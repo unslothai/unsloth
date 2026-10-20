@@ -74,9 +74,13 @@ def main() -> None:
         if name not in ("auth/auth.db", "studio.db"):
             assert (home / name).read_bytes() == payload, f"Owner read changed {name}"
     assert old_auth_row(home / "auth" / "auth.db") == auth_row
-    assert (
-        legacy_studio_rows(home / "studio.db") == studio_rows
-    ), "Owner read changed legacy studio.db rows"
+    # The attachment inventory is a versioned derived cache: a newer build rebuilds it on first
+    # read, so its bookkeeping row moves by design. Every user-written row must not.
+    derived = "chat_attachment_inventory_state"
+    after = legacy_studio_rows(home / "studio.db")
+    assert {t: r for t, r in after.items() if t != derived} == {
+        t: r for t, r in studio_rows.items() if t != derived
+    }, "Owner read changed legacy studio.db rows"
     assert not (home / "accounts").exists()
     print(json.dumps({"preserved_files": len(original), "owner_login": True}))
 

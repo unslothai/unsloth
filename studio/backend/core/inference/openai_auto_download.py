@@ -191,8 +191,13 @@ def _hub_token(hf_token: Optional[str]):
     return hf_token or False
 
 
-def _servable_key(repo_id: str, hf_token: Optional[str]) -> str:
-    """Cache key, per credential.
+def _endpoint() -> str:
+    from huggingface_hub import constants
+    return constants.ENDPOINT.rstrip("/")
+
+
+def _servable_key(repo_id: str, hf_token: Optional[str], endpoint: str) -> str:
+    """Cache key, per credential and Hub.
 
     The Hub 404s a private repo the caller cannot see, so a tokenless verdict says
     nothing about a caller who has one. Digested, so no token is held here.
@@ -200,18 +205,24 @@ def _servable_key(repo_id: str, hf_token: Optional[str]) -> str:
     import hashlib
 
     seen_as = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else "anon"
-    return f"{repo_id.lower()}\n{seen_as}"
+    return f"{repo_id.lower()}\n{seen_as}\n{endpoint}"
 
 
-def _mark_not_servable(repo_id: str, hf_token: Optional[str]) -> None:
+def _mark_not_servable(repo_id: str, hf_token: Optional[str], endpoint: str) -> None:
     with _cache_lock:
         if len(_not_servable) >= _NOT_SERVABLE_MAX:
             _not_servable.clear()
-        _not_servable[_servable_key(repo_id, hf_token)] = time.monotonic() + _NOT_SERVABLE_TTL_S
+        _not_servable[_servable_key(repo_id, hf_token, endpoint)] = (
+            time.monotonic() + _NOT_SERVABLE_TTL_S
+        )
 
 
-def _is_not_servable(repo_id: str, hf_token: Optional[str]) -> bool:
-    key = _servable_key(repo_id, hf_token)
+def _is_not_servable(
+    repo_id: str,
+    hf_token: Optional[str],
+    endpoint: Optional[str] = None,
+) -> bool:
+    key = _servable_key(repo_id, hf_token, endpoint or _endpoint())
     with _cache_lock:
         expires = _not_servable.get(key)
         if expires is None:
@@ -495,12 +506,16 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
     apart from an ordinary foreign label. Any failure answers False: refusing
     would strand normal traffic for the length of the download.
     """
-    if _is_not_servable(repo_id, hf_token):
+    # One Hub for the whole lookup, so its answer is filed under the Hub that gave it.
+    endpoint = _endpoint()
+    if _is_not_servable(repo_id, hf_token, endpoint):
         return False
 
     def _probe():
         from huggingface_hub import HfApi
-        return HfApi(token = _hub_token(hf_token)).model_info(repo_id, timeout = _MODEL_INFO_TIMEOUT_S)
+        return HfApi(endpoint = endpoint, token = _hub_token(hf_token)).model_info(
+            repo_id, timeout = _MODEL_INFO_TIMEOUT_S
+        )
 
     try:
         info = await asyncio.to_thread(_probe)
@@ -511,7 +526,7 @@ async def _is_downloadable_model(repo_id: str, hf_token: Optional[str]) -> bool:
     # download.
     servable = bool(_gguf_variants(getattr(info, "siblings", None), repo_id))
     if not servable:
-        _mark_not_servable(repo_id, hf_token)
+        _mark_not_servable(repo_id, hf_token, endpoint)
     return servable
 
 
@@ -638,11 +653,13 @@ async def _admit_and_start(
     subject: Optional[str] = None,
     via_api_key: bool = False,
 ) -> Optional[AutoDownloadRefusal]:
-    from hub.utils.hf_errors import hf_error_status
+    from hub.utils.hf_errors import hf_error_status, modelscope_missing
+
+    endpoint = _endpoint()
 
     def _probe():
         from huggingface_hub import HfApi
-        return HfApi(token = _hub_token(hf_token)).model_info(
+        return HfApi(endpoint = endpoint, token = _hub_token(hf_token)).model_info(
             repo_id, files_metadata = True, timeout = _MODEL_INFO_TIMEOUT_S
         )
 
@@ -663,13 +680,14 @@ async def _admit_and_start(
         if status == 403:
             return _gated_refusal(repo_id)
         if status == 404:
-            _mark_not_servable(repo_id, hf_token)
+            _mark_not_servable(repo_id, hf_token, endpoint)
             if not looks_like_quant(wanted_variant):
                 return None
             return AutoDownloadRefusal(
                 status = 404,
                 code = "model_not_found",
-                message = (
+                message = modelscope_missing(exc)
+                or (
                     f"'{repo_id}' was not found on Hugging Face, or is not accessible. "
                     "If it is private, send a token in the X-Unsloth-HF-Token header."
                 ),
@@ -692,7 +710,7 @@ async def _admit_and_start(
     variants = _gguf_variants(getattr(info, "siblings", None), repo_id)
     if not variants:
         _release(active)
-        _mark_not_servable(repo_id, hf_token)
+        _mark_not_servable(repo_id, hf_token, endpoint)
         if not looks_like_quant(wanted_variant):
             return None
         return AutoDownloadRefusal(
@@ -734,7 +752,7 @@ async def _admit_and_start(
             ),
         )
 
-    variant = _match_variant(wanted_variant, variants)
+    variant = _match_variant(wanted_variant, variants, repo_id)
     if variant is None:
         _release(active)
         listed = sorted(variants)
@@ -858,10 +876,10 @@ def preferred_quant(labels) -> Optional[str]:
     """
     from utils.models.model_config import _pick_best_gguf
 
-    # _pick_best_gguf ranks filenames and matches upper-case tokens, so feed "<LABEL>.gguf"
+    # _pick_best_gguf ranks filenames, so feed "<LABEL>.gguf"
     synthetic: dict[str, str] = {}
     for name in labels:
-        synthetic.setdefault(f"{name.upper()}.gguf", name)
+        synthetic.setdefault(f"{name}.gguf", name)
     best = _pick_best_gguf(list(synthetic))
     return synthetic.get(best) if best else None
 
@@ -888,7 +906,11 @@ def _bare_quant_alias(wanted: str, lowered: dict[str, str]) -> Optional[str]:
     return matches[0] if len(matches) == 1 else None
 
 
-def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[str]:
+def _match_variant(
+    wanted: Optional[str],
+    variants: dict[str, int],
+    repo_id: Optional[str] = None,
+) -> Optional[str]:
     """Resolve the requested quant against what the repo actually has.
 
     An explicit quant matches case-insensitively and must exist: never quietly
@@ -910,13 +932,10 @@ def _match_variant(wanted: Optional[str], variants: dict[str, int]) -> Optional[
         if exact is not None or looks_like_quant(wanted):
             # A quant-shaped suffix that matches nothing is a miss, never a swap.
             return exact
-    # A BARE org/repo means the ROOT checkpoint, so a qualified sibling must not be ranked against it: preferred_quant
-    # is order-sensitive, and once the map carried a key per checkpoint a repo with distilled/model-Q6_K beside
-    # model-Q6_K could serve the sibling for a bare id -- the same id that resolves to the root locally. Same filter
-    # local_model_resolver._local_gguf_entry applies, so both resolvers answer one id one way. A repo with nothing at
-    # the root falls back to the whole set rather than refusing.
-    unqualified = {name: size for name, size in variants.items() if "/" not in name}
-    return preferred_quant(unqualified or variants)
+    # A bare id means default_gguf_scope, the same scope every resolver applies (preferred_quant is order-sensitive).
+    from hub.utils.gguf import default_gguf_scope
+
+    return preferred_quant(default_gguf_scope(variants, repo_id))
 
 
 async def _dispatch(

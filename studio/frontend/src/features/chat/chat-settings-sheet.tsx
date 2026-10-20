@@ -51,6 +51,9 @@ import {
 } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
+import { useSliderDraft } from "@/hooks/use-slider-draft";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import {
   CHAT_SETTINGS_WIDTH_MIN,
   clampChatSettingsWidth,
@@ -60,8 +63,9 @@ import { useIsCompact } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
+import { cornerInsets, watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
-import { Edit03Icon, LayoutAlignRightIcon } from "@hugeicons/core-free-icons";
+import { Edit03Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Braces, ChevronDown, ExternalLink } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -81,8 +85,9 @@ import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
   parseExternalModelId,
-  supportsProviderPromptCacheTtl,
-  supportsProviderPromptCaching,
+  promptCacheTtlAppliesToModel,
+  promptCachingAppliesToModel,
+  providerModelSupportsStudioTools,
 } from "./external-providers";
 import {
   BUILTIN_PRESETS,
@@ -125,6 +130,7 @@ import {
 } from "./types/runtime";
 
 import { effectiveMinPMode, isMinPMode } from "./lib/min-p-policy";
+import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -162,11 +168,13 @@ export function ParamSlider({
   max,
   step,
   onChange,
-  displayValue,
+  onDraft,
+  format,
   info,
   valueSize,
   disabled,
   inline,
+  commitWhileDragging = false,
 }: {
   label: string;
   value: number;
@@ -174,13 +182,25 @@ export function ParamSlider({
   max: number;
   step: number;
   onChange: (v: number) => void;
-  displayValue?: string;
+  onDraft?: (value: number | null) => void;
+  format?: (value: number) => string | undefined;
   info?: ReactNode;
   valueSize?: number;
   disabled?: boolean;
   /** Label, track and value on one row, for narrow settings columns. */
   inline?: boolean;
+  commitWhileDragging?: boolean;
 }) {
+  const commit = (v: number) => onChange(snapToStep(v, step, min, max));
+  const { draft, sliderProps: draftProps } = useSliderDraft(
+    value,
+    commit,
+    onDraft,
+  );
+  const sliderProps = commitWhileDragging
+    ? { value: [value], onValueChange: ([v]: number[]) => commit(v) }
+    : draftProps;
+  const shown = draft ?? value;
   if (inline) {
     return (
       <div className="flex items-center gap-3">
@@ -195,18 +215,17 @@ export function ParamSlider({
           min={min}
           max={max}
           step={step}
-          value={[value]}
-          onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
+          {...sliderProps}
           className="panel-slider min-w-0 flex-1"
           disabled={disabled}
         />
         <NumericValueInput
-          value={value}
+          value={shown}
           min={min}
           max={max}
           step={step}
           onChange={onChange}
-          displayValue={displayValue}
+          displayValue={format?.(shown)}
           ariaLabel={label}
           size={valueSize ?? 4}
           className="panel-number-input"
@@ -225,12 +244,12 @@ export function ParamSlider({
           {info && <InfoHint>{info}</InfoHint>}
         </div>
         <NumericValueInput
-          value={value}
+          value={shown}
           min={min}
           max={max}
           step={step}
           onChange={onChange}
-          displayValue={displayValue}
+          displayValue={format?.(shown)}
           ariaLabel={label}
           size={valueSize ?? 4}
           className="panel-number-input"
@@ -241,8 +260,7 @@ export function ParamSlider({
         min={min}
         max={max}
         step={step}
-        value={[value]}
-        onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
+        {...sliderProps}
         className="panel-slider"
         disabled={disabled}
       />
@@ -399,11 +417,6 @@ function CollapsibleSection({
 interface ChatSettingsPanelProps {
   open: boolean;
   onOpenChange?: (open: boolean) => void;
-  params: InferenceParams;
-  onParamsChange: (
-    params: InferenceParams,
-    options?: { minPChoiceEdited?: boolean },
-  ) => void;
   modelConfig?: ReactNode;
   isExternalModel?: boolean;
   /** Sampling-param capabilities for the active external provider, or `null` for local models
@@ -475,8 +488,6 @@ function specFallbackMessage({
 export function ChatSettingsPanel({
   open,
   onOpenChange,
-  params,
-  onParamsChange,
   modelConfig = null,
   isExternalModel = false,
   providerCapabilities = null,
@@ -486,6 +497,8 @@ export function ChatSettingsPanel({
 }: ChatSettingsPanelProps) {
   const asideRef = useRef<HTMLElement>(null);
   const t = useT();
+  const params = useChatRuntimeStore((s) => s.params);
+  const setParams = useChatRuntimeStore((s) => s.setParams);
   const {
     width: settingsWidth,
     max: settingsMax,
@@ -508,11 +521,21 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   // Overlay as a sheet below lg so the thread keeps its width.
   const isCompact = useIsCompact();
+  const uiSpaceScale = useUiSpaceScale();
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
+  useEffect(() => {
+    if (!open || isCompact) return;
+    return watchChatSettingsInset(
+      cornerInsets,
+      asideRef.current,
+      settingsWidth * settingsScale,
+      uiSpaceScale,
+    );
+  }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
@@ -551,7 +574,7 @@ export function ChatSettingsPanel({
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
-  const mlxKvBits = useChatRuntimeStore((s) => s.mlxKvBits);
+  const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
@@ -613,9 +636,7 @@ export function ChatSettingsPanel({
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
-      toast.error(
-        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
-      );
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }, [applyLlamaUpdate, speculativeDrafterLabel]);
   const loadedEffectiveContext = customContextLength ?? loadedContextLength;
@@ -631,13 +652,19 @@ export function ChatSettingsPanel({
       // ngram-mod runs no drafter, so only the binary stand-down reaches it. Without
       // this the panel shows ngram selected, no speculation running, and no reason.
       speculativeType === "ngram");
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
+  const mlxSpecFallback =
+    !isExternalModel && loadedIsMlx && specFallbackReason != null
+      ? mlxSpecFallbackMessage(specFallbackReason, specDrafterKind)
+      : null;
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
     maxContextLength != null &&
     loadedEffectiveContext != null &&
     loadedEffectiveContext > maxContextLength;
-  const showLoadedDiagnostics = showSpecFallback || showContextVramWarning;
+  const showLoadedDiagnostics =
+    showSpecFallback || mlxSpecFallback != null || showContextVramWarning;
   const hasModelContent = showLoadedDiagnostics;
   const setActivePresetSource = useChatRuntimeStore(
     (s) => s.setActivePresetSource,
@@ -747,7 +774,7 @@ export function ChatSettingsPanel({
     customContextLength,
     loadedContextLength,
     kvCacheDtype,
-    mlxKvBits,
+    mlxKvQuant,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
@@ -772,7 +799,7 @@ export function ChatSettingsPanel({
       customContextLength,
       loadedContextLength,
       kvCacheDtype,
-      mlxKvBits,
+      mlxKvQuant,
       gpuMemoryMode,
       gpuLayers,
       nCpuMoe,
@@ -804,18 +831,33 @@ export function ChatSettingsPanel({
   const systemPromptEditorDirty =
     systemPromptDraft !== currentSystemPrompt ||
     systemVariablesDraft !== currentSystemVariables;
-  const showPromptCacheTtlControl = Boolean(
-    activeExternalProvider &&
-      supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
-  );
-  const showPromptCachingControl =
-    activeExternalProvider != null &&
-    supportsProviderPromptCaching(activeExternalProvider.providerType);
-  const promptCachingEnabled =
-    activeExternalProvider?.enablePromptCaching !== false;
   const externalSelection = currentCheckpoint
     ? parseExternalModelId(currentCheckpoint)
     : null;
+  // Budget, duration and dedupe are knobs of Unsloth's own tool loop, which external turns run
+  // only when the provider supports Unsloth tools (`=== true`, the same test the request uses).
+  const showStudioToolLoopControls =
+    !isExternalModel ||
+    providerModelSupportsStudioTools(
+      externalProviderType,
+      externalSelection?.modelId,
+    ) === true;
+
+  const showPromptCacheTtlControl = Boolean(
+    activeExternalProvider &&
+      promptCacheTtlAppliesToModel(
+        activeExternalProvider.providerType,
+        externalSelection?.modelId,
+      ),
+  );
+  const showPromptCachingControl =
+    activeExternalProvider != null &&
+    promptCachingAppliesToModel(
+      activeExternalProvider.providerType,
+      externalSelection?.modelId,
+    );
+  const promptCachingEnabled =
+    activeExternalProvider?.enablePromptCaching !== false;
   // The OpenRouter cap comes from the live catalog, which can land after this panel renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const maxTokensMax = isExternalModel
@@ -848,7 +890,7 @@ export function ChatSettingsPanel({
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
       const nextParams = {
-        ...params,
+        ...useChatRuntimeStore.getState().params,
         [key]: v,
         ...(key === "minP" ? { minPMode: "custom" as const } : {}),
       };
@@ -856,7 +898,7 @@ export function ChatSettingsPanel({
         ? getPresetSource(activePreset)
         : "modified";
       setActivePresetSource(nextSource);
-      onParamsChange(nextParams, {
+      setParams(nextParams, {
         minPChoiceEdited: key === "minP" || key === "minPMode",
       });
     };
@@ -883,14 +925,14 @@ export function ChatSettingsPanel({
       ? getPresetSource(activePreset)
       : "modified";
     setActivePresetSource(nextSource);
-    onParamsChange(nextParams);
+    setParams(nextParams);
   }, [
     activeExternalProvider,
     activePreset,
     activePresetBaseline,
     isExternalModel,
     maxTokensMax,
-    onParamsChange,
+    setParams,
     params,
     settingsHydrated,
     setActivePresetSource,
@@ -915,7 +957,7 @@ export function ChatSettingsPanel({
     }
     const p = presets.find((pr) => pr.name === name);
     if (p) {
-      onParamsChange(applyPresetParamsWithinCurrentLimits(p), {
+      setParams(applyPresetParamsWithinCurrentLimits(p), {
         minPChoiceEdited: true,
       });
       if (p.loadConfig) {
@@ -977,7 +1019,7 @@ export function ChatSettingsPanel({
     setCustomPresets(next);
     if (activePreset === name) {
       if (fallbackPreset) {
-        onParamsChange(
+        setParams(
           applyPresetParamsWithinCurrentLimits(fallbackPreset),
           { minPChoiceEdited: true },
         );
@@ -1016,7 +1058,7 @@ export function ChatSettingsPanel({
       ? getPresetSource(activePreset)
       : "modified";
     setActivePresetSource(nextSource);
-    onParamsChange(nextParams);
+    setParams(nextParams);
     setSystemPromptEditorOpen(false);
   }
 
@@ -1076,7 +1118,12 @@ export function ChatSettingsPanel({
 
   useEffect(() => () => promptObserverRef.current?.disconnect(), []);
 
-  const settingsScrollRef = useRef<HTMLDivElement>(null);
+  // Settings dissolve at whichever edge they run past, as on Images and Video.
+  const {
+    attach: attachSettingsScroll,
+    onScroll: onSettingsScroll,
+    className: settingsFadeClass,
+  } = useScrollFades();
 
   const settingsContent = (
     <>
@@ -1093,16 +1140,17 @@ export function ChatSettingsPanel({
             <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
-            <Tooltip>
+            <Tooltip key={open ? "open" : "closed"}>
                 <TooltipPrimitive.Trigger asChild={true}>
+                {/* Centred in the control row, as the header's open button is, so the toggle doesn't jump. */}
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="mt-[calc((var(--studio-chat-control-height,33px)-30px*var(--ui-space-scale,1))/2)] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
-                    icon={LayoutAlignRightIcon}
+                    icon={PanelRightIcon}
                     strokeWidth={1.75}
                     className="size-icon"
                   />
@@ -1121,8 +1169,12 @@ export function ChatSettingsPanel({
       </div>
 
       <div
-        ref={settingsScrollRef}
-        className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
+        ref={attachSettingsScroll}
+        onScroll={onSettingsScroll}
+        className={cn(
+          "run-settings-scroll panel-scroll-fade relative min-h-0 flex-1 overflow-y-auto",
+          settingsFadeClass,
+        )}
       >
       <div className="px-[calc(18px*var(--ui-space-scale,1))] pt-3">
         {(hasModelContent || modelConfig) && (
@@ -1136,10 +1188,10 @@ export function ChatSettingsPanel({
                       reason: specFallbackReason,
                       drafter: speculativeDrafterLabel,
                       isLocalGguf,
-                      updateAvailable: Boolean(llamaUpdateStatus?.update_available),
+                      updateAvailable: Boolean(llamaUpdateStatus?.llama.update_available),
                     })}
                   </p>
-                  {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                  {mtpUpdatable && llamaUpdateStatus?.llama.update_available && (
                     <Button
                       size="sm"
                       className="corner-squircle mt-2 h-7 text-ui-12"
@@ -1152,15 +1204,20 @@ export function ChatSettingsPanel({
                   )}
                 </div>
               )}
+              {mlxSpecFallback && (
+                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
+                  <p>{mlxSpecFallback}</p>
+                </div>
+              )}
               {showContextVramWarning && (
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length exceeds what fits in unified memory (
-                      {maxContextLength?.toLocaleString()} tokens). The GPU
-                      and the rest of the system share one pool here, so there
-                      is nothing to offload to. Lower the context, leave it on
-                      Auto, or set the KV cache to q8_0.
+                      Context length is above Studio&apos;s free-memory estimate
+                      ({maxContextLength?.toLocaleString()} tokens). It may
+                      still load, but macOS may have to compress or swap other
+                      apps and generation may slow down. Lower the context,
+                      leave it on Auto, or set the KV cache to q8_0.
                     </>
                   ) : (
                     <>
@@ -1505,7 +1562,7 @@ export function ChatSettingsPanel({
                 max={1}
                 step={0.05}
                 onChange={set("topP")}
-                displayValue={params.topP === 1 ? "Off" : undefined}
+                format={(v) => (v === 1 ? "Off" : undefined)}
                 info="Nucleus sampling. Restricts choices to the smallest set of tokens whose cumulative probability reaches this threshold. 1.0 = off."
               />
             ) : null}
@@ -1517,7 +1574,7 @@ export function ChatSettingsPanel({
                 max={100}
                 step={1}
                 onChange={set("topK")}
-                displayValue={params.topK === 0 ? "Off" : undefined}
+                format={(v) => (v === 0 ? "Off" : undefined)}
                 info="Limits sampling to the K most likely tokens at each step. 0 = off."
               />
             ) : null}
@@ -1570,9 +1627,7 @@ export function ChatSettingsPanel({
                 max={2}
                 step={0.05}
                 onChange={set("repetitionPenalty")}
-                displayValue={
-                  params.repetitionPenalty === 1 ? "Off" : undefined
-                }
+                format={(v) => (v === 1 ? "Off" : undefined)}
                 info="Down-weights tokens that have already appeared, reducing repetition. 1.0 = off; higher values penalize more strongly."
               />
             ) : null}
@@ -1584,9 +1639,7 @@ export function ChatSettingsPanel({
                 max={2}
                 step={0.1}
                 onChange={set("presencePenalty")}
-                    displayValue={
-                      params.presencePenalty === 0 ? "Off" : undefined
-                    }
+                format={(v) => (v === 0 ? "Off" : undefined)}
                 info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
               />
             ) : null}
@@ -1601,10 +1654,8 @@ export function ChatSettingsPanel({
               max={maxTokensMax}
               step={64}
               onChange={set("maxTokens")}
-              displayValue={
-                !isExternalModel && params.maxTokens >= maxTokensMax
-                  ? "Max"
-                  : undefined
+              format={(v) =>
+                !isExternalModel && v >= maxTokensMax ? "Max" : undefined
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
@@ -1658,18 +1709,27 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-            {isExternalModel ? null : (
+            {showStudioToolLoopControls ? (
           <CollapsibleSection label="Tools">
             <div className="flex flex-col gap-5">
-              <AutoHealToolCallsToggle />
-              <NudgeToolCallsToggle />
-              <ConfirmToolCallsToggle />
-              <BypassPermissionsToggle />
+              {isExternalModel ? null : (
+                <>
+                  <AutoHealToolCallsToggle />
+                  <NudgeToolCallsToggle />
+                </>
+              )}
+              <DeduplicateToolCallsToggle />
+              {isExternalModel ? null : (
+                <>
+                  <ConfirmToolCallsToggle />
+                  <BypassPermissionsToggle />
+                </>
+              )}
               <MaxToolCallsSlider />
               <ToolCallTimeoutSlider />
             </div>
           </CollapsibleSection>
-            )}
+            ) : null}
 
             {isExternalModel ? null : (
           <CollapsibleSection label="Retrieval">
@@ -1849,11 +1909,10 @@ export function ChatSettingsPanel({
       ref={asideRef}
       data-tour="chat-settings"
       data-slot="chat-settings-panel"
+      inert={!open}
       className={cn(
         "relative z-50 shrink-0 bg-panel-surface text-panel-surface-fg font-heading",
-        open
-          ? "w-(--chat-settings-width) border-l border-sidebar-border"
-          : "w-0 overflow-hidden",
+        open ? "w-(--chat-settings-width)" : "w-0 overflow-hidden",
       )}
       style={
         {
@@ -1887,7 +1946,14 @@ export function ChatSettingsPanel({
         dataSlot="chat-settings-resize-handle"
       />
       ) : null}
-      <div className="h-full w-full overflow-hidden">{settingsContent}</div>
+      <div
+        className={cn(
+          "h-full w-full overflow-hidden",
+          open && "border-l border-panel-edge",
+        )}
+      >
+        {settingsContent}
+      </div>
     </aside>
   );
 }
@@ -1909,9 +1975,7 @@ function MaxToolCallsSlider() {
       max={41}
       step={1}
       onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
-      displayValue={
-        sliderValue >= 41 ? "Max" : sliderValue === 0 ? "Off" : undefined
-      }
+      format={(v) => (v >= 41 ? "Max" : v === 0 ? "Off" : undefined)}
       info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap."
     />
   );
@@ -1924,13 +1988,6 @@ function ToolCallTimeoutSlider() {
   // Slider 1-31; 31 maps to 9999 ("Max")
   const sliderValue = timeout >= 9999 ? 31 : Math.min(Math.max(timeout, 1), 30);
 
-  const displayValue =
-    sliderValue >= 31
-      ? "Max"
-      : sliderValue === 1
-        ? "1 minute"
-        : `${sliderValue} minutes`;
-
   return (
     <ParamSlider
       label="Max Tool Call Duration"
@@ -1939,7 +1996,9 @@ function ToolCallTimeoutSlider() {
       max={31}
       step={1}
       onChange={(v) => setTimeout_(v >= 31 ? 9999 : v)}
-      displayValue={displayValue}
+      format={(v) =>
+        v >= 31 ? "Max" : v === 1 ? "1 minute" : `${v} minutes`
+      }
       valueSize={10}
       info="Per-call wall-clock limit. Long-running tool executions are terminated when this elapses; the model continues with what completed."
     />
@@ -1996,8 +2055,38 @@ function NudgeToolCallsToggle() {
   );
 }
 
+function DeduplicateToolCallsToggle() {
+  const deduplicateToolCalls = useChatRuntimeStore(
+    (s) => s.deduplicateToolCalls,
+  );
+  const setDeduplicateToolCalls = useChatRuntimeStore(
+    (s) => s.setDeduplicateToolCalls,
+  );
+
+  return (
+    <div className="flex min-h-8 items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+          Deduplicate Tool Calls
+        </span>
+        <InfoHint>
+          Skips a tool call identical to one that already succeeded in this
+          response and tells the model it was a duplicate. Turn off to let a
+          repeated call run again.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={deduplicateToolCalls}
+        onCheckedChange={setDeduplicateToolCalls}
+      />
+    </div>
+  );
+}
+
 function ConfirmToolCallsToggle() {
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
@@ -2011,7 +2100,8 @@ function ConfirmToolCallsToggle() {
             When on, every local Unsloth tool call pauses for your approval
             before it runs (the "Ask for approval" level). When off, tool calls
             run without prompts inside the sandbox (the "Run automatically"
-            level).
+            level); on a computer without a working OS sandbox, risky Python
+            and Terminal calls still ask.
             Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
@@ -2024,7 +2114,14 @@ function ConfirmToolCallsToggle() {
       <Switch
         className="panel-switch shrink-0"
         checked={permissionMode === "ask"}
-        onCheckedChange={setConfirmToolCalls}
+        onCheckedChange={(checked) => {
+          if (checked) {
+            setConfirmToolCalls(true);
+          } else {
+            // Same as picking "Run automatically".
+            setPermissionMode("off");
+          }
+        }}
         disabled={permissionMode === "full"}
       />
     </div>
@@ -2048,7 +2145,7 @@ function BypassPermissionsToggle() {
       {/* Full width, styled like the panel selects/preset input. */}
       <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
       {permissionMode === "full" ? (
-        <span className="text-ui-11 text-bypass">
+        <span className="text-ui-11 text-muted-foreground">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}

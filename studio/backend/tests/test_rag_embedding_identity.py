@@ -220,6 +220,7 @@ def test_identity_distinguishes_the_backends_and_the_gguf_repo(monkeypatch):
 
 def test_llama_identity_uses_the_resolved_stored_repo(monkeypatch):
     monkeypatch.setattr(embeddings, "active_backend_is_llama", lambda *_a, **_k: True)
+    monkeypatch.setattr(embeddings, "_llama_pooling", lambda *_a, **_k: None)
     monkeypatch.setattr(
         config,
         "effective_gguf_repo_for_embedding_model",
@@ -462,6 +463,7 @@ def test_the_web_ranker_labels_a_page_with_the_backend_that_encoded_it(rag_home,
     monkeypatch.setattr(
         embeddings, "token_counter", lambda model_name = None: lambda t: max(1, len(t.split()))
     )
+    monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
 
     class _SwapsMidEncode:
         def encode(

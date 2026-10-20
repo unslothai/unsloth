@@ -15,6 +15,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
@@ -23,10 +24,16 @@ _OK_SSE = 'data: {"choices":[{"index":0,"delta":{"content":"{}"}}]}\n\n' "data: 
 _LMSTUDIO_REFUSAL = {"error": "'response_format.type' must be 'json_schema' or 'text'"}
 
 
-def _run(handler, response_format) -> list[str]:
+def _run(
+    handler,
+    response_format,
+    *,
+    provider_type = "custom",
+    **kwargs,
+) -> list[str]:
     mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
     client = ExternalProviderClient(
-        provider_type = "custom",
+        provider_type = provider_type,
         base_url = "http://127.0.0.1:1234/v1",
         api_key = "",
     )
@@ -38,6 +45,7 @@ def _run(handler, response_format) -> list[str]:
                 messages = [{"role": "user", "content": "plan"}],
                 model = "some-local-model",
                 response_format = response_format,
+                **kwargs,
             ):
                 lines.append(line)
         finally:
@@ -111,3 +119,66 @@ def test_a_json_schema_refusal_is_not_retried_again():
 
     _run(handler, {"type": "json_object"})
     assert len(bodies) == 2
+
+
+def test_schema_retry_preserves_openrouter_session_and_request_options():
+    bodies: list[dict] = []
+    lines = _run(
+        _schema_only_server(bodies),
+        {"type": "json_object"},
+        provider_type = "openrouter",
+        thread_id = "research-thread",
+        temperature = 0.2,
+        top_p = None,
+        max_tokens = 128,
+        presence_penalty = 0.4,
+        top_k = 30,
+        min_p = 0.1,
+        repetition_penalty = 1.1,
+        reasoning_effort = "high",
+        tools = [
+            {"type": "function", "function": {"name": "search", "parameters": {"type": "object"}}}
+        ],
+        tool_choice = "none",
+    )
+    assert len(bodies) == 2
+    assert bodies[0]["session_id"] == "research-thread"
+    assert bodies[1] == {**bodies[0], "response_format": bodies[1]["response_format"]}
+    assert not any('"error"' in line for line in lines)
+
+
+@pytest.mark.parametrize("first_refusal", ["max_tokens", "response_format"])
+@pytest.mark.parametrize("schema_accepted", [True, False])
+def test_schema_and_token_limit_retries_preserve_each_others_changes(
+    first_refusal, schema_accepted
+):
+    bodies: list[dict] = []
+    token_refusal = {"error": "Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens'."}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        bodies.append(body)
+        refusals = {
+            "max_tokens": token_refusal if "max_tokens" in body else None,
+            "response_format": _LMSTUDIO_REFUSAL
+            if body["response_format"]["type"] == "json_object"
+            else None,
+        }
+        error = refusals[first_refusal] or next((r for r in refusals.values() if r), None)
+        if error is not None or not schema_accepted:
+            return httpx.Response(400, json = error or _LMSTUDIO_REFUSAL)
+        return httpx.Response(200, content = _OK_SSE, headers = {"content-type": "text/event-stream"})
+
+    lines = _run(handler, {"type": "json_object"}, max_tokens = 128)
+
+    assert len(bodies) == 3
+    assert bodies[-1]["max_completion_tokens"] == 128
+    assert "max_tokens" not in bodies[-1]
+    assert bodies[-1]["response_format"]["json_schema"]["schema"] == {"type": "object"}
+    for previous, current in zip(bodies, bodies[1:]):
+        if "max_completion_tokens" in previous:
+            assert current["max_completion_tokens"] == 128
+            assert "max_tokens" not in current
+        if previous["response_format"]["type"] == "json_schema":
+            assert current["response_format"] == previous["response_format"]
+    assert any('"error"' in line for line in lines) is not schema_accepted

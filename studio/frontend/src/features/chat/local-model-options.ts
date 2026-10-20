@@ -10,6 +10,7 @@ import type { LoraModelOption } from "@/features/model-picker";
  *  `materialize_ollama_model_ref`, which creates the `.gguf` link on demand. */
 const CHAT_LOCAL_SOURCES: ReadonlySet<LocalModelInfo["source"]> = new Set([
   "lmstudio",
+  "omlx",
   "models_dir",
   "ollama",
   "hermes",
@@ -20,6 +21,8 @@ function baseModelLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "ollama":
       return "Ollama";
     case "hermes":

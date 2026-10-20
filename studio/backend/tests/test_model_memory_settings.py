@@ -1039,6 +1039,27 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
             },
         )()
 
+    def test_a_discrete_full_offload_reports_not_applicable(self, monkeypatch):
+        backend = self._backend(True, False, state = (False, True))
+        resp = self._response(True, False, backend, monkeypatch)
+        assert resp.mlock_applicable is False
+        assert resp.mlock_active is False
+        assert resp.reload_required is False
+
+    def test_a_host_resident_load_reports_applicable(self, monkeypatch):
+        resp = self._response(True, False, self._backend(True, True), monkeypatch)
+        assert resp.mlock_applicable is True
+        assert resp.mlock_active is True
+
+    def test_nothing_loaded_reports_applicable(self, monkeypatch):
+        resp = self._response(True, False, self._backend(False, False), monkeypatch)
+        assert resp.mlock_applicable is True
+
+    def test_applicability_is_reported_with_residency_off(self, monkeypatch):
+        resp = self._response(False, False, self._backend(True, False), monkeypatch)
+        assert resp.mlock_applicable is False
+        assert resp.mlock_active is False
+
     def test_a_gated_load_reports_no_active_lock_and_no_limit(self, monkeypatch):
         resp = self._response(True, False, self._backend(True, False), monkeypatch)
         assert resp.mlock_active is False

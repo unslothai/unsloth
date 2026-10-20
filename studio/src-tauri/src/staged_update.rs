@@ -25,7 +25,7 @@ const RUNTIME_ENTRIES: [&str; 4] = [
     ".venv_t5_550",
     ".venv_t5_510",
 ];
-const HELPER_RUNTIME_ENTRIES: [&str; 3] = ["node", "llama.cpp", "whisper.cpp"];
+const HELPER_RUNTIME_ENTRIES: [&str; 4] = ["node", "llama.cpp", "whisper.cpp", "audio.cpp"];
 
 fn all_runtime_entries() -> impl Iterator<Item = &'static str> {
     RUNTIME_ENTRIES.into_iter().chain(HELPER_RUNTIME_ENTRIES)
@@ -878,6 +878,21 @@ mod tests {
             return None;
         }
         Some(me)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stable_records_guard_updates_after_an_epoch_clock_shift() {
+        let home = temp_home("stable-markers");
+        let me = std::process::id();
+        let identity = crate::process_identity::linux_process_identity(me).unwrap();
+        let marker = home.join(format!("studio-starting-{me}.marker"));
+        fs::write(&marker, format!("{me}\n1.0\n\n{identity}\n")).unwrap();
+        assert!(recorded_pids(&home).contains(&me));
+        fs::write(&marker, format!("{me}\n1.0\n\nlinux:another-boot:0\n")).unwrap();
+        fs::write(home.join("studio.pid"), format!("{me}\n")).unwrap();
+        assert!(!recorded_pids(&home).contains(&me));
+        cleanup(home);
     }
 
     #[test]

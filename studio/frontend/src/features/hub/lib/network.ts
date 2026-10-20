@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getHfEndpoint } from "@/lib/hf-endpoint";
+import { fetchHub } from "@/lib/hub-fetch";
 
 const NETWORK_STATUS_EVENT = "unsloth-network-status";
 const REMOTE_OFFLINE_TTL_MS = 30_000;
@@ -27,12 +28,15 @@ type RemoteNetworkScope = string | readonly string[];
  * Why a Hub request failed. Browsers collapse CORS, DNS, TLS interception and
  * real outages into one opaque TypeError, so "network-opaque" says what we can
  * prove, not what happened. Only CSP can be named, via its violation event.
+ * "auth-rejected" is the Hub answering, and refusing the credential: it never
+ * backs the origin off, since the Hub is reachable and a retry can succeed.
  */
 export type HubFailureKind =
   | "aborted"
   | "timeout"
   | "browser-offline"
   | "network-opaque"
+  | "auth-rejected"
   | "unknown";
 
 export interface HubFailure {
@@ -311,7 +315,7 @@ export function classifyFetchFailure(
     }
     return {
       kind: "network-opaque",
-      message: `The browser could not reach ${host}. A DNS or content filter, TLS-inspecting antivirus, a browser extension, or a CORS policy can all cause this, and the browser does not say which.`,
+      message: `Unable to reach ${host}. Check your network connection.`,
       origin,
       retryable: true,
     };
@@ -320,6 +324,38 @@ export function classifyFetchFailure(
     kind: "unknown",
     message: `The request to ${host} failed.`,
     origin,
+    retryable: true,
+  };
+}
+
+// What the Hub says when it refuses the credential itself: an expired or revoked
+// OAuth token ("OAuth token verification failed"), a bad key ("Invalid credentials
+// in Authorization header"), or a bare 401. A 403 is left out on purpose: it is
+// the answer for a gated or private repo the token is valid for, not a rejection.
+const HUB_TOKEN_REJECTED_RE =
+  /invalid credentials|invalid (?:user )?(?:access )?token|oauth token verification failed|token (?:has )?(?:expired|been revoked)/i;
+
+/**
+ * The failure for a Hub that answered and refused the saved token. Built from
+ * the HTTP status when the caller has it, else from the SDK's error text, which
+ * is all a paginated listing keeps. Null for anything else, including 403, 404,
+ * 429 and 5xx, so those keep their own wording.
+ */
+export function hubAuthFailure(
+  error: { status?: number | null; message?: string | null },
+  origin: string | null = defaultHubOrigin(),
+): HubFailure | null {
+  const rejected =
+    error.status === 401 ||
+    (error.status == null && HUB_TOKEN_REJECTED_RE.test(error.message ?? ""));
+  if (!rejected) {
+    return null;
+  }
+  return {
+    kind: "auth-rejected",
+    message: `${hostLabel(origin)} refused the saved Hugging Face token. It may have expired or been revoked. Update or clear it in Settings, then try again.`,
+    origin,
+    status: 401,
     retryable: true,
   };
 }
@@ -358,7 +394,10 @@ export async function fetchWithTimeout(
   const origin = originFromFetchInput(input);
 
   try {
-    const response = await fetch(input, { ...init, signal: controller.signal });
+    const response = await fetchHub(input, {
+      ...init,
+      signal: controller.signal,
+    });
     if (origin) {
       markRemoteNetworkOnline(origin);
     }

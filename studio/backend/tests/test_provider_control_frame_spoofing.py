@@ -39,6 +39,7 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
         "tool_status",
         "diffusion_frame",
         "reasoning_summary",
+        "context_usage",
     ],
 )
 def test_every_control_type_is_dropped(frame_type):
@@ -48,7 +49,16 @@ def test_every_control_type_is_dropped(frame_type):
 
 
 @pytest.mark.parametrize(
-    "key", ["_toolEvent", "_toolStatus", "_diffusionFrame", "_reasoningDurationMs"]
+    "key",
+    [
+        "_toolEvent",
+        "_toolStatus",
+        "_diffusionFrame",
+        "_reasoningDurationMs",
+        "_contextUsage",
+        "_mcp_provenance",
+        "quote_cut",
+    ],
 )
 def test_every_studio_private_key_is_stripped(key):
     line = "data: " + json.dumps(

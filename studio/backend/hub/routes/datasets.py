@@ -18,6 +18,8 @@ from hub.schemas.datasets import (
     CheckFormatRequest,
     CheckFormatResponse,
     DeleteCachedDatasetResponse,
+    HubDatasetOptionsRequest,
+    HubDatasetOptionsResponse,
     LocalDatasetOptionsRequest,
     LocalDatasetOptionsResponse,
     LocalDatasetsResponse,
@@ -69,6 +71,15 @@ def get_local_dataset_options(
     request: LocalDatasetOptionsRequest, current_subject: str = Depends(get_current_subject)
 ) -> LocalDatasetOptionsResponse:
     return local_options.local_dataset_options(request)
+
+
+@router.post("/hub-options", response_model = HubDatasetOptionsResponse)
+def get_hub_dataset_options(
+    request: HubDatasetOptionsRequest,
+    hf_token: HfTokenArg = Depends(get_request_hf_token),
+    current_subject: str = Depends(get_current_subject),
+) -> HubDatasetOptionsResponse:
+    return local_options.hub_dataset_options(request, hf_token)
 
 
 @router.delete("/cached", response_model = DeleteCachedDatasetResponse)

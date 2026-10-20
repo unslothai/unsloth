@@ -704,8 +704,17 @@ def test_the_admission_marker_matches_the_route_that_emits_it():
 
     assert inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(runs_mod._ADMISSION_WAIT_MARKER)
     assert inference_route._OPENAI_ADMISSION_SSE_DONE.startswith(runs_mod._ADMISSION_DONE_MARKER)
-    # And neither may match the stall keep-alive, which is the opposite signal.
-    for marker in (runs_mod._ADMISSION_WAIT_MARKER, runs_mod._ADMISSION_DONE_MARKER):
+    assert inference_route._OPENAI_TOOL_HEARTBEAT_SSE.startswith(runs_mod._TOOL_HEARTBEAT_MARKER)
+    assert inference_route._OPENAI_PREFILL_PROGRESS_SSE.startswith(
+        runs_mod._PREFILL_PROGRESS_MARKER
+    )
+    # And none may match the stall keep-alive, which is the opposite signal.
+    for marker in (
+        runs_mod._ADMISSION_WAIT_MARKER,
+        runs_mod._ADMISSION_DONE_MARKER,
+        runs_mod._TOOL_HEARTBEAT_MARKER,
+        runs_mod._PREFILL_PROGRESS_MARKER,
+    ):
         assert not inference_route._OPENAI_PASSTHROUGH_SSE_KEEPALIVE.startswith(marker)
     # The two must stay distinct, or the done branch would swallow every wait.
     assert not inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(
@@ -720,7 +729,7 @@ def test_only_admission_comments_renew_the_lease_from_the_stream():
     signal, so both renew, and nothing else may."""
     import inspect
 
-    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce)
+    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce_run)
     for marker in ("_ADMISSION_DONE_MARKER in text", "_ADMISSION_WAIT_MARKER in text"):
         guard = source.index(marker)
         renew = source.index("_try_touch_progress", guard)
@@ -734,7 +743,7 @@ def test_leaving_the_queue_renews_without_waiting_for_the_rate_limit():
     the default first-token timeout, so that difference is negative margin."""
     import inspect
 
-    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce)
+    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce_run)
     guard = source.index("_ADMISSION_DONE_MARKER in text")
     renew = source.index("_try_touch_progress", guard)
     between = source[guard:renew]

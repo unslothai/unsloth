@@ -410,7 +410,7 @@ export function KeyboardShortcutsTab() {
   };
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1
           data-settings-label={t("settings.keyboardShortcuts.title")}

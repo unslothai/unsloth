@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AUDIO_CPP_REPO,
+  isAudioCppFolderId,
+} from "../../audio/audio-cpp-catalog.ts";
 import { looksLikeLocalPath } from "./local-path.ts";
 
 const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:/;
@@ -85,6 +89,18 @@ const TRAILING_SLASHES_RE = /\/+$/;
 function looksLikeModelPath(identifier: string): boolean {
   if (GGUF_SUFFIX_RE.test(identifier)) {
     return true;
+  }
+  // An audio.cpp umbrella id names a folder of one Hub repo; mirrors model_ids._looks_like_path.
+  if (isAudioCppFolderId(identifier)) {
+    const parts = identifier
+      .trim()
+      .slice(AUDIO_CPP_REPO.length + 1)
+      .replace(BACKSLASHES_RE, "/")
+      .split("/")
+      .filter(Boolean);
+    if (parts.length > 0 && !parts.some((part) => part === "." || part === "..")) {
+      return false;
+    }
   }
   if (PUBLIC_ID_PATH_PREFIX_RE.test(identifier)) {
     return true;

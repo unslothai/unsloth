@@ -8,7 +8,12 @@ import {
   BROWSER_ACCOUNT_KEY,
   transitionBrowserAccount,
 } from "../src/lib/account-transition.ts";
-import { readLastPrompt, saveLastPrompt } from "../src/lib/last-prompt.ts";
+import {
+  dismissExample,
+  isExampleDismissed,
+  readLastPrompt,
+  saveLastPrompt,
+} from "../src/lib/last-prompt.ts";
 import { WORKFLOW_EXAMPLE_PROMPTS, WORKFLOW_TABS } from "../src/features/images/workflows.ts";
 
 function withStorage(storage: unknown, run: () => void) {
@@ -22,22 +27,33 @@ function withStorage(storage: unknown, run: () => void) {
   }
 }
 
-test("the last prompt survives a reload and falls back to the example", () => {
+function memoryStorage() {
   const store = new Map<string, string>();
-  const storage = {
+  return {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => void store.set(k, v),
   };
-  withStorage(storage, () => {
-    assert.equal(readLastPrompt("images:edit", "example"), "example");
+}
+
+test("the last prompt survives a reload, per page and workflow", () => {
+  withStorage(memoryStorage(), () => {
+    assert.equal(readLastPrompt("images:edit"), "");
     saveLastPrompt("images:edit", "make it blue");
-    assert.equal(readLastPrompt("images:edit", "example"), "make it blue");
-    // Keys are separate per page and workflow.
-    assert.equal(readLastPrompt("images:create", "example"), "example");
+    assert.equal(readLastPrompt("images:edit"), "make it blue");
+    assert.equal(readLastPrompt("images:create"), "");
   });
 });
 
-test("unavailable storage still yields the example", () => {
+test("an example hint dismissed once stays dismissed for that box", () => {
+  withStorage(memoryStorage(), () => {
+    assert.equal(isExampleDismissed("images:edit"), false);
+    dismissExample("images:edit");
+    assert.equal(isExampleDismissed("images:edit"), true);
+    assert.equal(isExampleDismissed("images:create"), false);
+  });
+});
+
+test("unavailable storage reads as nothing saved and the hint shown", () => {
   const broken = {
     getItem: () => {
       throw new Error("denied");
@@ -48,7 +64,9 @@ test("unavailable storage still yields the example", () => {
   };
   withStorage(broken, () => {
     saveLastPrompt("video", "x");
-    assert.equal(readLastPrompt("video", "example"), "example");
+    dismissExample("video");
+    assert.equal(readLastPrompt("video"), "");
+    assert.equal(isExampleDismissed("video"), false);
   });
 });
 
@@ -89,10 +107,14 @@ function accountBrowser(account: string) {
 
 test("another account signing in does not see the previous account's prompts", async () => {
   const { browser, localStorage } = accountBrowser("alice");
-  withStorage(localStorage, () => saveLastPrompt("images:create", "alice's prompt"));
+  withStorage(localStorage, () => {
+    saveLastPrompt("images:create", "alice's prompt");
+    dismissExample("images:create");
+  });
   await transitionBrowserAccount("bob", "/images", () => {}, browser);
   withStorage(localStorage, () => {
-    assert.equal(readLastPrompt("images:create", "example"), "example");
+    assert.equal(readLastPrompt("images:create"), "");
+    assert.equal(isExampleDismissed("images:create"), false);
   });
 });
 
@@ -101,7 +123,7 @@ test("the same account signing in again keeps its prompts", async () => {
   withStorage(localStorage, () => saveLastPrompt("video", "alice's clip"));
   await transitionBrowserAccount("alice", "/video", () => {}, browser);
   withStorage(localStorage, () => {
-    assert.equal(readLastPrompt("video", "example"), "alice's clip");
+    assert.equal(readLastPrompt("video"), "alice's clip");
   });
 });
 

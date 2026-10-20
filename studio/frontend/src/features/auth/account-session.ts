@@ -4,7 +4,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import {
   ensureLoginMode,
-  getFullAccessAllowed,
   getLoginMode,
   subscribeLoginMode,
 } from "./login-client";
@@ -50,12 +49,13 @@ function subscribeSession(listener: () => void): () => void {
     for (const event of events) window.removeEventListener(event, listener);
   };
 }
+/** Ownership outside a component body, for a callback that cannot call a hook. */
+export function isAccountOwner(): boolean {
+  return sessionAccount(getAuthToken())?.isOwner ?? false;
+}
+
 export function useIsAccountOwner(): boolean {
-  return useSyncExternalStore(
-    subscribeSession,
-    () => sessionAccount(getAuthToken())?.isOwner ?? false,
-    () => false,
-  );
+  return useSyncExternalStore(subscribeSession, isAccountOwner, () => false);
 }
 export function useLoginMode() {
   const mode = useSyncExternalStore(
@@ -66,13 +66,7 @@ export function useLoginMode() {
   useEffect(ensureLoginMode, []);
   return mode;
 }
-/** Whether Full access may be offered; false whenever another account exists, active or not. */
+/** The server enforces the same owner-only rule for unsandboxed tool calls. */
 export function useFullAccessAllowed(): boolean {
-  const allowed = useSyncExternalStore(
-    subscribeLoginMode,
-    getFullAccessAllowed,
-    () => true,
-  );
-  useEffect(ensureLoginMode, []);
-  return allowed;
+  return useIsAccountOwner();
 }

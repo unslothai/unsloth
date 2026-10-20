@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import {
   MAX_VIDEO_SIZE,
@@ -39,6 +39,7 @@ function lift(name: string, opener: string): string {
 }
 
 const liftedTs = [
+  "function modelVisibleMessage(message) { return message; }",
   lift("extractVideoPartBase64", "function extractVideoPartBase64("),
   lift("findLatestUserVideoBase64", "export function findLatestUserVideoBase64(").replace(
     "export function",

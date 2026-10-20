@@ -126,8 +126,8 @@ test("the mark promises a resume only when the transport can give one", () => {
   );
   assert.equal(
     PICKERS.split("<PartialBadge resumable={partialResumable} />").length - 1,
-    2,
-    "aligned and unaligned branches alike",
+    3,
+    "On Device, the Hub and unaligned rows alike",
   );
   // On Device reads its own row; Hub rows read the same cached rows partialSet is built from.
   assert.equal(
@@ -158,9 +158,12 @@ test("complete and partial are alternatives, never both dots on one row", () => 
     PICKERS.split(
       "{partial ? <PartialBadge resumable={partialResumable} /> : null}",
     ).length - 1,
-    2,
-    "drawn in the aligned and unaligned branches alike",
+    1,
+    "drawn in the unaligned branch",
   );
+  // The aligned lists draw it too: On Device beside the name, the Hub in its badge slot.
+  assert.ok(PICKERS.includes('{alignMeta === "device" && partial ? ('));
+  assert.ok(PICKERS.includes('{partial && alignMeta !== "device" ? ('));
   assert.equal(
     PICKERS.split(
       "{downloaded && !partial && !loaded ? <DownloadedBadge /> : null}",
@@ -198,6 +201,7 @@ test("Hub selections preserve download completeness and continuation state", () 
     repo: "Model",
     isGguf: false,
     modelFormat: "safetensors",
+    artifact: "unknown",
     capabilities,
     bytes: 128,
     partial: true,
@@ -216,6 +220,7 @@ test("Hub selections preserve download completeness and continuation state", () 
     path: "/cache/models--Org--Model",
     isGguf: false,
     modelFormat: "safetensors",
+    artifact: "unknown",
     capabilities,
     updatedAt: 1,
     partial: true,
@@ -425,7 +430,7 @@ test("the partial repo delete says it removes the repo, because it does", () => 
 });
 
 test("a partial pick carries no load identity", () => {
-  // The Chat-to-Audio route has no isDownloaded field: audio-page.tsx infers it from the
+  // The Chat-to-Audio route has no isDownloaded field: the Audio handoff infers it from the
   // forwarded loadId. A loadId names a revision already on disk, so sending one for a torn
   // snapshot told that page the weights were there and skipped the download.
   assert.equal(
@@ -444,14 +449,18 @@ test("a partial pick carries no load identity", () => {
     "the variant select still drops it the same way",
   );
   // What made the omission load bearing, in the page that reads it.
-  const audio = read("../src/features/audio/audio-page.tsx");
+  const audio = read("../src/features/audio/hooks/use-audio-handoff.ts");
   assert.match(
     audio,
     /isDownloaded: routeSearch\.loadId\n?\s*\? true/,
     "a routed loadId is still read as downloaded",
   );
   // And the route still forwards whatever the pick gives it.
-  assert.ok(PICKERS.includes("loadId: meta.loadId ?? undefined,"));
+  assert.ok(PICKERS.includes("audioPickSearch(id, { ...meta, task: pickedTask })"));
+  assert.match(
+    read("../src/features/audio/route-search.ts"),
+    /loadId: pick\.loadId \?\? undefined,/,
+  );
 });
 
 test("configure carries the same rule, because Run replays its metadata", () => {
@@ -658,4 +667,14 @@ test("the stale reason for hiding partials is gone from the picker", () => {
       "A partially-downloaded snapshot is not on-device: listing it as loadable errors",
     ),
   );
+});
+
+test("a GGUF's borrowed companion base is not offered as a picker row", () => {
+  // The base repo holds a VAE / text encoder and no denoiser. Listed as a partial, a click reads it
+  // as a torn download and fetches the full dense denoiser instead of loading anything.
+  const start = INVENTORY.indexOf("const cachedModels = useMemo(");
+  assert.ok(start > 0);
+  const filter = INVENTORY.slice(start, INVENTORY.indexOf(".map(", start));
+  assert.match(filter, /!row\.companion &&/);
+  assert.match(filter, /!row\.companionPrefetch &&/);
 });

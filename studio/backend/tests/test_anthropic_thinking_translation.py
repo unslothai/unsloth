@@ -14,7 +14,10 @@ Covers:
 """
 
 import asyncio
+import itertools
 import json
+import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -496,15 +499,28 @@ def test_claude_5_uses_adaptive_thinking_and_effort(monkeypatch, model):
 
 
 def test_thinking_off_disables_explicitly_on_opus_5(monkeypatch):
-    """Opus 5 thinks by default, so "off" must send an explicit disable."""
+    """Opus 5 defaults to thinking, so off requires an explicit disable."""
     body = _capture_body(monkeypatch, model = "claude-opus-5", enable_thinking = False)
     assert body["thinking"] == {"type": "disabled"}
     assert "output_config" not in body
 
 
 def test_thinking_off_omits_disable_on_fable_5(monkeypatch):
-    """Fable 5 thinking is always on and 400s on an explicit disable."""
+    """Fable 5 always thinks and rejects explicit disable requests with HTTP 400."""
     body = _capture_body(monkeypatch, model = "claude-fable-5", enable_thinking = False)
+    assert "thinking" not in body
+
+
+@pytest.mark.parametrize("off", ({"enable_thinking": False}, {"reasoning_effort": "none"}))
+def test_thinking_off_on_sonnet_5_5_sends_between_tools(monkeypatch, off):
+    body = _capture_body(monkeypatch, model = "claude-sonnet-5-5", **off)
+    assert body["thinking"] == {"type": "between_tools"}
+    assert "output_config" not in body
+
+
+@pytest.mark.parametrize("off", ({"enable_thinking": False}, {"reasoning_effort": "none"}))
+def test_thinking_off_omits_disable_on_opus_5_5(monkeypatch, off):
+    body = _capture_body(monkeypatch, model = "claude-opus-5-5", **off)
     assert "thinking" not in body
 
 
@@ -550,3 +566,33 @@ def test_model_capability_tables_cover_claude_5(model, web, code, compaction, fa
 )
 def test_sampling_capability_handles_alternate_id_spellings(model, sampling_removed):
     assert ep_mod._anthropic_sampling_params_removed(model) is sampling_removed
+
+
+def test_frontend_hides_claude_sampling_exactly_where_the_request_strips_it():
+    """A shown slider the request strips does nothing; a hidden one drops a value it would send."""
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend/src/features/chat/provider-capabilities.ts"
+    ).read_text(encoding = "utf-8")
+    literal = re.search(r"const ANTHROPIC_SAMPLING_REMOVED_MODEL =\s*/(.+)/;", source)
+    assert literal, "ANTHROPIC_SAMPLING_REMOVED_MODEL moved"
+    frontend = re.compile(literal.group(1))
+    models = [
+        f"claude-{family}-{major}{minor}{suffix}"
+        for family, major, minor, suffix in itertools.product(
+            ("opus", "sonnet", "haiku", "fable", "mythos", "nova"),
+            ("1", "3", "4", "5", "6", "7", "9", "10"),
+            ("", "-0", "-00", "-1", "-6", "-06", "-7", "-07", "-8", "-10", ".6", ".7"),
+            ("", "-20250514", "-latest"),
+        )
+    ] + [
+        "claude-mythos-preview",
+        "claude-mythos-preview-1",
+        "claude-mythos-previewer",
+        "claude-3-5-sonnet-20241022",
+        "claude-3-7-sonnet-20250219",
+        "claude-opus-latest",
+    ]
+    for model in models:
+        assert bool(frontend.match(model)) is ep_mod._anthropic_sampling_params_removed(
+            model
+        ), model

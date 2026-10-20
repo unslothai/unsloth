@@ -6,7 +6,7 @@
 from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Literal, Dict, Any, Union
+from typing import Annotated, List, Optional, Literal, Dict, Any, Union
 
 
 def _validate_save_directory(value: str) -> str:
@@ -47,6 +47,11 @@ class LoadCheckpointRequest(BaseModel):
         True,
         description = "Whether to load the model in 4-bit quantization",
     )
+    offload_layers: Union[Literal["auto"], Annotated[int, Field(ge = 0, le = 1024)]] = Field(
+        "auto",
+        description = "Decoder layers kept in host RAM and streamed to the GPU during export "
+        "(0 = off; 'auto' = only when a 4-bit load does not fit in GPU memory).",
+    )
     trust_remote_code: bool = Field(
         False,
         description = "Allow loading models with custom code. Only enable for checkpoints/base models you trust.",
@@ -58,6 +63,19 @@ class LoadCheckpointRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None,
         description = "Hugging Face token used to scan/load gated checkpoints and their base models.",
+    )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
+
+
+class ExportCancelRequest(BaseModel):
+    expected_op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Stop only the operation started with this op_id; one not started yet is refused when it starts.",
     )
 
 
@@ -106,6 +124,51 @@ class ExportStatusResponse(BaseModel):
         None,
         description = "Error message of the most recently finished op, if it failed",
     )
+    decision: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "{layout, adapter_only} when the loaded checkpoint is a decision model",
+    )
+
+
+class DecisionExportInfo(BaseModel):
+    """GGUF export options for a decision model (Clef or Laya) checkpoint."""
+
+    is_decision: bool = Field(True, description = "True for a decision model checkpoint")
+    layout: Literal["clef", "laya"] = Field(..., description = "Decision checkpoint layout")
+    adapter_only: bool = Field(
+        False,
+        description = "True for a Clef folder holding LoRA adapters only (merged at export time)",
+    )
+    eligible: Optional[bool] = Field(
+        None,
+        description = "False when llama.cpp cannot serve this model; None when only the export can tell",
+    )
+    reason: Optional[str] = Field(None, description = "Why the checkpoint is not eligible")
+    quantizations: List[str] = Field(..., description = "Allowed GGUF quantizations, default first")
+    default_quantization: str = Field(..., description = "Default GGUF quantization")
+    output_dir: str = Field(..., description = "Where the GGUF files are written (<run folder>/gguf)")
+    existing_export: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Content of an earlier gguf/export.json, if valid",
+    )
+
+
+class DiffusionLmExportInfo(BaseModel):
+    """Export limits for a text-diffusion LM checkpoint (LLaDA, Dream, SDAR, DiffusionGemma, ...)."""
+
+    profile: str = Field(..., description = "Text-diffusion family of the checkpoint's base model")
+    disabled_methods: List[str] = Field(
+        default_factory = list, description = "Export methods this checkpoint cannot use"
+    )
+    reason: Optional[str] = Field(None, description = "Why those methods are unavailable")
+
+
+class ExportDecisionInfoResponse(BaseModel):
+    """Decision-model export info for a checkpoint path; decision is None for any other model."""
+
+    checkpoint_path: str
+    decision: Optional[DecisionExportInfo] = None
+    diffusion_lm: Optional[DiffusionLmExportInfo] = None
 
 
 class ExportOperationResponse(BaseModel):
@@ -152,6 +215,17 @@ class ExportCommonOptions(BaseModel):
         None,
         description = "HuggingFace model ID of the base model (for model card metadata)",
     )
+    expected_checkpoint: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Export only while this checkpoint is still the loaded one. A client that loads and then "
+        "exports in two calls sends it so another load in between is refused instead of exported.",
+    )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
 
 
 class ExportMergedModelRequest(ExportCommonOptions):
@@ -176,6 +250,11 @@ class ExportMergedModelRequest(ExportCommonOptions):
         "When set, it overrides format_type. Lets the export UI expose the full set of formats "
         "beyond the quick buttons.",
     )
+    install_missing_dependencies: bool = Field(
+        False,
+        description = "User consent to install llm-compressor (or its shadow runtime) for "
+        "compressed-tensors export.",
+    )
 
 
 class ExportBaseModelRequest(ExportCommonOptions):
@@ -184,6 +263,18 @@ class ExportBaseModelRequest(ExportCommonOptions):
 
 class ExportGGUFRequest(BaseModel):
     """Request for exporting the current model to GGUF format."""
+
+    expected_checkpoint: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Export only while this checkpoint is still the loaded one. A client that loads and then "
+        "exports in two calls sends it so another load in between is refused instead of exported.",
+    )
+    op_id: Optional[str] = Field(
+        None,
+        max_length = 128,
+        description = "Caller's id for this operation; POST /api/export/cancel with it as expected_op_id stops only it.",
+    )
 
     save_directory: str = Field(
         ...,
@@ -225,11 +316,62 @@ class ExportGGUFRequest(BaseModel):
         False,
         description = "If True, create a private Hugging Face Hub repository",
     )
+    npu_q4nx: bool = Field(
+        False,
+        description = "Also convert one Q4_0 / Q4_1 / Q4_K_M GGUF to FastFlowLM's Q4NX for the "
+        "AMD Ryzen AI NPU, written to <save_directory>/npu-q4nx.",
+    )
+
+
+class ConvertQ4NXRequest(BaseModel):
+    """Convert a GGUF that already exists to FastFlowLM Q4NX, without loading a model."""
+
+    save_directory: str = Field(..., description = "Directory the Q4NX folder is written into")
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
+
+    gguf_path: Optional[str] = Field(None, description = "A local .gguf file")
+    repo_id: Optional[str] = Field(None, description = "Hub repo holding the GGUF, with filename")
+    filename: Optional[str] = Field(None, description = "GGUF file in repo_id")
+    base_model: str = Field(
+        ...,
+        description = "The original (non-GGUF) Hub repo or local model folder; FastFlowLM needs "
+        "its config.json and tokenizer files.",
+    )
+    hf_token: Optional[str] = Field(None, description = "Hugging Face token for gated repos")
+
+
+class ExportDiffusionLoRARequest(BaseModel):
+    """Copy an image-generation LoRA from the Images catalog into an export folder."""
+
+    lora_id: str = Field(
+        ..., description = "Local adapter id as listed by /api/models/diffusion-loras"
+    )
+    save_directory: str = Field(..., description = "Directory the adapter is copied into")
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""
 
+    adapter_format: Optional[Literal["mlx", "peft"]] = Field(
+        None,
+        description = "On-disk adapter format. Omitted resolves per platform "
+        "(Apple-silicon MLX servers write the native MLX format, CUDA servers "
+        "write the native PEFT format — omission always preserves the "
+        "platform's native output), except with gguf=True, where the adapter "
+        "files are always "
+        "PEFT (GGUF LoRA files are built from that format). Explicit 'peft' "
+        "on an MLX server converts the adapter; explicit 'mlx' on a non-MLX "
+        "server — or combined with gguf=True — is an error.",
+    )
     gguf: bool = Field(
         False,
         description = "If True, also convert the adapter to a GGUF LoRA file "
@@ -240,3 +382,19 @@ class ExportLoRAAdapterRequest(ExportCommonOptions):
         description = "GGUF LoRA output float type (only used when gguf=True). "
         "Q8_0 falls back to F16 per tensor for dims not divisible by the block size (32).",
     )
+
+
+class LlmCompressorExportProbeResponse(BaseModel):
+    ready: bool
+    needs_consent: bool
+    consent_kind: Optional[Literal["shadow", "workspace"]] = None
+    install_summary: Optional[str] = None
+    workspace_install_command: str
+    shadow_path: str
+    autoinstall_disabled: bool
+    shadow_disabled: bool
+    offline: bool
+    blocked_reason: Optional[str] = None
+    python_executable: str
+    has_pip: bool
+    has_uv: bool

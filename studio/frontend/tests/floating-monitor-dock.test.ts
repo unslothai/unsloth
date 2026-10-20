@@ -19,6 +19,10 @@ const source = readFileSync(
   new URL("../src/components/floating-monitor.tsx", import.meta.url),
   "utf8",
 );
+const layoutSource = readFileSync(
+  new URL("../src/hooks/use-floating-panel-layout.ts", import.meta.url),
+  "utf8",
+);
 const desktop = {
   isOpen: true,
   isMobile: false,
@@ -136,8 +140,10 @@ test("the monitor reads the panel's painted width and keeps its floating layer",
 });
 
 test("responsive changes reattach geometry observers and recalculate capacity", () => {
-  assert.match(source, /\}, \[isChatRoute, settingsPanelOpen, isMobile\]\);/);
-  assert.match(source, /\}, \[isMobile\]\);/);
+  assert.match(source, /\}, \[isOpen, isChatRoute, settingsPanelOpen, isMobile\]\);/);
+  assert.match(source, /\}, \[isOpen, isMobile\]\);/);
+  assert.match(source, /if \(!\(isOpen && isChatRoute && settingsPanelOpen\)\) \{/, "a closed monitor does not re-render on every frame of a Run settings drag");
+  assert.match(source, /const sidebar = isOpen \? document\.querySelector\('\[data-slot="sidebar"\]'\) : null;/, "nor of a sidebar drag");
   assert.match(source, /paintedSidebarWidth > 0 \? paintedSidebarWidth : committedSidebarWidth/);
   assert.match(source, /const sidebarWidth = pinned \? pinnedSidebarWidth : unpinnedSidebarWidth/);
   assert.match(source, /const viewportWidth = useSyncExternalStore\(/);
@@ -148,21 +154,21 @@ test("responsive changes reattach geometry observers and recalculate capacity", 
 test("suppression retains layout but does not publish a phantom frame", () => {
   assert.match(source, /\(visible \|\| suppressed\) &&/);
   assert.match(source, /suppressed && "invisible"/);
-  assert.match(source, /if \(hidden\) \{\s*useMonitorFrameStore\.getState\(\)\.clearFrame\(publisher\);/);
-  assert.match(source, /if \(!hiddenRef\.current\) \{\s*useMonitorFrameStore\.getState\(\)\.setFrame/);
-  assert.match(source, /\}, \[layout, constraintsElement, publisher, hidden\]\);/);
+  assert.match(layoutSource, /if \(hidden\) \{\s*useMonitorFrameStore\.getState\(\)\.clearFrame\(publisher\);/);
+  assert.match(layoutSource, /if \(!hiddenRef\.current\) \{\s*useMonitorFrameStore\.getState\(\)\.setFrame/);
+  assert.match(layoutSource, /\}, \[layout, constraintsElement, publisher, hidden\]\);/);
 });
 
 test("a net-zero docked drag must not discard the saved full-width X", () => {
-  const update = source.slice(source.indexOf("function updateDrag"), source.indexOf("function finishDrag"));
-  const finish = source.slice(source.indexOf("function finishDrag"));
+  const update = layoutSource.slice(layoutSource.indexOf("function updateDrag"), layoutSource.indexOf("function finishDrag"));
+  const finish = layoutSource.slice(layoutSource.indexOf("function finishDrag"));
   // Intermediate pointer moves are provisional. Only a released horizontal
   // displacement replaces the user's earlier full-width placement.
   assert.doesNotMatch(update, /chosenLeftRef\.current = null/);
   assert.match(finish, /if \(left !== baseLeft\) \{\s*hasDraggedLeftRef\.current = true;\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/);
-  assert.match(source, /restoreLeftRef\.current = chosenLeftRef\.current/);
-  assert.match(source, /if \(!narrowed\) \{\s*restoreLeftRef\.current = chosenLeftRef\.current;\s*reconcileRef\.current\?\.\(\);/);
-  assert.match(source, /place\(hasDraggedTopRef\.current, currentTop, maxTop\)/);
+  assert.match(layoutSource, /restoreLeftRef\.current = chosenLeftRef\.current/);
+  assert.match(layoutSource, /if \(!narrowed\) \{\s*restoreLeftRef\.current = chosenLeftRef\.current;\s*reconcileRef\.current\?\.\(\);/);
+  assert.match(layoutSource, /place\(hasDraggedTopRef\.current, currentTop, maxTop\)/);
 });
 
 test("the panel width clamps to the same bounds used by docking", async () => {
@@ -197,8 +203,8 @@ test("spacing and the resize handle use the same live UI scale", () => {
 
 test("docking never remounts the monitor or loses its drag geometry", () => {
   assert.doesNotMatch(source, /key=\{`\$\{panelKey\}-/);
-  assert.match(source, /useLayoutEffect\(\(\) => \{\s*if \(narrowedRef\.current === narrowed\)/);
-  assert.match(source, /const restoreTo = restoreLeftRef\.current;/);
-  assert.match(source, /place\(hasDraggedLeftRef\.current, currentLeft, maxLeft\)/);
+  assert.match(layoutSource, /useLayoutEffect\(\(\) => \{\s*if \(narrowedRef\.current === narrowed\)/);
+  assert.match(layoutSource, /const restoreTo = restoreLeftRef\.current;/);
+  assert.match(layoutSource, /place\(hasDraggedLeftRef\.current, currentLeft, maxLeft\)/);
   assert.match(source, /const unpinnedSidebarWidth = sidebarHoldsRail \? paintedSidebarWidth : 0/);
 });

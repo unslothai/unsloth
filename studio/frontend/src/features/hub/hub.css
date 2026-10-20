@@ -15,6 +15,7 @@
   --format-checkpoint: #f472b6;
   --format-adapter: #8b5cf6;
   --format-mlx: #f59e0b;
+  --format-npu: #06b6d4;
   --status-warning: #eab308;
   --status-danger: #ef4444;
   --status-success: #11b686;
@@ -30,6 +31,7 @@
   --format-checkpoint: #f472b6;
   --format-adapter: #a78bfa;
   --format-mlx: #fbbf24;
+  --format-npu: #22d3ee;
   --status-warning: #fbbf24;
   --status-danger: #ef4444;
   --status-success: #11b686;
@@ -41,6 +43,7 @@
   --color-format-checkpoint: var(--format-checkpoint);
   --color-format-adapter: var(--format-adapter);
   --color-format-mlx: var(--format-mlx);
+  --color-format-npu: var(--format-npu);
   --color-status-warning: var(--status-warning);
   --color-status-danger: var(--status-danger);
   --color-status-success: var(--status-success);
@@ -610,6 +613,12 @@
     border-radius: 16px;
   }
 
+  @media (max-width: 767px) {
+    .hub-page .hub-result-row.hub-result-card {
+      border-radius: 14px;
+    }
+  }
+
   .hub-page .hub-result-row:hover {
     background-color: var(--card);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
@@ -710,6 +719,26 @@
     background-color: color-mix(in srgb, var(--accent) 60%, var(--popover)) !important;
   }
 
+  /* The composer + menu's shape: 12px rows on a 9px gutter keep the 21px corners concentric. */
+  .hub-composer-menu[data-slot] {
+    border-radius: 21px !important;
+    padding: calc(0.5rem * var(--ui-space-scale, 1)) calc(9px * var(--ui-space-scale, 1)) !important;
+  }
+  html.dark .hub-composer-menu {
+    background-color: var(--card) !important;
+  }
+  .hub-composer-menu .hub-menu-row {
+    margin-block: 2px;
+    border-radius: 12px;
+  }
+  .hub-composer-menu .hub-menu-row:is(:hover, [data-highlighted]) {
+    background-color: rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)));
+    color: inherit;
+  }
+  html.dark .hub-composer-menu .hub-menu-row:is(:hover, [data-highlighted]) {
+    background-color: rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)));
+  }
+
   .hub-menu-instant *,
   .hub-menu-instant *::before,
   .hub-menu-instant *::after,
@@ -725,6 +754,12 @@
      segmented toggle in the app (Hub Discover/On Device, Models/Datasets,
      Unsloth/All, Recent/Name/Size, plus Settings + Train tabs) shares one
      design: a soft track with a white, softly-shadowed sliding pill. */
+  /* The selected pill sits at -z-10 under every segment's label (see
+     SegmentedPill), so the track keeps it from sinking below the page. */
+  .hub-tab-toggle {
+    isolation: isolate;
+  }
+
   html:not(.dark) .hub-tab-toggle {
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), transparent);
     border: 0;
@@ -775,13 +810,6 @@
     background-color: color-mix(in srgb, var(--foreground) calc(5% * var(--contrast-wash-gain, 1)), var(--background));
   }
 
-  /* A tab is a real button, so unlike the sliding indicator it can hover. In
-     light the pill is already the lightest thing on the panel, so it stays
-     put rather than moving the only direction left, which is down. */
-  html:not(.dark) .hub-tab-toggle-pill[role="tab"]:hover {
-    background-color: var(--background);
-  }
-
   /* The selected segment takes --accent, the app's one selection colour, so it
      reads like every other lit row. As its own wash it was scaled by the wash
      gain, which falls much further than the token does: at the bottom of the
@@ -804,6 +832,38 @@
 
   html.dark .hub-tab-toggle-pill.hub-pill-action:active {
     background-color: var(--accent);
+  }
+
+  /* The picker's panel is --sidebar, a step from --accent: its controls lift toward white to stand off it. */
+  html.dark .unsloth-model-selector-menu {
+    --picker-control-lit: color-mix(in srgb, var(--accent), white 7.5%);
+    /* Sunk further than the panel default's 27%: with the selected pill lifted, the unselected
+       half needs to sit below the panel to read as off. */
+    --hub-tab-track: color-mix(in srgb, var(--background) 55%, transparent);
+  }
+  html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill,
+  html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill:hover,
+  html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill.hub-pill-action:active {
+    background-color: var(--picker-control-lit);
+    color: #fff;
+  }
+  html.dark .unsloth-model-selector-menu .hub-tab-toggle-pill.hub-pill-action:hover {
+    background-color: color-mix(in srgb, var(--accent), white 12.5%);
+  }
+  html.dark .unsloth-model-selector-menu .field-soft {
+    background-color: color-mix(in srgb, var(--accent), white 3.5%) !important;
+    color: #fff;
+  }
+  html.dark .unsloth-model-selector-menu .field-soft:is(:hover, :active, :focus-visible) {
+    background-color: var(--picker-control-lit) !important;
+  }
+  /* Open, the trigger keeps the menu's tone so the two read as one piece. */
+  html.dark .unsloth-model-selector-menu .field-soft:is([data-state="open"], [aria-expanded="true"]):not(:hover) {
+    background-color: color-mix(in srgb, var(--accent), white 3.5%) !important;
+  }
+  /* These menus portal to body, so their own class keeps them at the picker's lift. */
+  html.dark .hub-menu-instant.picker-option-menu {
+    background-color: color-mix(in srgb, var(--accent), white 3.5%) !important;
   }
 
   html:not(.dark) .hub-page .catalog-row {

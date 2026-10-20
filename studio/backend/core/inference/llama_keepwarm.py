@@ -17,6 +17,7 @@ import contextvars
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 from loggers import get_logger
 
@@ -55,14 +56,19 @@ _kv_resume = None
 _lifecycle_lock = threading.Lock()
 
 
+_load_lock = threading.Lock()
+
+
 @contextlib.asynccontextmanager
-async def _unload_gate(cancel_event: threading.Event | None = None):
+async def _unload_gate(
+    cancel_event: threading.Event | None = None, lock: threading.Lock = _lifecycle_lock
+):
     # Acquire off the loop: non-blocking first (the common uncontended case), else poll a non-blocking acquire off a
     # short sleep. Polling keeps the wait off this loop AND cancellation-safe -- a cancel lands during the sleep, when
     # the gate is not held, so it never leaks (mirrors the auto-switch swap gate).
     acquired = False
     try:
-        while not _lifecycle_lock.acquire(blocking = False):
+        while not lock.acquire(blocking = False):
             if cancel_event is not None and cancel_event.is_set():
                 raise asyncio.CancelledError()
             await asyncio.sleep(0.02)
@@ -72,7 +78,7 @@ async def _unload_gate(cancel_event: threading.Event | None = None):
         yield
     finally:
         if acquired:
-            _lifecycle_lock.release()
+            lock.release()
 
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
@@ -398,6 +404,24 @@ def mark_current_response_failed() -> None:
     mark_response_failed(_current_response_scope.get())
 
 
+_MEDIA_TRACKED_SCOPE_KEY = "_unsloth_keepwarm_media_owner"
+_MEDIA_UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_media_untracked"
+
+
+def untrack_current_media_request(scope) -> None:
+    """Drop this request from its media tracker once the route knows it won't use the local
+    engine, so a call to a saved connection can't hold off a media swap or idle unload."""
+    if not isinstance(scope, dict) or scope.get(_MEDIA_UNTRACKED_SCOPE_KEY):
+        return
+    owner = scope.get(_MEDIA_TRACKED_SCOPE_KEY)
+    if owner is None:
+        return
+    from core.inference import media_keepwarm
+
+    scope[_MEDIA_UNTRACKED_SCOPE_KEY] = True
+    media_keepwarm.end_request(owner, counted = False)
+
+
 def untrack_current_request(scope) -> None:
     """Drop this request from the in-flight count once the route knows it won't use the
     local GGUF, so external-provider traffic can't trip the swap busy guard. Idempotent;
@@ -500,6 +524,10 @@ def inference_lifecycle_gate():
     return _unload_gate()
 
 
+def model_load_gate():
+    return _unload_gate(lock = _load_lock)
+
+
 def note_model_loaded(backend = None) -> None:
     """Stamp activity and synchronously drop any reload stash."""
     _note_activity()
@@ -565,8 +593,15 @@ def take_kv_resume():
         return manifest
 
 
-def purge_kv_resume() -> None:
-    resume = take_kv_resume()
+def purge_kv_resume(*, origin: Optional[str] = None) -> None:
+    """Drop the stash; with ``origin``, only one of that origin (an untagged stash is "idle")."""
+    global _kv_resume
+    with _lock:
+        resume = _kv_resume
+        if resume is not None and (origin is None or (resume.get("origin") or "idle") == origin):
+            _kv_resume = None
+        else:
+            resume = None
     if resume:
         _delete_resume_files(resume)
 
@@ -702,6 +737,8 @@ class LlamaKeepWarmMiddleware:
                 if chat_tracked:
                     _note_untracked_end(is_preview)
                 raise
+            if isinstance(scope, dict):
+                scope[_MEDIA_TRACKED_SCOPE_KEY] = media_owner
         ended = {"done": False}
         status = {"code": None}
         # Set once the terminal body frame (more_body False) is sent: only a response that completed cleanly adopts
@@ -716,7 +753,9 @@ class LlamaKeepWarmMiddleware:
                 return
             ended["done"] = True
             code = status["code"]
-            if media_owner is not None:
+            if media_owner is not None and not (
+                isinstance(scope, dict) and scope.get(_MEDIA_UNTRACKED_SCOPE_KEY)
+            ):
                 media_keepwarm.end_request(media_owner, counted = code not in (401, 403))
             if not chat_tracked:
                 return
@@ -792,9 +831,9 @@ def _loaded_identity(backend):
     return (*identity, companion_roots) if companion_roots else identity
 
 
-def _note_idle_unload_event(freed) -> None:
-    """Monitor row for an idle auto-unload. Best-effort; uses the stash's
-    advertised repo id so the row never shows the on-disk load path."""
+def _note_idle_unload_event(freed, reason: str = "idle") -> None:
+    """Monitor row for an idle auto-unload (or a swap, via ``reason``). Best-effort; uses the
+    stash's advertised repo id so the row never shows the on-disk load path."""
     try:
         from core.inference.api_monitor import api_monitor
         from core.inference.model_ids import public_model_id
@@ -803,7 +842,7 @@ def _note_idle_unload_event(freed) -> None:
         label = public_model_id(advertised or identifier) or "model"
         if variant and ":" not in label:
             label = f"{label}:{variant}"
-        api_monitor.record_lifecycle(event = "unload", model = label, reason = "idle")
+        api_monitor.record_lifecycle(event = "unload", model = label, reason = reason)
     except Exception as exc:
         logger.debug("idle unload monitor event failed: %s", exc)
 
@@ -836,12 +875,17 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             ttl = await asyncio.to_thread(get_auto_unload_idle_seconds)
             if ttl <= 0:
                 continue
-            from routes.inference import get_llama_cpp_backend
+            from core.inference.model_slots import unload_extra_models
+            from routes.inference import get_llama_cpp_backend, release_chat_gpu_claim
 
             backend = get_llama_cpp_backend()
             # track by (id, variant): a (re)loaded model counts as activity so it survives one TTL before its first
             # request
             async with _unload_gate():
+                if _is_idle(ttl) and await asyncio.to_thread(
+                    unload_extra_models, _user_pinned, True
+                ):
+                    await asyncio.to_thread(release_chat_gpu_claim)
                 # Purging the stash mid-reload would race the restore.
                 current = _loaded_identity(backend)
                 if current != seen_model:
@@ -889,7 +933,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         raise
                     _set_last_unloaded(freed)  # let an alias request reload it
                     if manifest and freed:
-                        _set_kv_resume({"identity": freed, **manifest})
+                        _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
                         logger.info("Idle auto-unload: saved slot KV for restore on reload")
                     elif manifest:
                         _delete_resume_files(manifest)

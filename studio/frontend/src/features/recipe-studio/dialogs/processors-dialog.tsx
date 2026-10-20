@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogFooter, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -12,6 +12,7 @@ import type { RecipeProcessorConfig } from "../types";
 import { buildDefaultSchemaTransform } from "../utils/processors";
 import { AvailableVariables } from "./shared/available-variables";
 import { FieldLabel } from "./shared/field-label";
+import { RecipeDialogContent } from "./shared/recipe-dialog-content";
 type ProcessorsDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -66,12 +67,9 @@ export function ProcessorsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
+      <RecipeDialogContent
         container={container}
-        position="absolute"
-        overlayPosition="absolute"
-        overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] overflow-auto sm:max-w-2xl shadow-border"
+        viewportClassName="overflow-auto"
       >
         <VisuallyHidden.Root>
           <DialogTitle>Processors</DialogTitle>
@@ -136,7 +134,7 @@ export function ProcessorsDialog({
             Done
           </Button>
         </DialogFooter>
-      </DialogContent>
+      </RecipeDialogContent>
     </Dialog>
   );
 }

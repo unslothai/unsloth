@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The llama.cpp mismatch gate and the llama.cpp selector have to agree, or updates churn.
-
-Before reinstalling, setup.ps1 deletes the existing llama.cpp tree when its recorded
-`install_kind` is not in the set the gate considers correct for this host; then
-install_llama_prebuilt.py picks a bundle. Nothing makes those two agree, and a disagreement
-is permanent: every update deletes the tree and refetches the identical bundle, forever, on
-a working host. The only relationship that matters is "the kind the selector installs is one
-the gate accepts", so that is asserted directly, over the product of what either side
-branches on, rather than the text of either.
-
-Both churning combinations this found are on Windows ARM64 and invisible from an x64 box:
-
-  * NVIDIA. The gate expected windows-cuda; on an ARM64 venv the selector installs
-    windows-arm64. That is every Windows ARM64 machine with an NVIDIA GPU.
-  * ROCm. No ROCm bundle exists for Windows ARM64 at all, so the selector falls through to
-    the ARM64 CPU bundle while the gate still expected windows-rocm or windows-hip.
-
-Offline. direct_upstream_release_plan takes a release dict, and the gate's own block is lifted
-out of setup.ps1 and run with only its inputs replaced.
-"""
+"""Selector's install kind must pass setup.ps1's mismatch gate, or every update deletes and refetches."""
 
 from __future__ import annotations
 
@@ -48,9 +29,7 @@ requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "PowerShell is unavail
 
 TAG = "b9334"
 
-# Everything upstream publishes for Windows, so no row is starved of a candidate and a
-# disagreement is a disagreement rather than a missing asset. Note what is NOT here and
-# cannot be: there is no ROCm or CUDA bundle for Windows ARM64 upstream.
+# Everything upstream publishes for Windows; there is no ROCm or CUDA bundle for Windows ARM64.
 ASSET_NAMES = (
     f"llama-{TAG}-bin-win-cpu-arm64.zip",
     f"llama-{TAG}-bin-win-cpu-x64.zip",
@@ -110,11 +89,9 @@ def _gate_block() -> str:
 
 def _expected_kinds(*, arm64_venv: bool, nvidia: bool, rocm: bool, opt_out: bool) -> list[str]:
     block = _gate_block()
-    # The parentheses stay: the source writes `if (Test-WinArm64Venv)`, and replacing the
-    # whole parenthesised form would leave `if $true {`, which does not parse.
+    # Keep the parentheses: `if $true {` does not parse.
     block = block.replace("Test-WinArm64Venv", "$true" if arm64_venv else "$false")
-    # The evidence index is read through a chain of markers and a venv on disk. Its only use
-    # is Test-WoaPersistableIndex, so supply the answer and stub the predicate.
+    # Only Test-WoaPersistableIndex reads the evidence index, so stub it.
     block = re.sub(
         r"(?s)\$_woaEvidenceIndex = if.*?\n(\s*)\$_nvidiaEvidence",
         "$_woaEvidenceIndex = '{}'\n\\1$_nvidiaEvidence".format(
@@ -128,14 +105,14 @@ def _expected_kinds(*, arm64_venv: bool, nvidia: bool, rocm: bool, opt_out: bool
             "function Test-WoaPersistableIndex { param($i) return ($i -like '*nvidia*') }",
             f"$env:UNSLOTH_LLAMA_ARM64_CUDA = '{'0' if opt_out else '1'}'",
             f"$HasNvidiaSmi = ${str(nvidia).lower()}",
+            f"$HasNvidiaDriverEvidence = ${str(nvidia).lower()}",
             f"$HasROCm = ${str(rocm).lower()}",
             "$script:ROCmGfxArch = " + ("'gfx1201'" if rocm else "$null"),
             block,
             "Write-Output ('<<<' + ($expectedKinds -join ',') + '>>>')",
         ]
     )
-    # run_pwsh, not subprocess.run: one shared $XDG_CACHE_HOME/powershell startup cache
-    # across xdist workers kills ~1 startup in 500 before it reaches the script.
+    # run_pwsh: a shared PowerShell startup cache across xdist workers kills ~1 startup in 500.
     done = run_pwsh(
         [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -196,3 +173,32 @@ def test_no_arm64_row_expects_a_kind_only_published_for_x64():
             f"nvidia={nvidia} rocm={rocm} optout={opt_out}: the gate expects only x64 kinds "
             f"on an ARM64 venv: {sorted(expected)}"
         )
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    ("nvidia", "rocm", "opt_out"),
+    [(False, False, False), (True, False, False), (True, False, True), (False, True, False)],
+)
+def test_the_gate_keeps_an_opt_in_arm64_vulkan_install(nvidia, rocm, opt_out):
+    """UNSLOTH_LLAMA_CPP_BACKEND=vulkan on Windows ARM64 installs windows-arm64-vulkan; a gate
+    without it deletes that tree on every update. An x64 venv never expects it."""
+    name = f"llama-{TAG}-bin-win-vulkan-arm64.zip"
+    release = {
+        **RELEASE,
+        "assets": RELEASE["assets"]
+        + [
+            {
+                "name": name,
+                "browser_download_url": f"https://example.invalid/{name}",
+                "digest": f"sha256:{_fixture_digest(name)}",
+            }
+        ],
+    }
+    routed = ip._vulkan_only_host(_host(arm64 = True, nvidia = nvidia, rocm = rocm))
+    plan = ip.direct_upstream_release_plan(release, routed, "ggml-org/llama.cpp", "latest")
+    assert plan.attempts[0].install_kind == "windows-arm64-vulkan"
+    expected = _expected_kinds(arm64_venv = True, nvidia = nvidia, rocm = rocm, opt_out = opt_out)
+    assert "windows-arm64-vulkan" in expected
+    x64 = _expected_kinds(arm64_venv = False, nvidia = nvidia, rocm = rocm, opt_out = opt_out)
+    assert "windows-arm64-vulkan" not in x64

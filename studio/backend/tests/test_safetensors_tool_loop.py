@@ -1124,6 +1124,9 @@ def _collect_events(generator, max_events = 200):
     return events
 
 
+_MAKE_LOOP_TOOLS = ["web_search", "python", "terminal"]
+
+
 def _make_loop(
     *,
     turns,
@@ -1136,7 +1139,8 @@ def _make_loop(
     """
     turn_iter = iter(turns)
 
-    def _gen(_messages):
+    def _gen(_messages, **kw):
+        exec_fn.offered.append([t["function"]["name"] for t in kw.get("active_tools") or []])
         try:
             chunks = next(turn_iter)
         except StopIteration:
@@ -1147,17 +1151,41 @@ def _make_loop(
             yield acc
 
     exec_fn = FakeExecuteTool(exec_results or [])
+    exec_fn.offered = []
     return run_safetensors_tool_loop(
         single_turn = _gen,
         messages = [{"role": "user", "content": "hi"}],
-        tools = [
-            {"type": "function", "function": {"name": "web_search"}},
-            {"type": "function", "function": {"name": "python"}},
-            {"type": "function", "function": {"name": "terminal"}},
-        ],
+        tools = [{"type": "function", "function": {"name": n}} for n in _MAKE_LOOP_TOOLS],
         execute_tool = exec_fn,
         **kwargs,
     ), exec_fn
+
+
+def test_web_search_domain_limits_reach_execute_tool():
+    seen = []
+
+    def execute(name, arguments, **kwargs):
+        seen.append(kwargs.get("website_policy"))
+        return "OK"
+
+    policy = {"allowedDomains": ["docs.python.org"], "blockedDomains": []}
+    call = '<tool_call>{"name":"web_search","arguments":{"query":"asyncio"}}</tool_call>'
+    turns = iter([[call], ["Done."]])
+
+    def gen(_messages, **_kw):
+        for chunk in next(turns, []):
+            yield chunk
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = execute,
+            website_policy = policy,
+        )
+    )
+    assert seen == [policy]
 
 
 class TestMarkerlessExecToolGuardLoop:
@@ -1851,8 +1879,8 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
         ),
         # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
         pytest.param(
-            [["I will use web_search", '[ARGS]{"code":"print(1)"}'], ["done"]],
-            [("web_search", {"code": "print(1)"})],
+            [["I will use web_search", '[ARGS]{"query":"print(1)"}'], ["done"]],
+            [("web_search", {"query": "print(1)"})],
             ["web_search"],
             None,
             id = "initial_buffer_flush_holds_split_rehearsal_name",
@@ -2020,7 +2048,7 @@ def test_unrestricted_mode_split_rehearsal_name_is_not_streamed():
             max_tool_iterations = 2,
         )
     )
-    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"query": "x"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search" in t for t in contents), contents
 
@@ -2043,7 +2071,7 @@ def test_unrestricted_mode_split_after_bracket_is_not_streamed():
             max_tool_iterations = 2,
         )
     )
-    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"query": "x"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search[" in t for t in contents), contents
 
@@ -2612,7 +2640,7 @@ class TestLoopBasic:
             [
                 [
                     '<think>draft render_html[ARGS]{"code":"x"}</think>',
-                    'web_search[ARGS]{"code":"print(1)"}',
+                    'web_search[ARGS]{"query":"print(1)"}',
                 ],
                 ["Done."],
             ]
@@ -2638,7 +2666,7 @@ class TestLoopBasic:
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
         assert [e["tool_name"] for e in tool_starts] == ["web_search"], tool_starts
-        assert exec_fn.calls == [("web_search", {"code": "print(1)"})]
+        assert exec_fn.calls == [("web_search", {"query": "print(1)"})]
 
     def test_render_html_success_blocks_second_canvas_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -2794,6 +2822,31 @@ class TestLoopBehaviour:
             "One earlier request to call tool 'web_search' in this batch was not executed"
         )
         assert "previous tool request" not in after[1]["content"].lower()
+
+    @pytest.mark.parametrize("deduplicate", [True, False])
+    def test_identical_calls_in_one_turn_run_when_deduplication_is_off(self, deduplicate):
+        call = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+        turns = iter([[call * 2], ["final"]])
+
+        def fake_single_turn(messages, active_tools = None):
+            acc = ""
+            for chunk in next(turns):
+                acc += chunk
+                yield acc
+
+        exec_fn = FakeExecuteTool(["1", "1"])
+        _collect_events(
+            run_safetensors_tool_loop(
+                single_turn = fake_single_turn,
+                messages = [{"role": "user", "content": "run it twice"}],
+                tools = [{"type": "function", "function": {"name": "python"}}],
+                execute_tool = exec_fn,
+                max_tool_iterations = 4,
+                deduplicate_tool_calls = deduplicate,
+            )
+        )
+
+        assert exec_fn.calls == [("python", {"code": "print(1)"})] * (1 if deduplicate else 2)
 
     def test_duplicate_tool_call_internal_noop_allows_distinct_followup_tool(self):
         captured_messages: list[list[dict]] = []
@@ -3291,6 +3344,99 @@ class TestLoopRePrompt:
         assert exec_fn.calls == []
         contents = [e for e in events if e["type"] == "content"]
         assert contents and contents[-1]["text"].strip() == "4"
+
+    @pytest.mark.parametrize(
+        "reasoning, answer, reasoning_prefilled",
+        [
+            pytest.param(
+                "",
+                "I'll write a small Python function that reverses a string.\n"
+                "```python\ndef reverse(s):\n    return s[::-1]\n```\n",
+                False,
+                id = "plain",
+            ),
+            pytest.param(
+                "",
+                "Let me run this:\n```python\nprint(1)\n```\n",
+                False,
+                id = "run_intent_with_code",
+            ),
+            pytest.param(
+                "Plan it.</think>",
+                "I'll write it.\n```python\ndef f(): pass\n```\n",
+                True,
+                id = "prefilled_then_answer",
+            ),
+        ],
+    )
+    def test_finished_code_answer_is_not_reprompted(self, reasoning, answer, reasoning_prefilled):
+        loop, exec_fn = _make_loop(
+            turns = [[reasoning + answer], ["No tool is needed. Here it is again."]],
+            nudge_tool_calls = True,
+            reasoning_prefilled = reasoning_prefilled,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        contents = [e["text"] for e in events if e["type"] == "content"]
+        assert NUDGE_TOOL_CALLS_STATUS not in statuses
+        assert exec_fn.calls == []
+        assert contents[-1] == reasoning + answer
+
+    @pytest.mark.parametrize(
+        "chunk, reasoning_prefilled",
+        [
+            pytest.param(
+                "<think>I'll write it.\n```python\ndef f(): pass\n```\n</think>",
+                False,
+                id = "think_block_only",
+            ),
+            pytest.param(
+                "I'll write it.\n```python\ndef f(): pass\n```\n",
+                True,
+                id = "prefilled_unclosed",
+            ),
+            pytest.param(
+                "I'll write it.\n```python\ndef f(): pass\n```\n</think>",
+                True,
+                id = "prefilled_closed_empty_answer",
+            ),
+        ],
+    )
+    def test_code_only_in_reasoning_is_still_reprompted(self, chunk, reasoning_prefilled):
+        loop, exec_fn = _make_loop(
+            turns = [[chunk], ["Done."]],
+            nudge_tool_calls = True,
+            reasoning_prefilled = reasoning_prefilled,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        assert NUDGE_TOOL_CALLS_STATUS in statuses
+
+    @pytest.mark.parametrize(
+        "chunk",
+        [
+            pytest.param(
+                'Let me run it.\n<tool_call>\n```json\n{"name": "python", "arguments": '
+                '{"code": "print(1)"}}\n```\n</tool_call>',
+                id = "fenced_json_call",
+            ),
+            pytest.param(
+                "Let me run it.\n<tool_call>\n```python\nprint(1)\n```\n</tool_call>",
+                id = "fenced_code_call",
+            ),
+        ],
+    )
+    def test_unparsed_call_with_a_fence_is_still_reprompted(self, chunk):
+        call = '<tool_call>\n{"name": "python", "arguments": {"code": "print(1)"}}\n</tool_call>'
+        loop, exec_fn = _make_loop(
+            turns = [[chunk], [call], ["1"]],
+            exec_results = ["1"],
+            nudge_tool_calls = True,
+        )
+        events = _collect_events(loop)
+        statuses = [e["text"] for e in events if e["type"] == "status"]
+        assert NUDGE_TOOL_CALLS_STATUS in statuses
+        assert exec_fn.calls == [("python", {"code": "print(1)"})]
 
     def test_max_reprompts_capped(self):
         # Model keeps stalling with intent -- after MAX_ACT_REPROMPTS re-prompts
@@ -4788,14 +4934,14 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
-    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"query":"' + big + '"}}'
     chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
     loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
     events = _collect_events(loop)
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
     assert exec_fn.calls and exec_fn.calls[0][0] == "web_search"
-    assert len(exec_fn.calls[0][1].get("code", "")) > _MAX_BARE_JSON_BUFFER
+    assert len(exec_fn.calls[0][1].get("query", "")) > _MAX_BARE_JSON_BUFFER
 
 
 def test_oversized_plain_json_answer_still_streams():
@@ -4960,12 +5106,6 @@ class TestEnabledToolNameGate:
 
     def _names(self, calls):
         return [c["function"]["name"] for c in calls]
-
-    def test_parse_inactive_rehearsal_does_not_swallow_active_call(self):
-        text = 'foo[ARGS]{"a":1} web_search[ARGS]{"query":"cats"}'
-        calls = parse_tool_calls_from_text(text, enabled_tool_names = {"web_search"})
-        assert self._names(calls) == ["web_search"]
-        assert json.loads(calls[0]["function"]["arguments"]) == {"query": "cats"}
 
     def test_parse_inactive_rehearsal_alone_is_prose(self):
         assert (
@@ -5730,6 +5870,29 @@ def test_an_alternating_workspace_block_does_not_crowd_out_a_later_tool():
     ]
 
 
+def test_mcp_listing_runs_again_after_an_mcp_write():
+    """#10348: `list, create, list` on an MCP server re-lists instead of dropping the call."""
+    name = "mcp__docs__manager"
+    listing = '<tool_call>{"name":"%s","arguments":{"action":"list"}}</tool_call>' % name
+    create = '<tool_call>{"name":"%s","arguments":{"action":"create"}}</tool_call>' % name
+    turns = iter([listing + create + listing, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["[]", "created", "[a]"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Create a doc"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [args.get("action") for _, args in executor.calls] == ["list", "create", "list"]
+
+
 def test_every_independent_edit_gets_its_own_verification_rerun():
     """Two edit-and-verify cycles in one turn: the test after the second edit must run."""
     test = '<tool_call>{"name":"terminal","arguments":{"command":"pytest -q"}}</tool_call>'
@@ -5760,3 +5923,141 @@ def test_every_independent_edit_gets_its_own_verification_rerun():
         "edit_file",
         "terminal",
     ]
+
+
+def _post_tool_stall(
+    tool_name,
+    arguments,
+    replies,
+    also = (),
+):
+    """One tool call, then the scripted replies, recording every prompt the model saw."""
+    captured: list[list] = []
+    call = '<tool_call>{"name":"%s","arguments":%s}</tool_call>' % (tool_name, arguments)
+    script = [call, *replies]
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        yield script[len(captured) - 1] if len(captured) <= len(script) else "Done."
+
+    exec_fn = FakeExecuteTool([])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": name}} for name in (tool_name, *also)],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = True,
+            max_tool_iterations = 5,
+        )
+    )
+    return captured, exec_fn
+
+
+def test_browser_turns_get_a_post_tool_nudge():
+    # A browser step announced and not taken would end the task: GGUF and external parity.
+    call = '<tool_call>{"name":"browser_click","arguments":{"ref":"r2"}}</tool_call>'
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot",
+        "{}",
+        ["I'll click the first result.", call, "The title is X."],
+        also = ("browser_click",),
+    )
+    assert [name for name, _ in exec_fn.calls] == ["browser_snapshot", "browser_click"]
+    assert captured[2][-1]["role"] == "user"
+
+
+def test_other_tools_still_never_nudge_after_a_tool():
+    captured, exec_fn = _post_tool_stall("web_search", '{"query":"x"}', ["I'll search again."])
+    assert [name for name, _ in exec_fn.calls] == ["web_search"]
+    assert len(captured) == 2, captured
+
+
+def test_a_browser_tool_turn_allows_one_nudge():
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot", "{}", ["I'll click the first result.", "Let me click it now."]
+    )
+    assert [name for name, _ in exec_fn.calls] == ["browser_snapshot"]
+    # The call, the stall, one nudged retry: the second stall in the same tool turn is the answer.
+    assert len(captured) == 3, captured
+
+
+def test_the_same_stall_words_in_a_later_browser_turn_are_nudged_again():
+    stall = "I'll click it now."
+    click = '<tool_call>{"name":"browser_click","arguments":{"ref":"r2"}}</tool_call>'
+    captured, exec_fn = _post_tool_stall(
+        "browser_snapshot", "{}", [stall, click, stall, click, "Done."], also = ("browser_click",)
+    )
+    assert [name for name, _ in exec_fn.calls] == [
+        "browser_snapshot",
+        "browser_click",
+        "browser_click",
+    ]
+
+
+def test_a_browser_turn_is_nudged_after_retrieval_was_injected(monkeypatch):
+    import core.inference.tools as tools_module
+
+    monkeypatch.setattr(
+        tools_module,
+        "build_rag_autoinject",
+        lambda *a, **k: {
+            "events": [],
+            "messages": [{"role": "user", "content": "Notes: background."}],
+        },
+    )
+    click = '<tool_call>{"name":"browser_click","arguments":{"ref":"r2"}}</tool_call>'
+    captured: list[list] = []
+    script = [
+        '<tool_call>{"name":"browser_snapshot","arguments":{}}</tool_call>',
+        "I'll click it now.",
+        click,
+        "Done.",
+    ]
+
+    def fake_single_turn(messages, active_tools = None):
+        captured.append(list(messages))
+        yield script[len(captured) - 1] if len(captured) <= len(script) else "Done."
+
+    exec_fn = FakeExecuteTool([])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = fake_single_turn,
+            messages = [{"role": "user", "content": "go"}],
+            tools = [
+                {"type": "function", "function": {"name": "browser_snapshot"}},
+                {"type": "function", "function": {"name": "browser_click"}},
+                {"type": "function", "function": {"name": "search_knowledge_base"}},
+            ],
+            execute_tool = exec_fn,
+            auto_heal_tool_calls = True,
+            nudge_tool_calls = True,
+            max_tool_iterations = 5,
+            rag_scope = {"kind": "thread", "thread_id": "t"},
+        )
+    )
+    assert [name for name, _ in exec_fn.calls] == ["browser_snapshot", "browser_click"]
+
+
+def test_a_forced_tool_is_offered_alone_until_it_runs_and_the_cap_runs_one_call():
+    loop, exec_fn = _make_loop(
+        turns = [["<function=web_search></function><function=python></function>"], ["Done."]],
+        tool_choice = {"type": "function", "function": {"name": "web_search"}},
+        disable_parallel_tool_use = True,
+    )
+    _collect_events(loop)
+    assert exec_fn.offered == [["web_search"], _MAKE_LOOP_TOOLS]
+    assert exec_fn.calls == [("web_search", {})]
+
+
+def test_a_forced_tool_search_is_released_once_discovery_runs(monkeypatch):
+    # As on llama-server: any executed call resolves the forced choice, discovery included.
+    monkeypatch.setitem(globals(), "_MAKE_LOOP_TOOLS", ["web_search", "mcp_tool_search"])
+    loop, exec_fn = _make_loop(
+        turns = [["<function=mcp_tool_search><parameter=query>x</parameter></function>"], ["Done."]],
+        tool_choice = {"type": "function", "function": {"name": "mcp_tool_search"}},
+    )
+    _collect_events(loop)
+    assert [name for name, _ in exec_fn.calls] == ["mcp_tool_search"]
+    assert exec_fn.offered == [["mcp_tool_search"], ["web_search", "mcp_tool_search"]]

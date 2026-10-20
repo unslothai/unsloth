@@ -7,15 +7,18 @@ A load/unload has to know which streaming chats it would interrupt. Everything
 under test is a dict + threading.Lock, so this passes on every platform.
 """
 
+import multiprocessing as _mp
 import os
 import sys
 import threading
+import uuid
 
 import pytest
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
+from core.inference.worker import _SLOTS, StopLedger, _Stops
 from state import active_generations
 
 
@@ -276,15 +279,24 @@ def test_tracked_cancel_shares_its_event_with_the_registry():
         tracker.__exit__(None, None, None)
 
 
-def _stub_load_route(monkeypatch, *, active_model_name):
-    """Point POST /load at an in-memory safetensors backend.
-
-    active_model_name == the requested path makes the request idempotent, so
-    _load_model_impl takes its already_loaded fast return.
-    """
+def _stub_load_route(
+    monkeypatch,
+    *,
+    active_model_name,
+    backend = None,
+):
     from types import SimpleNamespace
 
     import routes.inference as inf_mod
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    if backend is None:
+        backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
+        backend._stop_ledger = None
+        backend._pending_teardowns = None
+        backend.active_model_name = active_model_name
+        backend.models = {}
 
     monkeypatch.setattr(inf_mod, "_raise_if_sidecar_swap_in_progress", lambda: None)
     monkeypatch.setattr(inf_mod, "validate_extra_args", lambda args: [])
@@ -307,11 +319,7 @@ def _stub_load_route(monkeypatch, *, active_model_name):
         },
     )
     monkeypatch.setattr(inf_mod, "_resolve_loaded_trust_remote_code", lambda *a, **k: False)
-    monkeypatch.setattr(
-        inf_mod,
-        "get_inference_backend",
-        lambda: SimpleNamespace(active_model_name = active_model_name, models = {}),
-    )
+    monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: backend)
     monkeypatch.setattr(
         inf_mod,
         "get_llama_cpp_backend",
@@ -341,6 +349,27 @@ def test_idempotent_load_neither_refuses_nor_cancels_running_chats(monkeypatch):
             )
         assert response.status == "already_loaded"
         assert not ev.is_set()
+
+
+def test_a_width_change_reaches_the_resident_model_without_replacing_it(monkeypatch):
+    _route_gate()
+    import asyncio
+
+    from models.inference import LoadRequest
+
+    inf_mod = _stub_load_route(monkeypatch, active_model_name = "org/A")
+    applied = []
+    inf_mod.get_inference_backend().set_parallel_slots = applied.append
+
+    ev = threading.Event()
+    with active_generations.ActiveGeneration(ev, thread_id = "t1"):
+        response = asyncio.run(
+            inf_mod.load_model(LoadRequest(model_path = "org/A", n_parallel = 2), object(), "tester")
+        )
+
+    assert response.status == "already_loaded"
+    assert applied == [2]
+    assert not ev.is_set(), "a width change ended a reply that was decoding"
 
 
 def test_a_real_reload_still_refuses_while_chats_stream(monkeypatch):
@@ -1324,9 +1353,10 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
 
     request = _CompletionsRequest({"prompt": "hi", "model": "org/M-GGUF", "max_tokens": 8})
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(inf_mod.HTTPException) as exc:
         asyncio.run(inf_mod.openai_completions(request, "tester"))
 
+    assert exc.value.status_code == 499
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
@@ -1397,9 +1427,10 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
 
     request = _EmbeddingsRequest({"input": "hi", "model": "org/M-GGUF"})
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(inf_mod.HTTPException) as exc:
         asyncio.run(inf_mod.openai_embeddings(request, "tester"))
 
+    assert exc.value.status_code == 499
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
@@ -2195,11 +2226,14 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
         tools = [{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
     )
 
-    response = asyncio.run(
-        inf_mod.anthropic_messages(payload, request = _MessagesRequest(), current_subject = "tester")
-    )
+    with pytest.raises(inf_mod.HTTPException) as exc:
+        asyncio.run(
+            inf_mod.anthropic_messages(
+                payload, request = _MessagesRequest(), current_subject = "tester"
+            )
+        )
 
-    assert response.status_code == 200
+    assert exc.value.status_code == 499
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
@@ -2240,13 +2274,14 @@ def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeyp
         tools = [{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
     )
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(inf_mod.HTTPException) as exc:
         asyncio.run(
             inf_mod.anthropic_messages(
                 payload, request = _MessagesRequest(), current_subject = "tester"
             )
         )
 
+    assert exc.value.status_code == 499
     assert seen["cancelled"] == 1
     # Cancelled or not, the entry must go, or one message 409s every later reload.
     assert active_generations.count() == 0
@@ -2550,6 +2585,72 @@ def test_drain_returns_as_soon_as_the_cancelled_requests_unwind(monkeypatch):
     assert polls == 3
 
 
+def _ids(n):
+    return [str(uuid.uuid4()) for _ in range(n)]
+
+
+def _stopped(ledger):
+    """What the worker would read: the only way the record is read."""
+    return ledger.snapshot()[1]
+
+
+def test_a_request_reads_as_stopped_once_it_is():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    mine, theirs = _ids(2)
+
+    assert _stopped(ledger) == set()
+    assert ledger.stop(mine)
+    stops = _Stops(ledger, None, None, [])
+    assert stops.unread() and stops._refresh() is None and mine in stops and not stops.unread()
+    assert _stopped(ledger) == {mine}, "a stop names one request and no other"
+    assert theirs not in _stopped(ledger)
+
+
+def test_the_oldest_stop_is_the_one_that_ages_out():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    recorded = _ids(_SLOTS + 1)
+    for request_id in recorded:
+        assert ledger.stop(request_id)
+
+    assert _stopped(ledger) == set(recorded[1:]), "the oldest made way for the newest"
+
+
+def test_stopping_the_same_request_twice_spends_one_slot():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    theirs, mine = _ids(2)
+    assert ledger.stop(theirs)
+    for _ in range(_SLOTS):
+        assert ledger.stop(mine)
+
+    assert _stopped(ledger) == {mine, theirs}, "the one stopped first is still stopped"
+
+
+def test_a_snapshot_answers_for_every_reply_at_once():
+    ledger = StopLedger(_mp.get_context("spawn"))
+    mine, absent = _ids(2)
+    theirs = "short"
+    ledger.stop(mine)
+    ledger.stop(theirs)
+
+    written, stopped = ledger.snapshot()
+    assert written == 2
+    assert stopped == {mine, theirs}, "the ids as recorded, with nothing padded onto them"
+    assert absent not in stopped
+
+
+class _Ledger:
+    def __init__(self, read_by_worker = False):
+        self.stopped: set = set()
+        self._read_by_worker = read_by_worker
+
+    def stop(self, request_id):
+        self.stopped.add(request_id)
+        return True
+
+    def read_by_worker(self) -> bool:
+        return self._read_by_worker
+
+
 # ── queued chats must not cancel the running one ──────────────────────
 
 
@@ -2560,10 +2661,15 @@ def _orchestrator_for_ownership():
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._stop_ledger = _Ledger()
+    orch._pending_teardowns = None
     orch._gen_lock = threading.Lock()
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
+    orch._send_order_lock = threading.Lock()
+    orch._mailbox_lock = threading.Lock()
+    orch._request_cancel_events = {}
     orch._cancel_event = threading.Event()
     orch._ensure_subprocess_alive = lambda: False  # stop before _send_cmd
     return orch
@@ -2738,6 +2844,8 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         "core.inference.orchestrator", reason = "inference stack not installed"
     )
     orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch._stop_ledger = None
+    orch._pending_teardowns = None
     orch._active_cancel_events = []
     orch._executing_cancel_events = []
     orch._active_cancel_lock = threading.Lock()
@@ -2855,3 +2963,169 @@ def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
     [row] = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
     assert row["ttft_ms"] is not None
     assert row["stop_reason"] == "tool_calls"
+
+
+def _run_external_tool_chat(during):
+    import asyncio
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from types import SimpleNamespace
+
+    import httpx
+    from starlette.requests import Request
+
+    import routes.inference as inf_mod
+    from core.inference import external_provider as ep_mod
+    from models.inference import ChatCompletionRequest
+
+    release = threading.Event()
+
+    class _SlowProvider(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args, **kwargs):
+            return
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            for word in ("one ", "two "):
+                chunk = {"choices": [{"index": 0, "delta": {"content": word}}]}
+                self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                self.wfile.flush()
+                release.wait(10)
+            done = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+            self.wfile.write(f"data: {json.dumps(done)}\n\ndata: [DONE]\n\n".encode())
+            self.wfile.flush()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SlowProvider)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    payload = ChatCompletionRequest(
+        provider_type = "custom",
+        provider_base_url = f"http://127.0.0.1:{server.server_address[1]}/v1",
+        model = "remote-model",
+        messages = [{"role": "user", "content": "hi"}],
+        stream = True,
+        thread_id = "external-chat",
+        cancel_id = "external-run",
+        enable_tools = True,
+        enabled_tools = ["python"],
+    )
+    request = Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "POST",
+            "path": "/api/inference/chat/completions",
+            "raw_path": b"/api/inference/chat/completions",
+            "root_path": "",
+            "scheme": "http",
+            "query_string": b"",
+            "headers": [(b"content-type", b"application/json"), (b"x-unsloth-events", b"1")],
+            "client": ("127.0.0.1", 12345),
+            "server": ("127.0.0.1", 8000),
+            "app": SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)),
+        },
+        receive,
+    )
+
+    async def run():
+        previous = ep_mod._http_client
+        ep_mod._http_client = httpx.AsyncClient()
+        try:
+            response = await inf_mod._proxy_to_external_provider(payload, request)
+            iterator = response.body_iterator
+            chunks = []
+            while active_generations.count() == 0:
+                chunks.append(await asyncio.wait_for(iterator.__anext__(), 10))
+            seen = await during(inf_mod, request)
+            release.set()
+            async for chunk in iterator:
+                chunks.append(chunk)
+            return seen, "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+        finally:
+            release.set()
+            await ep_mod._http_client.aclose()
+            ep_mod._http_client = previous
+            server.shutdown()
+            server.server_close()
+
+    return asyncio.run(run())
+
+
+def test_an_external_tool_chat_is_not_stopped_by_a_local_model_swap():
+    _route_gate()
+
+    async def during(inf_mod, request):
+        [entry] = active_generations.snapshot()
+        listed = await inf_mod.get_active_generations(request, "tester")
+        inf_mod._raise_or_cancel_active_generations(force = False, action = "Unloading the model")
+        cancelled = inf_mod._raise_or_cancel_active_generations(
+            force = True, action = "Unloading the model"
+        )
+        return entry, listed, cancelled
+
+    (entry, listed, cancelled), body = _run_external_tool_chat(during)
+
+    assert entry["thread_id"] == "external-chat"
+    assert listed["count"] == 0 and listed["thread_ids"] == []
+    assert cancelled == 0
+    assert "two" in body and "[DONE]" in body
+    assert active_generations.count() == 0
+
+
+def test_external_registration_racing_the_swap_gate_stays_excluded(monkeypatch):
+    gate = _route_gate()
+    event = threading.Event()
+    tracker = active_generations.ActiveGeneration(
+        event,
+        thread_id = "external-chat",
+        external = True,
+    )
+    original_count = active_generations.count
+    entered = False
+
+    def count_after_registration(*args, **kwargs):
+        nonlocal entered
+        if not entered:
+            tracker.__enter__()
+            entered = True
+        return original_count(*args, **kwargs)
+
+    monkeypatch.setattr(active_generations, "count", count_after_registration)
+    try:
+        assert gate(force = False, action = "Unloading the model") == 0
+        assert not event.is_set()
+    finally:
+        if entered:
+            tracker.__exit__(None, None, None)
+
+
+def test_an_external_tool_chat_still_stops_on_its_own_stop():
+    _route_gate()
+
+    async def during(inf_mod, request):
+        return inf_mod._cancel_by_cancel_id_or_stash("external-run")
+
+    stopped, _ = _run_external_tool_chat(during)
+
+    assert stopped == 1
+    assert active_generations.count() == 0
+
+
+def test_deleting_an_external_tool_chat_still_stops_it():
+    _route_gate()
+
+    async def during(inf_mod, request):
+        return active_generations.cancel_thread("external-chat")
+
+    stopped, _ = _run_external_tool_chat(during)
+
+    assert stopped == 1

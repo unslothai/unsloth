@@ -663,7 +663,7 @@ test("the row does not withdraw its objection when it unmounts", () => {
   // The panel retires it on a model change instead.
   assert.match(
     pageSource.replace(/\s+/g, " "),
-    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(target\.isGguf && !isDiffusion\); \}, \[configId, target\.ggufVariant, target\.isGguf, isDiffusion\]\)/,
+    /setExtraArgsLoadable\(true\); setExtraArgsHydrating\(!isDiffusion\); \}, \[configId, target\.ggufVariant, target\.isGguf, isDiffusion\]\)/,
   );
 });
 
@@ -744,20 +744,21 @@ test("load waits for the stored arguments to be read", () => {
   assert.doesNotMatch(body, /loadLlamaFlagCatalog\(\)[^;]*Promise\.all/);
 });
 
-test("a model with no such field does not wait for one", () => {
+test("Load waits for the server row on every model but diffusion", () => {
   const panel = pageSource.slice(
     pageSource.indexOf("export function ModelConfigPage("),
   );
   const body = panel.replace(/\s+/g, " ");
-  // The row and the load payload are both GGUF-only, so a Transformers or MLX model
-  // must not have Load held shut while two requests it will never use settle.
-  // A diffusion GGUF is GGUF-shaped but runs through the diffusion shim, which
-  // appends no llama-server flags, so it must not wait either.
+  // Every non-diffusion model reads the row, and a Load sent before it lands with
+  // Remember unchecked forgets it. A diffusion model runs through the shim, which
+  // appends no llama-server flags, so it alone skips the wait.
   assert.match(
     body,
-    /if \(!target\.isGguf \|\| resolvedIsDiffusion\) \{ .*setExtraArgsHydrating\(false\); return; \}/,
+    /if \(resolvedIsDiffusion\) \{ [^}]*setExtraArgsHydrating\(false\); return; \}/,
   );
-  assert.match(body, /useState\( \(\) => target\.isGguf && !isDiffusion, \)/);
+  assert.match(body, /useState\( \(\) => !isDiffusion, \)/);
+  assert.match(body, /setExtraArgsHydrating\(!isDiffusion\);/);
+  assert.doesNotMatch(body, /setExtraArgsHydrating\(true\)/);
 });
 
 test("a diffusion classification retires the argument objection", () => {
@@ -794,7 +795,7 @@ test("a rollback restores the previous model with its arguments", () => {
   // without the arguments it had been running.
   assert.match(
     runtime,
-    /stateBeforeUnload\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: stateBeforeUnload\.loadedLlamaExtraArgs \}/,
+    /rollbackState\.loadedLlamaExtraArgs != null \? \{ llama_extra_args: rollbackState\.loadedLlamaExtraArgs \}/,
   );
   // And the snapshot is kept on every successful load, not only an explicit one,
   // taken from the server's own echo first: a reload that omits the field but sets
@@ -827,7 +828,7 @@ test("a hydrated list is judged even when the row cannot be", () => {
   );
   assert.match(
     body,
-    /const hydratedIsLoadable = hydratedArgs\.length === 0 \? true : extraArgsAreLoadable\( diagnoseExtraArgs\( formatExtraArgs\(hydratedArgs\)/,
+    /const hydratedIsLoadable = !target\.isGguf \|\| hydratedArgs\.length === 0 \? true : extraArgsAreLoadable\( diagnoseExtraArgs\( formatExtraArgs\(hydratedArgs\)/,
   );
   // But not over an edit made while the request was out: the row is judging that
   // text, and replacing its verdict re-enabled Load for invalid input.

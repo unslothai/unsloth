@@ -39,6 +39,14 @@ test("an empty query lists unsloth, a typed one searches everything", () => {
   assert.match(PICKER, /useDebouncedValue\(query\.trim\(\)\)/);
 });
 
+test("embeddinggemma-2 leads the empty list, ahead of the older embeddinggemma", () => {
+  // Pinned ahead of the by-downloads listing, where a new release would sit last.
+  assert.match(PICKER, /PINNED_EMBEDDING_MODELS: readonly string\[\] = \["unsloth\/embeddinggemma-2"\]/);
+  assert.match(PICKER, /priorityIds: PINNED_EMBEDDING_MODELS,/);
+  // The older model comes from the listing, so it isn't pinned above the new one.
+  assert.doesNotMatch(PICKER, /PINNED_EMBEDDING_MODELS[^\n]*embeddinggemma-300m/);
+});
+
 test("only the query searches; the saved model never becomes one", () => {
   assert.ok(
     !PICKER.includes("useDebouncedValue(value)"),
@@ -125,8 +133,8 @@ test("the action slot offers Download or Unload, not Reset to default", () => {
     !SECTION.includes("resetEmbeddingModelSettings"),
     "reset is reachable by picking the default in the list",
   );
-  assert.match(SECTION, /settings\.general\.rag\.unload/);
-  assert.match(SECTION, /embeddingModel\?\.backendLoaded \? \(/);
+  assert.match(SECTION, /settings\.general\.rag\.unloadFailed/);
+  assert.match(SECTION, /onEject=\{embeddingModel\?\.backendLoaded \? \(\) => void unload\(\) : undefined\}/);
   assert.ok(
     !SECTION.includes("): embeddingModel?.loaded ? ("),
     "Unload is not an alternative to Download",
@@ -290,7 +298,7 @@ test("the configured default stays reachable when the listing drops it", () => {
   // The empty query is scoped to `unsloth`, so a private, other-owner or local default has no row.
   assert.match(PICKER, /rows\.push\(\{ id: fallback, sizeBytes: null \}\)/);
   assert.match(PICKER, /const fallback = defaultModel\?\.trim\(\)/);
-  assert.match(PICKER, /\}, \[results, value, defaultModel\]\)/);
+  assert.match(PICKER, /\}, \[results, value, defaultModel, pinnedModels\]\)/);
   assert.match(SECTION, /defaultModel=\{embeddingModel\?\.defaultEmbeddingModel\}/);
 });
 

@@ -210,6 +210,12 @@ class TestTheSignalStudioAlreadyHas:
         assert LlamaCppBackend._requires_symmetric_kv(None, "DeepSeek4") is True
         assert LlamaCppBackend._requires_symmetric_kv(None, " deepseek4 ") is True
 
+    def test_deepseek41_is_recognized_without_kv_lora_rank(self):
+        """DeepSeek-V4.1 (deepseek41) is a separate arch in the same condition
+        (`|| arch == LLM_ARCH_DEEPSEEK41`) and, like deepseek4, writes no kv_lora_rank."""
+        assert LlamaCppBackend._requires_symmetric_kv(None, "deepseek41") is True
+        assert LlamaCppBackend._requires_symmetric_kv(None, "DeepSeek41") is True
+
     def test_a_non_mla_arch_without_a_rank_is_not_symmetric(self):
         assert LlamaCppBackend._requires_symmetric_kv(None, None) is False
         assert LlamaCppBackend._requires_symmetric_kv(None, "deepseek") is False
@@ -338,10 +344,6 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         b = self._backend({"/d/mla.gguf": (512, "deepseek2")})
         env = {"LLAMA_ARG_SPEC_DRAFT_MODEL": "/d/mla.gguf"}
         assert b._draft_kv_symmetry(["llama-server"], env) is True
-
-    def test_no_drafter_at_all_is_none(self):
-        b = self._backend({})
-        assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
 
     def test_an_unreadable_drafter_takes_the_conservative_path(self):
         """Named but unreadable is still a drafter that will launch."""

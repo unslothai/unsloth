@@ -8,6 +8,8 @@ one's checkpoint path and the load then refuses it as foreign."""
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -19,10 +21,11 @@ from core.inference import local_model_resolver as resolver
 from hub.services.models import account_access as access
 from storage import studio_db
 from utils import openai_auto_switch_settings as switch_settings
-from utils.account_context import OWNER, AccountContext, arun_as, run_as
+from utils.account_context import OWNER, AccountContext, arun_as, current_account_id, run_as
 
 ALICE = AccountContext("a" * 32, "alice")
 BOB = AccountContext("b" * 32, "bob")
+_REAL_WARM_INDEX_SOON = resolver.warm_index_soon
 
 
 @pytest.fixture
@@ -114,3 +117,92 @@ def test_the_owner_keeps_one_index_on_a_single_user_install(home, monkeypatch):
     for _ in range(3):
         assert resolver.resolve_local_gguf("owner-model")[0] == str(owner_model)
     assert len(scans) == 1
+
+
+def test_a_fast_account_scan_does_not_expire_another_accounts_slow_scan_miss(home, monkeypatch):
+    clock = SimpleNamespace(now = 1_000.0)
+    monkeypatch.setattr(resolver.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(resolver, "_managed_scans", {})
+    monkeypatch.setattr(resolver, "_managed_last_scan_s", {}, raising = False)
+    monkeypatch.setattr(resolver, "_last_scan_s", 0.0)
+    monkeypatch.setattr(resolver, "_misses", {})
+    scans = []
+
+    def _scan():
+        account_id = current_account_id()
+        scans.append(account_id)
+        clock.now += 17.0 if account_id == ALICE.account_id else 0.1
+        return {}
+
+    monkeypatch.setattr(resolver, "_build_index", _scan)
+    assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
+    assert run_as(BOB, resolver.resolve_local_gguf_for_switch, "missing") is None
+
+    # Bob's cheap scan must not replace the duty window earned by Alice's slow one.
+    clock.now += 10.0
+    assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
+    assert scans == [ALICE.account_id, BOB.account_id]
+
+
+def test_a_warm_scan_queues_behind_another_accounts_scan(home, monkeypatch):
+    now = time.monotonic()
+    monkeypatch.setattr(
+        resolver,
+        "_managed_scans",
+        {
+            ALICE.account_id: (now - 2 * resolver._CACHE_TTL_S - 1, {}),
+            BOB.account_id: (now - resolver._CACHE_TTL_S - 1, {}),
+        },
+    )
+    monkeypatch.setattr(
+        resolver,
+        "_managed_last_scan_s",
+        {ALICE.account_id: 0.0, BOB.account_id: 0.0},
+    )
+    monkeypatch.setattr(resolver, "_warming", False)
+    monkeypatch.setattr(resolver, "_warm_pending", False)
+    monkeypatch.setattr(resolver, "_warm_accounts", {}, raising = False)
+    monkeypatch.setattr(resolver, "_warm_active_account", None, raising = False)
+    monkeypatch.setattr(resolver, "_warm_retry_scopes", set(), raising = False)
+    monkeypatch.setattr(
+        resolver,
+        "_misses",
+        {(ALICE.account_id, "missing"): resolver._generation},
+    )
+    scans = []
+    bob_started = threading.Event()
+    release_bob = threading.Event()
+    alice_finished = threading.Event()
+
+    def _scan():
+        bob_started.set()
+        account_id = current_account_id()
+        scans.append(account_id)
+        if account_id == BOB.account_id:
+            assert release_bob.wait(5)
+        else:
+            alice_finished.set()
+        return {}
+
+    monkeypatch.setattr(resolver, "_index", _scan)
+    stale = run_as(
+        BOB,
+        lambda: (
+            resolver._snapshot()[0],
+            resolver.time.monotonic(),
+            resolver._duty_window(),
+        ),
+    )
+    assert stale[1] - stale[0] > stale[2], stale
+    run_as(BOB, _REAL_WARM_INDEX_SOON)
+    assert bob_started.wait(5), (resolver._warming, scans)
+    run_as(ALICE, _REAL_WARM_INDEX_SOON)
+    assert run_as(ALICE, resolver.resolve_local_gguf_for_switch, "missing") is None
+    assert scans == [BOB.account_id], "the queued refresh must keep the miss nonblocking"
+    release_bob.set()
+
+    try:
+        assert alice_finished.wait(1)
+        assert scans == [BOB.account_id, ALICE.account_id]
+    finally:
+        release_bob.set()

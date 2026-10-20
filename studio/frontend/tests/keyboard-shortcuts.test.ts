@@ -50,6 +50,7 @@ function keyEvent(
     altKey: boolean;
     /** What a Windows or Linux layout reports for AltGr, alongside Ctrl+Alt. */
     altGraph: boolean;
+    key: string;
   }> = {},
 ) {
   const { altGraph = false, ...rest } = mods;
@@ -361,7 +362,7 @@ test("the workspace chords land where the guard lets them", async () => {
   // gate. Read through the same helper the disabled row reads.
   assert.match(
     SRC__ROOT,
-    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason\) !== undefined;/,
+    /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\) !== undefined;/,
   );
   assert.match(
     SRC__ROOT,
@@ -369,7 +370,7 @@ test("the workspace chords land where the guard lets them", async () => {
   );
   assert.match(
     APP_SIDEBAR,
-    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\);/,
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\);/,
   );
   assert.match(APP_SIDEBAR, /disabled: videoDisabled,/);
 
@@ -525,6 +526,8 @@ test("no default takes a chord the browser owns without a reason", () => {
     // because the browser's own find is what it replaces. Reserving it is still
     // right -- it is what warns a web user before they rebind onto it.
     "Mod+KeyF",
+    // The command palette takes Print the same way.
+    "Mod+KeyP",
   ]);
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -664,6 +667,127 @@ test("labels use each platform's own modifier notation", () => {
   const comma = parseBinding("Mod+Comma");
   assert.ok(comma);
   assert.equal(formatBindingLabel(comma, true), "⌘,");
+});
+
+test("a key typing a letter answers as that letter, whatever its position", () => {
+  const sidebar = parseBinding("Mod+KeyB");
+  assert.ok(sidebar);
+  // Dvorak types x on the B position: Ctrl+X there is Cut (#14035).
+  const dvorakX = keyEvent("KeyB", { ctrlKey: true, key: "x" });
+  assert.equal(matchesBinding(sidebar, dvorakX, false), false);
+  assert.equal(formatBindingValue(bindingFromEvent(dvorakX, false)!), "Mod+KeyX");
+  const dvorakB = keyEvent("KeyN", { ctrlKey: true, key: "b" });
+  assert.equal(matchesBinding(sidebar, dvorakB, false), true);
+  const recorded = bindingFromEvent(dvorakB, false);
+  assert.ok(recorded);
+  assert.equal(formatBindingValue(recorded), "Mod+KeyB");
+  assert.equal(formatBindingLabel(recorded, false), "Ctrl+B");
+  const shifted = parseBinding("Mod+Shift+KeyO");
+  assert.ok(shifted);
+  assert.equal(
+    matchesBinding(shifted, keyEvent("KeyS", { metaKey: true, shiftKey: true, key: "O" }), true),
+    true,
+  );
+  const slash = parseBinding("Mod+Slash");
+  assert.ok(slash);
+  assert.equal(
+    matchesBinding(slash, keyEvent("Slash", { ctrlKey: true, key: "z" }), false),
+    false,
+  );
+});
+
+test("a letter position typing punctuation answers as that punctuation", () => {
+  const settings = parseBinding("Mod+Comma");
+  assert.ok(settings);
+  assert.equal(
+    matchesBinding(settings, keyEvent("KeyW", { metaKey: true, key: "," }), true),
+    true,
+  );
+  assert.equal(
+    matchesBinding(settings, keyEvent("Comma", { metaKey: true, key: "w" }), true),
+    false,
+  );
+});
+
+test("a punctuation position also answers to the punctuation it types", () => {
+  const slash = parseBinding("Mod+Slash");
+  assert.ok(slash);
+  const dvorakSlash = keyEvent("BracketLeft", { ctrlKey: true, key: "/" });
+  assert.equal(matchesBinding(slash, dvorakSlash, false), true);
+  assert.equal(matchesBinding(slash, keyEvent("BracketLeft", { metaKey: true, key: "/" }), true), true);
+  assert.equal(formatBindingValue(bindingFromEvent(dvorakSlash, false)!), "Mod+BracketLeft");
+  assert.equal(
+    matchesBinding(slash, keyEvent("BracketLeft", { metaKey: true, altKey: true, key: "/" }), true),
+    false,
+  );
+});
+
+test("keys that type no letter keep their position", () => {
+  // German types / only with Shift, so Mod+Slash stays on the position.
+  const slash = parseBinding("Mod+Slash");
+  assert.ok(slash);
+  assert.equal(
+    matchesBinding(slash, keyEvent("Slash", { ctrlKey: true, key: "-" }), false),
+    true,
+  );
+  const sidebar = parseBinding("Mod+KeyB");
+  assert.ok(sidebar);
+  assert.equal(
+    matchesBinding(sidebar, keyEvent("KeyB", { ctrlKey: true, key: "и" }), false),
+    true,
+  );
+  const archive = parseBinding("Mod+Alt+KeyE");
+  assert.ok(archive);
+  assert.equal(
+    matchesBinding(archive, keyEvent("KeyE", { metaKey: true, altKey: true, key: "Dead" }), true),
+    true,
+  );
+  const bookmarks = parseBinding("Mod+Alt+KeyB");
+  assert.ok(bookmarks);
+  assert.equal(
+    matchesBinding(bookmarks, keyEvent("KeyB", { metaKey: true, altKey: true, key: "∫" }), true),
+    true,
+  );
+  assert.equal(
+    matchesBinding(archive, keyEvent("KeyD", { ctrlKey: true, altKey: true, key: "e" }), false),
+    true,
+  );
+  assert.equal(
+    matchesBinding(archive, keyEvent("KeyE", { ctrlKey: true, altKey: true, altGraph: true, key: "€" }), false),
+    false,
+  );
+  const pad = parseBinding("Mod+Numpad1");
+  assert.ok(pad);
+  assert.equal(
+    matchesBinding(pad, keyEvent("Numpad1", { ctrlKey: true, key: "1" }), false),
+    true,
+  );
+});
+
+test("on US QWERTY every key answers to its own position", () => {
+  const us: Record<string, [string, string]> = {
+    Comma: [",", "<"], Period: [".", ">"], Slash: ["/", "?"], Semicolon: [";", ":"],
+    Quote: ["'", "\""], BracketLeft: ["[", "{"], BracketRight: ["]", "}"],
+    Backslash: ["\\", "|"], Minus: ["-", "_"], Equal: ["=", "+"], Backquote: ["`", "~"],
+  };
+  for (let i = 0; i < 26; i++) {
+    const letter = String.fromCharCode(97 + i);
+    us[`Key${letter.toUpperCase()}`] = [letter, letter.toUpperCase()];
+  }
+  const shifted = "!@#$%^&*()";
+  for (let i = 0; i < 10; i++) us[`Digit${(i + 1) % 10}`] = [`${(i + 1) % 10}`, shifted[i]];
+  for (const [code, [plain, withShift]] of Object.entries(us)) {
+    for (const mac of [false, true]) {
+      for (const shiftKey of [false, true]) {
+        const event = keyEvent(code, {
+          ...(mac ? { metaKey: true } : { ctrlKey: true }),
+          shiftKey,
+          key: shiftKey ? withShift : plain,
+        });
+        assert.equal(bindingFromEvent(event, mac)?.code, code, `${code} shift=${shiftKey}`);
+      }
+    }
+  }
 });
 
 test("an override wins, and null means unassigned", () => {
@@ -912,7 +1036,8 @@ test("Reset all local preferences clears the rebound chords", async () => {
 // shows an English word in the middle of a translated settings dialog.
 test("every locale overlay carries the shortcut strings", async () => {
   const locales = [
-    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "zh-CN",
+    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "sv",
+    "zh-CN",
   ];
   for (const locale of locales) {
     const source = await readFile(
@@ -1152,40 +1277,26 @@ test("the model picker chord opens without the tour's pin", async () => {
   assert.equal((CHAT_PAGE.match(/openModelSelector/g) ?? []).length, 3);
 });
 
-// The inline rename pill is rendered by the row, so it needs the row to be on
-// screen. A chord has no row under the cursor, and the open chat may be behind
-// a collapsed section, past a folder's limit, or on a route with no chat list.
-test("the rename chord does not land in a surface only a row can show", async () => {
-  // The chord asks for the dialog; the context menu, which has a row under the
-  // cursor by definition, keeps the pill.
+// The chord, the row menus and a double-click all open the Rename chat dialog; there is no in-row editor.
+test("every sidebar chat rename opens the dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
+    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item\)\);/,
   );
-  // The menu names the list its row is in, so a chat on screen twice renames in the row the
-  // user opened, not in both at once.
+  assert.match(APP_SIDEBAR, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
   assert.match(
     APP_SIDEBAR,
-    /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
+    /onDoubleClick=\{\(event\) => \{[\s\S]*?openRenameChat\(item\);/,
   );
-  assert.match(
-    APP_SIDEBAR,
-    /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
-  );
-
-  // The pill is gated on it, so a dialog rename cannot also arm a row that is
-  // off screen and surprise the user when it comes back.
-  assert.match(
-    APP_SIDEBAR,
-    /const isRenamingThis =\n\s*renamingTarget\?\.kind === "chat" &&\n\s*renamingTarget\.inline &&/,
-  );
-  // And the dialog takes chats now, which is what its chat strings were always
-  // written for.
-  assert.match(
-    APP_SIDEBAR,
-    /\(renamingTarget\.kind !== "chat" \|\| !renamingTarget\.inline\)/,
-  );
+  assert.match(APP_SIDEBAR, /function openRenameChat\(item: SidebarItem\) \{/);
+  assert.match(APP_SIDEBAR, /open=\{renamingTarget !== null\}/);
+  assert.doesNotMatch(APP_SIDEBAR, /isRenamingThis|handleInlineRename|renamingTarget\.inline/);
   assert.ok(APP_SIDEBAR.includes('t("shell.dialog.renameChat.title")'));
+  // The title opens selected, and focus still resets the IME state.
+  assert.match(
+    APP_SIDEBAR,
+    /onFocus=\{\(event\) => \{\s*resetInputIme\(renameImeRef\.current\);\s*event\.currentTarget\.select\(\);/,
+  );
 });
 
 // Bare Escape has more than one owner. The sidebar answers it while rows are
@@ -1268,6 +1379,11 @@ test("a collapsed sidebar section is not published for the chords", async () => 
     APP_SIDEBAR,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(/,
   );
+  // A custom section closes on its own, as Pinned does, and takes only its own rows.
+  assert.match(
+    APP_SIDEBAR,
+    /visibleCustomSections\.flatMap\(\(section\) =>\n\s*collapsedSectionIds\.has\(section\.id\)\n\s*\? \[\]/,
+  );
   assert.match(
     APP_SIDEBAR,
     /chatListsOnScreen && chatOpen \? sortedRecentChatItems/,
@@ -1280,12 +1396,12 @@ test("a collapsed sidebar section is not published for the chords", async () => 
   );
   assert.match(
     APP_SIDEBAR,
-    /folderChatItems\(projectsOpen, visibleProjectRecords\)/,
+    /folderChatItems\(projectsSectionRendered && projectsOpen, visibleProjectRecords\)/,
   );
   // In one list every project chat is a Recents row, so a folder must not list it again.
   assert.match(APP_SIDEBAR, /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\)/);
   // And the published lists are the filtered ones.
-  assert.match(APP_SIDEBAR, /pinnedItems: pinnedSectionChatItems,/);
+  assert.match(APP_SIDEBAR, /pinnedItems: upToPinnedChatItems,/);
   assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
 });
 
@@ -1509,6 +1625,7 @@ test("every action has a useShortcut call site", async () => {
   const files = [
     "../src/app/routes/__root.tsx",
     "../src/components/app-sidebar.tsx",
+    "../src/components/command-palette.tsx",
     "../src/components/ui/sidebar.tsx",
     "../src/components/assistant-ui/thread.tsx",
     "../src/components/assistant-ui/tool-confirmation-controls.tsx",
@@ -1518,6 +1635,8 @@ test("every action has a useShortcut call site", async () => {
     "../src/features/chat/components/chat-search-dialog.tsx",
     "../src/features/api-monitor/api-monitor-overlay.tsx",
     "../src/features/find-in-page/components/find-in-page.tsx",
+    "../src/features/browser/browser-panel.tsx",
+    "../src/features/browser/browser-toggle.tsx",
   ];
   const sources = await Promise.all(
     files.map((file) => readFile(new URL(file, import.meta.url), "utf8")),
@@ -1604,25 +1723,30 @@ test("the published chat lists stop where the sidebar stops", async () => {
   for (const group of [
     /if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !open\) return \[\];/,
     /chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\([\s\S]*?: \[\],/,
+    /const customSectionChatItems = useMemo\(\(\) => \{\n\s*const bySection = new Map<string, SidebarItem\[\]>\(\);\n\s*if \(!chatListsOnScreen\) return bySection;/,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   ]) {
     assert.match(APP_SIDEBAR, group);
   }
-  // Select All reads the same rows the walk does, so it cannot reach further.
-  const selectAll = APP_SIDEBAR.indexOf("const selectAllChats = useCallback(");
-  assert.ok(selectAll !== -1, "selectAllChats moved");
+  assert.match(
+    APP_SIDEBAR,
+    /const selectAllChats = useCallback\(\(\) => \{\n\s*if \(!chatRowsOnScreen\) return;/,
+  );
+  const selectAll = APP_SIDEBAR.indexOf("const selectRenderedChats = useCallback(");
+  assert.ok(selectAll !== -1, "selectRenderedChats moved");
   assert.match(
     APP_SIDEBAR.slice(selectAll, APP_SIDEBAR.indexOf("\n  }, [", selectAll)),
     /const ids = renderedChatItems\.map\(\(item\) => item\.id\);/,
   );
   assert.match(
     APP_SIDEBAR,
-    /const renderedChatItems = useMemo\(\n\s*\(\) => \[\n\s*\.\.\.pinnedSectionChatItems,\n\s*\.\.\.sectionProjectChatItems,\n\s*\.\.\.visibleRecentItems,/,
+    /const renderedChatItems = useMemo\(\n\s*\(\) => \[\.\.\.upToPinnedChatItems, \.\.\.belowPinnedChatItems, \.\.\.visibleRecentItems\],/,
   );
   // Gating the arrays is enough because nothing renders from them.
   const rendered = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("return (", selectAll));
   for (const name of [
     "pinnedSectionChatItems",
+    "customSectionChatItems",
     "visibleRecentItems",
     "renderedChatItems",
     "sectionProjectChatItems",

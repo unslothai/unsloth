@@ -25,16 +25,15 @@ export function classifyHost({
   /** Backend-reported dense quant capability. */
   denseQuantSupported?: boolean;
 }): HostClass {
-  // Mac outranks the backend string. Apple GPUs report as available and Unsloth may name the
-  // backend mlx or cpu, but no Mac can place a Modular Diffusers workflow: it needs
-  // mem_get_info, which torch.mps does not expose, and video.py refuses the load.
-  if (deviceType === "mac") return "gguf-only";
   const backend = (deviceBackend ?? "").trim().toLowerCase();
-  if (!(backend && budgetKnown)) return "unknown";
-  if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
-  if (ACCELERATED_BACKENDS.has(backend)) {
+  // Backend outranks the OS: no Mac reports one of these, but deviceType can be the BROWSER's platform (config/env.ts).
+  if (backend && budgetKnown && ACCELERATED_BACKENDS.has(backend)) {
     return denseQuantSupported ? "dense-quant" : "accelerated";
   }
+  // No Mac can place a Modular Diffusers workflow: it needs mem_get_info, which torch.mps lacks.
+  if (deviceType === "mac") return "gguf-only";
+  if (!(backend && budgetKnown)) return "unknown";
+  if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
   // An unrecognised backend is a new accelerator, not a CPU. Show what we show today.
   return "unknown";
 }
@@ -113,4 +112,20 @@ export function h3PerfSuffix(
   if (id === H3_PIPELINE_ID) return densePerfSuffix(denseQuantSchemes);
   if (id === H3_GGUF_ID) return "Slow";
   return null;
+}
+
+/** Video pipelines whose fp8 / int8 load runs a quantized DiT (a hosted pre-quantized checkpoint, else quantized at
+ *  load). Other video rows stay bare: the dense-quant row rule is image-only. */
+const DENSE_QUANT_VIDEO_PIPELINES = new Set(["lightricks/ltx-2.5-diffusers"]);
+
+/** Speed qualifier for those video rows, from the same host scheme list as the image rows. */
+export function videoDensePerfSuffix(
+  repoId: string,
+  host: HostClass,
+  denseQuantSchemes?: readonly string[] | null,
+): string | null {
+  if (!hostRunsDenseQuant(host)) return null;
+  return DENSE_QUANT_VIDEO_PIPELINES.has(repoId.trim().toLowerCase())
+    ? densePerfSuffix(denseQuantSchemes)
+    : null;
 }

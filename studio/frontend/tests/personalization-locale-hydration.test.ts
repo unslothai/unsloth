@@ -189,6 +189,7 @@ function setup(
     localCustomization?: Record<string, unknown>;
     remote?: ReturnType<typeof remotePersonalization> & {
       chatWidthSaved?: boolean;
+      sentAttachmentsSaved?: boolean;
     };
   } = {},
 ) {
@@ -365,7 +366,7 @@ function widthRemote(chatWidthSaved?: boolean, chatWidth?: string) {
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 4,
+    version: 5,
     chatWidthSaved,
     appearance: {
       ...remote.appearance,
@@ -429,5 +430,64 @@ test("an older server without chat width metadata preserves local width", async 
   await settle();
   assert.equal(app.saves.length, 1);
   assert.equal(app.saves[0]?.appearance.customization.chatWidth, "wide");
+  app.host.unmount();
+});
+
+function attachmentsRemote(saved: boolean | undefined, customization: Record<string, string>) {
+  const remote = remotePersonalization("auto");
+  return {
+    ...remote,
+    version: 5,
+    chatWidthSaved: true,
+    sentAttachmentsSaved: saved,
+    appearance: {
+      ...remote.appearance,
+      customization: { chatWidth: "standard", uiFont: "Georgia", ...customization },
+    },
+  };
+}
+
+test("legacy attachment display preserves and uploads the local choice", async () => {
+  const app = setup("stalled", {
+    localCustomization: { sentAttachments: "chips" },
+    remote: attachmentsRemote(false, { sentAttachments: "auto" }),
+  });
+  app.render();
+  await settle();
+  app.render();
+
+  assert.equal(app.customization().sentAttachments, "chips");
+  assert.equal(app.customization().uiFont, "Georgia");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 1);
+  assert.equal(app.saves[0]?.appearance.customization.sentAttachments, "chips");
+  app.host.unmount();
+});
+
+test("saved attachment display overrides local without another save", async () => {
+  const app = setup("stalled", {
+    localCustomization: { sentAttachments: "chips" },
+    remote: attachmentsRemote(true, { sentAttachments: "list" }),
+  });
+  app.render();
+  await settle();
+  app.render();
+  assert.equal(app.customization().sentAttachments, "list");
+  app.runTimers();
+  await settle();
+  assert.equal(app.saves.length, 0);
+  app.host.unmount();
+});
+
+test("an older server without attachment display keys preserves the local choice", async () => {
+  const app = setup("stalled", {
+    localCustomization: { sentAttachments: "list" },
+    remote: attachmentsRemote(undefined, {}),
+  });
+  app.render();
+  await settle();
+  app.render();
+  assert.equal(app.customization().sentAttachments, "list");
   app.host.unmount();
 });

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +17,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useIsAccountOwner } from "@/features/auth";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -28,6 +30,7 @@ import { FolderBrowser } from "@/features/model-picker";
 import {
   openModelsDir,
   pickHuggingFaceCacheDir,
+  pickNativeModelFolder,
 } from "@/features/native-intents";
 import {
   type HuggingFaceCacheSettings,
@@ -46,7 +49,7 @@ import {
   FolderOpenIcon,
   FolderSearchIcon,
   PlusSignIcon,
-  RefreshIcon,
+  Refresh01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -76,6 +79,7 @@ export function OnDeviceFoldersDialog({
 }) {
   const [folders, setFolders] = useState<ScanFolderInfo[]>([]);
   const [path, setPath] = useState("");
+  const [recursive, setRecursive] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -195,7 +199,7 @@ export function OnDeviceFoldersDialog({
       setPending("add");
       setError(null);
       try {
-        const folder = await addScanFolder(nextPath);
+        const folder = await addScanFolder(nextPath, recursive);
         setPath("");
         mutationVersionRef.current += 1;
         setFolders((current) => {
@@ -216,8 +220,15 @@ export function OnDeviceFoldersDialog({
         setPending(null);
       }
     },
-    [handleInventoryChanged, pending],
+    [handleInventoryChanged, pending, recursive],
   );
+
+  const isOwner = useIsAccountOwner();
+  const browseLocations = useCallback(async () => {
+    const picked = await pickNativeModelFolder(isOwner);
+    if (picked === undefined) setBrowserOpen(true);
+    else if (picked) await handleAdd(picked);
+  }, [handleAdd, isOwner]);
 
   // Scan folders are arbitrary paths that may be moved or deleted after they
   // were registered, so surface the command's failure as a toast.
@@ -379,7 +390,7 @@ export function OnDeviceFoldersDialog({
                         type="button"
                         variant="outline"
                         size="icon-sm"
-                        onClick={() => setBrowserOpen(true)}
+                        onClick={() => void browseLocations()}
                         aria-label="Browse locations"
                         className="size-9 rounded-full"
                       >
@@ -415,6 +426,24 @@ export function OnDeviceFoldersDialog({
                   </Button>
                 </div>
               </div>
+              <div className="mt-2 flex items-center gap-2">
+                <Checkbox
+                  id="scan-folder-recursive"
+                  checked={recursive}
+                  onCheckedChange={(checked) => setRecursive(checked === true)}
+                />
+                <label
+                  htmlFor="scan-folder-recursive"
+                  className="text-ui-12 text-muted-foreground"
+                >
+                  Also scan sub-folders
+                </label>
+              </div>
+              <p className="mt-2 text-ui-10p5 text-muted-foreground">
+                Adding a ComfyUI folder, or its models folder, lists the image
+                and video models in its diffusion_models, unet and checkpoints
+                folders, plus any extra_model_paths.yaml entries.
+              </p>
             </div>
 
             {error ? (
@@ -438,7 +467,7 @@ export function OnDeviceFoldersDialog({
                       className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
                     >
                       <HugeiconsIcon
-                        icon={RefreshIcon}
+                        icon={Refresh01Icon}
                         strokeWidth={1.75}
                         className={cn("size-3.5", loading && "animate-spin")}
                       />
@@ -506,6 +535,11 @@ export function OnDeviceFoldersDialog({
                               {folder.path}
                             </TooltipContent>
                           </Tooltip>
+                          {folder.recursive ? (
+                            <p className="text-ui-10p5 text-muted-foreground">
+                              Includes sub-folders
+                            </p>
+                          ) : null}
                           {problem ? (
                             <p
                               data-testid={`scan-folder-problem-${folder.id}`}

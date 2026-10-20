@@ -87,6 +87,20 @@ def audio_device_forces_cpu(value: Optional[str]) -> bool:
     return normalize_audio_device(value) == "cpu"
 
 
+def audio_load_runs_on_cpu(audio_type: Optional[str], value: Optional[str]) -> bool:
+    """True when a native audio load of this type ends up in CPU RAM: asked for, or a GGUF
+    audio model on an audio.cpp runtime that only runs on the CPU (Auto cannot place it on a GPU)."""
+    if audio_device_forces_cpu(value):
+        return True
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
+
+    if audio_type not in AUDIO_CPP_AUDIO_TYPES:
+        return False
+    from core.inference.audio_cpp_server import runtime_runs_on_cpu
+
+    return runtime_runs_on_cpu()
+
+
 def mask_accelerators_for_cpu_audio(env: dict) -> None:
     """Hide CUDA/ROCm from a worker whose weights stay in CPU RAM.
 

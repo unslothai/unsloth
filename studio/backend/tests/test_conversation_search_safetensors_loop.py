@@ -69,7 +69,9 @@ def test_the_loop_hands_its_search_the_active_branch():
 
     _run(1, execute_tool)
 
-    assert seen == [MESSAGES]
+    # The client's messages, then the call the loop itself appended, as the GGUF loop passes.
+    [branch] = seen
+    assert branch[: len(MESSAGES)] == MESSAGES and len(branch) == len(MESSAGES) + 1
 
 
 def test_conversation_searches_share_the_per_turn_cap():

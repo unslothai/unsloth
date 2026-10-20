@@ -58,3 +58,25 @@ def test_registration_is_idempotent_and_never_overwrites_diffusers_own():
     before = registry.get(QwenImageTransformerBlock)
     dc.register_unregistered_transformer_blocks()
     assert registry.get(QwenImageTransformerBlock) is before
+
+
+def test_step_cache_probe_refuses_unregistered_blocks():
+    registry, _ = _registry_and_block()
+    import torch
+    from diffusers.hooks._helpers import TransformerBlockMetadata
+
+    class _Block(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    class _Transformer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.transformer_blocks = torch.nn.ModuleList([_Block(), _Block()])
+
+    assert not dc._transformer_blocks_registered(_Transformer())
+    registry.register(model_class = _Block, metadata = TransformerBlockMetadata(0, None))
+    try:
+        assert dc._transformer_blocks_registered(_Transformer())
+    finally:
+        registry._registry.pop(_Block, None)

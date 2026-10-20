@@ -3,8 +3,8 @@
 
 import { useIsAccountOwner } from "@/features/auth";
 import { resolveSettingsTab, settingsTabVisible } from "./settings-tab-visibility";
-import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import { Button } from "@/components/ui/button";
+import { DropdownGlowContext } from "@/components/ui/dropdown-glow";
 import {
   Dialog,
   DialogContent,
@@ -12,12 +12,14 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
-import { isTauri } from "@/lib/api-base";
+import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
+  ApiIcon,
   BotIcon,
   Cancel01Icon,
   CloudIcon,
@@ -25,14 +27,16 @@ import {
   CpuIcon,
   DatabaseSettingIcon,
   EnergyRectangleIcon,
-  Globe02Icon,
+  InternetIcon,
   HelpCircleIcon,
   HomeWifiIcon,
+  LibrariesIcon,
   PaintBrush02Icon,
   Search01Icon,
   Settings02Icon,
   UserCircleIcon,
 } from "@hugeicons/core-free-icons";
+import { ShieldCogIcon } from "@/lib/shield-cog-icon";
 import { MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
@@ -45,15 +49,14 @@ import {
   lazy,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
 } from "react";
-import {
-  SETTINGS_SEARCH_KEYWORDS,
-  createSettingsSearchIndex,
-} from "./settings-search";
+import { DIALOG_SETTINGS_SEARCH_INDEX as SETTINGS_SEARCH_INDEX } from "./dialog-search-index";
+import { SETTINGS_SEARCH_KEYWORDS, renderedSearchEntries } from "./settings-search";
 import {
   type SettingsTab,
   useSettingsDialogStore,
@@ -77,12 +80,18 @@ const TAB_LOADERS = {
   resources: () =>
     import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
   chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  sandbox: () =>
+    import("./tabs/sandbox-tab").then((m) => ({ default: m.SandboxTab })),
+  browser: () =>
+    import("./tabs/browser-tab").then((m) => ({ default: m.BrowserTab })),
   voice: () =>
     import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
   connections: () =>
     import("./tabs/connections-tab").then((m) => ({
       default: m.ConnectionsTab,
     })),
+  library: () =>
+    import("./tabs/library-tab").then((m) => ({ default: m.LibraryTab })),
   data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
   "keyboard-shortcuts": () =>
     import("./tabs/keyboard-shortcuts-tab").then((m) => ({
@@ -206,9 +215,14 @@ const TABS: TabDef[] = [
     icon: MessageCircleIcon,
   },
   {
+    id: "sandbox",
+    labelKey: "settings.tabs.sandbox",
+    icon: ShieldCogIcon,
+  },
+  {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
-    icon: Globe02Icon,
+    icon: ApiIcon,
   },
   {
     id: "remote-lan",
@@ -224,7 +238,6 @@ const TABS: TabDef[] = [
     id: "accounts",
     labelKey: "settings.tabs.accounts",
     icon: UserCircleIcon,
-    badgeKey: "common.new",
   },
   {
     id: "agents",
@@ -237,14 +250,25 @@ const TABS: TabDef[] = [
     iconComponent: MicIcon,
   },
   {
-    id: "data",
-    labelKey: "settings.tabs.data",
-    icon: DatabaseSettingIcon,
+    id: "browser",
+    labelKey: "browser.settingsTitle",
+    icon: InternetIcon,
+    badgeKey: "common.new",
   },
   {
     id: "keyboard-shortcuts",
     labelKey: "settings.tabs.keyboardShortcuts",
     icon: EnergyRectangleIcon,
+  },
+  {
+    id: "data",
+    labelKey: "settings.tabs.data",
+    icon: DatabaseSettingIcon,
+  },
+  {
+    id: "library",
+    labelKey: "shell.navigation.library",
+    icon: LibrariesIcon,
   },
   {
     id: "debugging",
@@ -254,15 +278,6 @@ const TABS: TabDef[] = [
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
 
-const clientPlatform = getClientPlatform();
-const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
-  desktop: isTauri,
-  closeToTray:
-    isTauri &&
-    (clientPlatform.startsWith("win") ||
-      clientPlatform.includes("windows") ||
-      clientPlatform.includes("linux")),
-});
 
 /**
  * Stack the tab rail over the pane when the dialog is narrower than it is at
@@ -288,6 +303,8 @@ export function SettingsDialog() {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const stacked = useStackedLayout();
+  const hubSource = useHubSource();
+  const { attach: attachRail, onScroll: onRailScroll, className: railFadeClass } = useScrollFades();
   const visibleTabs = useMemo(() => TABS.filter((tab) => settingsTabVisible(tab.id, isOwner)), [isOwner]);
   const open = useSettingsDialogStore((s) => s.open);
   const requestedTab = useSettingsDialogStore((s) => s.activeTab);
@@ -326,7 +343,7 @@ export function SettingsDialog() {
     }
     return visibleTabs.map((tab) => {
       const tabLabel = t(tab.labelKey);
-      const entries = SETTINGS_SEARCH_INDEX[tab.id]
+      const entries = renderedSearchEntries(SETTINGS_SEARCH_INDEX, tab.id, hubSource, isOwner)
         .filter((key) => {
           if (t(key).toLowerCase().includes(q)) {
             return true;
@@ -343,13 +360,19 @@ export function SettingsDialog() {
         tabMatches: tabLabel.toLowerCase().includes(q),
       };
     }).filter((r) => r.tabMatches || r.entries.length > 0);
-  }, [query, t, visibleTabs]);
+  }, [query, t, visibleTabs, hubSource, isOwner]);
 
   const [pendingScroll, setPendingScroll] = useState<{
     tab: SettingsTab;
     entry: string;
   } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Shared scroller: reset per tab. panelTab, not activeTab, so the old panel does not jump mid-defer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: panelTab is the trigger, not an input.
+  useLayoutEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
+  }, [panelTab]);
 
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
@@ -424,9 +447,12 @@ export function SettingsDialog() {
     appearance: null,
     resources: null,
     chat: null,
+    sandbox: null,
+    browser: null,
     voice: null,
     connections: null,
     "keyboard-shortcuts": null,
+    library: null,
     data: null,
     "api-keys": null,
     "remote-lan": null,
@@ -454,8 +480,10 @@ export function SettingsDialog() {
     <>
       <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
         <DialogContent
+          data-settings-dialog
           showCloseButton={false}
-          overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
+          overlayClassName="bg-black/40"
+          overlayTone="strong"
           onCloseAutoFocus={(e) => {
             // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
             const focusTarget = [opener, openerFallback].find(
@@ -518,6 +546,7 @@ export function SettingsDialog() {
                       setQuery("");
                     }
                   }}
+                  data-type-to-activate="settings-search"
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
                   className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))] dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]"
@@ -582,11 +611,14 @@ export function SettingsDialog() {
                 {t("settings.dialog.title")}
               </p>
               <nav
+                ref={attachRail}
+                onScroll={onRailScroll}
                 className={cn(
                   // The tab list is the sidebar's flexible row: a short window
                   // leaves it taller than the sidebar, and the dialog clips its
                   // overflow, so scroll it rather than losing the last tabs.
-                  "hover-scrollbar flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  "hover-scrollbar settings-rail-fade flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-1 py-1",
+                  railFadeClass,
                   "group-data-stacked/settings:flex-none group-data-stacked/settings:flex-row group-data-stacked/settings:overflow-x-auto group-data-stacked/settings:py-0",
                   results !== null && "group-data-stacked/settings:flex hidden",
                 )}
@@ -656,42 +688,45 @@ export function SettingsDialog() {
             </aside>
 
             <main className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-              <button
-                type="button"
-                onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-[10px] text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                aria-label={t("settings.dialog.closeAriaLabel")}
-              >
-                <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
-              </button>
-              <div
-                ref={mainScrollRef}
-                className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
-              >
-                {/* Only a panel's first view waits, so the fallback is delayed and a
-                    promptly arriving panel never flashes it. */}
-                <SettingsPanelBoundary
-                  tab={panelTab}
-                  message={t("settings.dialog.panelFailed")}
-                  reloadLabel={t("settings.dialog.panelReload")}
+              {/* The pane is the page colour, not the dialog's card, so its dropdowns glow in --background. */}
+              <DropdownGlowContext.Provider value={null}>
+                <button
+                  type="button"
+                  onClick={closeDialog}
+                  className="absolute top-3 end-3 z-10 flex size-[calc(30px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-[#383835] dark:text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  aria-label={t("settings.dialog.closeAriaLabel")}
                 >
-                  <Suspense
-                    fallback={
-                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
-                        {t("common.loading")}
-                      </div>
-                    }
+                  <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
+                </button>
+                <div
+                  ref={mainScrollRef}
+                  className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
+                >
+                  {/* Only a panel's first view waits, so the fallback is delayed and a
+                      promptly arriving panel never flashes it. */}
+                  <SettingsPanelBoundary
+                    tab={panelTab}
+                    message={t("settings.dialog.panelFailed")}
+                    reloadLabel={t("settings.dialog.panelReload")}
                   >
-                    <Tab
-                      searchEntry={
-                        pendingScroll?.tab === panelTab
-                          ? pendingScroll.entry
-                          : undefined
+                    <Suspense
+                      fallback={
+                        <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                          {t("common.loading")}
+                        </div>
                       }
-                    />
-                  </Suspense>
-                </SettingsPanelBoundary>
-              </div>
+                    >
+                      <Tab
+                        searchEntry={
+                          pendingScroll?.tab === panelTab
+                            ? pendingScroll.entry
+                            : undefined
+                        }
+                      />
+                    </Suspense>
+                  </SettingsPanelBoundary>
+                </div>
+              </DropdownGlowContext.Provider>
             </main>
           </div>
         </DialogContent>

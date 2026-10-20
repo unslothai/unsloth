@@ -345,6 +345,7 @@ export function resolveLoadMaxSeqLength({
   pinnedMaxSeqLength,
   defaultMaxSeqLength,
   presetSource,
+  loadedContextPin = null,
 }: {
   modelId: string;
   ggufVariant?: string | null;
@@ -357,6 +358,9 @@ export function resolveLoadMaxSeqLength({
   pinnedMaxSeqLength: number | null;
   defaultMaxSeqLength: number;
   presetSource: ChatPresetSource;
+  /** `loadedCustomContextLength`: the context the resident server was pinned to, or null when
+   *  it was loaded on Auto. */
+  loadedContextPin?: number | null;
 }): number {
   const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
   const isGgufLoad = isGguf === true || ggufVariant != null || isDirectGgufFile;
@@ -371,8 +375,10 @@ export function resolveLoadMaxSeqLength({
   if (isGgufLoad && presetSource === "builtin-default") {
     return 0;
   }
+  // Keeping the resident size only holds an Auto window steady. When that size was a pin, Auto is
+  // a request to drop it, and resending it made the reload a no-op that kept the old context.
   if (isReloadingCurrentGguf) {
-    return loadedContextLength ?? 0;
+    return loadedContextPin != null ? 0 : (loadedContextLength ?? 0);
   }
   if (isGgufLoad) {
     return 0;
@@ -528,6 +534,14 @@ export function resolveFitMaxSeqLength(
 ): number {
   if (!isGguf || gpuMemoryMode !== "manual" || gpuLayers >= 0) return fallback;
   return customContextLength && customContextLength > 0 ? customContextLength : 0;
+}
+
+export function isReplayedLoadContext(
+  isGguf: boolean | null | undefined,
+  customContextLength: number | null,
+  maxSeqLength: number,
+): boolean {
+  return isGguf === true && customContextLength == null && maxSeqLength > 0;
 }
 
 /** The context pin a completed load leaves behind: the Context Length the user EXPLICITLY set, or

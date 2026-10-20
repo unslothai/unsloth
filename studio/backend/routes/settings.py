@@ -11,10 +11,10 @@ import re
 import threading
 import time
 from contextvars import ContextVar
-from typing import Any, Literal, Optional, get_args
+from typing import Annotated, Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import (
@@ -23,8 +23,11 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StrictStr,
+    StringConstraints,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from auth.authentication import (
@@ -35,8 +38,19 @@ from auth.authentication import (
 )
 from auth.storage import rotate_preview_link_secret
 from auth import policy
-from utils.account_context import OWNER, bind_account, current_account, reset_account
-from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused, hf_token_arg
+from utils.account_context import (
+    OWNER,
+    bind_account,
+    current_account,
+    is_owner_context,
+    reset_account,
+)
+from hub.utils.hf_tokens import (
+    HfTokenArg,
+    cache_reads_authorized,
+    cached_read_refused,
+    hf_token_arg,
+)
 
 from routes.provider_credentials import current_credential_write, require_ui_session
 
@@ -46,10 +60,11 @@ from core.rag.config import (
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
-from utils.utils import safe_error_detail, log_and_http_error
+from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
     PERSONALIZATION_VERSION,
+    drop_unknown_palette,
     get_personalization,
     set_personalization,
 )
@@ -75,13 +90,29 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
+from utils import video_cpu_settings
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
 )
+from utils.hub_settings import (
+    HubSettings,
+    active_source,
+    claim_automatic_source,
+    get_hub_settings,
+    set_hub_settings,
+    set_hub_source,
+)
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
+from utils.multi_model_settings import (
+    DEFAULT_MULTI_MODEL_ENABLED,
+    DEFAULT_MULTI_MODEL_MODE,
+    get_multi_model_mode,
+    set_multi_model_mode,
+)
 from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
     DEFAULT_NO_RAM_RESERVE,
@@ -135,6 +166,7 @@ from utils.keyless_api_access import (
     get_keyless_api_access_settings,
     set_keyless_api_access,
 )
+from utils.mcp_access import forced_by_env, is_mcp_enabled, set_mcp_enabled
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
@@ -153,6 +185,8 @@ from utils.current_date_prompt_settings import (
 )
 from utils.lan_access_settings import (
     lan_access_status,
+    normalize_lan_access_addresses,
+    save_lan_access_addresses,
     save_lan_access_port,
     set_lan_access_auto_start,
     start_lan_access,
@@ -171,6 +205,7 @@ from utils.embedding_model_settings import (
     get_rag_embedding_model,
     get_stored_embedding_model,
     reset_rag_embedding_model,
+    set_embedding_device,
     set_rag_embedding_model,
     validate_embedding_model,
 )
@@ -533,6 +568,29 @@ def delete_custom_generation_preset(
     return {"deleted": True}
 
 
+class MultiModelPayload(BaseModel):
+    # ``mode`` is the current shape; a bare ``enabled`` comes from an older client.
+    enabled: Optional[StrictBool] = None
+    mode: Optional[Literal["off", "fit", "always"]] = None
+
+    @model_validator(mode = "after")
+    def exactly_one(self):
+        if (self.enabled is None) == (self.mode is None):
+            raise ValueError("Send exactly one of mode or enabled.")
+        return self
+
+
+class MultiModelResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_MULTI_MODEL_ENABLED
+    mode: Literal["off", "fit", "always"] = DEFAULT_MULTI_MODEL_MODE
+    default_mode: Literal["off", "fit", "always"] = DEFAULT_MULTI_MODEL_MODE
+
+
+def _multi_model_response(mode: str) -> MultiModelResponse:
+    return MultiModelResponse(enabled = mode != "off", mode = mode)
+
+
 class UploadLimitPayload(BaseModel):
     max_upload_size_mb: int = Field(..., ge = MIN_UPLOAD_LIMIT_MB, le = MAX_UPLOAD_LIMIT_MB)
 
@@ -544,6 +602,21 @@ class UploadLimitResponse(BaseModel):
     default_upload_size_mb: int
     min_upload_size_mb: int = MIN_UPLOAD_LIMIT_MB
     max_allowed_upload_size_mb: int = MAX_UPLOAD_LIMIT_MB
+
+
+class ToolResultLimitPayload(BaseModel):
+    max_chars: StrictInt = Field(
+        ..., ge = tool_result_limit.MIN_MAX_CHARS, le = tool_result_limit.MAX_MAX_CHARS
+    )
+
+
+class ToolResultLimitResponse(BaseModel):
+    # The cap before a small context window lowers it.
+    max_chars: int
+    default_chars: int = tool_result_limit.DEFAULT_MAX_CHARS
+    min_chars: int = tool_result_limit.MIN_MAX_CHARS
+    max_allowed_chars: int = tool_result_limit.MAX_MAX_CHARS
+    locked_by_environment: bool = False
 
 
 class HuggingFaceTokenPayload(BaseModel):
@@ -616,6 +689,71 @@ def clear_hugging_face_token(
     return HuggingFaceTokenResponse(token = None, has_token = False)
 
 
+class SystemOneModelOption(BaseModel):
+    name: str
+    description: str
+    download_bytes: int
+    kind: Literal["catalog", "fine_tune"] = "catalog"
+    label: Optional[str] = None
+    available: bool = True
+    unavailable_reason: Optional[str] = None
+    # A GGUF with no PyTorch form: the runtime setting matters, and PyTorch cannot serve it.
+    llama_cpp_only: bool = False
+
+
+class SystemOneConnectionOption(BaseModel):
+    name: str
+    provider_id: str
+    provider: str
+    model: str
+
+
+class SystemOneSettingsResponse(BaseModel):
+    enabled: bool
+    enabled_locked: bool
+    model: str
+    model_locked: bool
+    device: str
+    device_locked: bool
+    gpu_available: bool
+    models: list[SystemOneModelOption]
+    loaded_model: Optional[str] = None
+    loaded_device: Optional[str] = None
+    loading_model: Optional[str] = None
+    installing: bool = False
+    error: Optional[str] = None
+    mcp_url: str
+    # Runtime setting, what a text request to the configured model uses now, and why Auto chose PyTorch.
+    backend: str = "auto"
+    # Whether "mlx" can be chosen as the runtime on this machine.
+    mlx_available: bool = False
+    native_ctx: int = 16384
+    effective_backend: Optional[str] = None
+    loaded_backend: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    input_modalities: list[str] = ["text"]
+    # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
+    layout: Optional[str] = None
+
+
+class SystemOneSettingsPayload(BaseModel):
+    enabled: Optional[bool] = None
+    model: Optional[str] = None
+    device: Optional[str] = None
+    backend: Optional[str] = None
+    native_ctx: Optional[int] = None
+    expected_enabled: Optional[bool] = None
+    expected_model: Optional[str] = None
+
+
+class SystemOneDownloadPlan(BaseModel):
+    repo: Optional[str] = None
+    files: list[str]
+    size_bytes: int
+    cached: bool
+    error: Optional[str] = None
+
+
 class HelperPrecachePayload(BaseModel):
     enabled: bool
 
@@ -624,6 +762,24 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class DeveloperModePayload(BaseModel):
+    video_cpu: StrictBool
+
+
+class DeveloperModeResponse(BaseModel):
+    # Effective answer (env override, else the setting) and the persisted setting on its own.
+    video_cpu: bool
+    video_cpu_setting: bool
+    default_video_cpu: bool = video_cpu_settings.DEFAULT_VIDEO_CPU_ENABLED
+    # True/False when UNSLOTH_VIDEO_ALLOW_CPU decides, null when the setting does.
+    video_cpu_env_override: Optional[bool] = None
+    # Whether the opt-in changes anything here: only a CPU-only host whose sole blocker is the
+    # missing accelerator. A GPU host already runs video; a broken install stays refused.
+    video_cpu_applicable: bool
+    host_ram_bytes: Optional[int] = None
+    min_ram_bytes: int = video_cpu_settings.VIDEO_CPU_MIN_RAM_GB * 1024**3
 
 
 class DownloadTransportPayload(BaseModel):
@@ -636,6 +792,26 @@ class DownloadTransportResponse(BaseModel):
     xet_unavailable_reason: Optional[str] = None
     auto_resolves_to: str
     auto_reason: Optional[str] = None
+
+
+class HubSettingsPayload(BaseModel):
+    hf_endpoint: str = Field(max_length = 2048)
+    datasets_server_follows_endpoint: StrictBool
+
+
+class HubSourcePayload(BaseModel):
+    source: Literal["huggingface", "modelscope"]
+
+
+class HubSettingsResponse(BaseModel):
+    hf_endpoint: str
+    datasets_server_follows_endpoint: bool
+    source: Literal["huggingface", "modelscope"]
+    active_source: Literal["huggingface", "modelscope"]
+
+
+class HubSourceNoticeResponse(BaseModel):
+    granted: bool
 
 
 class XetNoticeReservePayload(BaseModel):
@@ -686,6 +862,9 @@ class ModelMemoryResponse(BaseModel):
     # Whether --mlock is passed on the next load. False when no_ram_reserve
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
+    # False when the running llama.cpp child has no host copy to lock (full offload to a discrete GPU),
+    # so a keep-resident user is told why no lock is taken. True with nothing loaded.
+    mlock_applicable: bool = True
     reload_required: bool
     # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns that residency will not
     # fully pin a larger model. None means unlimited (macOS) or not applicable (Windows).
@@ -790,7 +969,8 @@ class LlamaCppPathResponse(BaseModel):
 
 
 class OpenAIAutoSwitchPayload(BaseModel):
-    enabled: bool
+    # Optional too, so a row saved outside API keys (Model memory) can't resend a stale value.
+    enabled: Optional[bool] = None
     # None leaves the stored value untouched (partial updates can't clobber it).
     auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
@@ -848,6 +1028,12 @@ class ModelOverridePayload(BaseModel):
     """
 
     model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    engine_parallelism: Optional[Literal["tensor", "pipeline", "data"]] = None
+    engine_precision: Optional[Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"]] = None
+    engine: Optional[Literal["auto", "vllm", "sglang"]] = None
+    engine_kv_cache_dtype: Optional[Literal["auto", "fp8"]] = None
+    engine_seed: Optional[int] = Field(default = None, ge = 0, le = 2**31 - 1)
+    engine_gpu_memory_utilization: Optional[float] = Field(default = None, ge = 0.05, le = 0.99)
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
     # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
@@ -855,9 +1041,22 @@ class ModelOverridePayload(BaseModel):
     custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
     # A discrete set, enforced by the normalizer; these bounds only block absurd values.
-    mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
+    mlx_kv_quant: Optional[str] = Field(default = None, max_length = 16)
+    mlx_kv_bits: Optional[float] = Field(default = None, ge = 2, le = 8)
+
+    @model_validator(mode = "after")
+    def derive_mlx_kv_quant(self):
+        """Fold the pair into the field storage keeps; null is how a client spells Auto."""
+
+        if "mlx_kv_quant" not in self.model_fields_set and self.mlx_kv_bits is not None:
+            from core.inference.mlx_inference import encode_mlx_kv_quant
+            self.mlx_kv_quant = encode_mlx_kv_quant(self.mlx_kv_bits)
+        self.mlx_kv_bits = None
+        return self
+
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
+    spec_draft_model: Optional[str] = Field(default = None, max_length = 1024)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
     reasoning_budget: Optional[int] = Field(default = None, ge = -1, le = 2_147_483_647)
@@ -880,14 +1079,19 @@ class ModelOverridePayload(BaseModel):
     # The reasoning pair came later than the four, so a build that mirrors them can still
     # predate it: its own flag, same contract.
     mirrors_reasoning_budget: bool = False
+    mirrors_spec_draft_model: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
+    mlx_int8_prefill: bool = False
+    # Default-engine 16-bit load; only False is stored.
+    load_in_4bit: bool = True
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
+    tensor_split: Optional[list[float]] = Field(default = None, min_length = 2, max_length = MAX_GPU_IDS)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
     # Which index space gpu_ids is in. Absent means physical, the only thing a client
     # written before this field could have meant.
@@ -896,6 +1100,27 @@ class ModelOverridePayload(BaseModel):
     remove: Optional[bool] = None
     # Fill in, don't replace: the backfill reads the map once then writes each model.
     fill_absent_fields: bool = False
+
+    @model_validator(mode = "after")
+    def _tensor_split_matches_gpu_ids(self):
+        if self.tensor_split is not None:
+            from utils.openai_auto_switch_settings import normalize_tensor_split
+            if normalize_tensor_split(self.tensor_split, self.gpu_ids) is None:
+                raise ValueError(
+                    "tensor_split must match an ordered selection of at least two unique GPUs"
+                )
+        return self
+
+    @field_validator("tensor_split")
+    @classmethod
+    def _valid_tensor_split(cls, value: Optional[list[float]]) -> Optional[list[float]]:
+        if value is None:
+            return None
+        from utils.openai_auto_switch_settings import normalize_tensor_split
+
+        if normalize_tensor_split(value, list(range(len(value)))) is None:
+            raise ValueError("tensor_split must be finite, non-negative, and have a positive total")
+        return value
 
     @field_validator("chat_template_override")
     @classmethod
@@ -927,6 +1152,7 @@ class ModelOverridePayload(BaseModel):
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
+        "tensor_split",
         mode = "before",
     )
     @classmethod
@@ -963,6 +1189,24 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
+    )
+
+
+def _developer_mode_response() -> DeveloperModeResponse:
+    try:
+        from utils.hardware import hardware as hardware_mod
+        applicable = (
+            hardware_mod._video_capability_verdict().get("video_unsupported_reason")
+            == "no_accelerator"
+        )
+    except Exception:  # noqa: BLE001 -- an unanswerable probe must not fail the settings read
+        applicable = False
+    return DeveloperModeResponse(
+        video_cpu = video_cpu_settings.video_cpu_enabled(),
+        video_cpu_setting = video_cpu_settings.get_video_cpu_setting(),
+        video_cpu_env_override = video_cpu_settings.video_cpu_env_override(),
+        video_cpu_applicable = applicable,
+        host_ram_bytes = video_cpu_settings.host_ram_bytes(),
     )
 
 
@@ -1087,6 +1331,13 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     return bool(state and state[0])
 
 
+def _model_memory_mlock_applicable() -> bool:
+    state, _policy_active, applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
+    return state is _NO_LAUNCH or bool(applicable)
+
+
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
     mlock_active = _model_memory_mlock_active(should_mlock())
@@ -1094,6 +1345,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = mlock_active,
+        mlock_applicable = _model_memory_mlock_applicable(),
         reload_required = _model_memory_reload_required(),
         memlock_limit_bytes = memlock_limit_bytes() if mlock_active else None,
     )
@@ -1248,6 +1500,53 @@ def update_llama_cpp_path(
     return _llama_cpp_path_response()
 
 
+@_shared_settings_router.get("/multi-model", response_model = MultiModelResponse)
+def get_multi_model(current_subject: str = Depends(get_current_subject)) -> MultiModelResponse:
+    return _multi_model_response(get_multi_model_mode())
+
+
+@_owner_settings_router.put("/multi-model", response_model = MultiModelResponse)
+def update_multi_model(
+    payload: MultiModelPayload,
+    background_tasks: BackgroundTasks,
+    current_subject: str = Depends(get_current_subject),
+) -> MultiModelResponse:
+    """Off, When they fit or Always. Takes effect on the next load."""
+    try:
+        mode = payload.mode
+        if mode is None:
+            # A legacy "on" never downgrades Always to When they fit.
+            current = get_multi_model_mode()
+            mode = (current if current != "off" else "fit") if payload.enabled else "off"
+        set_multi_model_mode(mode)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not save the multiple models setting."),
+            event = "settings.update_multi_model_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.multi_model_updated subject=%s mode=%s", current_subject, mode)
+    if mode == "off":
+        # Back to one model: the idle kept ones go after the reply (a teardown can take minutes),
+        # a busy one once it is ejected. One that fails to unload stays tracked as stuck.
+        background_tasks.add_task(_unload_idle_models)
+    return _multi_model_response(mode)
+
+
+def _unload_idle_models() -> None:
+    from core.inference import model_slots
+    from routes.inference import release_chat_after_kept_models
+
+    try:
+        model_slots.unload_idle()
+    except Exception:
+        logger.warning("settings.multi_model_unload_idle_failed", exc_info = True)
+    # The primary's own unload kept CHAT while these were loaded.
+    release_chat_after_kept_models()
+
+
 @_shared_settings_router.get("/upload-limit", response_model = UploadLimitResponse)
 def get_upload_limit(current_subject: str = Depends(get_current_subject)) -> UploadLimitResponse:
     return _upload_limit_response(get_upload_limit_mb())
@@ -1268,6 +1567,68 @@ def update_upload_limit(
             log = logger,
         ) from exc
     return _upload_limit_response(limit_mb)
+
+
+class FirstTokenTimeoutPayload(BaseModel):
+    minutes: StrictInt = Field(ge = 0, le = first_token_timeout.MAX_MINUTES)
+
+
+class FirstTokenTimeoutResponse(FirstTokenTimeoutPayload):
+    default_minutes: int = first_token_timeout.DEFAULT_MINUTES
+    max_minutes: int = first_token_timeout.MAX_MINUTES
+
+
+@_shared_settings_router.get("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def get_first_token_timeout(current_subject: str = Depends(get_current_subject)):
+    return FirstTokenTimeoutResponse(minutes = first_token_timeout.get_minutes())
+
+
+@_owner_settings_router.put("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def update_first_token_timeout(
+    payload: FirstTokenTimeoutPayload, current_subject: str = Depends(get_current_subject)
+):
+    first_token_timeout.set_minutes(payload.minutes)
+    return FirstTokenTimeoutResponse(minutes = payload.minutes)
+
+
+def _tool_result_limit_response() -> ToolResultLimitResponse:
+    return ToolResultLimitResponse(
+        max_chars = tool_result_limit.effective_max_chars(),
+        locked_by_environment = tool_result_limit.locked_by_environment(),
+    )
+
+
+@_shared_settings_router.get("/tool-result-limit", response_model = ToolResultLimitResponse)
+def get_tool_result_limit(
+    current_subject: str = Depends(get_current_subject),
+) -> ToolResultLimitResponse:
+    return _tool_result_limit_response()
+
+
+@_owner_settings_router.put("/tool-result-limit", response_model = ToolResultLimitResponse)
+def update_tool_result_limit(
+    payload: ToolResultLimitPayload, current_subject: str = Depends(get_current_subject)
+) -> ToolResultLimitResponse:
+    """Save how many characters of one tool result the model reads. Applies from the next tool call."""
+    if tool_result_limit.locked_by_environment():
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{tool_result_limit.MAX_CHARS_ENV} is set in the environment Unsloth runs in, which decides this.",
+        )
+    try:
+        max_chars = tool_result_limit.set_max_chars(payload.max_chars)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid tool output limit."),
+            event = "settings.update_tool_result_limit_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.tool_result_limit_updated subject=%s max_chars=%s", current_subject, max_chars
+    )
+    return _tool_result_limit_response()
 
 
 @_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)
@@ -1294,6 +1655,293 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+@_shared_settings_router.get("/developer-mode", response_model = DeveloperModeResponse)
+def get_developer_mode(
+    current_subject: str = Depends(get_current_subject),
+) -> DeveloperModeResponse:
+    return _developer_mode_response()
+
+
+@_owner_settings_router.put("/developer-mode", response_model = DeveloperModeResponse)
+def update_developer_mode(
+    payload: DeveloperModePayload, current_subject: str = Depends(get_current_subject)
+) -> DeveloperModeResponse:
+    try:
+        enabled = video_cpu_settings.set_video_cpu_setting(payload.video_cpu)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Developer mode setting."),
+            event = "settings.update_developer_mode_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.developer_mode_updated subject=%s video_cpu=%s", current_subject, enabled)
+    return _developer_mode_response()
+
+
+def _decision_description(checkpoint, mlx: bool) -> str:
+    from core.systemone import catalog
+    if (
+        mlx
+        and catalog.MLX_COMPANIONS.get(checkpoint.name)
+        and catalog.CHECKPOINTS.get(checkpoint.name) == checkpoint
+    ):
+        return checkpoint.description.replace("llama.cpp only", "llama.cpp or MLX")
+    return checkpoint.description
+
+
+def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
+    from core.systemone import laya_runtime
+
+    only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
+    if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        only = {} if only_mlx else {"llama_cpp_only": True}
+        # Selectable under a PyTorch runtime: the runtime row then says to switch it.
+        try:
+            laya_runtime.select(checkpoint, preference = "auto")
+        except laya_runtime.Unavailable as exc:
+            return {**only, "available": False, "unavailable_reason": exc.message}
+        return only
+    if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
+        return {}
+    # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
+    if laya_runtime.native_ready(checkpoint) or laya_runtime.mlx_ready(checkpoint):
+        return {}
+    return {"available": False, "unavailable_reason": reason}
+
+
+def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from pathlib import Path
+
+    from core.systemone import catalog, laya_runtime
+    from routes.systemone import MCP_PATH
+
+    clef_reason = catalog.clef_unsupported_reason(wait = False)
+    enabled = systemone_settings.get_enabled()
+    runtime = laya_runtime.status()
+    configured = catalog.default_checkpoint()
+    model = configured.name
+    if is_owner_context():
+        fine_tunes = catalog.fine_tunes()
+    else:
+        # Other accounts see only the configured model, never the owner's other output folders.
+        fine_tunes = [configured] if catalog.is_fine_tune_name(configured.name) else []
+        if runtime["loaded_model"] != model:
+            runtime["loaded_model"] = runtime["device"] = None
+        if runtime["loading_model"] != model:
+            runtime["loading_model"] = None
+    error = runtime["error"]
+    if runtime["error_model"] not in (None, model):
+        error = None
+    port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
+    # First: it waits for device detection, which the MLX answers below read without waiting.
+    gpu_available = systemone_settings.gpu_available()
+    effective, fallback = laya_runtime.effective_backend(configured)
+    mlx_available = laya_runtime.mlx_available()
+    if runtime["loaded_model"] == model and runtime["fallback_reason"]:
+        fallback = runtime["fallback_reason"]
+    return SystemOneSettingsResponse(
+        enabled = enabled,
+        enabled_locked = systemone_settings.enabled_locked(),
+        model = model,
+        model_locked = systemone_settings.model_locked(),
+        # llama.cpp and MLX default to the GPU when no device is stored; report where they actually run.
+        device = systemone_settings.clef_device()
+        if effective in ("llama.cpp", "mlx")
+        else systemone_settings.get_device(),
+        device_locked = systemone_settings.device_locked(),
+        gpu_available = gpu_available,
+        models = [
+            SystemOneModelOption(
+                name = c.name,
+                description = _decision_description(c, mlx_available),
+                download_bytes = c.download_bytes,
+                label = c.label,
+                **_clef_availability(c, clef_reason),
+            )
+            for c in catalog.CHECKPOINTS.values()
+        ]
+        + [
+            SystemOneModelOption(
+                name = c.name,
+                description = c.description,
+                download_bytes = 0,
+                kind = "fine_tune",
+                label = Path(c.source).name,
+                **_clef_availability(c, clef_reason),
+            )
+            for c in fine_tunes
+        ],
+        loaded_model = runtime["loaded_model"],
+        loaded_device = runtime["device"],
+        loading_model = runtime["loading_model"],
+        installing = runtime["installing"],
+        error = error,
+        mcp_url = f"http://127.0.0.1:{port}{MCP_PATH}/",
+        backend = systemone_settings.get_backend(),
+        mlx_available = mlx_available,
+        native_ctx = systemone_settings.get_native_ctx(),
+        effective_backend = effective,
+        loaded_backend = runtime["loaded_backend"] if runtime["loaded_model"] else None,
+        fallback_reason = fallback if effective == "pytorch" or effective is None else None,
+        input_modalities = laya_runtime.input_modalities(configured),
+        layout = getattr(configured, "layout", None),
+    )
+
+
+_SYSTEMONE_SETTINGS_LOCK = threading.Lock()
+
+
+def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
+    try:
+        return systemone_settings.validate(
+            **payload.model_dump(
+                include = {"enabled", "model", "device", "backend", "native_ctx"},
+                exclude_none = True,
+            )
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid Decision API setting."),
+            event = "settings.update_systemone_failed",
+            log = logger,
+        ) from exc
+
+
+def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    changed = (
+        payload.expected_enabled is not None
+        and systemone_settings.get_enabled() != payload.expected_enabled
+    ) or (
+        payload.expected_model is not None
+        and catalog.default_checkpoint().name != payload.expected_model
+    )
+    if changed:
+        raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")
+
+
+# Not the shared router, which reads as the owner for everyone: this answer depends on who asks.
+@_account_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
+def get_systemone_settings(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> SystemOneSettingsResponse:
+    return _systemone_response(request)
+
+
+async def _refresh_decision_models(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+    if catalog.parse_connection(payload.model):
+        await refresh_listed_decision_models()
+
+
+@_owner_settings_router.put("/systemone", response_model = SystemOneSettingsResponse)
+async def update_systemone_settings(
+    payload: SystemOneSettingsPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneSettingsResponse:
+    await _refresh_decision_models(payload)
+    return await asyncio.to_thread(_save_systemone_settings, payload, request)
+
+
+def _save_systemone_settings(
+    payload: SystemOneSettingsPayload, request: Request
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+    with _SYSTEMONE_SETTINGS_LOCK:
+        _check_systemone_expectations(payload)
+        values = _systemone_values(payload)
+        if values:
+            # The resident model was built from the old settings; drop it so the next request uses the new ones.
+            try:
+                laya_runtime.unload()
+            except laya_runtime.Unavailable as exc:
+                raise HTTPException(status_code = 409, detail = exc.message) from None
+            systemone_settings.save(values)
+    return _systemone_response(request)
+
+
+@_owner_settings_router.post("/systemone/validate", status_code = 204)
+async def validate_systemone_settings(
+    payload: SystemOneSettingsPayload, current_subject: str = Depends(get_current_subject)
+) -> None:
+    await _refresh_decision_models(payload)
+    await asyncio.to_thread(_validate_systemone_settings, payload)
+
+
+def _validate_systemone_settings(payload: SystemOneSettingsPayload) -> None:
+    from core.systemone import laya_runtime
+    with _SYSTEMONE_SETTINGS_LOCK:
+        _check_systemone_expectations(payload)
+        values = _systemone_values(payload)
+        if values:
+            try:
+                laya_runtime.ensure_can_unload()
+            except laya_runtime.Unavailable as exc:
+                raise HTTPException(status_code = 409, detail = exc.message) from None
+
+
+@_owner_settings_router.get(
+    "/systemone/connections", response_model = list[SystemOneConnectionOption]
+)
+async def list_systemone_connections(
+    current_subject: str = Depends(get_current_subject),
+) -> list[SystemOneConnectionOption]:
+    from core.systemone import catalog
+    from routes.systemone import refresh_listed_decision_models
+
+    await refresh_listed_decision_models()
+    return [
+        SystemOneConnectionOption(
+            name = catalog.Connection(row["id"], model).name,
+            provider_id = row["id"],
+            provider = row["display_name"],
+            model = model,
+        )
+        for row, models in await asyncio.to_thread(catalog.decision_connections)
+        for model in models
+    ]
+
+
+@_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
+def resolve_systemone_download(
+    model: Optional[str] = None,
+    backend: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+) -> SystemOneDownloadPlan:
+    from core.systemone import catalog, laya_runtime
+
+    checkpoint = (
+        catalog.default_checkpoint()
+        if model is None
+        else catalog.parse_connection(model) or catalog.resolve(model)
+    )
+    if checkpoint is None:
+        raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
+    if isinstance(checkpoint, catalog.Connection):
+        return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
+    if backend is not None and backend not in systemone_settings.BACKENDS:
+        raise HTTPException(status_code = 400, detail = "Unknown Decision API runtime.")
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint, preference = backend))
+
+
+@_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
+def unload_systemone_model(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> SystemOneSettingsResponse:
+    from core.systemone import laya_runtime
+    try:
+        laya_runtime.unload()
+    except laya_runtime.Unavailable as exc:
+        raise HTTPException(status_code = 409, detail = exc.message) from None
+    return _systemone_response(request)
+
+
 @_shared_settings_router.get("/download-transport", response_model = DownloadTransportResponse)
 def get_download_transport(
     current_subject: str = Depends(get_current_subject),
@@ -1316,6 +1964,62 @@ def update_download_transport(
             log = logger,
         ) from exc
     return _download_transport_response(mode)
+
+
+def _hub_settings_response(settings: HubSettings) -> HubSettingsResponse:
+    return HubSettingsResponse(
+        hf_endpoint = settings.hf_endpoint,
+        datasets_server_follows_endpoint = settings.datasets_server_follows_endpoint,
+        source = settings.source,
+        active_source = active_source(),
+    )
+
+
+# Owner only: the endpoint can name a private address that other accounts' clients must not learn.
+@_owner_settings_router.get("/hub", response_model = HubSettingsResponse)
+def get_hub(current_subject: str = Depends(get_current_subject)) -> HubSettingsResponse:
+    return _hub_settings_response(get_hub_settings())
+
+
+@_owner_settings_router.put("/hub", response_model = HubSettingsResponse)
+def update_hub(
+    payload: HubSettingsPayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSettingsResponse:
+    # The endpoint receives the installation's Hugging Face token, like the token routes above.
+    require_ui_session(via_api_key)
+    try:
+        settings = set_hub_settings(payload.hf_endpoint, payload.datasets_server_follows_endpoint)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Hugging Face endpoint."),
+            event = "settings.update_hub_failed",
+            log = logger,
+        ) from exc
+    return _hub_settings_response(settings)
+
+
+@_owner_settings_router.put("/hub/source", response_model = HubSettingsResponse)
+def update_hub_source(
+    payload: HubSourcePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSettingsResponse:
+    require_ui_session(via_api_key)
+    return _hub_settings_response(set_hub_source(payload.source))
+
+
+@_owner_settings_router.post("/hub/source-notice", response_model = HubSourceNoticeResponse)
+def claim_hub_source_notice(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> HubSourceNoticeResponse:
+    """Keep the automatic ModelScope default; granted once, to the UI that tells the owner."""
+    require_ui_session(via_api_key)
+    return HubSourceNoticeResponse(granted = claim_automatic_source())
 
 
 @_owner_settings_router.post("/xet-notice/reserve", response_model = XetNoticeResponse)
@@ -1551,6 +2255,78 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
     diverting: bool = False
 
 
+PINNED_MODELS_SETTING_KEY = "model_picker_pinned"
+PINNED_CONNECTED_MODELS_SETTING_KEY = "model_picker_pinned_connected"
+# Embedding models pinned to the RAG menu.
+PINNED_EMBEDDING_MODELS_SETTING_KEY = "rag_embedding_pinned"
+MAX_PINNED_MODELS = 512
+# Room for a "::quant" suffix or an "external::<connection>::" prefix on top of a model id.
+_MAX_PIN_KEY_LEN = MAX_MODEL_OVERRIDE_KEY_LEN + 512
+_PinKey = Annotated[str, StringConstraints(min_length = 1, max_length = _MAX_PIN_KEY_LEN)]
+
+
+class PinnedModelsPayload(BaseModel):
+    """Either list may be omitted; only what is sent is replaced."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    pinned: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    connected: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    embedding: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+
+
+class PinnedModelsResponse(BaseModel):
+    # None = never stored, so the browser seeds it.
+    pinned: Optional[list[str]] = None
+    connected: Optional[list[str]] = None
+    embedding: Optional[list[str]] = None
+
+
+def _pinned_models_response() -> PinnedModelsResponse:
+    from storage.studio_db import get_app_settings
+
+    stored = get_app_settings(
+        [
+            PINNED_MODELS_SETTING_KEY,
+            PINNED_CONNECTED_MODELS_SETTING_KEY,
+            PINNED_EMBEDDING_MODELS_SETTING_KEY,
+        ]
+    )
+
+    def _ids(value: Any) -> Optional[list[str]]:
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
+
+    return PinnedModelsResponse(
+        pinned = _ids(stored.get(PINNED_MODELS_SETTING_KEY)),
+        connected = _ids(stored.get(PINNED_CONNECTED_MODELS_SETTING_KEY)),
+        embedding = _ids(stored.get(PINNED_EMBEDDING_MODELS_SETTING_KEY)),
+    )
+
+
+@_account_settings_router.get("/pinned-models", response_model = PinnedModelsResponse)
+def get_pinned_models(current_subject: str = Depends(get_current_subject)) -> PinnedModelsResponse:
+    """Per-account picker pins: an account switch clears the browser copy."""
+    return _pinned_models_response()
+
+
+@_account_settings_router.put("/pinned-models", response_model = PinnedModelsResponse)
+def update_pinned_models(
+    payload: PinnedModelsPayload, current_subject: str = Depends(get_current_subject)
+) -> PinnedModelsResponse:
+    from storage.studio_db import upsert_app_settings
+
+    updates: dict[str, Any] = {}
+    if payload.pinned is not None:
+        updates[PINNED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.pinned))
+    if payload.connected is not None:
+        updates[PINNED_CONNECTED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.connected))
+    if payload.embedding is not None:
+        updates[PINNED_EMBEDDING_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.embedding))
+    if updates:
+        upsert_app_settings(updates, read_back = False)
+    return _pinned_models_response()
+
+
 def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
     from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
     return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
@@ -1670,9 +2446,13 @@ def update_openai_auto_switch(
             log = logger,
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
-    if not keep_kv or not idle_unload_is_configured():
-        from core.inference.llama_keepwarm import purge_kv_resume
+    from core.inference.llama_keepwarm import purge_kv_resume
+
+    if not keep_kv:
         purge_kv_resume()
+    elif not idle_unload_is_configured():
+        # Only the chat TTL's own stash; one kept across a media swap survives a TTL save.
+        purge_kv_resume(origin = "idle")
     return OpenAIAutoSwitchResponse(
         enabled = enabled,
         auto_unload_idle_seconds = idle_seconds,
@@ -1686,7 +2466,57 @@ def update_openai_auto_switch(
     )
 
 
-@_owner_settings_router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+class ModelAliasEntry(BaseModel):
+    name: str
+    model: str
+
+
+class ModelAliasesPayload(BaseModel):
+    aliases: list[ModelAliasEntry] = Field(default_factory = list)
+
+
+class ModelAliasesResponse(BaseModel):
+    aliases: list[ModelAliasEntry]
+
+
+@_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
+def get_model_aliases_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> ModelAliasesResponse:
+    from utils.model_aliases import get_model_aliases
+    return ModelAliasesResponse(aliases = get_model_aliases())
+
+
+@_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
+async def update_model_aliases_setting(
+    payload: ModelAliasesPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelAliasesResponse:
+    from core.systemone import catalog as decision_catalog
+    from routes.inference import _openai_catalog_objects
+    from utils.model_aliases import set_model_aliases
+
+    # Decision ids (clef, laya-multilingual) are reserved even while that API is off.
+    objects = await _openai_catalog_objects()
+    model_ids = [o["id"] for o in objects if isinstance(o.get("id"), str)]
+    model_ids += list(decision_catalog.CHECKPOINTS)
+    try:
+        aliases = await asyncio.to_thread(
+            set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid model alias."),
+            event = "settings.update_model_aliases_failed",
+            log = logger,
+        ) from exc
+    return ModelAliasesResponse(aliases = aliases)
+
+
+@_account_settings_router.get(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 def get_openai_auto_switch_overrides(
     model_id: Optional[str] = None,
     alias_id: Optional[str] = None,
@@ -1860,7 +2690,9 @@ def _serialized_override_write(func):
     return wrapper
 
 
-@_owner_settings_router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.put(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 @_serialized_override_write
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
@@ -1890,6 +2722,7 @@ def update_openai_auto_switch_override(
                 "fill_absent_fields",
                 "mirrors_server_tuning",
                 "mirrors_reasoning_budget",
+                "mirrors_spec_draft_model",
             },
             exclude_none = True,
         )
@@ -1899,10 +2732,13 @@ def update_openai_auto_switch_override(
             is_removal = (
                 not payload.tensor_parallel
                 and not payload.disable_vision
+                and not payload.mlx_int8_prefill
+                and payload.load_in_4bit
                 and not {
                     key: value
                     for key, value in saved_fields.items()
-                    if key not in ("tensor_parallel", "disable_vision")
+                    if key
+                    not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill", "load_in_4bit")
                 }
             )
         if requested_extra_args is None and not is_removal:
@@ -1964,10 +2800,16 @@ def update_openai_auto_switch_override(
         # legacy contract is a payload carrying only model_id, which leaves remove None.
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
         _reasoning_fields = ("reasoning_budget", "reasoning_budget_message")
-        _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields + _reasoning_fields}
+        _drafter_fields = ("spec_draft_model",)
+        _kept_tuning = {
+            name: getattr(payload, name)
+            for name in _tuning_fields + _reasoning_fields + _drafter_fields
+        }
         # Each group is carried only for a client that does not mirror it.
-        _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
-            () if payload.mirrors_reasoning_budget else _reasoning_fields
+        _carried_fields = (
+            (() if payload.mirrors_server_tuning else _tuning_fields)
+            + (() if payload.mirrors_reasoning_budget else _reasoning_fields)
+            + (() if payload.mirrors_spec_draft_model else _drafter_fields)
         )
         if _carried_fields and not is_removal:
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
@@ -2072,16 +2914,43 @@ def update_openai_auto_switch_override(
                         max_seq_length = explicit_ctx
                     if custom_context_length is not None:
                         custom_context_length = explicit_ctx
+            tensor_split = payload.tensor_split
+            if "tensor_split" not in fields_set:
+                previous = get_model_override(target_id)
+                if previous.get("gpu_ids") == payload.gpu_ids and previous.get(
+                    "gpu_index_kind", "physical"
+                ) == (payload.gpu_index_kind or "physical"):
+                    tensor_split = previous.get("tensor_split")
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
                 keep_empty_extra_args = keep_empty,
+                engine_parallelism = payload.engine_parallelism
+                if payload.engine_parallelism is not None or is_removal
+                else get_model_override(target_id).get("engine_parallelism"),
+                engine_precision = payload.engine_precision
+                if payload.engine_precision is not None or is_removal
+                else get_model_override(target_id).get("engine_precision"),
+                engine = payload.engine
+                if payload.engine is not None or is_removal
+                else get_model_override(target_id).get("engine"),
+                **{
+                    field: getattr(payload, field)
+                    if field in fields_set or is_removal
+                    else get_model_override(target_id).get(field)
+                    for field in (
+                        "engine_kv_cache_dtype",
+                        "engine_seed",
+                        "engine_gpu_memory_utilization",
+                    )
+                },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
-                mlx_kv_bits = payload.mlx_kv_bits,
+                mlx_kv_quant = payload.mlx_kv_quant,
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
+                spec_draft_model = _kept_tuning["spec_draft_model"],
                 n_parallel = payload.n_parallel,
                 reasoning_budget = (
                     None
@@ -2101,11 +2970,14 @@ def update_openai_auto_switch_override(
                 cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
+                mlx_int8_prefill = payload.mlx_int8_prefill,
+                load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,
                 n_cpu_moe = payload.n_cpu_moe,
                 gpu_ids = payload.gpu_ids,
+                tensor_split = tensor_split,
                 gpu_index_kind = payload.gpu_index_kind,
                 fill_absent_fields = payload.fill_absent_fields,
             )
@@ -2146,10 +3018,26 @@ class EmbeddingModelResponse(BaseModel):
     loaded: bool = False
     # Whether ANY embedder is resident.
     backend_loaded: bool = False
+    embedding_device: Literal["auto", "cpu", "gpu"] = "auto"
+    # RAG_EMBED_DEVICE names a device, so Settings shows it read-only.
+    embedding_device_locked: bool = False
+
+
+class EmbeddingDevicePayload(BaseModel):
+    device: Literal["auto", "cpu", "gpu"]
+
+
+def _embedding_device_state() -> tuple[str, bool]:
+    from core.rag import config as rag_config
+    try:
+        return rag_config.embed_device_preference(), rag_config.embed_device_locked()
+    except Exception:  # noqa: BLE001 - probe must never block reading settings
+        return "auto", False
 
 
 def _embedding_model_response() -> EmbeddingModelResponse:
     model = get_rag_embedding_model()
+    device, device_locked = _embedding_device_state()
     return EmbeddingModelResponse(
         embedding_model = model,
         embedding_gguf_repo = effective_gguf_repo_for_embedding_model(model),
@@ -2158,6 +3046,8 @@ def _embedding_model_response() -> EmbeddingModelResponse:
         is_custom = get_stored_embedding_model() is not None,
         loaded = _embedder_is_loaded(model),
         backend_loaded = _any_embedder_is_loaded(),
+        embedding_device = device,
+        embedding_device_locked = device_locked,
     )
 
 
@@ -2207,7 +3097,7 @@ def _llama_runtime_available() -> bool:
         return True
 
 
-def _llama_backend_active(model: str | None = None) -> bool:
+def _llama_backend_active(model: str | None = None, token: HfTokenArg = None) -> bool:
     """Whether llama serves the active model, or would serve ``model`` if supplied. Delegates to the embeddings
     module so a runtime fallback from sentence-transformers to llama-server is honored: in that state the
     process loads only inert GGUF, so the ST pickle gate below must not hard-block a repo whose GGUF
@@ -2215,7 +3105,7 @@ def _llama_backend_active(model: str | None = None) -> bool:
     from core.rag import embeddings
     try:
         if model is not None:
-            return embeddings.resolved_backend_for_model(model) == "llama-server"
+            return embeddings.resolved_backend_for_model(model, token) == "llama-server"
         return embeddings.active_backend_is_llama()
     except Exception:  # noqa: BLE001 - backend probe must never block saving
         return False
@@ -2285,11 +3175,18 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
 
 
 def _no_embedding_weights_error(candidates: list[str]) -> str:
-    """Error after the caller has already exhausted GGUF and ST resolution."""
     checked = " or ".join(repr(c) for c in candidates)
     return (
         f"No GGUF weights found in {checked}, and no safetensors to fall back to. "
         "Only the model's own publisher is used as a source."
+    )
+
+
+def _st_cannot_load_error(model: str, candidates: list[str]) -> str:
+    checked = " or ".join(repr(c) for c in candidates)
+    return (
+        f"No GGUF weights found in {checked}, and {model!r} needs a newer sentence-transformers or "
+        "transformers than this install has."
     )
 
 
@@ -2303,8 +3200,7 @@ def get_embedding_model(
 class EmbeddingModelResolveResponse(BaseModel):
     embedding_model: str
     backend: Literal["llama", "sentence-transformers"]
-    # Repo the picker hands the download manager, and the files to take from it. Split GGUF plans contain
-    # every shard in the selected family; both None when nothing needs fetching or when ``error`` is set.
+    # download source; split plans include every shard; both fields are None on no fetch or error
     download_repo: Optional[str] = None
     files: Optional[list[str]] = None
     cached: bool = False
@@ -2338,7 +3234,7 @@ _EMBEDDING_RESOLVE_DEADLINE: ContextVar[float | None] = ContextVar(
 
 
 def _call_with_embedding_resolve_budget(fn, *, name: str):
-    """Run one remote probe inside the resolution's single time budget."""
+    """run one remote probe within the shared resolution deadline."""
     deadline = _EMBEDDING_RESOLVE_DEADLINE.get()
     timeout = (
         _GGUF_LIST_DEADLINE_S
@@ -2353,15 +3249,18 @@ def _call_with_embedding_resolve_budget(fn, *, name: str):
 
 
 def _with_embedding_resolve_budget(fn):
-    """Give one GET/PUT resolution a deadline shared by every Hub fallback."""
+    """share one deadline and ST proof scope so timeout skips cannot erase earlier results."""
 
     @functools.wraps(fn)
     def _wrapped(*args, **kwargs):
         if _EMBEDDING_RESOLVE_DEADLINE.get() is not None:
             return fn(*args, **kwargs)
+        from core.rag.embeddings import st_load_proof_scope
+
         marker = _EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() + _GGUF_LIST_DEADLINE_S)
         try:
-            return fn(*args, **kwargs)
+            with st_load_proof_scope():
+                return fn(*args, **kwargs)
         finally:
             _EMBEDDING_RESOLVE_DEADLINE.reset(marker)
 
@@ -2369,7 +3268,7 @@ def _with_embedding_resolve_budget(fn):
 
 
 def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
-    """List a Hub repo without letting a blackholed route pin Settings forever."""
+    """bound Hub listing time so a blackholed route cannot pin Settings."""
     from huggingface_hub import list_repo_files
     return _call_with_embedding_resolve_budget(
         lambda: list_repo_files(repo, token = hf_token),
@@ -2618,7 +3517,6 @@ def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str
 
 
 def _sentence_transformers_fallback_allowed(model: str) -> bool:
-    """Whether a newly selected model can actually be served by ST in this process."""
     try:
         from core.rag import embeddings
         return embeddings.sentence_transformers_fallback_allowed(model)
@@ -2626,8 +3524,25 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
         return False
 
 
+def _sentence_transformers_can_load(model: str, token: HfTokenArg = None) -> bool:
+    try:
+        from core.rag import embeddings
+    except Exception:  # noqa: BLE001 - unimportable embedder: no proof either way
+        return True
+    # check known failures before the deadline so a timeout cannot erase earlier proof
+    if embeddings.sentence_transformers_known_unloadable(model):
+        return False
+    try:
+        return _call_with_embedding_resolve_budget(
+            lambda: embeddings.sentence_transformers_can_load(model, token),
+            name = "embed-settings-st-load-check",
+        )
+    except Exception:  # noqa: BLE001 - spent budget: no proof either way
+        return True
+
+
 def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
-    """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the hub does not say."""
+    """return total file bytes for confirmation, or None when Hub omits the sizes."""
     try:
         from huggingface_hub import model_info
 
@@ -2693,7 +3608,7 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
 
 @_with_embedding_resolve_budget
 def _resolve_embedding_model_plan(
-    resolved: str, token: Optional[str]
+    resolved: str, token: HfTokenArg
 ) -> EmbeddingModelResolveResponse:
     """Server-owned artifact/backend plan shared by GET and PUT.
 
@@ -2728,7 +3643,7 @@ def _resolve_embedding_model_plan(
     # resolver's deadline before a miss. It was also the wrong question, per the note above.
 
     # Resolve for the model being selected.
-    on_llama = _llama_backend_active(resolved)
+    on_llama = _llama_backend_active(resolved, token)
     backend: Literal["llama", "sentence-transformers"] = (
         "llama" if on_llama else "sentence-transformers"
     )
@@ -2824,8 +3739,7 @@ def _resolve_embedding_model_plan(
         )
     plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(resolved, token)
     if plan is None:
-        # The loader's offline fallback accepts any complete cached quant from
-        # any candidate only after its bounded online listing fails.
+        # the offline fallback accepts any complete cached quant after bounded online listing fails
         cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
         if cached_repo and not _authorized(cached_repo):
             cached_repo = None
@@ -2836,40 +3750,34 @@ def _resolve_embedding_model_plan(
                 download_repo = cached_repo,
                 cached = True,
             )
-        # No GGUF from this publisher: run it on its own safetensors only when
-        # configuration/runtime policy can actually select ST for this model.
-        st_plan = (
-            _safetensors_plan(resolved, token)
-            if _sentence_transformers_fallback_allowed(resolved)
-            else None
-        )
-        # The GGUF branches above are gated and this one was not. The plan answers with the
-        # repo the snapshot is FILED under, which for a slashless alias is not the name the
-        # caller typed, and the response then reports it cached: that is how a denied caller
-        # discovers the operator's private weights and force-saves them as the embedder.
-        # Reading our own disk to find the repo is fine; naming it back is what is gated.
+        # use publisher safetensors only when this process can select ST
+        st_allowed = _sentence_transformers_fallback_allowed(resolved)
+        st_unloadable = st_allowed and not _sentence_transformers_can_load(resolved, token)
+        st_plan = _safetensors_plan(resolved, token) if st_allowed and not st_unloadable else None
+        # authorize the plan's repo to avoid exposing a cached private repo through an alias
         if st_plan is not None and not _authorized(st_plan[0]):
             st_plan = None
         if st_plan is None:
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
                 backend = backend,
-                error = _no_embedding_weights_error(candidates),
+                error = (
+                    _st_cannot_load_error(resolved, candidates)
+                    if st_unloadable
+                    else _no_embedding_weights_error(candidates)
+                ),
             )
         st_repo, _st_files = st_plan
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = "sentence-transformers",
             download_repo = st_repo,
-            # Same alias-aware predicate, asked about the repo the plan named
-            # rather than the alias the user typed, which the gate above authorized.
+            # check the authorized plan repo because slashless aliases are cached under sentence-transformers/
             cached = _cached_snapshot_has_st_weights(st_repo),
             size_bytes = _hf_snapshot_size(st_repo, token),
         )
     repo, files = plan
-    # A gated repo can publish its filenames, so a plan coming back is not authorization to
-    # report the operator's copy of it. The repo the plan names need not be the one the
-    # caller asked about, so it is authorized in its own right like every other candidate.
+    # authorize the resolved repo before reporting whether the operator has its exact files cached
     if _authorized(repo) and _cached_embedding_gguf_files(repo, files):
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
@@ -3106,6 +4014,29 @@ def unload_embedding_model(
     return _embedding_model_response()
 
 
+@_owner_settings_router.put("/embedding-model/device", response_model = EmbeddingModelResponse)
+def update_embedding_device(
+    payload: EmbeddingDevicePayload, current_subject: str = Depends(get_current_subject)
+) -> EmbeddingModelResponse:
+    """Run the embedder on the CPU, the GPU, or the hardware default, for every embedding model. The vectors
+    keep their embedding space, so indexed documents stay searchable. A failed GPU start falls back to CPU."""
+    from core.rag import config as rag_config
+
+    if rag_config.embed_device_locked():
+        raise HTTPException(
+            status_code = 409, detail = "The embedding device is set by RAG_EMBED_DEVICE."
+        )
+    if set_embedding_device(payload.device):
+        from core.rag import embeddings
+
+        # The resident embedder stays on its old device until rebuilt; the next index or search rebuilds it.
+        embeddings.release_backend()
+    logger.info(
+        "settings.embedding_device_updated subject=%s device=%s", current_subject, payload.device
+    )
+    return _embedding_model_response()
+
+
 @_owner_settings_router.delete("/embedding-model", response_model = EmbeddingModelResponse)
 def reset_embedding_model(
     current_subject: str = Depends(get_current_subject),
@@ -3139,6 +4070,17 @@ class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
     tools: bool
     exposure: Optional[Literal["colab", "public_url", "private_lan", "network"]] = None
+
+
+class McpAccessPayload(BaseModel):
+    enabled: StrictBool
+
+
+class McpAccessResponse(BaseModel):
+    enabled: bool
+    forced_by_env: bool
+    # Display only: where an agent should point. Agents connect to whatever address reaches this server.
+    url: str
 
 
 class PreviewSharingPayload(BaseModel):
@@ -3271,6 +4213,22 @@ class LanAccessPortPayload(BaseModel):
     port: Optional[StrictInt] = Field(ge = 1, le = 65535)
 
 
+class LanAccessAddressesPayload(BaseModel):
+    # required, so a body that forgets the field cannot silently reset the choice to Automatic
+    addresses: Optional[list[StrictStr]]
+
+    @field_validator("addresses")
+    @classmethod
+    def _bindable(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        normalized = normalize_lan_access_addresses(value)
+        return list(normalized) if normalized is not None else None
+
+
+class LanAccessAddress(BaseModel):
+    address: str
+    public: bool = False
+
+
 class LanAccessResponse(BaseModel):
     state: Literal["off", "online", "error"]
     urls: list[str] = []
@@ -3280,6 +4238,9 @@ class LanAccessResponse(BaseModel):
 
     configured_port: Optional[int] = None
     active_port: Optional[int] = None
+    configured_addresses: Optional[list[str]] = None
+    available_addresses: list[LanAccessAddress] = []
+    configured_public_addresses: list[str] = []
     managed_by: Optional[Literal["launch", "settings"]] = None
     can_start: bool
     can_stop: bool
@@ -3366,6 +4327,25 @@ def update_lan_access_port(
         "settings.lan_access_port_updated subject=%s port=%s",
         current_subject,
         payload.port if payload.port is not None else "automatic",
+    )
+    return response
+
+
+@_owner_settings_router.put("/lan-access/addresses", response_model = LanAccessResponse)
+def update_lan_access_addresses(
+    request: Request,
+    payload: LanAccessAddressesPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**save_lan_access_addresses(request.app, payload.addresses))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info(
+        "settings.lan_access_addresses_updated subject=%s addresses=%s",
+        current_subject,
+        ",".join(payload.addresses) if payload.addresses is not None else "automatic",
     )
     return response
 
@@ -3519,6 +4499,46 @@ def update_keyless_api_access(
     return _keyless_api_access_response(request)
 
 
+def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    """MCP admits API keys, so a key (or a keyless caller) must not be the thing that opens it."""
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403, detail = "Agent access (MCP) can only be changed from the Unsloth UI."
+        )
+
+
+def _mcp_access_response(request: Request) -> McpAccessResponse:
+    return McpAccessResponse(
+        enabled = is_mcp_enabled(),
+        forced_by_env = forced_by_env(),
+        url = str(request.base_url).rstrip("/") + "/mcp/",
+    )
+
+
+@_owner_settings_router.get("/mcp-access", response_model = McpAccessResponse)
+def get_mcp_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_mcp),
+) -> McpAccessResponse:
+    return _mcp_access_response(request)
+
+
+@_owner_settings_router.put("/mcp-access", response_model = McpAccessResponse)
+def update_mcp_access(
+    request: Request,
+    payload: McpAccessPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_mcp),
+) -> McpAccessResponse:
+    """Turn agent access over MCP on or off for the whole installation."""
+    if forced_by_env():
+        raise HTTPException(status_code = 409, detail = "Set by UNSLOTH_STUDIO_ENABLE_MCP.")
+    enabled = set_mcp_enabled(payload.enabled)
+    logger.info("settings.mcp_access_updated subject=%s enabled=%s", current_subject, enabled)
+    return _mcp_access_response(request)
+
+
 def _is_bundled_avatar_url(value: str) -> bool:
     parsed = urlsplit(value)
     if parsed.scheme or parsed.netloc:
@@ -3633,8 +4653,9 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,
     "projects": True,
+    "library": True,
     "images": True,
-    "video": True,
+    "video": False,
     "audio": False,
     "train": True,
     "recipes": False,
@@ -3674,6 +4695,7 @@ def _default_sidebar_menu() -> "list[PersonalizationSidebarMenuItem]":
 SidebarNavItemId = Literal[
     "hub",
     "projects",
+    "library",
     "images",
     "video",
     "audio",
@@ -3728,6 +4750,7 @@ class PersonalizationCustomization(BaseModel):
     uiFontSize: Optional[int] = Field(None, ge = 12, le = 20)
     codeFontSize: Optional[int] = Field(None, ge = 10, le = 20)
     chatWidth: Literal["standard", "wide", "full"] = "standard"
+    sentAttachments: Literal["auto", "list", "chips"] = "auto"
     contrast: int = Field(50, ge = 0, le = 100)
     pointerCursors: bool = False
     reduceMotion: Literal["system", "on", "off"] = "system"
@@ -3788,11 +4811,40 @@ class PersonalizationAppearance(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
     theme: Literal["light", "dark", "system"] = "system"
-    palette: Literal["standard", "classic", "minimal"] = "standard"
+    palette: Literal[
+        "standard",
+        "classic",
+        "minimal",
+        "blueberry",
+        "butterfly-pea",
+        "cherry",
+        "cinnamon",
+        "cotton-candy",
+        "dragon-fruit",
+        "earl-grey",
+        "espresso",
+        "honey",
+        "licorice",
+        "macaron",
+        "matcha",
+        "mint",
+        "neon-cyberpunk",
+        "oat-milk",
+        "peach",
+        "pina-paraiso",
+        "plum",
+        "tangerine",
+        "taro",
+        "wasabi",
+        "yuzu",
+    ] = "standard"
     language: Optional[str] = Field(None, max_length = 20)
     customization: PersonalizationCustomization = Field(
         default_factory = PersonalizationCustomization
     )
+
+
+_PALETTE_IDS = frozenset(get_args(PersonalizationAppearance.model_fields["palette"].annotation))
 
 
 class PersonalizationPayload(BaseModel):
@@ -3809,6 +4861,7 @@ class PersonalizationResponse(PersonalizationPayload):
     # overrides instead of treating a server-filled default as an explicit value.
     customizationSaved: bool = False
     chatWidthSaved: bool = False
+    sentAttachmentsSaved: bool = False
     paletteSaved: bool = False
     greetingSlothSaved: bool = False
 
@@ -3817,7 +4870,7 @@ class PersonalizationResponse(PersonalizationPayload):
 def get_personalization_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> PersonalizationResponse:
-    stored = get_personalization()
+    stored = drop_unknown_palette(get_personalization(), _PALETTE_IDS)
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
     appearance = stored.get("appearance") if isinstance(stored, dict) else None
@@ -3825,6 +4878,9 @@ def get_personalization_settings(
     profile = stored.get("profile") if isinstance(stored, dict) else None
     response.customizationSaved = isinstance(appearance, dict) and "customization" in appearance
     response.chatWidthSaved = isinstance(customization, dict) and "chatWidth" in customization
+    response.sentAttachmentsSaved = (
+        isinstance(customization, dict) and "sentAttachments" in customization
+    )
     response.paletteSaved = isinstance(appearance, dict) and "palette" in appearance
     response.greetingSlothSaved = isinstance(profile, dict) and "showGreetingSloth" in profile
     return response
@@ -3862,8 +4918,10 @@ def update_personalization_settings(
             log = logger,
         ) from exc
     # Return the stored record, not the defaults-filled request, so the response
-    # matches storage (and the next GET) for fields the client omitted.
-    return PersonalizationPayload.model_validate(merged)
+    # matches storage (and the next GET) for fields the client omitted. An unknown
+    # stored palette is filtered like GET does; clients send a palette with every
+    # save, so the next save replaces it.
+    return PersonalizationPayload.model_validate(drop_unknown_palette(merged, _PALETTE_IDS))
 
 
 # Backs Settings > Logs: the session log always existed, but its path was only printed to a console
@@ -3881,6 +4939,7 @@ class DebugLogSourceModel(BaseModel):
 class DebugLogSourcesResponse(BaseModel):
     sources: list[DebugLogSourceModel]
     default_source_id: Optional[str] = None
+    matched_source_id: Optional[str] = None
     file_logging_disabled: bool = False
     # Where the logs actually live, so a caller does not have to guess. The
     # desktop "Open logs folder" button otherwise falls back to a hard-coded
@@ -3911,6 +4970,7 @@ class DebugLogResponse(BaseModel):
 
 @_owner_settings_router.get("/debug/logs/sources", response_model = DebugLogSourcesResponse)
 def get_debug_log_sources(
+    diagnostic_path: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
 ) -> DebugLogSourcesResponse:
@@ -3932,6 +4992,7 @@ def get_debug_log_sources(
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
+        matched_source_id = debug_log_sources.source_id_for_path(diagnostic_path, sources),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
         log_root = log_root,
     )
@@ -4071,6 +5132,575 @@ def export_debug_logs(
         # waits for a cyclic GC pass, holding up to SPOOL_MAX_BYTES meanwhile.
         background = BackgroundTask(archive.close),
     )
+
+
+class SandboxToolStatus(BaseModel):
+    backend: str
+    available: bool
+    reason: str
+    protection_state: str = "unavailable"
+    limitations: list[str] = Field(default_factory = list)
+    remediation: str = ""
+
+
+class SandboxWindowsStatus(BaseModel):
+    runtime_installed: bool
+    # None: this Windows can run MXC; "arch" (not x64 or ARM64) or "build" (older than 26100) otherwise.
+    runtime_unsupported: Optional[Literal["arch", "build"]] = None
+    allow_dacl_fallback: bool
+    allow_dacl_fallback_saved: bool
+    dacl_locked_by_environment: bool
+    persistent_read_grants: bool
+    persistent_read_grants_saved: bool
+    grants_locked_by_environment: bool
+    # None: MXC could not tell; [] prepared; otherwise the wxc-host-prep verbs still missing.
+    host_prep_missing: Optional[list[str]] = None
+    prepare_repeats_after_restart: bool = True
+    # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
+    builtin_container: Optional[bool] = None
+    # Set only when a Windows update adds the built-in container: this PC's build and the first one with it.
+    windows_build: Optional[str] = None
+    builtin_container_build: Optional[str] = None
+
+
+class SandboxSetupStatus(BaseModel):
+    action: Optional[str] = None
+    # sudo | pkexec | uac, or None.
+    elevation: Optional[str] = None
+    manual_command: str = ""
+    reason: str = ""
+    needs_consent: bool = False
+    can_run: bool = False
+
+
+class SandboxMemoryStatus(BaseModel):
+    # GiB the next sandboxed run is capped at; None = no cap.
+    limit_gb: Optional[int] = None
+    saved_gb: int
+    default_gb: int
+    min_gb: int
+    max_gb: int
+    locked_by_environment: bool
+
+
+class SandboxStatusResponse(BaseModel):
+    platform: str
+    python: SandboxToolStatus
+    terminal: SandboxToolStatus
+    terminal_shell: Optional[str] = None
+    windows: Optional[SandboxWindowsStatus] = None
+    # None off Linux, where the rlimit never applied.
+    memory: Optional[SandboxMemoryStatus] = None
+    setup: Optional[SandboxSetupStatus] = None
+    checked_at: float
+    grants_restored: Optional[int] = None
+
+
+class SandboxSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    allow_dacl_fallback: Optional[StrictBool] = None
+    persistent_read_grants: Optional[StrictBool] = None
+    memory_limit_gb: Optional[StrictInt] = Field(
+        default = None,
+        ge = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
+        le = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
+    )
+
+
+class SandboxSetupPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    operation: Literal["linux-install", "windows-setup", "windows-runtime"]
+    consent_dacl_fallback: StrictBool = False
+
+
+class SandboxSetupJob(BaseModel):
+    state: Literal["idle", "running", "succeeded", "declined", "failed"]
+    id: Optional[str] = None
+    operation: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    output_tail: list[str] = Field(default_factory = list)
+    steps: list[str] = Field(default_factory = list)
+    manual_command: str = ""
+    note: str = ""
+
+
+class SandboxPrepareJob(BaseModel):
+    state: Literal["idle", "running", "succeeded", "declined", "failed"]
+    id: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    output_tail: list[str] = Field(default_factory = list)
+    steps: list[str] = Field(default_factory = list)
+
+
+_SANDBOX_STATUS_TTL_SECONDS = 30.0
+_sandbox_status_lock = threading.Lock()
+_sandbox_status_cache: Optional[tuple[float, SandboxStatusResponse]] = None
+# Bumped by every change: a status built before a save must not be cached after it.
+_sandbox_status_generation = 0
+
+
+def _forget_sandbox_status() -> None:
+    global _sandbox_status_cache, _sandbox_status_generation
+    with _sandbox_status_lock:
+        _sandbox_status_cache = None
+        _sandbox_status_generation += 1
+
+
+def _sandbox_tool_status(capability) -> SandboxToolStatus:
+    return SandboxToolStatus(
+        backend = capability.backend,
+        available = capability.available,
+        reason = capability.reason,
+        protection_state = capability.protection_state,
+        limitations = list(capability.limitations),
+        remediation = capability.remediation,
+    )
+
+
+def _sandbox_terminal_target() -> tuple[str, Optional[str]]:
+    import shutil
+    import sys
+
+    from core.inference import tools
+
+    if sys.platform != "win32":
+        return shutil.which("bash") or "bash", None
+    profile = tools._terminal_profile(False)
+    if profile == "cmd_isolated":
+        return tools._windows_system_cmd(), profile
+    return tools._windows_bash() or tools._windows_system_cmd(), profile
+
+
+def _sandbox_windows_status() -> SandboxWindowsStatus:
+    from core.inference import (
+        mxc_adapter,
+        mxc_policy,
+        mxc_read_grants,
+        mxc_runtime,
+        sandbox_setup_plan,
+    )
+    from utils import mxc_isolation_settings as saved
+
+    try:
+        mxc_runtime.installation_identity()
+        installed = True
+    except Exception:
+        installed = False
+    missing: Optional[list[str]] = None
+    if installed:
+        steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
+        missing = None if steps is None else list(steps)
+    update = sandbox_setup_plan.windows_builtin_container_update()
+    return SandboxWindowsStatus(
+        runtime_installed = installed,
+        runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
+        allow_dacl_fallback = mxc_policy.dacl_fallback_enabled(),
+        allow_dacl_fallback_saved = saved.dacl_fallback_setting(),
+        dacl_locked_by_environment = saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV),
+        persistent_read_grants = mxc_read_grants.enabled(),
+        persistent_read_grants_saved = saved.persistent_grants_setting(),
+        grants_locked_by_environment = saved.locked_by_environment(
+            mxc_read_grants.PERSISTENT_GRANTS_ENV
+        ),
+        host_prep_missing = missing,
+        windows_build = update[0] if update else None,
+        builtin_container_build = update[1] if update else None,
+    )
+
+
+def _sandbox_windows_block(python, dacl_at_probe: bool) -> SandboxWindowsStatus:
+    """wxc-exec does not name its tier, but with the fallback off it runs only in BaseContainer."""
+    from core.inference import mxc_probe
+
+    windows = _sandbox_windows_status()
+    builtin = None
+    # A save between the probe and this read would pair one setting's verdict with the other.
+    if windows.runtime_installed and not (windows.allow_dacl_fallback or dacl_at_probe):
+        if python.available and python.backend == "mxc-processcontainer":
+            builtin = True
+        elif python.reason == mxc_probe.NO_BUILTIN_CONTAINER_REASON:
+            builtin = False
+    return windows.model_copy(update = {"builtin_container": builtin})
+
+
+def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
+    """Blocking (live probes); run off the event loop. Never elevates: probes only."""
+    import sys
+
+    from core.inference import os_sandbox
+
+    windows_refresh = force and sys.platform == "win32"
+    if windows_refresh:
+        # The Terminal's bash-or-cmd choice reads cached verdicts; a Refresh must choose from fresh ones.
+        from core.inference import mxc_probe, sandbox_probe, tools
+
+        sandbox_probe.reset_probe_cache()
+        mxc_probe.invalidate_cache()
+        tools.reset_terminal_profile_cache()
+    # After the resets above: they raise the floor an earlier generation is dropped under.
+    generation = os_sandbox.tool_isolation_generation()
+    dacl_at_probe = False
+    if sys.platform == "win32":
+        from core.inference import mxc_policy
+        dacl_at_probe = mxc_policy.dacl_fallback_enabled()
+    python = os_sandbox.capability_snapshot(
+        force = force, execution_kind = "python", selected_executable = sys.executable
+    )
+    terminal_exe, shell = _sandbox_terminal_target()
+    # On Windows the choice above just probed this executable.
+    terminal = os_sandbox.capability_snapshot(
+        force = force and not windows_refresh,
+        execution_kind = "terminal",
+        selected_executable = terminal_exe,
+    )
+    for tool, capability in (("python", python), ("terminal", terminal)):
+        os_sandbox.note_tool_isolation(
+            tool,
+            capability.available,
+            backend = capability.backend,
+            reason = capability.reason,
+            generation = generation,
+        )
+    return SandboxStatusResponse(
+        platform = sys.platform,
+        python = _sandbox_tool_status(python),
+        terminal = _sandbox_tool_status(terminal),
+        terminal_shell = shell,
+        windows = _sandbox_windows_block(python, dacl_at_probe) if sys.platform == "win32" else None,
+        setup = _sandbox_setup_status(python.available and terminal.available),
+        checked_at = time.time(),
+    )
+
+
+def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
+    from core.inference import sandbox_setup_plan
+    try:
+        plan = sandbox_setup_plan.detect(available)
+    except Exception as exc:  # noqa: BLE001 - the status stays useful without the setup hint
+        logger.warning("settings.sandbox_setup_plan_failed: %s", exc)
+        return None
+    return SandboxSetupStatus(
+        action = plan.action,
+        elevation = plan.elevation,
+        manual_command = plan.manual_command,
+        reason = plan.reason,
+        needs_consent = plan.needs_consent,
+    )
+
+
+def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
+    import sys
+
+    # Linux only: Windows never set this rlimit, and on macOS setrlimit(RLIMIT_AS) fails once the forked child
+    # already maps more than the cap, so tool runs there were never capped.
+    if sys.platform != "linux":
+        return None
+    return SandboxMemoryStatus(
+        limit_gb = sandbox_memory_limit.effective_memory_limit_gb(),
+        saved_gb = sandbox_memory_limit.saved_memory_limit_gb(),
+        default_gb = sandbox_memory_limit.DEFAULT_MEMORY_LIMIT_GB,
+        min_gb = sandbox_memory_limit.MIN_MEMORY_LIMIT_GB,
+        max_gb = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
+        locked_by_environment = sandbox_memory_limit.locked_by_environment(),
+    )
+
+
+def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
+    """Blocking. The setup button: a direct local request, or a Linux install that prompts nobody here."""
+    from core.inference import sandbox_setup_plan
+    from utils.client_ip import is_direct_local_request
+
+    # Read per request, not from the probe cache: a save must show at once.
+    status = status.model_copy(update = {"memory": _sandbox_memory_status()})
+    setup = status.setup
+    if setup is None:
+        return status
+    local = bool(setup.action) and is_direct_local_request(request)
+    update: dict = {"can_run": False}
+    if setup.action == sandbox_setup_plan.LINUX_INSTALL:
+        can_run, elevation = sandbox_setup_plan.linux_install_allowed(local = local)
+        update = {"can_run": can_run, "elevation": elevation}
+    elif local:
+        update = {"can_run": True}
+    return status.model_copy(update = {"setup": setup.model_copy(update = update)})
+
+
+def _sandbox_status(refresh: bool = False) -> SandboxStatusResponse:
+    global _sandbox_status_cache
+    with _sandbox_status_lock:
+        cached, generation = _sandbox_status_cache, _sandbox_status_generation
+    if not refresh and cached is not None and time.monotonic() < cached[0]:
+        return cached[1]
+    status = _build_sandbox_status(force = refresh)
+    with _sandbox_status_lock:
+        if generation == _sandbox_status_generation:
+            _sandbox_status_cache = (time.monotonic() + _SANDBOX_STATUS_TTL_SECONDS, status)
+    return status
+
+
+def _sandbox_invalidate() -> None:
+    from core.inference import mxc_probe, tools
+
+    mxc_probe.invalidate_cache()
+    tools.reset_terminal_profile_cache()
+    _forget_sandbox_status()
+
+
+def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
+    """Blocking: save, reset every cached verdict, and take the read grants back once they are off."""
+    from core.inference import mxc_policy, mxc_read_grants
+    from utils import mxc_isolation_settings as saved
+
+    if payload.memory_limit_gb is not None:
+        sandbox_memory_limit.set_memory_limit_gb(payload.memory_limit_gb)
+        # The route refuses it beside the Windows switches, so the MXC state below is untouched.
+        return None
+    if payload.allow_dacl_fallback is not None:
+        saved.set_dacl_fallback_setting(payload.allow_dacl_fallback)
+    if payload.persistent_read_grants is not None:
+        saved.set_persistent_grants_setting(payload.persistent_read_grants)
+    saved.forget_cached_setting()
+    _sandbox_invalidate()
+    if not (mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled()):
+        return len(mxc_read_grants.revoke_recorded())
+    return None
+
+
+def _sandbox_job_response(job) -> SandboxPrepareJob:
+    return (
+        SandboxPrepareJob(**job.as_dict()) if job is not None else SandboxPrepareJob(state = "idle")
+    )
+
+
+@_owner_settings_router.get("/sandbox", response_model = SandboxStatusResponse)
+async def get_sandbox_status(
+    request: Request,
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
+) -> SandboxStatusResponse:
+    """What Python and the Terminal get from the OS sandbox on this machine, plus the Windows opt-in."""
+    try:
+        status = await asyncio.to_thread(_sandbox_status, refresh)
+        return await asyncio.to_thread(_for_request, status, request)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not read the sandbox status.",
+            event = "settings.sandbox_status_failed",
+            log = logger,
+        ) from exc
+
+
+@_owner_settings_router.put("/sandbox", response_model = SandboxStatusResponse)
+async def update_sandbox_settings(
+    payload: SandboxSettingsPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    # Host policy: changed at the console, never by an API key the owner happens to hold.
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxStatusResponse:
+    """Save the Windows MXC opt-in, the persistent read grant choice, or the Linux memory limit. Applies to the next
+    launch."""
+    import sys
+
+    from core.inference import mxc_policy, mxc_read_grants
+    from utils import mxc_isolation_settings as saved
+
+    windows_fields = (
+        payload.allow_dacl_fallback is not None or payload.persistent_read_grants is not None
+    )
+    if payload.memory_limit_gb is not None:
+        if sys.platform != "linux":
+            raise HTTPException(
+                status_code = 409, detail = "The sandbox memory limit only applies on Linux."
+            )
+        if sandbox_memory_limit.locked_by_environment():
+            raise HTTPException(
+                status_code = 409,
+                detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
+            )
+    if sys.platform != "win32" and (windows_fields or payload.memory_limit_gb is None):
+        raise HTTPException(status_code = 409, detail = "These settings only apply on Windows.")
+    locks = (
+        (payload.allow_dacl_fallback, mxc_policy.DACL_FALLBACK_ENV),
+        (payload.persistent_read_grants, mxc_read_grants.PERSISTENT_GRANTS_ENV),
+    )
+    for value, env in locks:
+        if value is not None and saved.locked_by_environment(env):
+            raise HTTPException(
+                status_code = 409,
+                detail = f"{env} is set in the environment Unsloth runs in, which decides this.",
+            )
+    try:
+        restored = await asyncio.to_thread(_sandbox_apply, payload)
+        status = await asyncio.to_thread(_sandbox_status, False)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not save the sandbox settings.",
+            event = "settings.sandbox_update_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s",
+        current_subject,
+        payload.allow_dacl_fallback,
+        payload.persistent_read_grants,
+        payload.memory_limit_gb,
+    )
+    status = await asyncio.to_thread(_for_request, status, request)
+    return status.model_copy(update = {"grants_restored": restored})
+
+
+@_owner_settings_router.get("/sandbox/prepare", response_model = SandboxPrepareJob)
+def get_sandbox_prepare(current_subject: str = Depends(get_current_subject)) -> SandboxPrepareJob:
+    return _sandbox_job_response(_newest_host_job(prepares_host = True))
+
+
+@_owner_settings_router.post("/sandbox/prepare", response_model = SandboxPrepareJob)
+async def start_sandbox_prepare(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxPrepareJob:
+    """Run MXC's elevated host preparation; Windows shows its administrator prompt on this computer."""
+    import sys
+
+    from core.inference import mxc_host_prep_job, mxc_runtime, sandbox_setup_job
+    from utils.client_ip import is_direct_local_request
+
+    # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
+    if not is_direct_local_request(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Prepare this PC from the computer running Unsloth: the Windows administrator "
+                "prompt appears there, not in this browser."
+            ),
+        )
+    if sys.platform != "win32":
+        raise HTTPException(status_code = 409, detail = "Host preparation is Windows-only.")
+    try:
+        await asyncio.to_thread(mxc_runtime.installation_identity)
+    except Exception as exc:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The MXC runtime is not installed; install it from Settings > Sandbox first.",
+        ) from exc
+    mxc_host_prep_job.add_finish_hook(_forget_sandbox_status)
+    try:
+        job = await asyncio.to_thread(mxc_host_prep_job.start)
+    except sandbox_setup_job.SetupUnavailable as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.sandbox_prepare_started subject=%s job=%s", current_subject, job.id)
+    return _sandbox_job_response(job)
+
+
+def _sandbox_setup_response(job) -> SandboxSetupJob:
+    if job is None:
+        return SandboxSetupJob(state = "idle")
+    data = job.as_dict()
+    data.setdefault("operation", "windows-setup")
+    return SandboxSetupJob(**data)
+
+
+@_owner_settings_router.get("/sandbox/setup", response_model = SandboxSetupJob)
+def get_sandbox_setup(current_subject: str = Depends(get_current_subject)) -> SandboxSetupJob:
+    return _sandbox_setup_response(_newest_host_job())
+
+
+def _newest_host_job(prepares_host: bool = False):
+    """``prepares_host``: the prepare row reads this, so a runtime-only install is not its result."""
+    from core.inference import mxc_host_prep_job, sandbox_setup_job, sandbox_setup_plan
+
+    job = sandbox_setup_job.current()
+    if prepares_host and job is not None and job.operation != sandbox_setup_plan.WINDOWS_SETUP:
+        job = None
+    prep = mxc_host_prep_job.current()
+    if prep is not None and (job is None or prep.started_at > job.started_at):
+        return prep
+    return job
+
+
+@_owner_settings_router.post("/sandbox/setup", response_model = SandboxSetupJob)
+async def start_sandbox_setup(
+    payload: SandboxSetupPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxSetupJob:
+    """Install or prepare the OS sandbox here; the password or administrator prompt appears on this computer.
+
+    Steps that need no prompt (the Windows runtime-only install, a Linux install as root or with
+    passwordless sudo) also work from a remote browser.
+    """
+    import sys
+
+    from core.inference import mxc_policy, sandbox_setup_job, sandbox_setup_plan
+    from utils import mxc_isolation_settings as saved
+    from utils.client_ip import is_direct_local_request
+
+    # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
+    local = is_direct_local_request(request)
+    if not local and not await asyncio.to_thread(
+        sandbox_setup_plan.remote_start_allowed, payload.operation
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Set up the sandbox from the computer running Unsloth: the password or administrator "
+                "prompt appears there, not in this browser."
+            ),
+        )
+    platform_operations = (
+        (sandbox_setup_plan.WINDOWS_SETUP, sandbox_setup_plan.WINDOWS_RUNTIME)
+        if sys.platform == "win32"
+        else (sandbox_setup_plan.LINUX_INSTALL,)
+        if sys.platform.startswith("linux")
+        else ()
+    )
+    if payload.operation not in platform_operations:
+        raise HTTPException(
+            status_code = 409, detail = f"{payload.operation} does not apply to this computer."
+        )
+    consent = (
+        payload.operation == sandbox_setup_plan.WINDOWS_SETUP
+        and payload.consent_dacl_fallback
+        and not mxc_policy.dacl_fallback_enabled()
+    )
+    if consent and saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"{mxc_policy.DACL_FALLBACK_ENV} is set in the environment Unsloth runs in, "
+                "which decides this."
+            ),
+        )
+    sandbox_setup_job.add_finish_hook(_forget_sandbox_status)
+    try:
+        job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation, interactive = local)
+    except sandbox_setup_job.SetupUnavailable as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    if consent:
+        # Only once accepted: turned on first, the plan reads "already works" and never prepares.
+        await asyncio.to_thread(_sandbox_apply, SandboxSettingsPayload(allow_dacl_fallback = True))
+        sandbox_setup_plan.invalidate()
+    _forget_sandbox_status()
+    logger.info(
+        "settings.sandbox_setup_started subject=%s operation=%s job=%s",
+        current_subject,
+        payload.operation,
+        job.id,
+    )
+    return _sandbox_setup_response(job)
 
 
 router.include_router(_account_settings_router)

@@ -66,3 +66,25 @@ def test_io_counter_distinguishes_existing_directory_attempts(tmp_path):
     result = module.measure_cost(lambda: tmp_path.mkdir(exist_ok = True))
     assert result["mkdir_calls"] == 1
     assert result["directories_created"] == 0
+
+
+def test_steady_cost_drops_a_one_off_rebuild_but_keeps_a_persistent_one(tmp_path):
+    module = load_script("probe")
+    calls = []
+
+    def one_off_rebuild():
+        calls.append(None)
+        # A cache revalidation that happens to land inside the second measured call.
+        for _ in range(2 if len(calls) == 2 else 1):
+            with closing(sqlite3.connect(tmp_path / "one-off.db")) as conn:
+                conn.execute("SELECT 1")
+
+    assert module.steady_cost(one_off_rebuild)["connections"] == 1
+    assert len(calls) == 5
+
+    def persistent_increase():
+        for _ in range(2):
+            with closing(sqlite3.connect(tmp_path / "persistent.db")) as conn:
+                conn.execute("SELECT 1")
+
+    assert module.steady_cost(persistent_increase)["connections"] == 2

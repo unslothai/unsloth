@@ -47,7 +47,7 @@ def _mapper_tables() -> Optional[tuple[dict, dict, dict]]:
 
 def _string_literal(node) -> Optional[str]:
     """``"Repo".lower()`` and ``"Repo"`` as data. BAD_MAPPINGS is written with ``.lower()``
-    calls on both sides, so ast.literal_eval alone cannot read it."""
+    calls on its keys, so ast.literal_eval alone cannot read it."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     if (
@@ -126,7 +126,7 @@ def unsloth_public_mirror(model_name: Optional[str], load_in_4bit: bool = True) 
     # resolves through INT_TO_FLOAT_MAPPER (unsloth/gemma-3-270m-it-unsloth-bnb-4bit ->
     # unsloth/gemma-3-270m-it), and BAD_MAPPINGS is applied to the INPUT name when the tables
     # resolve nothing (loader_utils.py:1014-1016), which is how a 4-bit
-    # unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit becomes unsloth/qwen3-30b-a3b. Both were verified
+    # unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit becomes unsloth/Qwen3-30B-A3B. Both were verified
     # against get_model_name. Returning None for these let the security scan check a repo the
     # loader never fetches while the one it does fetch, and any custom code in it, went
     # unscanned. Identity results are still dropped at the end.

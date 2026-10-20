@@ -4,6 +4,7 @@
 import {
   ChatMessageProtectedError,
   ChatThreadDeletedError,
+  batchCountChatMessages,
   batchListChatMessages,
   buildBackendChatExport,
   clearBackendChats,
@@ -52,9 +53,37 @@ export function markThreadIncognito(threadId: string): void {
   incognitoThreadIds.add(threadId);
 }
 
+/** Saving a temporary chat: from here on it persists like any other thread. */
+export function unmarkThreadIncognito(threadId: string): void {
+  incognitoThreadIds.delete(threadId);
+}
+
 /** True for a temporary-session thread, which is deliberately never persisted. */
 export function isThreadIncognito(threadId: string): boolean {
   return incognitoThreadIds.has(threadId);
+}
+
+// Read live: initialize() clears newThreadId before persisting the thread.
+const newThreadIdSources = new Set<() => string | null | undefined>();
+// Settings can start a row write while the runtime still considers the thread new.
+const writtenThreadIds = new Set<string>();
+
+/** Returns the unregister function. */
+export function registerNewThreadIdSource(
+  source: () => string | null | undefined,
+): () => void {
+  newThreadIdSources.add(source);
+  return () => {
+    newThreadIdSources.delete(source);
+  };
+}
+
+function isPendingNewThread(threadId: string): boolean {
+  if (writtenThreadIds.has(threadId)) return false;
+  for (const source of newThreadIdSources) {
+    if (source() === threadId) return true;
+  }
+  return false;
 }
 
 type ThreadListArgs = {
@@ -398,6 +427,7 @@ async function saveLegacyChatThread(
 }
 
 function writeChatThreadRecord(thread: ThreadRecord): Promise<ThreadRecord> {
+  writtenThreadIds.add(thread.id);
   return threadRecordWrites.write(thread.id, () => saveChatThread(thread));
 }
 
@@ -479,6 +509,13 @@ async function dexieIsEmpty(): Promise<boolean> {
     // which throws too and resets the import promise so the next caller can retry.
     return false;
   }
+}
+
+/** Runs this session's legacy import; true once the server alone holds every chat. */
+export async function settleLegacyChatImport(): Promise<boolean> {
+  await importLegacyChatsIfNeeded().catch(() => undefined);
+  await Promise.allSettled([...pendingLegacyThreadImports]);
+  return isLegacyChatImportDone();
 }
 
 async function importLegacyChatsIfNeeded(): Promise<void> {
@@ -626,6 +663,9 @@ export async function getStoredChatThreadReadResult(
   if (isChatThreadDeleted(threadId)) {
     return { thread: undefined, cacheable: true };
   }
+  if (isPendingNewThread(threadId)) {
+    return { thread: undefined, cacheable: true };
+  }
   const legacyThread = await readLegacyStore(
     () => db.threads.get(threadId),
     undefined,
@@ -638,6 +678,7 @@ export async function getStoredChatThreadReadResult(
       bounded: options.bounded,
       timeoutMs: options.timeoutMs,
       signal: options.signal,
+      share: true,
     });
   } catch (error) {
     if (legacyThread && !isChatThreadDeleted(legacyThread.id)) {
@@ -802,14 +843,22 @@ function inheritedMessageIds(
 export async function listStoredChatMessages(
   threadId: string,
 ): Promise<MessageRecord[]> {
-  if (isThreadIncognito(threadId)) return [];
-  if (isChatThreadDeleted(threadId)) return [];
+  return (await readStoredChatMessages(threadId)).messages;
+}
+
+/** `fromBackend` is false when the backend read failed and the legacy browser copy was returned. */
+export async function readStoredChatMessages(
+  threadId: string,
+): Promise<{ messages: MessageRecord[]; fromBackend: boolean }> {
+  if (isThreadIncognito(threadId)) return { messages: [], fromBackend: false };
+  if (isChatThreadDeleted(threadId)) return { messages: [], fromBackend: false };
+  if (isPendingNewThread(threadId)) return { messages: [], fromBackend: false };
   const legacyMessages = await readLegacyStore(
     () => db.messages.where("threadId").equals(threadId).toArray(),
     [] as MessageRecord[],
   );
   const [backendThread, backendMessages] = await Promise.all([
-    getChatThread(threadId).catch(() => undefined),
+    getChatThread(threadId, { share: true }).catch(() => undefined),
     listChatMessages(threadId).catch((error) => {
       if (legacyMessages.length > 0) {
         return undefined;
@@ -830,22 +879,26 @@ export async function listStoredChatMessages(
         (backendMessages.length === 0 && legacyMessages.length > 0),
     });
     if (legacyMessages.length > 0 && merged.shouldSync) {
-      return syncChatMessages(threadId, merged.messages, {
+      const messages = await syncChatMessages(threadId, merged.messages, {
         pruneMissing: false,
       }).catch(() => merged.messages);
+      return { messages, fromBackend: true };
     }
-    return merged.messages;
+    return { messages: merged.messages, fromBackend: true };
   }
   if (
     backendMessages &&
     isLegacyChatImportDone() &&
     legacyMessages.length === 0
   ) {
-    return [];
+    return { messages: [], fromBackend: true };
   }
-  return legacyMessages.filter(
-    (message) => !isChatThreadDeleted(message.threadId),
-  );
+  return {
+    messages: legacyMessages.filter(
+      (message) => !isChatThreadDeleted(message.threadId),
+    ),
+    fromBackend: false,
+  };
 }
 
 export async function getStoredChatMessage(
@@ -929,8 +982,12 @@ export async function listStoredChatThreadsWithMessages(
 ): Promise<ThreadRecord[]> {
   const threads = await listStoredChatThreads(args);
   if (threads.length === 0) return [];
-  // One batched HTTP call instead of N. Per-thread legacy Dexie fallback only fires when the batch result is empty.
   const threadIds = threads.map((t) => t.id);
+  const counts = await countStoredChatMessages(threadIds).catch(() => null);
+  if (counts !== null) {
+    return threads.filter((thread) => (counts.get(thread.id) ?? 0) > 0);
+  }
+  // Per-thread Dexie fallback only when the batch is empty.
   let backendByThread: Map<string, MessageRecord[]>;
   try {
     backendByThread = await batchListChatMessages(threadIds);
@@ -964,6 +1021,8 @@ export async function getStoredChatProject(
 
 export async function createStoredChatProject(
   name: string,
+  nativePathLease?: string,
+  id: string = crypto.randomUUID(),
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -971,13 +1030,13 @@ export async function createStoredChatProject(
   }
   const now = Date.now();
   return saveChatProject({
-    id: crypto.randomUUID(),
+    id,
     name: trimmed,
     instructions: "",
     archived: false,
     createdAt: now,
     updatedAt: now,
-  });
+  }, nativePathLease);
 }
 
 export async function updateStoredChatProject(
@@ -1172,6 +1231,44 @@ export async function updateStoredChatThread(
   });
   if (!thread) return undefined;
   return updateChatThread(threadId, patch, options);
+}
+
+/** Message counts in one request. Threads the server has none for count legacy local messages.
+ *  Null on an older server. */
+export async function countStoredChatMessages(
+  threadIds: string[],
+): Promise<Map<string, number> | null> {
+  const ids = threadIds.filter((id) => !isThreadIncognito(id) && !isChatThreadDeleted(id));
+  const counts = await batchCountChatMessages(ids);
+  if (!counts) return null;
+  await Promise.all(
+    ids
+      .filter((id) => (counts.get(id) ?? 0) === 0)
+      .map(async (id) => {
+        const legacy = await readLegacyStore(
+          () => db.messages.where("threadId").equals(id).toArray(),
+          [] as MessageRecord[],
+        );
+        const n = legacy.filter((m) => m.role === "user" || m.role === "assistant").length;
+        if (n > 0) counts.set(id, n);
+      }),
+  );
+  return counts;
+}
+
+/** Messages for many threads in one request; a thread the batch has nothing for falls back to
+ *  its per-thread read, which also covers legacy local history. */
+export async function listStoredChatMessagesMany(
+  threadIds: string[],
+): Promise<Map<string, MessageRecord[]>> {
+  const ids = threadIds.filter((id) => !isThreadIncognito(id) && !isChatThreadDeleted(id));
+  const out = await batchListChatMessages(ids).catch(() => new Map<string, MessageRecord[]>());
+  await Promise.all(
+    ids
+      .filter((id) => (out.get(id)?.length ?? 0) === 0)
+      .map(async (id) => out.set(id, await listStoredChatMessages(id).catch(() => []))),
+  );
+  return out;
 }
 
 /** Thread ids whose sandbox still holds files, passed through from the route. */

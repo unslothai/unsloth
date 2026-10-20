@@ -284,15 +284,15 @@ def test_a_placeholder_architecture_matches_the_picker_verdict(tmp_path):
 
 
 def test_an_unassemblable_video_arch_promises_no_page(tmp_path):
-    # Wan 2.2 A14B is a two-expert MoE the Video backend cannot assemble, and Wan 2.1's repo
-    # ids resolve to no family, so _arch_to_task tags both image-diffusion-unsupported and
-    # the Video picker never lists them. The header says "wan" for all three, so the refusal
-    # has to consult the same family resolution rather than trusting the arch.
+    # The header says "wan" for an unpaired A14B expert and Wan 2.1 I2V alike: the refusal must consult
+    # family resolution, not the arch.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
-        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),
-        ("QuantStack/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", False),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", True),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-Q4_K_M.gguf", False),
+        ("QuantStack/Wan2.1-T2V-14B-GGUF", "Wan2.1-T2V-14B-Q4_K_M.gguf", True),
+        ("city96/Wan2.1-I2V-14B-480P-gguf", "wan2.1-i2v-14b-480p-Q4_K_M.gguf", False),
     ):
         _, message = _refusal(tmp_path, arch = "wan", name = name, identifier = identifier)
         assert message is not None
@@ -385,12 +385,13 @@ def test_a_split_placeholder_media_gguf_is_still_refused(tmp_path):
 
 def test_the_metadata_less_branch_asks_what_the_pickers_ask(tmp_path):
     # A family that resolves is not enough for the arch branches, nor here: routes.models
-    # drops an MoE the loader cannot assemble, so the Video page would not list Wan 2.2 A14B
-    # however its GGUF is packaged.
+    # drops an MoE the loader cannot assemble, so the Video page lists a Wan 2.2 A14B GGUF only
+    # when its name pairs the other expert.
     from routes.models import _arch_to_task
     for identifier, name, page_named in (
         ("QuantStack/Wan2.2-TI2V-5B-GGUF", "Wan2.2-TI2V-5B-Q4_K_M.gguf", True),
-        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", False),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf", True),
+        ("QuantStack/Wan2.2-T2V-A14B-GGUF", "Wan2.2-T2V-A14B-Q4_K_M.gguf", False),
     ):
         _, message = _refusal(tmp_path, arch = None, name = name, identifier = identifier)
         assert message is not None
@@ -433,3 +434,28 @@ def test_every_name_the_video_preflight_imports_from_routes_still_resolves():
         f"core/inference/llama_cpp.py imports {missing} from routes.models, but routes.models "
         f"does not bind them. The probe's broad except turns that into a silent fail-open."
     )
+
+
+def test_an_image_arch_this_host_cannot_build_promises_no_page(tmp_path, monkeypatch):
+    # The catalog hides an unbuildable family, so the refusal must not name the Images page.
+    import core.inference.diffusion_engine_router as router
+
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: False)
+    _, message = _refusal(
+        tmp_path,
+        arch = "qwen_image21",
+        name = "qwen-image-2.1-Q4_K_M.gguf",
+        identifier = "unsloth/Qwen-Image-2.1-GGUF",
+    )
+    assert message is not None
+    assert "cannot run as a chat model" in message
+    assert "Open it from the Images page" not in message
+
+    monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: True)
+    _, message = _refusal(
+        tmp_path,
+        arch = "qwen_image21",
+        name = "qwen-image-2.1-Q4_K_M.gguf",
+        identifier = "unsloth/Qwen-Image-2.1-GGUF",
+    )
+    assert "Open it from the Images page" in message

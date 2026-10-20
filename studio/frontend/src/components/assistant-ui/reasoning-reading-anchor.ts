@@ -3,7 +3,8 @@
 
 import type { ReasoningReadingAnchor } from "./reasoning-transcript-index.ts";
 
-const passages = "p, pre, li, h1, h2, h3, h4, h5, h6, td, th";
+const passages =
+  "p, pre, .aui-reasoning-code-lines, li, h1, h2, h3, h4, h5, h6, td, th";
 
 function textNodes(root: Element): Text[] {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -19,6 +20,7 @@ export function reasoningTextRange(
   root: Element,
   text: string,
   occurrence = 0,
+  range: Range = document.createRange(),
 ): Range | null {
   const nodes = textNodes(root);
   const source = nodes.map((node) => node.data).join("");
@@ -27,7 +29,6 @@ export function reasoningTextRange(
     start = source.indexOf(text, start + 1);
     if (start < 0) return null;
   }
-  const range = document.createRange();
   let offset = 0;
   let started = false;
   for (const node of nodes) {
@@ -44,6 +45,8 @@ export function reasoningTextRange(
   return null;
 }
 
+let probe: Range | null = null;
+
 /** Capture the first visible character, including when its block starts above the viewport. */
 export function captureReasoningAnchor(
   root: Element,
@@ -51,9 +54,9 @@ export function captureReasoningAnchor(
 ): ReasoningReadingAnchor | undefined {
   const bounds = viewport.getBoundingClientRect();
   const nodes = textNodes(root);
+  const range = (probe ??= document.createRange());
   let preceding = "";
   for (const node of nodes) {
-    const range = document.createRange();
     range.selectNodeContents(node);
     const rect = range.getBoundingClientRect();
     if (

@@ -196,7 +196,7 @@ export function RecentDictationsView({
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex items-center gap-2">
         <button
           type="button"
@@ -216,7 +216,7 @@ export function RecentDictationsView({
       </header>
 
       <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold">
+        <h2 className="settings-heading text-sm font-semibold">
           {selected
             ? t("settings.voice.recents.detailTitle")
             : t("settings.voice.recents.sectionTitle")}

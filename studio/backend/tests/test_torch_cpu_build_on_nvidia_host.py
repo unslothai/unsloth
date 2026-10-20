@@ -567,6 +567,8 @@ def test_nvidia_smi_is_resolved_from_the_standard_windows_locations(monkeypatch)
 def test_path_resolution_is_a_no_op_off_windows_and_when_path_has_it(monkeypatch):
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Linux")
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: None)
+    # Not a WSL host: the /usr/lib/wsl/lib fallback has its own tests.
+    monkeypatch.setattr(nvidia.os.path, "isfile", lambda _p: False)
     assert nvidia._nvidia_smi_executable() == "nvidia-smi"
 
     monkeypatch.setattr(nvidia.platform, "system", lambda: "Windows")
@@ -1203,11 +1205,12 @@ def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
     for device in covered:
         assert hw._devices_that_can_establish_a_mismatch([device]) == [device], device["name"]
 
-    # RDNA 1 is declined on purpose: a repair here would reinstall the same CPU wheel.
-    declined = [
-        {"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}
-    ]
-    assert hw._devices_that_can_establish_a_mismatch(declined) == []
+    # RDNA 1: declined on Linux (same CPU wheel), repairable on Windows (#11755).
+    rdna1 = [{"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}]
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    assert hw._devices_that_can_establish_a_mismatch(rdna1) == []
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    assert hw._devices_that_can_establish_a_mismatch(rdna1) == rdna1
 
 
 def test_a_nameless_intel_card_counts_once_xpu_was_actually_chosen(monkeypatch, tmp_path):
@@ -1340,7 +1343,7 @@ def test_a_healthy_xpu_wheel_is_not_called_unavailable(monkeypatch):
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
 
-@pytest.mark.parametrize("mask", ["", " ", "-1"])
+@pytest.mark.parametrize("mask", [" ", "-1"])
 def test_an_emptied_xpu_mask_is_a_deliberate_hide(monkeypatch, mask):
     import sys
 
@@ -1354,6 +1357,22 @@ def test_an_emptied_xpu_mask_is_a_deliberate_hide(monkeypatch, mask):
     assert hw.classify_torch_build() is None
 
     monkeypatch.setenv("ZE_AFFINITY_MASK", "0")
+    assert hw.classify_torch_build() == "torch_cuda_unavailable"
+
+
+@pytest.mark.parametrize("mask", ["", "default"])
+def test_an_empty_or_default_xpu_mask_hides_nothing(monkeypatch, mask):
+    """Level Zero reads "" and "default" as no mask (isAffinityMaskSet): every Intel GPU stays visible."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("cuda_dead"))
+    monkeypatch.setattr(
+        hw,
+        "get_physical_gpu_inventory",
+        lambda **_kw: {"available": True, "devices": [{"vendor": "intel"}]},
+    )
+    monkeypatch.setenv("ZE_AFFINITY_MASK", mask)
+    assert hw._vendors_masked_off() == set()
     assert hw.classify_torch_build() == "torch_cuda_unavailable"
 
 
@@ -1659,7 +1678,7 @@ def test_a_recovery_re_measures_torch_rather_than_reusing_the_old_answer(monkeyp
 
 
 def test_a_vendor_mask_does_not_hide_another_vendors_card(monkeypatch):
-    """A hybrid NVIDIA + Arc host with ZE_AFFINITY_MASK="".
+    """A hybrid NVIDIA + Arc host with ZE_AFFINITY_MASK="-1".
 
     The mask hides the Arc and nothing else, but it was cancelling the whole
     classification, so a CPU-only wheel went unreported for the NVIDIA card the user
@@ -1669,7 +1688,7 @@ def test_a_vendor_mask_does_not_hide_another_vendors_card(monkeypatch):
     import sys
 
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("cpu"))
-    monkeypatch.setenv("ZE_AFFINITY_MASK", "")
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "-1")
     hybrid = [
         {"vendor": "nvidia", "name": "NVIDIA RTX A4000"},
         {"vendor": "intel", "name": "Intel(R) Arc(TM) A770"},
@@ -2453,10 +2472,10 @@ def test_the_ranking_callers_still_see_an_empty_map(monkeypatch):
         ("AMD Radeon RX 7900 XT", True),
         ("AMD Radeon RX 9070 XT", True),
         ("AMD Radeon 780M Graphics", True),
-        # Polaris and RDNA 1: no wheel family covers them, so a repair could not change
-        # anything and this host is on CPU torch on purpose.
+        # Polaris: no wheel family, CPU torch on purpose.
         ("AMD Radeon RX 580", False),
-        ("AMD Radeon RX 5700 XT", False),
+        # RDNA 1: routed on Windows through AMD's multi-arch index (unslothai/unsloth#11755).
+        ("AMD Radeon RX 5700 XT", True),
         ("", False),
     ],
 )

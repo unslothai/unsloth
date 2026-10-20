@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHubDownloadPlan } from "../download-manager/use-hub-download-queue";
+import { HubPlanProgress } from "../download-manager/hub-plan-progress";
+import { useRequiredAssetsDownload } from "./use-required-assets-download";
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   DropdownMenu,
@@ -22,7 +25,11 @@ import {
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { getCachedModelPath, revealCachedModel } from "@/features/chat";
-import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
+import {
+  formatFootprintBytes,
+  pinKey,
+  usePinnedModelsStore,
+} from "@/features/model-picker";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -30,11 +37,12 @@ import { type GgufFitClass, classifyGgufVariantFit } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
-  ArrowReloadHorizontalIcon,
+  Refresh01Icon,
   Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Folder01Icon,
+  HelpCircleIcon,
   InformationCircleIcon,
   MoreVerticalIcon,
   PinIcon,
@@ -56,6 +64,13 @@ import {
   useHttpPartialsResumable,
   useRepoDownload,
 } from "../download-manager";
+import {
+  type GgufVariantFootprint,
+  type MediaStudioPage,
+  awaitsCompanions,
+  ggufVariantFootprint,
+  useMediaCompanionBytes,
+} from "../hooks/use-media-companion-bytes";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
@@ -87,6 +102,8 @@ import {
   activeDownloadState,
   applyLiveGgufVariantStates,
   createLiveGgufVariantStatesSelector,
+  createScopedLiveGgufFilesSelector,
+  isScopedLiveVariant,
 } from "./gguf-live-variant-states";
 import {
   GgufDownloadStatusCard,
@@ -243,6 +260,83 @@ interface GgufVariantMenuItem {
   downloaded: boolean;
   partial: boolean;
   downloadSizeLabel: string;
+  footprint: GgufVariantFootprint | null;
+}
+
+/** Model plus uncached companion size, with the breakdown on hover; on disk, only what Run still fetches. */
+function GgufVariantSizeLabel({
+  label,
+  footprint,
+  downloaded = false,
+}: {
+  label: string;
+  footprint: GgufVariantFootprint | null;
+  downloaded?: boolean;
+}) {
+  if (!footprint) return <>{label}</>;
+  const companion = formatFootprintBytes(footprint.companionBytes);
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          data-model-download-footprint={true}
+          data-model-needs-required-assets={downloaded || undefined}
+          className="inline-flex items-center gap-1"
+        >
+          {downloaded
+            ? `${companion} more to run`
+            : formatFootprintBytes(
+                footprint.checkpointBytes + footprint.companionBytes,
+              )}
+          {/* Align the icon with the digits. */}
+          <HugeiconsIcon
+            icon={HelpCircleIcon}
+            aria-hidden={true}
+            className="size-3 shrink-0 -translate-y-[0.08em] text-muted-foreground/80"
+            strokeWidth={1.8}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        <span className="font-medium">
+          {formatFootprintBytes(footprint.checkpointBytes)} model
+          {downloaded ? " on device" : ""} + {companion} required assets
+        </span>
+        <span className="ml-1 text-muted-foreground">
+          {downloaded
+            ? "· assets download on Run, once, shared across compatible variants"
+            : "· assets download on Run"}
+        </span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function CompanionsPendingTag({
+  companionBytes,
+  compact = false,
+}: {
+  companionBytes: number;
+  compact?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <span className="inline-flex">
+          <DotTag
+            tone="warning"
+            label="Partial"
+            className={compact ? "max-sm:border-0 max-sm:px-0" : undefined}
+            labelClassName={compact ? "max-sm:sr-only" : undefined}
+          />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={4}>
+        Model on device. {formatFootprintBytes(companionBytes)} of required
+        assets download on Run.
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
 function createGgufVariantMenuItems(
@@ -253,6 +347,7 @@ function createGgufVariantMenuItems(
     systemRamGb?: number;
     budgetFraction?: number;
   },
+  companionBytesByKey: ReadonlyMap<string, number>,
 ): GgufVariantMenuItem[] {
   if (!variants) return [];
   return variants.map((variant) => ({
@@ -264,6 +359,7 @@ function createGgufVariantMenuItems(
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
     downloadSizeLabel: ggufVariantTransferLabel(variant),
+    footprint: ggufVariantFootprint(variant, companionBytesByKey),
   }));
 }
 
@@ -360,7 +456,7 @@ export function QuantOptionsMenu({
               strokeWidth={1.75}
               className="size-icon"
             />
-            <span>{pinned ? "Unpin" : "Pin to top"}</span>
+            <span>{pinned ? "Unpin" : "Pin"}</span>
           </DropdownMenuItem>
         )}
         {downloaded && (
@@ -504,13 +600,19 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           variant="menu"
           tooltipMode="lazy"
         />
-        {item.downloaded && <DotTag tone="success" label="On device" />}
+        {awaitsCompanions(item.downloaded, item.footprint) ? (
+          <CompanionsPendingTag
+            companionBytes={item.footprint?.companionBytes ?? 0}
+          />
+        ) : (
+          item.downloaded && <DotTag tone="success" label="On device" />
+        )}
         {!item.downloaded && item.partial && (
           <Tooltip>
             <TooltipTrigger asChild={true}>
               <span className="inline-flex">
                 <DotTag
-                  tone="warning"
+                  tone={liveActive ? "downloading" : "warning"}
                   label={liveActive ? "Downloading" : "Partial"}
                 />
               </span>
@@ -527,7 +629,11 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
-          {item.downloadSizeLabel}
+          <GgufVariantSizeLabel
+            label={item.downloadSizeLabel}
+            footprint={item.footprint}
+            downloaded={item.downloaded}
+          />
         </span>
         {/* Options only apply to files on disk; placeholder keeps the size
             chips column-aligned across rows. */}
@@ -566,7 +672,7 @@ export function GgufDownloadCard({
   runPending = false,
   onChange,
   showMemoryBar = true,
-  mediaRuntime = false,
+  mediaPage,
 }: {
   repoId: string;
   isActive: boolean;
@@ -592,22 +698,22 @@ export function GgufDownloadCard({
    *  weights-only verdict anyway, which is a confident number about the wrong
    *  runtime. The picker suppresses these rows for the same reason. */
   showMemoryBar?: boolean;
-  /** This repo is placed by the diffusion planner, not llama-server. Suppresses the fit badges
-   *  for the same reason it suppresses the memory bar: the budget and the offload rules here are
-   *  llama.cpp's, and an oversized diffusion model gets told it "still works with offloading"
-   *  when on a host pool the planner refuses the load outright. */
-  mediaRuntime?: boolean;
+  /** Selects the companion download planner and hides llama.cpp fit badges,
+   *  whose memory and offload rules do not apply to media models. */
+  mediaPage?: MediaStudioPage;
 }) {
+  const mediaRuntime = mediaPage !== undefined;
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const partialsResumable = useHttpPartialsResumable();
-  const localVariantPath = cachePath?.trim() || null;
+  const localVariantPath = showMemoryBar ? null : cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
       preferLocalCache,
       localPath: localVariantPath,
+      includeCacheLocations: showMemoryBar,
     });
   const [selectedQuantState, setSelectedQuantState] = useState<{
     repoId: string;
@@ -660,6 +766,11 @@ export function GgufDownloadCard({
   const liveVariantStates = useDownloadManagerStore(
     selectLiveGgufVariantStates,
   );
+  const selectScopedLiveFiles = useMemo(
+    () => createScopedLiveGgufFilesSelector(repoId),
+    [repoId],
+  );
+  const scopedLiveFiles = useDownloadManagerStore(selectScopedLiveFiles);
   const sortedVariants = useMemo(() => {
     if (!rawSortedVariants) return null;
     const withLive = applyLiveGgufVariantStates(
@@ -673,17 +784,6 @@ export function GgufDownloadCard({
         : v,
     );
   }, [completedVariantKeys, liveVariantStates, rawSortedVariants]);
-  const variantMenuItems = useMemo(
-    () =>
-      createGgufVariantMenuItems(sortedVariants, {
-        gpuGb,
-        gpuCount,
-        systemRamGb,
-        budgetFraction,
-      }),
-    [gpuGb, gpuCount, sortedVariants, systemRamGb, budgetFraction],
-  );
-
   const selectedQuant =
     (selectedQuantOverride
       ? sortedVariants?.find((v) =>
@@ -692,6 +792,37 @@ export function GgufDownloadCard({
       : null) ??
     sortedVariants?.[0]?.quant ??
     null;
+  const selected =
+    sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
+    null;
+  const companionBytesByKey = useMediaCompanionBytes(
+    mediaPage,
+    repoId,
+    variants,
+    selected?.filename,
+    hfToken,
+  );
+  const variantMenuItems = useMemo(
+    () =>
+      createGgufVariantMenuItems(
+        sortedVariants,
+        {
+          gpuGb,
+          gpuCount,
+          systemRamGb,
+          budgetFraction,
+        },
+        companionBytesByKey,
+      ),
+    [
+      gpuGb,
+      gpuCount,
+      sortedVariants,
+      systemRamGb,
+      budgetFraction,
+      companionBytesByKey,
+    ],
+  );
 
   const job = useRepoDownload({
     kind: "model",
@@ -755,16 +886,23 @@ export function GgufDownloadCard({
     );
   }, [loading, error, refreshError, variants]);
 
-  const selected =
-    sortedVariants?.find((v) => ggufVariantsMatch(v.quant, selectedQuant)) ??
-    null;
+  const assets = useRequiredAssetsDownload({
+    repoId,
+    filename: selected?.filename,
+    runtime: selected ? mediaPage : undefined,
+    modelLabel: `${repoId} · ${selectedQuant ?? ""}`,
+  });
   const selectedLiveState = selectedQuant
     ? liveVariantStates.get(normalizeGgufVariantIdentity(selectedQuant))
     : undefined;
   const selectedPresentation = pendingDrafterPresentation(selected);
-  const selectedLiveActive = activeDownloadState(selectedLiveState?.state);
   const downloadingThisVariant =
     progress !== null && ggufVariantsMatch(progress.variant, selectedQuant);
+  // Images/Video stage quants as scoped jobs with no quant-keyed job.
+  const selectedScopedLive =
+    !downloadingThisVariant && isScopedLiveVariant(selected, scopedLiveFiles);
+  const selectedLiveActive =
+    activeDownloadState(selectedLiveState?.state) || selectedScopedLive;
   const ctaDisabled = isLoadingThisModel || !selected;
   const selectedIsActive =
     isActive && activeQuant && ggufVariantsMatch(selected?.quant, activeQuant);
@@ -782,6 +920,13 @@ export function GgufDownloadCard({
   const selectedDownloadSizeLabel = selected
     ? ggufVariantTransferLabel(selected)
     : null;
+  const selectedFootprint = selected
+    ? ggufVariantFootprint(selected, companionBytesByKey)
+    : null;
+  const selectedAwaitsCompanions = awaitsCompanions(
+    selected?.downloaded,
+    selectedFootprint,
+  );
   const updateAvailable =
     selected?.downloaded === true && selected.update_available === true;
   const selectedVariantKey = selectedQuant
@@ -818,7 +963,7 @@ export function GgufDownloadCard({
       ? true
       : downloadingThisVariant
         ? false
-        : ctaDisabled,
+        : ctaDisabled || selectedScopedLive,
     isPartial: Boolean(selected?.partial),
     partialTransport: selected?.partial_transport ?? null,
     partialResumable: selected?.partial_resumable === true,
@@ -832,7 +977,13 @@ export function GgufDownloadCard({
   const deleteTargetLabel = deleteTargetVariant
     ? ggufVariantDisplayLabel(deleteTargetVariant)
     : deleteTarget;
-  const deleteImpact = useDeleteImpact(deleteTarget !== null, repoId, deleteTarget);
+  // The same identity the delete below sends, so the preview measures the copy that goes.
+  const deleteImpact = useDeleteImpact(
+    deleteTarget !== null,
+    repoId,
+    deleteTarget,
+    deleteTargetVariant?.cache_ref ?? deleteTargetVariant?.cache_path ?? cachePath ?? undefined,
+  );
   const { deleting, runDelete } = useDeleteConfirmAction({
     action: async () => {
       if (!deleteTarget) return;
@@ -840,7 +991,12 @@ export function GgufDownloadCard({
         repoId,
         deleteTarget,
         hfToken || undefined,
-        cachePath ?? undefined,
+        // Redaction clears the path and leaves the reference: forwarding it keeps the
+        // delete on this row instead of whichever duplicate the server ranks first.
+        deleteTargetVariant?.cache_ref ??
+          deleteTargetVariant?.cache_path ??
+          cachePath ??
+          undefined,
       );
     },
     successMessage: () =>
@@ -885,9 +1041,10 @@ export function GgufDownloadCard({
       ...(presentation ? { presentation } : {}),
     });
   }, [updateTarget, updateTargetVariant, repoId]);
+  const hubPlan = useHubDownloadPlan(repoId, selected?.filename);
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
-  const showUpdateAction =
+  const showUpdateAction = !hubPlan &&
     selected?.downloaded === true &&
     online &&
     updateAvailable &&
@@ -897,12 +1054,12 @@ export function GgufDownloadCard({
     !cancelling &&
     !downloadAction.starting &&
     !downloadingThisVariant;
-  const showDownloadAction =
+  const showDownloadAction = !hubPlan && (
     !selected?.downloaded ||
     downloadingThisVariant ||
     cancelling ||
-    downloadAction.starting;
-  const showRunAction =
+    downloadAction.starting);
+  const showRunAction = !hubPlan &&
     Boolean(onRun) &&
     selected?.downloaded === true &&
     selected.partial !== true &&
@@ -958,6 +1115,7 @@ export function GgufDownloadCard({
   return (
     <div className="flex w-full flex-col gap-2">
       <DownloadCard
+        footer={hubPlan ? <HubPlanProgress plan={hubPlan} /> : undefined}
         job={job}
         progress={downloadingThisVariant ? progress : null}
         dialogs={
@@ -1036,21 +1194,28 @@ export function GgufDownloadCard({
                     Select quantization
                   </span>
                 )}
-                {selected?.downloaded && (
-                  // Dot only on phones.
-                  <DotTag
-                    tone="success"
-                    label="On device"
-                    className="max-sm:border-0 max-sm:px-0"
-                    labelClassName="max-sm:sr-only"
+                {selectedAwaitsCompanions ? (
+                  <CompanionsPendingTag
+                    companionBytes={selectedFootprint?.companionBytes ?? 0}
+                    compact={true}
                   />
+                ) : (
+                  selected?.downloaded && (
+                    // Dot only on phones.
+                    <DotTag
+                      tone="success"
+                      label="On device"
+                      className="max-sm:border-0 max-sm:px-0"
+                      labelClassName="max-sm:sr-only"
+                    />
+                  )
                 )}
                 {selected && !selected.downloaded && selected.partial && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <span className="inline-flex">
                         <DotTag
-                          tone="warning"
+                          tone={selectedLiveActive ? "downloading" : "warning"}
                           label={selectedLiveActive ? "Downloading" : "Partial"}
                         />
                       </span>
@@ -1058,19 +1223,26 @@ export function GgufDownloadCard({
                     <TooltipContent side="top" sideOffset={4}>
                       {/* The badge rides inside the quant trigger, so clicking
                           it opens the menu. Name the button that acts. */}
-                      {selectedLiveActive
-                        ? "Download is running. Use the button on the right to stop it."
-                        : downloadAction.partialHint}
+                      {selectedScopedLive
+                        ? "Download is running. Progress is in the downloads panel."
+                        : selectedLiveActive
+                          ? "Download is running. Use the button on the right to stop it."
+                          : downloadAction.partialHint}
                     </TooltipContent>
                   </Tooltip>
                 )}
                 {/* Size beats format tag on phones. */}
                 <DotTag tone="gguf" label="GGUF" className="max-sm:hidden" />
+                {/* Downloaded quants show a size only while Run still has assets to fetch. */}
                 {selected &&
                   selectedDownloadSizeLabel &&
-                  !selected.downloaded && (
+                  (!selected.downloaded || selectedFootprint) && (
                     <span className="shrink-0 tabular-nums">
-                      {selectedDownloadSizeLabel}
+                      <GgufVariantSizeLabel
+                        label={selectedDownloadSizeLabel}
+                        footprint={selectedFootprint}
+                        downloaded={Boolean(selected.downloaded)}
+                      />
                     </span>
                   )}
               </span>
@@ -1090,7 +1262,9 @@ export function GgufDownloadCard({
             <div className="max-h-[calc(344px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
               {variantMenuItems.map((item) => {
                 const liveState = liveVariantStates.get(item.key);
-                const liveActive = activeDownloadState(liveState?.state);
+                const liveActive =
+                  activeDownloadState(liveState?.state) ||
+                  isScopedLiveVariant(item, scopedLiveFiles);
                 return (
                   <GgufVariantMenuRow
                     key={item.filename}
@@ -1149,7 +1323,7 @@ export function GgufDownloadCard({
             className="hub-action-btn ml-1 text-amber-700 dark:text-amber-300"
           >
             <HugeiconsIcon
-              icon={ArrowReloadHorizontalIcon}
+              icon={Refresh01Icon}
               strokeWidth={1.75}
             />
             Update
@@ -1159,9 +1333,11 @@ export function GgufDownloadCard({
         {showDownloadAction && (
           <button
             type="button"
-            disabled={downloadAction.disabled}
-            onClick={downloadAction.onClick}
-            aria-label={downloadAction.ariaLabel}
+            disabled={downloadAction.disabled || assets.checking}
+            onClick={() => downloadingThisVariant ? downloadAction.onClick() : void assets.request(downloadAction.onClick)}
+            aria-label={
+              selectedScopedLive ? "Downloading" : downloadAction.ariaLabel
+            }
             className={cn(
               "hub-action-btn w-24",
               ctaDisabled &&
@@ -1191,15 +1367,20 @@ export function GgufDownloadCard({
                 <Spinner />
                 Starting…
               </span>
+            ) : selectedScopedLive ? (
+              <span className="inline-flex items-center gap-2 text-muted-foreground">
+                <Spinner />
+              </span>
             ) : (
               <>
                 <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-                {downloadAction.downloadLabel}
+                {assets.checking ? "Checking…" : downloadAction.downloadLabel}
               </>
             )}
           </button>
         )}
 
+        {hubPlan && <span className="px-3 text-ui-12 text-muted-foreground">Downloading…</span>}
         {showRunAction && onRun && selected && (
           <ModelRunActionButton
             label={`Configure and run ${repoId} ${selectedLabel ?? selected.quant}`}
@@ -1218,6 +1399,7 @@ export function GgufDownloadCard({
           />
         )}
       </DownloadCard>
+      {assets.dialog}
       {/* Only a quant actually on disk gets charted: an undownloaded one has no
           weights to measure, and the fit badge already tiers those. */}
       {selected?.downloaded && showMemoryBar ? (

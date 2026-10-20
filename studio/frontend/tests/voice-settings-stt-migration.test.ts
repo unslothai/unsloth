@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   DEFAULT_STT_MODEL,
   RECOMMENDED_STT_MODELS,
-  STT_MODELS,
+  STT_PICKER_MODELS,
   migrateVoiceSettings,
 } from "../src/features/settings/stores/stt-model-catalog.ts";
 
@@ -28,10 +28,10 @@ test("the default dictation model is a recommended one", () => {
 });
 
 test("recommended models are listed before the rest", () => {
-  const firstOther = STT_MODELS.findIndex(
+  const firstOther = STT_PICKER_MODELS.findIndex(
     (model) => !RECOMMENDED_STT_MODELS.has(model),
   );
-  const lastRecommended = STT_MODELS.reduce(
+  const lastRecommended = STT_PICKER_MODELS.reduce(
     (last, model, index) => (RECOMMENDED_STT_MODELS.has(model) ? index : last),
     -1,
   );

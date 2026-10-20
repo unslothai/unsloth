@@ -5,6 +5,7 @@ use log::{info, warn};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 static DESKTOP_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -85,8 +86,7 @@ impl AuthError {
 }
 
 fn auth_secret_path(home: &Path, filename: &str) -> PathBuf {
-    home.join(".unsloth")
-        .join("studio")
+    crate::studio_home::studio_root_for_home(home)
         .join("auth")
         .join(filename)
 }
@@ -195,6 +195,11 @@ fn classify_auth_send_error(error: reqwest::Error) -> AuthError {
     }
 }
 
+// Long enough for a backend still importing its ML stack at startup.
+fn desktop_auth_client() -> Result<Client, reqwest::Error> {
+    crate::loopback_http::client(Duration::from_secs(30))
+}
+
 fn should_retry_with_discovered_port(source: PortSource, error: &AuthError) -> bool {
     matches!(
         (source, error),
@@ -263,10 +268,13 @@ async fn provision_desktop_auth() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME.
-    // Scrub so provisioning writes match what the Rust auth code reads.
+    // Inherited roots are dropped and the desktop's own root passed, so provisioning writes
+    // match what the Rust auth code reads.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -365,8 +373,7 @@ async fn desktop_auth_inner(
     if backend.source == PortSource::Discovered {
         diagnostics::record_attached_external_backend(diagnostics, backend.port);
     }
-    let client = crate::loopback_http::client(std::time::Duration::from_secs(5))
-        .map_err(|e| format!("Desktop auth failed: {}", e))?;
+    let client = desktop_auth_client().map_err(|e| format!("Desktop auth failed: {}", e))?;
 
     for attempt in 0..2 {
         if attempt == 1 {
@@ -408,6 +415,10 @@ mod tests {
     }
 
     async fn login_server_with_body(status: &str, body: &str) -> u16 {
+        delayed_login_server(status, body, Duration::ZERO).await
+    }
+
+    async fn delayed_login_server(status: &str, body: &str, delay: Duration) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let status = status.to_string();
@@ -417,6 +428,7 @@ mod tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buffer = [0; 1024];
             let _ = stream.read(&mut buffer).await.unwrap();
+            tokio::time::sleep(delay).await;
             let response = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -425,6 +437,17 @@ mod tests {
         });
 
         port
+    }
+
+    #[tokio::test]
+    async fn desktop_login_waits_for_a_slow_response() {
+        let body = r#"{"access_token":"access","refresh_token":"refresh"}"#;
+        let port = delayed_login_server("200 OK", body, Duration::from_secs(6)).await;
+        let response =
+            exchange_desktop_secret(&desktop_auth_client().unwrap(), port, "desktop-secret")
+                .await
+                .unwrap();
+        assert!(matches!(response, Some(DesktopAuthResponse::Tokens { .. })));
     }
 
     #[tokio::test]

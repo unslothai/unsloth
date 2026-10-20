@@ -12,6 +12,7 @@ import {
   isDownloadCancelled,
   urlToBlob,
 } from "@/lib/native-files";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import type {
@@ -21,12 +22,7 @@ import type {
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type VariantProps, cva } from "class-variance-authority";
-import {
-  ImageIcon,
-  ImageOffIcon,
-  RefreshCwIcon,
-  ShieldAlertIcon,
-} from "lucide-react";
+import { ImageIcon, ImageOffIcon, ShieldAlertIcon } from "lucide-react";
 import {
   type ComponentProps,
   type PropsWithChildren,
@@ -381,7 +377,7 @@ function RegenerateButton({
       aria-label="Regenerate image"
       className="inline-flex size-7 items-center justify-center rounded hover:bg-muted disabled:opacity-50"
     >
-      <RefreshCwIcon
+      <RefreshGlyph
         className={cn("size-4", isRegenerating && "animate-spin")}
       />
     </button>

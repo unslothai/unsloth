@@ -159,12 +159,15 @@ def test_edit_file_cannot_read_or_write_foreign_sandbox(other, kind):
 @pytest.mark.parametrize(
     "flags", [{"permission_mode": "full"}, {"bypass_permissions": True}, {"disable_sandbox": True}]
 )
-def test_full_access_admission_refuses_every_account_in_multi_mode(account, flags):
+def test_full_access_admission_follows_the_account_role(account, flags):
+    if account.is_owner:
+        run_as(account, tool_policy.require_tool_access, **flags)
+        return
     with pytest.raises(HTTPException) as exc:
         run_as(account, tool_policy.require_tool_access, **flags)
     assert exc.value.status_code == 400
     assert "full access" in exc.value.detail.lower()
-    assert "more than one account exists" in exc.value.detail
+    assert "installation owner" in exc.value.detail
 
 
 @pytest.mark.parametrize(
@@ -194,7 +197,7 @@ def test_sandboxed_admission_never_queries_installation_policy(monkeypatch):
 def test_direct_tool_bypass_is_rejected_before_dispatch(monkeypatch):
     monkeypatch.setattr(tools, "_bash_exec", lambda *a, **kw: pytest.fail("tool ran"))
     with pytest.raises(HTTPException) as exc:
-        tools.execute_tool("terminal", {"command": "pwd"}, disable_sandbox = True)
+        run_as(ALICE, tools.execute_tool, "terminal", {"command": "pwd"}, disable_sandbox = True)
     assert exc.value.status_code == 400
 
 
@@ -401,7 +404,7 @@ def test_closing_mcp_sessions_only_closes_acting_account(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("account", ACCOUNTS)
+@pytest.mark.parametrize("account", (ALICE, BOB))
 @pytest.mark.parametrize("loop_name", ["gguf", "safetensors", "studio", "codex"])
 def test_every_tool_loop_refuses_full_access_before_model_or_tool_dispatch(account, loop_name):
     def check():
@@ -709,3 +712,26 @@ def test_sandbox_recovery_runs_once_for_each_account(isolated, monkeypatch):
         assert not worker.is_alive()
         assert run_as(account, isolated) is None
     assert seen == [ALICE.account_id, BOB.account_id]
+
+
+@pytest.mark.parametrize("account", ACCOUNTS)
+def test_only_owner_full_access_can_edit_outside_the_sandbox(account, tmp_path):
+    target = tmp_path / "outside-sandbox.txt"
+    target.write_text("original", encoding = "utf-8")
+
+    def edit():
+        return run_as(
+            account,
+            tools.execute_tool,
+            "edit_file",
+            {"path": str(target), "edits": [{"old_string": "original", "new_string": "updated"}]},
+            disable_sandbox = True,
+        )
+
+    if account.is_owner:
+        edit()
+        assert target.read_text(encoding = "utf-8") == "updated"
+    else:
+        with pytest.raises(HTTPException, match = "installation owner"):
+            edit()
+        assert target.read_text(encoding = "utf-8") == "original"

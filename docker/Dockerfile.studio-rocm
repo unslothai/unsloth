@@ -8,9 +8,9 @@
 # also ships JupyterLab, the notebook tooling and the notebooks, so Dockerfile.studio
 # inherits them; the ROCm base ships none of that, so it is all installed here.
 #
-# llama.cpp is installed as the CPU bundle: the builder has no GPU, and a ROCm
-# bundle is per-gfx-family, so baking one would pin this image to one arch. GGUF
-# chat therefore runs on the CPU here; training, the notebooks and the UI use the GPU.
+# llama.cpp is the Vulkan bundle (Mesa RADV): a ROCm bundle is per-gfx-family and would
+# pin this image to one arch. Without a RADV device (CDNA, the WSL2 DXG bridge) GGUF
+# chat falls back to the CPU.
 #
 # Build (on the published ROCm base, or one built from docker/Dockerfile.rocm):
 #   docker buildx build --build-arg BASE_IMAGE=unsloth/unsloth-rocm:latest \
@@ -60,10 +60,10 @@ RUN apt-get update \
  && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
-RUN /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python "jupyterlab==4.6.0"
+RUN /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python "jupyterlab==4.6.4"
 COPY jupyter/unsloth_labext /opt/labext-src
 RUN cd /opt/labext-src \
- && /opt/unsloth-venv/bin/jlpm install \
+ && /opt/unsloth-venv/bin/jlpm install --immutable \
  && /opt/unsloth-venv/bin/jlpm build:prod
 
 FROM ${BASE_IMAGE}
@@ -85,6 +85,8 @@ ARG UNSLOTH_NOTEBOOKS_REF=main
 # $UNSLOTH_STUDIO_HOME/cache/uv, which would fill a volume on the home with wheels.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
+    UNSLOTH_STUDIO_DOCUMENTS_HOME=/opt/unsloth-studio/documents \
+    UNSLOTH_STUDIO_SKILLS_HOME=/opt/unsloth-studio/skills \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
     JUPYTER_PORT=8888 \
     UNSLOTH_STUDIO_PORT=8000 \
@@ -95,10 +97,11 @@ ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
 
 # install.sh needs curl + git; supervisor runs Studio and JupyterLab together;
 # ffmpeg is what the notebooks' audio decode shells out to (docker/Dockerfile bakes
-# it for the same reason), and it is not in the ROCm base.
+# it for the same reason), and it is not in the ROCm base. libvulkan1 and
+# mesa-vulkan-drivers (RADV) let the Vulkan llama.cpp reach the card.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-        curl git ca-certificates supervisor ffmpeg \
+        curl git ca-certificates supervisor ffmpeg libvulkan1 mesa-vulkan-drivers \
  && rm -rf /var/lib/apt/lists/*
 
 # JupyterLab and the notebooks' runtime packages into the base venv, so the kernel
@@ -115,7 +118,7 @@ RUN set -eux \
  && BASE_TORCH="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('torch'))")" \
  && BASE_NUMPY="$(/opt/unsloth-venv/bin/python -c "from importlib.metadata import version; print(version('numpy'))")" \
  && /opt/unsloth-venv/bin/uv pip install --python /opt/unsloth-venv/bin/python \
-        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
+        "jupyterlab==4.6.4" "notebook==7.6.3" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
         "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
         "langid==1.1.6" "easydict==1.13" "omegaconf==2.3.1" "einx==0.4.3" \
         "librosa==0.11.0" "ftfy==6.3.1" "decord==0.6.0" \
@@ -150,7 +153,7 @@ RUN set -eux \
     UNSLOTH_TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
     UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}" \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
-    UNSLOTH_LLAMA_CPP_BACKEND=cpu \
+    UNSLOTH_LLAMA_CPP_BACKEND=vulkan \
     UNSLOTH_SKIP_WHISPER_INSTALL=1 \
     UNSLOTH_PYTHON=3.12 \
     UNSLOTH_ALLOW_CPU=1 \
@@ -166,6 +169,8 @@ RUN set -eux \
     # The UI is the point of this image, so a missing frontend build is fatal here
     # rather than a 404 at runtime.
  && test -f "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/dist/index.html" \
+    # Shipping the CPU bundle here would put GGUF chat back on the CPU unnoticed.
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import json; m = json.load(open('${UNSLOTH_STUDIO_HOME}/llama.cpp/UNSLOTH_PREBUILT_INFO.json')); assert m.get('backend') == 'vulkan', 'llama.cpp installed as ' + repr(m.get('backend')) + ', not vulkan'; print('llama.cpp', m.get('release_tag'), m.get('asset'))" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
           "${UV_CACHE_DIR}" \
@@ -240,15 +245,16 @@ RUN SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get
 # No transformers sidecars are baked: the CUDA image derives its set from the vLLM
 # it carries, and this image carries none, so a recorded transformers pin resolves
 # to the base venv's transformers.
-COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
+COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_root_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
 RUN set -eux \
  && SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')" \
  && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
  && cp /opt/unsloth-nb/unsloth_nb_pip_magic.py "$SP/unsloth_nb_pip_magic.py" \
  && cp /opt/unsloth-nb/unsloth_colab_compat.py "$SP/unsloth_colab_compat.py" \
- && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
+ && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_root_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
  && mkdir -p /opt/unsloth-nb/bin \
  && for t in pip pip3 uv; do ln -sf /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/bin/$t; done \
+ && for t in apt apt-get dpkg sudo; do ln -sf /opt/unsloth-nb/unsloth_root_shim.py /opt/unsloth-nb/bin/$t; done \
  && ln -sf /opt/unsloth-nb/unsloth_run.py /usr/local/bin/unsloth-run \
  && ln -sf /opt/unsloth-nb/unsloth_sync_notebooks.sh /usr/local/bin/unsloth-sync-notebooks \
  && ln -sf /opt/unsloth-nb/unsloth_nb_content_sig.py /usr/local/bin/unsloth-nb-content-sig \

@@ -250,6 +250,9 @@ def test_pre_detect_reads_the_repo_the_loader_fetches(
     monkeypatch.setattr(trainer_mod, "detect_audio_type_checked", probe)
     monkeypatch.setattr(trainer_mod, "is_vision_model", vision)
     monkeypatch.setattr(transformers, "AutoTokenizer", _Tokenizer, raising = False)
+    # The 4-bit row reads the 4-bit table only where bitsandbytes is usable; with unsloth
+    # importable on a CPU host it is not. The fallback has its own test below.
+    monkeypatch.setattr(trainer_mod, "_bitsandbytes_allows_4bit", lambda: True)
 
     trainer = trainer_mod.UnslothTrainer()
     trainer.pre_detect_and_load_tokenizer(
@@ -755,7 +758,7 @@ def test_the_security_scan_imports_nothing_heavy():
         ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", False, "unsloth/gemma-3-270m-it"),
         # ...while a 4-bit load keeps it, so the tables resolve nothing and BAD_MAPPINGS is
         # applied to the input name instead, landing on a DIFFERENT repo.
-        ("unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit", True, "unsloth/qwen3-30b-a3b"),
+        ("unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit", True, "unsloth/Qwen3-30B-A3B"),
         # An id the loader really does leave alone still answers None.
         ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", True, None),
         ("unsloth/gemma-3-270m-it", False, None),

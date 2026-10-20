@@ -1,6 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app_layout;
+mod app_menu;
+mod browser_capture;
+#[cfg(target_os = "macos")]
+mod browser_context_downloads;
+mod browser_downloads;
+#[cfg(target_os = "macos")]
+mod browser_layer;
+mod browser_open_with;
+mod browser_proxy;
+#[cfg(target_os = "linux")]
+mod browser_linux;
+mod browser_webview;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -13,7 +25,10 @@ mod install;
 mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
+mod long_paths;
 mod loopback_http;
+#[cfg(target_os = "macos")]
+mod macos_event_guard;
 #[cfg(target_os = "macos")]
 mod macos_tray;
 mod native_backend_lease;
@@ -24,7 +39,9 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod shell_path;
 mod staged_update;
+mod studio_home;
 mod update;
 mod webview_permissions;
 mod windows_job;
@@ -39,7 +56,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -55,6 +72,11 @@ static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
+
+/// Absent or unreadable = shown, so a hidden start never loses its only way back (see `.setup`).
+const TRAY_ICON_VISIBLE_PREFERENCE_FILE: &str = "tray-icon-visible-v1";
+
+const TRAY_ID: &str = "main";
 
 /// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
 /// from it. The Windows entry is one HKCU Run value that outside things delete without asking:
@@ -203,6 +225,60 @@ fn write_close_to_tray_preference(config_dir: &Path, enabled: bool) -> Result<()
     })
 }
 
+fn tray_icon_visible_preference_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(TRAY_ICON_VISIBLE_PREFERENCE_FILE)
+}
+
+fn read_tray_icon_visible_preference(config_dir: &Path) -> bool {
+    let path = tray_icon_visible_preference_path(config_dir);
+    match fs::read_to_string(&path) {
+        Ok(value) => match value.trim().parse::<bool>() {
+            Ok(visible) => visible,
+            Err(error) => {
+                warn!(
+                    "Ignoring invalid tray icon visibility preference {}: {error}",
+                    path.display()
+                );
+                true
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            warn!(
+                "Could not read tray icon visibility preference {}: {error}",
+                path.display()
+            );
+            true
+        }
+    }
+}
+
+fn write_tray_icon_visible_preference(config_dir: &Path, visible: bool) -> Result<(), String> {
+    fs::create_dir_all(config_dir).map_err(|error| {
+        format!(
+            "Failed to create app configuration directory {}: {error}",
+            config_dir.display()
+        )
+    })?;
+    let path = tray_icon_visible_preference_path(config_dir);
+    fs::write(&path, format!("{visible}\n")).map_err(|error| {
+        format!(
+            "Failed to save tray icon visibility preference {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn stored_tray_icon_visible_preference(app: &tauri::AppHandle) -> bool {
+    app.path()
+        .app_config_dir()
+        .map(|dir| read_tray_icon_visible_preference(&dir))
+        .unwrap_or_else(|error| {
+            warn!("Could not determine app configuration directory: {error}");
+            true
+        })
+}
+
 fn launch_at_login_preference_path(config_dir: &Path) -> PathBuf {
     config_dir.join(LAUNCH_AT_LOGIN_PREFERENCE_FILE)
 }
@@ -306,6 +382,52 @@ fn set_close_to_tray(
         .map_err(|error| format!("Could not determine app configuration directory: {error}"))?;
     write_close_to_tray_preference(&config_dir, enabled)?;
     state.0.store(enabled, Ordering::SeqCst);
+    Ok(enabled)
+}
+
+#[tauri::command]
+fn get_tray_icon_visible(app: tauri::AppHandle) -> Option<bool> {
+    cfg!(target_os = "macos").then(|| stored_tray_icon_visible_preference(&app))
+}
+
+/// tray-icon rebuilds the status item on show, so the appearance observer must follow it.
+fn apply_tray_icon_visible(tray: &tauri::tray::TrayIcon, visible: bool) -> tauri::Result<()> {
+    tray.set_visible(visible)?;
+    #[cfg(target_os = "macos")]
+    if visible {
+        if let Err(error) = macos_tray::install_appearance_observer(tray) {
+            // The template icon remains visible and adaptive if native observation is unavailable.
+            warn!("Could not install the macOS tray appearance observer: {error}");
+        }
+    } else {
+        macos_tray::remove_appearance_observer();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_tray_icon_visible(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    if !cfg!(target_os = "macos") {
+        return Err("The menu bar icon is only configurable on macOS".to_string());
+    }
+    let tray = app
+        .tray_by_id(TRAY_ID)
+        .ok_or_else(|| "Menu bar icon is not available".to_string())?;
+    let previous = stored_tray_icon_visible_preference(&app);
+    apply_tray_icon_visible(&tray, enabled)
+        .map_err(|error| format!("Could not update the menu bar icon: {error}"))?;
+    let persisted = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("Could not determine app configuration directory: {error}"))
+        .and_then(|config_dir| write_tray_icon_visible_preference(&config_dir, enabled));
+    if let Err(error) = persisted {
+        // Keep the icon matching the preference the next launch will read.
+        if let Err(restore_error) = apply_tray_icon_visible(&tray, previous) {
+            warn!("Could not restore the previous menu bar icon visibility: {restore_error}");
+        }
+        return Err(error);
+    }
     Ok(enabled)
 }
 
@@ -780,15 +902,18 @@ fn setup_logging() {
         simplelog::ColorChoice::Auto,
     ));
 
-    // Try to set up file logging to ~/.unsloth/studio/tauri.log
+    // Try to set up file logging to ~/.unsloth/studio/tauri.log (a chosen root once it exists).
     if let Some(home) = dirs::home_dir() {
-        let log_dir = home.join(".unsloth").join("studio");
+        let log_dir = studio_home::chosen_root_for_home(&home)
+            .filter(|root| root.is_dir())
+            .unwrap_or_else(|| studio_home::default_root_for_home(&home));
         if fs::create_dir_all(&log_dir).is_ok() {
             let log_path = log_dir.join("tauri.log");
             let rotated_path = log_dir.join("tauri.log.1");
             let max_log_bytes = 5 * 1024 * 1024;
-            if let Ok(file) = RotatingLogFile::open(log_path, rotated_path, max_log_bytes) {
+            if let Ok(file) = RotatingLogFile::open(log_path.clone(), rotated_path, max_log_bytes) {
                 loggers.push(WriteLogger::new(LevelFilter::Info, Config::default(), file));
+                let _ = PANIC_LOG_PATH.set(log_path);
             }
         }
     }
@@ -798,12 +923,81 @@ fn setup_logging() {
     }
 }
 
+static PANIC_LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Own file handle, not `log`: a panic raised inside the logger's lock would deadlock.
+fn log_panics() {
+    static PANICS: AtomicU64 = AtomicU64::new(0);
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = PANIC_LOG_PATH.get() {
+            // Symbolizing is slow, so only the first few panics get a backtrace.
+            let backtrace = if PANICS.fetch_add(1, Ordering::Relaxed) < 4 {
+                format!("\n{}", std::backtrace::Backtrace::force_capture())
+            } else {
+                String::new()
+            };
+            let now = time::OffsetDateTime::now_utc();
+            let thread = std::thread::current();
+            if let Ok(mut file) = fs::OpenOptions::new().append(true).open(path) {
+                let _ = writeln!(
+                    file,
+                    "{:02}:{:02}:{:02} [ERROR] thread '{}' {info}{backtrace}",
+                    now.hour(),
+                    now.minute(),
+                    now.second(),
+                    thread.name().unwrap_or("<unnamed>"),
+                );
+            }
+        }
+        default_hook(info);
+    }));
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let window = app.get_webview_window("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.set_decorations(false)?;
+    Ok(())
+}
+
+// tao reapplies the config's `resizable: false` on the first configure, wiping setResizable calls made while hidden
+#[cfg(target_os = "linux")]
+fn keep_resizable_across_first_configure(
+    app: &tauri::App,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use gtk::prelude::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    let gtk_window = window.gtk_window()?;
+    let requested: Rc<Cell<Option<bool>>> = Rc::default();
+    let handlers: Rc<RefCell<Vec<glib::SignalHandlerId>>> = Rc::default();
+
+    let seen = requested.clone();
+    // "event" fires before tao's configure-event handler; unrealized configures skip that handler, so refresh each time
+    let before = gtk_window.connect_event(move |window, event| {
+        if event.event_type() == gdk::EventType::Configure {
+            seen.set(Some(window.is_resizable()));
+        }
+        glib::Propagation::Proceed
+    });
+    let owned = handlers.clone();
+    let after = gtk_window.connect_configure_event(move |window, _| {
+        if let Some(resizable) = requested.take() {
+            window.set_resizable(resizable);
+            for id in owned.borrow_mut().drain(..) {
+                window.disconnect(id);
+            }
+        }
+        false
+    });
+    handlers.borrow_mut().extend([before, after]);
     Ok(())
 }
 
@@ -986,6 +1180,40 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .buttons(MessageDialogButtons::OkCancelCustom(
             "Quit anyway".to_string(),
             "Keep training".to_string(),
+        ))
+        .blocking_show()
+}
+
+fn confirm_update_during_training(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    app.dialog()
+        .message(
+            "Training is starting or still running. Updating now stops the \
+             run and loses progress since the last checkpoint.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Training in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Update anyway".to_string(),
+            "Keep training".to_string(),
+        ))
+        .blocking_show()
+}
+
+fn confirm_update_during_downloads(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    app.dialog()
+        .message(
+            "Downloads are still running. Updating now stops the backend and \
+             cancels the downloads in progress.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Downloads in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Update anyway".to_string(),
+            "Keep downloading".to_string(),
         ))
         .blocking_show()
 }
@@ -1276,11 +1504,13 @@ fn show_main_window(app: &tauri::AppHandle) {
     // Hidden login starts run as an accessory app (no Dock icon); restore the regular policy.
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    if let Some(window) = app.get_webview_window("main") {
+    // Not get_webview_window: that is None while browser views are children of the window.
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    browser_webview::window_changed(app, None);
 }
 
 /// Coordinates the one visible quit confirmation and, on macOS, one AppKit termination request
@@ -1547,7 +1777,7 @@ where
                             // CTRL_BREAK budgets in series.
                             cfg!(target_os = "windows"),
                             || {
-                                app.get_webview_window("main")
+                                app.get_window("main")
                                     .map(|window| window.is_visible().map_err(|e| e.to_string()))
                             },
                         )
@@ -1610,10 +1840,13 @@ fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .accelerator("CmdOrCtrl+Q")
         .build(app)?;
     app_menu.append(&quit)?;
+    app_menu::setup_app_menus(app, &menu)?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
         if event.id() == APP_QUIT_MENU_ID {
             request_quit(app);
+        } else {
+            app_menu::handle_menu_event(app, event.id().as_ref());
         }
     });
     Ok(())
@@ -1738,10 +1971,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // template mode lets AppKit choose the correct monochrome color for the current menu bar.
     #[cfg(target_os = "macos")]
     let tray_icon = tauri::include_image!("./icons/tray-icon@2x.png");
+    // Supplied tray exports are monochrome; retain the existing Windows/Linux color pixels.
     #[cfg(not(target_os = "macos"))]
-    let tray_icon = app.default_window_icon().unwrap().clone();
+    let tray_icon = tauri::include_image!("./icons/tray-icon-color.png");
 
-    let tray = TrayIconBuilder::new()
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .tooltip("Unsloth")
         .icon(tray_icon)
@@ -1767,9 +2001,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build(app)?;
 
     #[cfg(target_os = "macos")]
-    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
-        // The template icon remains visible and adaptive if native observation is unavailable.
-        warn!("Could not install the macOS tray appearance observer: {error}");
+    {
+        let visible = stored_tray_icon_visible_preference(app.handle());
+        if let Err(error) = apply_tray_icon_visible(&tray, visible) {
+            warn!("Could not apply the stored tray icon visibility: {error}");
+        }
     }
     #[cfg(not(target_os = "macos"))]
     drop(tray);
@@ -2073,10 +2309,13 @@ fn main() {
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
-    let _ = fix_path_env::fix();
+    shell_path::fix_path();
 
     setup_logging();
+    log_panics();
     info!("Unsloth desktop app starting");
+    #[cfg(target_os = "macos")]
+    macos_event_guard::install();
 
     #[cfg(target_os = "linux")]
     if let Some((variables, reason)) = webkit_rendering_workaround {
@@ -2091,6 +2330,19 @@ fn main() {
 
     let mut context = tauri::generate_context!();
     extend_csp_with_hf_endpoints(&mut context);
+    // Restore while hidden, else the 760x560 setup size overwrites the saved layout.
+    let restore_initial_layout = dirs::config_dir().is_some_and(|dir| {
+        app_layout::should_restore_initial_window_state(
+            &dir.join(&context.config().identifier),
+            tauri_plugin_window_state::DEFAULT_FILENAME,
+        )
+    });
+    info!("Native saved app layout restore enabled: {restore_initial_layout}");
+    let mut window_state = tauri_plugin_window_state::Builder::new()
+        .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
+    if !restore_initial_layout {
+        window_state = window_state.skip_initial_state("main");
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -2108,12 +2360,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
-                .skip_initial_state("main")
-                .build(),
-        )
+        .plugin(window_state.build())
+        .manage(app_layout::NativeLayoutRestored(
+            std::sync::atomic::AtomicBool::new(restore_initial_layout),
+        ))
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_training_activity_state())
@@ -2125,13 +2375,57 @@ fn main() {
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
-        .invoke_handler(tauri::generate_handler![
+        .manage(native_file_dialogs::NativeSaveRegistry::default())
+        .manage(browser_webview::new_browser_views())
+        .manage(browser_downloads::new_browser_downloads())
+        .invoke_handler(|invoke| {
+            if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
+                invoke.resolver.reject("Studio commands are only available to the main webview");
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+            app_menu::set_app_menu_actions,
+            browser_webview::browser_view_supported,
+            browser_webview::browser_view_show,
+            browser_webview::browser_view_open_background,
+            browser_webview::browser_view_navigate,
+            browser_webview::browser_view_action,
+            browser_webview::browser_view_zoom,
+            browser_webview::browser_view_find,
+            browser_webview::browser_view_annotate,
+            browser_webview::browser_view_agent,
+            browser_webview::browser_view_eval,
+            browser_webview::browser_view_close,
+            browser_webview::browser_view_clear_data,
+            browser_webview::browser_view_mute,
+            browser_webview::browser_view_layered,
+            browser_webview::browser_view_input,
+            browser_capture::browser_capture,
+            browser_downloads::browser_download_save,
+            browser_downloads::browser_download_reveal,
+            browser_downloads::browser_download_open,
+            browser_downloads::browser_download_exists,
+            browser_downloads::browser_download_forget,
+            browser_downloads::browser_download_decide,
+            browser_downloads::browser_download_folder,
+            browser_downloads::browser_download_folder_pick,
+            browser_downloads::browser_download_folder_reset,
+            browser_open_with::browser_file_local_copy,
+            browser_open_with::browser_file_apps,
+            browser_open_with::browser_file_open,
+            browser_open_with::browser_file_path,
+            browser_open_with::browser_file_reveal,
+            browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
+            app_layout::take_native_layout_restored,
             commands::check_install_status,
+            studio_home::studio_install_location,
+            studio_home::choose_studio_install_location,
+            studio_home::reset_studio_install_location,
             commands::desktop_preflight,
             commands::start_install,
             commands::start_server,
@@ -2143,11 +2437,14 @@ fn main() {
             commands::get_server_logs,
             commands::open_logs_dir,
             commands::open_models_dir,
+            commands::confirm_backend_update,
             commands::start_backend_update,
             commands::start_managed_repair,
             commands::native_path_leases_usable,
             commands::cancel_pending_elevation,
             commands::install_system_packages,
+            long_paths::windows_long_paths_status,
+            long_paths::enable_windows_long_paths,
             desktop_auth::desktop_auth,
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
@@ -2161,6 +2458,10 @@ fn main() {
             native_clipboard::read_native_clipboard_files,
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
+            native_file_dialogs::begin_native_file_save,
+            native_file_dialogs::append_native_file_save_chunk,
+            native_file_dialogs::finish_native_file_save,
+            native_file_dialogs::cancel_native_file_save,
             native_file_dialogs::save_native_file_from_url,
             native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
@@ -2173,6 +2474,7 @@ fn main() {
             native_intents::read_native_attachment_file,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
+            native_intents::pick_native_model_folder,
             native_intents::pick_native_document_folder,
             native_intents::consume_native_path_token,
             native_intents::register_artifact_path,
@@ -2188,15 +2490,20 @@ fn main() {
             set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
+            get_tray_icon_visible,
+            set_tray_icon_visible,
             set_tray_server_status,
-        ])
+            ];
+            handler(invoke)
+        })
         .setup(|app| {
             // Resolve here, before any window path can ask: this consumes the relaunch marker.
             let launched_hidden = was_launched_hidden(app.handle().clone());
             #[cfg(not(target_os = "macos"))]
             let _ = launched_hidden;
             #[cfg(target_os = "macos")]
-            if launched_hidden {
+            // Without a menu bar icon the Dock icon is the only way back to a hidden start.
+            if launched_hidden && stored_tray_icon_visible_preference(app.handle()) {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
 
@@ -2223,6 +2530,8 @@ fn main() {
             setup_custom_titlebar(app)?;
             #[cfg(target_os = "linux")]
             setup_linux_media_permissions(app)?;
+            #[cfg(target_os = "linux")]
+            keep_resizable_across_first_configure(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]
@@ -2235,13 +2544,30 @@ fn main() {
             setup_unix_termination_signals(app)?;
             Ok(())
         })
+        .on_webview_event(|webview, event| {
+            // The multi-webview runtime delivers OS drops to the webview, not the window.
+            // Browser page drops must not authorize paths for Studio's native intake.
+            if webview.label() == "main" {
+                if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) =
+                    event
+                {
+                    webview
+                        .state::<native_intents::NativeIntakeState>()
+                        .note_dropped_paths(paths);
+                }
+            }
+        })
         .on_window_event(|window, event| {
-            // Record real drops here, in Rust, so the renderer can only register paths the
-            // OS actually handed to the native intake commands.
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
-                window
-                    .state::<native_intents::NativeIntakeState>()
-                    .note_dropped_paths(paths);
+            if window.label() == "main" {
+                match event {
+                    tauri::WindowEvent::Focused(focused) => {
+                        browser_webview::window_changed(window.app_handle(), Some(*focused))
+                    }
+                    tauri::WindowEvent::Resized(_) => {
+                        browser_webview::window_changed(window.app_handle(), None)
+                    }
+                    _ => {}
+                }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.
@@ -2251,6 +2577,7 @@ fn main() {
                     MainWindowCloseAction::Hide => {
                         // The tray's Open action and a second app launch restore the window.
                         let _ = window.hide();
+                        browser_webview::window_changed(window.app_handle(), None);
                     }
                     MainWindowCloseAction::Quit => request_quit(window.app_handle()),
                 }
@@ -2264,6 +2591,11 @@ fn main() {
                 has_visible_windows: false,
                 ..
             } => show_main_window(app),
+            #[cfg(target_os = "linux")]
+            tauri::RunEvent::ExitRequested { .. } => {
+                // window-state only saves windows with one webview; detach browser tabs first.
+                browser_webview::close_all(app);
+            }
             tauri::RunEvent::Exit => {
                 // Safety net for framework-driven exits. When another path already owns
                 // cleanup, this blocks the main event-loop thread until that path is done.
@@ -2530,6 +2862,25 @@ media-src 'self' https:"
         fs::write(close_to_tray_preference_path(dir.path()), b"maybe\n").unwrap();
 
         assert!(!read_close_to_tray_preference(dir.path()));
+    }
+
+    #[test]
+    fn tray_icon_visible_preference_defaults_on_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+
+        assert!(read_tray_icon_visible_preference(dir.path()));
+        write_tray_icon_visible_preference(dir.path(), false).unwrap();
+        assert!(!read_tray_icon_visible_preference(dir.path()));
+        write_tray_icon_visible_preference(dir.path(), true).unwrap();
+        assert!(read_tray_icon_visible_preference(dir.path()));
+    }
+
+    #[test]
+    fn invalid_tray_icon_visible_preference_falls_back_to_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(tray_icon_visible_preference_path(dir.path()), b"maybe\n").unwrap();
+
+        assert!(read_tray_icon_visible_preference(dir.path()));
     }
 
     #[test]

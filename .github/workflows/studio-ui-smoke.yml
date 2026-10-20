@@ -37,7 +37,19 @@ on:
       # The Playwright test files themselves -- a PR that ONLY edits
       # the test must still trigger UI CI. Kept as a directory glob, which
       # test_stt_model_search_locator_contract.py asserts.
-      - 'tests/studio/**'
+      # The files under tests/ the jobs execute, not all of tests/studio (hundreds of
+      # guard tests and PowerShell units no step here runs). Every lane runs
+      # tests/studio/playwright_*.py scripts as plain python, and their only local
+      # imports are _playwright_robust.py and other playwright_* modules (log_budget
+      # comes from studio/backend/tests, listed above). The pytest step runs
+      # test_stt_model_search_locator_contract.py from the repo root, which loads
+      # tests/conftest.py, the tests package and tests/_shared.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_stt_model_search_locator_contract.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       # Reached by the installer this workflow already triggers on, so a commit touching
@@ -78,7 +90,19 @@ on:
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      - 'tests/studio/**'
+      # The files under tests/ the jobs execute, not all of tests/studio (hundreds of
+      # guard tests and PowerShell units no step here runs). Every lane runs
+      # tests/studio/playwright_*.py scripts as plain python, and their only local
+      # imports are _playwright_robust.py and other playwright_* modules (log_budget
+      # comes from studio/backend/tests, listed above). The pytest step runs
+      # test_stt_model_search_locator_contract.py from the repo root, which loads
+      # tests/conftest.py, the tests package and tests/_shared.
+      - 'tests/studio/playwright_*.py'
+      - 'tests/studio/_playwright_robust.py'
+      - 'tests/studio/test_stt_model_search_locator_contract.py'
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/scripts/run-studio-indicator-browser.sh'
       - 'studio/nvidia_probe.py'
@@ -95,9 +119,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a pending run
-  # before it starts. See the note below for what this is buying.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Per workflow, ref and event: a merge burst runs the executing commit plus the tip.
+  # See studio-backend-ci.yml for the trade, and the note below.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   # On a PR branch: latest-only, which is what cancel-in-progress buys.
   #
   # On main it buys less than it looks like. GitHub cancels any PENDING run in a
@@ -108,7 +132,7 @@ concurrency:
   # in 37 minutes cancelled three consecutive main runs of this workflow and none
   # completed. Detection survives on the tip, since the tree is cumulative;
   # per-commit attribution does not.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -180,6 +204,12 @@ jobs:
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18892'
       HF_HOME: ${{ github.workspace }}/hf-cache
+      # A llama.cpp, whisper.cpp or audio.cpp release published while this job runs leaves the prebuilt it
+      # just installed one behind, and Studio then puts an update card in the bottom-right overlay rail, over
+      # the composer the scripts click. Seen on main eb0617b6: audio.cpp v0.9.2 was published six minutes
+      # after the job installed v0.9.1, and the IME script timed out on a click the card intercepted. These
+      # scripts test chat, not live update checks; the update banner scripts stub the update routes.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -273,13 +303,6 @@ jobs:
           key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
           enableCrossOsArchive: true
 
-      - name: Install Unsloth (--local, --no-torch)
-        uses: ./.github/actions/install-unsloth-local
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-
       - name: Pin the Playwright version so the browser cache has a key
         id: pw
         run: |
@@ -329,6 +352,11 @@ jobs:
 
       - name: Install Playwright browsers
         id: pw-install
+        # A background step: it runs alongside Install Unsloth below, which uses its own
+        # venv. If both reach apt, this side goes through retry-with-apt-lock.sh and waits
+        # for the dpkg lock. Its outcome, which the cache saves read, is settled by the
+        # `wait: pw-install` step after the install.
+        background: true
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
@@ -438,6 +466,16 @@ jobs:
             probe ${{ matrix.engines }}
           fi
 
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Wait for the Playwright browsers
+        wait: pw-install
+
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
       # can only be restored by re-runs of that same PR while still competing for the
@@ -460,7 +498,7 @@ jobs:
         # restored by re-runs of that same PR while still counting against the shared
         # budget, evicting the copy every PR can read.
         if: >-
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.apt-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -470,7 +508,7 @@ jobs:
 
       - name: Save the Playwright browser cache
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -738,6 +776,16 @@ jobs:
           PW_ART_DIR="$PW_ART_DIR/late-filename" PW_RESOLVE_FIRST=1 python tests/studio/playwright_image_download_queue.py
           PW_ART_DIR="$PW_ART_DIR/late-quant" PW_LOAD_SECOND=1 PW_HOLD_FIRST_PLAN=1 PW_DIFFERENT_QUANT=1 python tests/studio/playwright_image_download_queue.py
 
+      # A cached model with two missing asset repos lists the queued stage beside the active one.
+      - name: Image staged-download pending rows regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          PW_ART_DIR: logs/playwright_staged_download_rows
+        run: |
+          mkdir -p logs/playwright_staged_download_rows
+          python tests/studio/playwright_staged_download_rows.py
+
       # The Text encoder precision control: what the select sends to the plan and to the load, that
       # Default omits the field entirely, that a refresh race cannot leave a stale reading, and that
       # the select follows the build the backend reports back, downgrade or decline included.
@@ -949,6 +997,7 @@ jobs:
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
             logs/playwright_image_download_queue
+            logs/playwright_staged_download_rows
             logs/playwright_image_text_encoder
             logs/playwright_modelcfg
             logs/playwright_memory_estimate
@@ -1207,7 +1256,7 @@ jobs:
         # restored by re-runs of that same PR while still counting against the shared
         # budget, evicting the copy every PR can read.
         if: >-
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.apt-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -1217,7 +1266,7 @@ jobs:
 
       - name: Save the Playwright browser cache
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0

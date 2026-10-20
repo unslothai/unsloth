@@ -728,6 +728,57 @@ def test_list_chat_messages_for_threads_chunks_over_900_ids(tmp_path, monkeypatc
     assert {m["threadId"] for m in out} == {f"t-{i}" for i in range(n)}
 
 
+def test_chat_thread_modified_at_stamps_only_real_edits(tmp_path, monkeypatch):
+    """Rename, move and archive stamp modified_at; a no-op patch or other field does not."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("t"))
+    assert studio_db.get_chat_thread("t")["modifiedAt"] is None
+
+    studio_db.update_chat_thread("t", {"title": "Test Chat"})
+    studio_db.update_chat_thread("t", {"archived": False, "modelId": "other"})
+    assert studio_db.get_chat_thread("t")["modifiedAt"] is None
+
+    renamed = studio_db.update_chat_thread("t", {"title": "Renamed"})
+    assert renamed["modifiedAt"] is not None
+
+    with sqlite3.connect(studio_db_path()) as conn:
+        conn.execute("UPDATE chat_threads SET modified_at = 1 WHERE id = 't'")
+    archived = studio_db.update_chat_thread("t", {"archived": True})
+    assert archived["modifiedAt"] > 1
+
+
+def test_count_chat_messages_for_threads_follows_the_newest_branch(tmp_path, monkeypatch):
+    """Counts user/assistant rows; a branched thread counts only its newest path."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    for tid in ("flat", "branched", "empty"):
+        studio_db.upsert_chat_thread(_thread(tid))
+
+    def msg(tid, mid, parent, role, at):
+        studio_db.upsert_chat_message(
+            {
+                "id": mid,
+                "threadId": tid,
+                "parentId": parent,
+                "role": role,
+                "content": [{"type": "text", "text": "x"}],
+                "createdAt": at,
+            }
+        )
+
+    msg("flat", "f1", None, "user", 1)
+    msg("flat", "f2", None, "assistant", 2)
+    msg("flat", "f3", None, "system", 3)
+    # b1 -> b2 (old reply) and b1 -> b3 (regenerated, newest) -> b4
+    msg("branched", "b1", None, "user", 10)
+    msg("branched", "b2", "b1", "assistant", 11)
+    msg("branched", "b3", "b1", "assistant", 12)
+    msg("branched", "b4", "b3", "user", 13)
+
+    counts = studio_db.count_chat_messages_for_threads(["flat", "branched", "empty", "missing"])
+    assert counts == {"flat": 2, "branched": 3, "empty": 0, "missing": 0}
+    assert studio_db.count_chat_messages_for_threads([]) == {}
+
+
 # ---------------------------------------------------------------------------
 # Legacy Dexie import ledger
 # ---------------------------------------------------------------------------
@@ -1098,6 +1149,63 @@ def _without(messages: list[dict], *drop: str) -> list[dict]:
     return [dict(m) for m in messages if m["id"] not in drop]
 
 
+@pytest.mark.parametrize("owner", ["generation", "research"])
+@pytest.mark.parametrize("revision", [None, 4])
+def test_reparented_managed_prompt_invalidates_saved_usage_after_reload(
+    tmp_path, monkeypatch, owner, revision
+):
+    from storage import chat_generation_runs_db, research_runs_db
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    prompt = _stored_message(id = "prompt", parentId = "ancestor")
+    prompt["metadata"] = {"kept": "server value"}
+    if revision is not None:
+        prompt["metadata"]["revision"] = revision
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _stored_message(id = "ancestor", role = "assistant", createdAt = 1),
+            prompt,
+            _stored_message(id = "sibling", createdAt = 10),
+        ],
+    )
+    common = dict(
+        run_id = "run-1",
+        owner_subject = "owner",
+        thread_id = "src",
+        user_message_id = "prompt",
+        assistant_message_id = "report",
+    )
+    if owner == "generation":
+        chat_generation_runs_db.create_run(
+            **common,
+            request_payload = {"model": "local", "messages": [{"role": "user", "content": "Hello"}]},
+        )
+    else:
+        research_runs_db.create_run(**common, config = {}, created_at = 11)
+    before = {m["id"]: m for m in studio_db.list_chat_messages("src")}
+    payload = _without(list(before.values()), "ancestor")
+    edited = next(m for m in payload if m["id"] == "prompt")
+    edited["parentId"] = None
+    edited["metadata"] = {"revision": 999, "untrusted": True}
+    edited["content"] = [{"type": "text", "text": "client drift"}]
+
+    studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    reloaded = {m["id"]: m for m in studio_db.list_chat_messages("src")}
+
+    assert reloaded["prompt"]["parentId"] is None
+    assert reloaded["prompt"]["metadata"] == {
+        **before["prompt"]["metadata"],
+        "revision": (revision or 0) + 1,
+    }
+    assert reloaded["prompt"]["content"] == before["prompt"]["content"]
+    assert reloaded["report"] == before["report"]
+    assert reloaded["sibling"] == before["sibling"]
+    studio_db.sync_chat_messages("src", payload, prune_missing = True)
+    assert studio_db.list_chat_messages("src") == list(reloaded.values())
+
+
 def test_deleting_an_ancestor_relinks_the_research_prompt(tmp_path, monkeypatch):
     # The headline case: assistant-ui relinks the protected prompt to the deleted node's parent,
     # and the guard must read that as the repair it is rather than an edit.
@@ -1180,9 +1288,10 @@ def test_the_reseat_does_not_carry_any_other_edit(tmp_path, monkeypatch, field, 
     prompt = next(m for m in synced if m["id"] == "prompt")
     # The deleted ancestor was the root, so the repair is a reseat to the root.
     assert prompt["parentId"] is None
-    # .get on both sides: an absent key is how a None metadata comes back, and the point is
-    # that the client's value is not there either way.
-    assert prompt.get(field) == stored.get(field)
+    expected = stored.get(field)
+    if field == "metadata":
+        expected = {**(expected or {}), "revision": 1}
+    assert prompt.get(field) == expected
     assert prompt.get(field) != value
 
 

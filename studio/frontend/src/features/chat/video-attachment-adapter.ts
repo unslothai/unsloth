@@ -37,12 +37,7 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
-    if (!modelLoaded) {
-      // Mirror the image and audio gates: a failed load reads differently from no model picked.
-      unavailableReason = state.lastModelLoadError
-        ? "The last model failed to load. Check the server logs, then load a model before adding video."
-        : "Load a model before adding video.";
-    } else if (!activeModel?.hasVideoInput) {
+    if (modelLoaded && !activeModel?.hasVideoInput) {
       const label =
         activeModel?.name ||
         externalModelLabel(checkpoint) ||

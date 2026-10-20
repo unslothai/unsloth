@@ -24,6 +24,8 @@ const {
   subscribeGenerationRecoveryTriggers,
 } = await import("../src/features/chat/utils/chat-generation-recovery.ts");
 
+const MARKERS = { messageCount: 2, revision: 0, estimatedTokens: 5 };
+
 test("first-token recovery ignores role and control chunks", () => {
   assert.equal(
     generationChunkHasSubstantiveDelta({
@@ -48,10 +50,11 @@ test("first-token recovery ignores role and control chunks", () => {
     [
       { choices: [{ delta: { role: "assistant" } }] },
       { context_truncated: { checkpoint: true } },
+      { choices: [], quote_cut: true },
       { choices: [], usage: { completion_tokens: 1 } },
       { choices: [{ delta: { content: "token" } }] },
     ].map(generationChunkCountsTowardTiming),
-    [true, false, false, true],
+    [true, false, false, false, true],
   );
   assert.equal(
     generationChunkHasSubstantiveDelta({
@@ -144,6 +147,104 @@ test("active runs are read before messages so a concurrent create is visible", a
   );
 });
 
+test("terminal recovery reads cache writes from either provider's usage shape", () => {
+  const writesFor = (usage: Record<string, unknown>) =>
+    (
+      recoveredGenerationFinalMetadata({
+        current: {},
+        run: {
+          id: "run-1",
+          requestPayload: { model: "m" },
+          createdAt: 100,
+          startedAt: 120,
+          completedAt: 1120,
+        },
+        usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10, ...usage },
+        totalChunks: 1,
+        markers: MARKERS,
+      }).contextUsage as { cacheWriteTokens: number }
+    ).cacheWriteTokens;
+  assert.equal(writesFor({ prompt_tokens_details: { cache_write_tokens: 5 } }), 5);
+  assert.equal(
+    writesFor({ cache_creation_input_tokens: 7, prompt_tokens_details: { cache_write_tokens: 5 } }),
+    7,
+  );
+});
+
+test("terminal recovery prices a tool loop's context, not its summed completions", () => {
+  const metadata = recoveredGenerationFinalMetadata({
+    current: { generationSettled: true },
+    run: {
+      id: "run-tools",
+      requestPayload: { model: "local/model" },
+      createdAt: 100,
+      startedAt: 120,
+      completedAt: 1120,
+    },
+    usage: {
+      prompt_tokens: 140,
+      completion_tokens: 40,
+      total_tokens: 180,
+      context_tokens: 150,
+    },
+    timings: {},
+    firstChunkAt: 220,
+    totalChunks: 4,
+    markers: MARKERS,
+  });
+  const usage = metadata.contextUsage as {
+    totalTokens: number;
+    contextTokens: number;
+  };
+  assert.equal(usage.contextTokens, 150);
+  assert.equal(usage.totalTokens, 180);
+});
+
+test("recovered usage keeps the reasoning mode from its persisted request", () => {
+  const metadata = recoveredGenerationFinalMetadata({
+    current: { generationSettled: true },
+    run: {
+      id: "run-reasoning",
+      requestPayload: {
+        model: "local/model",
+        thinking: { type: "enabled" },
+        reasoning_effort: "high",
+        preserve_thinking: false,
+      },
+      createdAt: 100,
+      startedAt: 120,
+      completedAt: 1120,
+    },
+    usage: { prompt_tokens: 140, completion_tokens: 40, total_tokens: 180 },
+    totalChunks: 4,
+    markers: MARKERS,
+  });
+  assert.equal(
+    (metadata.contextUsage as { reasoningKey: string }).reasoningKey,
+    '[true,"high",false]',
+  );
+});
+
+test("recovery certifies usage only for a branch no edit could have revised", () => {
+  const usageFor = (revision: number) =>
+    recoveredGenerationFinalMetadata({
+      current: { generationSettled: true },
+      run: {
+        id: "run-revised",
+        requestPayload: { model: "local/model" },
+        createdAt: 100,
+        startedAt: 120,
+        completedAt: 1120,
+      },
+      usage: { prompt_tokens: 140, completion_tokens: 40, total_tokens: 180 },
+      totalChunks: 4,
+      markers: { ...MARKERS, revision },
+    }).contextUsage as { revision?: number; estimatedTokens?: number };
+  assert.equal(usageFor(0).revision, 0);
+  assert.equal(usageFor(1).revision, undefined);
+  assert.equal(usageFor(1).estimatedTokens, MARKERS.estimatedTokens);
+});
+
 test("terminal recovery restores final local usage and timing metadata", () => {
   const metadata = recoveredGenerationFinalMetadata({
     current: { generationSettled: true },
@@ -163,6 +264,7 @@ test("terminal recovery restores final local usage and timing metadata", () => {
     timings: { predicted_per_second: 12, prompt_ms: 25 },
     firstChunkAt: 220,
     totalChunks: 4,
+    markers: MARKERS,
   });
   assert.deepEqual(metadata.contextUsage, {
     promptTokens: 8,
@@ -171,6 +273,8 @@ test("terminal recovery restores final local usage and timing metadata", () => {
     cachedTokens: 3,
     cacheWriteTokens: 0,
     modelId: "local/model",
+    reasoningKey: "[null,null,null]",
+    ...MARKERS,
   });
   assert.deepEqual(metadata.serverTimings, {
     predicted_per_second: 12,
@@ -238,6 +342,21 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
       [false, { reason: "cancelled" }],
     ],
   );
+
+  // Recovery must match the producer's reason, with length taking precedence.
+  const recovered = (lengthLimited: boolean, quoteCut: boolean) =>
+    generationRecoveryMetadata({
+      current: { generationRunId: "run-1" },
+      runId: "run-1",
+      status: "completed",
+      cursor: 4,
+      lastEventSeq: 4,
+      lengthLimited,
+      quoteCut,
+    }).incomplete;
+  assert.deepEqual(recovered(false, true), { reason: "quote_cut" });
+  assert.deepEqual(recovered(true, true), { reason: "length" });
+  assert.equal(recovered(false, false), undefined);
 
   const windowTarget = new EventTarget();
   const documentTarget = Object.assign(new EventTarget(), {
@@ -324,6 +443,7 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
     timings: midStream.generationRecoveryTimings as typeof timings,
     firstChunkAt: 220,
     totalChunks: 4,
+    markers: MARKERS,
   });
   assert.deepEqual(settled.contextUsage, {
     promptTokens: 8,
@@ -332,6 +452,8 @@ test("recovery persists recovered usage alongside the cursor it advanced", () =>
     cachedTokens: 0,
     cacheWriteTokens: 0,
     modelId: "local/model",
+    reasoningKey: "[null,null,null]",
+    ...MARKERS,
   });
   assert.deepEqual(settled.serverTimings, timings);
 });

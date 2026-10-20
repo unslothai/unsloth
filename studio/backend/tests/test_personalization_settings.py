@@ -90,6 +90,7 @@ def test_customization_defaults():
     assert c.chatFont is None
     assert c.uiFontSize is None
     assert c.chatWidth == "standard"
+    assert c.sentAttachments == "auto"
     assert [(i.id, i.visible) for i in c.sidebarMenu] == [
         ("api", True),
         ("darkMode", True),
@@ -115,6 +116,10 @@ def test_customization_invalid_values_rejected():
         PersonalizationPayload.model_validate({"appearance": {"customization": {"uiFontSize": 99}}})
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate({"appearance": {"customization": {"contrast": 500}}})
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"appearance": {"customization": {"sentAttachments": "grid"}}}
+        )
     with pytest.raises(ValidationError):
         PersonalizationPayload.model_validate(
             {"appearance": {"customization": {"reduceMotion": "sometimes"}}}
@@ -187,8 +192,9 @@ def _sidebar_nav(items):
 FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("hub", True),
     ("projects", True),
+    ("library", True),
     ("images", True),
-    ("video", True),
+    ("video", False),
     ("audio", False),
     ("train", True),
     ("recipes", False),
@@ -228,6 +234,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("video", True),
         ("hub", False),
         ("projects", True),
+        ("library", True),
         ("images", True),
         ("audio", False),
         ("train", True),
@@ -498,6 +505,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                 "headingFont": "Avenir Next",
                 "chatFont": "Georgia",
                 "chatWidth": "full",
+                "sentAttachments": "chips",
                 "codeFont": None,
                 "importedFonts": [
                     {"name": "SF Pro Text", "dataUrl": "data:font/woff2;base64,AAAA"}
@@ -526,6 +534,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "hub", "pinned": True},
                     {"id": "train", "pinned": True},
                     {"id": "projects", "pinned": False},
+                    {"id": "library", "pinned": True},
                     {"id": "recipes", "pinned": False},
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
@@ -600,6 +609,49 @@ def test_personalization_legacy_chat_width_presence(monkeypatch):
     assert body["chatWidthSaved"] is True
     assert body["appearance"]["customization"]["chatWidth"] == "full"
     assert body["appearance"]["customization"]["uiFont"] == "Arial"
+
+
+def test_personalization_legacy_attachment_display_presence(monkeypatch):
+    store = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "appearance": {"customization": {"chatWidth": "wide"}},
+        }
+    }
+    client = _shared_setup_1(monkeypatch, store)
+    body = client.get("/api/settings/personalization").json()
+    assert body["customizationSaved"] is True
+    assert body["sentAttachmentsSaved"] is False
+    assert body["appearance"]["customization"]["sentAttachments"] == "auto"
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"sentAttachments": "chips"}}},
+    )
+    assert put.status_code == 200
+    body = client.get("/api/settings/personalization").json()
+    assert body["sentAttachmentsSaved"] is True
+    assert body["appearance"]["customization"]["sentAttachments"] == "chips"
+
+
+def test_personalization_ignores_retired_composer_attachments(monkeypatch):
+    # The composer always shows cards now; older clients and records may still carry the key.
+    store = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "appearance": {"customization": {"composerAttachments": "compact"}},
+        }
+    }
+    client = _shared_setup_1(monkeypatch, store)
+    body = client.get("/api/settings/personalization").json()
+    assert "composerAttachments" not in body["appearance"]["customization"]
+    assert "composerAttachmentsSaved" not in body
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"appearance": {"customization": {"composerAttachments": "compact"}}},
+    )
+    assert put.status_code == 200
+    body = client.get("/api/settings/personalization").json()
+    assert "composerAttachments" not in body["appearance"]["customization"]
 
 
 @pytest.mark.parametrize("width", ["standard", "wide", "full"])

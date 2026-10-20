@@ -20,6 +20,7 @@ from core.inference.diffusion_precision import (
     TE_QUANT_FP8,
     TE_QUANT_FP8_DYNAMIC,
     TE_QUANT_INT8,
+    TE_QUANT_MODES,
     TE_QUANT_NVFP4,
     _cast_int8_selective,
     _cast_nvfp4,
@@ -30,6 +31,7 @@ from core.inference.diffusion_precision import (
     te_quant_is_auto,
     quantize_text_encoders,
     te_quant_supported,
+    te_quant_unsupported_reason,
 )
 
 
@@ -47,7 +49,9 @@ def _stub_torch(
     *,
     with_fp8 = True,
     cc = (10, 0),
+    nvfp4_config = True,
 ):
+    monkeypatch.setattr(dp, "nvfp4_weight_only_importable", lambda: nvfp4_config)
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
     torch.float16 = "float16"
@@ -114,12 +118,26 @@ def test_fp8_supported_requires_cuda_bf16_and_fp8(monkeypatch):
     assert te_quant_supported(_target(dtype = "float16"), TE_QUANT_FP8) is False
 
 
-def test_nvfp4_supported_requires_blackwell(monkeypatch):
-    _stub_torch(monkeypatch, cc = (10, 0))
-    assert te_quant_supported(_target(), TE_QUANT_NVFP4) is True
-    # Hopper (cc 9.0) has no NVFP4 tensor cores.
-    _stub_torch(monkeypatch, cc = (9, 0))
+@pytest.mark.parametrize("cc", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)])
+def test_nvfp4_supported_without_fp4_cores(monkeypatch, cc):
+    _stub_torch(monkeypatch, cc = cc)
+    assert te_quant_supported(_target(cc = cc), TE_QUANT_NVFP4) is True
+
+
+def test_nvfp4_supported_requires_cuda_bf16_and_fp8_dtype(monkeypatch):
+    _stub_torch(monkeypatch, cc = (8, 6))
+    assert te_quant_supported(_target(device = "cpu"), TE_QUANT_NVFP4) is False
+    # pre-Ampere resolves float16, which torchao's nvfp4 quantizer rejects
+    assert te_quant_supported(_target(dtype = "float16"), TE_QUANT_NVFP4) is False
+    _stub_torch(monkeypatch, with_fp8 = False, cc = (8, 6))
     assert te_quant_supported(_target(), TE_QUANT_NVFP4) is False
+
+
+def test_nvfp4_unsupported_when_torchao_lacks_the_weight_only_config(monkeypatch):
+    # older Studio installs keep torchao 0.14 with torch <= 2.8, which lacks NVFP4WeightOnlyConfig
+    _stub_torch(monkeypatch, cc = (8, 6), nvfp4_config = False)
+    assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_NVFP4) is False
+    assert te_quant_supported(_target(cc = (8, 6)), TE_QUANT_INT8) is True
 
 
 def test_int8_supported_requires_sm80(monkeypatch):
@@ -128,7 +146,7 @@ def test_int8_supported_requires_sm80(monkeypatch):
     assert te_quant_supported(_target(), TE_QUANT_INT8) is True
     _stub_torch(monkeypatch, cc = (7, 5))
     assert te_quant_supported(_target(), TE_QUANT_INT8) is False
-    # Still needs CUDA + bf16 like every mode.
+    # all modes also require CUDA and bf16
     _stub_torch(monkeypatch, cc = (8, 0))
     assert te_quant_supported(_target(device = "cpu"), TE_QUANT_INT8) is False
 
@@ -180,16 +198,52 @@ def test_quantize_nvfp4_uses_torchao(monkeypatch):
     assert recorder == [("nvfp4", te)]
 
 
-def test_quantize_nvfp4_unsupported_on_hopper_is_noop(monkeypatch):
-    _stub_torch(monkeypatch, cc = (9, 0))
+def test_quantize_nvfp4_engages_on_ampere(monkeypatch):
+    _stub_torch(monkeypatch, cc = (8, 6))
+    recorder: list = []
+    _stub_casters(monkeypatch, recorder)
+    te = object()
+    pipe = types.SimpleNamespace(text_encoder = te)
+    outcome = quantize_text_encoders(pipe, _target(cc = (8, 6)), mode = "nvfp4")
+    assert outcome.mode == TE_QUANT_NVFP4 and outcome.status == "applied"
+    assert recorder == [("nvfp4", te)]
+
+
+def test_quantize_nvfp4_unsupported_on_float16_is_noop(monkeypatch):
+    _stub_torch(monkeypatch, cc = (7, 5))
     recorder: list = []
     _stub_casters(monkeypatch, recorder)
     pipe = types.SimpleNamespace(text_encoder = object())
-    outcome = quantize_text_encoders(pipe, _target(cc = (9, 0)), mode = "nvfp4")
+    outcome = quantize_text_encoders(pipe, _target(dtype = "float16", cc = (7, 5)), mode = "nvfp4")
     assert outcome.mode is None
-    # An unsupported request is now REPORTED rather than silently skipped.
-    assert outcome.status == "unsupported" and "nvfp4" in outcome.reason
+    assert outcome.status == "unsupported"
+    assert "'nvfp4' needs an NVIDIA GPU that runs bf16" in outcome.reason
     assert recorder == []
+
+
+def test_nvfp4_weight_only_probe_reads_the_installed_torchao(monkeypatch):
+    def _rejects_this_torch():
+        raise RuntimeError("requires PyTorch 2.8 or later")
+
+    probe = dp.nvfp4_weight_only_importable.__wrapped__
+    tq = types.ModuleType("core.inference.diffusion_transformer_quant")
+    tq._quiet_config = lambda config_cls, **kwargs: config_cls(**kwargs)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_transformer_quant", tq)
+    mx = types.ModuleType("torchao.prototype.mx_formats")
+    monkeypatch.setitem(sys.modules, "torchao", types.ModuleType("torchao"))
+    monkeypatch.setitem(sys.modules, "torchao.prototype", types.ModuleType("torchao.prototype"))
+    monkeypatch.setitem(sys.modules, "torchao.prototype.mx_formats", mx)
+    assert probe() is False
+    mx.NVFP4WeightOnlyConfig = _rejects_this_torch
+    assert probe() is False
+    mx.NVFP4WeightOnlyConfig = lambda: "nvfp4cfg"
+    assert probe() is True
+
+
+@pytest.mark.parametrize("mode", TE_QUANT_MODES)
+def test_every_mode_has_an_unsupported_reason(mode):
+    reason = te_quant_unsupported_reason(mode)
+    assert f"'{mode}' needs " in reason and "Blackwell" not in reason
 
 
 def test_quantize_tolerates_caster_failure(monkeypatch):
@@ -220,12 +274,30 @@ def test_quantize_int8_uses_family_keep_bf16_schedule(monkeypatch):
     monkeypatch.setattr(
         dp, "_cast_int8_selective", lambda enc, tgt, first, last: calls.append((enc, first, last))
     )
+    # A family with a schedule and no hosted int8 ConvRot file (qwen-image now hosts one, so it never takes this path).
+    monkeypatch.setitem(dp._TE_INT8_SKIP, "scheduled-family", (6, 6))
     te = object()
     pipe = types.SimpleNamespace(text_encoder = te)
-    outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "qwen-image")
+    outcome = quantize_text_encoders(pipe, _target(), mode = "int8", family = "scheduled-family")
     assert outcome.mode == TE_QUANT_INT8
     assert outcome.status == "applied"
     assert calls == [(te, 6, 6)]
+
+
+def test_int8_never_takes_the_torchao_cast_over_a_pre_cast_encoder(monkeypatch):
+    # qwen-image has a keep-bf16 schedule AND a hosted int8 ConvRot file: an int8 request whose encoder came from a
+    # pre-cast fp8 file is the (idempotent) fp8 cast, never torchao on top of fp8 storage.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    monkeypatch.setattr(dp, "_cast_int8_selective", lambda *a: pytest.fail("torchao int8 cast"))
+    fp8_calls: list = []
+    monkeypatch.setattr(dp, "_cast_fp8", lambda enc, tgt: fp8_calls.append(enc))
+    te = types.SimpleNamespace(_unsloth_te_prequant_scheme = "fp8")
+    outcome = quantize_text_encoders(
+        types.SimpleNamespace(text_encoder = te), _target(), mode = "int8", family = "qwen-image"
+    )
+    assert (outcome.mode, outcome.status) == (TE_QUANT_FP8, "fell_back")
+    assert "int8 ConvRot text encoder is not available" in outcome.reason
+    assert fp8_calls == [te]
 
 
 def test_quantize_int8_unknown_family_falls_back_to_fp8(monkeypatch):
@@ -518,9 +590,10 @@ def test_int8_without_a_schedule_reports_fp8_as_the_effective_mode():
     # host whose torchao cannot do int8 while fp8 still works, every unscheduled family died.
     assert effective_te_quant(TE_QUANT_INT8, "z-image-turbo") == TE_QUANT_FP8
     assert effective_te_quant(TE_QUANT_INT8, None) == TE_QUANT_FP8
-    # A family WITH a schedule really does run int8, so the gate must keep asking about int8.
-    assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_INT8
-    assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_INT8
+    # A family hosting an int8 ConvRot file loads it as plain tensors (fp8 behind it), so the gate asks about fp8 even
+    # where a keep-bf16 schedule exists.
+    assert effective_te_quant(TE_QUANT_INT8, "qwen-image") == TE_QUANT_FP8
+    assert effective_te_quant(TE_QUANT_INT8, "Flux.2-Dev") == TE_QUANT_FP8
     # Every other mode is its own effective mode, and absent stays absent.
     assert effective_te_quant(TE_QUANT_FP8_DYNAMIC, "z-image-turbo") == TE_QUANT_FP8_DYNAMIC
     assert effective_te_quant(None, "qwen-image") is None
@@ -561,7 +634,12 @@ def test_no_torchao_config_is_constructed_outside_quiet_config():
     from pathlib import Path
 
     backend = Path(__file__).resolve().parents[1]
-    files = sorted((backend / "core" / "inference").glob("*.py")) + [
+    # sglang_server.py runs in the SGLang engine's own Python and never imports Studio.
+    files = [
+        path
+        for path in sorted((backend / "core" / "inference").glob("*.py"))
+        if path.name != "sglang_server.py"
+    ] + [
         backend / "core" / "training" / "diffusion_dit_trainer.py",
     ]
     offenders: list[str] = []

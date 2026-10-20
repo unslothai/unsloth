@@ -49,6 +49,9 @@ export async function revealSandbox(sessionId: string): Promise<void> {
     } catch {
       // A non-JSON error body leaves the status as the only thing to report.
     }
-    throw new Error(detail || `Request failed (${response.status})`);
+    // Status lets callers tell "no folder yet" (404) from a failure.
+    throw Object.assign(new Error(detail || `Request failed (${response.status})`), {
+      status: response.status,
+    });
   }
 }

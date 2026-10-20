@@ -19,14 +19,15 @@ const QUEUED_SETTING_KEYS = [
   "codeToolsEnabled",
   "codeToolsDeclinedUnderFullAccess",
   "imageToolsEnabled",
-  "artifactsEnabled",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "bypassPermissions",
   "permissionMode",
+  "sandboxLevel",
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
   "ragEnabled",
   "ragSource",
@@ -40,11 +41,16 @@ const QUEUED_SETTING_KEYS = [
   // queued against. Without this an Ollama or native-path GGUF, which reports no quant and
   // no .gguf suffix, reads as non-GGUF and loses its compaction policy.
   "loadedIsGguf",
+  "loadedIsMlx",
+  "loadedEngine",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
+  // A queued send keeps the tab-close choice it was sent with, like every setting above.
+  "keepRunningWhenTabClosed",
 ] as const;
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
@@ -82,11 +88,41 @@ export function snapshotQueuedChatRunSettings(
   return snapshot;
 }
 
-/** A queued send may only fill in the model of a row that was written without one. */
-export function shouldPersistResolvedQueuedModel(
-  storedThread: { modelId?: string | null } | null | undefined,
+export function resolveDeferredQueuedModelSettings(
+  settings: QueuedChatRunSettings,
+  resolved: Pick<ChatRuntimeState, "params" | "supportsTools">,
+): QueuedChatRunSettings {
+  return {
+    ...settings,
+    params: {
+      ...settings.params,
+      checkpoint: resolved.params.checkpoint,
+    },
+    supportsTools: resolved.supportsTools,
+  };
+}
+
+/** A chat remembers the model it last sent to, so reopening it offers that one back. Compare panes
+ *  keep the model they were opened with: their labels and pairing read it. An unknown variant
+ *  never clears a saved one for the same model. */
+export function shouldPersistRunModel(
+  storedThread:
+    | {
+        modelId?: string | null;
+        modelGgufVariant?: string | null;
+        pairId?: string | null;
+      }
+    | null
+    | undefined,
+  modelId: string,
+  modelGgufVariant: string | null,
 ): boolean {
-  return Boolean(storedThread && !storedThread.modelId);
+  if (!storedThread || !modelId || storedThread.pairId) return false;
+  if (storedThread.modelId !== modelId) return true;
+  return (
+    modelGgufVariant != null &&
+    modelGgufVariant !== (storedThread.modelGgufVariant ?? null)
+  );
 }
 
 export function registerQueuedChatRunSettings(

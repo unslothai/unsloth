@@ -7,11 +7,17 @@ import { useEffect, useState } from "react";
 export interface GpuDevice {
     name: string | null;
     vramTotalGb: number | null;
+    sharedMemory?: boolean;
+    unifiedMemory?: boolean;
+    sharedMemoryHostBackedGb?: number | null;
 }
 
 interface ApiGpu {
     name?: string | null;
     vram_total_gb?: number | null;
+    shared_memory?: boolean;
+    unified_memory?: boolean;
+    shared_memory_host_backed_gb?: number | null;
 }
 
 export interface HardwareInfo {
@@ -28,18 +34,24 @@ export interface HardwareInfo {
     transformers: string | null;
     unsloth: string | null;
     llamaCpp: string | null;
+    audioCpp: string | null;
     // Whether export can run here (true only on a supported accelerator), with a torch-aware
     // reason. `null` until the authoritative response lands, so callers don't briefly enable
     // export; `loaded` flips true once a real (non-error) response arrives.
     exportSupported: boolean | null;
     exportUnsupportedReason: string | null;
     exportUnsupportedMessage: string | null;
+    // False only on Windows ROCm without a loadable torchao; absent from older backends = true.
+    torchaoExportSupported: boolean;
     // Whether video generation can run here. Same tri-state as export: `null` until the
     // authoritative response lands, and `null` too against a backend that predates the field,
     // so only an explicit `false` hides the generator.
     videoSupported: boolean | null;
     videoUnsupportedReason: string | null;
     videoUnsupportedMessage: string | null;
+    // True when video is supported only because Developer mode admitted a CPU-only host; the
+    // Video page keeps a warning up while it is. False against an older backend.
+    videoCpuExperimental: boolean;
     loaded: boolean;
 }
 
@@ -55,12 +67,15 @@ const DEFAULT: HardwareInfo = {
     transformers: null,
     unsloth: null,
     llamaCpp: null,
+    audioCpp: null,
     exportSupported: null,
     exportUnsupportedReason: null,
     exportUnsupportedMessage: null,
+    torchaoExportSupported: true,
     videoSupported: null,
     videoUnsupportedReason: null,
     videoUnsupportedMessage: null,
+    videoCpuExperimental: false,
     loaded: false,
 };
 
@@ -106,6 +121,9 @@ async function fetchOnce(): Promise<HardwareInfo> {
                     ? data.gpus.map((g: ApiGpu) => ({
                         name: g?.name ?? null,
                         vramTotalGb: g?.vram_total_gb ?? null,
+                        sharedMemory: g?.shared_memory === true,
+                        unifiedMemory: g?.unified_memory === true,
+                        sharedMemoryHostBackedGb: g?.shared_memory_host_backed_gb ?? null,
                     }))
                     : [],
                 torch: data?.versions?.torch ?? null,
@@ -115,12 +133,15 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
+                audioCpp: data?.audio_cpp ?? null,
                 exportSupported: data?.export_supported ?? null,
                 exportUnsupportedReason: data?.export_unsupported_reason ?? null,
                 exportUnsupportedMessage: data?.export_unsupported_message ?? null,
+                torchaoExportSupported: data?.torchao_export_supported ?? true,
                 videoSupported: data?.video_supported ?? null,
                 videoUnsupportedReason: data?.video_unsupported_reason ?? null,
                 videoUnsupportedMessage: data?.video_unsupported_message ?? null,
+                videoCpuExperimental: data?.video_cpu_experimental === true,
                 loaded: true,
             };
             if (generation === cacheGeneration) {

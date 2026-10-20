@@ -14,6 +14,7 @@ import types
 
 import pytest
 
+from core.inference import diffusion_compile_config as compile_config
 from core.inference import diffusion_speed as ds_mod
 from core.inference.diffusion_speed import (
     SPEED_DEFAULT,
@@ -61,6 +62,13 @@ def _family(*, compile_ok = True):
 
 
 @pytest.fixture(autouse = True)
+def _fresh_compile_knobs():
+    compile_config._reset_for_tests()
+    yield
+    compile_config._reset_for_tests()
+
+
+@pytest.fixture(autouse = True)
 def _compile_runtime_independent_of_the_host(monkeypatch):
     """Keep these tests off the HOST's toolchain, which is what "hermetic" above claims.
 
@@ -80,15 +88,22 @@ def _compile_runtime_independent_of_the_host(monkeypatch):
 def _stub_torch(monkeypatch):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"  # _is_bfloat16 compares by identity then str fallback
+    torch.float16 = "float16"
     torch.channels_last = "channels_last"
+    torch.contiguous_format = "contiguous_format"
     torch.backends = types.SimpleNamespace(
         cuda = types.SimpleNamespace(matmul = types.SimpleNamespace(allow_tf32 = False)),
         cudnn = types.SimpleNamespace(allow_tf32 = False, benchmark = False),
     )
     # Said explicitly so the CUDA-graph arm refuses deterministically, whatever the host has.
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
-    # The VAE-decode compile wraps a bound method; identity wrap is enough for tests.
-    torch.compile = lambda fn, **kwargs: fn
+    torch.compile_calls = []
+
+    def _compile(fn, **kwargs):
+        torch.compile_calls.append(kwargs)
+        return fn
+
+    torch.compile = _compile
     monkeypatch.setitem(sys.modules, "torch", torch)
     return torch
 
@@ -126,12 +141,174 @@ def test_compile_eligible_requires_bf16_cuda_friendly(monkeypatch):
     assert compile_eligible(_target(), is_gguf = False, family = _family()) is True
     # GGUF is compile-eligible too (measured ~2.3x, PSNR ~37 dB vs eager).
     assert compile_eligible(_target(), is_gguf = True, family = _family()) is True
-    # fp16 (non-bf16) is excluded.
+    # fp16 is excluded when the card's capability cannot be read (this stub has no probe).
     assert compile_eligible(_target(dtype = "float16"), is_gguf = False, family = _family()) is False
     # A family flagged not compile-friendly is excluded.
     assert compile_eligible(_target(), is_gguf = False, family = _family(compile_ok = False)) is False
     # No compile support (e.g. XPU/MPS) is excluded.
     assert compile_eligible(_target(compile_ok = False), is_gguf = False, family = _family()) is False
+
+
+def _stub_torch_capability(
+    monkeypatch,
+    cap,
+    seen = None,
+):
+    torch = _stub_torch(monkeypatch)
+    torch.float16 = "float16"
+
+    def get_device_capability(*args):
+        if seen is not None:
+            seen.append(args)
+        return cap
+
+    torch.cuda = types.SimpleNamespace(
+        is_available = lambda: True, get_device_capability = get_device_capability
+    )
+    return torch
+
+
+def _fp16_target(**kw):
+    t = _target(dtype = "float16")
+    for k, v in kw.items():
+        setattr(t, k, v)
+    return t
+
+
+@pytest.mark.parametrize("cap", [(7, 5), (8, 6), (8, 9), (12, 0)])
+def test_compile_eligible_fp16_on_turing_or_newer(monkeypatch, cap):
+    _stub_torch_capability(monkeypatch, cap)
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is True
+    assert compile_eligible(_fp16_target(backend = "cuda"), is_gguf = True, family = _family()) is True
+
+
+@pytest.mark.parametrize("cap", [(7, 0), (6, 1), (6, 0), (5, 2)])
+def test_compile_eligible_fp16_stays_eager_below_turing(monkeypatch, cap):
+    _stub_torch_capability(monkeypatch, cap)
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is False
+
+
+def test_compile_eligible_fp16_asks_the_selected_card(monkeypatch):
+    seen = []
+    _stub_torch_capability(monkeypatch, (7, 5), seen)
+    assert compile_eligible(_fp16_target(ordinal = 3), is_gguf = False, family = _family()) is True
+    assert seen == [(3,)]
+
+
+def test_compile_eligible_fp16_refusals(monkeypatch):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    fam = types.SimpleNamespace(supports_torch_compile = True, fp16_incompatible = True)
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = fam) is False
+    assert compile_eligible(_fp16_target(backend = "rocm"), is_gguf = False, family = _family()) is False
+    assert (
+        compile_eligible(_fp16_target(), is_gguf = False, family = _family(compile_ok = False)) is False
+    )
+    assert (
+        compile_eligible(
+            _fp16_target(supports_default_torch_compile = False), is_gguf = False, family = _family()
+        )
+        is False
+    )
+    assert compile_eligible(_target(dtype = "float32"), is_gguf = False, family = _family()) is False
+
+
+def test_compile_eligible_fp16_probe_failure_stays_eager(monkeypatch):
+    torch = _stub_torch_capability(monkeypatch, (7, 5))
+
+    def boom(*args):
+        raise RuntimeError("no device")
+
+    torch.cuda.get_device_capability = boom
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is False
+
+
+def test_fp16_compile_is_explicit_tier_only(monkeypatch):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    assert ds_mod.fp16_compile_explicit_only(_fp16_target()) is True
+    assert compile_eligible(_fp16_target(), is_gguf = False, family = _family()) is True
+    assert ds_mod.fp16_compile_explicit_only(_target()) is False
+    assert ds_mod.fp16_compile_explicit_only(_target(dtype = "float32")) is False
+
+
+def test_compile_eligible_bf16_never_probes_capability(monkeypatch):
+    seen = []
+    _stub_torch_capability(monkeypatch, (7, 0), seen)
+    fam = types.SimpleNamespace(supports_torch_compile = True, fp16_incompatible = True)
+    assert compile_eligible(_target(), is_gguf = False, family = fam) is True
+    assert seen == []
+
+
+def test_apply_speed_optims_compiles_fp16_dit(monkeypatch):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: True)
+    applied = apply_speed_optims(
+        types.SimpleNamespace(),
+        _fp16_target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert applied["compiled"] is True
+
+
+def _unet_pipe():
+    UNet2DConditionModel = type("UNet2DConditionModel", (), {})
+    return types.SimpleNamespace(unet = UNet2DConditionModel())
+
+
+@pytest.mark.parametrize("mode", [SPEED_DEFAULT, SPEED_MAX])
+def test_fp16_unet_stays_eager_under_offload(monkeypatch, mode):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    calls = []
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: calls.append(1) or True)
+    monkeypatch.setattr(ds_mod, "_fuse_qkv", lambda *a, **k: True)
+    off = apply_speed_optims(
+        _unet_pipe(),
+        _fp16_target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = mode,
+        offload_active = True,
+    )
+    assert off["compiled"] is False and calls == []
+    if mode == SPEED_DEFAULT:
+        assert off["fused_qkv"] is False
+    resident = apply_speed_optims(
+        _unet_pipe(),
+        _fp16_target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = mode,
+        offload_active = False,
+    )
+    assert resident["compiled"] is True
+
+
+def test_fp16_offloaded_dit_and_bf16_unet_still_compile(monkeypatch):
+    _stub_torch_capability(monkeypatch, (7, 5))
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: True)
+    monkeypatch.setattr(ds_mod, "_fuse_qkv", lambda *a, **k: True)
+    dit = apply_speed_optims(
+        types.SimpleNamespace(),
+        _fp16_target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        offload_active = True,
+    )
+    assert dit["compiled"] is True
+    bf16 = apply_speed_optims(
+        _unet_pipe(),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        offload_active = True,
+    )
+    assert bf16["compiled"] is True
+    assert ds_mod.fp16_unet_offloaded(_target(), _unet_pipe(), offload_active = True) is False
+    assert ds_mod.fp16_unet_offloaded(_fp16_target(), _unet_pipe(), offload_active = True) is True
+    assert ds_mod.fp16_unet_offloaded(_fp16_target(), _unet_pipe(), offload_active = False) is False
 
 
 # ── backend-flag snapshot / restore (TF32 / cudnn.benchmark leak guard) ────────
@@ -195,6 +372,14 @@ def test_restore_is_independent_per_flag(monkeypatch):
 # ── applier ───────────────────────────────────────────────────────────────────
 
 
+class AutoencoderKL(types.SimpleNamespace):
+    """The class NAME matters: ``auto`` keys the allow list off it."""
+
+
+class AutoencoderKLWan(types.SimpleNamespace):
+    """A video VAE."""
+
+
 class _Pipe:
     def __init__(
         self,
@@ -202,8 +387,9 @@ class _Pipe:
         with_compile = False,
         with_fuse = False,
         with_second_dit = False,
+        vae_cls = AutoencoderKL,
     ) -> None:
-        self.vae = types.SimpleNamespace(mem_format = None, to = self._vae_to)
+        self.vae = vae_cls(mem_format = None, to = self._vae_to, decode = lambda z: z)
         self.transformer = types.SimpleNamespace()
         if with_compile:
             self.transformer.compile_repeated_blocks = self._compile
@@ -240,14 +426,19 @@ def test_speed_off_applies_nothing(monkeypatch):
     )
     assert applied == {
         "channels_last": False,
+        "vae_fp16_decode": False,
+        "vae_single_frame": False,
+        "vae_fused": False,
         "cudnn_benchmark": False,
         "tf32": False,
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
+        "rocm_query_chunks": False,
         "compiled_vae_decode": False,
         "fp16_accum": False,
         "cuda_graph": False,
+        "int8_gemm": False,
     }
     assert pipe.vae.mem_format is None and pipe.compiled is False
     # off must not touch any process-wide flag (the bit-identical reference path).
@@ -274,7 +465,7 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
-    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+    assert applied["channels_last"] is False and pipe.vae.mem_format == torch.contiguous_format
     assert applied["compiled"] is True and pipe.compiled is True
     # default compiles with dynamic=True and no autotune mode: fast cold start, resolution-robust, sidesteps the CUDA-graph crash.
     assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": True}
@@ -310,7 +501,7 @@ def test_speed_default_gguf_compiles_only_dequant(monkeypatch):
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_DEFAULT
     )
-    assert applied["channels_last"] is True
+    assert applied["channels_last"] is False
     assert applied["compiled_dequant"] is True
     # The transformer block is NOT regionally compiled under GGUF default.
     assert applied["compiled"] is False and pipe.compiled is False
@@ -344,6 +535,31 @@ def test_speed_max_gguf_regional_compile_not_dequant(monkeypatch):
     assert called == {"compiled_dequant": 0}
 
 
+def test_speed_max_gguf_without_block_compile_keeps_dequant_compile(monkeypatch):
+    # ROCm targets never regionally compile, so max used to run the GGUF dequant eager: slower than default on gfx1151
+    # (3.83 vs 2.98 s per 512 px FLUX.2-klein Q2_K render).
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(compile_ok = False), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is False and pipe.compiled is False
+    assert applied["compiled_dequant"] is True
+    assert called == {"compiled_dequant": 1}
+
+
+def test_speed_max_gguf_whose_block_compile_fails_keeps_dequant_compile(monkeypatch):
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is False and applied["compiled_dequant"] is True
+    assert called == {"compiled_dequant": 1}
+
+
 def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
@@ -355,6 +571,96 @@ def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
         speed_mode = SPEED_DEFAULT,
     )
     assert applied["cudnn_benchmark"] is False  # not CUDA -> no autotune flip
+
+
+@pytest.mark.parametrize(
+    "hip, version",
+    [("7.13.0", "2.11.0+rocm7.13.0"), (None, "2.9.1+rocmsdk20251116")],
+    ids = ["version_hip", "rocm_tag_only"],
+)
+def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch, hip, version):
+    torch = _stub_torch(monkeypatch)
+    torch.version = types.SimpleNamespace(hip = hip)
+    torch.__version__ = version
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = True, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is False
+    assert torch.backends.cudnn.benchmark is False
+
+
+@pytest.mark.parametrize("speed_mode", [SPEED_OFF, SPEED_DEFAULT])
+@pytest.mark.parametrize(
+    "hip, version",
+    [("7.13.0", "2.11.0+rocm7.13.0"), (None, "2.9.1+rocmsdk20251116")],
+    ids = ["version_hip", "rocm_tag_only"],
+)
+def test_rocm_load_turns_on_miopen_immediate(monkeypatch, hip, version, speed_mode):
+    # #9130: torch's MIOpen Find trial-launches kernels; one faulting there aborted the server.
+    monkeypatch.delenv("MIOPEN_FIND_MODE", raising = False)
+    monkeypatch.delenv("MIOPEN_FIND_ENFORCE", raising = False)
+    torch = _stub_torch(monkeypatch)
+    torch.version = types.SimpleNamespace(hip = hip)
+    torch.__version__ = version
+    torch.backends.miopen = types.SimpleNamespace(immediate = False)
+    flags = snapshot_backend_flags()
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = _family(), speed_mode = speed_mode
+    )
+    assert torch.backends.miopen.immediate is True
+    restore_backend_flags(flags)
+    assert torch.backends.miopen.immediate is True
+
+
+@pytest.mark.parametrize(
+    "hip, version, env",
+    [
+        (None, "2.11.0+cu130", {}),
+        ("7.13.0", "2.11.0+rocm7.13.0", {"MIOPEN_FIND_MODE": "NORMAL"}),
+        ("7.13.0", "2.11.0+rocm7.13.0", {"MIOPEN_FIND_ENFORCE": "SEARCH"}),
+    ],
+    ids = ["cuda_torch", "explicit_find_mode", "explicit_find_enforce"],
+)
+def test_miopen_immediate_left_alone(monkeypatch, hip, version, env):
+    for name in ("MIOPEN_FIND_MODE", "MIOPEN_FIND_ENFORCE"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    torch = _stub_torch(monkeypatch)
+    torch.version = types.SimpleNamespace(hip = hip)
+    torch.__version__ = version
+    torch.backends.miopen = types.SimpleNamespace(immediate = False)
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert torch.backends.miopen.immediate is False
+
+
+def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    family = types.SimpleNamespace(supports_torch_compile = True, cudnn_benchmark = False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is False
+    assert torch.backends.cudnn.benchmark is False
+    family = types.SimpleNamespace(supports_torch_compile = True, cudnn_benchmark = True)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
+
+
+def test_cudnn_benchmark_opt_out_image_families():
+    # Unmeasured families keep the benchmark.
+    from core.inference.diffusion_families import _FAMILIES
+    off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
+    assert off == {"qwen-image", "flux.1", "z-image", "sdxl"}
 
 
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
@@ -416,7 +722,7 @@ class _UNetPipe:
     def __init__(self, unet = None):
         self.mem_format = None
         self.fused = False
-        self.vae = types.SimpleNamespace(to = self._vae_to, decode = lambda z: z)
+        self.vae = AutoencoderKL(to = self._vae_to, decode = lambda z: z)
         self.unet = UNet2DConditionModel() if unet is None else unet
 
     def _vae_to(self, *, memory_format):
@@ -440,16 +746,300 @@ def test_unet_whole_compile_default_tier(monkeypatch):
     assert applied["compiled_vae_decode"] is True
 
 
-def test_dit_default_tier_keeps_fuse_and_vae_decode_off(monkeypatch):
-    # The DiT default tier is unchanged: fused QKV measured exactly neutral so it stays max-only, and the VAE decode stays eager.
-    _stub_torch(monkeypatch)
+@pytest.mark.parametrize("tier", [SPEED_DEFAULT, SPEED_MAX])
+def test_a_unet_keeps_its_decode_recipe_and_bundle_key_on_every_tier(monkeypatch, tier):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
+    assert applied["compiled_vae_decode"] is True
+    assert {"fullgraph": False, "dynamic": True} in torch.compile_calls
+    assert not any(call.get("mode") for call in torch.compile_calls)
+    assert ds_mod.vae_decode_compile_allowed(pipe, tier) is False
+
+
+def test_dit_default_tier_keeps_fuse_off_and_leaves_the_vae_decode_eager(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
     pipe = _Pipe(with_compile = True, with_fuse = True)
+    assert type(pipe.vae).__name__ in ds_mod._VAE_COMPILE_ALLOW
     applied = apply_speed_optims(
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["compiled"] is True
     assert applied["fused_qkv"] is False and pipe.fused is False
     assert applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is False
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_MAX) is True
+
+
+@pytest.mark.parametrize("tier", [SPEED_EAGER, SPEED_DEFAULT])
+def test_eager_vae_decode_keeps_contiguous_weights(monkeypatch, tier):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
+    assert applied["compiled_vae_decode"] is False
+    assert applied["channels_last"] is False and pipe.vae.mem_format == torch.contiguous_format
+
+
+@pytest.mark.parametrize("tier", [SPEED_EAGER, SPEED_DEFAULT])
+def test_fused_vae_keeps_its_channels_last_weights(monkeypatch, tier):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+
+    def fused(p, logger):
+        p.vae._unsloth_vae_fused_cl_weights = True
+        return True
+
+    monkeypatch.setattr(ds_mod, "_install_fused_vae", fused)
+    applied = apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = tier)
+    assert applied["vae_fused"] is True
+    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
+@pytest.mark.parametrize(
+    "backend, device", [("rocm", "cuda"), ("mps", "mps"), ("xpu", "xpu"), ("cpu", "cpu")]
+)
+def test_eager_vae_decode_layout_unchanged_off_nvidia(monkeypatch, backend, device):
+    torch = _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    target = _target(device = device)
+    target.backend = backend
+    applied = apply_speed_optims(
+        pipe, target, is_gguf = False, family = _family(), speed_mode = SPEED_EAGER
+    )
+    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
+@pytest.mark.parametrize(
+    "dtype, expect_channels_last",
+    [("torch.bfloat16", True), ("float16", True), ("torch.float32", False)],
+)
+def test_offloaded_eager_decode_keeps_channels_last_unless_fp32(
+    monkeypatch, dtype, expect_channels_last
+):
+    # An eager 16-bit contiguous decode peaks ~0.63 GiB/MP higher; an fp32 one is smaller contiguous.
+    torch = _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    pipe.vae.dtype = dtype
+    applied = apply_speed_optims(
+        pipe,
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_EAGER,
+        offload_active = True,
+    )
+    assert applied["channels_last"] is expect_channels_last
+    assert pipe.vae.mem_format == (
+        torch.channels_last if expect_channels_last else torch.contiguous_format
+    )
+
+
+def test_unmeasured_vae_class_keeps_channels_last(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True, vae_cls = type("HYVAE2D", (types.SimpleNamespace,), {}))
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_EAGER
+    )
+    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
+def test_compiled_vae_decode_keeps_channels_last(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+    pipe.vae.dtype = "torch.bfloat16"
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert applied["channels_last"] is True and pipe.vae.mem_format == torch.channels_last
+
+
+@pytest.mark.parametrize(
+    "dtype, force_upcast, expect_channels_last",
+    [
+        ("torch.float32", False, False),
+        ("float16", True, False),
+        ("float16", False, True),
+        ("bfloat16", True, True),
+    ],
+)
+def test_unet_compiled_decode_in_fp32_keeps_contiguous_weights(
+    monkeypatch, dtype, force_upcast, expect_channels_last
+):
+    # SDXL pipelines decode a force_upcast fp16 VAE in fp32, where channels_last measured 0.89x even compiled (T4).
+    torch = _stub_torch(monkeypatch)
+    pipe = _UNetPipe()
+    pipe.vae.dtype = dtype
+    pipe.vae.config = types.SimpleNamespace(force_upcast = force_upcast)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert applied["channels_last"] is expect_channels_last
+    assert pipe.mem_format == (
+        torch.channels_last if expect_channels_last else torch.contiguous_format
+    )
+
+
+def test_dit_default_tier_vae_decode_compile_forced_on_by_env(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is True
+
+
+def test_dit_vae_decode_compile_opts_out_by_env(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
+    pipe = _Pipe(with_compile = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    assert ds_mod.vae_decode_compile_allowed(pipe, SPEED_MAX) is False
+
+
+def test_dit_vae_decode_compile_deny_set_and_force(monkeypatch):
+    assert "AutoencoderKLQwenImage" in ds_mod._VAE_COMPILE_DENY
+    _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True)
+    monkeypatch.setattr(
+        ds_mod,
+        "_VAE_COMPILE_DENY",
+        frozenset({type(pipe.vae).__name__}),
+    )
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled_vae_decode"] is False
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert applied["compiled_vae_decode"] is True
+
+
+def test_video_vae_stays_eager_under_auto_and_compiles_once_per_pipe(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True, vae_cls = AutoencoderKLWan)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    for _ in range(2):
+        applied = apply_speed_optims(
+            pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+        )
+        assert applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [{"fullgraph": False, "dynamic": True}]
+
+
+def test_dit_vae_decode_compile_max_tier_autotunes(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert torch.compile_calls == [
+        {"fullgraph": False, "dynamic": True, "mode": "max-autotune-no-cudagraphs"}
+    ]
+
+
+@pytest.mark.parametrize("vae_name", ["AutoencoderKL", "AutoencoderKLFlux2"])
+def test_max_tier_vae_decode_compiles_dynamic_once_for_every_resolution(monkeypatch, vae_name):
+    """Automatic dynamic paid a generalising VAE recompile on the second resolution (minutes on max); dynamic=True
+    compiles once, and a VAE compile never marks the load automatic-dynamic."""
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    pipe = _Pipe(with_compile = True, vae_cls = type(vae_name, (AutoencoderKL,), {}))
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert [c["dynamic"] for c in torch.compile_calls] == [True]
+    assert not getattr(pipe.vae, "_unsloth_auto_dynamic", False)
+
+
+def test_qwen_image_vae_decode_stays_eager_with_the_single_frame_path(monkeypatch):
+    """Not worth a compile on max (see _VAE_COMPILE_DENY), and never keyed on the marker installed after the
+    compile-cache fingerprint: the loader and apply_speed_optims must give the same answer."""
+    _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    AutoencoderKLQwenImage = type("AutoencoderKLQwenImage", (), {})
+    pipe = types.SimpleNamespace(vae = AutoencoderKLQwenImage())
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_MAX) is False
+    pipe.vae._unsloth_single_frame = True
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_MAX) is False
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is False
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    assert ds_mod._vae_decode_compile_allowed(pipe, SPEED_DEFAULT) is True
+
+
+def test_unet_vae_decode_compile_ignores_the_env(monkeypatch):
+    _stub_torch(monkeypatch)
+    monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "0")
+    pipe = _UNetPipe()
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled_vae_decode"] is True
+
+
+def test_video_wan_vae_decode_is_denied_on_measurement(monkeypatch):
+    # Denied, not just unlisted: stays off even if added to the allow set.
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    assert "AutoencoderKLWan" in ds_mod._VAE_COMPILE_DENY
+    monkeypatch.setattr(
+        ds_mod, "_VAE_COMPILE_ALLOW", ds_mod._VAE_COMPILE_ALLOW | {"AutoencoderKLWan"}
+    )
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLWan),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled"] is True and applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
+
+
+def test_video_wan_vae_decode_stays_denied_on_max(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True, vae_cls = AutoencoderKLWan),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_MAX,
+        cuda_graph_default = False,
+    )
+    assert applied["compiled_vae_decode"] is False
+    assert torch.compile_calls == []
 
 
 def test_unet_whole_compile_offload_drops_fullgraph(monkeypatch):
@@ -718,6 +1308,53 @@ def test_snapshot_restores_emulate_precision_casts(monkeypatch):
     cfg.emulate_precision_casts = True
     restore_backend_flags(snap)
     assert cfg.emulate_precision_casts is False
+
+
+def _stub_training_config(torch):
+    """Unsloth's training config as torch < 2.12 leaves it process-wide: memory planning on, compile errors suppressed."""
+    inductor = types.SimpleNamespace(memory_planning = True, emulate_precision_casts = False)
+    dynamo = types.SimpleNamespace(suppress_errors = True)
+    torch._inductor = types.SimpleNamespace(config = inductor)
+    torch._dynamo = types.SimpleNamespace(config = dynamo)
+    return inductor, dynamo
+
+
+@pytest.mark.parametrize("is_gguf", [True, False], ids = ["gguf_dequant", "regional"])
+def test_compile_runs_with_torch_defaults_not_the_training_config(monkeypatch, is_gguf):
+    # #9897: memory planning's inductor::_alloc_from_pool views fail AOTAutograd's aliasing check at the first render,
+    # and suppress_errors hid every failed compile as a silent eager run.
+    torch = _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = is_gguf,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert inductor.memory_planning is False
+    assert dynamo.suppress_errors is False
+
+
+@pytest.mark.parametrize("mode", [SPEED_OFF, SPEED_EAGER])
+def test_non_compiling_tiers_leave_the_compile_config_alone(monkeypatch, mode):
+    torch = _stub_torch(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = mode
+    )
+    assert inductor.memory_planning is True and dynamo.suppress_errors is True
+
+
+def test_snapshot_restores_the_compile_config(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    snap = snapshot_backend_flags()
+    inductor.memory_planning = False
+    dynamo.suppress_errors = False
+    restore_backend_flags(snap)
+    assert inductor.memory_planning is True and dynamo.suppress_errors is True
 
 
 def test_missing_inductor_config_is_tolerated(monkeypatch):
@@ -1143,6 +1780,201 @@ def test_cuda_graph_install_failure_leaves_the_load_usable(monkeypatch):
     assert applied["compiled"] is True  # the rest of the tier still engaged
 
 
+class _StreamBlock:
+    """A repeated block whose ``forward`` source is what the detector reads."""
+
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover - never run
+        return hidden_states, encoder_hidden_states
+
+
+class FluxSingleTransformerBlock(_StreamBlock):
+    """Named on ``_STREAM_MERGING_BLOCKS``, so it is recognised without reading source."""
+
+
+class _MergingByArgOrderA(_StreamBlock):
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        import torch  # source fixture: only the text is read
+        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim = 1)
+        return hidden_states, encoder_hidden_states
+
+
+class _MergingByArgOrderB(_StreamBlock):
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        import torch  # source fixture: only the text is read
+        hidden_states = torch.cat([hidden_states, encoder_hidden_states], dim = 1)
+        return hidden_states, encoder_hidden_states
+
+
+class _DualStreamBlock(_StreamBlock):
+    """Takes BOTH streams but keeps them separate (Qwen-Image / SD3 shape), so it stays dynamic."""
+
+    def forward(self, hidden_states, encoder_hidden_states, temb):  # pragma: no cover
+        return hidden_states + 1, encoder_hidden_states + 1
+
+
+@pytest.fixture
+def no_divisibility_proof(monkeypatch):
+    """The static fallback only exists for a torch whose inductor cannot prove the stream-merge split."""
+    monkeypatch.setattr(ds_mod, "_divisibility_proof_available", lambda: False)
+
+
+def _dit(*block_classes):
+    blocks = [cls() for cls in block_classes]
+    dit = types.SimpleNamespace(
+        _repeated_blocks = [cls.__name__ for cls in block_classes],
+        named_modules = lambda: [("", None)] + [(f"blocks.{i}", b) for i, b in enumerate(blocks)],
+    )
+    return dit
+
+
+def test_class_merges_streams_is_crash_confirmed_names_only_by_default():
+    assert ds_mod._class_merges_streams(FluxSingleTransformerBlock) is True
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA) is False
+    assert ds_mod._class_merges_streams(_MergingByArgOrderB) is False
+    assert ds_mod._class_merges_streams(_DualStreamBlock) is False
+
+
+def test_class_merges_streams_broad_sweep_is_opt_in():
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is True
+    assert ds_mod._class_merges_streams(_MergingByArgOrderB, True) is True
+    assert ds_mod._class_merges_streams(_DualStreamBlock, True) is False
+
+
+def test_class_merges_streams_without_source_falls_back_to_the_name_list(monkeypatch):
+    import inspect
+
+    monkeypatch.setattr(
+        inspect, "getsource", lambda _obj: (_ for _ in ()).throw(OSError("no source"))
+    )
+    ds_mod._class_merges_streams.cache_clear()
+    assert ds_mod._class_merges_streams(_MergingByArgOrderA, True) is False
+    assert ds_mod._class_merges_streams(FluxSingleTransformerBlock, True) is True
+    ds_mod._class_merges_streams.cache_clear()
+
+
+@pytest.mark.usefixtures("no_divisibility_proof")
+def test_dits_merge_streams_honours_the_opt_in_env(monkeypatch):
+    monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
+    monkeypatch.setenv(ds_mod._STREAM_MERGE_DETECT_ENV, "1")
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is True
+    monkeypatch.delenv(ds_mod._STREAM_MERGE_DETECT_ENV, raising = False)
+    assert ds_mod._dits_merge_streams([_dit(FluxSingleTransformerBlock)]) is True
+
+
+@pytest.mark.usefixtures("no_divisibility_proof")
+def test_dits_merge_streams_scans_every_denoiser():
+    assert ds_mod._dits_merge_streams([]) is False
+    assert ds_mod._dits_merge_streams([types.SimpleNamespace()]) is False
+    assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock)]) is False
+    assert ds_mod._dits_merge_streams([_dit(_MergingByArgOrderA)]) is False
+    assert ds_mod._dits_merge_streams([_dit(_DualStreamBlock, FluxSingleTransformerBlock)]) is True
+    assert (
+        ds_mod._dits_merge_streams([_dit(_DualStreamBlock), _dit(FluxSingleTransformerBlock)])
+        is True
+    )
+
+
+@pytest.mark.usefixtures("no_divisibility_proof")
+def test_speed_default_compiles_stream_merging_dit_with_static_shapes(monkeypatch):
+    """FLUX.1 regression: dynamic=True cannot be codegen'd for a stream-merging block."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": False}
+    assert pipe.compile_kwargs["dynamic"] is not None
+
+
+@pytest.mark.usefixtures("no_divisibility_proof")
+def test_compiled_shapes_are_static_reports_the_stream_merging_downgrade(monkeypatch):
+    _stub_torch(monkeypatch)
+    merging = types.SimpleNamespace(transformer = _dit(FluxSingleTransformerBlock))
+    plain = types.SimpleNamespace(transformer = _dit(_DualStreamBlock))
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_DEFAULT) is True
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_DEFAULT) is False
+    assert ds_mod.compiled_shapes_are_static(plain, SPEED_MAX) is True
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_OFF) is False
+    assert ds_mod.compiled_shapes_are_static(merging, SPEED_EAGER) is False
+
+
+def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    # Both compile-cache begins (load, and the deferred 3rd-image profile) key through the one resolver ...
+    assert src.count("autoopt.compile_cache_kwargs(") == 2
+    assert "deferred = True" in src
+    # ... which keys vae_decode on the same decision the speed pass makes for that tier.
+    from core.inference.diffusion_autoopt.plan import compile_cache_kwargs
+
+    seen = []
+    orig = ds_mod.vae_decode_compile_allowed
+    try:
+        ds_mod.vae_decode_compile_allowed = lambda pipe, mode: seen.append(mode) or mode == "max"
+        pipe = types.SimpleNamespace(transformer = None)
+        assert (
+            compile_cache_kwargs(pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False)[
+                "vae_decode"
+            ]
+            is True
+        )
+        assert (
+            compile_cache_kwargs(
+                pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False, deferred = True
+            )["vae_decode"]
+            is False
+        )
+    finally:
+        ds_mod.vae_decode_compile_allowed = orig
+    assert seen == ["max", "default"]
+
+
+def test_stream_merging_dit_compiles_dynamic_once_inductor_proves_the_split(monkeypatch):
+    """With the divisibility proof (torch 2.14+ or the backport) FLUX.1 compiles dynamic like every other DiT."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_divisibility_proof_available", lambda: True)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert applied["compiled"] is True
+    assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": True}
+    assert ds_mod._dits_merge_streams([_dit(FluxSingleTransformerBlock)]) is False
+    assert ds_mod.compiled_shapes_are_static(pipe, SPEED_DEFAULT) is False
+
+
+def test_divisibility_proof_probe_never_raises(monkeypatch):
+    from core.inference import diffusion_inductor_backports as bp
+    monkeypatch.setattr(bp, "proof_available", lambda: (_ for _ in ()).throw(RuntimeError("probe")))
+    assert ds_mod._divisibility_proof_available() is False
+
+
+def test_speed_max_keeps_automatic_dynamic_for_a_stream_merging_dit(monkeypatch):
+    """The static exception is the default tier's alone: max compiles every DiT with automatic dynamic."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert pipe.compile_kwargs["dynamic"] is None
+    assert ds_mod.auto_dynamic_active(pipe) is True
+
+
 # ── runtime compile failure falls back to eager ──────────────────────────────
 # compile_repeated_blocks is lazy: inductor runs on the first forward, inside generate(). A lowering bug there
 # (Qwen-Image-2.1 int8 / fp8: inductor CantSplit) used to fail every render; the guard drops that DiT to eager.
@@ -1253,6 +2085,14 @@ def test_settle_fallback_keeps_compiled_while_another_dit_still_compiles(monkeyp
     assert state.speed_optims == ("cuda_graph", "compile_fallback_eager")
 
 
+def test_settle_fallback_drops_a_dequant_compile_that_fell_back(monkeypatch):
+    monkeypatch.setattr(ds_mod.gguf_compile, "compile_error", lambda: "InductorError: hip_utils.c")
+    pipe = types.SimpleNamespace(transformer = _Dit([_Block(lambda x: x)]))
+    state = types.SimpleNamespace(speed_optims = ("compiled_dequant", "cudnn_benchmark"))
+    assert "hip_utils" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("cudnn_benchmark", "compile_fallback_eager")
+
+
 def test_settle_fallback_sees_a_modular_workflows_named_partition(monkeypatch):
     # MiniMax-H3's reference workflow compiles transformer_ref through a view; settlement runs on the bare pipe.
     _stub_torch_compile_errors(monkeypatch)
@@ -1338,6 +2178,156 @@ def test_non_compile_errors_are_not_swallowed(monkeypatch, kind):
     assert ds_mod.compile_fallback_error(types.SimpleNamespace(transformer = dit)) is None
 
 
+class _Vae:
+    """A VAE whose ``decode`` is a class method, as on a diffusers AutoencoderKL."""
+
+    def __init__(self) -> None:
+        self.eager_calls = 0
+
+    def decode(self, z):
+        self.eager_calls += 1
+        return z + 1
+
+
+def _stub_lazy_compile(monkeypatch, failure):
+    """torch.compile that returns fine and fails only on the first call, like dynamo / inductor lowering."""
+    torch = _stub_torch_compile_errors(monkeypatch)
+    calls = {"compiled": 0}
+
+    def _compile(fn, **kwargs):
+        torch.compile_calls.append(kwargs)
+
+        def compiled(*args, **kw):
+            calls["compiled"] += 1
+            raise failure()
+
+        return compiled
+
+    torch.compile = _compile
+    return calls
+
+
+def test_vae_decode_compile_failure_at_first_decode_falls_back_to_eager(monkeypatch):
+    calls = _stub_lazy_compile(
+        monkeypatch, lambda: _BackendCompilerFailed("LoweringException: no lowering for aten.foo")
+    )
+    vae = _Vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    assert ds_mod._compile_vae_decode(pipe, None, max_autotune = True) is True
+    assert "decode" in vae.__dict__
+    assert vae.decode(1) == 2
+    assert vae.eager_calls == 1
+    assert "decode" not in vae.__dict__
+    assert vae.decode(5) == 6
+    assert calls["compiled"] == 1
+    assert "LoweringException" in vae._unsloth_compile_decode_error
+
+
+def test_vae_decode_fallback_is_settled_into_status_and_not_recompiled(monkeypatch):
+    # Dual-DiT loads run apply_speed_optims twice: a fallen-back decode must not read as a live compile.
+    calls = _stub_lazy_compile(monkeypatch, lambda: _BackendCompilerFailed("LoweringException"))
+    vae = _Vae()
+    pipe = types.SimpleNamespace(vae = vae)
+    state = types.SimpleNamespace(speed_optims = ("compiled", "compiled_vae_decode"))
+    assert ds_mod.settle_compile_fallback(state, pipe) is None
+    assert ds_mod._compile_vae_decode(pipe, None) is True
+    assert vae.decode(1) == 2
+    assert vae._unsloth_compiled_decode is False
+    assert "LoweringException" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("compiled", "compile_fallback_eager")
+    assert ds_mod._compile_vae_decode(pipe, None) is False
+    assert "decode" not in vae.__dict__
+    assert vae.decode(5) == 6
+    assert calls["compiled"] == 1
+
+
+def test_vae_decode_compile_fallback_restores_an_instance_decode(monkeypatch):
+    _stub_torch_compile_errors(monkeypatch)
+    original = lambda z: z * 3  # noqa: E731 - an instance attribute, as on the SimpleNamespace fakes
+    vae = types.SimpleNamespace(decode = original)
+
+    def broken(z):
+        raise _BackendCompilerFailed("CantSplit")
+
+    vae.decode = ds_mod._guard_compiled_decode(vae, broken, original, None)
+    assert vae.decode(2) == 6
+    assert vae.decode is original
+
+
+@pytest.mark.parametrize("forced", [False, True])
+def test_a_tiled_dit_decode_stays_eager_unless_the_compile_is_forced(monkeypatch, forced):
+    # Tiled decode unrolls its tile loop into one graph: minutes of first-render compile for a low-VRAM load.
+    if forced:
+        monkeypatch.setenv(ds_mod.COMPILE_VAE_ENV, "1")
+    else:
+        monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    calls = {"compiled": 0, "eager": 0}
+
+    def compiled(z):
+        calls["compiled"] += 1
+        return z
+
+    def eager(z):
+        calls["eager"] += 1
+        return z
+
+    vae = types.SimpleNamespace(decode = eager, use_tiling = True)
+    vae.decode = ds_mod._guard_compiled_decode(
+        vae, compiled, eager, None, eager_when_tiled = ds_mod._vae_eager_when_tiled(None)
+    )
+    vae.decode(1)
+    assert calls == ({"compiled": 1, "eager": 0} if forced else {"compiled": 0, "eager": 1})
+    vae.use_tiling = False
+    vae.decode(1)
+    assert calls["compiled"] == (2 if forced else 1)
+
+
+@pytest.mark.parametrize("offload_active", [False, True])
+def test_vae_decode_compile_fallback_relayouts_an_eager_16bit_decode(monkeypatch, offload_active):
+    monkeypatch.delenv(ds_mod.COMPILE_VAE_ENV, raising = False)
+    _stub_lazy_compile(monkeypatch, lambda: _BackendCompilerFailed("LoweringException"))
+    torch = sys.modules["torch"]
+    pipe = _Pipe(with_compile = True)
+    pipe.vae.dtype = "torch.bfloat16"
+    applied = apply_speed_optims(
+        pipe,
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_MAX,
+        offload_active = offload_active,
+    )
+    assert applied["compiled_vae_decode"] is True
+    assert pipe.vae.mem_format == torch.channels_last
+    assert pipe.vae.decode(1) == 1
+    assert pipe.vae._unsloth_compiled_decode is False
+    assert pipe.vae.mem_format == (
+        torch.channels_last if offload_active else torch.contiguous_format
+    )
+
+
+@pytest.mark.parametrize("kind", ["runtime", "oom"])
+def test_vae_decode_non_compile_errors_are_not_swallowed(monkeypatch, kind):
+    def failure():
+        if kind == "runtime":
+            return RuntimeError("CUDA error: an illegal memory access was encountered")
+        try:
+            raise _OutOfMemory("CUDA out of memory")
+        except _OutOfMemory as oom:
+            try:
+                raise _BackendCompilerFailed("autotune ran out") from oom
+            except _BackendCompilerFailed as outer:
+                return outer
+
+    _stub_lazy_compile(monkeypatch, failure)
+    vae = _Vae()
+    assert ds_mod._compile_vae_decode(types.SimpleNamespace(vae = vae), None) is True
+    with pytest.raises((RuntimeError, _BackendCompilerFailed)):
+        vae.decode(1)
+    assert vae.eager_calls == 0
+    assert "decode" in vae.__dict__
+
+
 class _TorchaoWeight:
     pass
 
@@ -1405,3 +2395,739 @@ def test_auto_dynamic_active_follows_the_torchao_marker():
     dit._unsloth_auto_dynamic = True
     assert ds_mod.auto_dynamic_active(pipe) is True
     assert isinstance(ds_mod.dynamo_graph_count(), int)
+
+
+def test_automatic_dynamic_compile_arms_the_prompt_length_allowlist(monkeypatch):
+    from core.inference import diffusion_dynamic_text
+
+    armed = []
+    monkeypatch.setattr(
+        diffusion_dynamic_text,
+        "install",
+        lambda t, logger = None, *, dynamic = None: armed.append((t, dynamic)) or True,
+    )
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert armed == [(pipe.transformer, None)]
+
+    # default compiles dynamic=True; install() gets that value and arms only unbacked sources (dense MiniMax-H3's temb)
+    armed.clear()
+    _stub_torch(monkeypatch)
+    pipe = _Pipe(with_compile = True)
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert armed == [(pipe.transformer, True)]
+
+
+@pytest.mark.usefixtures("no_divisibility_proof")
+def test_speed_max_compiles_a_quantised_stream_merging_dit_static(monkeypatch):
+    """A torchao FLUX block under automatic dynamic hits CantSplit on the first new resolution and drops to eager;
+    max compiles it static instead, and reports its artifacts as per-shape."""
+    _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_carries_torchao_weights", lambda module: True)
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer._repeated_blocks = ["FluxSingleTransformerBlock"]
+    block = FluxSingleTransformerBlock()
+    pipe.transformer.named_modules = lambda: [("blocks.0", block)]
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_MAX)
+    assert pipe.compile_kwargs["dynamic"] is False
+    assert ds_mod.auto_dynamic_active(pipe) is False
+    assert ds_mod.compiled_shapes_are_static(pipe, SPEED_MAX) is True
+
+
+def test_real_rope_installed_before_the_qwen_image_21_block_compile_only(monkeypatch):
+    from core.inference import diffusion_qwenimage21_rope as rope
+
+    _stub_torch(monkeypatch)
+    order = []
+    monkeypatch.setattr(rope, "install", lambda logger = None: order.append("rope") or True)
+    pipe = _Pipe(with_compile = True)
+    real_compile = pipe._compile
+    pipe.transformer.compile_repeated_blocks = lambda **kw: order.append("compile") or real_compile(
+        **kw
+    )
+    apply_speed_optims(pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT)
+    assert order == ["compile"]  # any other DiT keeps the stock RoPE
+
+    order.clear()
+    QwenImage21Transformer2DModel = type("QwenImage21Transformer2DModel", (), {})
+    pipe = _Pipe(with_compile = True)
+    pipe.transformer = QwenImage21Transformer2DModel()
+    pipe.transformer.compile_repeated_blocks = lambda **kw: order.append("compile")
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert order == ["rope", "compile"] and applied["compiled"] is True
+
+    order.clear()
+    monkeypatch.setattr(
+        rope, "install", lambda logger = None: (_ for _ in ()).throw(RuntimeError("probe"))
+    )
+    applied = apply_speed_optims(
+        pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
+    )
+    assert order == ["compile"] and applied["compiled"] is True
+
+
+def test_family_compiles_regionally_reads_the_repeated_blocks_declaration(monkeypatch):
+    from core.inference.diffusion_speed import family_compiles_regionally
+
+    diffusers = types.ModuleType("diffusers")
+    diffusers.Blocked = type("Blocked", (), {"_repeated_blocks": ["Block"]})
+    diffusers.Unblocked = type("Unblocked", (), {"_repeated_blocks": []})
+    diffusers.Undeclared = type("Undeclared", (), {})
+    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
+
+    def fam(cls, denoiser_attr = "transformer"):
+        return types.SimpleNamespace(transformer_class = cls, denoiser_attr = denoiser_attr)
+
+    assert family_compiles_regionally(fam("Blocked")) is True
+    assert family_compiles_regionally(fam("Unblocked")) is False
+    assert family_compiles_regionally(fam("Undeclared")) is True
+    assert family_compiles_regionally(fam("NotInThisDiffusers")) is True
+    assert family_compiles_regionally(fam("Unblocked", denoiser_attr = "unet")) is True
+    assert family_compiles_regionally(fam(None)) is True
+    assert family_compiles_regionally(None) is True
+
+
+def test_family_compiles_regionally_closes_the_dynamo_import_window_first(monkeypatch):
+    import utils.torch_warmup as warmup
+
+    from core.inference.diffusion_speed import family_compiles_regionally
+
+    events: list = []
+    monkeypatch.setattr(warmup, "close_dynamo_import_window", lambda _log: events.append("guard"))
+
+    class _Diffusers(types.ModuleType):
+        def __getattr__(self, name):
+            events.append("probe")
+            raise AttributeError(name)
+
+    monkeypatch.setitem(sys.modules, "diffusers", _Diffusers("diffusers"))
+    fam = types.SimpleNamespace(transformer_class = "Lumina2Transformer2DModel")
+    assert family_compiles_regionally(fam) is True
+    assert events[:2] == ["guard", "probe"]
+
+
+def test_pinned_denoiser_engages_the_int8_gemm_after_placement(monkeypatch):
+    """Pinned after placement: the GEMM installs with offload_active False, only on a compiled DiT."""
+    calls = []
+    fake = types.ModuleType("core.inference.diffusion_int8_gemm")
+
+    def _install(
+        transformer,
+        logger = None,
+        offload_active = False,
+    ):
+        calls.append(offload_active)
+        return 0 if offload_active else 60
+
+    fake.install = _install
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_int8_gemm", fake)
+    dit = types.SimpleNamespace()
+    pipe = types.SimpleNamespace(_unsloth_cuda_graph_reason = "offload active")
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda p: [dit])
+
+    applied = {"compiled": True, "int8_gemm": False, "cuda_graph": False}
+    ds_mod.engage_pinned_denoisers(pipe, applied)
+    assert calls == [False] and applied["int8_gemm"] and dit._unsloth_int8_gemm == 60
+    assert not applied["cuda_graph"]
+    assert pipe._unsloth_cuda_graph_reason == "denoiser pinned resident under offload hooks"
+
+    calls.clear()
+    eager = {"compiled": False, "int8_gemm": False}
+    ds_mod.engage_pinned_denoisers(pipe, eager)
+    assert calls == [] and not eager["int8_gemm"]
+
+
+@pytest.mark.parametrize(
+    "offload_active, denoiser_offloaded, expected",
+    [(True, False, False), (True, True, True), (True, None, True), (False, None, False)],
+)
+def test_int8_gemm_install_follows_the_denoiser_placement(
+    monkeypatch, offload_active, denoiser_offloaded, expected
+):
+    """Only a moving denoiser keeps the stock GEMM; one pinned under the others' offload rotation takes the fused one."""
+    from core.inference import diffusion_int8_gemm, diffusion_speed as ds_mod
+
+    seen = []
+    monkeypatch.setattr(
+        diffusion_int8_gemm,
+        "install",
+        lambda t, logger = None, offload_active = False: seen.append(offload_active) or 0,
+    )
+
+    class _DiT:
+        def compile_repeated_blocks(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda pipe: [_DiT()])
+    ds_mod._compile_repeated_blocks(
+        types.SimpleNamespace(),
+        None,
+        offload_active = offload_active,
+        denoiser_offloaded = denoiser_offloaded,
+    )
+    assert seen == [expected]
+
+
+def test_compile_eligible_on_rocm_follows_the_probe(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    rocm = types.SimpleNamespace(
+        device = "cuda",
+        dtype = "bfloat16",
+        backend = "rocm",
+        ordinal = None,
+        supports_default_torch_compile = True,
+    )
+    monkeypatch.setattr(ds_mod, "_is_bfloat16", lambda d: d == "bfloat16")
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: False)
+    assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is False
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: True)
+    assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is True
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: 1 / 0)
+    cuda = types.SimpleNamespace(
+        device = "cuda", dtype = "bfloat16", backend = "cuda", supports_default_torch_compile = True
+    )
+    assert ds_mod.compile_eligible(cuda, is_gguf = False, family = _family()) is True
+
+
+def test_rocm_compile_probe_settings(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    rc._reset_for_tests()
+    monkeypatch.setenv(rc.ENV, "0")
+    assert rc.rocm_block_compile_probe() == (False, f"{rc.ENV}=0") and not rc.rocm_compile_allowed()
+    monkeypatch.setenv(rc.ENV, "1")
+    assert rc.rocm_block_compile_probe()[0] is True and rc.rocm_compile_allowed()
+
+
+def _rocm_bf16(dtype = "bfloat16"):
+    return types.SimpleNamespace(
+        device = "cuda",
+        dtype = dtype,
+        backend = "rocm",
+        ordinal = None,
+        supports_default_torch_compile = True,
+    )
+
+
+def _probe_must_not_run(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.delenv(rc.ENV, raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    monkeypatch.setattr(ds_mod, "_is_bfloat16", lambda d: d == "bfloat16")
+    monkeypatch.setattr(ds_mod, "_is_float16", lambda d: d == "float16")
+    calls = []
+    monkeypatch.setattr(
+        rc, "rocm_block_compile_works", lambda device = None: calls.append(device) or True
+    )
+    rc._reset_for_tests()
+    return rc, calls
+
+
+def test_rocm_preflight_never_runs_the_allocating_probe(monkeypatch):
+    # The route preflight and the polled status route run before eviction: they read the probe, never run it.
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_transformer_quant as tq
+
+    rc, calls = _probe_must_not_run(monkeypatch)
+    assert (
+        dmod._pipeline_quant_uncompilable_reason(
+            _rocm_bf16(), _family(), None, model_kind = "pipeline"
+        )
+        is None
+    )
+    assert ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = None, probe = False) is True
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "torchao_unavailable_reason", lambda: "stop here")
+    assert tq.dense_quant_host_capable(_rocm_bf16()) is False
+    assert calls == []
+    # A recorded failure is honoured without re-probing; the loader (probe=True) runs it.
+    rc._result[rc._index(None)] = (False, "boom")
+    assert ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = None, probe = False) is False
+    rc._reset_for_tests()
+    assert (
+        dmod._pipeline_quant_uncompilable_reason(
+            _rocm_bf16(), _family(), None, model_kind = "pipeline", probe = True
+        )
+        is None
+    )
+    assert len(calls) == 1
+
+
+def test_rocm_probe_oom_is_held_for_the_load_and_retried_at_the_next(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    calls = []
+    answers = iter([(False, "OutOfMemoryError: HIP out of memory"), (True, "ok")])
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: calls.append(1) or next(answers))
+    rc._reset_for_tests()
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is False
+        # Same load: no second compile/OOM, and a non-probing read still sees "unprobed".
+        assert rc.rocm_block_compile_probe()[0] is False
+        assert rc.rocm_block_compile_known() is None
+    assert len(calls) == 1
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is True
+    assert rc.rocm_block_compile_known() is True and len(calls) == 2
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_oom_outside_a_load_is_never_cached(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    calls = []
+    monkeypatch.setattr(
+        rc, "_probe", lambda torch, index: calls.append(1) or (False, "OutOfMemoryError: x")
+    )
+    rc._reset_for_tests()
+    rc.rocm_block_compile_probe()
+    rc.rocm_block_compile_probe()
+    assert len(calls) == 2 and rc.probe_result(0) is None
+    rc._reset_for_tests()
+
+
+def test_rocm_known_read_does_not_wait_for_a_running_probe(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    rc._reset_for_tests()
+    out = []
+    with rc._lock:  # a probe in progress holds this for seconds
+        t = threading.Thread(target = lambda: out.append(rc.rocm_block_compile_known()), daemon = True)
+        t.start()
+        t.join(2)
+        assert not t.is_alive() and out == [None]
+
+
+def test_rocm_fp16_never_pays_the_probe(monkeypatch):
+    from core.inference.diffusion_autoopt.plan import compile_ineligible_reason
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    assert ds_mod.compile_eligible(_rocm_bf16("float16"), is_gguf = False, family = _family()) is False
+    assert compile_ineligible_reason(_rocm_bf16("float16"), _family()).startswith("dtype")
+    assert calls == []
+
+
+def test_rocm_kill_switch_also_stops_the_gguf_dequant_compile(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    cuda = types.SimpleNamespace(backend = "cuda")
+    monkeypatch.setenv(rc.ENV, "0")
+    assert ds_mod._gguf_dequant_compilable(True, True, True, _rocm_bf16()) is False
+    assert ds_mod._gguf_dequant_compilable(True, True, True, cuda) is True
+    monkeypatch.setenv(rc.ENV, "auto")
+    assert ds_mod._gguf_dequant_compilable(True, True, True, _rocm_bf16()) is True
+
+
+def test_loader_probes_rocm_only_for_an_engaged_pipeline_quant():
+    # speed=off with quant off must not pay the allocating probe: the loader's probe=True call sits inside the
+    # engaged-quant branch.
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dmod
+
+    tree = ast.parse(inspect.getsource(dmod))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "_pipeline_quant_uncompilable_reason"
+        and any(k.arg == "probe" and getattr(k.value, "value", None) is True for k in n.keywords)
+    ]
+    assert len(calls) == 1
+    node, guards = calls[0], []
+    while node in parents:
+        child, node = node, parents[node]
+        if isinstance(node, ast.If) and child in node.body:
+            guards.append(ast.unparse(node.test))
+    assert any("normalize_transformer_quant(transformer_quant) is not None" in g for g in guards)
+
+
+def _diffusion_calls(name):
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dmod
+
+    tree = ast.parse(inspect.getsource(dmod))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    calls = [
+        n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name
+    ]
+    return calls, parents
+
+
+def test_deferred_speed_profile_arms_without_running_the_rocm_probe():
+    import ast
+
+    calls, parents = _diffusion_calls("compile_eligible")
+    deferred = []
+    for c in calls:
+        node = c
+        while node in parents and not isinstance(node, ast.Assign):
+            node = parents[node]
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) == "speed_deferred" for t in node.targets
+        ):
+            deferred.append(c)
+    assert deferred and all(
+        any(k.arg == "probe" and getattr(k.value, "value", None) is False for k in c.keywords)
+        for c in deferred
+    )
+
+
+def test_native_quant_never_runs_the_rocm_probe():
+    import ast
+
+    calls, parents = _diffusion_calls("_pipeline_quant_uncompilable_reason")
+    probing = [
+        c
+        for c in calls
+        if any(k.arg == "probe" and getattr(k.value, "value", None) is True for k in c.keywords)
+    ]
+    assert len(probing) == 1
+    node, guarded = probing[0], False
+    while node in parents:
+        child, node = node, parents[node]
+        if (
+            isinstance(node, ast.IfExp)
+            and child is node.orelse
+            and ast.unparse(node.test) == "native_scheme is not None"
+        ):
+            guarded = True
+    assert guarded
+
+
+def test_rocm_kill_switch_declines_the_planned_dequant_step(monkeypatch):
+    import torch
+
+    from core.inference import diffusion_rocm_compile as rc
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    pipe = types.SimpleNamespace(transformer = None)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    rocm = types.SimpleNamespace(
+        device = "cuda", backend = "rocm", dtype = torch.bfloat16, supports_default_torch_compile = True
+    )
+    monkeypatch.setenv(rc.ENV, "0")
+    p = plan_mod.build_plan(
+        pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True
+    )
+    assert p.step("compiled_dequant").attempt is False
+    assert p.reason("compiled_dequant") == f"{rc.ENV}=0"
+    monkeypatch.setenv(rc.ENV, "1")
+    p = plan_mod.build_plan(
+        pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True
+    )
+    assert p.step("compiled_dequant").attempt is True
+
+
+def test_rocm_gguf_default_compile_cache_gate_uses_the_dequant_predicate():
+    # A regional probe failure recorded by an earlier dense load must not close the GGUF dequant cache context.
+    import ast
+
+    calls, parents = _diffusion_calls("_gguf_dequant_compilable")
+    gated = []
+    for c in calls:
+        node = c
+        while node in parents and not isinstance(node, ast.If):
+            node = parents[node]
+        if isinstance(node, ast.If) and "compile_cache.begin(" in ast.unparse(node.body[0]):
+            gated.append((c, parents[c]))
+    assert len(gated) == 2
+    c, ifexp = gated[0]
+    assert isinstance(ifexp, ast.IfExp) and ifexp.body is c
+    test = ast.unparse(ifexp.test)
+    assert "gguf_transformer" in test and "SPEED_DEFAULT" in test and "'rocm'" in test
+    # max: a refused regional compile falls back to the dequant, which keeps the cache context open.
+    assert isinstance(ifexp.orelse, ast.BoolOp) and isinstance(ifexp.orelse.op, ast.Or)
+    regional, fallback = ifexp.orelse.values
+    assert getattr(regional.func, "id", None) == "_compile_cache_wanted"
+    assert "'rocm'" in ast.unparse(fallback) and gated[1][0] in list(ast.walk(fallback))
+
+
+def test_rocm_probe_runs_on_wheels_without_a_hip_version(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.9.0+rocm7.1.0")
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: (False, "compiled block disagrees"))
+    rc._reset_for_tests()
+    assert rc.rocm_block_compile_probe() == (False, "compiled block disagrees")
+    rc._reset_for_tests()
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("HIP out of memory. Tried to allocate 2.00 MiB"),
+        type("OutOfMemoryError_", (RuntimeError,), {})("boom"),
+    ],
+)
+def test_rocm_probe_wrapped_oom_stays_transient(monkeypatch, exc):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    wrapped = RuntimeError("backend='inductor' raised: compile failed")
+    wrapped.__cause__ = exc
+
+    class _Boom:
+        def __getattr__(self, name):
+            raise wrapped
+
+    monkeypatch.setattr(torch, "device", lambda *a, **k: _Boom().device)
+    rc._reset_for_tests()
+    ok, why = rc.rocm_block_compile_probe()
+    assert ok is False and "OutOfMemoryError" in why
+    assert rc.rocm_block_compile_known() is None
+    assert rc.probe_result(0) is None
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_oom_of_one_load_is_never_reused_by_an_overlapping_load(monkeypatch):
+    # Overlapping image / video loads: an older load's OOM, whenever it lands, belongs to that load alone.
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    answers = iter([(False, "OutOfMemoryError: HIP out of memory"), (True, "ok")])
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: next(answers))
+    rc._reset_for_tests()
+    newer_started, older_done = threading.Event(), threading.Event()
+    seen = {}
+
+    def _newer():
+        with rc.load_scope():
+            newer_started.set()
+            older_done.wait(5)
+            seen["newer"] = rc.rocm_block_compile_probe()[0]
+
+    t = threading.Thread(target = _newer)
+    t.start()
+    newer_started.wait(5)
+    with rc.load_scope():  # the older load reaches its probe only after the newer load began
+        seen["older"] = rc.rocm_block_compile_probe()[0]
+    older_done.set()
+    t.join(5)
+    assert seen == {"older": False, "newer": True}
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_index_keeps_an_integer_ordinal(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+
+    def _old_device(*args, **kwargs):  # torch 2.4: no torch.device(int)
+        if args and isinstance(args[0], int):
+            raise TypeError("device() received an invalid combination of arguments")
+        return types.SimpleNamespace(index = None)
+
+    monkeypatch.setattr(torch, "device", _old_device)
+    assert rc._index(1) == 1
+    assert rc._index(3) == 3
+
+
+@pytest.mark.parametrize("which", ["image", "video"])
+@pytest.mark.parametrize("token", [None, 7])
+def test_every_load_pipeline_call_runs_in_its_own_rocm_probe_scope(monkeypatch, which, token):
+    # Direct calls and begin_load workers (token passed) alike: the OOM memo is the load's own.
+    from core.inference import diffusion_rocm_compile as rc
+
+    if which == "image":
+        from core.inference import diffusion as mod
+        backend = mod.DiffusionBackend()
+    else:
+        from core.inference import video as mod
+        backend = mod.VideoBackend()
+    scopes = []
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(*a, **k):
+        scopes.append(rc._load_oom.get())
+        raise _Stop
+
+    monkeypatch.setattr(backend, "validate_load_request", _stop)
+    if which == "image":
+        monkeypatch.setattr(backend, "_raise_if_load_cancelled", lambda token: None)
+    with pytest.raises(_Stop):
+        backend.load_pipeline(repo_id = "x/y", _load_token = token)
+    assert scopes == [{}] and rc._load_oom.get() is None
+
+
+def test_rocm_probe_leaves_the_process_rng_untouched():
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(1234)
+    before = torch.random.get_rng_state().clone()
+    rc._probe(torch, 0)  # builds the block, then fails to reach a GPU on this host
+    assert torch.equal(torch.random.get_rng_state(), before)
+
+
+def test_deferred_profile_engagement_runs_in_its_own_rocm_probe_scope(monkeypatch):
+    # It engages at the 3rd generation, after load_pipeline's scope closed: one OOM must hold for the engagement.
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_rocm_compile as rc
+
+    backend = dmod.DiffusionBackend()
+    scopes = []
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(state):
+        scopes.append(rc._load_oom.get())
+        raise _Stop
+
+    monkeypatch.setattr(backend, "_state_device_target", _stop)
+    state = types.SimpleNamespace(speed_deferred = True)
+    with pytest.raises(_Stop):
+        backend._engage_deferred_profile(state)
+    assert scopes == [{}] and rc._load_oom.get() is None
+
+
+def test_rocm_load_local_oom_wins_over_a_concurrent_global_success(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    monkeypatch.setattr(
+        rc, "_probe", lambda torch, index: (False, "OutOfMemoryError: HIP out of memory")
+    )
+    rc._reset_for_tests()
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is False
+        rc._result[0] = (True, "ok")  # another load on the same card probed successfully meanwhile
+        assert rc.rocm_block_compile_probe()[0] is False
+    assert rc.rocm_block_compile_probe()[0] is True
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_waits_for_a_compilable_model(monkeypatch):
+    # No denoiser to compile: neither the plan nor the speed primitive it hands the family to may run the probe.
+    from core.inference.diffusion_autoopt import apply as apply_mod
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    pipe = types.SimpleNamespace(transformer = None)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    p = plan_mod.build_plan(pipe, _rocm_bf16(), family = fam, backend = "image", speed_mode = "default")
+    assert p.step("compiled").attempt is False
+    assert p.reason("compiled") == "no denoiser transformer or whole-compile U-Net"
+    assert p.compile_declined_by_model is True
+    seen = []
+
+    def _apply(family, logger):
+        seen.append(ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = family))
+        return {}
+
+    apply_mod.run_speed_layer(
+        pipe, _rocm_bf16(), family = fam, backend = "image", speed_mode = "default", apply = _apply
+    )
+    assert seen == [False] and calls == []
+
+
+def test_rocm_probe_still_runs_for_a_compilable_model(monkeypatch):
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    monkeypatch.setattr(plan_mod.targets, "denoiser_dits", lambda pipe: [object()])
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    p = plan_mod.build_plan(
+        types.SimpleNamespace(), _rocm_bf16(), family = fam, backend = "image", speed_mode = "default"
+    )
+    assert p.compile_declined_by_model is False
+    assert len(calls) == 1
+
+
+def test_rocm_probe_answer_is_read_without_waiting_for_another_probe(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 1)
+    monkeypatch.setattr("core.inference.rocm_bf16.is_rocm_torch", lambda torch: True)
+    rc._reset_for_tests()
+    rc._result[1] = (True, "cached")
+    out = []
+    with rc._lock:  # a probe on another card holds this for seconds
+        t = threading.Thread(target = lambda: out.append(rc.rocm_block_compile_probe()), daemon = True)
+        t.start()
+        t.join(2)
+        assert not t.is_alive() and out == [(True, "cached")]
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_never_rewinds_the_shared_rng(monkeypatch):
+    # A concurrent consumer of the default CPU generator must not see its draws undone by a probe snapshot/restore.
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+
+    def _no_fork(*args, **kwargs):
+        raise AssertionError("fork_rng snapshots and restores the shared generator")
+
+    monkeypatch.setattr(torch.random, "fork_rng", _no_fork)
+    monkeypatch.setattr(torch, "compile", lambda module, **kwargs: module)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *args, **kwargs: None)
+    torch.manual_seed(1234)
+    before = torch.random.get_rng_state().clone()
+    ok, why = rc._probe(torch, 0, device = torch.device("cpu"))
+    assert ok, why
+    assert torch.equal(torch.random.get_rng_state(), before)
+
+
+def test_compile_cache_gate_skips_the_rocm_probe_for_a_model_with_nothing_to_compile(monkeypatch):
+    from core.inference import diffusion as dmod
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    pipe = types.SimpleNamespace(transformer = None)
+    wanted = dmod._compile_cache_wanted(
+        pipe, _rocm_bf16(), fam, is_gguf = False, speed_mode = "default", offload_active = False
+    )
+    assert wanted is False and calls == []
+    cuda = types.SimpleNamespace(**{**vars(_rocm_bf16()), "backend": "cuda"})
+    assert dmod._compile_cache_wanted(
+        pipe, cuda, fam, is_gguf = False, speed_mode = "default", offload_active = False
+    ) is ds_mod.compile_eligible(cuda, is_gguf = False, family = fam)

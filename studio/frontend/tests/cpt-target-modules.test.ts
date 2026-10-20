@@ -8,6 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
+const trainingConfig = await import("../src/config/training.ts");
 const {
   CPT_TARGET_MODULES,
   DEFAULT_HYPERPARAMS,
@@ -15,7 +16,7 @@ const {
   isCptTargetModuleActive,
   resolveCptTargetModules,
   toggleCptTargetModule,
-} = await import("../src/config/training.ts");
+} = trainingConfig;
 
 test("resolveCptTargetModules keeps all-linear for architecture-specific models", () => {
   assert.deepEqual(resolveCptTargetModules(["all-linear"]), [
@@ -99,5 +100,20 @@ test("CPT embedding controls do not change the LoRA target mode", () => {
   assert.deepEqual(
     toggleCptTargetModule(["all-linear", "lm_head"], "all-linear"),
     [...DEFAULT_HYPERPARAMS.targetModules, "lm_head"],
+  );
+});
+
+test("non-CPT target controls show an all-linear model default as active", () => {
+  const { getUiTargetModules } = trainingConfig;
+  assert.deepEqual(getUiTargetModules(false), [
+    "all-linear",
+    ...DEFAULT_HYPERPARAMS.targetModules,
+  ]);
+  assert.equal(isCptTargetModuleActive(["all-linear"], "all-linear"), true);
+  assert.equal(isCptTargetModuleActive(["all-linear"], "q_proj"), false);
+  assert.deepEqual(toggleCptTargetModule(["all-linear"], "q_proj"), ["q_proj"]);
+  assert.deepEqual(
+    toggleCptTargetModule(["all-linear"], "all-linear"),
+    DEFAULT_HYPERPARAMS.targetModules,
   );
 });

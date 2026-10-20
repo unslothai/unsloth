@@ -25,7 +25,9 @@ test("queue acceptance follows the owning lifecycle phase", () => {
   for (const phase of ["preparing", "loading", "unloading"] as const) {
     const gate = new ModelLifecycleGate();
     assert.equal(gate.canQueue(), true);
+    assert.equal(gate.currentPhase(), null);
     const lease = gate.tryAcquire(phase)!;
+    assert.equal(gate.currentPhase(), phase);
     assert.equal(gate.canQueue(), phase === "loading");
     assert.equal(gate.tryAcquire("loading"), null);
     assert.equal(gate.markLoading(lease + 1), false);
@@ -33,6 +35,7 @@ test("queue acceptance follows the owning lifecycle phase", () => {
     assert.equal(gate.markLoading(lease), phase === "preparing");
     assert.equal(gate.canQueue(), phase !== "unloading");
     assert.equal(gate.release(lease), true);
+    assert.equal(gate.currentPhase(), null);
     assert.equal(gate.canQueue(), true);
     const next = gate.tryAcquire("preparing")!;
     assert.equal(gate.markLoading(lease), false);

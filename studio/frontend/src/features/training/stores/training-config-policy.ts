@@ -59,6 +59,11 @@ export const initialTrainingConfigState: TrainingConfigState = {
   modelKnownCached: false,
   modelLocalPath: null,
   modelFormat: null,
+  modelSubfolder: null,
+  decisionCheckpoints: null,
+  trainAsDecision: false,
+  decisionLayout: null,
+  settingsBeforeDecision: null,
   projectName: "",
   trainingMethod: "qlora",
   trainingMethodProvenance: {
@@ -69,6 +74,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
     loraRankBeforeCpt: null,
     loraAlphaBeforeCpt: null,
     loraVariantBeforeCpt: null,
+    trainOnCompletionsBeforeCpt: null,
   },
   datasetSource: "huggingface",
   browseDatasetSelection: createHfBrowseDatasetSelection(null),
@@ -104,6 +110,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   isDatasetAudio: false,
   datasetCheckFailed: false,
   maxPositionEmbeddings: null,
+  drafterCapability: null,
   ...DEFAULT_HYPERPARAMS,
 };
 export function hasSeparateStreamingEvalSplit(

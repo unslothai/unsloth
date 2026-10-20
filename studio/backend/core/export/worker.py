@@ -28,10 +28,14 @@ from typing import Any
 
 logger = get_logger(__name__)
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
+
+from utils.hardware import apply_gpu_ids
 
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the
@@ -179,16 +183,19 @@ def _activate_transformers_version(model_name: str, hf_token: str | None = None)
 
 @contextlib.contextmanager
 def _offline_window_if_unreachable(step = "loading"):
-    """Force HF offline for a network-touching step (transformers version activation, or the
-    load preflights that hit the Hub) when the endpoint is unreachable, then restore the prior
-    env. Keeps a no-network export from hanging on Hub calls that run before load_checkpoint's
-    own probe, while letting this persistent worker re-decide per operation once back online.
+    """Force HF offline for a network-touching step (transformers version activation, the load
+    preflights that hit the Hub, or a local export) when the endpoint is unreachable, then
+    restore the prior env. Keeps a no-network export from hanging or failing on Hub calls, while
+    letting this persistent worker re-decide per operation once back online.
 
-    Post-ML-import (the load preflights), huggingface_hub has already read its in-process
+    Post-ML-import (load preflights, exports), huggingface_hub has already read its in-process
     offline constant and cached sessions, so env alone is too late: defer to the loader's
     _force_hf_offline (env + in-process flags + session reset). Pre-import (activation),
     huggingface_hub is not loaded yet, so setting the env vars suffices for its urllib probes."""
+    from utils.wheel_utils import HF_OFFLINE_AUTO_ENV
+
     saved: dict[str, str | None] = {}
+    saved_marker: list = []  # [prior value] once this window marked HF offline as auto-set
     force_ctx = None
     try:
         from utils.transformers_version import _env_offline, hf_endpoint_unreachable
@@ -200,6 +207,10 @@ def _offline_window_if_unreachable(step = "loading"):
         )
         if not _env_offline() and probe_enabled and hf_endpoint_unreachable():
             logger.warning("Hugging Face endpoint unreachable; %s offline", step)
+            # Only the Hub is known to be down: mark this offline as ours so a required kernel
+            # install (GitHub / PyPI) is still allowed; an operator's HF offline never enters here.
+            saved_marker.append(os.environ.get(HF_OFFLINE_AUTO_ENV))
+            os.environ[HF_OFFLINE_AUTO_ENV] = "1"
             if "huggingface_hub" in sys.modules:
                 try:
                     from unsloth.models.loader_utils import _force_hf_offline
@@ -226,6 +237,11 @@ def _offline_window_if_unreachable(step = "loading"):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        if saved_marker:
+            if saved_marker[0] is None:
+                os.environ.pop(HF_OFFLINE_AUTO_ENV, None)
+            else:
+                os.environ[HF_OFFLINE_AUTO_ENV] = saved_marker[0]
 
 
 def _send_response(resp_queue: Any, response: dict) -> None:
@@ -233,6 +249,219 @@ def _send_response(resp_queue: Any, response: dict) -> None:
         resp_queue.put(response)
     except (OSError, ValueError) as exc:
         logger.error("Failed to send response: %s", exc)
+
+
+def _nemotron_auto_trust(checkpoint_path: str, hf_token) -> bool:
+    """Whether a NemotronH/Nano checkpoint gets trust_remote_code without the user asking: a
+    genuine first-party Hub repo only (not a local/spoof name starting with "unsloth/"),
+    authenticated so private repos resolve."""
+    _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
+    _cp_lower = str(checkpoint_path).lower()
+    if not (
+        any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS)
+        and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
+    ):
+        return False
+    from utils.security.trusted_org import is_trusted_org_repo
+
+    return is_trusted_org_repo(checkpoint_path, hf_token = hf_token)
+
+
+def _run_export_security_gates(
+    targets: list,
+    *,
+    trust_remote_code: bool,
+    hf_token,
+    approved_fingerprint,
+    resp_queue: Any,
+    compute_subdirs: bool = True,
+    subject = None,
+) -> bool:
+    """Malware + (when *trust_remote_code*) remote-code consent gates over *targets* (checkpoint +
+    LoRA base). Sends the matching 'loaded' failure and returns False if blocked, True when every
+    target is clear.
+
+    ``compute_subdirs=False`` keeps the gate transformers-free (``security_load_subdirs`` imports
+    ``model_config`` -> ``transformers``, which would snapshot optional-backend availability before
+    the SSM kernels are installed): used for the preflight before kernel provisioning, where
+    ``_handle_load`` re-runs the authoritative gate with full subdir scoping."""
+    from utils.security import evaluate_file_security, load_scan_target
+
+    if compute_subdirs:
+        from utils.security import security_load_subdirs
+
+    security_targets: list[str] = []
+    consent_load_subdirs: dict[str, tuple] = {}
+    for requested_target in dict.fromkeys(t for t in targets if t):
+        load_subdirs = security_load_subdirs(requested_target, hf_token) if compute_subdirs else ()
+        target, load_subdirs = load_scan_target(requested_target, load_subdirs)
+        if target not in consent_load_subdirs:
+            security_targets.append(target)
+            consent_load_subdirs[target] = ()
+        consent_load_subdirs[target] = tuple(
+            dict.fromkeys((*consent_load_subdirs[target], *load_subdirs))
+        )
+
+    for target in security_targets:
+        _fs = evaluate_file_security(
+            target,
+            hf_token = hf_token,
+            load_subdirs = consent_load_subdirs[target],
+        )
+        if _fs.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
+                    "ts": time.time(),
+                },
+            )
+            return False
+
+    # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH unless pinned-approved.
+    # A LoRA merges its base model, whose code runs, so gate it too. Adapter + base are scanned as
+    # one combined unit, pinned by a single fingerprint.
+    if trust_remote_code:
+        from utils.security import evaluate_remote_code_consent_for_targets
+        _rc = evaluate_remote_code_consent_for_targets(
+            security_targets,
+            hf_token = hf_token,
+            trust_remote_code = True,
+            approved_fingerprint = approved_fingerprint,
+            subject = subject,
+            load_subdirs_by_target = consent_load_subdirs,
+        )
+        if _rc.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": (
+                        f"Checkpoint '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review and "
+                        f"approve it to proceed."
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                    "ts": time.time(),
+                },
+            )
+            return False
+
+    return True
+
+
+def _local_adapter_base(checkpoint_path: str):
+    """``base_model_name_or_path`` of a local adapter checkpoint, read straight from its
+    adapter_config.json (no ML import), else None."""
+    try:
+        import json
+        cfg = Path(checkpoint_path) / "adapter_config.json"
+        if cfg.is_file():
+            return (
+                json.loads(cfg.read_text(encoding = "utf-8-sig")).get("base_model_name_or_path")
+                or None
+            )
+    except Exception:
+        pass
+    return None
+
+
+def _preflight_security_gates(cmd: dict, resp_queue: Any) -> bool:
+    """The security gates, transformers-free, BEFORE any SSM kernel is provisioned: a blocked
+    checkpoint (or LoRA base) must not trigger a native build or a wheel install on its behalf.
+    Gates the checkpoint plus its LoRA base (the explicit one, a local adapter_config.json, or the
+    Hub adapter config), under the trust the load will use. ``_handle_load`` re-runs the
+    authoritative gates afterwards. Returns False after sending the 'loaded' failure."""
+    checkpoint_path = cmd["checkpoint_path"]
+    hf_token = cmd.get("hf_token") or None
+    base = cmd.get("base_model") or _local_adapter_base(checkpoint_path)
+    if not base:
+        try:
+            from utils.transformers_version import _remote_lora_base
+            base = _remote_lora_base(checkpoint_path, hf_token)
+        except Exception as exc:
+            logger.debug("Could not resolve the adapter base for the preflight gates: %s", exc)
+    trust_remote_code = bool(cmd.get("trust_remote_code")) or _nemotron_auto_trust(
+        checkpoint_path, hf_token
+    )
+    return _run_export_security_gates(
+        [checkpoint_path, base],
+        trust_remote_code = trust_remote_code,
+        hf_token = hf_token,
+        approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+        resp_queue = resp_queue,
+        compute_subdirs = False,  # stay transformers-free until the SSM kernels are installed
+        subject = cmd.get("subject"),
+    )
+
+
+def _export_uses_cuda_kernels(device_backend) -> bool:
+    """causal-conv1d / mamba-ssm are CUDA / ROCm extensions, so only a CUDA export (ROCm reports as
+    "cuda" too) provisions them: MLX, CPU, XPU, an unspecified backend and any macOS export never
+    load them. ssm_runtime then checks the torch build itself."""
+    return sys.platform != "darwin" and str(device_backend or "") in ("cuda", "rocm")
+
+
+def _provision_ssm_kernels(
+    checkpoint_path: str,
+    base_model: str | None,
+    hf_token,
+    resp_queue: Any,
+    device_backend = None,
+    trust_remote_code = None,
+) -> bool:
+    """Install the causal-conv1d / mamba-ssm a checkpoint needs before Unsloth and its modeling
+    import, decided from its config (a LoRA's base config), as a training or chat load does.
+    Returns False after reporting a failure only for a model that cannot load without mamba-ssm."""
+    if not _export_uses_cuda_kernels(device_backend):
+        return True
+    try:
+        from utils.ssm_runtime import provision_ssm_kernels, ssm_probe_identifier
+        from utils.transformers_version import _remote_lora_base
+    except Exception as exc:
+        logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel install", exc)
+        return True
+    base = base_model
+    if not base:
+        try:
+            # Raw HTTP, no ML import; a local adapter's base is read by the provisioner itself.
+            base = _remote_lora_base(checkpoint_path, hf_token or None)
+        except Exception as exc:
+            logger.debug("Could not resolve the adapter base for SSM kernels: %s", exc)
+    status = lambda message: _send_response(
+        resp_queue, {"type": "status", "message": message, "ts": time.time()}
+    )
+    try:
+        # The trust the load will use decides whether an auto_map model runs its remote code.
+        trusted = bool(trust_remote_code) or _nemotron_auto_trust(checkpoint_path, hf_token or None)
+        provision_ssm_kernels(
+            ssm_probe_identifier(checkpoint_path, base),
+            checkpoint_path,
+            hf_token or None,
+            adapter_base = base,
+            trust_remote_code = trusted,
+            status_cb = status,
+        )
+        return True
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "error",
+                "error": (
+                    "This model needs SSM kernel libraries (causal-conv1d / mamba-ssm) "
+                    f"that could not be installed: {exc}"
+                ),
+                "ts": time.time(),
+            },
+        )
+        return False
 
 
 def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
@@ -261,30 +490,17 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     base_model = cmd.get("base_model") or None
 
     # Auto-enable trust_remote_code for NemotronH/Nano models.
-    if not trust_remote_code:
-        from utils.security.trusted_org import is_trusted_org_repo
+    if not trust_remote_code and _nemotron_auto_trust(checkpoint_path, hf_token):
+        trust_remote_code = True
+        logger.info(
+            "Auto-enabled trust_remote_code for Nemotron model: %s",
+            checkpoint_path,
+        )
 
-        _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
-        _cp_lower = checkpoint_path.lower()
-        if (
-            any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS)
-            and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
-            # Genuine first-party Hub repo only (not a local/spoof name starting
-            # with "unsloth/"); authenticated so private repos resolve.
-            and is_trusted_org_repo(checkpoint_path, hf_token = hf_token)
-        ):
-            trust_remote_code = True
-            logger.info(
-                "Auto-enabled trust_remote_code for Nemotron model: %s",
-                checkpoint_path,
-            )
-
-    # Malware gate: a poisoned pickle deserializes on load even with
-    # trust_remote_code False, so check HF's security scan (metadata-only) every
-    # load. Local checkpoints have no Hub scan and are skipped in the helper; a
-    # LoRA merges its base weights, so gate that repo too.
-    from utils.security import evaluate_file_security, load_scan_target, security_load_subdirs
-
+    # Malware gate: a poisoned pickle deserializes on load even with trust_remote_code False, so
+    # check HF's security scan (metadata-only) every load. Local checkpoints have no Hub scan and
+    # are skipped in the helper; a LoRA merges its base weights, so gate that repo too. This is
+    # the authoritative check (full subdir scoping); the pre-provisioning preflight is a subset.
     requested_security_targets = [checkpoint_path]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
@@ -295,69 +511,15 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             requested_security_targets.append(_base)
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
-    security_targets: list[str] = []
-    consent_load_subdirs: dict[str, tuple] = {}
-    for requested_target in dict.fromkeys(requested_security_targets):
-        load_subdirs = security_load_subdirs(requested_target, hf_token)
-        target, load_subdirs = load_scan_target(requested_target, load_subdirs)
-        if target not in consent_load_subdirs:
-            security_targets.append(target)
-            consent_load_subdirs[target] = ()
-        consent_load_subdirs[target] = tuple(
-            dict.fromkeys((*consent_load_subdirs[target], *load_subdirs))
-        )
-
-    for target in security_targets:
-        _fs = evaluate_file_security(
-            target,
-            hf_token = hf_token,
-            load_subdirs = consent_load_subdirs[target],
-        )
-        if _fs.blocked:
-            _send_response(
-                resp_queue,
-                {
-                    "type": "loaded",
-                    "success": False,
-                    "message": _fs.reason,
-                    "error_kind": "malware_blocked",
-                    "security": _fs.response_payload(),
-                    "ts": time.time(),
-                },
-            )
-            return
-
-    # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH unless
-    # pinned-approved. A LoRA merges its base model, whose code runs, so gate it too.
-    if trust_remote_code:
-        from utils.security import evaluate_remote_code_consent_for_targets
-
-        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
-        _rc = evaluate_remote_code_consent_for_targets(
-            security_targets,
-            hf_token = hf_token,
-            trust_remote_code = True,
-            approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
-            subject = cmd.get("subject"),
-            load_subdirs_by_target = consent_load_subdirs,
-        )
-        if _rc.blocked:
-            _send_response(
-                resp_queue,
-                {
-                    "type": "loaded",
-                    "success": False,
-                    "message": (
-                        f"Checkpoint '{_rc.model_name}' ships custom code flagged as "
-                        f"{_rc.max_severity} by the security scan. Review and "
-                        f"approve it to proceed."
-                    ),
-                    "error_kind": "remote_code_blocked",
-                    "remote_code": _rc.response_payload(),
-                    "ts": time.time(),
-                },
-            )
-            return
+    if not _run_export_security_gates(
+        requested_security_targets,
+        trust_remote_code = trust_remote_code,
+        hf_token = hf_token,
+        approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+        resp_queue = resp_queue,
+        subject = cmd.get("subject"),
+    ):
+        return
 
     try:
         _send_response(
@@ -373,6 +535,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             checkpoint_path = checkpoint_path,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = cmd.get("offload_layers", "auto"),
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
             base_model = base_model,
@@ -387,6 +550,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 "checkpoint": checkpoint_path if success else None,
                 "is_vision": backend.is_vision if success else False,
                 "is_peft": backend.is_peft if success else False,
+                "decision": getattr(backend, "decision", None) if success else None,
                 "ts": time.time(),
             },
         )
@@ -437,6 +601,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 private = cmd.get("private", False),
                 compressed_method = cmd.get("compressed_method"),
+                install_missing_dependencies = cmd.get("install_missing_dependencies", False),
             )
         elif export_type == "base":
             success, message, output_path = backend.export_base_model(
@@ -456,6 +621,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 hf_token = cmd.get("hf_token"),
                 imatrix_file = cmd.get("imatrix_file"),
                 private = cmd.get("private", False),
+                npu_q4nx = cmd.get("npu_q4nx", False),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(
@@ -466,6 +632,7 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
                 private = cmd.get("private", False),
                 gguf = cmd.get("gguf", False),
                 gguf_outtype = cmd.get("gguf_outtype", "q8_0"),
+                adapter_format = cmd.get("adapter_format"),
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
@@ -558,6 +725,8 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         quiet_progress_bars = False,
     )
 
+    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
+
     checkpoint_path = config["checkpoint_path"]
 
     # Before the huggingface_hub import: it latches HF_HUB_DISABLE_IMPLICIT_TOKEN into a
@@ -587,16 +756,32 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             )
             return
 
+        # Before Unsloth and the modeling import: transformers captures its kernel gates at import,
+        # and some remote modeling code (Nemotron-H) cannot import at all without mamba-ssm. Inside
+        # the activation window, so it adds no Hub reachability probe of its own; an MLX / CPU /
+        # macOS export installs nothing. The security gates run first, so a blocked checkpoint
+        # never triggers a kernel build on its behalf.
+        if not _preflight_security_gates(config, resp_queue):
+            return
+        if not _provision_ssm_kernels(
+            checkpoint_path,
+            config.get("base_model") or None,
+            config.get("hf_token"),
+            resp_queue,
+            config.get("device_backend"),
+            trust_remote_code = config.get("trust_remote_code"),
+        ):
+            return
+
     # Importable Triton isn't enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
         gate_torch_compile_on_windows(logger)
 
-    # See core/_torchao_stub.py: torchao crashes on Windows ROCm (RCCL absent). No-op off Windows ROCm. Must run
-    # before importing transformers / unsloth_zoo.
-    from core._torchao_stub import install_torchao_windows_rocm_stub
+    # Before transformers / unsloth_zoo: real torchao via unsloth's shim on Windows ROCm, else the stub.
+    from core._torchao_stub import install_torchao_windows_rocm_real_or_stub
 
-    install_torchao_windows_rocm_stub()
+    install_torchao_windows_rocm_real_or_stub()
 
     try:
         _send_response(
@@ -676,12 +861,32 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
             if cmd_type == "load":
                 # Load a new checkpoint, reusing this subprocess.
                 backend.cleanup_memory()
-                # Offline window also covers this load's Hub preflights (re-probed per load).
+                # Offline window covers this load's Hub preflights (re-probed per load). The
+                # security gates run before any SSM kernel is provisioned for the checkpoint.
                 with _offline_window_if_unreachable():
+                    if not _preflight_security_gates(cmd, resp_queue):
+                        continue
+                    if not _provision_ssm_kernels(
+                        cmd["checkpoint_path"],
+                        cmd.get("base_model") or None,
+                        cmd.get("hf_token"),
+                        resp_queue,
+                        config.get("device_backend"),
+                        trust_remote_code = cmd.get("trust_remote_code"),
+                    ):
+                        continue
                     _handle_load(backend, cmd, resp_queue)
 
             elif cmd_type == "export":
-                _handle_export(backend, cmd, resp_queue)
+                # Re-probed per export: connectivity may change after loading. A push needs the Hub,
+                # so pinning it offline for the whole export would only make the push fail.
+                export_window = (
+                    contextlib.nullcontext()
+                    if cmd.get("push_to_hub")
+                    else _offline_window_if_unreachable(step = "exporting")
+                )
+                with export_window:
+                    _handle_export(backend, cmd, resp_queue)
 
             elif cmd_type == "cleanup":
                 _handle_cleanup(backend, resp_queue)

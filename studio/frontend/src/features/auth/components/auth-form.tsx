@@ -15,7 +15,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { refreshSession } from "../api";
+import { refreshSession, refreshSessionOutcome } from "../api";
 import {
   deadlineFromStatus,
   formatCountdown,
@@ -201,6 +201,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   const hasBootstrapPassword = Boolean(window.__UNSLOTH_BOOTSTRAP__?.password);
   const changingFromSetupCode =
     !isLoginMode && sessionAccount(getAuthToken())?.isOwner === false;
+  const passwordManagerUsername =
+    isLoginMode && loginMode === "multi"
+      ? null
+      : sessionAccount(getAuthToken())?.username || username || null;
   const invalidChangePasswordForm =
     !isLoginMode &&
     (currentPassword.length < 8 ||
@@ -267,9 +271,12 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         let accessToken = getAuthToken();
 
         if (hasRefreshToken()) {
-          const refreshed = await refreshSession();
+          const outcome = await refreshSessionOutcome();
+          if (outcome === "unavailable") {
+            throw new Error("Unsloth is busy. Try again in a moment.");
+          }
           accessToken = getAuthToken();
-          if (!refreshed) {
+          if (outcome === "rejected") {
             clearAuthTokens();
             accessToken = null;
           }
@@ -375,6 +382,18 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         </p>
       )}
       <form className="space-y-5" onSubmit={handleSubmit}>
+        {passwordManagerUsername && (
+          <input
+            type="text"
+            name="username"
+            autoComplete="username"
+            value={passwordManagerUsername}
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+            className="sr-only"
+          />
+        )}
         {isLoginMode && loginMode === "multi" && (
           <div className="space-y-2">
             <Label htmlFor="username">Username</Label>

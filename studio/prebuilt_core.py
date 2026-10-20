@@ -30,6 +30,7 @@ from __future__ import annotations
 import errno
 import functools
 import hashlib
+import http.client
 import json
 import os
 import stat
@@ -149,6 +150,10 @@ _RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
 # the cudart64_<major>.dll / libcudart.so.<major> naming.
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
+
+# Toolkit 12.8+ prebuilts use nvcc -compress-mode=size, "not compatible with drivers released
+# before CUDA Toolkit's 12.4 Release" (nvcc docs): every kernel load fails (#12842).
+_COMPRESSED_FATBIN_MIN_DRIVER = (12, 4)
 
 # Blackwell floor is sm_100 (B100/B200 sm_100, B300/GB300 sm_103 below consumer
 # RTX 50 sm_120); the family needs toolkit >= 12.8, sm_103/sm_121 need 12.9.
@@ -441,6 +446,11 @@ def is_retryable_url_error(exc: Exception) -> bool:
         return True
     if isinstance(exc, socket.timeout):
         return True
+    # urllib wraps only a failure to send in URLError. A server that drops the connection
+    # before answering (RemoteDisconnected), a reset mid-body, or a body cut short
+    # (IncompleteRead) reaches here raw, and one of those would otherwise skip every retry.
+    if isinstance(exc, (ConnectionError, http.client.IncompleteRead)):
+        return True
     return False
 
 
@@ -482,6 +492,25 @@ def sleep_backoff(
 
 
 # ── Atomic writes and hashing ──
+def make_staging_dir(parent: Path, prefix: str) -> Path:
+    """``tempfile.mkdtemp``, except a Windows dir inherits ``parent``'s ACL.
+
+    mkdtemp's 0o700 gives a Windows dir a protected SYSTEM / Administrators / OWNER RIGHTS DACL
+    (CPython gh-118486), and a tree renamed out of it keeps those entries. An elevated run owns it
+    as Administrators, so the same account cannot read it unelevated (#14052, #9928).
+    """
+    if sys.platform != "win32":
+        return Path(tempfile.mkdtemp(prefix = prefix, dir = str(parent)))
+    for _ in range(100):
+        path = Path(parent) / f"{prefix}{os.urandom(6).hex()}"
+        try:
+            os.mkdir(path)
+        except FileExistsError:
+            continue
+        return path
+    raise FileExistsError(f"no free staging name under {parent}")
+
+
 def atomic_write_bytes(destination: Path, data: bytes) -> None:
     destination.parent.mkdir(parents = True, exist_ok = True)
     with tempfile.NamedTemporaryFile(
@@ -1671,11 +1700,27 @@ def detected_windows_runtime_lines(ops: ModuleOps) -> tuple[list[str], dict[str,
     return detected, runtime_dirs
 
 
+def driver_below_cuda_prebuilt_floor(host: Any) -> bool:
+    """A reported driver too old for any CUDA prebuilt (see _COMPRESSED_FATBIN_MIN_DRIVER)."""
+    driver = host.driver_cuda_version
+    return bool(driver) and tuple(driver[:2]) < _COMPRESSED_FATBIN_MIN_DRIVER
+
+
+def cuda_driver_floor_message(host: Any) -> str:
+    major, minor = host.driver_cuda_version[:2]
+    return (
+        f"NVIDIA driver reports CUDA {major}.{minor}, older than the CUDA "
+        f"{_COMPRESSED_FATBIN_MIN_DRIVER[0]}.{_COMPRESSED_FATBIN_MIN_DRIVER[1]} the CUDA "
+        "llama.cpp prebuilts need (their kernels fail with 'device kernel image is invalid'); "
+        "skipping them. Update the NVIDIA driver to R550 or newer (CUDA 12.4+) to use them."
+    )
+
+
 def compatible_linux_runtime_lines(host: Any) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, _minor = host.driver_cuda_version
-    if major < _MIN_CUDA_MAJOR:
+    if major < _MIN_CUDA_MAJOR or driver_below_cuda_prebuilt_floor(host):
         return []
     return _cuda_runtime_lines_for_major(major)
 
@@ -2760,7 +2805,7 @@ def install_from_bundle(
 ) -> None:
     staging_root = install_dir.parent / ops.INSTALL_STAGING_ROOT_NAME
     staging_root.mkdir(parents = True, exist_ok = True)
-    staging = Path(tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root))
+    staging = make_staging_dir(staging_root, f"{install_dir.name}.staging-")
     try:
         archive_path = staging / selection.asset
         url = ops.asset_download_url(bundle, selection.asset)

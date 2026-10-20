@@ -3,9 +3,14 @@
 
 import { authFetch } from "@/features/auth";
 
-import { chatModelsFromCatalog, type OpenAIModel } from "./openai-model-catalog";
+import {
+  type AudioApiModel,
+  type OpenAIModel,
+  audioModelsFromCatalog,
+  chatModelsFromCatalog,
+} from "./openai-model-catalog";
 
-export type { OpenAIModel };
+export type { AudioApiModel, OpenAIModel };
 
 /**
  * The chat-capable models this server can serve: `/v1/models` also lists image,
@@ -17,4 +22,13 @@ export async function listOpenAIModels(): Promise<OpenAIModel[]> {
     throw new Error(`Failed to list models (${res.status})`);
   }
   return chatModelsFromCatalog(await res.json());
+}
+
+/** The downloaded speech and transcription models, for the Audio API examples. */
+export async function listOpenAIAudioModels(): Promise<AudioApiModel[]> {
+  const res = await authFetch("/v1/models");
+  if (!res.ok) {
+    throw new Error(`Failed to list models (${res.status})`);
+  }
+  return audioModelsFromCatalog(await res.json());
 }

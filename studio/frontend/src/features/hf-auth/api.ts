@@ -36,8 +36,11 @@ export async function validateHfToken(
     status?: HfTokenValidationStatus;
     retry_after_seconds?: number | null;
   };
+  const status = body.status ?? "unavailable";
+  // A "valid" here may be the backend's cached verdict from before the token was revoked,
+  // so it never clears a refusal a real read saw; a read the token answers again does.
   return {
-    status: body.status ?? "unavailable",
+    status,
     retryAfterSeconds: body.retry_after_seconds ?? null,
   };
 }

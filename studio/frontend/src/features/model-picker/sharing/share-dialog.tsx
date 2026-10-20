@@ -1,0 +1,376 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
+import { useId, useMemo, useState } from "react";
+import type { ModelPickTarget } from "../components/model-selector/types";
+import {
+  DEFAULT_PER_MODEL_CONFIG,
+  type PerModelConfig,
+} from "../model-config/per-model-config";
+import { sharedExtraArgsError } from "./extra-args";
+import {
+  SHARED_CONFIG_FIELDS,
+  SHARED_CONFIG_KEYS,
+  type SharedConfigKey,
+  formatSharedConfigValue,
+} from "./fields";
+import {
+  DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH,
+  type SharedRunConfig,
+  createRunConfigLink,
+  isShareableModelId,
+} from "./links";
+
+const SHARING_DEFAULTS: PerModelConfig = {
+  ...DEFAULT_PER_MODEL_CONFIG,
+  gpuMemoryMode: "auto",
+  gpuLayers: -1,
+  nCpuMoe: 0,
+  selectedGpuIds: null,
+  selectedGpuIndexKind: null,
+};
+
+const loopbackHostname = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])$/;
+
+function linkPreview(value: SharedRunConfig, destination: string) {
+  try {
+    return {
+      link: createRunConfigLink(
+        value,
+        destination === "browser" ? window.location.href : undefined,
+      ),
+      error: "",
+    };
+  } catch (cause) {
+    return {
+      link: "",
+      error:
+        cause instanceof Error ? cause.message : "Could not create this link.",
+    };
+  }
+}
+
+export function ShareRunConfigDialog({
+  target,
+  config: sourceConfig,
+  onClose,
+}: {
+  target: ModelPickTarget;
+  config: PerModelConfig;
+  onClose: () => void;
+}) {
+  const id = useId();
+  const config = useMemo(
+    () => ({
+      ...sourceConfig,
+      llamaExtraArgs: sourceConfig.llamaExtraArgs ?? null,
+    }),
+    [sourceConfig],
+  );
+  const model = target.configId ?? target.id;
+  const shareableModel = isShareableModelId(model);
+  const fields = useMemo(
+    () =>
+      SHARED_CONFIG_KEYS.filter((key) => config[key] !== undefined).map(
+        (key) => {
+          const error =
+            key === "llamaExtraArgs" && config[key] !== null
+              ? sharedExtraArgsError(config[key])
+              : SHARED_CONFIG_FIELDS[key].valid(config[key])
+                ? null
+                : (SHARED_CONFIG_FIELDS[key].error ??
+                  "This value cannot be shared.");
+          const detail =
+            error === null
+              ? formatSharedConfigValue(key, config)
+              : key === "llamaExtraArgs"
+                ? `Excluded: ${error} Edit Extra Arguments in Run settings to share them.`
+                : error;
+          return { key, valid: error === null, detail };
+        },
+      ),
+    [config],
+  );
+  const [includeModel, setIncludeModel] = useState(shareableModel);
+  const [includeVariant, setIncludeVariant] = useState(
+    shareableModel && Boolean(target.ggufVariant),
+  );
+  const remoteAddress =
+    !isTauri && !loopbackHostname.test(window.location.hostname);
+  const [destination, setDestination] = useState(
+    isTauri || remoteAddress ? "desktop" : "browser",
+  );
+  const [selected, setSelected] = useState<Set<SharedConfigKey>>(
+    () =>
+      new Set(
+        fields
+          .filter(
+            ({ key, valid }) =>
+              valid &&
+              (key === "llamaExtraArgs"
+                ? (config.llamaExtraArgs?.length ?? 0) > 0
+                : JSON.stringify(config[key]) !==
+                  JSON.stringify(SHARING_DEFAULTS[key])),
+          )
+          .map(({ key }) => key),
+      ),
+  );
+  const [copying, setCopying] = useState(false);
+  const { link, error } = useMemo(
+    () =>
+      linkPreview(
+        {
+          ...(includeModel ? { model } : {}),
+          ...(includeVariant && target.ggufVariant
+            ? { ggufVariant: target.ggufVariant }
+            : {}),
+          config: Object.fromEntries(
+            [...selected].map((key) => [key, config[key]]),
+          ),
+        },
+        destination,
+      ),
+    [
+      config,
+      selected,
+      includeModel,
+      model,
+      includeVariant,
+      target.ggufVariant,
+      destination,
+    ],
+  );
+  const choice = (
+    key: string,
+    label: string,
+    checked: boolean,
+    change: (checked: boolean) => void,
+    detail?: string,
+    disabled = false,
+  ) => (
+    <div key={key}>
+      <div className="flex min-h-8 items-center gap-3">
+        <Checkbox
+          id={`${id}-${key}`}
+          aria-describedby={
+            detail !== undefined ? `${id}-${key}-detail` : undefined
+          }
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={(value) => change(value === true)}
+        />
+        <label
+          htmlFor={`${id}-${key}`}
+          className={`flex min-w-0 flex-1 items-baseline justify-between gap-4 text-ui-13 ${disabled ? "cursor-not-allowed text-muted-foreground" : "cursor-pointer text-foreground"}`}
+        >
+          <span className="shrink-0">{label}</span>
+          {detail !== undefined && !disabled && (
+            <span
+              id={`${id}-${key}-detail`}
+              aria-hidden={true}
+              title={detail}
+              className="min-w-0 truncate text-ui-12 text-muted-foreground"
+            >
+              {detail}
+            </span>
+          )}
+        </label>
+      </div>
+      {detail !== undefined && disabled && (
+        <p
+          id={`${id}-${key}-detail`}
+          className="pb-2 pl-7 text-ui-12 leading-snug text-muted-foreground"
+        >
+          {detail}
+        </p>
+      )}
+    </div>
+  );
+  return (
+    <Dialog
+      open={true}
+      onOpenChange={(open) => {
+        if (!open) {
+          onClose();
+        }
+      }}
+    >
+      <DialogContent className="grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] gap-5 sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Share run settings</DialogTitle>
+          <DialogDescription>
+            Choose what to include. Omitted settings use the recipient’s
+            existing defaults. Opening a link shows the settings before running.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="@container flex min-h-0 flex-col border-y border-border/60">
+          <div className="border-b border-border/60 py-2">
+            {shareableModel ? (
+              choice("model", "Model", includeModel, setIncludeModel, model)
+            ) : (
+              <p className="py-1.5 text-ui-12 leading-snug text-muted-foreground">
+                This model uses a local path. The recipient can choose their own
+                model.
+              </p>
+            )}
+            {target.ggufVariant &&
+              choice(
+                "variant",
+                "GGUF variant",
+                includeVariant,
+                setIncludeVariant,
+                target.ggufVariant,
+              )}
+          </div>
+          <div className="hover-scrollbar -mr-7 min-h-0 flex-1 overflow-y-auto py-2 sm:max-h-75">
+            <div className="w-[100cqw]">
+              {fields.map(({ key, valid, detail }) =>
+                choice(
+                  key,
+                  SHARED_CONFIG_FIELDS[key].label,
+                  selected.has(key),
+                  (checked) =>
+                    setSelected(
+                      (current) =>
+                        new Set(
+                          checked
+                            ? [...current, key]
+                            : [...current].filter((item) => item !== key),
+                        ),
+                    ),
+                  detail,
+                  !valid,
+                ),
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <div className="flex min-h-9 items-center justify-between gap-4">
+              {isTauri ? (
+                <>
+                  <span className="text-ui-13 font-medium">Open in</span>
+                  <span className="text-ui-13 text-muted-foreground">
+                    Desktop
+                  </span>
+                </>
+              ) : (
+                <>
+                  <label
+                    htmlFor={`${id}-destination`}
+                    className="text-ui-13 font-medium"
+                  >
+                    Open in
+                  </label>
+                  <Select value={destination} onValueChange={setDestination}>
+                    <SelectTrigger id={`${id}-destination`} className="w-32">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="desktop">Desktop</SelectItem>
+                      <SelectItem value="browser">Web</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </>
+              )}
+            </div>
+            <p
+              className={
+                destination === "browser" && remoteAddress
+                  ? "text-ui-12 leading-snug text-amber-600 dark:text-amber-500"
+                  : "text-ui-12 leading-snug text-muted-foreground"
+              }
+            >
+              {destination !== "browser"
+                ? "The recipient needs Unsloth Desktop installed."
+                : remoteAddress
+                  ? "This link contains this Studio's network address. Anyone with it and your password can sign in and control this computer. Share it only with people who should use this Studio; otherwise share a Desktop link."
+                  : "This link contains your Unsloth Web address. Recipients need access to that address. A localhost address opens Unsloth Web on their own computer."}
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <label
+                htmlFor={`${id}-link`}
+                className="flex h-9 min-w-0 flex-1 cursor-text items-center rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:focus-within:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+              >
+                <span className="sr-only">Shareable link</span>
+                <Textarea
+                  id={`${id}-link`}
+                  readOnly={true}
+                  value={link}
+                  rows={1}
+                  fieldSizing="fixed"
+                  onKeyUp={(event) => {
+                    if (event.key === "Tab") {
+                      event.currentTarget.select();
+                    }
+                  }}
+                  className="no-scrollbar! min-h-0 flex-1 overflow-x-auto overflow-y-hidden whitespace-pre rounded-none border-0 bg-transparent p-0 py-1 font-mono text-ui-12 leading-4 text-muted-foreground md:text-ui-12 dark:bg-transparent dark:focus-visible:bg-transparent"
+                />
+              </label>
+              <Button
+                className="shrink-0 px-4"
+                disabled={!link || copying}
+                onClick={async () => {
+                  setCopying(true);
+                  try {
+                    if (await copyToClipboard(link)) {
+                      toast.success("Run settings link copied");
+                    } else {
+                      toast.error(
+                        "Could not copy the link. Select and copy it from the link field.",
+                      );
+                    }
+                  } finally {
+                    setCopying(false);
+                  }
+                }}
+              >
+                Copy link
+              </Button>
+            </div>
+            {error && (
+              <p role="alert" className="text-ui-12 text-destructive">
+                {error}
+              </p>
+            )}
+            {destination === "desktop" &&
+              link.length > DESKTOP_RUN_CONFIG_URL_WARNING_LENGTH && (
+                <output className="block text-ui-12 text-amber-700 dark:text-amber-300">
+                  Long Desktop links may not open on Windows. Include fewer
+                  settings{!isTauri && " or open in Web"}.
+                </output>
+              )}
+            <p className="text-ui-12 leading-snug text-muted-foreground">
+              Anyone with the link can read the included settings. Custom text,
+              template code and file, network or tool arguments cannot be
+              shared.
+            </p>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

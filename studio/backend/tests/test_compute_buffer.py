@@ -525,6 +525,43 @@ class TestContextBufferDSV4:
         assert per_tok == pytest.approx(512 * 2, rel = 1e-6)
 
 
+class TestContextBufferDSV41:
+    """DeepSeek-V4.1 (deepseek41) has its own sparse-attention graph: ~2 GiB flat, then
+    growing faster than linearly, but far below DSV4's rate. Measured CUDA0 compute
+    buffer with the pinned llama.cpp (UD-IQ1_S, experts + Engram on CPU, f16 cache)."""
+
+    MIB = 1024**2
+    # (n_ctx, n_ubatch): measured MiB
+    _MEASURED = {
+        (16384, 512): 2102.26,
+        (65536, 512): 2198.26,
+        (262144, 512): 3094.26,
+        (1048576, 512): 11197.26,
+        (262144, 2048): 9751.02,
+        (1048576, 2048): 37143.02,
+    }
+
+    @pytest.mark.parametrize("ctx_ub", list(_MEASURED))
+    def test_covers_every_measurement(self, ctx_ub):
+        n_ctx, ub = ctx_ub
+        b = _backend(embd = 5120, arch = "deepseek41")
+        mib = b._compute_buffer_ctx_bytes(n_ctx, ub, "f16") / self.MIB
+        assert mib >= self._MEASURED[ctx_ub], f"under-reserved {mib:.0f} < {self._MEASURED[ctx_ub]}"
+
+    def test_not_the_dsv4_rate(self):
+        # Reusing deepseek4's 72000 B/tok would reserve ~6.6x the measured 1M buffer and
+        # cut the context the fit grants for nothing; stay within 1.2x of measured.
+        b = _backend(embd = 5120, arch = "deepseek41")
+        mib = b._compute_buffer_ctx_bytes(1048576, 512, "f16") / self.MIB
+        assert mib <= self._MEASURED[(1048576, 512)] * 1.2
+
+    def test_layer_split_adds_mask_copies(self):
+        b = _backend(embd = 5120, arch = "deepseek41")
+        one = b._compute_buffer_ctx_bytes(262144, 512, "f16")
+        split = b._compute_buffer_ctx_bytes(262144, 512, "f16", layer_split = True)
+        assert split - one == (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT - 1) * 512 * 2 * 262144
+
+
 class TestContextBufferLayerSplit:
     """The per-device f16 (KQ-mask) rate steps 4x once the model spans >1 device under
     ``-sm layer``: a step on "is split", not a ramp in device count. ``_MEASURED`` is
@@ -1389,24 +1426,29 @@ class TestSplitRateRecheckAfterSelection:
             if keyword.arg in ("split_extra_bytes", "split_extra_for_slots")
         ]
         # Projector floor pin, explicit-context pin, reduced-slot retry, per-candidate
-        # re-fit. A fifth has to come here and say which context it prices at.
+        # re-fit, overcommit notice's q8_0 what-if. A sixth has to say which context it prices at.
         #
         # Four, not the three the counting version asserted. It counted two spellings,
         # `_cc_split_extra(effective_ctx)` and `_cc_split_extra(ctx),`, and the
         # projector-floor site spells its context `_mm_floor_ctx`, so it was invisible
         # to the check that claimed to cover every call site. It has been wired
         # correctly the whole time; nothing was holding it there.
-        assert len(wired) == 4, wired
+        assert len(wired) == 5, wired
         # Each passes the step at a context of its own, so none is exempt and none
         # hardcodes one: `_cc_split_extra(4096)` would not match.
         # The reduced-slot search re-prices the step for each candidate slot count.
         for expression in wired:
             assert re.fullmatch(
-                r"_cc_split_extra\(\w+\)|lambda s: _cc_split_extra\(\w+, s\)", expression
+                r"_cc_split_extra\(\w+\)|lambda s: _cc_split_extra\(\w+, s\)"
+                r"|_cc_split_extra\(\w+, cache_type='q8_0'\)",
+                expression,
             ), expression
         assert "gpu_indices,use_fit=self._select_gpus_split_aware(" in load
         # The step rides _cc_bytes' pipelining gate, so it is 0 when llama.cpp declines.
-        assert "returnmax(0,_cc_bytes(ctx,2,slots)//2-_cc_bytes(ctx,1,slots))" in load
+        assert (
+            "returnmax(0,_cc_bytes(ctx,2,slots,cache_type)//2-_cc_bytes(ctx,1,slots,cache_type),)"
+            in load
+        )
         slots = "".join(inspect.getsource(LlamaCppBackend._slots_that_fit_on_gpu).split())
         assert "self._select_gpus_split_aware(" in slots
         assert (

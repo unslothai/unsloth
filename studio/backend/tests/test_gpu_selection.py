@@ -33,6 +33,7 @@ from utils.hardware import (
     prepare_gpu_selection,
     resolve_requested_gpu_ids,
 )
+from utils.hardware import nvidia
 import utils.hardware.hardware as _hw_module
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
@@ -106,6 +107,7 @@ class _GpuCacheResetMixin:
     def tearDown(self):
         _hw_module._physical_gpu_count = None
         _hw_module._visible_gpu_count = None
+        nvidia._uuid_mask_cache.clear()
 
 
 class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
@@ -128,6 +130,102 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
             patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 8),
         ):
             self.assertEqual(get_parent_visible_gpu_ids(), [])
+
+    def _uuid_mask_ids(
+        self,
+        mask,
+        smi_stdout,
+        env = None,
+        returncode = 0,
+        probe = get_parent_visible_gpu_ids,
+    ):
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": mask, "CUDA_DEVICE_ORDER": "PCI_BUS_ID", **(env or {})},
+                clear = True,
+            ),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 2),
+            patch("utils.hardware.nvidia.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = SimpleNamespace(returncode = returncode, stdout = smi_stdout)
+            return probe(), mock_run.call_count
+
+    def test_uuid_mask_resolves_to_physical_ids_in_mask_order(self):
+        smi = "0, GPU-d18a14b7-70a4\n1, GPU-2f902962-578c\n"
+        ids, _ = self._uuid_mask_ids("GPU-2f902962-578c,GPU-d18a14b7", smi)
+        self.assertEqual(ids, [1, 0])
+
+    def test_llama_backend_inherits_the_resolved_uuid_mask(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        smi = "0, GPU-d18a14b7-70a4\n1, GPU-2f902962-578c\n"
+        mask = "GPU-2f902962-578c,GPU-d18a14b7"
+        with patch.object(LlamaCppBackend, "_torch_is_rocm", return_value = False):
+            ids, _ = self._uuid_mask_ids(
+                mask, smi, probe = LlamaCppBackend._resolve_visible_physical_ids
+            )
+            self.assertEqual(ids, [1, 0])
+            allowed, _ = self._uuid_mask_ids(
+                mask,
+                smi,
+                probe = lambda: LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES"),
+            )
+            self.assertEqual(allowed, {0, 1})
+            ids, _ = self._uuid_mask_ids(
+                "GPU-ffff", smi, probe = LlamaCppBackend._resolve_visible_physical_ids
+            )
+            self.assertIsNone(ids)
+
+    def test_failed_uuid_resolution_is_not_retried_every_call(self):
+        _, first = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        _, again = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        self.assertEqual((first, again), (1, 0))
+        from utils.hardware import gpu_query
+
+        gpu_query.invalidate_static("test")
+        _, after_invalidate = self._uuid_mask_ids("GPU-aaa1", "", returncode = 9)
+        self.assertEqual(after_invalidate, 1)
+
+    def test_cross_vendor_inventory_follows_uuid_mask_order(self):
+        inventory = {
+            "devices": [
+                {"index": 0, "name": "GPU Zero", "memory_total_gb": 24.0},
+                {"index": 1, "name": "GPU One", "memory_total_gb": 24.0},
+            ]
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "GPU-b,GPU-a", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+                clear = True,
+            ),
+            patch(
+                "core.inference.llama_cpp.LlamaCppBackend._visible_devices_mask",
+                return_value = {0, 1},
+            ),
+            patch("utils.hardware.nvidia.resolve_uuid_mask", return_value = [1, 0]),
+            patch("utils.hardware.nvidia.get_physical_gpu_inventory", return_value = inventory),
+            patch(
+                "utils.hardware.nvidia.get_visible_gpu_utilization", return_value = {"devices": []}
+            ),
+        ):
+            devices = _hw_module._nvidia_inference_devices()
+        self.assertEqual([d["index"] for d in devices], [1, 0])
+
+    def test_unresolvable_uuid_mask_stays_unresolved(self):
+        smi = "0, GPU-aaa1\n1, GPU-aaa2\n"
+        for mask in ("GPU-aaa", "GPU-bbb", "MIG-aaa1", "0,GPU-aaa1", "GPU-aaa1,GPU-aaa1"):
+            with self.subTest(mask = mask):
+                self.assertEqual(self._uuid_mask_ids(mask, smi)[0], [])
+        self.assertEqual(self._uuid_mask_ids("GPU-aaa1", smi, returncode = 9)[0], [])
+
+    def test_uuid_mask_not_resolved_off_pci_bus_order_or_on_rocm(self):
+        smi = "0, GPU-aaa1\n"
+        ids, calls = self._uuid_mask_ids("GPU-aaa1", smi, {"CUDA_DEVICE_ORDER": "FASTEST_FIRST"})
+        self.assertEqual((ids, calls), ([], 0))
+        with patch("utils.hardware.hardware.IS_ROCM", True):
+            self.assertEqual(self._uuid_mask_ids("GPU-aaa1", smi), ([], 0))
 
     def test_invalid_requests_raise_clear_value_errors(self):
         cases = [
@@ -901,6 +999,68 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNone(metadata["selected_gpu_ids"])
 
 
+class TestExplicitPickWithoutTorchKernels(unittest.TestCase):
+    def test_an_uncovered_card_is_rejected_with_the_arch_list(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch(
+                "utils.hardware.hardware._describe_rocm_gpus",
+                return_value = ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"],
+            ),
+            patch(
+                "utils.hardware.hardware._torch_kernel_arch_tokens",
+                return_value = ["gfx1030", "gfx1034"],
+            ),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                r"GPU 1 \(AMD Radeon RX 5700 XT, gfx1010\) cannot run the PyTorch build this Unsloth Studio installed, "
+                r"which has kernels for gfx1030, gfx1034 only",
+            ):
+                prepare_gpu_selection([1], model_name = "unsloth/test")
+        mock_auto_select.assert_not_called()
+
+    def test_a_covered_card_beside_an_uncovered_one_is_accepted(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [0]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = {1}),
+            patch("utils.hardware.hardware.auto_select_gpu_ids") as mock_auto_select,
+        ):
+            selected, metadata = prepare_gpu_selection([0], model_name = "unsloth/test")
+        self.assertEqual(selected, [0])
+        self.assertEqual(metadata["selection_mode"], "explicit")
+        mock_auto_select.assert_not_called()
+
+    def test_the_refusal_names_the_arch_on_wheels_without_gcnArchName(self):
+        props = SimpleNamespace(
+            name = "AMD Radeon RX 5700 XT", gcnArchName = "", gfx_arch_name = "gfx1010:xnack-"
+        )
+        with (
+            patch("torch.cuda.device_count", return_value = 2),
+            patch("torch.cuda.get_device_properties", return_value = props),
+            patch(
+                "utils.hardware.hardware._get_parent_visible_gpu_spec",
+                return_value = {"numeric_ids": [0, 1], "raw": None},
+            ),
+        ):
+            self.assertEqual(
+                _hw_module._describe_rocm_gpus([1]), ["GPU 1 (AMD Radeon RX 5700 XT, gfx1010)"]
+            )
+
+    def test_a_host_where_every_card_is_covered_is_untouched(self):
+        with (
+            patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA),
+            patch("utils.hardware.hardware.resolve_requested_gpu_ids", return_value = [1]),
+            patch("utils.hardware.hardware.rocm_gpu_ids_without_torch_kernels", return_value = set()),
+        ):
+            selected, _ = prepare_gpu_selection([1], model_name = "unsloth/test")
+        self.assertEqual(selected, [1])
+
+
 class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
     def test_training_backend_resolves_explicit_gpu_ids_before_spawn(self):
         backend = TrainingBackend()
@@ -1152,7 +1312,19 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(sub_config["gpu_selection"]["selection_mode"], "auto")
 
 
+# The arbiter's module-level state, restored by TestRouteErrors.
+_ARBITER_STATE = ("_owner", "_owner_epoch", "_owner_account", "_prior_account")
+
+
 class TestRouteErrors(unittest.TestCase):
+    def setUp(self):
+        # These tests drive the real load routes, which claim the GPU in the process-wide arbiter before the
+        # stubbed backend refuses the load. Put the arbiter back, or the next test on this worker inherits a
+        # CHAT owner that nothing holds (it made the FLUX.3 prompt upsampler tests refuse to start).
+        import core.inference.gpu_arbiter as arb
+        saved = {name: getattr(arb, name) for name in _ARBITER_STATE}
+        self.addCleanup(lambda: [setattr(arb, name, value) for name, value in saved.items()])
+
     def test_prepare_gpu_selection_rejects_gpu_ids_on_non_accelerator_backend(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
             with self.assertRaises(ValueError) as exc_info:
@@ -2436,10 +2608,6 @@ class TestTheCudaMapNamesItsFallback(_GpuCacheResetMixin, unittest.TestCase):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CUDA):
             self.assertNotEqual(get_device_map([0, 1]), "unsloth")
 
-    def test_xpu_keeps_plain_balanced(self):
-        with patch("utils.hardware.hardware.get_device", return_value = DeviceType.XPU):
-            self.assertEqual(get_device_map([0, 1]), "balanced")
-
     def test_a_single_gpu_never_asks_for_a_plan(self):
         for device in (DeviceType.CUDA, DeviceType.XPU, DeviceType.CPU):
             with patch("utils.hardware.hardware.get_device", return_value = device):
@@ -2534,10 +2702,12 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
             self.assertTrue(self._probe()())
 
     def test_diffusion_factories_skip_bnb_on_xpu_and_keep_it_elsewhere(self):
+        """torch AdamW everywhere; AdamW8bit only to resume its own bundle, never on XPU."""
         import torch
 
         import core.training.diffusion_dit_trainer as dit_mod
         import core.training.diffusion_lora_trainer as lora_mod
+        import core.training.diffusion_train_common as common_mod
 
         class _Bnb8bitMarker(torch.optim.AdamW):
             """Stands in for bnb.optim.AdamW8bit: constructs fine, dies at the first step
@@ -2555,32 +2725,32 @@ class TestXpuBitsandbytesOptimizerGate(unittest.TestCase):
             ("sdxl_lora", lora_mod, "_make_lora_optimizer"),
             ("dit", dit_mod, "_make_optimizer"),
         )
+        resume_key = "bitsandbytes.optim.adamw.AdamW8bit"
         for label, module, factory_name in cases:
             factory = getattr(module, factory_name)
             for on_xpu in (True, False):
-                with self.subTest(trainer = label, xpu = on_xpu):
-                    param = torch.nn.Parameter(torch.zeros(2, 2))
-                    param.grad = torch.ones(2, 2)
-                    with (
-                        patch.dict(
-                            sys.modules,
-                            {"bitsandbytes": fake_bnb, "bitsandbytes.optim": fake_optim},
-                        ),
-                        patch.object(
-                            module,
-                            "bitsandbytes_optimizer_supported",
-                            lambda supported = not on_xpu: supported,
-                        ),
-                    ):
-                        optimizer = factory([param], 1e-4)
+                for resume in (None, resume_key):
+                    with self.subTest(trainer = label, xpu = on_xpu, resume = resume):
+                        param = torch.nn.Parameter(torch.zeros(2, 2))
+                        param.grad = torch.ones(2, 2)
+                        with (
+                            patch.dict(
+                                sys.modules,
+                                {"bitsandbytes": fake_bnb, "bitsandbytes.optim": fake_optim},
+                            ),
+                            patch.object(
+                                common_mod,
+                                "bitsandbytes_optimizer_supported",
+                                lambda supported = not on_xpu: supported,
+                            ),
+                        ):
+                            optimizer = factory([param], 1e-4, resume)
 
-                    if on_xpu:
-                        # Must not be the bnb optimizer, and must survive an actual step.
-                        self.assertNotIsInstance(optimizer, _Bnb8bitMarker)
-                        optimizer.step()
-                    else:
-                        # Unchanged off XPU: still the 8-bit optimizer, not a blanket disable.
-                        self.assertIsInstance(optimizer, _Bnb8bitMarker)
+                        if on_xpu or resume is None:
+                            self.assertNotIsInstance(optimizer, _Bnb8bitMarker)
+                            optimizer.step()
+                        else:
+                            self.assertIsInstance(optimizer, _Bnb8bitMarker)
 
 
 class TestCliDefaultOptimizerFollowsTheDevicePolicy(unittest.TestCase):

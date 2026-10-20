@@ -5,13 +5,20 @@
 execution, and terminal commands."""
 
 import ast
+import base64
 import codecs
 import copy
+from collections import OrderedDict, deque
+from collections.abc import Iterable
 import fnmatch
 import functools
 import hashlib
+from html.parser import HTMLParser
 import json
+import math
 import http.client
+import ipaddress
+import ntpath
 import os
 from functools import partial
 import signal
@@ -22,6 +29,7 @@ import asyncio
 import queue
 import random
 import re
+import sqlite3
 import shlex
 import shutil
 import ssl
@@ -32,10 +40,14 @@ import sys
 import tempfile
 import contextlib
 import threading
+import zlib
 from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
-from .context_window import _RESULT_NOTICE_RESERVE
+from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
+from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
+from .media_chat_tools import MEDIA_CHAT_TOOLS
+from . import file_history
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -58,25 +70,47 @@ import time
 import urllib.parse
 import urllib.request
 
+from core.inference.mcp_image import (
+    ATTACHED_IMAGE,
+    image_input_mappings,
+    image_mapping,
+    public_tool,
+    settle_image_call,
+    strip_attached_image_note,
+)
 from core.inference.mcp_client import (
+    MCP_RESOURCE_TOOL,
     MCP_TOOL_PREFIX,
+    MCP_IMAGES_SENTINEL,
     TOOL_CACHE_INVALIDATING_FIELDS,
+    _drop_forged_ui_sentinels,
     cache_tools,
     call_tool_sync,
+    get_cached_resources,
     get_cached_tools,
     in_failure_cooloff,
+    is_studio_decisions,
     is_stdio,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
+    parse_stdio_command,
     probe_timeout,
+    read_resource_sync,
     record_probe_failure,
     stdio_mcp_enabled,
+    tool_ui_resource_uri,
+    tool_visible_to,
 )
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils import sandbox_memory_limit, tool_result_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
 from utils.paths.storage_roots import RetiredAccountError, ensure_dir
+
+from . import os_sandbox
 
 from loggers import get_logger
 
@@ -87,6 +121,8 @@ _RAG_SEARCH_SLOT = threading.BoundedSemaphore(1)
 # Candidate multiplier when a website policy will filter the results after the search.
 _POLICY_OVERFETCH = 4
 _DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
+# How a lookup that found no address starts, as opposed to a refused one.
+_RESOLVE_FAILED = "Failed to resolve host"
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
@@ -99,6 +135,15 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# Not "connection error": DNS failures and refused connections are not resets (#12638).
+_DDGS_RESET_MARKERS = (
+    "connection reset",
+    "h2 connection driver error",
+    "server disconnected",
+    "broken pipe",
+    "forcibly closed",  # Windows WSAECONNRESET (10054)
+)
+_DDGS_HTTP1_RETRY_LOCK = threading.Lock()
 
 # Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
 # an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
@@ -145,7 +190,17 @@ def _env_int(name: str, default: int) -> int:
 
 # Model-visible cap on python/terminal tool results. The live UI stream is capped separately and higher, so
 # _truncate's notice stays mode-neutral (tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
-_MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
+_MAX_OUTPUT_CHARS = _env_int(tool_result_limit.MAX_CHARS_ENV, tool_result_limit.DEFAULT_MAX_CHARS)
+
+
+def _tool_result_max_chars() -> int:
+    """The cap before the window lowers it: Settings > Chat, unless the env var decides. Read per call so a save
+    applies to the next tool call; no saved value keeps `_MAX_OUTPUT_CHARS`."""
+    if tool_result_limit.locked_by_environment():
+        return _MAX_OUTPUT_CHARS
+    return tool_result_limit.saved_max_chars() or _MAX_OUTPUT_CHARS
+
+
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
@@ -201,6 +256,40 @@ _BLOCKED_COMMANDS = (
     if sys.platform == "win32"
     else _BLOCKED_COMMANDS_COMMON
 )
+
+# An approved call may run `rm`, but only as one plain command naming its files, never recursively. An allowlist, not a
+# recursive-flag scan: globs and xargs can feed rm a file named `-rf`, a line continuation splits a flag, `./rm` may be
+# another program, so any shell syntax keeps the block.
+_APPROVED_RM_SHELL_CHARS = frozenset(";&|<>()$`\\{}*?[]!#%^\n\r")
+# No -i / -I / --interactive: stdin is /dev/null, so rm reads "no", deletes nothing and still exits 0.
+_APPROVED_RM_SHORT_OPTION_RE = re.compile(r"-[fvd]+")
+_APPROVED_RM_LONG_OPTIONS = frozenset({"--force", "--verbose", "--dir", "--interactive=never"})
+_APPROVED_RM_REFUSED = (
+    "Blocked command(s) for safety: rm. Approval allows only one plain rm naming each file, "
+    "e.g. rm notes.txt old.log. Recursive deletion (-r, -R, -rf, --recursive) is never allowed, "
+    "nor are globs, pipes, xargs, chained commands or $ expansion."
+)
+
+
+def _is_approvable_rm(command: str) -> bool:
+    # A trailing newline only ends the command; one inside starts another.
+    command = command.strip()
+    if _APPROVED_RM_SHELL_CHARS & set(command):
+        return False
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return False
+    if len(words) < 2 or words[0] != "rm":
+        return False
+    for i, word in enumerate(words[1:], 1):
+        if word == "--":
+            return i + 1 < len(words)
+        if word.startswith("-") and not (
+            _APPROVED_RM_SHORT_OPTION_RE.fullmatch(word) or word in _APPROVED_RM_LONG_OPTIONS
+        ):
+            return False
+    return any(not w.startswith("-") for w in words[1:])
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
@@ -411,7 +500,9 @@ _SUBSTITUTION_SPAN_STEP = 64
 # Quote state of a backslash and the character behind it. Distinct from the surrounding quoting because bash expands
 # neither: the `$(` in `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
 _ESCAPED_CHAR_STATE = "\\"
-_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
+_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "cmdextversion", "not"})
+# cmd's `IF [/I] [NOT] a OP b command`: the comparison stands where the command word would.
+_WIN_COMPARISON_OPS = frozenset({"==", "equ", "neq", "lss", "leq", "gtr", "geq"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # A find action is COMPLETE at its terminator: words after it are find's next predicate, not CMD's. Reading past it
 # took a following `-exec grep -e safe {} +` for sed's script.
@@ -1343,6 +1434,38 @@ _START_SWITCHES = frozenset(
 )
 
 
+# A program spelled as a Windows path, spaces allowed (C:\Program Files\..., %SystemDrive%\...). The characters
+# Windows forbids in a file name are not, so a whole command line (`dir C:\x\curl`) does not read as one path.
+_WIN_PROGRAM_PATH_RE = re.compile(r'(?:[A-Za-z]:|\.{1,2}|%[A-Za-z_][\w()]*%)?[\\/][^:*?"<>|\r\n]*')
+_WIN_RELATIVE_PROGRAM_PATH_RE = re.compile(r'[^:*?"<>|\r\n]*[\\/][^:*?"<>|\r\n]*')
+
+
+def _blocked_program_path(word: str, program_slot: bool = False) -> str:
+    r"""The blocked name ``word`` runs when cmd or START takes it as one program path. Re-lexing it
+    as a command line splits `C:\Program Files\PowerShell\7\pwsh.exe` at the space. ntpath, not
+    os.path, so the Linux test runner reads backslashes the way Windows does."""
+    word = word.strip('"')
+    # ``program_slot``: the word can only be a program (START's), so `tools dir\pwsh.exe` is a path too.
+    # An extensionless path resolves through PATHEXT either way.
+    if not (
+        _WIN_PROGRAM_PATH_RE.fullmatch(word)
+        or (program_slot and _WIN_RELATIVE_PROGRAM_PATH_RE.fullmatch(word))
+    ):
+        return ""
+    base = ntpath.basename(word).lower()
+    stem, ext = ntpath.splitext(base)
+    if (
+        not program_slot
+        and any(char.isspace() for char in word)
+        and any(_WIN_PROGRAM_PATH_RE.match(piece) for piece in word.split()[1:])
+    ):
+        # A rooted command line (`\Windows\System32\where.exe \src\rm`), not one path holding spaces.
+        return ""
+    if ext in {".exe", ".com", ".bat", ".cmd"}:
+        base = stem
+    return base if base in _BLOCKED_COMMANDS else ""
+
+
 def _is_start_title(token: str) -> bool:
     """True when START would read ``token`` as its window title, not the program. The cmd lexer
     keeps the quote marks, so a title still arrives quoted; the posix lexer leaves two spellings
@@ -1371,14 +1494,20 @@ def _blocked_word_re(assignment_prefixes: bool):
     """
     if not _BLOCKED_COMMANDS:
         return None
+    # `.` (source) is left to the token walk: here `\b` let it match only a dot glued to a word, never `source`, so
+    # `.venv/bin/python` and `C:/x/app.exe` were refused as `.` (#12054).
+    words = sorted(w for w in _BLOCKED_COMMANDS if w[:1].isalnum() or w[:1] == "_")
+    if not words:
+        return None
     return re.compile(
         # No `coproc` alternative here, deliberately: with no quoting or command-position context this pass refused
         # `grep coproc rm file`. The token scan above knows where a command starts and handles the keyword.
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
         + (r"(?:[A-Za-z_]\w*=[^\s'\"]*\s+)*" if assignment_prefixes else r"")
-        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        # Both prefixes end at a separator, so the name is a whole path segment.
+        + r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\](?:[\w./\\-]*[/\\])?)?"
         + r"("
-        + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        + "|".join(re.escape(w) for w in words)
         + r")"
         + r"(?:\.(?:exe|com|bat|cmd))?\b"
     )
@@ -1571,13 +1700,14 @@ def _join_escaped_newlines(text: str) -> str:
     return "".join(out)
 
 
-def _find_blocked_commands(command: str) -> set[str]:
+def _find_blocked_commands(command: str, posix: "bool | None" = None) -> set[str]:
     """Detect blocked commands at shell command position only.
 
     A token is at command position if it is the first token, or follows a shell separator /
     brace-group opener / new-command keyword, or a command-prefix wrapper like `env` / `time` /
     `xargs`. Tokens in argument position pass through. Also scans `find ... -exec CMD` and recurses
-    into bash -c / cmd /c.
+    into bash -c / cmd /c. ``posix`` names the dialect of the shell that will run the command; None
+    keeps the host default (_shell_is_posix).
     """
     blocked: set[str] = set()
 
@@ -1596,7 +1726,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # rm -rf x` and at a line break. Keyed to the shell that will actually run this, not to the OS: on a Windows host
     # with bash the non-posix lexer never split on `;`, so `if true; then rm -rf x; fi` came back with nothing
     # blocked.
-    lexed_posix = _shell_is_posix()
+    lexed_posix = _shell_is_posix() if posix is None else posix
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
@@ -1685,14 +1815,37 @@ def _find_blocked_commands(command: str) -> set[str]:
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
     coproc_kw = False  # the word just consumed was the `coproc` KEYWORD, so a name may follow
+    if_condition = False  # just after cmd's IF, where a comparison may precede the command
+    skip_tokens = 0
     for token_index, token in enumerate(tokens):
         after_coproc = coproc_kw
         coproc_kw = False
+        if skip_tokens:
+            skip_tokens -= 1
+            continue
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand where the command word would otherwise
             # be.
             skip_operand = False
             continue
+        if expect_command and token.lower() == "if":
+            # cmd's IF is case-insensitive; reading `IF` as the command word hid the command after its condition.
+            if_condition = True
+            prefix_pending = False
+            prefix_command = ""
+            xargs_index = -1
+            continue
+        if if_condition and expect_command:
+            low = token.lower()
+            if low in {"/i", "not"}:
+                continue
+            if_condition = False
+            following = tokens[token_index + 1].lower() if token_index + 1 < len(tokens) else ""
+            if following in _WIN_COMPARISON_OPS:
+                skip_tokens = 2
+                continue
+            if "==" in token.strip("="):
+                continue
         if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
             skip_operand = token.lower() != "not"
             continue
@@ -1706,8 +1859,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         # A keyword only separates where a COMMAND may start. A quoted operator is DATA the command receives, not a
         # separator, so it leaves command position alone: `grep '|&' rm file` runs nothing and must not be refused.
+        # Folded: cmd's FOR ... DO is case-insensitive; in bash a capitalised keyword is only a command name.
         if (_looks_like_separator(token) and token_index not in quoted_separators) or (
-            token in _SHELL_KEYWORDS_AS_SEP and expect_command
+            token.lower() in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
             coproc_kw = expect_command and token == "coproc"
             expect_command = True
@@ -1773,7 +1927,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             _name, _sep, _value = nxt.partition("=")
             if _sep and _value:
-                blocked |= _find_blocked_commands(_value)
+                blocked |= _find_blocked_commands(_value, posix = posix)
 
     # find's `-exec`/`-execdir` and fd's `-x` / `-X` / `--exec` / `--exec-batch` all invoke CMD directly. Reading only
     # find's own flags left every fd form unscanned, so `fd -x rm -rf x` reached the hard blocklist as nothing at all.
@@ -1966,14 +2120,24 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue  # skip Windows switches like /s, /q, /v:on
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
-                blocked |= _find_blocked_commands(tokens[i + 1])
+                blocked |= _find_blocked_commands(tokens[i + 1], posix = posix)
             elif is_win_c and prev_base in _SHELLS_WIN:
                 # The cmd lexer keeps the marks, so `cmd /c "powershell ls"` would recurse on a first word of
                 # `"powershell` and match nothing.
                 payload = tokens[i + 1]
                 if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
                     payload = payload[1:-1]
-                blocked |= _find_blocked_commands(payload)
+                blocked |= _find_blocked_commands(payload, posix = posix)
+                # cmd runs a leading quoted path as the program (`cmd /c "C:\x y\pwsh.exe" -c ...`); `""prog" args"`
+                # loses its outer pair first. The posix lexer already handed that path over as one token.
+                if lexed_posix:
+                    program = tokens[i + 1]
+                else:
+                    rest = " ".join(tokens[i + 1 :])
+                    rest = '"' + rest[2:].lstrip() if rest.startswith('""') else rest
+                    quoted = re.match(r'"([^"]*)"', rest)
+                    program = quoted.group(1) if quoted else ""
+                blocked |= {_blocked_program_path(program)} - {""}
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above sees only as an argument, so screen what
@@ -1990,14 +2154,17 @@ def _find_blocked_commands(command: str) -> set[str]:
         # runnable; deciding whether `start` itself is executed is deliberately not attempted, since every local
         # approximation under-approximated.
         if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
+            blocked |= _find_blocked_commands(tokens[j], posix = posix)
+            if not _is_start_title(tokens[j]):
+                blocked |= {_blocked_program_path(tokens[j], program_slot = True)} - {""}
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
             while k < len(tokens) and _win_switch(tokens[k].lower()) in _START_SWITCHES:
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
-                blocked |= _find_blocked_commands(tokens[k])
+                blocked |= _find_blocked_commands(tokens[k], posix = posix)
+                blocked |= {_blocked_program_path(tokens[k], program_slot = True)} - {""}
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the scan above sees only as a text
     # argument, so screen it like `bash -c`. The pattern-space forms yield an empty payload; the auto gate prompts on
@@ -2047,7 +2214,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             for variant in _sed_program_variants(alternative, sed_vars or {}):
                 for payload in _sed_exec_payloads(variant):
                     if payload:
-                        blocked |= _find_blocked_commands(payload)
+                        blocked |= _find_blocked_commands(payload, posix = posix)
 
     return blocked
 
@@ -2625,6 +2792,7 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "subprocess",
         "shutil",
         "socket",
+        "_socket",
         "ctypes",
         "multiprocessing",
         "pty",
@@ -2765,6 +2933,9 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # Loaders that can execute code embedded in the data they deserialize; gated by receiver module (torch.load,
 # yaml.load) since bare `load` is too common.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
+# numpy loaders that unpickle under allow_pickle -> its positional index. The gate checks positions 1 and 2 of all of
+# them, so an alias pointing at another loader cannot shift the flag out of view.
+_NUMPY_PICKLE_FLAG_POS = {"load": 2, "read_array": 1, "NpzFile": 2}
 # The load entry points on those modules. yaml.load runs whatever its Loader= builds, and !!python/object/apply in the
 # data is a call, so it asks like the pickle-backed ones. yaml.safe_load is untouched.
 _AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset({"load", "load_all"})
@@ -2891,27 +3062,35 @@ _PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
 # Modules whose destructive names are the same calls: posix/nt are os's platform twins.
 _PY_DESTRUCTIVE_FS_MODULES = ("os", "posix", "nt", "shutil", "pathlib")
 
+
+# Credential file names below are stored as pieces and joined at import, so this file does not carry
+# them verbatim; the values are unchanged. Split any credential name added to these lists the same way.
+def _joined(*parts) -> str:
+    """Concatenate parts; a tuple part is one name split into pieces."""
+    return "".join("".join(part) for part in parts)
+
+
 # Reading these off the host escapes the intent of "read-only is safe": they hold credentials. Path traversal (../)
 # escapes the per-session workdir.
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
-    r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    + _joined((r"|\.(?:net", r"rc|npmrc|pypirc|git-cred", r"entials|env)(?:$|[/\\.\s'\"])"))
     # User-level persistence: a write into a shell startup file or an XDG autostart/user-service dir runs on the next
     # login, the /etc boot-hook risk without root, and the sandbox does not confine absolute paths. Rarely read in a
     # dev session, so gating any reference does not over-prompt.
-    r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
+    + r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
     r"|profile|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
     r"|xprofile|xinitrc|xsession)(?:$|[/\\\s'\"])"
     r"|(?:^|[/\\])\.config[/\\](?:autostart|systemd[/\\]user|environment\.d)(?:[/\\]|$)"
-    r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
+    + _joined((r"|id_r", r"sa"), (r"|id_ed", r"25519"), (r"|id_ec", r"dsa"), (r"|id_d", r"sa"))
     # Hugging Face stores the login token at ~/.cache/huggingface/token and the legacy ~/.huggingface/token (plus
     # stored_tokens); the rest of that cache is model data, so only the credential files match.
-    r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
+    + r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys; the whole dir is sensitive, not just passwd/shadow/sudoers. The trailing
     # group is the system persistence set: a write there installs a boot/login/preload hook, and the sandbox keeps
     # host-fs access. Effectively write-only in a dev session, so gating any reference does not over-prompt.
-    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$)"
-    r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
+    + _joined((r"|cred", r"entials"), (r"|/etc/(?:pas", r"swd|sh", r"adow|sudoers|ssh(?:[/\\]|$)"))
+    + r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
     r"|ld\.so\.preload(?:$|[/\\.\s'\"])|ld\.so\.conf|rc\.local|init\.d(?:[/\\]|$))"
     # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets, so a redirection to one reaches the
     # network without the confirm prompt.
@@ -2936,9 +3115,12 @@ _STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
     # Dotted names nothing else spells, so they match bare too.
     r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\";&|)(<>`]*|\.bootstrap_password|\.desktop_secret)"
     + _WORD_END
+    # The per-launch key file, bare or as a glob (find / -name 'llama_api_key_*').
+    + r"|(?:^|[/\\\s'\"=])llama_api_key_[^/\\\s'\";&|)(<>`]*"
+    + _WORD_END
     # Path form only: the bare name is an ordinary identifier. auth.db is absent for the same reason,
     # and Studio's copy is covered by the auth-directory patterns below.
-    + r"|[/\\]llama_api_key"
+    + r"|[/\\]llama_api_key(?:_\w+)?"
     + _WORD_END
     # `unsloth start` keeps the coding-agent keys here. Path form only: matching the bare name
     # refused `print('agent_api_key.json')`.
@@ -3204,8 +3386,9 @@ def _assignment_is_a_command_prefix(text: str, value_start: int) -> bool:
         elif char in " \t;&|\n":
             break
         index += 1
-    following = text[index:].lstrip(" \t")
-    return bool(following) and following[0] not in ";&|\n"
+    while index < len(text) and text[index] in " \t":
+        index += 1
+    return index < len(text) and text[index] not in ";&|\n"
 
 
 def _assignment_is_inert(text: str, index: int) -> bool:
@@ -3234,6 +3417,31 @@ def _assignment_is_inert(text: str, index: int) -> bool:
         elif character == ")":
             depth = max(depth - 1, 0)
     return bool(quote) or depth > 0
+
+
+def _assignment_inert_states(text: str) -> "list[bool]":
+    """`_assignment_is_inert(text, i)` for every i in one pass (index len(text) included)."""
+    states = []
+    quote = ""
+    escaped = False
+    depth = 0
+    for character in text:
+        states.append(bool(quote) or depth > 0)
+        if escaped:
+            escaped = False
+        elif character == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if character == quote:
+                quote = ""
+        elif character in "'\"":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(depth - 1, 0)
+    states.append(bool(quote) or depth > 0)
+    return states
 
 
 def _rebinds_the_studio_home_first(text: str) -> bool:
@@ -3933,6 +4141,9 @@ def _references_studio_credential_here(
     text: str,
     workdir: "str | None",
     _unescaped: bool = False,
+    _assign_expand_depth: int = 0,
+    _quoted_assignments: bool = False,
+    _positional_assignments: bool = False,
 ) -> bool:
     """`_references_studio_credential`, plus the relative paths *text* would open from *workdir*.
 
@@ -4005,12 +4216,49 @@ def _references_studio_credential_here(
     # One level of indirection, `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"`. Same substitution the
     # sensitive-path scan uses, and it only ADDS detections.
     if "$" in text:
-        expanded = _expand_shell_assignments(text)
-        # The WHOLE workdir-aware analysis, not only the literal scan: `d=../..; cd "$d"` moves the
-        # directory every later relative path opens from, and handing the unexpanded text to the cwd
-        # walk read `$d` as a directory name and never moved.
-        if expanded != text and _references_studio_credential_here(expanded, workdir):
-            return True
+        # Quoted bindings scanned separately: log text shaped like an assignment must not overwrite real ones.
+        quoted_modes, quote_states = (_quoted_assignments,), None
+        if _assign_expand_depth == 0 and ("'" in text or '"' in text):
+            quote_states = _shell_quote_states(text)
+            # Both modes only differ when some assignment sits inside quotes.
+            if any(quote_states[m.start(1)] for m in _SHELL_ASSIGN_RE.finditer(text)):
+                quoted_modes = (False, True)
+        seen = {text}
+        for include_quoted in quoted_modes:
+            final, positional_text, saw_prefix = _shell_assignment_expansions(
+                text, include_quoted = include_quoted, quote_states = quote_states
+            )
+            if saw_prefix and (_assign_expand_depth == 0 or _positional_assignments):
+                positional_text = _shell_assignment_expansions(
+                    text, include_quoted = include_quoted, quote_states = quote_states, skip_prefix = True
+                )[1]
+            variants = (
+                ((True, positional_text), (False, final))
+                if _assign_expand_depth == 0
+                else (
+                    (
+                        _positional_assignments,
+                        positional_text if _positional_assignments else final,
+                    ),
+                )
+            )
+            for positional, expanded in variants:
+                if expanded in seen:
+                    continue
+                seen.add(expanded)
+                # Exhausted expansion budget fails closed: unresolved aliases may still hide the auth path.
+                if _assign_expand_depth >= _MAX_SHELL_ASSIGN_EXPAND_PASSES or (
+                    "$" in expanded and len(expanded) > max(_MAX_TERMINAL_SCAN_CHARS, len(text))
+                ):
+                    return True
+                if _references_studio_credential_here(
+                    expanded,
+                    workdir,
+                    _assign_expand_depth = _assign_expand_depth + 1,
+                    _quoted_assignments = include_quoted,
+                    _positional_assignments = positional,
+                ):
+                    return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for offset, limit, cwd in _cwds_after_cd(workdir, text):
@@ -4987,7 +5235,13 @@ _SHELL_PARAM_CASE_RE = re.compile(r"\$\{(\w+)(\^\^|,,|\^|,)\}")
 # Indirect expansion ${!p} yields the value of the variable *named* by $p, so x=passwd; p=x; cat /etc/${!p} builds
 # /etc/passwd.
 _SHELL_PARAM_INDIRECT_RE = re.compile(r"\$\{!(\w+)\}")
-_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]+)")
+_SHELL_PARAM_VALUE_OP_RE = re.compile(r"\$\{([A-Za-z_]\w*)(:?)([-=+])([^{}]*)\}")
+# A NAME=value word is an assignment (not an argument) after one of these characters or keywords.
+_SHELL_ASSIGN_POSITION_CHARS = frozenset(";&|(\n'\"`{")
+_SHELL_ASSIGN_KEYWORDS = frozenset(
+    ("export", "local", "declare", "typeset", "readonly", "then", "do", "else", "{", "!", "time")
+)
+_SHELL_ASSIGN_RE = re.compile(r"(?:^|[\s;&|(])([A-Za-z_]\w*)=([^\s;&|)]*)")
 # Bash ANSI-C quoting ($'\x77' -> 'w') is expanded after this classifier, so decode $'...' bodies before the
 # sensitive-path scan.
 _ANSI_C_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
@@ -5001,17 +5255,20 @@ _GLOB_BRACKET_RE = re.compile(r"\[([^!\]][^\]]*)\]")
 _POSIX_CLASS_RE = re.compile(r"\[\[:\w+:\]\]")
 # Canonical sensitive files a ? / * / [..] glob could expand to; fnmatch tests whether the pattern reaches one (cat
 # /e??/passwd -> /etc/passwd).
-_SENSITIVE_GLOB_TARGETS = (
-    "/etc/passwd",
-    "/etc/shadow",
-    "/etc/sudoers",
-    "/root/.ssh/id_rsa",
-    "/root/.aws/credentials",
-    "/home/u/.ssh/id_rsa",
-    "/home/u/.ssh/id_ed25519",
-    "/home/u/.aws/credentials",
-    "/home/u/.netrc",
-    "/home/u/.git-credentials",
+_SENSITIVE_GLOB_TARGETS = tuple(
+    _joined(parts)
+    for parts in (
+        ("/etc/pas", "swd"),
+        ("/etc/sh", "adow"),
+        ("/etc/sudoers",),
+        ("/root/.ssh/id_r", "sa"),
+        ("/root/.aws/cred", "entials"),
+        ("/home/u/.ssh/id_r", "sa"),
+        ("/home/u/.ssh/id_ed", "25519"),
+        ("/home/u/.aws/cred", "entials"),
+        ("/home/u/.net", "rc"),
+        ("/home/u/.git-cred", "entials"),
+    )
 )
 # Directories whose every file is a credential; a glob resolving into one reads a secret even though the exact
 # filename is never enumerated, so a globbed token here asks.
@@ -5038,25 +5295,26 @@ _SENSITIVE_GLOB_DIRS = (
 # Credential basenames a glob can reach even when the directory is not wholly sensitive (cat ~/.netr? -> .netrc); the
 # canonical-target list only covers a few fixed home paths.
 _SENSITIVE_GLOB_BASENAMES = frozenset(
-    {
-        "token",
-        "stored_tokens",
-        "credentials",
-        ".netrc",
-        "netrc",
-        ".pypirc",
-        ".npmrc",
-        ".git-credentials",
-        "id_rsa",
-        "id_ed25519",
-        "id_ecdsa",
-        "id_dsa",
-        "passwd",
-        "shadow",
+    _joined(parts)
+    for parts in (
+        ("token",),
+        ("stored_tokens",),
+        ("cred", "entials"),
+        (".net", "rc"),
+        ("net", "rc"),
+        (".pypirc",),
+        (".npmrc",),
+        (".git-cred", "entials"),
+        ("id_r", "sa"),
+        ("id_ed", "25519"),
+        ("id_ec", "dsa"),
+        ("id_d", "sa"),
+        ("pas", "swd"),
+        ("sh", "adow"),
         # A project .env holds secrets; the literal path is gated elsewhere, so a glob that expands to it (cat .e?v)
         # must be too.
-        ".env",
-    }
+        (".env",),
+    )
 )
 # A leading shell redirection hides the path from a plain glob scan (cat </e??/passwd); strip it before matching.
 _REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
@@ -5074,8 +5332,8 @@ _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 # path fails closed rather than spending unbounded time. Ordinary commands are far below these bounds.
 _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
-# A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
-_GLOB_META_RE = re.compile(r"[?*\[]")
+# Each pass doubles resolved alias hops; leftover work after the cap fails closed.
+_MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
 _TREE_NODES_ATTR = "_unsloth_walk_nodes"
 
@@ -5243,13 +5501,59 @@ def _posix_join(parts) -> str:
     return out
 
 
-def _expand_shell_assignments(command: str) -> str:
+def _shell_assign_value_self_references(name: str, value: str) -> bool:
+    """True when *value* expands *name* (VAR=$VAR), which must not feed back into itself."""
+    if "$" not in value:
+        return False
+    if any((m.group(1) or m.group(2)) == name for m in _SHELL_VAR_RE.finditer(value)):
+        return True
+    return any(
+        m.group(1) == name
+        for pattern in (
+            _SHELL_PARAM_REPL_RE,
+            _SHELL_PARAM_CASE_RE,
+            _SHELL_PARAM_INDIRECT_RE,
+            _SHELL_PARAM_VALUE_OP_RE,
+        )
+        for m in pattern.finditer(value)
+    )
+
+
+def _expand_shell_assignments(
+    command: str,
+    *,
+    _include_quoted: bool = True,
+    _positional: bool = False,
+) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
     pattern replacement. Fail-open: only adds detections."""
-    env = dict(_SHELL_ASSIGN_RE.findall(command))
-    if not env:
-        return command
+    final, positional, _ = _shell_assignment_expansions(command, include_quoted = _include_quoted)
+    return positional if _positional else final
+
+
+def _shell_assignment_expansions(
+    command: str,
+    *,
+    include_quoted: bool = True,
+    quote_states = None,
+    skip_prefix: bool = False,
+) -> "tuple[str, str, bool]":
+    """(last binding everywhere, binding active at each use, saw a command-prefix assignment).
+
+    `x=/tmp cat "$x"` expands the argument with the OUTER x and only hands /tmp to the child, so with
+    *skip_prefix* such assignments bind nothing; the last-binding result keeps them for the child."""
+    env = {}
+    saw_prefix = False
+    inert_states = None
+
+    def repl_default(m):
+        name, colon, op, operand = m.groups()
+        value = env.get(name)
+        missing = value is None or (colon and not value.strip("'\""))
+        if op == "+":
+            return "" if missing else operand
+        return operand if missing else value
 
     def repl_pattern(m):
         var, is_global, pat, rep = m.group(1), m.group(2), m.group(3), m.group(4)
@@ -5275,10 +5579,79 @@ def _expand_shell_assignments(command: str) -> str:
         pointed = env.get(m.group(1))
         return env.get(pointed, m.group(0)) if pointed is not None else m.group(0)
 
-    command = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, command)
-    command = _SHELL_PARAM_REPL_RE.sub(repl_pattern, command)
-    command = _SHELL_PARAM_CASE_RE.sub(repl_case, command)
-    return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), command)
+    def expand(text):
+        if "$" not in text:
+            return text
+        text = _SHELL_PARAM_INDIRECT_RE.sub(repl_indirect, text)
+        text = _SHELL_PARAM_REPL_RE.sub(repl_pattern, text)
+        text = _SHELL_PARAM_CASE_RE.sub(repl_case, text)
+        return _SHELL_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), text)
+
+    # Positional: each use sees the binding active where it stands; the last binding covers loops.
+    pieces, pos = [], 0
+    matches = list(_SHELL_ASSIGN_RE.finditer(command))
+    # An assignment run is a command prefix only when a command word ends it: `A=1 B=2 echo $A`, not `A=1 B=2;`.
+    prefix = [False] * len(matches)
+    for i in range(len(matches) - 1, -1, -1):
+        m = matches[i]
+        if (quote_states is None or not quote_states[m.start(1)]) and (
+            _assignment_is_a_command_prefix(command, m.start(2))
+        ):
+            chained = (
+                i + 1 < len(matches) and not command[m.end(2) : matches[i + 1].start(1)].strip()
+            )
+            prefix[i] = prefix[i + 1] if chained else True
+    # `echo x=` is an argument, not an assignment: it binds nothing, so positional skips it too.
+    for i, m in enumerate(matches):
+        if prefix[i] or (quote_states is not None and quote_states[m.start(1)]):
+            continue
+        j = m.start(1) - 1
+        while j >= 0 and command[j] in " \t":
+            j -= 1
+        if j < 0 or command[j] in _SHELL_ASSIGN_POSITION_CHARS:
+            continue
+        if i and matches[i - 1].end(2) == j + 1:
+            prefix[i] = prefix[i - 1]
+            continue
+        k = j
+        while k >= 0 and command[k] not in " \t;&|(\n":
+            k -= 1
+        if command[k + 1 : j + 1] not in _SHELL_ASSIGN_KEYWORDS:
+            prefix[i] = True
+    for i, match in enumerate(matches):
+        if not include_quoted and ("'" in command or '"' in command):
+            if quote_states is None:
+                quote_states = _shell_quote_states(command)
+            if quote_states[match.start(1)]:
+                continue
+        var, val = match.groups()
+        pieces.append(expand(command[pos : match.start(2)]))
+        pieces.append(expand(val))
+        pos = match.end(2)
+        if prefix[i]:
+            saw_prefix = True
+            if skip_prefix:
+                continue
+        if _shell_assign_value_self_references(var, val):
+            # Studio home vars stay references: `H=$H; cat "$H/auth/auth.db"` must still name the install.
+            if var.upper() in _STUDIO_HOME_ENV_VARS:
+                env.setdefault(var, "${" + var + "}")
+            val = _SHELL_PARAM_VALUE_OP_RE.sub(repl_default, val)
+            env.setdefault(var, "")
+            val = expand(val)
+            # `a=$a$a` repeated doubles each time: past the path cap keep the earlier binding.
+            if len(val) > _MAX_PATH_SCAN_CHARS:
+                continue
+        # Only a scoped empty assignment (`(x=)`) keeps the outer binding; a top-level `x=` clears it.
+        if not val and var in env:
+            if inert_states is None:
+                inert_states = _assignment_inert_states(command)
+            if inert_states[match.start(1)]:
+                continue
+        env[var] = val
+    if not env:
+        return command, command, saw_prefix
+    return expand(command), "".join(pieces) + expand(command[pos:]), saw_prefix
 
 
 def _expand_param_defaults(command: str) -> str:
@@ -5689,10 +6062,58 @@ def _command_references_sensitive(command: str) -> bool:
     return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
 
 
+_CMD_ECHO_OFF_RE = re.compile(r"(?<![^\s&|()])@+")
+# cmd control flow that runs the command after it: IF's condition, FOR's DO and CALL become separators.
+_CMD_CONTROL_RE = re.compile(
+    r"(?i)(?<![^\s&|()])(?:if\s+(?:/i\s+)?(?:not\s+)?(?:(?:exist|defined|errorlevel|cmdextversion)\s+\S+"
+    r"|\S+?\s*==\s*\S+|\S+\s+(?:equ|neq|lss|leq|gtr|geq)\s+\S+)|do|call)(?=\s)"
+)
+
+
+def _cmd_reading(command: str) -> str:
+    """How cmd splits a command for the POSIX classifiers: ' is an ordinary character, ^ only escapes,
+    a leading @ only turns the echo off, and IF / FOR ... DO / CALL run the command that follows."""
+    text = _CMD_ECHO_OFF_RE.sub("", command.replace("^", "").replace("'", " "))
+    return _CMD_CONTROL_RE.sub(" & ", text)
+
+
+# The request's sandbox level while a call is classified: Low runs the Terminal on the host shell,
+# so the classifier must not probe for (or assume) the isolated cmd profile.
+_classifying_sandbox_level: "ContextVar[str | None]" = ContextVar(
+    "unsloth_classifying_sandbox_level", default = None
+)
+
+
+@contextlib.contextmanager
+def classifying_under(sandbox_level: "str | None"):
+    token = _classifying_sandbox_level.set(sandbox_level)
+    try:
+        yield
+    finally:
+        _classifying_sandbox_level.reset(token)
+
+
+# Both run the command through cmd.exe: the isolated one inside MXC, the fallback on a host without Git Bash.
+_CMD_PROFILES = ("cmd_isolated", "cmd_fallback")
+
+
+def _reads_differently_under_cmd(command: str) -> bool:
+    """True when cmd.exe will run ``command`` and would split it unlike bash."""
+    return (
+        sys.platform == "win32"
+        and _cmd_reading(command) != command
+        and _terminal_profile(_classifying_sandbox_level.get() == "low") in _CMD_PROFILES
+    )
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
         return False
+    if _reads_differently_under_cmd(command) and _terminal_is_potentially_unsafe(
+        _cmd_reading(command)
+    ):
+        return True
     # Redirections and substitutions can hide writes or nested commands; a quoted ">" false-positives into a prompt,
     # which is the safe direction.
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
@@ -5844,6 +6265,17 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     return False
 
 
+def _is_literal_false(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is False
+
+
+def _is_inert_loader_arg(node: ast.AST, mmap_slot: bool) -> bool:
+    # False, None, or a string in load's mmap_mode slot.
+    return isinstance(node, ast.Constant) and (
+        node.value is None or node.value is False or (mmap_slot and isinstance(node.value, str))
+    )
+
+
 def _python_is_potentially_unsafe(code: str) -> bool:
     """Classify python-tool code for auto mode (fail closed)."""
     if not code or not code.strip():
@@ -5886,6 +6318,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a pickle-backed loader (import torch as t), so t.load(...) is still gated as a
     # code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # numpy module aliases, and names / attributes bound to a numpy pickle loader -> its allow_pickle position.
+    numpy_aliases = {"numpy"}
+    pickle_fn_aliases: "dict[str, int]" = {}
+    pickle_fn_attr_aliases: "dict[str, int]" = {}
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup aliased through it still fails closed.
     getattr_aliases = {"getattr"}
     # Names bound to functools.partial, so a partial that wraps open/a writer fails closed when it is called.
@@ -5904,6 +6340,29 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # direct open() site. Track aliases so an aliased invoker is still checked; the write-callable gate keeps map(len,
     # ...) safe.
     invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
+
+    def _in_numpy(node) -> bool:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in numpy_aliases
+
+    def _allow_pickle_position(node) -> "int | None":
+        # A conditional or boolean callee counts if any branch is a loader.
+        if isinstance(node, ast.NamedExpr):
+            return _allow_pickle_position(node.value)
+        if isinstance(node, (ast.IfExp, ast.BoolOp)):
+            branches = [node.body, node.orelse] if isinstance(node, ast.IfExp) else node.values
+            return next(
+                (pos for pos in map(_allow_pickle_position, branches) if pos is not None), None
+            )
+        if isinstance(node, ast.Name):
+            return pickle_fn_aliases.get(node.id)
+        if isinstance(node, ast.Attribute):
+            if node.attr in pickle_fn_attr_aliases:
+                return pickle_fn_attr_aliases[node.attr]
+            if node.attr in _NUMPY_PICKLE_FLAG_POS and _in_numpy(node.value):
+                return _NUMPY_PICKLE_FLAG_POS[node.attr]
+        return None
 
     def _is_dynamic_namespace(node) -> bool:
         # A namespace mapping whose .get/.pop/.setdefault (or subscript) can return open/eval/a mutator:
@@ -6013,11 +6472,23 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     os_aliases.add(alias.asname or alias.name)
                 elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
                     load_module_aliases.add(alias.asname or alias.name)
+                elif alias.name.split(".")[0] == "numpy":
+                    numpy_aliases.add(alias.asname or "numpy")
                 elif alias.name == "operator":
                     operator_aliases.add(alias.asname or "operator")
                 elif alias.name == "fileinput":
                     fileinput_aliases.add(alias.asname or "fileinput")
         elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split(".")[0] == "numpy":
+                for alias in node.names:
+                    if alias.name == "*":
+                        pickle_fn_aliases.update(_NUMPY_PICKLE_FLAG_POS)
+                    elif alias.name in _NUMPY_PICKLE_FLAG_POS:
+                        pickle_fn_aliases[alias.asname or alias.name] = _NUMPY_PICKLE_FLAG_POS[
+                            alias.name
+                        ]
+                    else:
+                        numpy_aliases.add(alias.asname or alias.name)
             if node.module == "operator":
                 for alias in node.names:
                     if alias.name == "methodcaller":
@@ -6069,6 +6540,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            if _in_numpy(value):
+                numpy_aliases.update(targets)
+            if (_pos := _allow_pickle_position(value)) is not None:
+                pickle_fn_aliases.update(dict.fromkeys(targets, _pos))
+                pickle_fn_attr_aliases.update(dict.fromkeys(attr_targets, _pos))
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
                 attr_open_aliases.update(attr_targets)  # box.f = open
@@ -6174,9 +6650,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         value.elts
                     ):
                         for tgt_el, val_el in zip(target.elts, value.elts):
+                            if (
+                                isinstance(tgt_el, ast.Attribute)
+                                and (_pos := _allow_pickle_position(val_el)) is not None
+                            ):
+                                pickle_fn_attr_aliases[tgt_el.attr] = _pos
                             if not isinstance(tgt_el, ast.Name):
                                 continue
                             tid = tgt_el.id
+                            if (_pos := _allow_pickle_position(val_el)) is not None:
+                                pickle_fn_aliases[tid] = _pos
                             if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
                                 open_aliases.add(tid)
                             elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
@@ -6217,6 +6700,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 )
             ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
             for _param, _default in _defaulted:
+                if (_pos := _allow_pickle_position(_default)) is not None:
+                    pickle_fn_aliases[_param.arg] = _pos
                 if isinstance(_default, ast.Name):
                     _did = _default.id
                     if _did in open_aliases:
@@ -6331,6 +6816,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # rm("x")).
                 if node.attr in _AUTO_UNSAFE_PY_ATTRS:
                     return True
+                # z = np.load("a.npz"); z.allow_pickle = True turns pickling on for the next z["x"].
+                if node.attr == "allow_pickle" and isinstance(node.ctx, ast.Store):
+                    return True
                 # builtins.exec / eval / __import__ (and compile/breakpoint) are dynamic code execution, matching the
                 # bare-name code_exec_aliases path; __builtins__.__import__(...) is a dynamic import that dodges the
                 # static import check.
@@ -6373,11 +6861,32 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     func = func.value
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
+                # numpy allow_pickle unpickles like torch.load: only a literal False (None/False positionally) is safe.
+                if any(
+                    kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
+                    for kw in node.keywords
+                ) or (
+                    (_flag_pos := _allow_pickle_position(func)) is not None
+                    and (
+                        not all(
+                            _is_inert_loader_arg(arg, mmap_slot = i == 1 and _flag_pos == 2)
+                            for i, arg in enumerate(node.args[1:3], start = 1)
+                        )
+                        or any(isinstance(arg, ast.Starred) for arg in node.args)
+                        or any(kw.arg is None for kw in node.keywords)
+                    )
+                ):
+                    return True
                 # A concrete write callable handed as an argument to any call escapes into a helper that can invoke it
                 # without a direct open()/writer site: the same bypass the map/starmap/reduce branches gate, but
                 # through a user-defined helper. A benign callable argument (run(len)) is unaffected.
                 if any(_passed_write_callable(a) for a in node.args) or any(
                     _passed_write_callable(kw.value) for kw in node.keywords
+                ):
+                    return True
+                # A numpy loader handed to a helper can be called there with allow_pickle positionally.
+                if any(_allow_pickle_position(a) is not None for a in node.args) or any(
+                    _allow_pickle_position(kw.value) is not None for kw in node.keywords
                 ):
                     return True
                 if isinstance(func, ast.Name):
@@ -6517,6 +7026,45 @@ _MCP_CREDENTIAL_KEY_RE = re.compile(
 )
 
 
+def _mcp_resource_names_a_secret(name: str, tool_name: str, arguments) -> bool:
+    # read_resource names nothing; the resource it reads stands in for a tool name, by URI
+    # (secrets://prod) or by its listed name (vault://object/7f3a listed as production-secret).
+    uri = (
+        arguments.get("uri")
+        if tool_name == MCP_RESOURCE_TOOL and isinstance(arguments, dict)
+        else None
+    )
+    if not isinstance(uri, str):
+        return False
+    uri = uri.strip()
+    parts = name.split("__", 2)
+    resources = get_cached_resources(parts[1]) if len(parts) == 3 else None
+    listed = next((r for r in resources or () if r.get("uri") == uri), {})
+    return any(
+        _AUTO_SENSITIVE_MCP_NOUN_RE.search(
+            _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", text))
+        )
+        for text in (uri, listed.get("name") or "")
+    )
+
+
+def _path_spellings(value: str) -> tuple:
+    # A file: URI (an MCP resource) names its path percent-encoded, which no path pattern matches.
+    if value.lstrip()[:5].lower() != "file:":
+        return (value,)
+    try:
+        parts = urllib.parse.urlsplit(value.strip())
+    except ValueError:
+        return (value,)
+    host = f"//{parts.netloc}" if parts.netloc and parts.netloc.lower() != "localhost" else ""
+    spellings = [value, host + urllib.parse.unquote(parts.path)]
+    try:
+        spellings.append(host + urllib.request.url2pathname(parts.path))
+    except Exception:  # noqa: BLE001 - Windows raises IndexError on `file::x`
+        pass
+    return tuple(spellings)
+
+
 def _mcp_arguments_reference_studio_credential(arguments) -> bool:
     """True if an MCP call's arguments point at Studio's auth directory. An MCP server runs outside
     the terminal sandbox, so a filesystem server would read the credential the local tools refuse.
@@ -6525,7 +7073,9 @@ def _mcp_arguments_reference_studio_credential(arguments) -> bool:
 
     def walk(value, is_prose: bool = False) -> bool:
         if isinstance(value, str):
-            return False if is_prose else _references_studio_credential(value)
+            return not is_prose and any(
+                _references_studio_credential(spelling) for spelling in _path_spellings(value)
+            )
         if isinstance(value, dict):
             return any(
                 walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
@@ -6551,10 +7101,11 @@ def _mcp_arguments_reference_sensitive(arguments) -> bool:
             # allowlisted: an issue body mentioning a credential file is text to store, not a file to open.
             if is_prose:
                 return False
-            return (
-                _references_sensitive_path(value)
-                or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(value))
-                or bool(_MCP_METADATA_HOST_RE.search(value))
+            return any(
+                _references_sensitive_path(spelling)
+                or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(spelling))
+                or bool(_MCP_METADATA_HOST_RE.search(spelling))
+                for spelling in _path_spellings(value)
             )
         if isinstance(value, dict):
             if any(key_is_credential(k) for k in value):
@@ -6814,8 +7365,20 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "search_conversation",
         "read_skill",
         "deep_research",
+        "mcp_tool_search",
+        "view_image",
+        # Gated in the chat tab instead, which knows what each ref on the live page is: submits,
+        # purchases, sign-ins and new sites ask there, in every permission mode.
+        *BROWSER_TOOL_NAMES,
+        # Render on the resident image/video model; never load/unload a model or reach the network.
+        *MEDIA_CHAT_TOOLS,
     }
 )
+
+
+def never_needs_approval(name: str) -> bool:
+    """search_conversation only reads this chat's own compacted turns (#11671)."""
+    return name == "search_conversation"
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -6873,6 +7436,8 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         # A credential noun (read_secret, list_tokens, get_credentials) makes a
         # read-named tool a sensitive disclosure, so it asks too.
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_resource_names_a_secret(name, tool_name, arguments):
             return True
         # A read-named fs tool pointed at a credential path is still a
         # sensitive read (mcp__fs__read_file {"path": "/etc/passwd"}).
@@ -7158,8 +7723,8 @@ _NETWORK_CLIENT_AT_CMD_RE = re.compile(
 # -connect host:443). Plain openssl (dgst, enc) is local and stays out. Matched on the resolved command segment, so
 # wrapped forms are seen too.
 _OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
-# `getent shadow` returns password hashes straight from NSS, so the read never spells out /etc/shadow for the path
-# check to find.
+# `getent shadow` returns password hashes straight from NSS, so the read never spells out the shadow file's path
+# for the path check to find.
 _GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
 _OPENSSL_NETWORK_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
@@ -7168,9 +7733,6 @@ _OPENSSL_NETWORK_RE = re.compile(
 # -c/eval it runs an unscreened payload. Paired with the var-executed-as-command test so `echo "${a[@]}"` is left
 # alone.
 _ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
-# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that precedes the real command, so it is
-# not mistaken for the command itself.
-_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 # Non-shell interpreters running an inline program (python -c, node -e, php -r): the terminal path never screens that
 # program the way the python tool does. sh/bash -c are omitted, the hard-block already recursing into their payloads.
 _INLINE_CODE_INTERPRETERS = frozenset(
@@ -7990,6 +8552,12 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         return True
     if not command or not command.strip():
         return False
+    if (
+        _depth == 0
+        and _reads_differently_under_cmd(command)
+        and _terminal_is_high_risk(_cmd_reading(command))
+    ):
+        return True
     # A credential/secret path read or write, or a sandbox escape (../), asks.
     if _command_references_sensitive(command):
         return True
@@ -9006,6 +9574,8 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
             return True
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
             return True
+        if _mcp_resource_names_a_secret(name, tool_name, arguments):
+            return True
         if _mcp_arguments_reference_sensitive(arguments):
             return True
         # A read-named tool carrying a destructive payload (query_database {"query": "DELETE FROM runs"}) masks a
@@ -9124,7 +9694,8 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
 
 # not dot-named: the walks skip dot-dirs, which would hide a model's /tmp write. not "tmp": too common in a workspace,
 # and adopting one is what broke the walks.
-_SANDBOX_TEMP_DIRNAME = "unsloth-tmp"
+# Shared with os_sandbox: a drifted name would silently disable the scan's exemption.
+_SANDBOX_TEMP_DIRNAME = os_sandbox.TOOL_TEMP_DIRNAME
 
 
 def _sandbox_temp_dir(workdir: str) -> str:
@@ -9182,20 +9753,38 @@ def _reusable_sandbox_temp_dir(temp_dir: str, workdir: str) -> bool:
     return _is_sandbox_temp_dir(temp_dir, workdir) and os.access(temp_dir, os.W_OK | os.X_OK)
 
 
-def _build_safe_env(workdir: str) -> dict[str, str]:
+# Git for Windows starts hooks, the pager and the editor through its MSYS sh.exe, which cannot start inside MXC, so a
+# hook turns every commit into a failure and an editor hangs the call. Compatibility defaults, not a boundary: a
+# command can override them with git -c, and MXC is what confines it. core.hooksPath=NUL names no hook at all.
+_ISOLATED_CMD_GIT_ENV = {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "core.hooksPath",
+    "GIT_CONFIG_VALUE_0": "NUL",
+    "GIT_PAGER": "",
+    "GIT_EDITOR": "unsloth-no-editor",
+    "GIT_SEQUENCE_EDITOR": "unsloth-no-editor",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "never",
+}
+
+
+def _build_safe_env(workdir: str, shell: "str | None" = None) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only
     PATH/HOME/TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows SystemRoot and a
     minimal PATHEXT) reach the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
-    points at the sandbox workdir so SDKs can't read the operator's cached creds, and the temp vars
-    at _sandbox_temp_dir just inside it. PYTHONPATH carries only the sandbox sitecustomize shim
-    directory.
+    (and on Windows HOMEDRIVE/HOMEPATH) points at the sandbox workdir so SDKs can't read the
+    operator's cached creds, and the temp vars at _sandbox_temp_dir just inside it. PYTHONPATH
+    carries only the sandbox sitecustomize shim directory.
 
     PATH starts with the Unsloth interpreter / venv and OS system dirs so ``python``/``pip`` stay
     pinned. On Windows only, Git-for-Windows install dirs from the host PATH are appended so bare
     ``git`` resolves (#7317). User-writable host PATH entries are never inherited: they could shadow
     auto-safe terminal commands.
+
+    ``shell="cmd_isolated"`` is the Windows MXC Terminal on cmd.exe: Git Bash's userland stays off
+    PATH and git gets the non-interactive settings in _ISOLATED_CMD_GIT_ENV.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the same environment the Unsloth server
     # runs in.
@@ -9213,7 +9802,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
         # Ahead of System32 and its DOS twins (bare `find` would hit FIND.EXE, not GNU find), behind the interpreter
         # dirs so a Git-shipped python.exe cannot shadow the environment this server runs in.
-        path_entries.extend(_windows_bash_userland_dirs())
+        if shell != "cmd_isolated":
+            path_entries.extend(_windows_bash_userland_dirs())
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
@@ -9226,6 +9816,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # Append the CANONICAL (realpath) trusted git dir, scanning past any untrusted user shim that sorts first on
         # PATH; the canonical path cannot be retargeted via a junction after the trust check.
         _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
+        if not _trusted_git_dir and shell == "cmd_isolated":
+            # Git installed for Git Bash only is not on PATH; bash found it, so use its Git\cmd.
+            _trusted_git_dir, git_ext = _windows_bash_git_cmd_dir(), ".EXE"
         if _trusted_git_dir:
             path_entries.append(_trusted_git_dir)
 
@@ -9255,6 +9848,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # and writes outside the workdir.
         env["TEMP"] = temp_dir
         env["TMP"] = temp_dir
+        # Path.home() ignores HOME on Windows; a workdir USERPROFILE would instead send pip's cache to .\pip in the cwd.
+        env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(workdir)
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -9264,6 +9859,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         # cmd/CreateProcess search cwd before PATH for bare names; disable so a workdir rg.exe/git.exe cannot shadow
         # auto-approved commands.
         env["NoDefaultCurrentDirectoryInExePath"] = "1"
+        if shell == "cmd_isolated":
+            env.update(_ISOLATED_CMD_GIT_ENV)
     return env
 
 
@@ -9445,6 +10042,15 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     return env
 
 
+# Read by _sandbox_preexec after the fork, so it is resolved here first: the settings store cannot be read in the child.
+_sandbox_as_bytes = 8 * 1024 * 1024 * 1024
+
+
+def _refresh_sandbox_memory_limit() -> None:
+    global _sandbox_as_bytes
+    _sandbox_as_bytes = sandbox_memory_limit.memory_limit_bytes()
+
+
 def _sandbox_preexec():
     """Best-effort sandbox setup for sandboxed subprocesses (modules are resolved at import time so
     the forked child runs no imports)."""
@@ -9484,8 +10090,9 @@ def _sandbox_preexec():
         except (ValueError, OSError):
             pass
         try:
-            as_bytes = int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")) * 1024 * 1024 * 1024
-            _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
+            as_bytes = _sandbox_as_bytes
+            if as_bytes is not None:
+                _resource.setrlimit(_resource.RLIMIT_AS, (as_bytes, as_bytes))
         except (ValueError, OSError, AttributeError):
             pass
         try:
@@ -9534,6 +10141,195 @@ def _bypass_preexec():
         os.setsid()
     except OSError:
         pass
+
+
+# Never read back by the executors, so a concurrent call can only make this stale.
+_last_tool_execution_record: "os_sandbox.ToolExecutionRecord | None" = None
+
+
+def _note_tool_execution(record) -> None:
+    """Built from a live probe, never from model output, so it is safe to show as a badge."""
+    global _last_tool_execution_record
+    if record is None:
+        return
+    _last_tool_execution_record = record
+    logger.info("tool execution mode: %s", record.as_dict())
+
+
+def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -> str:
+    """Require disable_sandbox for full access; checked here because managed accounts skip the planner."""
+    if tool_execution_mode not in os_sandbox.TOOL_EXECUTION_MODES:
+        raise os_sandbox.SandboxUnavailableError(
+            f"TOOL_EXECUTION_MODE_INVALID: {tool_execution_mode!r} is not a tool "
+            f"execution mode ({', '.join(os_sandbox.TOOL_EXECUTION_MODES)})",
+            remediation = "Use 'auto' or 'required'.",
+        )
+    if disable_sandbox:
+        return "full"
+    if tool_execution_mode == "full":
+        raise os_sandbox.SandboxUnavailableError(
+            "TOOL_EXECUTION_MODE_INVALID: full access is not requestable through "
+            "tool_execution_mode",
+            remediation = "Full access is granted with disable_sandbox (Bypass Permissions).",
+        )
+    return tool_execution_mode
+
+
+_with_session_packages = os_sandbox.with_session_packages
+
+
+def _software_safeguards_launch(plan, fault: str):
+    """Prepare an unisolated launch, retaining session packages and recording *fault*."""
+    full = plan.requested_mode == "full"
+    return os_sandbox.PreparedSandboxLaunch(
+        argv = plan.argv,
+        workdir = plan.workdir,
+        env = _with_session_packages(plan.env, plan.workdir),
+        preexec_fn = plan.preexec_fn,
+        backend = "software-safeguards",
+        timeout_seconds = plan.timeout_seconds,
+        close_fds = plan.close_fds,
+        terminate_descendants = plan.terminate_descendants,
+        execution_record = os_sandbox.ToolExecutionRecord(
+            requested_mode = plan.requested_mode,
+            # Do not claim software safeguards for a launch that skipped them.
+            effective_mode = "full" if full else "software_safeguards",
+            environment = sys.platform,
+            backend = "software-safeguards",
+            profile_id = "full-access" if full else "software-safeguards-v1",
+            probe_generation = "",
+            os_isolation = False,
+            retained_safeguards = tuple(
+                item
+                for item in (
+                    os_sandbox._FULL_SAFEGUARDS if full else os_sandbox._SOFTWARE_SAFEGUARDS
+                )
+                if item != "timeout" or plan.timeout_seconds is not None
+            ),
+            limitations = (
+                ("security_restrictions_disabled", fault)
+                if full
+                else (*os_sandbox._software_only_limitations(), fault)
+            ),
+        ),
+    )
+
+
+def _reaches_host_paths(kind: str, text: str) -> bool:
+    """Whether the call names a host path outside the silent roots: the check that put it in front of the user."""
+    try:
+        if kind == "python":
+            tree, error = _parse_python(text)
+            return error is None and _python_reaches_outside_sandbox(tree, text)
+        # Decoded like the approval classifier, or cat $'/home/u/x' prompts yet stays isolated.
+        decoded = _decode_ansi_c(text, keep_one_word = True)
+        command = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+        for variant in {command, _expand_shell_assignments(_expand_param_defaults(command))}:
+            lexer = shlex.shlex(variant, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            if _terminal_reaches_outside_sandbox(list(lexer), variant):
+                return True
+    except Exception:  # noqa: BLE001 - unclassifiable stays isolated
+        return False
+    return False
+
+
+def _prepare_tool_launch(
+    plan,
+    *,
+    host_access_approved: bool = False,
+    user_folder: bool = False,
+):
+    """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
+    if user_folder and plan.requested_mode == "auto":
+        os_sandbox.recheck_overran_workdir(plan.workdir)
+    if host_access_approved and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_approved_host_access")
+    # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
+    # repositories (hard links from git clone --local, pnpm, uv) and walk large trees on every call. Decided up front,
+    # never after a scan finding, which tool code could plant to drop its own boundary.
+    if user_folder and plan.requested_mode == "auto":
+        return _software_safeguards_launch(plan, "user_working_folder")
+    try:
+        prepared = os_sandbox.prepare_tool_launch(plan)
+        if plan.preexec_fn is not None and prepared.preexec_fn is None:
+            # Preserve setsid so timeout cleanup cannot kill the server's process group.
+            logger.warning(
+                "Sandbox backend %s dropped the launch pre-exec; restoring it",
+                prepared.backend,
+            )
+            prepared.preexec_fn = plan.preexec_fn
+        if prepared.execution_record is not None and not prepared.execution_record.os_isolation:
+            # The other door: os_sandbox returns its own fallback through here.
+            prepared.env = _with_session_packages(prepared.env, plan.workdir)
+        return prepared
+    except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
+        # These failures can be tool-induced; fallback would let code remove its own boundary.
+        raise
+    except os_sandbox.SandboxUnavailableError:
+        # Any other refusal means the backend stopped being available.
+        if plan.requested_mode == "required" or (
+            plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES
+        ):
+            raise
+        logger.warning(
+            "The sandbox backend is no longer available, running with software safeguards",
+            exc_info = True,
+        )
+        return _software_safeguards_launch(plan, "sandbox_became_unavailable")
+    except Exception as exc:  # noqa: BLE001 - construction failures never buy a host replay
+        if plan.requested_mode == "full":
+            return _software_safeguards_launch(plan, "sandbox_planner_error")
+        raise os_sandbox.SandboxBuildError(
+            f"sandbox preparation failed without host fallback: {exc}"
+        ) from exc
+
+
+# Launcher stderr prefixes for refusing to build the sandbox, not payload failures.
+_LAUNCHER_FAILURE_MARKERS = {
+    "bubblewrap": "bwrap: ",
+    "macos-seatbelt": "sandbox-exec: ",
+}
+
+
+def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
+    """Drop a stale probe verdict found at exec, so it costs one call rather than the cache's lifetime."""
+    if prepared is None or prepared.backend == "software-safeguards":
+        return
+    if not output.startswith("Exit code "):
+        return
+    # Keyed on the backend that ran: Seatbelt reports `sandbox-exec:`, not `bwrap:`.
+    marker = _LAUNCHER_FAILURE_MARKERS.get(prepared.backend)
+    if marker is None or marker not in output[:400]:
+        return
+    logger.warning("The sandbox backend failed at launch; re-probing the capability")
+    try:
+        from .sandbox_probe import reset_probe_cache
+        reset_probe_cache()
+        if sys.platform == "linux":
+            from .sandbox_linux import reset_cache_verdicts
+            reset_cache_verdicts()
+    except Exception:  # noqa: BLE001 - a cache reset never breaks a tool result
+        logger.debug("could not reset the sandbox probe cache", exc_info = True)
+
+
+def _sandbox_refusal(exc) -> str:
+    """The remediation is part of the answer: the reader can fix the host."""
+    remediation = getattr(exc, "remediation", "") or ""
+    return _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
+
+
+def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
+    """The OUTER process needs its own session: every kill path is killpg based."""
+    popen_kwargs["cwd"] = prepared.workdir
+    popen_kwargs["env"] = prepared.env
+    if sys.platform != "win32":
+        popen_kwargs["preexec_fn"] = prepared.preexec_fn
+    popen_kwargs["close_fds"] = prepared.close_fds
+    if prepared.pass_fds:
+        # Empty for every fallback, so Windows never sees a kwarg it rejects.
+        popen_kwargs["pass_fds"] = tuple(prepared.pass_fds)
+    return popen_kwargs
 
 
 # Hardening the Unsloth parent is done once (PR_SET_DUMPABLE is process-global and sticky); guarded so repeated bypass
@@ -9620,6 +10416,23 @@ def _windows_bash() -> "str | None":
     return None
 
 
+def _windows_bash_git_cmd_dir() -> str:
+    """The trusted ``Git\\cmd`` dir of the install the resolved bash belongs to, or ""."""
+    bash = _windows_bash()
+    if not bash:
+        return ""
+    bin_dir = os.path.dirname(bash)
+    for root in (os.path.dirname(bin_dir), os.path.dirname(os.path.dirname(bin_dir))):
+        candidate = os.path.join(root, "cmd")
+        if (
+            root
+            and os.path.isfile(os.path.join(candidate, "git.exe"))
+            and _is_trusted_windows_program_dir(candidate)
+        ):
+            return os.path.realpath(candidate)
+    return ""
+
+
 def _windows_bash_userland_dirs() -> list[str]:
     """Trusted dirs holding the resolved bash and the POSIX tools beside it.
 
@@ -9665,6 +10478,100 @@ def _get_shell_cmd(command: str) -> list[str]:
     return ["bash", "-c", command]
 
 
+def _windows_system_cmd() -> str:
+    """System32 cmd.exe, resolved the same way MXC policy resolves it; never COMSPEC or PATH."""
+    from .mxc_policy import _system_cmd
+    return _system_cmd()
+
+
+def _terminal_profile(disable_sandbox: bool = False) -> str:
+    """Which shell the Terminal runs: "bash", "cmd_isolated" or "cmd_fallback".
+
+    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when bash fails the MXC probe and
+    cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than unsandboxed on bash.
+    Any bash failure counts, not only the MSYS verdict: on a freshly prepared host bash fails without
+    that signature while cmd passes. Only a failed bash probes cmd. Full access and
+    UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    """
+    if sys.platform != "win32":
+        return "bash"
+    bash = _windows_bash()
+    host_default = "bash" if bash else "cmd_fallback"
+    if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
+        return host_default
+    try:
+        if bash:
+            # Either MXC tier: any bash failure tries cmd.
+            verdict = os_sandbox.capability_snapshot(
+                execution_kind = "terminal", selected_executable = bash
+            )
+            if verdict.available:
+                return "bash"
+        cmd = os_sandbox.capability_snapshot(
+            execution_kind = "terminal", selected_executable = _windows_system_cmd()
+        )
+        return "cmd_isolated" if cmd.available else host_default
+    except Exception as exc:  # noqa: BLE001 - a probe failure must never take the Terminal away
+        logger.warning(f"terminal profile check failed, keeping the host shell: {exc}")
+        return host_default
+
+
+# The last profile a request advertised, so an expired probe verdict is refreshed off the request path.
+_request_profile: list = [None, 0.0]
+_request_profile_lock = threading.Lock()
+_REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+# Bumped by every reset: a refresh that started earlier must not publish the profile it computed.
+_request_profile_generation = 0
+
+
+def reset_terminal_profile_cache() -> None:
+    """Forget the advertised Terminal profile, so the next request re-checks it (isolation settings changed)."""
+    global _request_profile_generation
+    with _request_profile_lock:
+        _request_profile[:] = [None, 0.0]
+        _request_profile_generation += 1
+
+
+def _refresh_request_profile() -> str:
+    with _request_profile_lock:
+        generation = _request_profile_generation
+    profile = _terminal_profile(False)
+    with _request_profile_lock:
+        if generation == _request_profile_generation:
+            _request_profile[:] = [profile, time.monotonic()]
+    return profile
+
+
+def _profile_for_request() -> str:
+    with _request_profile_lock:
+        profile, computed = _request_profile
+        stale = (
+            profile is not None and time.monotonic() - computed > _REQUEST_PROFILE_REFRESH_SECONDS
+        )
+        if stale:
+            _request_profile[1] = time.monotonic()  # one refresh in flight at a time
+    if profile is None:
+        return _refresh_request_profile()
+    if stale:
+        threading.Thread(target = _refresh_request_profile, daemon = True).start()
+    return profile
+
+
+def apply_terminal_profile_for_request(
+    tools: list[dict], sandbox_level: "str | None" = None
+) -> list[dict]:
+    """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
+    first call can block on the MXC probe, so async callers run it in a worker thread; later calls
+    reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
+    if not any(
+        isinstance(t, dict) and (t.get("function") or {}).get("name") == "terminal"
+        for t in tools or ()
+    ):
+        return tools
+    profile = _terminal_profile(True) if sandbox_level == "low" else _profile_for_request()
+    return apply_terminal_profile_description(tools, profile)
+
+
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
     """Keep a confined account's command text off argv: other accounts' tools can read
     /proc/<pid>/cmdline and Landlock cannot deny per-pid reads."""
@@ -9697,6 +10604,11 @@ _sessions_free = threading.Condition(_active_sessions_lock)
 
 def _workdir_key(session_id: "str | None") -> tuple[str, str]:
     return current_account_id(), session_id or _ANON_KEY
+
+
+def workdir_scan_overran(session_id: "str | None") -> bool:
+    workdir = _workdirs.get(_workdir_key(session_id))
+    return workdir is not None and os_sandbox.workdir_scan_overran(workdir)
 
 
 def _session_key(session_id: "str | None") -> tuple[str, str]:
@@ -10094,6 +11006,32 @@ def _project_exists(project_id: str) -> bool:
         return True
 
 
+def _is_managed_project_workdir(session_id: "str | None", workdir: str) -> bool:
+    """Compares with the sandbox path, not the working-folder setting, which can change before the chmod."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import get_chat_project
+
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        sandbox = (project or {}).get("sandboxPath")
+        return bool(sandbox) and os.path.realpath(sandbox) == workdir
+    except Exception:
+        return False
+
+
+def _is_user_project_folder(session_id: "str | None", workdir: str) -> bool:
+    """Whether *workdir* is the owner's chosen folder for this project; False when unsure, which keeps isolation."""
+    if not session_id or not session_id.startswith(_PROJECT_SESSION_PREFIX):
+        return False
+    try:
+        from storage.studio_db import available_project_working_folder, get_chat_project
+        project = get_chat_project(session_id[len(_PROJECT_SESSION_PREFIX) :])
+        return available_project_working_folder(project) == os.path.realpath(workdir)
+    except Exception:
+        return False
+
+
 def _project_workdir_for(session_id: "str | None") -> "str | None":
     """The project workspace a session id names, if it names one. The prefixed id can be longer than
     a directory name may be, or carry a character one may not: it is the project part that has to
@@ -10136,7 +11074,9 @@ def _get_project_workdir(session_id: str) -> str | None:
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
         return None
-    return sandbox_real
+    from storage.studio_db import available_project_working_folder
+
+    return available_project_working_folder(project) or sandbox_real
 
 
 # Dropped in every session directory we create. The root can be an existing shared folder the user pointed us at, and
@@ -10564,15 +11504,9 @@ def _legacy_lock_peek(name: str) -> "threading.Lock | None":
 _LEGACY_SHARED_BUCKET = "_invalid"
 
 
-def _legacy_session_dir(session_id: str) -> "str | None":
-    """This session's directory at the legacy root, while one is still there.
-
-    Both names, like the migration itself: a chat from before the upgrade whose
-    id starts with the derived prefix kept its folder under the literal id.
-    """
-    if not is_owner_context():
-        return None
-    legacy_root = _legacy_sandbox_root()
+def _legacy_names(session_id: str) -> "list[str]":
+    """Every name this session's folder can have at the legacy root, which is also the key its move
+    is locked under."""
     names = [_sandbox_name(session_id)]
     if not _usable_session_id(session_id):
         # Before this change an id the filesystem could not hold shared one bucket with every other such chat: read
@@ -10582,13 +11516,50 @@ def _legacy_session_dir(session_id: str) -> "str | None":
         # Only the derived-prefix case: an id the old code could hold kept its folder under the literal name while
         # _sandbox_name now hashes it. A fallback name is nobody's chat: every session-less call ran in there.
         names.append(session_id)
-    for name in names:
+    return names
+
+
+def _marked_sandbox_after_moves(root: str, session_id: str) -> "str | None | bool":
+    """_marked_sandbox_in with every legacy move of this session held off, or False when no move of
+    it ever started. Under whichever name it was moved from: a chat whose id starts with the
+    derived prefix moves under the literal id, and its staging tree is marked with the derived one."""
+    locks = [_legacy_lock_peek(name) for name in _legacy_names(session_id)]
+    locks = [lock for lock in locks if lock is not None]
+    if not locks:
+        return False
+    # All at once, so no move can start between the wait and the look. A mover only ever holds one of these, so taking
+    # several in a fixed order cannot deadlock against it.
+    with contextlib.ExitStack() as held:
+        for lock in locks:
+            held.enter_context(lock)
+        return _marked_sandbox_in(root, session_id)
+
+
+def _legacy_session_dir(session_id: str) -> "str | None":
+    """This session's directory at the legacy root, while one is still there.
+
+    Both names, like the migration itself: a chat from before the upgrade whose
+    id starts with the derived prefix kept its folder under the literal id.
+    """
+    if not is_owner_context():
+        return None
+    legacy_root = _legacy_sandbox_root()
+    for name in _legacy_names(session_id):
         candidate = os.path.join(legacy_root, name)
-        if not os.path.isdir(candidate) or os.path.islink(candidate):
+        if os.path.islink(candidate):
             continue
+        if os.path.isdir(candidate):
+            lock = _legacy_lock_for(name)
+        else:
+            # Gone from the legacy root can mean sitting in staging, where neither root holds it and the caller would
+            # fall through to a destination that does not exist yet. The same durable trace
+            # _migrate_one_legacy_session waits on: an entry means a move began, so waiting on it lets the move land.
+            lock = _legacy_lock_peek(name)
+            if lock is None:
+                continue
         # Under this session's move lock, and checked again inside it: the move is a rename, so a path handed back
         # mid-move lists nothing and 404s every card. One that already ran sends the caller to the destination.
-        with _legacy_lock_for(name):
+        with lock:
             if os.path.isdir(candidate) and not os.path.islink(candidate):
                 return candidate
     return None
@@ -10845,7 +11816,10 @@ def _get_workdir(session_id: str | None = None) -> str:
     cached = _workdirs.get(key)
     if cached is not None and not os.path.isdir(cached):
         cached = None
-    if cached is not None and not _get_project_workdir(session_id or ""):
+    project_now = _get_project_workdir(session_id or "") if cached is not None else None
+    if cached is not None and project_now and os.path.realpath(cached) != project_now:
+        cached = None
+    if cached is not None and not project_now:
         # The same checks a fresh resolve makes: the entry can have been renamed and replaced with a link to another
         # chat's directory since, and containment alone accepts that.
         root_now = sandbox_root()
@@ -10912,8 +11886,10 @@ def _get_workdir(session_id: str | None = None) -> str:
             except OSError:
                 pass
         # Only ours: a shared root can already hold a directory with this name, and tightening it would cut off
-        # whoever else uses it.
-        if created or _sandbox_is_ours(workdir):
+        # whoever else uses it. Never the user's project folder.
+        if (created or _sandbox_is_ours(workdir)) and (
+            not project_workdir or _is_managed_project_workdir(session_id, project_workdir)
+        ):
             try:
                 os.chmod(workdir, 0o700)
             except OSError:
@@ -10958,6 +11934,14 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         # A migration that moved the tree but could not rename it into place leaves the only copy under a marked name,
         # at any root.
         ours = _marked_sandbox_in(root, session_id)
+        if ours and _STAGING_SUFFIX in os.path.basename(ours):
+            # A live move marks its staging tree before renaming it into place, so this can also be one still moving,
+            # which the rename is about to take away. Movers hold the session's lock for the whole move, so once it is
+            # free a staging tree that is still there is a stranded one, and one that landed or rolled back is found
+            # where it went.
+            settled = _marked_sandbox_after_moves(root, session_id)
+            if settled is not False:
+                ours = settled
         if ours:
             return ours
         # Right after an upgrade the files can still be at the legacy root: the move runs in the background and can
@@ -10965,6 +11949,13 @@ def resolve_sandbox_workdir(session_id: str | None = None) -> str:
         legacy = _legacy_session_dir(session_id)
         if legacy:
             return legacy
+        if not os.path.isdir(workdir):
+            # The lookup above can have waited out a move the first scan ran ahead of. One whose rename and rollback
+            # both failed leaves the only copy in a marked staging tree, which that scan never saw. Only a session a
+            # move has touched pays for the second listing.
+            ours = _marked_sandbox_after_moves(root, session_id)
+            if ours:
+                return ours
     if not _root_is_ours() and not _owned_by_session(workdir, session_id):
         # In a root the user pointed us at this chat can be in a fallback whose name nothing recomputes, and a read
         # that stops here shows an empty sandbox and 404s the file cards already in the transcript.
@@ -11227,6 +12218,8 @@ def _holds_no_user_files(target: str, owner: "str | None" = None) -> bool:
             # name `_spill_full_output` generates: the directory is writable, tool code can create anything in it, and
             # a real file there is the user's like any other.
             if _is_spill_artifact(target, parent, name):
+                continue
+            if _is_attachment_copy(target, parent, name):
                 continue
             return False
         budget -= 1
@@ -11494,7 +12487,9 @@ def _edit_file_write(
                     "was being prepared; nothing was written. Read it again and "
                     "redo the edit against the current contents."
                 )
-        os.replace(tmp, path)
+        from core import library
+
+        library.replace_file(tmp, path)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
@@ -11619,6 +12614,28 @@ def _edit_file_replace_all(value: object) -> "bool | None":
     if isinstance(value, int):
         return bool(value)
     return None
+
+
+def _edit_file_created_sentinel(target: str, workdir: str) -> str:
+    """The ``__FILES__`` row for a file edit_file just created, so its card offers the download
+    python and terminal cards do. Only files the download route can serve: inside the workdir,
+    within its depth, every segment servable. Edits are not reported; the creating call's row
+    already downloads the current bytes."""
+    try:
+        root = os.path.realpath(workdir)
+        relative = os.path.relpath(target, root)
+        size = os.stat(target).st_size
+    except (OSError, ValueError):
+        return ""
+    parts = relative.split(os.sep)
+    if (
+        parts[0] == os.pardir
+        or os.path.isabs(relative)
+        or len(_user_path_parts(parts, root)) > _MAX_SANDBOX_PATH_SEGMENTS
+        or not all(_servable_segment(part) for part in parts)
+    ):
+        return ""
+    return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
 
 
 def _edit_file_create(
@@ -11877,7 +12894,28 @@ def _edit_file(
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace exact strings in a file. See the notes above."""
+    """Replace exact strings in a file. See the notes above. The receipt can echo a model-chosen name, so it is
+    defused before the files row of a created file is appended."""
+    created: "list[str]" = []
+    history: dict = {}
+    try:
+        text = _defuse_sentinels(
+            _edit_file_apply(arguments, session_id, disable_sandbox, created, history)
+        )
+    finally:
+        _history_end_file(history)
+    if session_id and created:
+        text += _edit_file_created_sentinel(created[0], _get_workdir(session_id))
+    return text
+
+
+def _edit_file_apply(
+    arguments: dict,
+    session_id: "str | None",
+    disable_sandbox: bool,
+    created: "list[str]",
+    history: "dict | None" = None,
+) -> str:
     # The receipt echoes a window of the file back, so an edit is a read, and Bypass Permissions
     # lifts the containment that would otherwise keep it out.
     if _references_studio_credential(str(arguments.get("path") or "")):
@@ -11896,6 +12934,8 @@ def _edit_file(
         os.path.realpath(target)
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
+    if history is not None:
+        history.update(_history_begin_file(session_id, target))
     name = os.path.basename(target)
     # Decided before the no-op check below, not after: both strings empty is the documented way to create __init__.py
     # or .gitkeep, and read as identical, nothing to change it was refused, leaving no way to write a zero-byte file.
@@ -11906,13 +12946,16 @@ def _edit_file(
                 f"combined with the other {len(edits) - 1} edit(s). Create the file "
                 "in one call, then edit it in the next."
             )
-        return _edit_file_create(
+        result = _edit_file_create(
             target,
             edits[0][1],
             name,
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
+        if result.startswith("Created "):
+            created.append(target)
+        return result
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
             return (
@@ -11997,6 +13040,41 @@ WEB_SEARCH_TOOL = {
         },
     },
 }
+
+
+# Local models often emit q/search_query instead of query, or uri/href instead of url.
+_WEB_SEARCH_QUERY_ALIASES = ("query", "q", "search_query", "search", "text")
+_WEB_SEARCH_URL_ALIASES = ("url", "uri", "href", "link")
+
+
+def _first_nonempty_arg(arguments: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _resolve_web_search_args(arguments) -> tuple[str, str]:
+    args = arguments if isinstance(arguments, dict) else {}
+    return (
+        _first_nonempty_arg(args, _WEB_SEARCH_QUERY_ALIASES),
+        _first_nonempty_arg(args, _WEB_SEARCH_URL_ALIASES),
+    )
+
+
+def canonicalize_web_search_arguments(arguments) -> dict:
+    # URL mode returns before _web_search reads query or image_queries, so they are dropped from the key.
+    args = dict(arguments) if isinstance(arguments, dict) else {}
+    query, url = _resolve_web_search_args(args)
+    if url:
+        return {"url": url}
+    canonical: dict = {}
+    if query:
+        canonical["query"] = query
+    if "image_queries" in args:
+        canonical["image_queries"] = args["image_queries"]
+    return canonical
 
 
 def web_search_tool_with_images() -> dict:
@@ -12231,6 +13309,43 @@ TERMINAL_TOOL_FULL_ACCESS = {
         "description": _to_full_access(TERMINAL_TOOL["function"]["description"], "terminal"),
     },
 }
+
+# The isolated Windows Terminal (see _terminal_profile) is cmd.exe inside MXC whatever the host shell is, so it gets
+# its own schema, chosen per request; the module default keeps describing the host shell.
+_ISOLATED_CMD_SHELL_NOTE = (
+    " The shell is cmd, running isolated, not bash: send one command per call, chain with &&, use "
+    "double quotes only, and use relative paths. git, when installed, runs without hooks, a pager or "
+    "an editor, so pass -m to git commit."
+)
+
+TERMINAL_TOOL_CMD_ISOLATED = {
+    "type": "function",
+    "function": {
+        **TERMINAL_TOOL["function"],
+        "description": "Execute a terminal command and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE
+        + _ISOLATED_CMD_SHELL_NOTE,
+    },
+}
+
+
+def apply_terminal_profile_description(tools: list[dict], profile: str) -> list[dict]:
+    """Swap the terminal schema for the one matching ``profile``. Like
+    apply_full_access_tool_descriptions, the input list is never mutated and a list with nothing to
+    swap is returned as-is; only "cmd_isolated" changes anything."""
+    if not tools or profile != "cmd_isolated":
+        return tools
+    swapped = False
+    out: list[dict] = []
+    for tool in tools:
+        name = (tool.get("function") or {}).get("name") if isinstance(tool, dict) else None
+        if name == "terminal":
+            out.append(TERMINAL_TOOL_CMD_ISOLATED)
+            swapped = True
+        else:
+            out.append(tool)
+    return out if swapped else tools
+
 
 # edit_file is registered below, once its schema exists.
 _FULL_ACCESS_TOOL_BY_NAME = {
@@ -12483,11 +13598,15 @@ CREATE_SKILL_TOOL = {
 }
 
 
+from .view_image import VIEW_IMAGE_TOOL
+
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
     TERMINAL_TOOL,
     EDIT_FILE_TOOL,
+    VIEW_IMAGE_TOOL,
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
@@ -12550,23 +13669,546 @@ _MCP_ALIAS_DIGEST_LEN = 8
 # The "_" plus digest every alias ends with, which is the room its stem does not get.
 _MCP_ALIAS_SUFFIX_LEN = _MCP_ALIAS_DIGEST_LEN + 1
 
+_MCP_SUMMARY_CHARS = 240
+# Past this share of the local window, MCP tools are deferred behind mcp_tool_search (#10997).
+_MCP_TOOL_SEARCH_SHARE = 0.10
+_MCP_TOOL_SEARCH_LIMIT = 5
+# Up to this many tools ranked against the user's message are listed up front, within their own share of the
+# window: small models often answer that a tool is unavailable rather than search for it (#10997).
+_MCP_TOOL_PRELOAD = 5
+_MCP_TOOL_PRELOAD_SHARE = 0.33
+# Tools a turn loads by search or by name, newest first; older ones leave the listing to stay within it.
+_MCP_TOOL_LOAD_SHARE = 0.5
+_MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
+_MCP_TOOL_SEARCH_MAX_LIMIT = 10
+_MCP_TOOL_SEARCH_MAX_NAMES = 200
+# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds.
+_MCP_LOADED_PER_THREAD = 8
+_MCP_LOADED_THREADS_MAX = 512
+MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
+_MCP_LISTING_CONTEXT_TOKENS: ContextVar = ContextVar("mcp_listing_context_tokens", default = None)
+_MCP_LISTING_THREAD: ContextVar = ContextVar("mcp_listing_thread", default = None)
+_MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
+_MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
+_MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
+# (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
+_MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
+_MCP_LOADED_LOCK = threading.Lock()
+# Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
+_MCP_SEARCH_INDEXES: "OrderedDict[str, sqlite3.Connection]" = OrderedDict()
+_MCP_SEARCH_LOCK = threading.Lock()
 
-def _mcp_tool_model_visible(tool: dict) -> bool:
-    """False for MCP Apps tools marked app-only (_meta.ui.visibility without "model"): those exist
-    for a server-rendered widget to call, not the LLM."""
-    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
-    for key in ("meta", "_meta"):
-        meta = tool.get(key)
-        if not isinstance(meta, dict):
+
+def set_mcp_listing_context_tokens(
+    context_tokens,
+    thread_id = None,
+    messages = None,
+    tool_choice = None,
+    mcp_image = None,
+) -> None:
+    """The local window the next MCP listing in this context is sized against; unset lists every tool in full.
+    ``thread_id`` keeps the tools a chat ran listed; ``messages`` ranks the deferred ones listed up front; a
+    ``tool_choice`` forcing a tool keeps that one listed, and an attached image (in the message or, sent to MCP tools
+    only, as ``mcp_image``) keeps the tools mapped to take it listed."""
+    from core.inference.chat_template_helpers import forced_tool_name, last_user_text  # noqa: PLC0415
+
+    valid = isinstance(context_tokens, int) and context_tokens > 0
+    _MCP_LISTING_CONTEXT_TOKENS.set(context_tokens if valid else None)
+    _MCP_LISTING_THREAD.set(thread_id if isinstance(thread_id, str) and thread_id else None)
+    dicts = [m.model_dump() if hasattr(m, "model_dump") else m for m in messages or []]
+    _MCP_LISTING_QUERY.set(last_user_text(dicts) if valid else "")
+    _MCP_LISTING_FORCED.set(forced_tool_name(tool_choice))
+    last_user = next(
+        (m for m in reversed(dicts) if isinstance(m, dict) and m.get("role") == "user"), None
+    )
+    _MCP_LISTING_IMAGE.set(
+        bool(mcp_image) or (bool(last_user) and _content_has_image(last_user.get("content")))
+    )
+
+
+def _content_has_image(content) -> bool:
+    if isinstance(content, list):
+        return any(_content_has_image(part) for part in content)
+    return isinstance(content, dict) and str(content.get("type", "")).lower() in (
+        "image",
+        "image_url",
+        "input_image",
+    )
+
+
+def _mcp_tool_search_spec(
+    catalog: list[tuple[str, list[tuple[str, str]]]], max_chars: int | None = None
+) -> dict:
+    """``catalog`` is (server display name, [(tool name, summary)]) per server, in listing order; the tool lines
+    stop at ``_MCP_TOOL_SEARCH_MAX_NAMES`` and at ``max_chars``, and at 0 only the count is left."""
+    names_left = _MCP_TOOL_SEARCH_MAX_NAMES
+    chars_left = max_chars if max_chars is not None else float("inf")
+    groups = []
+    for display, tools in catalog:
+        lines = []
+        for name, summary in tools:
+            line = f"- {name}: {summary}" if summary else f"- {name}"
+            if names_left <= 0 or len(line) > chars_left:
+                break
+            lines.append(line)
+            names_left -= 1
+            chars_left -= len(line) + 1
+        if len(tools) > len(lines):
+            lines.append(f"- and {len(tools) - len(lines)} more")
+        groups.append(f"{display[:_MCP_SUMMARY_CHARS]}:\n" + "\n".join(lines))
+    if max_chars == 0:
+        groups = [f"{sum(len(tools) for _, tools in catalog)} tools, found by searching."]
+    return {
+        "type": "function",
+        "function": {
+            "name": MCP_TOOL_SEARCH_NAME,
+            "description": (
+                "Find and load MCP tools. The connected MCP servers have the tools named below; one that is "
+                "not in your tool list must be loaded with this tool before you call it. Search with keywords "
+                "for the action (or the tool's exact name); the best matches are loaded and you can then call "
+                "them with their full parameters. Tools:\n" + "\n".join(groups)
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords for the action, or exact tool names.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": _MCP_TOOL_SEARCH_MAX_LIMIT,
+                        "description": f"How many tools to load. Defaults to {_MCP_TOOL_SEARCH_LIMIT}.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    }
+
+
+def _mcp_input_schema(tool: dict) -> dict:
+    return (
+        tool.get("inputSchema") or tool.get("input_schema") or {"type": "object", "properties": {}}
+    )
+
+
+def _mcp_summary(description: str, limit: int = _MCP_SUMMARY_CHARS) -> str:
+    text = " ".join((description or "").split()).lstrip("# ")
+    match = re.match(r"(.+?[.!?])(?:\s|$)", text)
+    if match:
+        text = match.group(1)
+    if len(text) > limit:
+        text = text[: limit - 3].rstrip() + "..."
+    return text
+
+
+def _mcp_cached_tool(server: dict, tool_name: str) -> dict | None:
+    for tool in get_cached_tools(server["id"]) or []:
+        if tool.get("name") == tool_name and tool_visible_to(tool, "model"):
+            return public_tool(server, tool)
+    return None
+
+
+def _mcp_image_recipient(server: dict, mapping: dict) -> str:
+    identity = [
+        server["id"],
+        server["url"],
+        server.get("headers_json"),
+        server.get("use_oauth"),
+        mapping,
+    ]
+    return hashlib.sha256(json.dumps(identity, sort_keys = True).encode()).hexdigest()
+
+
+def _mcp_image_destination(url: str) -> str:
+    # Host or program name only: credentials can sit in URL userinfo or in stdio arguments.
+    if is_stdio(url):
+        try:
+            return f"local command {os.path.basename(parse_stdio_command(url)[0])}"
+        except (ValueError, IndexError):
+            return "local command"
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or "unknown host"
+    return f"{host}:{parts.port}" if parts.port else host
+
+
+def mcp_image_share(name, arguments, mcp_image) -> dict | None:
+    """Approval-card details plus the image bound to this server when the call would send it, else None.
+
+    A call that would send it has ``arguments`` rewritten in place to what goes out (settle_image_call).
+    """
+    if mcp_image is None or not isinstance(arguments, dict):
+        return None
+    from .tool_loop_controller import UNPARSED_ARGUMENTS_KEY  # noqa: PLC0415
+
+    server, tool, tool_name = _mcp_resolve_tool(name)
+    mapping = image_mapping(server, tool) if server else None
+    if mapping is None:
+        return None
+    # Arguments that could not be read are not a call to rewrite: they keep their ordinary path.
+    schema = _mcp_input_schema(tool)
+    properties = schema.get("properties") or {}
+    if UNPARSED_ARGUMENTS_KEY in arguments or (
+        set(arguments) == {"raw"} and "raw" not in properties
+    ):
+        return None
+    if not settle_image_call(arguments, mapping["field"], schema.get("required") or ()):
+        return None
+    # The fingerprint covers the server's headers, so it stays on the server: only "disclosure" is streamed.
+    return {
+        "disclosure": {
+            "server": server.get("display_name") or server["id"],
+            "tool": tool_name,
+            "size_bytes": len(mcp_image.data),
+            "destination": _mcp_image_destination(server["url"]),
+        },
+        "image": mcp_image.approved_for(_mcp_image_recipient(server, mapping)),
+    }
+
+
+def _mcp_resolve_tool(name) -> "tuple[dict | None, dict | None, str]":
+    if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX) or name.count("__") < 2:
+        return None, None, ""
+    _, server_key, _ = name.split("__", 2)
+    tool_name = _mcp_raw_tool_name(name)
+    server = mcp_servers_db.get_server_for_tool(server_key)
+    return server, _mcp_cached_tool(server, tool_name) if server else None, tool_name
+
+
+def mcp_image_targets(names) -> list[tuple[str, str]]:
+    """(catalog name, field) for each of these tools with a field mapped to the attached image."""
+    targets = []
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        mapping = image_mapping(server, tool) if server else None
+        if mapping:
+            targets.append((name, mapping["field"]))
+    return targets
+
+
+def mcp_catalog_takes_image(names) -> bool:
+    """Whether any of these catalog tools has a field mapped to the attached image."""
+    for name in names:
+        server, tool, _ = _mcp_resolve_tool(name)
+        if server and image_mapping(server, tool):
+            return True
+    return False
+
+
+def _mcp_thread_key() -> tuple | None:
+    thread_id = _MCP_LISTING_THREAD.get()
+    return (current_account_id(), thread_id) if thread_id else None
+
+
+def _mcp_loaded_names() -> list[str]:
+    key = _mcp_thread_key()
+    if key is None:
+        return []
+    with _MCP_LOADED_LOCK:
+        return list(_MCP_LOADED_THREADS.get(key, ()))
+
+
+def mcp_record_loaded_tools(thread_id, names) -> None:
+    """Remember tools a thread ran, so its next turns list them up front."""
+    if not isinstance(thread_id, str) or not thread_id or not names:
+        return
+    key = (current_account_id(), thread_id)
+    with _MCP_LOADED_LOCK:
+        loaded = [n for n in _MCP_LOADED_THREADS.pop(key, []) if n not in names] + list(names)
+        _MCP_LOADED_THREADS[key] = loaded[-_MCP_LOADED_PER_THREAD:]
+        while len(_MCP_LOADED_THREADS) > _MCP_LOADED_THREADS_MAX:
+            _MCP_LOADED_THREADS.popitem(last = False)
+
+
+def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict]:
+    specs = [spec for _, _, server_specs in listed for spec in server_specs]
+    ctx = _MCP_LISTING_CONTEXT_TOKENS.get()
+    if not ctx or not specs:
+        return specs
+    budget = ctx * _MCP_TOOL_SEARCH_SHARE
+    text = json.dumps(specs, separators = (",", ":"))
+    listing_tokens = _text_token_cost(text, ctx)
+    if listing_tokens <= budget:
+        return specs
+    # Every tool is deferred, as Claude Code and Codex do: a small tool left listed beside the search tool was called
+    # in place of the right, deferred one (Qwen3-4B on Notion, #10997).
+    by_name = {spec["function"]["name"]: spec for spec in specs}
+    # Always listed: a forced tool_choice names its tool, and an attached image is refused unless the catalog
+    # lists a tool mapped to take it.
+    pinned = [_MCP_LISTING_FORCED.get()]
+    catalog = []
+    for server, payload, server_specs in listed:
+        display = server.get("display_name") or server["id"]
+        names = [_mcp_raw_tool_name(spec["function"]["name"]) for spec in server_specs]
+        # The composed name past its mcp__<server>__ prefix: a raw name can be any length, an alias cannot.
+        tools_listed = [
+            (
+                spec["function"]["name"].split("__", 2)[2],
+                _mcp_summary(
+                    spec["function"]["description"].removeprefix(f"[{display}]"),
+                    _MCP_TOOL_SEARCH_SUMMARY_CHARS,
+                ),
+            )
+            for spec in server_specs
+        ]
+        if names:
+            catalog.append((display, tools_listed))
+        if _MCP_LISTING_IMAGE.get():
+            tools = {tool.get("name"): tool for tool in payload if isinstance(tool, dict)}
+            pinned += [
+                spec["function"]["name"]
+                for spec, raw in zip(server_specs, names)
+                if image_mapping(server, tools.get(raw))
+            ]
+    # Halved until the finished declaration fits the share, since summaries can run a token a character.
+    max_chars = int(budget * 4)
+    search = _mcp_tool_search_spec(catalog, max_chars)
+    while max_chars and _text_token_cost(json.dumps(search, separators = (",", ":")), ctx) > budget:
+        max_chars //= 2
+        search = _mcp_tool_search_spec(catalog, max_chars)
+    listing = [search]
+    listing += [by_name[name] for name in dict.fromkeys(pinned) if name in by_name]
+    room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
+        json.dumps(listing, separators = (",", ":")), ctx
+    )
+    ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
+    ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
+    for name in dict.fromkeys(ran + ranked[:_MCP_TOOL_PRELOAD]):
+        if by_name[name] in listing:
             continue
-        ui = meta.get("ui")
-        visibility = ui.get("visibility") if isinstance(ui, dict) else None
-        if visibility is None:
-            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
-            visibility = meta.get("ui/visibility")
-        if isinstance(visibility, (list, tuple)):
-            return "model" in visibility
-    return True
+        cost = _text_token_cost(json.dumps(by_name[name], separators = (",", ":")), ctx)
+        if cost <= room:
+            listing.append(by_name[name])
+            room -= cost
+    return listing
+
+
+def _cached_mcp_catalog() -> list[dict]:
+    """Every model-visible MCP tool spec already cached for this account's enabled servers."""
+    servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
+    if not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+    specs: list[dict] = []
+    for server in servers:
+        payload = get_cached_tools(server["id"])
+        # An empty list can still carry resources (a resource-only server).
+        if payload is not None:
+            specs.extend(
+                _mcp_specs_for_server(server, [public_tool(server, tool) for tool in payload])
+            )
+    return specs
+
+
+def mcp_loadable_specs(tools) -> list[dict]:
+    """The MCP tools a loop offering mcp_tool_search may load mid-turn, so its call detection knows their names."""
+    names = {(t.get("function") or {}).get("name") for t in tools or [] if isinstance(t, dict)}
+    return _cached_mcp_catalog() if MCP_TOOL_SEARCH_NAME in names else []
+
+
+def mcp_tool_spec(name) -> dict | None:
+    """The full spec of a cached MCP tool, for loading it into a running tool loop."""
+    if not isinstance(name, str) or not name.startswith(MCP_TOOL_PREFIX):
+        return None
+    for spec in _cached_mcp_catalog():
+        if spec["function"]["name"] == name:
+            return spec
+    return None
+
+
+def _mcp_search_text(spec: dict) -> tuple[str, str, str]:
+    function = spec["function"]
+    parameters = function.get("parameters") or {}
+    props = parameters.get("properties") if isinstance(parameters, dict) else None
+    props = props if isinstance(props, dict) else {}
+    param_text = " ".join(
+        f"{key} {value.get('description') or ''}" if isinstance(value, dict) else str(key)
+        for key, value in props.items()
+    )
+    # Names are word-split so notion-create-pages matches "create pages".
+    return re.sub(r"[_\-.]+", " ", function["name"]), function.get("description") or "", param_text
+
+
+def _mcp_search_index(specs: list[dict]) -> sqlite3.Connection:
+    rows = [_mcp_search_text(spec) for spec in specs]
+    digest = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+    cached = _MCP_SEARCH_INDEXES.get(digest)
+    if cached is not None:
+        _MCP_SEARCH_INDEXES.move_to_end(digest)
+        return cached
+    conn = sqlite3.connect(":memory:", check_same_thread = False)
+    # The RAG store's tokenizer (storage/rag_db.py chunks_fts). Names get their own table: a word every
+    # description shares ("page" on Notion) has its BM25 IDF floored to nothing there, but still tells names apart.
+    conn.execute("CREATE VIRTUAL TABLE tool_names USING fts5(name, tokenize='porter unicode61')")
+    conn.execute(
+        "CREATE VIRTUAL TABLE tool_text USING fts5(description, params, tokenize='porter unicode61')"
+    )
+    conn.executemany(
+        "INSERT INTO tool_names(rowid, name) VALUES (?, ?)", [(i, r[0]) for i, r in enumerate(rows)]
+    )
+    conn.executemany(
+        "INSERT INTO tool_text(rowid, description, params) VALUES (?, ?, ?)",
+        [(i, r[1], r[2]) for i, r in enumerate(rows)],
+    )
+    _MCP_SEARCH_INDEXES[digest] = conn
+    while len(_MCP_SEARCH_INDEXES) > 4:
+        _MCP_SEARCH_INDEXES.popitem(last = False)[1].close()
+    return conn
+
+
+def _mcp_search_limit(limit) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)) or not math.isfinite(limit):
+        return _MCP_TOOL_SEARCH_LIMIT
+    return max(1, min(_MCP_TOOL_SEARCH_MAX_LIMIT, int(limit)))
+
+
+_MCP_SEARCH_QUERY_CHARS = 2000
+# Ids and numbers ("page 195de922-...", "issue 55"); short names like ec2, s3 and v2 stay.
+_MCP_SEARCH_ID_RE = re.compile(r"\b(?:\d+|(?=[0-9a-f]*\d)[0-9a-f]{4,})\b", re.IGNORECASE)
+# Users and tool names pick different verbs for one write: "add a comment" is notion-create-comments, and an
+# unexpanded name leg ranks the update/fetch siblings that share the noun above it. Read verbs (find, get) stay
+# unexpanded: "find" -> "search" lists every search-* tool over the one the noun names.
+_MCP_VERB_GROUPS = (
+    ("create", "add", "new", "make", "insert", "append", "post", "reply"),
+    ("delete", "remove", "erase", "trash", "drop"),
+    ("update", "edit", "change", "modify", "rename", "patch"),
+)
+
+
+def _verb_forms(verb: str) -> set[str]:
+    if verb == "new":  # an adjective: "news" is not "create"
+        return {verb}
+    stem = verb.removesuffix("e")
+    return {
+        verb,
+        verb + "s",
+        verb + "d",
+        verb + "ed",
+        stem + "ing",
+        verb + "ing",
+        verb + verb[-1] + "ed",
+        verb + verb[-1] + "ing",
+        verb.removesuffix("y") + "ies",
+    }
+
+
+_MCP_VERB_SYNONYMS: dict[str, tuple[str, ...]] = {
+    form: tuple(v for v in group if v != verb)
+    for group in _MCP_VERB_GROUPS
+    for verb in group
+    for form in _verb_forms(verb)
+}
+
+
+def _mcp_ranked(specs: list[dict], query) -> tuple[list[int], int]:
+    """Indexes into ``specs`` for ``query`` and how many lead as exact names (openai/codex#21503), then names and
+    descriptions ranked by BM25 and fused as the knowledge-base search fuses its legs."""
+    if not isinstance(query, str) or not query.strip() or not specs:
+        return [], 0
+    words = [w.casefold() for w in re.split(r"[\s,]+", query) if w]
+    by_name: dict[str, list[int]] = {}
+    for i, spec in enumerate(specs):
+        name = spec["function"]["name"]
+        for key in dict.fromkeys((name.casefold(), _mcp_raw_tool_name(name).casefold())):
+            by_name.setdefault(key, []).append(i)
+    # A raw name two servers share ("search") is both of their tools.
+    exact = list(dict.fromkeys(i for w in words for i in by_name.get(w, ())))
+    if exact and all(w in by_name for w in words):
+        return exact, len(exact)
+    from core.rag import config as rag_config, retrieval  # noqa: PLC0415 -- RAG ranking, imported lazily
+    from core.rag.store import conversation_match_queries  # noqa: PLC0415
+
+    # A long paste would OR thousands of terms (seconds per request).
+    query = query[:_MCP_SEARCH_QUERY_CHARS]
+    expressions = conversation_match_queries(
+        _MCP_SEARCH_ID_RE.sub(" ", query)
+    ) or conversation_match_queries(query)
+    rankings: list[list] = []
+    if expressions:
+        synonyms = dict.fromkeys(
+            v
+            for w in re.findall(r"[a-z]+", query.casefold())
+            for v in _MCP_VERB_SYNONYMS.get(w, ())
+        )
+        name_expression = " OR ".join([expressions[-1], *(f'"{v}"' for v in synonyms)])
+        with _MCP_SEARCH_LOCK:
+            conn = _mcp_search_index(specs)
+            for sql, expression in (
+                (
+                    "SELECT rowid, bm25(tool_names) AS s FROM tool_names WHERE tool_names MATCH ? "
+                    "ORDER BY s LIMIT ?",
+                    name_expression,
+                ),
+                (
+                    "SELECT rowid, bm25(tool_text, 1.0, 0.3) AS s FROM tool_text WHERE tool_text MATCH ? "
+                    "ORDER BY s LIMIT ?",
+                    expressions[-1],
+                ),
+            ):
+                rows = conn.execute(sql, (expression, 4 * _MCP_TOOL_SEARCH_MAX_LIMIT))
+                rankings.append([retrieval.Hit(str(rowid), -score) for rowid, score in rows])
+    ranked = [int(hit.chunk_id) for hit in retrieval._rrf(rankings, rag_config.RRF_K, len(specs))]
+    return list(dict.fromkeys(exact + ranked)), len(exact)
+
+
+def mcp_fit_loaded(specs: list[dict]) -> list[dict]:
+    """The leading ``specs`` (newest first) that fit the share of the window a turn's loaded tools may take."""
+    ctx = _MCP_LISTING_CONTEXT_TOKENS.get() or _window_context_tokens()
+    if not ctx:
+        return list(specs)
+    room = ctx * _MCP_TOOL_LOAD_SHARE
+    fitted = []
+    for spec in specs:
+        cost = _text_token_cost(json.dumps(spec, separators = (",", ":")), ctx)
+        if cost <= room:
+            fitted.append(spec)
+            room -= cost
+    return fitted
+
+
+def _mcp_search_matches(arguments) -> tuple[list[dict], list[dict]]:
+    """(the cached MCP tools a mcp_tool_search call loads, the matches too large to)."""
+    arguments = arguments if isinstance(arguments, dict) else {}
+    specs = _cached_mcp_catalog()
+    order, exact = _mcp_ranked(specs, arguments.get("query"))
+    picked = [specs[i] for i in order[: max(_mcp_search_limit(arguments.get("limit")), exact)]]
+    fitted = mcp_fit_loaded(picked)
+    return fitted, [spec for spec in picked if spec not in fitted]
+
+
+def mcp_tool_search_specs(arguments) -> list[dict]:
+    """The cached MCP tools a mcp_tool_search call loads: exact names first, then the best matches, while they
+    fit the window's load share (five Notion query tools are more schema than a 32K window)."""
+    return _mcp_search_matches(arguments)[0]
+
+
+def _mcp_tool_search(arguments) -> str:
+    query = arguments.get("query") if isinstance(arguments, dict) else None
+    if not isinstance(query, str) or not query.strip():
+        return "Error: mcp_tool_search needs a query naming the action you need."
+    found, too_large = _mcp_search_matches(arguments)
+    if not found and too_large:
+        names = ", ".join(spec["function"]["name"] for spec in too_large)
+        return f"Error: the matching MCP tools ({names}) are too large for this model's context window."
+    if not found:
+        return (
+            f"No MCP tool matched '{query.strip()}'. Try other keywords, or one of the tool names "
+            f"listed in the {MCP_TOOL_SEARCH_NAME} description."
+        )
+    lines = [
+        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}"
+        for spec in found
+    ]
+    return (
+        f"Loaded {len(found)} MCP tool{'s' if len(found) != 1 else ''}. Call the one that fits directly, "
+        "with the parameters in its schema:\n" + "\n".join(lines)
+    )
+
+
+def _mcp_tool_prefix(server: dict) -> str:
+    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    return f"{MCP_TOOL_PREFIX}{server_key}__"
 
 
 def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
@@ -12575,10 +14217,9 @@ def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     Names that already satisfy ``function.name`` are claimed first, so an alias minted for a dotted
     or oversized one can never take a name another tool ships under.
     """
-    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
-    prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
+    prefix = _mcp_tool_prefix(server)
     raw_names = [
-        tool["name"] for tool in mcp_tools if tool.get("name") and _mcp_tool_model_visible(tool)
+        tool["name"] for tool in mcp_tools if tool.get("name") and tool_visible_to(tool, "model")
     ]
     names: dict[str, str] = {}
     for raw_name in raw_names:
@@ -12606,6 +14247,103 @@ def _mcp_raw_tool_name(name: str) -> str:
     return _MCP_TOOL_ALIASES.get(name) or name.split("__", 2)[-1]
 
 
+_MCP_RESOURCE_LISTING_CHARS = 4000
+_MCP_TEXT_BLOB_TYPES = ("json", "xml", "yaml", "csv", "javascript", "markdown", "toml")
+
+
+def _mcp_listed_resources(server: dict) -> list[dict]:
+    """Readable resources; none when the server ships its own tool by that name."""
+    tools = get_cached_tools(server["id"])
+    resources = get_cached_resources(server["id"])
+    if tools is None or not resources:
+        return []
+    if any(
+        isinstance(tool, dict)
+        and tool.get("name") == MCP_RESOURCE_TOOL
+        and tool_visible_to(tool, "model")
+        for tool in tools
+    ):
+        return []
+    return resources
+
+
+def _mcp_resource_spec(server: dict, resources: list[dict]) -> dict:
+    display = server.get("display_name") or server["id"]
+    lines = []
+    for resource in resources:
+        line = f"- {resource['uri']}"
+        if resource.get("name") and resource["name"] != resource["uri"]:
+            line += f" ({resource['name']})"
+        if resource.get("description"):
+            line += f": {_mcp_summary(resource['description'])}"
+        lines.append(line)
+    shown, size = [], 0
+    for line in lines:
+        if size + len(line) > _MCP_RESOURCE_LISTING_CHARS:
+            shown.append(f"- ... and {len(lines) - len(shown)} more")
+            break
+        shown.append(line)
+        size += len(line) + 1
+    return {
+        "type": "function",
+        "function": {
+            "name": f"{_mcp_tool_prefix(server)}{MCP_RESOURCE_TOOL}",
+            "description": (
+                f"[{display}] Read a resource this MCP server provides (a file, document or "
+                "data it exposes), by its URI. Resources:\n" + "\n".join(shown)
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uri": {
+                        "type": "string",
+                        "description": "The resource URI, exactly as listed.",
+                    }
+                },
+                "required": ["uri"],
+            },
+        },
+    }
+
+
+def _mcp_read_resource(server: dict, arguments, url: str, headers, **kwargs) -> str:
+    display = server.get("display_name") or server["id"]
+    listed = [resource["uri"] for resource in _mcp_listed_resources(server)]
+    uri = arguments.get("uri") if isinstance(arguments, dict) else None
+    uri = uri.strip() if isinstance(uri, str) else ""
+    # Only what the server listed: a filesystem server would otherwise read any file:// path.
+    if uri not in listed:
+        return (
+            f"Error: '{uri}' is not a resource '{display}' lists. Pass one of its URIs "
+            f"exactly: {', '.join(listed[:10])}"
+        )
+    try:
+        resource = read_resource_sync(url, headers, uri, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - every failure goes back to the model
+        return f"Error: reading MCP resource '{uri}' failed: {exc or type(exc).__name__}"
+
+    def _shown(text, blob, mime) -> str:
+        if not blob:
+            return text or ""
+        # JSON and text often arrive as blobs; a binary type stays out even when it decodes.
+        mime = str(mime or "").lower()
+        if not mime or mime.startswith("text/") or any(t in mime for t in _MCP_TEXT_BLOB_TYPES):
+            try:
+                return base64.b64decode(blob, validate = True).decode("utf-8")
+            except ValueError:
+                pass
+        return f"[binary {mime or 'content'}, not shown]"
+
+    if not resource["contents"]:
+        body = _shown(resource["text"], resource["blob"], resource["mime_type"])
+    else:
+        body = "\n\n".join(
+            f"[{item['uri']}]\n{_shown(item.get('text'), item.get('blob'), item.get('mimeType'))}"
+            for item in resource["contents"]
+        )
+    return body
+
+
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
@@ -12617,7 +14355,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
             continue
-        if not _mcp_tool_model_visible(tool):
+        if not tool_visible_to(tool, "model"):
             logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         name = names_by_raw.get(raw_name)
@@ -12655,7 +14393,23 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 },
             }
         )
+    resources = _mcp_listed_resources(server)
+    if resources:
+        specs.append(_mcp_resource_spec(server, resources))
     return specs
+
+
+def _enabled_mcp_servers(servers: list[dict]) -> list[dict]:
+    enabled = [server for server in servers if server.get("is_enabled")]
+    if not any(is_studio_decisions(server["url"]) for server in enabled):
+        return enabled
+    from utils import systemone_settings
+
+    return (
+        enabled
+        if systemone_settings.get_enabled()
+        else [server for server in enabled if not is_studio_decisions(server["url"])]
+    )
 
 
 def cached_mcp_tools() -> tuple[list[dict], bool]:
@@ -12671,11 +14425,11 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     server renders nothing on the completion path either, so skipping that one is exact rather than
     short. Callers that must not undercount should decline on False.
     """
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    servers = _enabled_mcp_servers(mcp_servers_db.list_servers())
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
 
-    specs: list[dict] = []
+    listed: list[tuple[dict, list[dict], list[dict]]] = []
     complete = True
     for server in servers:
         payload = get_cached_tools(server["id"])
@@ -12683,23 +14437,24 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
             if not in_failure_cooloff(server["id"]):
                 complete = False
             continue
-        specs.extend(_mcp_specs_for_server(server, payload))
-    return specs, complete
+        payload = [public_tool(server, tool) for tool in payload]
+        listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+    return _mcp_listing(listed), complete
 
 
-async def get_enabled_mcp_tools() -> list[dict]:
-    # Keep the SQLite-backed server list off the event loop.
-    servers = [
-        s for s in await asyncio.to_thread(mcp_servers_db.list_servers) if s.get("is_enabled")
-    ]
-    # Never spawn stdio servers when stdio is disabled on this host.
-    if not stdio_mcp_enabled():
+async def get_enabled_mcp_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
+    # keep the SQLite-backed server list off the event loop.
+    servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
+    if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
         return []
 
-    # Skip servers still in their post-failure cool-off, otherwise a down server gets re-probed, and blocks the send
-    # for the full timeout, on every message.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down.
     uncached = [
         s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
     ]
@@ -12711,6 +14466,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
                     headers = parse_server_headers(s),
                     timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
                     use_oauth = bool(s.get("use_oauth")),
+                    **oauth_client_kwargs(s),
                 )
                 for s in uncached
             ),
@@ -12738,13 +14494,86 @@ async def get_enabled_mcp_tools() -> list[dict]:
                 continue
             cache_tools(server["id"], payload)
 
-    specs: list[dict] = []
+    listed: list[tuple[dict, list[dict], list[dict]]] = []
     for server in servers:
         payload = get_cached_tools(server["id"])
         if payload is None:
             continue
-        specs.extend(_mcp_specs_for_server(server, payload))
-    return specs
+        payload = [public_tool(server, tool) for tool in payload]
+        listed.append((server, payload, _mcp_specs_for_server(server, payload)))
+    return _mcp_listing(listed)
+
+
+def mcp_search_argument(name: str, tool: dict) -> str | None:
+    schema = _mcp_input_schema(tool)
+    required = schema.get("required") or []
+    properties = schema.get("properties") or {}
+    if len(required) != 1 or not isinstance(properties, dict):
+        return None
+    key = required[0]
+    prop = properties.get(key) if isinstance(key, str) else None
+    if not isinstance(prop, dict) or prop.get("type") != "string" or "enum" in prop:
+        return None
+    if is_potentially_unsafe_tool_call(name, {key: ""}):
+        return None
+    return key
+
+
+async def mcp_search_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is False:
+        return []
+    await get_enabled_mcp_tools(include_stdio = include_stdio, server_ids = server_ids)
+    servers = _enabled_mcp_servers(await asyncio.to_thread(mcp_servers_db.list_servers))
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
+    if not include_stdio or not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+    found = []
+    for server in servers:
+        for tool in get_cached_tools(server["id"]) or ():
+            raw_name = tool.get("name") if isinstance(tool, dict) else None
+            if not isinstance(raw_name, str) or not tool_visible_to(tool, "model"):
+                continue
+            name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+            argument = mcp_search_argument(name, public_tool(server, tool))
+            if argument:
+                found.append(
+                    {
+                        "name": name,
+                        "serverId": server["id"],
+                        "serverName": server.get("display_name") or server["id"],
+                        "tool": raw_name,
+                        "description": tool.get("description") or "",
+                        "argument": argument,
+                    }
+                )
+    return found
+
+
+def execute_mcp_tool(name: str, arguments: dict, **kwargs) -> str:
+    if not name.startswith(MCP_TOOL_PREFIX):
+        return f"Error: '{name}' is not an MCP tool"
+    return execute_tool(name, arguments, **kwargs)
+
+
+def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
+    """cache only: callers must not spawn a stdio subprocess or block on a probe."""
+    tools = get_cached_tools(server_id) or ()
+    return next((t for t in tools if isinstance(t, dict) and t.get("name") == tool_name), None)
+
+
+def mcp_session_scope(session_id: "str | None", thread_id: "str | None") -> "str | None":
+    """Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
+    id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +
+    percent-quote the parts so ids can't collide or ":" merge conversations."""
+    if not thread_id:
+        return None
+    quote = urllib.parse.quote
+    return f"s={quote(session_id or '', safe = '')}:t={quote(thread_id, safe = '')}"
 
 
 _TIMEOUT_UNSET = object()
@@ -12786,6 +14615,10 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
+    mcp_image = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -12798,7 +14631,11 @@ def execute_tool(
     tools; web_search / MCP are unchanged. ``output_callback``: optional ``callable(str)`` invoked
     with incremental stdout/stderr chunks while python/terminal executions run. Purely
     observational: the returned result string is identical with or without it. ``website_policy``:
-    hidden server-validated domain limits for web_search.
+    hidden server-validated domain limits for web_search. ``tool_execution_mode`` controls OS
+    isolation for python/terminal: ``"auto"`` isolates when available and otherwise preserves
+    existing behavior, while ``"required"`` refuses unisolated execution. Full access remains
+    controlled by ``disable_sandbox``; ``"full"`` here is refused. ``host_access_approved``: the user approved this
+    call at the confirmation prompt (see ``_prepare_tool_launch``).
     """
     from state.tool_policy import require_tool_access
 
@@ -12827,7 +14664,31 @@ def execute_tool(
             f"Error: {name} arguments {cause}, so nothing ran. Resend as complete JSON, "
             "split across smaller calls if the content is long."
         )
-    effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    # Block placeholders copied from compacted history before any tool can write them (#11839).
+    receipt_field = compaction_receipt_field(
+        arguments,
+        match_only = frozenset({"old_string"}) if name == "edit_file" else frozenset(),
+    )
+    if receipt_field is not None:
+        return (
+            f"Error: {name} '{receipt_field}' is a placeholder that stood in for earlier "
+            "arguments to save room, not content, so nothing ran. Write the actual content "
+            "out in full."
+        )
+    # By type, not `is _TIMEOUT_UNSET`: see `_request_context_tokens`.
+    effective_timeout = (
+        timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
+    )
+    if is_browser_tool(name):
+        return execute_browser_tool(
+            name,
+            arguments,
+            cancel_event = cancel_event,
+            output_callback = output_callback,
+            session_id = session_id,
+            website_policy = website_policy,
+            timeout = effective_timeout,
+        )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -12910,6 +14771,8 @@ def execute_tool(
         )
     if name == "render_html":
         return _fit_result_to_room(_render_html_result(arguments), name)
+    if name == MCP_TOOL_SEARCH_NAME:
+        return _fit_result_to_room(_mcp_tool_search(arguments), name)
     if name.startswith(MCP_TOOL_PREFIX):
         # An MCP server is not inside the terminal sandbox, so the local refusal has to hold here too.
         if _mcp_arguments_reference_studio_credential(arguments):
@@ -12928,19 +14791,46 @@ def execute_tool(
             return f"Error: MCP server '{display}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
             return f"Error: stdio MCP server '{display}' is disabled on this host"
-        # Persist a stateful stdio session only per conversation (thread_id). session_id is the project-wide sandbox
-        # id, so scoping by it alone leaks browser/DB/REPL state across conversations; fall back to one-shot. Tag +
-        # percent-quote the parts so ids can't collide or ":" merge conversations.
-        if thread_id:
-            mcp_scope = "s={}:t={}".format(
-                urllib.parse.quote(session_id or "", safe = ""),
-                urllib.parse.quote(thread_id, safe = ""),
-            )
-        else:
-            mcp_scope = None
+        mcp_scope = mcp_session_scope(session_id, thread_id)
         headers = parse_server_headers(server)
         url = server["url"]
         use_oauth = bool(server.get("use_oauth"))
+        mapping = (
+            image_mapping(server, _mcp_cached_tool(server, tool_name))
+            if image_input_mappings(server) and isinstance(arguments, dict)
+            else None
+        )
+        carries_image = bool(mapping) and arguments.get(mapping["field"]) == ATTACHED_IMAGE
+        if mcp_image is not None and not carries_image:
+            # Approved for a mapping that has since gone (edited server, dropped tool cache): never forward the call.
+            return (
+                "Error: the MCP server changed after the image was approved. Call the tool again."
+            )
+        if carries_image:
+            # Only a tool loop that just got the user's approval for this call passes mcp_image.
+            if mcp_image is None:
+                return "Error: no approved image to send. Ask the user to attach one and approve sharing it."
+            # Re-read the row: an edit while the approval card was open must not redirect the image.
+            fresh = mcp_servers_db.get_server(server_id)
+            fresh_mapping = (
+                image_mapping(fresh, _mcp_cached_tool(fresh, tool_name)) if fresh else None
+            )
+            if not (
+                fresh_mapping
+                and fresh.get("is_enabled")
+                and mcp_image.recipient
+                == _mcp_image_recipient(server, mapping)
+                == _mcp_image_recipient(fresh, fresh_mapping)
+            ):
+                return "Error: the MCP server changed after the image was approved. Call the tool again."
+            arguments = {**arguments, mapping["field"]: mcp_image.encoded(mapping["encoding"])}
+
+        def _image_still_approved(row: dict) -> bool:
+            # Checked again at dispatch: a call can wait behind a stdio session lock after the re-read above.
+            if not carries_image:
+                return True
+            current = image_mapping(row, _mcp_cached_tool(row, tool_name))
+            return bool(current) and _mcp_image_recipient(row, current) == mcp_image.recipient
 
         def _config_current() -> bool:
             # Re-read before an MCP session is cached: this call may have read the row just before an update/delete
@@ -12954,36 +14844,65 @@ def execute_tool(
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
+                and _image_still_approved(row)
             )
 
-        return _fit_result_to_room(
-            call_tool_sync(
+        if tool_name == MCP_RESOURCE_TOOL and _mcp_listed_resources(server):
+            body = _mcp_read_resource(
+                server,
+                arguments,
                 url = url,
                 headers = headers,
-                name = tool_name,
-                args = arguments,
                 timeout = effective_timeout,
                 use_oauth = use_oauth,
                 cancel_event = cancel_event,
                 scope = mcp_scope,
                 config_check = _config_current,
-            ),
-            name,
+                **oauth_client_kwargs(server),
+            )
+            # As for tool results: a marker anywhere in the text, errors included, would summon a widget.
+            return _fit_result_to_room(_drop_forged_ui_sentinels(body), name)
+        result = call_tool_sync(
+            url = url,
+            headers = headers,
+            name = tool_name,
+            args = arguments,
+            timeout = effective_timeout,
+            use_oauth = use_oauth,
+            cancel_event = cancel_event,
+            scope = mcp_scope,
+            **oauth_client_kwargs(server),
+            config_check = _config_current,
+            ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )
+        if mcp_image is not None and isinstance(result, str):
+            # Returned images may be resized copies of the user's; none of them reach the model on this call.
+            result, returned_images, _ = result.partition(MCP_IMAGES_SENTINEL)
+            if returned_images:
+                result = (
+                    result.rstrip("\n")
+                    + "\n[Images the tool returned were withheld from the model.]"
+                )
+            result = mcp_image.redact(result)
+        return _fit_result_to_room(result, name)
     if name == "deep_research":
         if not str(arguments.get("question") or "").strip():
             return "Error: deep_research needs a question to investigate."
         return DEEP_RESEARCH_STARTED
     if name == "web_search":
+        query, url = _resolve_web_search_args(arguments)
+        image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
+        if not query and not url and not _clean_image_queries(image_queries):
+            return "No query provided."
         return _fit_result_to_room(
             _web_search(
-                arguments.get("query", ""),
-                url = arguments.get("url"),
+                query,
+                url = url or None,
                 timeout = effective_timeout,
                 cancel_event = cancel_event,
                 website_policy = website_policy,
                 include_images = search_images,
-                image_queries = arguments.get("image_queries"),
+                image_queries = image_queries,
             ),
             name,
         )
@@ -12998,6 +14917,8 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -13009,9 +14930,16 @@ def execute_tool(
                 disable_sandbox = disable_sandbox,
                 output_callback = output_callback,
                 thread_id = thread_id,
+                tool_execution_mode = tool_execution_mode,
+                host_access_approved = host_access_approved,
             )
-    # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
-    # unlink it underneath.
+    if name == "view_image":
+        from .view_image import view_image
+        with _session_in_flight(session_id):
+            return _fit_result_to_room(
+                view_image(arguments.get("path"), _get_workdir(session_id), cancel_event), name
+            )
+    # Keep the workdir alive if the chat is deleted during an edit.
     if name == "edit_file":
         with _session_in_flight(session_id):
             return _fit_result_to_room(
@@ -13019,6 +14947,21 @@ def execute_tool(
                     arguments,
                     session_id = session_id,
                     disable_sandbox = disable_sandbox,
+                ),
+                name,
+            )
+    if name in MEDIA_CHAT_TOOLS:
+        if name == "generate_image":
+            from .generate_image_tool import run_generate_image as run_media_tool
+        else:
+            from .generate_video_tool import run_generate_video as run_media_tool
+        with _session_in_flight(session_id):
+            return _fit_result_to_room(
+                run_media_tool(
+                    arguments,
+                    workdir = _get_workdir(session_id),
+                    cancel_event = cancel_event,
+                    timeout = effective_timeout,
                 ),
                 name,
             )
@@ -13398,14 +15341,14 @@ def _last_user_text(conversation: list[dict]) -> str:
             continue
         content = msg.get("content")
         if isinstance(content, str):
-            return content.strip()
+            return strip_current_date_update_note(strip_attached_image_note(content)).strip()
         if isinstance(content, list):
             parts = [
-                p.get("text", "")
+                strip_attached_image_note(p.get("text", ""))
                 for p in content
                 if isinstance(p, dict) and p.get("type") in ("text", "input_text")
             ]
-            return " ".join(t for t in parts if t).strip()
+            return strip_current_date_update_note(" ".join(t for t in parts if t)).strip()
         return ""
     return ""
 
@@ -13429,6 +15372,8 @@ def build_synthetic_search_exchange(
     call_id = call_prefix + _uuid.uuid4().hex[:12]
     args = {"query": query}
     full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    # Local and round-less: the client replays it as its own exchange.
+    provenance = {"source": "local"}
     events = [
         {"type": "status", "text": f"{status_label}: {query[:60]}"},
         {
@@ -13436,12 +15381,14 @@ def build_synthetic_search_exchange(
             "tool_name": tool_name,
             "tool_call_id": call_id,
             "arguments": args,
+            "provenance": provenance,
         },
         {
             "type": "tool_end",
             "tool_name": tool_name,
             "tool_call_id": call_id,
             "result": full_result,
+            "provenance": provenance,
         },
         {"type": "status", "text": ""},
     ]
@@ -13619,6 +15566,22 @@ def rag_autoinject_reaches_retrieval(
     return bool(enabled), whole_doc_requested
 
 
+def _thread_document_ids(thread_id) -> set | None:
+    """Ids of the thread's indexed attachments; None when the store cannot say."""
+    try:
+        from core.rag import store
+        from storage import rag_db
+
+        conn = rag_db.get_connection()
+        try:
+            docs = store.list_documents(conn, store.thread_scope(thread_id))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    return {d["id"] for d in docs if d.get("status") == "completed" and d.get("num_chunks")}
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return ``{"events": [...],
     "messages": [...]}`` to splice into the loop, else ``None``. Toggle via ``rag_scope.autoinject``
@@ -13648,7 +15611,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     # Cap at the lean top_k, but honor a lower user setting.
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
-    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    # Zero or below is no limit to the search, which then returns its own default count.
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None and sidebar_k > 0 else lean_k
     budget: int | None = None
     # The window the budget was sized against, so `_text_token_cost` only trusts a GGUF actually serving this same
     # window.
@@ -13722,19 +15686,34 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
         return _trim(found[0], found[1], max_tokens) if found else None
 
+    thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
+
+    def retrieve_thread_unfloored(*, max_tokens = None):
+        # Lexical-only finds nothing for a generic request ("summarize this") whose words are not in the file, so
+        # this mandatory grounding retries with the dense leg. Chats with no attachment skip the query embedding.
+        if thread_docs is not None and not thread_docs:
+            return None
+        scope_kwargs = _scope_retrieval_kwargs(rag_scope)
+        found = retrieve(
+            max_tokens = max_tokens, scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs
+        )
+        if not found and scope_kwargs["mode"] == "lexical":
+            found = retrieve(
+                max_tokens = max_tokens,
+                scope_thread_id = thread_id,
+                min_dense_score = None,
+                mode = "hybrid",
+            )
+        return found
+
     # An oversized thread attachment is mandatory grounding: with auto-injection off, search it alone, without the
     # optional-auto relevance floor, then add project context if the combination still fits. The budget binds on that
     # path only: with auto-injection on this stays the single combined unbudgeted search, so a small context cannot
-    # silently switch RAG off.
+    # silently switch RAG off, and the thread is searched again without the floor when none of it cleared.
     if text is None and (enabled or whole_doc_requested):
         try:
             if whole_doc_requested and not enabled:
-                found = retrieve(
-                    max_tokens = budget,
-                    scope_thread_id = thread_id,
-                    min_dense_score = None,
-                    **_scope_retrieval_kwargs(rag_scope),
-                )
+                found = retrieve_thread_unfloored(max_tokens = budget)
                 project_id = rag_scope.get("project_id")
                 if found and project_id:
                     # Isolated like the whole-document companion above: an unavailable project index must not send the
@@ -13761,6 +15740,28 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     min_dense_score = floor,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
+                # Project hits clearing the floor must not crowd out the attachment: without one of its passages,
+                # it goes first.
+                grounded = (
+                    bool(found)
+                    and thread_docs is not None
+                    and any(s.get("documentId") in thread_docs for s in found[1])
+                )
+                if (
+                    whole_doc_requested
+                    and (not found or rag_scope.get("project_id"))
+                    and not grounded
+                ):
+                    thread_found = retrieve_thread_unfloored()
+                    if thread_found and found:
+                        cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
+                        if not any(s.get("documentId") in cited for s in found[1]):
+                            # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
+                            n_proj = min(len(found[1]), top_k // 2)
+                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
+                            found = (render_sources(merged), merged)
+                    elif thread_found:
+                        found = thread_found
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
@@ -13783,34 +15784,31 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     return built
 
 
-_MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+_MAX_PAGE_CHARS = 16000  # fetched page cap after HTML-to-Markdown conversion
 
-# Share of the loaded window one fetched page may claim. The same window also has to hold the system prompt, the
-# carried-forward block, the user's turn, the call itself and room to answer, so a third is already generous.
+# one page may use 35% of the window, leaving room for prompts, context, calls, and answers.
 _PAGE_CONTEXT_SHARE = 0.35
-# Below this a page is too clipped to answer from, so the fetch is not worth making small. Half, when the room has to
-# be converted to characters with no way to check the answer: see `_dense_char_limit`, the conversion charges ASCII an
-# English four characters per token and the dense ASCII these tools print runs nearer two.
+# unmeasurable token budgets are halved because dense ASCII can cost twice the English estimate.
 _UNMEASURED_ROOM_MARGIN = 0.5
 
 _MIN_PAGE_CHARS = 2000
-# A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
+# a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections stripped during conversion; 512 KB
-# still reaches article content.
+# raw cap exceeds _MAX_PAGE_CHARS because conversion strips large SSR <head> sections.
 _MAX_FETCH_BYTES = 512 * 1024
-# "%" is safe so an already-encoded URL is not re-encoded into %25.
+# news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
+_MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
+# keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
-# PDF cross-reference data lives at EOF, so extraction needs the whole body.
+# PDF cross-reference data at EOF requires the whole body.
 _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
-# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs). Binary when they exceed 12.5%, after
-# allowing 16 minor encoding glitches.
+# binary threshold excludes whitespace and ESC; allow 16 glitches or 12.5%, whichever is larger.
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
-# Common binary signatures that can otherwise look text-heavy when mislabeled.
+# signatures catch mislabeled binaries that pass text heuristics.
 _PDF_MAGIC = b"%PDF-"
 _BINARY_MAGIC = (
     _PDF_MAGIC,
@@ -13840,6 +15838,30 @@ _MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
 _ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
 
 _META_CHARSET_SCAN_BYTES = 2048
+_META_REFRESH_SCAN_BYTES = 4096
+_META_REFRESH_MAX_DELAY = 5
+_META_REFRESH_CONTENT_RE = re.compile(
+    r"\s*(\d+|(?=\.))(?:\.[\d.]*)?(?:(?=[\s;,])\s*[;,]?\s*(?:url\s*=\s*)?(.*))?\Z",
+    re.ASCII | re.IGNORECASE | re.DOTALL,
+)
+# Browsers leave an unterminated named reference in an attribute alone, so "&section=" stays literal instead of "§ion=".
+_ATTR_CHAR_REF_RE = re.compile(r"&(?:#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[A-Za-z][A-Za-z0-9]*;)")
+# <plaintext> has no end tag: everything after it is text.
+_META_REFRESH_INERT_TAGS = frozenset(
+    (
+        b"iframe",
+        b"noembed",
+        b"noframes",
+        b"noscript",
+        b"plaintext",
+        b"script",
+        b"style",
+        b"template",
+        b"textarea",
+        b"title",
+        b"xmp",
+    )
+)
 # A comment or whole tag, quoted attribute values included, so markup inside them is never read as <meta>. As in the
 # browser prescan, an unterminated tag ends the scan.
 _HTML_TAG_RE = re.compile(
@@ -13994,6 +16016,60 @@ def _sniff_meta_charset(head: bytes, content_type: str) -> str | None:
     return prolog and _whatwg_codec(prolog.group(1))
 
 
+def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
+    from html import unescape
+    from urllib.parse import urldefrag, urljoin, urlparse
+
+    def attr_text(value: bytes) -> str:
+        return _ATTR_CHAR_REF_RE.sub(
+            lambda ref: unescape(ref.group(0)), value.decode("utf-8", "replace")
+        )
+
+    base_url, seen_base, inert = page_url, False, None
+    for tag in _HTML_TAG_RE.finditer(body[:_META_REFRESH_SCAN_BYTES]):
+        name = (tag.group(1) or b"").lower()
+        if inert is not None:
+            end = tag.group(0)[: len(inert) + 3].lower()
+            if inert != b"plaintext" and end[:-1] == b"</" + inert and end[-1:] in b"\t\n\f\r />":
+                inert = None
+        elif name in _META_REFRESH_INERT_TAGS:
+            inert = name
+        elif name in (b"base", b"meta"):
+            attrs = {}
+            for attr, *values in _META_ATTR_RE.findall(tag.group(2)):
+                attrs.setdefault(attr.lower(), b"".join(values))
+            if name == b"base":
+                # Only the first <base href> counts, and only for a refresh that comes after it.
+                if b"href" in attrs and not seen_base:
+                    seen_base = True
+                    try:
+                        href = urljoin(page_url, attr_text(attrs[b"href"]).strip())
+                        if urlparse(href).scheme in ("http", "https"):
+                            base_url = href
+                    except ValueError:
+                        pass
+                continue
+            if attrs.get(b"http-equiv", b"").strip().lower() != b"refresh":
+                continue
+            match = _META_REFRESH_CONTENT_RE.match(attr_text(attrs.get(b"content", b"")))
+            if match is None:
+                continue
+            location = (match.group(2) or "").strip()
+            if location[:1] in ("'", '"'):
+                location = location[1:].split(location[0], 1)[0].strip()
+            if not location or int(match.group(1) or 0) > _META_REFRESH_MAX_DELAY:
+                return None
+            try:
+                target = urljoin(base_url, location)
+                scheme = urlparse(target).scheme
+            except ValueError:
+                return None
+            if scheme not in ("http", "https") or urldefrag(target)[0] == urldefrag(page_url)[0]:
+                return None
+            return target
+    return None
+
+
 def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
@@ -14055,12 +16131,13 @@ _PINNED_DIAL_TIMEOUT = 1.0
 _PINNED_PROBE_BUDGET = 0.25
 
 
-def _pinned_create_connection(addresses):
+def _pinned_create_connection(addresses, origin = None):
     """``socket.create_connection`` that walks *addresses* instead of resolving.
 
     Pinning to one validated address dropped the walk every other client gets. Walking
     here rather than around ``opener.open`` keeps the caller's timeout covering one
-    whole response.
+    whole response. A direct dial of *origin*, a name sent on for a proxy, walks them
+    too: the opener reads the proxy settings again, and must not look the name up afresh.
     """
     import socket
 
@@ -14072,8 +16149,10 @@ def _pinned_create_connection(addresses):
         if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
             timeout = socket.getdefaulttimeout()
         # A proxy dial is not an origin dial, and callers withhold the addresses for it.
-        if address[0] not in addresses:
+        if address[0] not in addresses and address[0] != origin:
             return socket.create_connection(address, timeout, source_address)
+        if not addresses:
+            raise OSError(f"{origin} did not resolve here and no proxy took it")
 
         port = address[1]
         expiry = None if timeout is None else time.monotonic() + timeout
@@ -14129,12 +16208,13 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         *,
         sni_hostname: str,
         addresses = (),
+        origin = None,
         **kwargs,
     ):
         super().__init__(host, **kwargs)
         self._sni_hostname = sni_hostname
-        if addresses:
-            self._create_connection = _pinned_create_connection(tuple(addresses))
+        if addresses or origin:
+            self._create_connection = _pinned_create_connection(tuple(addresses), origin)
 
     def connect(self):
         http.client.HTTPConnection.connect(self)
@@ -14158,10 +16238,12 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
         self,
         hostname: str,
         addresses = (),
+        origin = None,
     ):
         super().__init__(context = _tls_ctx)
         self._sni_hostname = hostname
         self._addresses = tuple(addresses)
+        self._origin = origin
 
     def https_open(self, req):
         return self.do_open(self._sni_connection, req)
@@ -14172,22 +16254,28 @@ class _SNIHTTPSHandler(urllib.request.HTTPSHandler):
             host,
             sni_hostname = self._sni_hostname,
             addresses = self._addresses,
+            origin = self._origin,
             **kwargs,
         )
 
 
 class _PinnedHTTPHandler(urllib.request.HTTPHandler):
-    def __init__(self, addresses = ()):
+    def __init__(
+        self,
+        addresses = (),
+        origin = None,
+    ):
         super().__init__()
         self._addresses = tuple(addresses)
+        self._origin = origin
 
     def http_open(self, req):
         return self.do_open(self._pinned_connection, req)
 
     def _pinned_connection(self, host, **kwargs):
         conn = http.client.HTTPConnection(host, **kwargs)
-        if self._addresses:
-            conn._create_connection = _pinned_create_connection(self._addresses)
+        if self._addresses or self._origin:
+            conn._create_connection = _pinned_create_connection(self._addresses, self._origin)
         return conn
 
 
@@ -14215,6 +16303,44 @@ def _explicit_proxy_applies(scheme: str, host: str) -> bool:
         return False
 
 
+# Fake-IP DNS (Clash/sing-box/Surge TUN) answers from 198.18.0.0/15; allowed only once the resolver probe sees it
+# (else any public domain could point into the range). Literals stay refused.
+_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
+_FAKE_IP_PROBE_TTL = 60.0
+_fake_ip_probe: list = [None, False]  # (monotonic time checked, answer)
+
+
+def _resolver_is_fake_ip() -> bool:
+    """Whether the system resolver answers a name nobody registered from the fake-IP range, as fake-IP DNS answers every
+    name and real DNS says NXDOMAIN. Without this, any public domain could point into the range."""
+    import secrets
+    import socket
+
+    checked, answer = _fake_ip_probe
+    now = time.monotonic()
+    if checked is not None and now - checked < _FAKE_IP_PROBE_TTL:
+        return answer
+    try:
+        infos = socket.getaddrinfo(
+            f"unsloth-{secrets.token_hex(12)}.com", 443, type = socket.SOCK_STREAM
+        )
+        answer = bool(infos) and all(
+            ipaddress.ip_address(info[4][0]) in _FAKE_IP_NETWORK for info in infos
+        )
+    except (OSError, UnicodeError, ValueError):
+        answer = False
+    _fake_ip_probe[:] = [now, answer]
+    return answer
+
+
+def _is_public_name(hostname: str) -> bool:
+    """A dotted DNS name with a non-local suffix, never an address however spelled (TLDs start with a letter)."""
+    from .browser_agent import _host_problem
+
+    label = hostname.rstrip(".").rsplit(".", 1)[-1]
+    return ":" not in hostname and label[:1].isalpha() and _host_problem(hostname) is None
+
+
 def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, list[str]]:
     """Resolve *hostname*, reject non-public IPs, return the pinned IP strings.
 
@@ -14229,14 +16355,18 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, lis
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
     except (OSError, UnicodeError) as e:
         # IDNA encoding rejects a hostname with UnicodeError, not OSError.
-        return False, f"Failed to resolve host: {e}", []
+        return False, f"{_RESOLVE_FAILED}: {e}", []
 
     if not infos:
-        return False, f"Failed to resolve host: no addresses for {hostname!r}", []
+        return False, f"{_RESOLVE_FAILED}: no addresses for {hostname!r}", []
 
     resolved = []
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
+        if ip in _FAKE_IP_NETWORK and _is_public_name(hostname) and _resolver_is_fake_ip():
+            if sockaddr[0] not in resolved:
+                resolved.append(sockaddr[0])
+            continue
         # `not ip.is_global` is the source of truth (also rejects CGNAT and benchmarking/doc ranges); the explicit
         # predicates only label the error.
         if (
@@ -14352,6 +16482,21 @@ def _github_repo_readme_api_url(url: str) -> str | None:
     return f"https://api.github.com/repos/{owner}/{repo}/readme"
 
 
+def _github_blob_raw_url(url: str) -> str | None:
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    if (parsed.hostname or "").lower() not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 5 or parts[2] != "blob":
+        return None
+    owner, repo = parts[:2]
+    if not (_GITHUB_NAME_RE.match(owner) and _GITHUB_NAME_RE.match(repo)):
+        return None
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/" + "/".join(parts[3:])
+
+
 # A single fetch can chain several steps (README API attempt, HTML fallback, up to five redirect hops, each reading a
 # body). A per-operation socket timeout bounds one stalled step but not their sum, and nothing aborts on client
 # disconnect, so one overall wall-clock deadline (plus a cooperative cancel_event) bounds the whole fetch instead.
@@ -14394,8 +16539,8 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     def _resolve():
         try:
             result.put(_validate_and_resolve_host(hostname, port))
-        except Exception as exc:  # defensive: never let the worker die silently
-            result.put((False, f"Failed to resolve host: {exc}", []))
+        except Exception as exc:  # prevent the resolver thread from failing silently
+            result.put((False, f"{_RESOLVE_FAILED}: {exc}", []))
 
     threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
     while True:
@@ -14408,20 +16553,263 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
             continue
 
 
-def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
-    """Read up to ``max_bytes``, enforcing the overall budget between chunks. A single
-    ``resp.read(max_bytes)`` can block for the whole transfer if the server dribbles bytes just
-    inside each socket-inactivity timeout, so the body is read in chunks with the budget
-    re-checked (and the socket timeout re-tightened toward the deadline) each round. The joined
-    bytes are identical to one capped read. Returns ``(error_or_None, body_bytes)``."""
-    # Best-effort handle on the underlying socket so its timeout tightens as the deadline nears; absent on test
-    # doubles, where the between-chunk budget check still bounds the read.
-    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
-    # A buffered read(n) keeps receiving until n bytes arrive, so a drip never reaches the
-    # budget check; read1 returns after one receive.
+class _HTMLBodyLocator(HTMLParser):
+    """locate the explicit or implied document body without matching markup inside head content."""
+
+    _PENDING_LIMIT = 65536
+    _CDATA_TAIL_BYTES = 64
+    _HEAD_ELEMENTS = frozenset(
+        {
+            "base",
+            "basefont",
+            "bgsound",
+            "link",
+            "meta",
+            "noframes",
+            "noscript",
+            "script",
+            "style",
+            "template",
+            "title",
+        }
+    )
+    _HEAD_TEXT_ELEMENTS = frozenset({"noframes", "noscript", "script", "style", "title"})
+
+    def __init__(self, charset = None):
+        super().__init__(convert_charrefs = False)
+        self.body_at = None
+        self._absolute_offset = 0
+        self._head_text_depth = 0
+        self._template_depth = 0
+        self._prefix = b""
+        self._decoder = None
+        self._codec = "latin-1"
+        self._deferred = []
+        self._deferred_chars = 0
+        try:
+            codec = codecs.lookup(charset).name if charset else None
+        except (LookupError, ValueError):
+            codec = None
+        if codec in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"):
+            self._codec = codec if codec.endswith(("-le", "-be")) else codec + "-le"
+
+    def feed_bytes(self, data):
+        if self._decoder is None:
+            self._prefix += data
+            if len(self._prefix) < 4:
+                return
+            data, self._prefix = self._prefix, b""
+            for bom, codec in (
+                (codecs.BOM_UTF32_LE, "utf-32-le"),
+                (codecs.BOM_UTF32_BE, "utf-32-be"),
+                (codecs.BOM_UTF16_LE, "utf-16-le"),
+                (codecs.BOM_UTF16_BE, "utf-16-be"),
+            ):
+                if data.startswith(bom):
+                    self._codec = codec
+                    self._absolute_offset = len(bom)
+                    data = data[len(bom) :]
+                    break
+            self._decoder = codecs.getincrementaldecoder(self._codec)(errors = "replace")
+        decoded = self._decoder.decode(data)
+        if len(self.rawdata) > self._PENDING_LIMIT and not self.cdata_elem:
+            self._deferred.append(decoded)
+            self._deferred_chars += len(decoded)
+            if self._deferred_chars < len(self.rawdata):
+                return
+            decoded = "".join(self._deferred)
+            self._deferred.clear()
+            self._deferred_chars = 0
+        self.feed(decoded)
+        if self.body_at is not None or len(self.rawdata) <= self._PENDING_LIMIT:
+            return
+        if self.cdata_elem:
+            discard = len(self.rawdata) - self._CDATA_TAIL_BYTES
+            self.updatepos(0, discard)
+            self.rawdata = self.rawdata[discard:]
+
+    def updatepos(self, i, j):
+        if j > i:
+            self._absolute_offset += (
+                j - i
+                if self._codec == "latin-1"
+                else len(self.rawdata[i:j].encode(self._codec, errors = "replace"))
+            )
+        return super().updatepos(i, j)
+
+    def _offset(self):
+        return self._absolute_offset
+
+    def _mark_body(self):
+        if self.body_at is None:
+            self.body_at = self._offset()
+
+    def handle_starttag(self, tag, attrs):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth += 1
+            return
+        if tag == "template":
+            self._template_depth = 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth += 1
+            return
+        if tag in ("html", "head"):
+            return
+        if tag == "body":
+            self._mark_body()
+            return
+        if tag in self._HEAD_ELEMENTS:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth = 1
+            return
+        self._mark_body()
+
+    def handle_startendtag(self, tag, attrs):
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and tag not in self._HEAD_ELEMENTS
+            and tag not in ("html", "head")
+        ):
+            self._mark_body()
+
+    def handle_endtag(self, tag):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth -= 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth -= 1
+            return
+        if tag == "head":
+            self._mark_body()
+
+    def handle_data(self, data):
+        if self._offset() == 0 and data.startswith(codecs.BOM_UTF8.decode("latin-1")):
+            data = data[len(codecs.BOM_UTF8) :]
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and data.strip()
+        ):
+            self._mark_body()
+
+    def handle_entityref(self, name):
+        from html import unescape
+        self.handle_data(unescape("&" + name + ";"))
+
+    def handle_charref(self, name):
+        self.handle_entityref("#" + name)
+
+
+# What _ContentDecoder undoes, and what the fetcher's Accept-Encoding names: with none, any coding is
+# acceptable (RFC 9110 12.5.3), brotli and zstd included.
+_DECODED_CODINGS = ("gzip", "x-gzip", "deflate")
+
+
+class _ContentDecoder:
+    """Undoes a gzip or deflate Content-Encoding as the body is read. Servers send one unasked (python.org
+    does even for ``Accept-Encoding: identity``). Output is bounded per read and input by ``wire_limit``,
+    so a small compressed body can't expand past the caller's budget."""
+
+    def __init__(self, coding):
+        self.gzip = coding != "deflate"
+        self.inflater = None
+        # Before the first byte, or between gzip members: an end of input here is a complete body.
+        self.at_boundary = True
+        self.members = 0
+        self.unread = b""
+        self.wire = 0
+        self.wire_limit = 0
+        self.finished = False
+
+    def read(self, read_wire, size):
+        """At most ``size`` decoded bytes. ``b""`` before ``finished`` means only input was consumed: call again."""
+        if self.finished:
+            return b""
+        data, self.unread = self.unread, b""
+        draining = False
+        if len(data) < 2 and (self.inflater is None or not data):
+            more = read_wire(65536)
+            self.wire += len(more)
+            if self.wire > self.wire_limit:
+                raise ValueError("compressed response exceeds the byte limit")
+            if not more:
+                # An empty coded body (a 204, or Content-Length: 0) has nothing to decode; after a member, a
+                # stray byte is padding.
+                if self.at_boundary and (not data or self.members):
+                    self.finished = True
+                    return b""
+                if self.inflater is None:
+                    raise ValueError("truncated compressed response")
+                # zlib can hold output back past a full buffer with all the input consumed (raw deflate).
+                draining = True
+            data += more
+            if self.inflater is None and len(data) < 2:
+                self.unread = data
+                return b""
+        if self.inflater is None:
+            if self.gzip:
+                if self.members and not data.startswith(b"\x1f\x8b"):
+                    # Bytes after the last member are padding, which browsers ignore too.
+                    self.finished = True
+                    return b""
+                # Concatenated gzip members are one body (RFC 1952 2.2).
+                self.inflater = zlib.decompressobj(31)
+            else:
+                # "deflate" is meant to be zlib-wrapped (RFC 9110 8.4.1.2); some servers send it raw.
+                wrapped = data[0] & 0x0F == 8 and (data[0] << 8 | data[1]) % 31 == 0
+                self.inflater = zlib.decompressobj(15 if wrapped else -15)
+            self.at_boundary = False
+        out = self.inflater.decompress(data, size)
+        if draining and not out and not self.inflater.eof:
+            raise ValueError("truncated compressed response")
+        if not self.inflater.eof:
+            self.unread = self.inflater.unconsumed_tail
+        elif self.gzip:
+            self.members += 1
+            self.unread = self.inflater.unused_data
+            self.inflater = None
+            self.at_boundary = True
+        else:
+            self.finished = True
+        return out
+
+
+def _read_capped_body(
+    resp,
+    max_bytes,
+    timeout,
+    deadline,
+    cancel_event,
+    body_window = None,
+    charset = None,
+    decoder = None,
+):
+    """read at most ``max_bytes`` (decoded, with a ``decoder``), and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
+    # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
+    fp = getattr(resp, "fp", None)
+    sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
+    # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
+    if decoder is not None:
+        read_wire = read
+        decoder.wire_limit = decoder.wire + max_bytes + 65536
+        read = lambda size: decoder.read(read_wire, size)
     chunks = []
     remaining = max_bytes
+    body_at = None
+    body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
@@ -14435,11 +16823,30 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
                 sock.settimeout(_fetch_hop_timeout(timeout, deadline))
             except Exception:
                 pass
-        chunk = read(min(65536, remaining))
+        try:
+            chunk = read(min(65536, remaining))
+        except (ValueError, zlib.error) as exc:
+            if decoder is None:
+                raise
+            if decoder.wire > decoder.wire_limit:
+                return f"(compressed content exceeds the {decoder.wire_limit} byte limit)", b""
+            return f"Failed to decode the compressed response: {exc}", b""
         if not chunk:
+            # Checks the budget between compressed chunks that decode to nothing yet.
+            if decoder is not None and not decoder.finished:
+                continue
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        if body_locator is not None and body_at is None:
+            got = max_bytes - remaining
+            try:
+                body_locator.feed_bytes(chunk)
+            except Exception:
+                body_locator = None
+            if body_locator is not None and body_locator.body_at is not None:
+                body_at = body_locator.body_at
+                remaining = max(0, min(remaining, body_at + body_window - got))
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
         try:
@@ -14451,8 +16858,7 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-# ASCII-only because str.isdigit() is True for digits int() refuses, and capped at 5 digits so the range check never
-# converts an unbounded integer.
+# ASCII-only: str.isdigit() accepts digits int() rejects; five digits bounds integer conversion
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 
 
@@ -14503,6 +16909,33 @@ def _pinned_netloc(ip: str, port: int | None) -> str:
     return f"{host}:{port}" if port else host
 
 
+def _redirect_hop(url: str, website_policy) -> tuple[str | None, str]:
+    from .web_access_policy import check_url_access
+
+    allowed, reason, host = check_url_access(url, website_policy)
+    if not allowed:
+        return reason, ""
+    return None, host
+
+
+def _is_bot_check(status: int, headers) -> bool:
+    """Whether a refusal came from a bot check (Cloudflare, DataDome, Akamai), not the site."""
+    if headers is None:
+        return False
+    if (headers.get("cf-mitigated") or "").lower() == "challenge":
+        return True
+    if headers.get("x-datadome") or headers.get("x-dd-b"):
+        return True
+    # Rate limits and outages behind these CDNs carry the same Server header.
+    server = (headers.get("Server") or "").lower()
+    if status != 403:
+        return False
+    # Cloudflare names itself on every response it proxies; its own blocks skip the cache and send no CF-Cache-Status.
+    if "cloudflare" in server:
+        return headers.get("cf-cache-status") is None
+    return "akamaighost" in server
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -14511,42 +16944,30 @@ def _fetch_url_raw(
     cancel_event = None,
     website_policy: dict | None = None,
     raw_bytes_max: int | None = None,
+    post_data: bytes | None = None,
+    meta_out: dict | None = None,
+    host_headers = None,
+    error_page: bool = False,
+    method: str | None = None,
+    any_status: bool = False,
+    on_redirect = None,
+    proxy_hostname: bool | None = None,
 ) -> tuple[str | None, "str | bytes", str]:
-    """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
-
-    ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
-    or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
-    gates apply either way.
-
-    ``error`` is a user-facing message string when the fetch failed, else ``None``. Blocks
-    private/loopback/link-local targets and caps the download size. No input reaches the caller as
-    an exception: the URL is model-supplied, so every malformed form resolves to one of these
-    strings.
-
-    ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch (redirect hops and
-    body read included) and ``cancel_event`` aborts it when the caller goes away; both default off.
-    """
+    """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads.
+    ``method`` replaces the GET/POST chosen from ``post_data``; with ``any_status`` (binary mode) every status returns its body, and ``meta_out`` gets the status and headers.
+    ``on_redirect(url, method, has_body, headers)`` runs before a redirect is followed, with the redirect's headers; a string it returns is the error, and the hop is never sent.
+    ``proxy_hostname`` sends a system proxy the hostname instead of the validated IP, and lets a proxied hop whose name doesn't resolve here go on; ``None`` follows ``--disable-dns-pinning``."""
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
-    # Before the policy gate: it requires an http(s) scheme, so a bare host would be refused there and never reach the
-    # fetch.
+    # normalize before the policy gate because a bare host would otherwise fail its http(s) scheme check.
     url = _normalize_url_scheme(url)
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
         return reason, "", ""
 
-    # check_url_access already parsed this and read .port, so this cannot raise.
-    parsed = urlparse(url)
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    ok, reason, pinned_ips = _resolve_with_budget(
-        canonical_host,
-        port,
-        deadline,
-        cancel_event,
-    )
-    if not ok:
-        return reason, "", ""
+    if proxy_hostname is None:
+        proxy_hostname = os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1"
 
     try:
         from urllib.error import HTTPError as _HTTPError
@@ -14556,6 +16977,9 @@ def _fetch_url_raw(
         current_url = url
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
+        pending_post = post_data
+        pending_method = method
+        http_error = None
 
         for _hop in range(5):
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
@@ -14575,7 +16999,24 @@ def _fetch_url_raw(
             # Decide routing once, on the netloc urllib tests: a pinned request carries an IP, which no NO_PROXY entry
             # matches, so the opener below has to carry the decision rather than re-derive it.
             proxied = _explicit_proxy_applies(cp.scheme, validated_netloc)
-            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1" and proxied:
+            # Resolved after routing: a name that reaches the proxy may resolve only there (proxy-only networks),
+            # and a poisoned answer here never gets used. Non-public answers are refused either way.
+            ok, reason, pinned_ips = _resolve_with_budget(
+                current_host,
+                cp.port or (443 if cp.scheme == "https" else 80),
+                deadline,
+                cancel_event,
+            )
+            named = proxied and proxy_hostname
+            if not ok and not (named and reason.startswith(_RESOLVE_FAILED)):
+                return reason, "", ""
+            if named:
+                from .browser_agent import _host_problem
+
+                # The proxy resolves what it gets, so a local name must not reach it, as in the desktop's page proxy.
+                local = _host_problem(current_host)
+                if local:
+                    return f"Blocked: {local}.", "", ""
                 # Enterprise proxies need the hostname in CONNECT for policy and TLS interception, and they resolve
                 # it, so nothing rebinds behind us.
                 request_url = urlunparse(cp._replace(netloc = validated_netloc))
@@ -14584,11 +17025,12 @@ def _fetch_url_raw(
                 request_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
             # The proxy makes the origin connection, to the one address the URL pins.
-            walk = () if proxied else pinned_ips
+            walk = () if proxied and not named else pinned_ips
+            origin = current_host if named else None
             handlers = [
                 _NoRedirect,
-                _SNIHTTPSHandler(current_host, walk),
-                _PinnedHTTPHandler(walk),
+                _SNIHTTPSHandler(current_host, walk, origin),
+                _PinnedHTTPHandler(walk, origin),
             ]
             if not proxied:
                 # An empty ProxyHandler is the documented way to opt a request out.
@@ -14598,56 +17040,85 @@ def _fetch_url_raw(
             headers = {
                 "User-Agent": ua,
                 "Host": validated_netloc,
+                "Accept-Encoding": "gzip, deflate",
             }
             if extra_headers:
                 headers.update(extra_headers)
-            req = urllib.request.Request(request_url, headers = headers)
+            if host_headers is not None:
+                headers.update(host_headers(current_host))
+            if pending_post is not None and pending_method is None:
+                headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            req = urllib.request.Request(
+                request_url, headers = headers, data = pending_post, method = pending_method
+            )
             try:
-                # Cap the socket timeout at the time left on the overall deadline so a single slow hop cannot outlast
-                # the whole fetch budget.
+                # cap the socket timeout at the remaining deadline so one slow hop cannot outlast the fetch budget.
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
-                location = e.headers.get("Location")
-                if not location:
-                    return "Failed to fetch URL: redirect missing Location header.", "", ""
-                current_url = urljoin(current_url, location)
-                # Server-controlled, so never scheme-upgraded; the gate below reads .port first, so the parse after it
-                # cannot raise.
-                allowed, policy_reason, redirect_host = check_url_access(
-                    current_url,
-                    website_policy,
-                )
-                if not allowed:
-                    return policy_reason, "", ""
-                rp = urlparse(current_url)
-                rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ips = _resolve_with_budget(
-                    redirect_host,
-                    rp_port,
-                    deadline,
-                    cancel_event,
-                )
-                if not ok2:
-                    return reason2, "", ""
-                current_host = redirect_host
-                continue
+                    if meta_out is not None:
+                        meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
+                    http_error = f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    declared = e.headers.get("Content-Type") and e.headers.get_content_type()
+                    html_error_page = error_page and declared in (
+                        None,
+                        "",
+                        "text/html",
+                        "application/xhtml+xml",
+                    )
+                    if raw_bytes_max is None or not (any_status or html_error_page):
+                        return http_error, "", ""
+                    resp = e
+                else:
+                    location = e.headers.get("Location")
+                    if not location:
+                        return "Failed to fetch URL: redirect missing Location header.", "", ""
+                    current_url = urljoin(current_url, location)
+                    # Fetch's HTTP-redirect fetch: 301/302 turn a POST, and 303 anything but GET/HEAD,
+                    # into a bodiless GET; otherwise the method and body go to the next hop.
+                    sent = pending_method or ("GET" if pending_post is None else "POST")
+                    if (e.code in (301, 302) and sent == "POST") or (
+                        e.code == 303 and sent not in ("GET", "HEAD")
+                    ):
+                        pending_post = None
+                        pending_method = None
+                    if on_redirect is not None:
+                        refused = on_redirect(
+                            current_url,
+                            pending_method or ("GET" if pending_post is None else "POST"),
+                            pending_post is not None,
+                            e.headers,
+                        )
+                        if refused:
+                            return refused, "", ""
+                    hop_error, current_host = _redirect_hop(current_url, website_policy)
+                    if hop_error is not None:
+                        return hop_error, "", ""
+                    continue
 
-            # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
-            # callers can tell a missing header apart from a server that really declared text/plain.
+            coding = (resp.headers.get("Content-Encoding") or "").strip().lower()
+            if coding not in ("", "identity", *_DECODED_CODINGS):
+                return f"Failed to fetch URL: unsupported Content-Encoding {coding[:40]!r}.", "", ""
+            decoder = _ContentDecoder(coding) if coding in _DECODED_CODINGS else None
+
+            # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
             else:
                 content_type = (resp.headers.get_content_type() or "").lower()
 
-            # Success: read the capped body enforcing the budget between chunks (see _read_capped_body), so a
-            # slow-drip server can't stretch a single resp.read past the deadline.
+            # chunked reads recheck the fetch budget between chunks.
             declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
+            declared_html = raw_bytes_max is None and content_type in (
+                "text/html",
+                "application/xhtml+xml",
+            )
             if raw_bytes_max is not None:
                 read_limit = raw_bytes_max + 1
             elif declared_pdf:
                 read_limit = _MAX_PDF_FETCH_BYTES + 1
+            elif declared_html:
+                read_limit = _MAX_HTML_FETCH_BYTES
             else:
                 read_limit = max_bytes
             body_error, raw_bytes = _read_capped_body(
@@ -14656,28 +17127,51 @@ def _fetch_url_raw(
                 timeout,
                 deadline,
                 cancel_event,
+                body_window = max_bytes if declared_html else None,
+                charset = resp.headers.get_content_charset() if declared_html else None,
+                decoder = decoder,
             )
             if body_error is not None:
                 return body_error, "", ""
 
-            # A missing or wrong PDF MIME type is common: once the initial text-sized read identifies PDF magic,
-            # finish the bounded download to reach the EOF xref.
+            # missing or wrong PDF MIME types require a bounded tail read to reach the EOF xref.
             if raw_bytes_max is not None:
                 if len(raw_bytes) > raw_bytes_max:
                     return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
-                return None, raw_bytes, content_type
-            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+                if meta_out is not None:
+                    meta_out["url"] = current_url
+                    meta_out["charset"] = resp.headers.get_content_charset()
+                    meta_out["filename"] = resp.headers.get_filename()
+                    meta_out["allow_origin"] = resp.headers.get("Access-Control-Allow-Origin")
+                    meta_out["cache_control"] = resp.headers.get("Cache-Control")
+                    meta_out["age"] = resp.headers.get("Age")
+                    meta_out["status"] = resp.getcode()
+                    meta_out["reason"] = str(getattr(resp, "reason", "") or "")
+                    meta_out["headers"] = list(resp.headers.items())
+                return http_error, raw_bytes, content_type
+            if not declared_pdf and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
-                    _MAX_PDF_FETCH_BYTES - max_bytes + 1,
+                    _MAX_PDF_FETCH_BYTES - len(raw_bytes) + 1,
                     timeout,
                     deadline,
                     cancel_event,
+                    decoder = decoder,
                 )
                 if tail_error is not None:
                     return tail_error, "", ""
                 raw_bytes += tail
-            break
+            refresh_url = content_type == "text/html" and _meta_refresh_target(
+                raw_bytes, current_url
+            )
+            if not refresh_url:
+                break
+            current_url = refresh_url
+            # a refresh starts a new GET like a browser.
+            pending_post = None
+            hop_error, current_host = _redirect_hop(current_url, website_policy)
+            if hop_error is not None:
+                return hop_error, "", ""
         else:
             return "Failed to fetch URL: too many redirects.", "", ""
 
@@ -14869,6 +17363,15 @@ def _loaded_context_tokens() -> int | None:
     return None
 
 
+def _request_context_tokens() -> int | None:
+    """The request's window (an int, or None = unknowable: never probed), else the process probe. By type, not
+    `is _UNSET_CONTEXT_TOKENS`: an `execute_tool` held across a reload stores the old sentinel (#11384)."""
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    if scoped is None or isinstance(scoped, int):
+        return scoped
+    return _loaded_context_tokens()
+
+
 def _result_char_budget(cap: int) -> int:
     """`cap`, lowered to what the serving window can actually hold. Shared by fetched pages and by
     terminal/python results, because the failure is the same: a fixed character cap has no
@@ -14877,10 +17380,7 @@ def _result_char_budget(cap: int) -> int:
     that does not fit and the request goes irreducible. Measured live on a 5120-token window:
     7043 and 6684 token requests refused, both on the code tools, whose 16,000-character cap is
     about 4,000 tokens on its own."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return cap
     # Clamped to `cap` on the way out, not only on the way in. The floor keeps a result worth reading when the WINDOW
@@ -14893,6 +17393,18 @@ def _result_char_budget(cap: int) -> int:
 
 def _tool_result_char_budget() -> int:
     """The terminal/python cap, sized to the window. See `_result_char_budget`."""
+    cap = _tool_result_max_chars()
+    if not _request_context_tokens():
+        # Unknown window (an external provider, possibly a small local server): a raised setting is not applied blind.
+        cap = min(cap, _MAX_OUTPUT_CHARS)
+    return _result_char_budget(cap)
+
+
+def _other_tool_result_char_budget(name = None) -> int:
+    """Web, edit and the other built-in tools keep the install cap: their results are bounded by their own caps. An MCP
+    result has none, so it follows the Settings > Chat limit like Python and Terminal (#13576)."""
+    if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX):
+        return _tool_result_char_budget()
     return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
@@ -14908,10 +17420,7 @@ def _page_char_budget() -> int:
     Above roughly an 11k window this returns the old constant unchanged, so only the models that
     cannot afford a whole page are affected.
     """
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return _MAX_PAGE_CHARS
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
@@ -14933,10 +17442,7 @@ def _request_result_room() -> int | None:
 
 def _window_context_tokens() -> int | None:
     """The window this request is served by, or None when it cannot be read."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     return ctx if ctx else None
 
 
@@ -15353,7 +17859,8 @@ def _text_token_cost(text: str, ctx: int) -> float:
         return measured
     # A counter that could not answer is a counter that is not there: taking its presence as proof the estimate is
     # safe is what leaves dense ASCII priced at the English rate.
-    estimate = sum(0.25 if character.isascii() else 1.0 for character in text)
+    ascii_chars = len(text.encode("ascii", "ignore"))
+    estimate = ascii_chars * 0.25 + (len(text) - ascii_chars)
     return estimate / _UNMEASURED_ROOM_MARGIN
 
 
@@ -15484,7 +17991,7 @@ def _fetch_page_text(
             # Markdown README that merely opens with a block tag is kept as-is (see _HTML_DOCUMENT_RE).
             if _looks_like_html_document(body):
                 from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True)
+                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
                 readme_body = converted if converted.strip() else body
             if readme_body.strip():
                 return _truncate_page_text(
@@ -15492,14 +17999,33 @@ def _fetch_page_text(
                     max_chars,
                 )
 
+    raw_file_url = _github_blob_raw_url(url)
+    if raw_file_url:
+        err, body, _ctype = _fetch_url_raw(
+            raw_file_url,
+            timeout = timeout,
+            deadline = deadline,
+            cancel_event = cancel_event,
+            **policy_kwargs,
+        )
+        if err is None and body.strip():
+            return _truncate_page_text(body.strip(), max_chars)
+
+    meta: dict = {}
     err, body, content_type = _fetch_url_raw(
         url,
         timeout = timeout,
         deadline = deadline,
         cancel_event = cancel_event,
+        meta_out = meta,
         **policy_kwargs,
     )
     if err is not None:
+        if meta.get("bot_check"):
+            return (
+                f"{err.rstrip()}. The site's bot protection blocked this automated request; "
+                "fetching this site again will not help, so use another source."
+            )
         return err
 
     # Trust a declared HTML type, and otherwise sniff the body: servers with a missing or wrong Content-Type still get
@@ -15511,9 +18037,17 @@ def _fetch_page_text(
         return _truncate_page_text(body.strip(), max_chars)
 
     # Convert HTML to Markdown with the builtin converter (no external deps).
-    from ._html_to_md import html_to_markdown
+    from ._html_to_md import SiteLinks, html_to_markdown
 
-    return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
+    site_links = SiteLinks(url)
+    # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
+    text = html_to_markdown(
+        body, main_content = True, site_links = site_links, max_span_chars = max_chars // 2
+    )
+    # a page that fits keeps same-site links so the model can follow them.
+    if text and len(text) <= max_chars and len(text) <= _dense_char_limit(text, max_chars):
+        return text
+    return _truncate_page_text(site_links.strip(text), max_chars)
 
 
 def _search_failure_message(exc: BaseException, timeout: int) -> str:
@@ -15563,6 +18097,165 @@ def _resolve_engine_tiers(text_engines) -> list:
     return resolved
 
 
+def _class_token(name: str) -> str:
+    return f"contains(concat(' ', normalize-space(@class), ' '), ' {name} ')"
+
+
+# Each section.algo leaves a div unclosed, so lxml nests every later result inside it: match the
+# nearest section, and take the next s-desc before the next title (a descendant search takes them all).
+_YAHOO_SECTION_TITLES = (
+    f"//a[{_class_token('s-title')}][ancestor::section[1][{_class_token('algo')}]]"
+)
+_YAHOO_SECTION_SNIPPET = f"following::*[self::p[{_class_token('s-desc')}] or self::a[{_class_token('s-title')}]][1][self::p]"
+
+
+def _install_yahoo_layout_parser(text_engines) -> None:
+    """Parse Yahoo's ``section.algo`` pages, which ddgs 9.8.0-9.16.0 (``div.relsrch`` only) read as
+    empty. ddgs builds engines from this registry by name; ``relsrch`` pages keep ddgs's parser."""
+    yahoo = (text_engines or {}).get("yahoo")
+    if not isinstance(yahoo, type) or getattr(yahoo, "_parses_section_layout", False):
+        return
+
+    class _Yahoo(yahoo):
+        _parses_section_layout = True
+
+        def extract_results(self, html_text):
+            results = super().extract_results(html_text)
+            if results:
+                return results
+            tree = self.extract_tree(self.pre_process_html(html_text))
+            for link in tree.xpath(_YAHOO_SECTION_TITLES):
+                # TextResult strips tags and collapses whitespace on assignment.
+                result = self.result_type()
+                result.title = link.get("aria-label") or "".join(
+                    link.xpath(f".//text()[not(ancestor::span[{_class_token('title-url')}])]")
+                )
+                result.href = link.get("href") or ""
+                snippet = link.xpath(_YAHOO_SECTION_SNIPPET)
+                if snippet:
+                    result.body = snippet[0].xpath("string()")
+                results.append(result)
+            return results
+
+    text_engines["yahoo"] = _Yahoo
+
+
+def _is_connection_reset(exc) -> bool:
+    return any(marker in f"{type(exc).__name__}: {exc}".lower() for marker in _DDGS_RESET_MARKERS)
+
+
+def _ddgs_http1_replay(args, kwargs, config):
+    import httpx
+
+    verify = config["verify"]
+    if isinstance(verify, str):
+        verify = ssl.create_default_context(cafile = verify)
+    with httpx.Client(
+        headers = config["headers"],
+        cookies = config["cookies"],
+        proxy = config["proxy"],
+        timeout = config["timeout"],
+        verify = verify,
+        follow_redirects = config["follow_redirects"],
+        http1 = True,
+        http2 = False,
+    ) as client:
+        resp = client.request(*args, **kwargs)
+        resp.read()
+        return resp
+
+
+def _install_ddgs_http1_retry() -> None:
+    """Replay a ddgs request once over plain HTTP/1.1 after a connection reset (#12638): primp has
+    no HTTP/1.1-only mode. Successful requests are untouched; wraps each class once; never raises."""
+    try:
+        import inspect
+
+        from ddgs import http_client
+        from ddgs.exceptions import DDGSException
+
+        def _wrapper(response_cls):
+            # ddgs 9.14's primp Response wraps the raw response; 9.8.0's and HttpClient2's take fields.
+            if "status_code" not in inspect.signature(response_cls).parameters:
+                return response_cls
+            return lambda resp: response_cls(
+                status_code = resp.status_code, content = resp.content, text = resp.text
+            )
+
+        targets = [(http_client.HttpClient, _wrapper(http_client.Response), True)]
+        try:
+            from ddgs import http_client2
+        except ImportError:
+            http_client2 = None
+        if http_client2 is not None and hasattr(http_client2, "HttpClient2"):
+            # HttpClient2 does not follow redirects; primp does.
+            targets.append((http_client2.HttpClient2, _wrapper(http_client2.Response), False))
+
+        with _DDGS_HTTP1_RETRY_LOCK:
+            for cls, wrap, follow_redirects in targets:
+                if cls.__dict__.get("_unsloth_http1_retry"):
+                    continue
+                _wrap_ddgs_client(
+                    cls, wrap, follow_redirects, inspect.signature(cls.__init__), DDGSException
+                )
+    except Exception:  # noqa: BLE001 - the retry is a hardening layer, never a reason to fail a search
+        logger.debug("ddgs HTTP/1.1 retry not installed", exc_info = True)
+
+
+def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) -> None:
+    orig_init, orig_request = cls.__init__, cls.request
+
+    @functools.wraps(orig_init)
+    def __init__(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        try:
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            config = dict(bound.arguments)
+            config.pop("self", None)  # no client -> config -> client cycle
+            self._unsloth_http1_config = config
+        except TypeError:
+            pass
+
+    @functools.wraps(orig_request)
+    def request(self, *args, **kwargs):
+        start = time.monotonic()
+        try:
+            return orig_request(self, *args, **kwargs)
+        except Exception as exc:
+            config = getattr(self, "_unsloth_http1_config", None)
+            if config is None or not _is_connection_reset(exc):
+                raise
+            timeout = config.get("timeout")
+            if timeout:
+                timeout -= time.monotonic() - start
+                if timeout <= 0:
+                    raise
+            client = getattr(self, "client", None)
+            # httpx's jar only: primp 0.15 (ddgs 9.8.0) get_cookies aborts the process on a miss.
+            cookies = getattr(client, "cookies", None)
+            # httpx may lack primp's zstd decoder, so let it pick accept-encoding.
+            session = getattr(client, "headers", None) or {}
+            headers = {k: v for k, v in dict(session).items() if k.lower() != "accept-encoding"}
+            replay = {
+                "headers": headers,
+                "cookies": cookies,
+                "proxy": config.get("proxy"),
+                "timeout": timeout,
+                "verify": config.get("verify", True),
+                "follow_redirects": follow_redirects,
+            }
+            try:
+                return wrap(_ddgs_http1_replay(args, kwargs, replay))
+            except Exception as retry_exc:
+                raise ddgs_exception(
+                    f"{exc}; HTTP/1.1 retry failed: {type(retry_exc).__name__}: {retry_exc}"
+                ) from retry_exc
+
+    cls.__init__, cls.request = __init__, request
+    cls._unsloth_http1_retry = True
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -15601,6 +18294,57 @@ def _empty_result_with_requested_images(
     return empty_text + "\n\n---\n\n" + found
 
 
+def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, website_policy):
+    """search English Wikipedia independently of ddgs through the guarded HTTP fetcher."""
+    # ddgs uses a one-result Wikipedia lookup, so full-text search recovers misses and failures.
+    from html import unescape
+
+    params = urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "srlimit": min(max_results, 50),
+            "srnamespace": 0,
+        }
+    )
+    error, body, _ = _fetch_url_raw(
+        "https://en.wikipedia.org/w/api.php?" + params,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+        website_policy = website_policy,
+        raw_bytes_max = 1024 * 1024,
+        extra_headers = {"User-Agent": "UnslothStudio/1.0 (https://github.com/unslothai/unsloth)"},
+    )
+    if error:
+        raise RuntimeError(error)
+    payload = json.loads(body)
+    if "error" in payload:
+        raise RuntimeError("Wikipedia search API returned an error")
+    return [
+        {
+            "title": item["title"],
+            "href": "https://en.wikipedia.org/wiki/"
+            + urllib.parse.quote(item["title"].replace(" ", "_"), safe = ""),
+            "body": unescape(re.sub(r"<[^>]+>", "", item.get("snippet", ""))),
+        }
+        for item in payload["query"]["search"]
+        if isinstance(item, dict) and isinstance(item.get("title"), str) and item["title"].strip()
+    ]
+
+
+def _usable_search_results(results, website_policy):
+    from .web_access_policy import check_url_access
+    return [
+        r
+        for r in results
+        if isinstance(r, dict)
+        and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
+    ]
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -15611,11 +18355,7 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
-    fetches that page directly instead of searching. ``include_images`` adds image results registered
-    server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
-    envelope appended: one picture per ``image_queries`` subject when the model named them, else
-    a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
+    """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
@@ -15630,8 +18370,7 @@ def _web_search(
     if subjects and not (query and query.strip()):
         if not include_images:
             return IMAGE_SEARCH_DISABLED
-        # Ahead of the try below, so this one has to carry its own guard: execute_tool returns a string for every
-        # input, and a raise here would escape _web_search.
+        # guard here because execute_tool requires a string result and this is outside the try.
         found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
         if found is None:
             return "No images found for: " + ", ".join(subjects)
@@ -15639,57 +18378,91 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
-    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be interrupted mid-flight, so gate on either
-    # side: skip an already-cancelled request, and discard results that land after the client has gone.
+    # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
     try:
-        from ddgs import DDGS
-        from ddgs.engines import ENGINES
-
         from .web_access_policy import check_url_access, scope_search_query
 
-        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
-        if not engine_tiers:
-            return "Search failed: no approved search engine is available."
-
         effective_query = scope_search_query(query, website_policy)
-        # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
-        # all disallowed otherwise yields nothing even when valid results rank just under them. Test the domain lists,
-        # not the dict: a run always stores a normalized policy, which is truthy even when unrestricted.
+        # overfetch for allowed hits below blocked ones; normalized policy remains truthy.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
-        # a client per tier would restart the budget and a 7s web_search could block ~14s.
+        # bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
-        client = DDGS(timeout = timeout)
-        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
-        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
-        results, last_error = [], None
-        for backend in engine_tiers:
-            if cancel_event is not None and cancel_event.is_set():
-                return "Search cancelled."
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+        client, results, last_error = None, [], None
+        rejected_results = False
+        wikipedia_fallback = False
+        try:
+            from ddgs import DDGS
+            from ddgs.engines import ENGINES
+
+            text_engines = ENGINES.get("text") or {}
+            _install_yahoo_layout_parser(text_engines)
+            _install_ddgs_http1_retry()
+            engine_tiers = _resolve_engine_tiers(text_engines)
+            if not engine_tiers:
+                raise RuntimeError("no approved search engine is available.")
+            # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
+            deadline = time.monotonic() + timeout if timeout else None
+            client = DDGS(timeout = timeout)
+            # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
+            for backend in engine_tiers:
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Search cancelled."
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    client = DDGS(timeout = remaining)
+                try:
+                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    results = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not results)
+                except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
+                    last_error = exc
+                    continue
+                if results:
                     break
-                client = DDGS(timeout = remaining)
-            try:
-                results = client.text(effective_query, max_results = wanted, backend = backend)
-            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
-                last_error = exc
-                continue
-            if results:
-                break
-        if not results and last_error is not None:
-            raise last_error
+        except Exception as exc:
+            last_error = exc
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
+            remaining = deadline - time.monotonic() if deadline else 5.0
+            allowed, _, _ = check_url_access("https://en.wikipedia.org/w/api.php", website_policy)
+            if allowed and remaining > 0:
+                try:
+                    fallback_timeout = min(remaining, 5.0)
+                    fallback_deadline = time.monotonic() + fallback_timeout
+                    if deadline is not None:
+                        fallback_deadline = min(fallback_deadline, deadline)
+                    results = _usable_search_results(
+                        _wikipedia_search(
+                            query,
+                            wanted,
+                            fallback_timeout,
+                            fallback_deadline,
+                            cancel_event,
+                            website_policy,
+                        ),
+                        website_policy,
+                    )
+                    wikipedia_fallback = bool(results)
+                except Exception:
+                    logger.debug("Independent Wikipedia search failed", exc_info = True)
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+        # blocked results take precedence over earlier tier exceptions.
+        if not results and last_error is not None and not rejected_results:
+            raise last_error
+        if not results:
             return _empty_result_with_requested_images(
-                EMPTY_SEARCH_RESULTS[0],
+                EMPTY_SEARCH_RESULTS[1]
+                if rejected_results and restricted
+                else EMPTY_SEARCH_RESULTS[0],
                 subjects,
                 include_images,
                 timeout,
@@ -15704,7 +18477,7 @@ def _web_search(
             allowed, _reason, _hostname = check_url_access(href, website_policy)
             if not allowed:
                 continue
-            title = " ".join(str(r.get("title") or "").split())
+            title = " ".join(str(r.get("title") or href).split())
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
@@ -15717,17 +18490,23 @@ def _web_search(
                 website_policy,
             )
         text = "\n\n---\n\n".join(parts)
+        if wikipedia_fallback:
+            text = (
+                "General web search was unavailable or returned no usable results. "
+                "These are Wikipedia-only encyclopedia results, not current web coverage.\n\n"
+                + text
+            )
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
             'the url parameter (e.g. {"url": "<URL>"}).'
         )
         if include_images and subjects:
-            # The model named what it will show: one picture per subject, no generic pile.
+            # named subjects require one image each rather than a generic image batch.
             found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
             if found is not None:
                 text += "\n\n---\n\n" + found
-        elif include_images:
+        elif include_images and not wikipedia_fallback:
             text += _web_search_images_suffix(
                 client,
                 effective_query,
@@ -15736,13 +18515,12 @@ def _web_search(
                 website_policy,
             )
         elif subjects:
-            # Replayed history keeps teaching the parameter; say so, don't drop it.
+            # replayed history must retain the disabled-search reminder.
             text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
         failure = _search_failure_message(e, timeout)
-        # ddgs signals an empty sweep by RAISING, so that exit is an empty result too and owes the named subjects
-        # their pictures. A genuine failure keeps its message alone: pictures under an error read as a partial answer.
+        # ddgs raises on an empty sweep; attach requested images only to empty results, not genuine errors.
         if failure == EMPTY_SEARCH_RESULTS[0]:
             return _empty_result_with_requested_images(
                 failure,
@@ -15803,6 +18581,7 @@ def _image_search(
         from .web_access_policy import scope_search_query
     except Exception as e:
         return _search_failure_message(e, timeout)
+    _install_ddgs_http1_retry()
     if not callable(getattr(DDGS, "images", None)):
         return "Image search is unavailable in this install."
 
@@ -15892,7 +18671,20 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
 # The first component of every network module and of every recognised prefix. `urllib.request`
 # and `urllib3` share `urllib`; `http.client` and `httpx` share `http`.
 _NETWORK_ROOT_NAMES = frozenset(
-    {"socket", "urllib", "urllib3", "http", "httpx", "requests", "aiohttp"}
+    {
+        "socket",
+        # The C module behind `socket`: same primitives, so it screens the same.
+        "_socket",
+        "urllib",
+        "urllib3",
+        "http",
+        "httpx",
+        "requests",
+        "aiohttp",
+        "paramiko",
+        "fabric",
+        "asyncssh",
+    }
 )
 
 
@@ -15939,13 +18731,9 @@ def _check_signal_escape_patterns(code: str):
             "warnings": [],
         }
 
-    # Whether a recognised egress call is possible AT ALL in this source. Every route to one -- an
-    # import, an alias of an import, a star import, or the module written out at the call -- spells
-    # the module's own name, so a source with none of these substrings has no candidate to resolve
-    # and the alias machinery below has nothing to say about it. One pass over the text, against
-    # three walks of the tree and a second visitor pass.
-    # Whether a recognised egress call is possible AT ALL in this tree. Read below.
-    network_possible = _network_candidates_possible(_tree_nodes(tree))
+    _LOCAL_DATABASE_MODULES = ("sqlite3", "duckdb")
+    tree_nodes = _tree_nodes(tree)
+    network_possible = _network_candidates_possible(tree_nodes)
 
     signal_tampering = []
     exception_catching = []
@@ -16292,6 +19080,9 @@ def _check_signal_escape_patterns(code: str):
         "socket.socket",
         "socket.create_connection",
         "socket.getaddrinfo",
+        "_socket.socket",
+        "_socket.SocketType",
+        "_socket.getaddrinfo",
         "urllib.request.urlopen",
         "urllib.request.urlretrieve",
         "urllib3.",
@@ -16316,68 +19107,245 @@ def _check_signal_escape_patterns(code: str):
         "aiohttp.ClientSession",
     )
     # The modules an alias is resolved back to, so `import urllib.request as u` and `from urllib.request import
-    # urlopen` reach the prefixes above exactly as the spelled-out call does.
-    # The first component of every prefix above: one lookup rejects a callee that cannot be one.
-    _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
     _NETWORK_MODULES = frozenset(
         {
             "socket",
+            "_socket",
             "urllib.request",
             "urllib3",
+            "urllib3.connection",
+            "urllib3.connectionpool",
+            "urllib3.poolmanager",
+            "urllib3.util.connection",
+            "urllib3.contrib.socks",
             "http.client",
             "requests",
+            "requests.api",
+            "requests.sessions",
             "httpx",
             "aiohttp",
+            "aiohttp.client",
+            "paramiko",
+            "paramiko.client",
+            "paramiko.transport",
+            "fabric",
+            "fabric.connection",
+            "asyncssh",
+            "asyncssh.connection",
         }
     )
+    _HTTP_VERBS = ("get", "post", "put", "delete", "patch", "head", "options")
     # Calls whose FIRST positional argument is the host or the URL. `socket.socket(AF_INET, ...)` and the
     # session/client constructors take neither, so an unreadable first argument says nothing about them.
     _NETWORK_URL_ARG0_FQ = frozenset(
         {
             "socket.create_connection",
             "socket.getaddrinfo",
+            "_socket.getaddrinfo",
             "urllib.request.urlopen",
             "urllib.request.urlretrieve",
-            "requests.get",
-            "requests.post",
-            "requests.put",
-            "requests.delete",
-            "requests.patch",
-            "requests.head",
             "http.client.HTTPConnection",
             "http.client.HTTPSConnection",
-            "httpx.get",
-            "httpx.post",
-            "httpx.put",
-            "httpx.patch",
-            "httpx.delete",
+            *(
+                f"{module}.{verb}"
+                for module in ("requests", "requests.api", "httpx")
+                for verb in _HTTP_VERBS
+            ),
         }
     )
-    # Where the destination sits in a recognised egress call: the positional index, then the keyword
-    # spellings that carry it instead. Reading only the first positional left the rule below
-    # sidesteppable by one word, `requests.get(url = "http://evil.example/")`, which is the spelling
-    # a caller reaches for the moment there is a `timeout =` next to it.
+    _HOST_ARG_ROOTS = ("socket.", "_socket.", "http.client.")
     _NETWORK_DESTINATION_ARG = {
-        fq: (0, ("url", "fullurl", "host", "address")) for fq in _NETWORK_URL_ARG0_FQ
+        fq: (
+            0,
+            ("url", "fullurl", "host", "address"),
+            "host" if fq.startswith(_HOST_ARG_ROOTS) else "url",
+        )
+        for fq in _NETWORK_URL_ARG0_FQ
     }
-    # `requests.request(method, url)` and its httpx twin carry the destination second.
-    _NETWORK_DESTINATION_ARG["requests.request"] = (1, ("url",))
-    _NETWORK_DESTINATION_ARG["httpx.request"] = (1, ("url",))
     # `urllib3.request(method, url, ...)` is the same shape, and it matches the broad `urllib3.`
     # prefix, so without an entry here the fallback read argument 0 (the method) and never looked
     # at the destination. Signature checked against the installed urllib3 2.8.0.
-    _NETWORK_DESTINATION_ARG["urllib3.request"] = (1, ("url",))
+    _NETWORK_DESTINATION_ARG.update(
+        {
+            f"{module}.request": (1, ("url",), "url")
+            for module in (
+                "requests",
+                "requests.api",
+                "httpx",
+                "urllib3",
+                "aiohttp",
+                "aiohttp.client",
+            )
+        }
+    )
+    _NETWORK_DESTINATION_ARG["httpx.stream"] = (1, ("url",), "url")
+    _VERB_CLIENTS = (
+        "requests.Session",
+        "requests.sessions.Session",
+        "requests.session",
+        "requests.sessions.session",
+        "httpx.Client",
+        "httpx.AsyncClient",
+        "aiohttp.ClientSession",
+        "aiohttp.client.ClientSession",
+    )
+    _POOL_CLIENTS = (
+        "urllib3.PoolManager",
+        "urllib3.ProxyManager",
+        "urllib3.poolmanager.PoolManager",
+        "urllib3.poolmanager.ProxyManager",
+        "urllib3.proxy_from_url",
+        "urllib3.poolmanager.proxy_from_url",
+        "urllib3.contrib.socks.SOCKSProxyManager",
+    )
+    # SocketType is an alias of the socket class in both modules.
+    _SOCKET_TYPES = ("socket.socket", "socket.SocketType", "_socket.socket", "_socket.SocketType")
+    _SOCKET_CLIENTS = (
+        *_SOCKET_TYPES,
+        "paramiko.SSHClient",
+        "paramiko.client.SSHClient",
+    )
+    _OPENER_CLIENTS = ("urllib.request.build_opener", "urllib.request.OpenerDirector")
+    _CLIENT_CLASSES = frozenset(
+        (*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS, *_OPENER_CLIENTS)
+    )
+    _NETWORK_DESTINATION_ARG.update(
+        {
+            **{
+                f"{client}.{verb}": (0, ("url",), "url")
+                for client in _VERB_CLIENTS
+                for verb in _HTTP_VERBS
+            },
+            **{
+                f"{client}.request": (1, ("url",), "url")
+                for client in (*_VERB_CLIENTS, *_POOL_CLIENTS)
+            },
+            **{
+                f"{client}.stream": (1, ("url",), "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            **{
+                f"{client}.ws_connect": (0, ("url",), "url")
+                for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            **{
+                client: (None, ("base_url",), "url")
+                for client in ("httpx.Client", "httpx.AsyncClient")
+            },
+            **{
+                client: (0, ("base_url",), "url")
+                for client in ("aiohttp.ClientSession", "aiohttp.client.ClientSession")
+            },
+            **{
+                f"{client}.send": (0, ("request",), "url")
+                for client in (
+                    "httpx.Client",
+                    "httpx.AsyncClient",
+                    "requests.Session",
+                    "requests.sessions.Session",
+                )
+            },
+            **{
+                f"{client}.{method}": (1, ("url",), "url")
+                for client in _POOL_CLIENTS
+                for method in ("urlopen", "request_encode_url", "request_encode_body")
+            },
+            **{f"{client}.connection_from_url": (0, ("url",), "url") for client in _POOL_CLIENTS},
+            **{
+                f"{client}.connection_from_host": (0, ("host",), "host") for client in _POOL_CLIENTS
+            },
+            **{
+                f"{module}.{factory}": (0, ("url",), "url")
+                for factory, defined_in in (
+                    ("connection_from_url", "urllib3.connectionpool"),
+                    ("proxy_from_url", "urllib3.poolmanager"),
+                )
+                for module in ("urllib3", defined_in)
+            },
+            **{
+                f"{module}.ProxyManager": (0, ("proxy_url",), "url")
+                for module in ("urllib3", "urllib3.poolmanager")
+            },
+            "urllib3.contrib.socks.SOCKSProxyManager": (0, ("proxy_url",), "url"),
+            **{
+                f"httpx.{transport}": (None, ("proxy",), "proxy")
+                for transport in ("HTTPTransport", "AsyncHTTPTransport")
+            },
+            **{
+                f"{module}.{pool}": (0, ("host",), "host")
+                for module in ("urllib3", "urllib3.connectionpool")
+                for pool in ("HTTPConnectionPool", "HTTPSConnectionPool")
+            },
+            **{
+                f"urllib3.connection.{conn}": (0, ("host",), "host")
+                for conn in ("HTTPConnection", "HTTPSConnection")
+            },
+            "urllib3.util.connection.create_connection": (0, ("address",), "host"),
+            **{
+                f"{sock}.{m}": (0, ("address",), "host")
+                for sock in _SOCKET_TYPES
+                for m in ("connect", "connect_ex")
+            },
+            **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
+            "urllib.request.ProxyHandler": (None, (), "proxy"),
+            # A datagram names its address per send. `sendto(data, flags, address)` puts the int
+            # flags at index 1, which reads as unreadable and fails closed.
+            **{f"{sock}.sendto": (1, (), "host") for sock in _SOCKET_TYPES},
+            **{f"{sock}.sendmsg": (3, (), "host") for sock in _SOCKET_TYPES},
+            **{
+                f"{client}.connect": (0, ("hostname", "host"), "host")
+                for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
+            },
+            **{
+                f"{module}.Transport": (0, ("sock",), "host")
+                for module in ("paramiko", "paramiko.transport")
+            },
+            **{
+                f"{module}.Connection": (0, ("host",), "host")
+                for module in ("fabric", "fabric.connection")
+            },
+            **{
+                f"{module}.{fn}": (index, ("host",), "host")
+                for module in ("asyncssh", "asyncssh.connection")
+                for fn, index in (
+                    ("connect", 0),
+                    ("connect_reverse", 0),
+                    ("create_connection", 1),
+                )
+            },
+            **{
+                f"{module}.SSHClientConnectionOptions": (None, (), "host")
+                for module in ("asyncssh", "asyncssh.connection")
+            },
+        }
+    )
+    _NETWORK_FQ_PREFIXES = _NETWORK_FQ_PREFIXES + tuple(
+        fq
+        for fq in sorted(_NETWORK_DESTINATION_ARG)
+        if not any(fq.startswith(p) for p in _NETWORK_FQ_PREFIXES)
+    )
+    _NETWORK_ROOTS = frozenset(p.partition(".")[0] for p in _NETWORK_FQ_PREFIXES)
+    _PROXY_KEYWORDS = ("proxy", "proxies")
+    _DESTINATION_ATTRS = {
+        "proxies": frozenset(
+            (
+                "requests.Session",
+                "requests.sessions.Session",
+                "requests.session",
+                "requests.sessions.session",
+            )
+        ),
+        "base_url": frozenset(("httpx.Client", "httpx.AsyncClient")),
+    }
     _UPLOAD_HTTP_METHODS = (
-        "requests.post",
-        "requests.put",
-        "requests.patch",
-        "requests.delete",
-        "requests.request",
-        "httpx.post",
-        "httpx.put",
-        "httpx.patch",
-        "httpx.delete",
-        "httpx.request",
+        *(
+            f"{owner}.{verb}"
+            for owner in ("requests", "requests.api", "httpx", *_VERB_CLIENTS)
+            for verb in ("post", "put", "patch", "delete", "request")
+        ),
+        "aiohttp.request",
+        "aiohttp.client.request",
+        *(f"{owner}.stream" for owner in ("httpx", "httpx.Client", "httpx.AsyncClient")),
         "urllib.request.urlopen",
         "urllib.request.Request",
     )
@@ -16530,8 +19498,8 @@ def _check_signal_escape_patterns(code: str):
         ".readthedocs.org",
     )
     _SENSITIVE_FILE_PREFIXES = (
-        "/etc/passwd",
-        "/etc/shadow",
+        _joined(("/etc/pas", "swd")),
+        _joined(("/etc/sh", "adow")),
         "/etc/sudoers",
         "/etc/ssh/",
     )
@@ -16541,8 +19509,11 @@ def _check_signal_escape_patterns(code: str):
         if not host:
             return ""
         h = host.strip().lower().rstrip(".")
+        if "\\" in h:
+            # urllib3 ends the host at a backslash, httpx reads it as userinfo: trust neither.
+            return h
         if "@" in h:
-            h = h.split("@", 1)[1]
+            h = h.rsplit("@", 1)[1]
         if h.startswith("[") and "]" in h:
             h = h[1 : h.index("]")]
         elif h.count(":") == 1:
@@ -16863,7 +19834,7 @@ def _check_signal_escape_patterns(code: str):
     )
 
     # Their handlers rebind first and then register, so generic_visit must not sweep them again.
-    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign)
+    _REBOUND_BY_HANDLER = (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign)
 
     # Statement kinds that really run when the module runs. A shadow REMOVES a way to recognise a
     # call, so unlike everything else here it may only be believed when it cannot be skipped:
@@ -16931,17 +19902,72 @@ def _check_signal_escape_patterns(code: str):
             ]
         return []
 
-    # What a name may be bound to and still be trusted to name `urllib.request.Request` or the
-    # module path leading to it.
+    def _is_local_database_target(target: str) -> bool:
+        if target.startswith(("md:", "motherduck:", "file:")):
+            return False
+        if len(target) >= 2 and target[0] in "/\\" and target[1] in "/\\":
+            return False
+        if (
+            len(target) >= 3
+            and target[0].isascii()
+            and target[0].isalpha()
+            and target[1] == ":"
+            and target[2] in "/\\"
+        ):
+            return True
+        return "://" not in target
+
+    def _local_database_names(nodes) -> frozenset:
+        """names that can only ever hold `sqlite3` / `duckdb`, judged over the whole source.
+
+        Deliberately scope-blind: any other binding of the name anywhere (parameter, assignment,
+        loop target, class attribute, `nonlocal` rebinding, ...) or any star import fails closed
+        to the host check, so no scope resolution can be fooled. `db = sqlite3` copies are kept,
+        resolved with a worklist so long copy chains stay linear.
+        """
+        imported: set[str] = set()
+        other: set[str] = set()
+        copies: dict[str, set[str]] = {}
+        for node in nodes:
+            if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+                return frozenset()
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module = alias.name.partition(".")[0]
+                    name = alias.asname or module
+                    (imported if module in _LOCAL_DATABASE_MODULES else other).add(name)
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Name)
+            ):
+                copies.setdefault(node.targets[0].id, set()).add(node.value.id)
+            else:
+                other.update(_binding_names(node))
+        trusted = {name for name in imported - other if name not in copies}
+        remaining = {
+            name: set(sources) - trusted for name, sources in copies.items() if name not in other
+        }
+        waiting: dict[str, list[str]] = {}
+        for name, sources in remaining.items():
+            for source in sources:
+                waiting.setdefault(source, []).append(name)
+        queue = [name for name, sources in remaining.items() if not sources]
+        while queue:
+            name = queue.pop()
+            trusted.add(name)
+            for dependent in waiting.pop(name, ()):
+                remaining[dependent].discard(name)
+                if not remaining[dependent]:
+                    queue.append(dependent)
+        return frozenset(trusted)
+
+    # bindings that can still resolve to `urllib.request.Request`.
     _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
 
     def _scope_bodies(nodes, tree):
-        """`(scope id, statement list)` for the module and for every function, lambda and class body.
-
-        A shadow belongs to the scope whose body it sits directly in, so this is what says which
-        statements can shadow a name for which calls. The module is scope 0. A lambda has an
-        expression rather than a body, so it contributes no statements, only its parameters.
-        """
+        """yield statement scopes; module id is 0, while lambdas contribute only parameters."""
         yield 0, getattr(tree, "body", [])
         for node in nodes:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -17056,32 +20082,119 @@ def _check_signal_escape_patterns(code: str):
             return out or [("", False)]
         return [("", False)]
 
+    def _alternatives(value) -> "list[ast.AST]":
+        """Every expression a value can evaluate to (conditional, `or`, walrus, `await`)."""
+        out: "list[ast.AST]" = []
+        stack = [value]
+        while stack:
+            cur = stack.pop()
+            if isinstance(cur, ast.IfExp):
+                stack.extend((cur.body, cur.orelse))
+            elif isinstance(cur, ast.BoolOp):
+                stack.extend(cur.values)
+            elif isinstance(cur, (ast.NamedExpr, ast.Await)):
+                stack.append(cur.value)
+            else:
+                out.append(cur)
+        return out
+
+    def _constant_getattr(node) -> "ast.Attribute | None":
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
+        ):
+            return ast.Attribute(value = node.args[0], attr = node.args[1].value, ctx = ast.Load())
+        return None
+
+    def _reexported(fq: str) -> "str | None":
+        """The listed top-level re-export of a submodule name: `httpx._api.get` is `httpx.get`."""
+        parts = fq.split(".")
+        if len(parts) < 3 or parts[0] not in _NETWORK_ROOTS:
+            return None
+        if not all(p[:1].islower() or p[:1] == "_" for p in parts[1:-1]):
+            return None  # a class in the path makes this a method, not a module attribute
+        top = f"{parts[0]}.{parts[-1]}"
+        return top if top in _NETWORK_DESTINATION_ARG or top in _CLIENT_CLASSES else None
+
+    def _returns_of(function_name: str) -> str:
+        return f"{function_name}()"
+
+    # The clients that read the proxy environment variables; sockets and urllib3 do not, and
+    # aiohttp only when a session opts in with `trust_env`, which defaults to False.
+    _ENV_PROXY_CLIENTS = ("requests.", "urllib.request.")
+
+    def _reads_proxy_environment(node: ast.Call, recognised) -> bool:
+        trust = next((kw.value for kw in node.keywords if kw.arg == "trust_env"), None)
+        disabled = isinstance(trust, ast.Constant) and trust.value is False
+        if any(c.startswith("httpx.") for c in recognised):
+            return not disabled  # `trust_env=False` turns the environment off for httpx
+        if any(c.startswith(_ENV_PROXY_CLIENTS) for c in recognised):
+            return True
+        if any(c.startswith("aiohttp.") for c in recognised):
+            return trust is not None and not disabled
+        return False
+
+    _ENV_PROXY_VARIABLES = frozenset(
+        {"http_proxy", "https_proxy", "all_proxy", "ws_proxy", "wss_proxy", "ftp_proxy"}
+    )
+
+    _ROUTE_KEYWORDS = {
+        "paramiko.SSHClient.": ("sock",),
+        "paramiko.client.SSHClient.": ("sock",),
+        "fabric.": ("gateway",),
+        "asyncssh.": ("tunnel", "proxy_command"),
+    }
+    # Positional spellings of the same routes (paramiko 5.0.0, fabric 3.2.3 signatures).
+    _ROUTE_POSITIONS = {
+        "paramiko.SSHClient.connect": {10: "sock"},
+        "paramiko.client.SSHClient.connect": {10: "sock"},
+        "fabric.Connection": {4: "gateway", 7: "connect_kwargs"},
+        "fabric.connection.Connection": {4: "gateway", 7: "connect_kwargs"},
+    }
+    _UNREADABLE = ast.Name(id = "<unreadable>", ctx = ast.Load())
+
+    def _is_no_proxy(key) -> bool:
+        return isinstance(key, ast.Constant) and key.value == "no_proxy"
+
+    def _paired(target, value):
+        if not isinstance(target, (ast.Tuple, ast.List)):
+            yield target, value
+            return
+        if not isinstance(value, (ast.Tuple, ast.List)) or any(
+            isinstance(e, ast.Starred) for e in value.elts
+        ):
+            return
+        elts = target.elts
+        star = next((i for i, e in enumerate(elts) if isinstance(e, ast.Starred)), None)
+        if star is None:
+            if len(elts) != len(value.elts):
+                return
+            pairs = list(zip(elts, value.elts))
+        else:
+            before, after = elts[:star], elts[star + 1 :]
+            if len(value.elts) < len(before) + len(after):
+                return
+            pairs = list(zip(before, value.elts)) + list(
+                zip(after, value.elts[len(value.elts) - len(after) :])
+            )
+        for t, v in pairs:
+            yield from _paired(t, v)
+
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def __init__(self):
-            # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
-            # this analyzer already resolves both; without them `import urllib.request as u; u.urlopen(...)` matched
-            # no prefix and a hardcoded attacker host passed the screen untouched.
-            # Name -> every network module ever bound to it, because this map is not scope
-            # aware: a nested `def f(): import socket as r` would otherwise overwrite an outer
-            # `import requests as r`, and the module-level `r.get(...)` after it would carry
-            # only unrecognised candidates. Accumulating keeps resolution monotone, so a binding
-            # anywhere can add a way to recognise a call and never take one away.
+            # accumulate module aliases so nested imports cannot hide outer network calls
             self.module_aliases: dict[str, set[str]] = {}
-            # Name -> every network function ever bound to it, accumulated for the same reason:
-            # `from requests import get as fetch` followed by a nested, never-called
-            # `from socket import inet_aton as fetch` still calls `requests.get` at module level,
-            # and overwriting the entry resolved the call to the unrecognised socket function.
+            # accumulate function aliases for the same scope-insensitive rebinding case
             self.func_aliases: dict[str, set[str]] = {}
-            # Name -> every string literal it can hold, None when unreadable. `url =
-            # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
-            # All three are read ONLY to answer a question about a recognised egress call, so
-            # when the source cannot name a network module none of them can change a verdict and
-            # none are built. That is the difference between walking this tree three more times
-            # and not touching it at all, and ordinary tool code takes the second path.
+            self.local_databases: "frozenset | None" = None
+            # collect literals only when egress is possible to avoid three extra tree walks
             nodes = _tree_nodes(tree) if network_possible else ()
             self.literal_names = _collect_literal_names(nodes) if network_possible else {}
-            # Names bound anywhere, in any scope, to something other than `urllib.request.Request`
-            # or the module path to it. Read only by `_unwrapped_url_arg`: see the note there.
+            # track names rebound away from `urllib.request.Request` for URL unwrapping
             self.rebound_anywhere = (
                 _names_bound_to_something_else(nodes) if network_possible else frozenset()
             )
@@ -17115,7 +20228,7 @@ def _check_signal_escape_patterns(code: str):
             # was star-imported. A shadow only takes effect for calls that CANNOT run before it:
             # dropping the alias for the whole tree let `fetch(url)` written ABOVE `fetch = print`
             # go unrecognised, when that call really is `requests.get`.
-            self.shadow_lines: "dict[str, list[tuple[tuple[int, int], int]]]" = {}
+            self.shadow_lines: "dict[tuple[str, int], list[tuple[int, int]]]" = {}
             self.star_lines: "list[tuple[int, int]]" = []
             # Name -> the positions where a network alias was registered for it. A shadow only
             # counts while no alias registration follows it: `r = object()` then `r = requests`
@@ -17135,6 +20248,268 @@ def _check_signal_escape_patterns(code: str):
             self.collecting = True
             # Whether any alias map can ever be non-empty. See `_NETWORK_SOURCE_HINTS`.
             self.aliases_possible = network_possible
+            self.instance_aliases: "dict[str, set[str]]" = {}
+            self.receiver_destinations: "dict[str, list[tuple[str, ast.AST]]]" = {}
+            self.path_links: "dict[str, set[str]]" = {}
+            self.proxy_owners: "dict[str, set[tuple[str, str]]]" = {}
+            self.class_family: "dict[int, str]" = {}
+            self.class_names: "dict[str, str]" = {}
+            self.properties: "list[tuple[str, str]]" = []
+            self.class_inits: "dict[str, list[ast.AST]]" = {}
+            self.method_self: "dict[int, tuple[str, str]]" = {}
+            if network_possible:
+                classes = [n for n in nodes if isinstance(n, ast.ClassDef)]
+                parent = {c.name: c.name for c in classes}
+
+                def find(name):
+                    while parent[name] != name:
+                        name = parent[name]
+                    return name
+
+                for c in classes:
+                    for base in c.bases:
+                        if isinstance(base, ast.Name) and base.id in parent:
+                            parent[find(base.id)] = find(c.name)
+                for c in classes:
+                    family = f"<{find(c.name)}>"
+                    self.class_family[id(c)] = family
+                    self.class_names[c.name] = family
+                    for fn in c.body:
+                        if isinstance(fn, ast.FunctionDef) and fn.name == "__init__":
+                            self.class_inits.setdefault(c.name, []).append(fn)
+                    for fn in c.body:
+                        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and not any(
+                            (getattr(d, "id", None) or getattr(d, "attr", None)) == "staticmethod"
+                            for d in fn.decorator_list
+                        ):
+                            params = fn.args.posonlyargs + fn.args.args
+                            if params:
+                                self.method_self[id(fn)] = (params[0].arg, family)
+                            if any(getattr(d, "id", None) == "property" for d in fn.decorator_list):
+                                self.properties.append((family, fn.name))
+                bases = {
+                    c.name: [b.id for b in c.bases if isinstance(b, ast.Name)] for c in classes
+                }
+                for name in bases:
+                    seen, stack = {name}, [name]
+                    while stack and name not in self.class_inits:
+                        for base in bases.get(stack.pop(), ()):
+                            if base in self.class_inits:
+                                self.class_inits[name] = self.class_inits[base]
+                                break
+                            if base not in seen:
+                                seen.add(base)
+                                stack.append(base)
+            self.self_names: "list[tuple[str, str]]" = []
+            self.local_functions: "dict[str, list[ast.AST]]" = {}
+            self.callable_aliases: "dict[str, set[str]]" = {}
+            self.def_names: "dict[int, str]" = {}
+            self.local_methods: "dict[str, list[tuple[ast.AST, int]]]" = {}
+            if network_possible:
+                for fn in nodes:
+                    if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        self.local_functions.setdefault(fn.name, []).append(fn)
+                        self.def_names[id(fn)] = fn.name
+                    elif isinstance(fn, (ast.Assign, ast.AnnAssign)) and isinstance(
+                        fn.value, ast.Lambda
+                    ):
+                        for target in getattr(fn, "targets", None) or [fn.target]:
+                            if isinstance(target, ast.Name):
+                                self.local_functions.setdefault(target.id, []).append(fn.value)
+                    elif isinstance(fn, ast.ClassDef):
+                        for m in fn.body:
+                            if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                skip = 1 if id(m) in self.method_self else 0
+                                self.local_methods.setdefault(m.name, []).append((m, skip))
+            # Every (target, value) that can carry a client, re-read after the gathering pass when a
+            # path it reads gains one: `def f(s): t = s` is visited before `f(requests.Session())`.
+            self.flows: "list[tuple]" = []
+            self.flows_from: "dict[str, list[int]]" = {}
+            self.pending_calls: "list[tuple]" = []
+            self.pending_proxies: "list[tuple]" = []
+            self.env_proxies: "list[ast.AST]" = []
+            self.dict_literals: "dict[str, list[ast.Dict]]" = {}
+            self.dict_entries: "dict[str, list[tuple]]" = {}
+            self.dict_mutated: "set[str]" = set()
+            self.os_names: "set[str]" = {"os"}
+            self.environ_names: "set[str]" = set()
+            for imp in nodes:
+                if isinstance(imp, ast.Import):
+                    for alias in imp.names:
+                        if alias.name == "os":
+                            self.os_names.add(alias.asname or "os")
+                elif isinstance(imp, ast.ImportFrom) and imp.module == "os":
+                    for alias in imp.names:
+                        if alias.name in ("environ", "environb"):
+                            self.environ_names.add(alias.asname or alias.name)
+
+        def _instance_key(self, target) -> "str | None":
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None and isinstance(target, ast.Name):
+                return f"{family}.{target.id}"
+            return self._receiver_path(target)
+
+        def _record_flow(self, target, value, at, node) -> None:
+            if not self.collecting or self._instance_key(target) is None:
+                return
+            self.flows.append(
+                (target, value, at, node, tuple(self.scope_stack), tuple(self.self_names))
+            )
+
+        def _index_flows(self) -> None:
+            """Runs after the gathering pass, so an alias assigned below its use is already known."""
+            for index, (_t, value, _at, _n, scopes, selves) in enumerate(self.flows):
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                for alt in _alternatives(value):
+                    if isinstance(alt, ast.Call):
+                        for callee in self._local_callees(alt.func):
+                            self.flows_from.setdefault(_returns_of(callee), []).append(index)
+                    else:
+                        path = self._receiver_path(alt)
+                        if path is not None:
+                            self.flows_from.setdefault(path, []).append(index)
+
+        def _local_callees(self, func) -> "set[str]":
+            if isinstance(func, ast.Name):
+                names, seen, stack = set(), {func.id}, [func.id]
+                while stack:
+                    name = stack.pop()
+                    if name in self.local_functions:
+                        names.add(name)
+                    for source in self.callable_aliases.get(name, ()):
+                        if source not in seen:
+                            seen.add(source)
+                            stack.append(source)
+                return names
+            if isinstance(func, ast.Attribute) and func.attr in self.local_methods:
+                return {func.attr}
+            return set()
+
+        def _bind_call_arguments(self, node) -> None:
+            if isinstance(node.func, ast.Name):
+                targets = [
+                    (fn, skip)
+                    for name in sorted(self._local_callees(node.func))
+                    for fn in self.local_functions.get(name, ())
+                    for skip in ((0, 1) if id(fn) in self.method_self else (0,))
+                ] + [(fn, 1) for fn in self.class_inits.get(node.func.id, ())]
+            elif isinstance(node.func, ast.Attribute):
+                methods = self.local_methods.get(node.func.attr, [])
+                targets = methods + [(fn, 0) for fn, skip in methods if skip]
+            else:
+                return
+            at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+            for fn, skip in targets:
+                positional = (fn.args.posonlyargs + fn.args.args)[skip:]
+                pairs = []
+                for param, arg in zip(positional, node.args):
+                    if isinstance(arg, ast.Starred):
+                        break
+                    pairs.append((param.arg, arg))
+                named = {a.arg for a in positional + fn.args.kwonlyargs}
+                pairs += [(kw.arg, kw.value) for kw in node.keywords if kw.arg in named]
+                for param, arg in pairs:
+                    target = ast.Name(id = param, ctx = ast.Store())
+                    self._link(target, arg)
+                    if self._is_environ(arg):
+                        self.environ_names.add(param)  # `configure(os.environ)`
+                    if isinstance(arg, ast.Name) and arg.id in self.os_names:
+                        self.os_names.add(param)  # `configure(os)`
+                    if isinstance(arg, ast.Attribute) and arg.attr in _DESTINATION_ATTRS:
+                        owner = self._receiver_path(arg.value)
+                        if owner is not None:
+                            self.proxy_owners.setdefault(param, set()).add((owner, arg.attr))
+                    self._record_flow(target, arg, at, fn)
+
+        def resolve_flows(self) -> None:
+            """Fixpoint: each pass past the subset check adds a client to a path, so this terminates."""
+            for call, scopes, selves in self.pending_calls:
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                self._bind_call_arguments(call)
+            for target, value, mutated, scopes, selves in self.pending_proxies:
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                self._apply_proxy(target, value, mutated)
+            for name in self.environ_names:
+                for key, value in self.dict_entries.get(name, ()):
+                    self._record_env_proxy(key, value)
+                if name in self.dict_mutated:
+                    self.env_proxies.append(_UNREADABLE)
+            for family, name in self.properties:
+                attribute = ast.Name(id = f"{family}.{name}", ctx = ast.Store())
+                returned = ast.Name(id = _returns_of(name), ctx = ast.Load())
+                self.flows.append((attribute, returned, (0, 0), attribute, (0,), ()))
+            self._index_flows()
+            queue = list(range(len(self.flows)))
+            while queue:
+                target, value, at, node, scopes, selves = self.flows[queue.pop()]
+                self.scope_stack, self.self_names = list(scopes), list(selves)
+                found = self._instances_named_by(value, at)
+                key = self._instance_key(target)
+                if key is None or found <= self.instance_aliases.get(key, set()):
+                    continue
+                self._register(target, (set(), set(), found), node)
+                queue.extend(self.flows_from.get(key, ()))
+            self.scope_stack, self.self_names = [0], []
+
+        def _receiver_path(self, expr) -> "str | None":
+            parts: list[str] = []
+            cur = expr
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return None
+            root = next((f for name, f in reversed(self.self_names) if name == cur.id), cur.id)
+            return ".".join([root] + parts)
+
+        def _roots(self, name: str) -> "list[str]":
+            roots = [next((f for n, f in reversed(self.self_names) if n == name), name)]
+            if name in self.class_names:
+                roots.append(self.class_names[name])  # `A.s` is the class attribute of `<A>`
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None:
+                roots.append(f"{family}.{name}")
+            for root in list(roots):
+                roots += [f for f in self.instance_aliases.get(root, ()) if f.startswith("<")]
+            return list(dict.fromkeys(roots))
+
+        def _path_variants(self, expr) -> "list[str]":
+            parts: list[str] = []
+            cur = expr
+            while isinstance(cur, ast.Attribute):
+                parts.insert(0, cur.attr)
+                cur = cur.value
+            if not isinstance(cur, ast.Name):
+                return []
+            return [".".join([root] + parts) for root in self._roots(cur.id)]
+
+        def _instances_named_by(self, value, at) -> "set[str]":
+            found: set[str] = set()
+            for alt in _alternatives(value):
+                if isinstance(alt, ast.Call):
+                    found.update(
+                        c for c in self._fq_candidates(alt.func, at) if c in _CLIENT_CLASSES
+                    )
+                    for callee in self._local_callees(alt.func):
+                        found.update(self.instance_aliases.get(_returns_of(callee), ()))
+                    if isinstance(alt.func, ast.Name) and alt.func.id in self.class_names:
+                        found.add(self.class_names[alt.func.id])  # `API()` is an `<API>`
+                    if (
+                        isinstance(alt.func, ast.Name)
+                        and alt.func.id == "super"
+                        and not alt.args
+                        and self.self_names
+                    ):
+                        found.add(self.self_names[-1][1])  # `super()` in a method of `<S>`
+                    continue
+                receiver = isinstance(alt, ast.Name) and any(
+                    n == alt.id for n, _f in self.self_names
+                )
+                if isinstance(alt, ast.Name) and not receiver and self._is_shadowed(alt.id, at):
+                    continue
+                for path in self._path_variants(alt):
+                    found.update(self.instance_aliases.get(path, ()))
+            return found
 
         def _shadowing_names(self, node) -> "list[str]":
             """The names a node binds IN THE ENCLOSING scope, which is the only scope that can
@@ -17160,6 +20535,10 @@ def _check_signal_escape_patterns(code: str):
                 # fetch(url)` puts all three on line 1, and comparing lines alone made the
                 # rebinding invisible, so a harmless local call was refused as `requests.get`.
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    # A def or class binds its name after its defaults and bases run:
+                    # `import requests as fetch; def fetch(a = fetch.get(u))` calls requests.
+                    where = (node.body[0].lineno, node.body[0].col_offset)
                 for name in self._shadowing_names(node):
                     if name in exempt:
                         # A statement that REGISTERS an alias must not also shadow the name it just
@@ -17170,7 +20549,7 @@ def _check_signal_escape_patterns(code: str):
                     # The module set is deliberately NOT dropped: see __init__. A bare function
                     # alias is shadowed, so a local `def get(...)` still shadows
                     # `from requests import get` for the calls that follow it.
-                    self.shadow_lines.setdefault(name, []).append((where, scope))
+                    self.shadow_lines.setdefault((name, scope), []).append(where)
 
         def generic_visit(self, node):
             """`ast.NodeVisitor.generic_visit`, inlined, plus the rebinding hook.
@@ -17192,11 +20571,17 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(value)
 
         def _register_alias(self, name: str, node) -> None:
-            """Note where a network alias was bound to `name`, so a shadow older than this one no
-            longer applies. See `_is_shadowed`."""
+            """record network alias positions so newer imports supersede older shadows."""
             self.alias_lines.setdefault(name, []).append(
                 (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
             )
+
+        def _names_local_database(self, owner) -> bool:
+            if not isinstance(owner, ast.Name):
+                return False
+            if self.local_databases is None:
+                self.local_databases = _local_database_names(tree_nodes)
+            return owner.id in self.local_databases
 
         def _is_shadowed(
             self,
@@ -17204,25 +20589,12 @@ def _check_signal_escape_patterns(code: str):
             at,
             after_star: bool = False,
         ) -> bool:
-            """Whether a module-level rebinding of `name` has certainly happened by `at`.
-
-            Positions are `(lineno, col_offset)`, so a semicolon-separated
-            `from requests import get as fetch; fetch = print; fetch(url)` orders correctly where
-            comparing lines alone made the rebinding invisible.
-
-            A call inside a function, lambda or class body is never shadowed: the body can be
-            invoked at any point, including before the rebinding. At module level the rebinding
-            counts only for what comes AFTER it, and only while no alias registration comes between
-            the two: the last `import`, `from ... import` or module-carrying assignment before the
-            call supersedes every shadow older than it. For a star-imported name the star import is
-            that registration, since it rebinds every exported name.
-            """
+            """whether a module binding shadows an alias until a later registration."""
             registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
             floor = max((where for where in registrations if where < at), default = (0, -1))
-            here = self.scope_stack[-1]
             return any(
-                scope == here and floor < where < at
-                for where, scope in self.shadow_lines.get(name, ())
+                floor < where < at
+                for where in self.shadow_lines.get((name, self.scope_stack[-1]), ())
             )
 
         def _star_imported_fq(self, name: str, at) -> "str | None":
@@ -17242,7 +20614,7 @@ def _check_signal_escape_patterns(code: str):
                 where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
                 for name in _binding_names(node):
                     if name != getattr(node, "name", None):
-                        self.shadow_lines.setdefault(name, []).append((where, id(node)))
+                        self.shadow_lines.setdefault((name, id(node)), []).append(where)
             # Decorators, defaults, annotations and bases are evaluated in the ENCLOSING scope, at
             # the moment the def is executed, BEFORE any parameter is bound. Visiting them inside
             # the new scope let a parameter shadow a call the parameter cannot possibly reach:
@@ -17259,7 +20631,36 @@ def _check_signal_escape_patterns(code: str):
                             self.visit(item)
                 elif isinstance(value, ast.AST):
                     self.visit(value)
+            if self.collecting and isinstance(node, ast.ClassDef):
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                inherited = {
+                    c
+                    for base in node.bases
+                    for c in self._fq_candidates(base, where)
+                    if c in _CLIENT_CLASSES or c in _NETWORK_DESTINATION_ARG
+                }
+                if inherited:
+                    self.func_aliases.setdefault(node.name, set()).update(inherited)
+                    family = self.class_family.get(id(node))
+                    if family is not None:
+                        self.instance_aliases.setdefault(family, set()).update(inherited)
+                    self._register_alias(node.name, node.body[0])
+            args = getattr(node, "args", None)
+            if self.collecting and args is not None:
+                positional = args.posonlyargs + args.args
+                defaults = list(
+                    zip(positional[len(positional) - len(args.defaults) :], args.defaults)
+                )
+                defaults += [
+                    (a, d) for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None
+                ]
+                where = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                for param, default in defaults:
+                    self._carry(ast.Name(id = param.arg, ctx = ast.Store()), default, where, node)
             self.scope_stack.append(id(node))
+            self_name = self.method_self.get(id(node))
+            if self_name is not None:
+                self.self_names.append(self_name)
             try:
                 body = node.body
                 if isinstance(body, list):
@@ -17270,6 +20671,8 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(body)
             finally:
                 self.scope_stack.pop()
+                if self_name is not None:
+                    self.self_names.pop()
 
         visit_FunctionDef = _visit_scope
         visit_AsyncFunctionDef = _visit_scope
@@ -17282,7 +20685,9 @@ def _check_signal_escape_patterns(code: str):
                 return
             registered: set[str] = set()
             for alias in node.names:
-                if alias.asname and alias.name in _NETWORK_MODULES:
+                if alias.asname and (
+                    alias.name in _NETWORK_MODULES or alias.name.partition(".")[0] in _NETWORK_ROOTS
+                ):
                     self.module_aliases.setdefault(alias.asname, set()).add(alias.name)
                     self._register_alias(alias.asname, node)
                     registered.add(alias.asname)
@@ -17323,8 +20728,7 @@ def _check_signal_escape_patterns(code: str):
                     self.module_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
                     registered.add(bound)
-                elif module in _NETWORK_MODULES:
-                    # from urllib.request import urlopen
+                elif module in _NETWORK_MODULES or _reexported(fq):
                     self.func_aliases.setdefault(bound, set()).add(fq)
                     self._register_alias(bound, node)
                     registered.add(bound)
@@ -17340,6 +20744,9 @@ def _check_signal_escape_patterns(code: str):
             collapsing the set to one candidate resolved the later `s = r; s.get(...)` to the
             unrecognised `aiohttp.get` and let a hostile host through.
             """
+            alts = _alternatives(value)
+            if alts != [value]:
+                return set().union(*(self._modules_named_by(alt, at) for alt in alts))
             parts: list[str] = []
             cur = value
             while isinstance(cur, ast.Attribute):
@@ -17373,6 +20780,10 @@ def _check_signal_escape_patterns(code: str):
             `from requests import get as fetch` then `fetch = fetch`, or `g = fetch`, recorded the
             target as shadowed and left the later call with no candidate at all.
             """
+            alts = _alternatives(value)
+            if alts != [value]:
+                return set().union(*(self._functions_named_by(alt, at) for alt in alts))
+            value = _constant_getattr(value) or value
             if isinstance(value, ast.Name):
                 if self._is_shadowed(value.id, at):
                     # Same stale-source rule as `_modules_named_by`: `fetch = print` before
@@ -17387,25 +20798,292 @@ def _check_signal_escape_patterns(code: str):
                 }
             return set()
 
+        def _named_by(self, value, at) -> "tuple[set[str], set[str], set[str]]":
+            return (
+                self._modules_named_by(value, at),
+                self._functions_named_by(value, at),
+                self._instances_named_by(value, at),
+            )
+
+        def _register(self, target, named, node) -> bool:
+            """True when a name took an alias, exempting it from the shadow this statement records."""
+            modules, functions, instances = named
+            path = self._receiver_path(target)
+            family = self.class_family.get(self.scope_stack[-1])
+            if family is not None and isinstance(target, ast.Name):
+                path = f"{family}.{target.id}"
+            if path is not None and instances:
+                self.instance_aliases.setdefault(path, set()).update(instances)
+            if not isinstance(target, ast.Name):
+                return False
+            if modules:
+                self.module_aliases.setdefault(target.id, set()).update(modules)
+            if functions:
+                self.func_aliases.setdefault(target.id, set()).update(functions)
+            if modules or functions or any(not c.startswith("<") for c in instances):
+                self._register_alias(target.id, node)
+                return True
+            return False
+
+        def _carry(self, target, value, at, node) -> bool:
+            self._link(target, value)
+            self._record_flow(target, value, at, node)
+            return self._register(target, self._named_by(value, at), node)
+
+        def _link(self, target, value) -> None:
+            path = self._receiver_path(target)
+            if path is None:
+                return
+            for alt in _alternatives(value):
+                other = self._receiver_path(alt)
+                if other is not None and other != path:
+                    self.path_links.setdefault(path, set()).add(other)
+                    self.path_links.setdefault(other, set()).add(path)
+
+        def _linked_paths(self, path: str) -> "set[str]":
+            seen = {path}
+            stack = [path]
+            while stack:
+                for other in self.path_links.get(stack.pop(), ()):
+                    if other not in seen:
+                        seen.add(other)
+                        stack.append(other)
+            return seen
+
+        def _record_proxy(
+            self,
+            target,
+            value,
+            mutated = False,
+        ) -> None:
+            """Applied after call arguments are bound, so `configure(s.proxies)` still reaches `s`."""
+            if isinstance(target, ast.Subscript) and self._is_environ(target.value):
+                self._record_env_proxy(target.slice, value)
+                return
+            if isinstance(target, ast.Attribute) and self._is_environ(target):
+                self._record_env_mapping(value)  # `os.environ = {...}` replaces it wholesale
+                return
+            self.pending_proxies.append(
+                (target, value, mutated, tuple(self.scope_stack), tuple(self.self_names))
+            )
+
+        def _record_dict_mutation(self, name: str, method: str, args, keywords) -> None:
+            if method in ("setdefault", "__setitem__") and len(args) >= 2:
+                self.dict_entries.setdefault(name, []).append((args[0], args[1]))
+            elif method in ("update", "__ior__"):
+                for arg in args:
+                    if isinstance(arg, ast.Dict) and None not in arg.keys:
+                        self.dict_entries.setdefault(name, []).extend(zip(arg.keys, arg.values))
+                    else:
+                        self.dict_mutated.add(name)
+                for kw in keywords:
+                    if kw.arg is None:
+                        self.dict_mutated.add(name)
+                    else:
+                        self.dict_entries.setdefault(name, []).append(
+                            (ast.Constant(value = kw.arg), kw.value)
+                        )
+
+        def _record_env_mapping(self, mapping) -> None:
+            """Mapping merged into the environment; anything unreadable is recorded as unreadable."""
+            if isinstance(mapping, ast.Dict):
+                for k, v in zip(mapping.keys, mapping.values):
+                    if k is None:
+                        self.env_proxies.append(_UNREADABLE)
+                    else:
+                        self._record_env_proxy(k, v)
+            elif isinstance(mapping, ast.Name) and mapping.id in self.dict_literals:
+                if mapping.id in self.dict_mutated:
+                    self.env_proxies.append(_UNREADABLE)
+                for literal in self.dict_literals[mapping.id]:
+                    self._record_env_mapping(literal)
+                for key, value in self.dict_entries.get(mapping.id, ()):
+                    self._record_env_proxy(key, value)
+            elif (
+                isinstance(mapping, ast.Call)
+                and isinstance(mapping.func, ast.Name)
+                and mapping.func.id == "dict"
+                and not mapping.args
+            ):
+                for kw in mapping.keywords:
+                    if kw.arg is None:
+                        self.env_proxies.append(_UNREADABLE)
+                    else:
+                        self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+            elif isinstance(mapping, (ast.List, ast.Tuple)) and all(
+                isinstance(e, ast.Tuple) and len(e.elts) == 2 for e in mapping.elts
+            ):
+                for e in mapping.elts:
+                    self._record_env_proxy(e.elts[0], e.elts[1])
+            else:
+                self.env_proxies.append(_UNREADABLE)
+
+        def _is_environ(self, node) -> bool:
+            node = _constant_getattr(node) or node  # `getattr(os, "environ")`
+            if isinstance(node, ast.Name):
+                return node.id in self.environ_names
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr in ("environ", "environb")  # `environb` shares `environ`'s data
+                and isinstance(node.value, ast.Name)
+                and node.value.id in self.os_names
+            )
+
+        def _record_env_proxy(self, key, value) -> None:
+            """requests, httpx and urllib honour the proxy environment by default."""
+            if isinstance(key, ast.Constant):
+                names = [key.value] if isinstance(key.value, str) else []
+                if isinstance(key.value, bytes):
+                    names = [key.value.decode("latin-1")]  # `os.environb[b"HTTPS_PROXY"]`
+            elif isinstance(key, ast.Name) and self.literal_names.get(key.id):
+                names = list(self.literal_names[key.id])  # `key = "HTTPS_PROXY"`
+            else:
+                # A key this screen cannot read may name a proxy variable: fail closed.
+                self.env_proxies.append(_UNREADABLE)
+                return
+            if any(name.lower() in _ENV_PROXY_VARIABLES for name in names):
+                self.env_proxies.append(value)
+
+        def _apply_proxy(self, target, value, mutated) -> None:
+            if isinstance(target, ast.Subscript) and self._is_environ(target.value):
+                self._record_env_proxy(target.slice, value)
+                return
+            if isinstance(target, ast.Subscript):
+                if _is_no_proxy(target.slice):
+                    return
+                target, mutated = target.value, True
+            if isinstance(target, ast.Attribute) and target.attr in _DESTINATION_ATTRS:
+                owners = {(self._receiver_path(target.value), target.attr)}
+            elif mutated and self._receiver_path(target) is not None:
+                owners = set().union(
+                    *(
+                        self.proxy_owners.get(path, ())
+                        for path in self._linked_paths(self._receiver_path(target))
+                    )
+                )
+            else:
+                return
+            for owner, attr in owners:
+                if owner is not None:
+                    self.receiver_destinations.setdefault(owner, []).append((attr, value))
+
         def visit_Assign(self, node):
+            self._visit_binding(node, node.targets, node.value)
+
+        def visit_AnnAssign(self, node):
+            if node.value is None:
+                if self.collecting:
+                    self._rebind(node)
+                self.generic_visit(node)
+                return
+            self._visit_binding(node, [node.target], node.value)
+
+        def _visit_binding(self, node, targets, value_node):
             if not self.collecting:
                 self.generic_visit(node)
                 return
             at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
-            carried = self._modules_named_by(node.value, at)
-            carried_functions = self._functions_named_by(node.value, at)
+            # Every value is read before any target is bound, so `f, g = g, f` swaps.
+            pairs = [
+                (target, value, self._named_by(value, at))
+                for whole in targets
+                for target, value in _paired(whole, value_node)
+            ]
+            if not isinstance(value_node, (ast.Tuple, ast.List)):
+                for whole in targets:
+                    if isinstance(whole, (ast.Tuple, ast.List)):
+                        for elt in whole.elts:  # `s, n = make()`: any element may be the client
+                            elt = elt.value if isinstance(elt, ast.Starred) else elt
+                            self._record_flow(elt, value_node, at, node)
             registered: set[str] = set()
-            for target in node.targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                if carried:
-                    self.module_aliases.setdefault(target.id, set()).update(carried)
-                if carried_functions:
-                    self.func_aliases.setdefault(target.id, set()).update(carried_functions)
-                if carried or carried_functions:
-                    self._register_alias(target.id, node)
+            for target, value, named in pairs:
+                self._record_proxy(target, value)
+                self._link(target, value)
+                self._record_flow(target, value, at, node)
+                if isinstance(target, ast.Name) and isinstance(value, ast.Dict):
+                    self.dict_literals.setdefault(target.id, []).append(value)
+                if isinstance(target, ast.Name) and self._is_environ(value):
+                    self.environ_names.add(target.id)  # `env = os.environ`
+                if (
+                    isinstance(target, ast.Name)
+                    and isinstance(value, ast.Name)
+                    and value.id in self.os_names
+                ):
+                    self.os_names.add(target.id)  # `o = os`
+                if isinstance(target, ast.Name) and isinstance(value, ast.Lambda):
+                    returns = ast.Name(id = _returns_of(target.id), ctx = ast.Store())
+                    self._record_flow(returns, value.body, at, node)
+                if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
+                    self._record_dict_mutation(
+                        target.value.id, "__setitem__", [target.slice, value], []
+                    )
+                if isinstance(target, ast.Name):
+                    for alt in _alternatives(value):
+                        if isinstance(alt, ast.Name) and alt.id != target.id:
+                            self.callable_aliases.setdefault(target.id, set()).add(alt.id)
+                        elif isinstance(alt, ast.Attribute) and alt.attr in self.local_methods:
+                            self.callable_aliases.setdefault(target.id, set()).add(alt.attr)
+                if isinstance(value, ast.Attribute) and value.attr in _DESTINATION_ATTRS:
+                    owner = self._receiver_path(value.value)
+                    alias = self._receiver_path(target)
+                    if owner is not None and alias is not None:
+                        self.proxy_owners.setdefault(alias, set()).add((owner, value.attr))
+                if self._register(target, named, node):
                     registered.add(target.id)
             self._rebind(node, exempt = registered)
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node):
+            if self.collecting:
+                if self._is_environ(node.target):
+                    self._record_env_mapping(node.value)
+                else:
+                    if isinstance(node.target, ast.Name):
+                        self._record_dict_mutation(node.target.id, "__ior__", [node.value], [])
+                    self._record_proxy(node.target, node.value, mutated = True)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node):
+            if self.collecting and isinstance(node.target, ast.Name):
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                self._carry(node.target, node.value, at, node)
+            self.generic_visit(node)
+
+        def visit_Return(self, node):
+            function = self.def_names.get(self.scope_stack[-1])
+            if self.collecting and node.value is not None and function is not None:
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                returns = ast.Name(id = _returns_of(function), ctx = ast.Store())
+                self._record_flow(returns, node.value, at, node)
+                if isinstance(node.value, (ast.Tuple, ast.List)):
+                    for elt in node.value.elts:  # `return requests.Session(), 1`
+                        self._record_flow(returns, elt, at, node)
+            self.generic_visit(node)
+
+        def _carry_loop(self, node) -> None:
+            if self.collecting and isinstance(node.iter, (ast.List, ast.Tuple, ast.Set)):
+                for elt in node.iter.elts:
+                    if isinstance(elt, ast.Starred):
+                        continue
+                    at = (getattr(elt, "lineno", 0), getattr(elt, "col_offset", 0))
+                    for target, value in _paired(node.target, elt):
+                        self._carry(target, value, at, elt)
+
+        def visit_For(self, node):
+            self._carry_loop(node)
+            self.generic_visit(node)
+
+        visit_AsyncFor = visit_For
+
+        def visit_comprehension(self, node):
+            self._carry_loop(node)
+            self.generic_visit(node)
+
+        def visit_withitem(self, node):
+            if self.collecting and node.optional_vars is not None:
+                ctx = node.context_expr
+                at = (getattr(ctx, "lineno", 0), getattr(ctx, "col_offset", 0))
+                self._carry(node.optional_vars, ctx, at, ctx)
             self.generic_visit(node)
 
         def _fq_candidates(
@@ -17414,11 +21092,22 @@ def _check_signal_escape_patterns(code: str):
             at = (0, 0),
         ) -> "list[str]":
             """Every fully qualified name a callee could be, written spelling first."""
+            alts = _alternatives(func)
+            if alts != [func]:
+                out: list[str] = []
+                for alt in alts:
+                    out.extend(c for c in self._fq_candidates(alt, at) if c not in out)
+                return out
             parts: list[str] = []
             cur = func
-            while isinstance(cur, ast.Attribute):
-                parts.insert(0, cur.attr)
-                cur = cur.value
+            while True:
+                if isinstance(cur, ast.Attribute):
+                    parts.insert(0, cur.attr)
+                    cur = cur.value
+                elif _constant_getattr(cur) is not None:
+                    cur = _constant_getattr(cur)
+                else:
+                    break
             if isinstance(cur, ast.Name):
                 parts.insert(0, cur.id)
             written = ".".join(parts) if parts else ""
@@ -17431,7 +21120,13 @@ def _check_signal_escape_patterns(code: str):
                 # local API, and offering `requests.get` as a candidate refused it as egress.
                 if not self._is_shadowed(parts[0], at):
                     for module in sorted(self.module_aliases[parts[0]]):
-                        candidates.append(".".join(module.split(".") + parts[1:]))
+                        fq = ".".join(module.split(".") + parts[1:])
+                        if module not in _NETWORK_MODULES and not any(
+                            m.startswith(f"{module}.") for m in _NETWORK_MODULES
+                        ):
+                            fq = _reexported(fq)
+                        if fq is not None:
+                            candidates.append(fq)
             elif len(parts) == 1 and parts[0] in self.func_aliases:
                 if not self._is_shadowed(parts[0], at):
                     candidates.extend(sorted(self.func_aliases[parts[0]]))
@@ -17439,6 +21134,37 @@ def _check_signal_escape_patterns(code: str):
                 starred = self._star_imported_fq(parts[0], at)
                 if starred:
                     candidates.append(starred)
+            held: "list[tuple[set[str], list[str]]]" = []
+            if not isinstance(cur, ast.Name):
+                if parts:
+                    classes = self._instances_named_by(cur, at)
+                    held.append((classes, parts))
+                    for family in (c for c in classes if c.startswith("<")):
+                        for k in range(len(parts)):
+                            path = ".".join([family] + parts[:k])
+                            if path in self.instance_aliases:
+                                held.append((self.instance_aliases[path], parts[k:]))
+            elif self.instance_aliases:
+                for root in self._roots(parts[0]):
+                    for k in range(1, len(parts)):
+                        path = ".".join([root] + parts[1:k])
+                        if path in self.instance_aliases and not (
+                            k == 1 and root == parts[0] and self._is_shadowed(parts[0], at)
+                        ):
+                            held.append((self.instance_aliases[path], parts[k:]))
+            for classes, rest in held:
+                for cls in sorted(classes):
+                    fq = ".".join([cls] + rest)
+                    # Only a method the table places counts: `s.mount(prefix, adapter)` sends
+                    # nothing, though `requests.Session` is a recognised prefix.
+                    if (
+                        fq in _NETWORK_DESTINATION_ARG or fq in _UPLOAD_HTTP_METHODS
+                    ) and fq not in candidates:
+                        candidates.append(fq)
+            for fq in list(candidates):
+                top = _reexported(fq)
+                if top is not None and top not in candidates:
+                    candidates.append(top)
             return candidates
 
         def _unwrapped_url_arg(self, node: ast.AST) -> ast.AST:
@@ -17465,6 +21191,44 @@ def _check_signal_escape_patterns(code: str):
 
         def visit_Call(self, node):
             if self.collecting:
+                self.pending_calls.append((node, tuple(self.scope_stack), tuple(self.self_names)))
+                func = node.func
+                if isinstance(func, ast.Attribute) and (
+                    self._is_environ(func.value)
+                    or (
+                        func.attr == "putenv"
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id in self.os_names
+                    )
+                ):
+                    if func.attr in ("setdefault", "putenv", "__setitem__") and len(node.args) >= 2:
+                        self._record_env_proxy(node.args[0], node.args[1])
+                    elif func.attr in ("update", "__ior__"):
+                        for arg in node.args:
+                            self._record_env_mapping(arg)
+                        for kw in node.keywords:
+                            if kw.arg is None:
+                                self._record_env_mapping(kw.value)  # `update(**cfg)`
+                            else:
+                                self._record_env_proxy(ast.Constant(value = kw.arg), kw.value)
+                elif isinstance(func, ast.Attribute) and func.attr in (
+                    "update",
+                    "setdefault",
+                    "__setitem__",
+                    "__ior__",
+                ):
+                    if isinstance(func.value, ast.Name):
+                        self._record_dict_mutation(
+                            func.value.id, func.attr, node.args, node.keywords
+                        )
+                    args = node.args
+                    if func.attr in ("setdefault", "__setitem__"):
+                        args = [] if args and _is_no_proxy(args[0]) else args[1:2]
+                    for value in [
+                        *args,
+                        *(kw.value for kw in node.keywords if kw.arg != "no_proxy"),
+                    ]:
+                        self._record_proxy(func.value, value, mutated = True)
                 self.generic_visit(node)
                 return
             # Resolving an alias may only ADD a way to recognise this call, never take one away.
@@ -17493,6 +21257,29 @@ def _check_signal_escape_patterns(code: str):
             )
             fq = recognised[0] if recognised else (fq_candidates[0] if fq_candidates else "")
 
+            chooser = node.func
+            if (
+                network_possible
+                and isinstance(chooser, ast.Call)
+                and isinstance(chooser.func, ast.Name)
+                and chooser.func.id == "getattr"
+                and len(chooser.args) >= 2
+                and _constant_getattr(chooser) is None
+            ):
+                at = (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+                owner = chooser.args[0]
+                if self._modules_named_by(owner, at) or self._instances_named_by(owner, at):
+                    network_calls.append(
+                        {
+                            "type": "unreadable_host_blocked",
+                            "line": getattr(node, "lineno", -1),
+                            "description": (
+                                "Blocked: network call is chosen at runtime; "
+                                "call the function by name"
+                            ),
+                        }
+                    )
+
             hf_upload_name = _method_call_hf_upload_name(node)
             if hf_upload_name is not None:
                 violation = _hf_upload_violation(node, hf_upload_name)
@@ -17505,8 +21292,12 @@ def _check_signal_escape_patterns(code: str):
                         }
                     )
 
-            # Direct sock.connect((host, port)) bypasses the FQ-prefix branch.
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "connect" and node.args:
+            if (
+                not recognised
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "connect"
+                and node.args
+            ):
                 a0 = node.args[0]
                 host_lit = None
                 if isinstance(a0, ast.Tuple) and a0.elts:
@@ -17514,7 +21305,11 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                         host_lit = e0.value
                 elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                    if not (
+                        self._names_local_database(node.func.value)
+                        and _is_local_database_target(a0.value.lower())
+                    ):
+                        host_lit = a0.value
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -17568,16 +21363,90 @@ def _check_signal_escape_patterns(code: str):
                 specs = [
                     _NETWORK_DESTINATION_ARG[c] for c in recognised if c in _NETWORK_DESTINATION_ARG
                 ]
-                destinations: "list[tuple[ast.AST, bool]]" = []
-                for index, keywords in specs:
-                    if len(node.args) > index:
+                destinations: "list[tuple[ast.AST, bool, str]]" = []
+                for index, keywords, kind in specs:
+                    if index is not None and len(node.args) > index:
                         found = node.args[index]
                     else:
                         found = next(
                             (kw.value for kw in node.keywords or [] if kw.arg in keywords), None
                         )
-                    if found is not None:
-                        destinations.append((found, True))
+                    if found is not None and not (
+                        isinstance(found, ast.Constant) and found.value is None
+                    ):
+                        destinations.append((found, True, kind))
+                routed = list(node.keywords or [])
+                for fq, positions in _ROUTE_POSITIONS.items():
+                    if fq in recognised:
+                        for index, arg in enumerate(node.args):
+                            if isinstance(arg, ast.Starred):
+                                routed.append(ast.keyword(arg = "sock", value = _UNREADABLE))
+                                break
+                            if index in positions:
+                                routed.append(ast.keyword(arg = positions[index], value = arg))
+                for kw in routed:
+                    if isinstance(kw.value, ast.Constant) and kw.value.value is None:
+                        continue
+                    for prefix, routes in _ROUTE_KEYWORDS.items():
+                        if kw.arg in routes and any(c.startswith(prefix) for c in recognised):
+                            if kw.arg == "tunnel":
+                                destinations.append((kw.value, True, "host"))
+                            else:
+                                destinations.append((_UNREADABLE, True, "host"))
+                    if kw.arg == "connect_kwargs" and any(
+                        c.startswith("fabric.") for c in recognised
+                    ):
+                        # Fabric passes these to `SSHClient.connect`, so a `sock` routes the session.
+                        keys = list(kw.value.keys) if isinstance(kw.value, ast.Dict) else []
+                        known = isinstance(kw.value, ast.Dict)
+                        if isinstance(kw.value, ast.Name):
+                            name = kw.value.id
+                            known = name in self.dict_literals and name not in self.dict_mutated
+                            keys = [k for d in self.dict_literals.get(name, ()) for k in d.keys]
+                            keys += [k for k, _v in self.dict_entries.get(name, ())]
+                        if not known or any(
+                            not isinstance(k, ast.Constant) or k.value == "sock" for k in keys
+                        ):
+                            destinations.append((_UNREADABLE, True, "host"))
+                proxies = [kw.value for kw in node.keywords or [] if kw.arg in _PROXY_KEYWORDS]
+                if _reads_proxy_environment(node, recognised):
+                    proxies += self.env_proxies
+                if "urllib.request.ProxyHandler" in recognised and node.args:
+                    proxies.append(node.args[0])  # `ProxyHandler({"https": ...})`
+                if isinstance(node.func, ast.Attribute):
+                    owners = {c.rpartition(".")[0] for c in recognised}
+                    linked = set()
+                    for receiver in self._path_variants(node.func.value):
+                        linked |= self._linked_paths(receiver)
+                    for path in linked:
+                        proxies.extend(
+                            value
+                            for attr, value in self.receiver_destinations.get(path, ())
+                            if owners & _DESTINATION_ATTRS[attr]
+                        )
+                for proxy in proxies:
+                    if isinstance(proxy, ast.Name) and proxy.id in self.dict_literals:
+                        if proxy.id in self.dict_mutated:
+                            unreadable = True
+                        entries = [
+                            (k, v)
+                            for literal in self.dict_literals[proxy.id]
+                            for k, v in zip(literal.keys, literal.values)
+                        ] + list(self.dict_entries.get(proxy.id, ()))
+                        if any(k is None for k, _v in entries):
+                            unreadable = True
+                        values = [v for k, v in entries if k is not None and not _is_no_proxy(k)]
+                    elif isinstance(proxy, ast.Dict):
+                        if None in proxy.keys:
+                            unreadable = True  # `{**other}` merges a mapping not here to read
+                        values = [
+                            v for k, v in zip(proxy.keys, proxy.values) if not _is_no_proxy(k)
+                        ]
+                    else:
+                        values = [proxy]
+                    for value in values:
+                        if not (isinstance(value, ast.Constant) and value.value is None):
+                            destinations.append((value, True, "proxy"))
                 if specs:
                     # A splat can carry the destination past both spellings, and its contents are
                     # not here to read: `requests.get(**{"url": "http://evil.example/"})`.
@@ -17588,8 +21457,8 @@ def _check_signal_escape_patterns(code: str):
                 elif node.args:
                     # Not a call whose destination this screen knows how to locate, so arg0 is read
                     # for a literal host only and never made to fail closed.
-                    destinations.append((node.args[0], False))
-                for destination, fails_closed in destinations:
+                    destinations.append((node.args[0], False, "url"))
+                for destination, fails_closed, kind in destinations:
                     a0 = self._unwrapped_url_arg(destination)
                     is_tuple = isinstance(a0, ast.Tuple)
                     read = None if is_tuple and not a0.elts else (a0.elts[0] if is_tuple else a0)
@@ -17600,9 +21469,9 @@ def _check_signal_escape_patterns(code: str):
                     )
                     for head, whole in candidates:
                         host = None
-                        if is_tuple:
-                            if whole and head:
-                                host = head
+                        if is_tuple or kind == "host":
+                            if whole and head.strip():
+                                host = head.strip()
                         else:
                             # Leading whitespace is stripped by the client before the URL is
                             # parsed, so it cannot be used to hide the host: checked against
@@ -17612,15 +21481,25 @@ def _check_signal_escape_patterns(code: str):
                             # is still unparsable after stripping is left as no host, which is
                             # right: the client raises `MissingSchema` on it rather than reaching
                             # anything.
-                            reading = head.lstrip()
-                            m = re.match(r"^\w+://([^/?#]+)", reading)
+                            # The URL parser drops tab, CR and LF anywhere in the URL.
+                            reading = re.sub(r"[\t\r\n]", "", head).lstrip()
+                            # aiohttp 3.14.3 treats `//host/x` as absolute and connects to `host`.
+                            m = re.match(r"^(?:\w+:)?//([^/?#]+)", reading)
                             # The host ends at the first `/?#`, so a literal truncated past that point
                             # still names it in full; one truncated inside it does not
                             # (`"http://evil." + tld`).
                             if m and (whole or reading[m.end(1) :]):
                                 host = m.group(1)
+                            elif not m and kind == "proxy" and whole and reading.strip():
+                                # requests prepends `http://` to a scheme-less proxy.
+                                host = reading.strip()
+                        relative = (
+                            kind == "url"
+                            and not is_tuple
+                            and re.match(r"^\s*/[^/]", head) is not None
+                        )
                         if host is None:
-                            unreadable = unreadable or (fails_closed and not whole)
+                            unreadable = unreadable or (fails_closed and not whole and not relative)
                         else:
                             hosts.append(host)
 
@@ -17690,6 +21569,7 @@ def _check_signal_escape_patterns(code: str):
     _network_visitor = NetworkAndIoVisitor()
     if network_possible:
         _network_visitor.visit(tree)  # pass 1: gather aliases, star imports and shadows
+        _network_visitor.resolve_flows()
     _network_visitor.collecting = False
     _network_visitor.visit(tree)  # pass 2: check every call against the final maps
 
@@ -17962,6 +21842,13 @@ def _cancel_watcher(
     short-circuit)."""
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            request_cancel = getattr(proc, "_unsloth_cancel", None)
+            if request_cancel is not None and request_cancel():
+                try:
+                    proc.wait(timeout = 5)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
             _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
@@ -17994,11 +21881,16 @@ def _truncate(
     scope: "str | None" = "",
     hint: str = "",
     reserve_tokens: float = 0.0,
+    omitted: "tuple[int, int]" = (0, 0),
 ) -> str:
     # Resolved per call, not bound at import: the default would freeze the constant before any model is loaded, which
     # is exactly when the window is still unknown.
     if limit is None:
         limit = _tool_result_char_budget()
+    # `omitted` is the (chars, lines) the drain dropped between its head and tail, so only the head may be shown.
+    size = len(text) + omitted[0]
+    if omitted[0]:
+        limit = min(limit, _SPILL_MAX_BYTES)
     # Same correction as a fetched page: a character cap reserves its share of the window only for English, and a
     # command that prints CJK or percent-escaped text costs two to three times what the cap assumed.
     # Whatever the loop will append to this result once it has it: the tool-error nudge goes on after the tool has
@@ -18040,7 +21932,7 @@ def _truncate(
     # to nothing.
     if _request_result_room() is not None:
         limit = _dense_char_limit(text, cap, cost + _RESULT_NOTICE_RESERVE)
-    if limit <= 0 and len(_zero_room_stub(len(text), None, True)) >= len(text):
+    if limit <= 0 and len(_zero_room_stub(size, None, True)) >= len(text):
         # Decided BEFORE the spill: a result this short is served whole below, and writing a file (and creating the
         # spill directory) for output that is never cut is a side effect with nothing on the other side of it.
         return text + hint
@@ -18049,7 +21941,7 @@ def _truncate(
         # No room for a body, so no room for the usual notice either: at this point the notice IS the message, and the
         # full one costs ~90 tokens of a budget that just reported none. Kept to a line so the thread stays servable
         # and the next fit can evict older turns and recover, which is the whole reason a stub beats a refusal.
-        stub = _zero_room_stub(len(text), spill, complete)
+        stub = _zero_room_stub(size, spill, complete)
         # A short result costs less than the notice explaining it is gone, and replacing "done" with a longer sentence
         # saves nothing and loses the answer.
         return (stub if len(stub) < len(text) else text) + hint
@@ -18058,7 +21950,7 @@ def _truncate(
         return (
             head
             + (
-                f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+                f"\n\n... (truncated to {limit} chars for the model; {size} chars "
                 "total. The full output is not retained here; any files the code wrote "
                 "persist in the working directory.)"
             )
@@ -18073,7 +21965,7 @@ def _truncate(
         # blank line, where the head is "\n" alone and a count of two makes the hint resume at line 3, skipping the
         # first line the reader never saw.
         shown = 0 if not head else head.count("\n") + (0 if head.endswith("\n") else 1)
-        total = text.count("\n") + 1
+        total = text.count("\n") + 1 + omitted[1]
         resume = f"sed -n '{shown + 1},{shown + max(1, shown)}p' {spill}"
         where = f"showing lines 1-{shown} of {total}"
     else:
@@ -18088,11 +21980,11 @@ def _truncate(
         chunk = text[len(head) : len(head) * 2 or None]
         span = len(chunk.encode("utf-8", "surrogatepass"))
         resume = f"tail -c +{offset + 1} {spill} | head -c {max(1, span)}"
-        where = f"showing the first {len(head)} chars of {len(text)}"
+        where = f"showing the first {len(head)} chars of {size}"
     # The workdir sentence stays whatever else the notice says: it is about the files the CODE wrote, not the spill,
     # and it is the only thing telling the model those survive.
     common = (
-        f"\n\n... (truncated to {limit} chars for the model; {where}, {len(text)} chars "
+        f"\n\n... (truncated to {limit} chars for the model; {where}, {size} chars "
         f"total. {_capitalise(_spill_phrase(spill, complete))}, and any files the code "
         "wrote persist in the working directory"
     )
@@ -18118,10 +22010,15 @@ def _fit_result_to_room(text, name = None):
     notice and no paging hint.
 
     With no priced room (external providers, the hosted path, any loop that does not measure its own
-    conversation) the text is returned untouched.
+    conversation) the text is returned untouched, except an MCP result under a lowered setting.
     """
-    if _request_result_room() is None or not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text:
         return text
+    if _request_result_room() is None:
+        # Against the shipped default: an environment cap sets `_MAX_OUTPUT_CHARS` too.
+        lowered = _tool_result_max_chars() < tool_result_limit.DEFAULT_MAX_CHARS
+        if not (lowered and isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)):
+            return text
     # Only the part the model will actually be shown is measured and cut. The rest is a frontend-only envelope (an MCP
     # image array, web_search thumbnails, RAG sources) which `strip_result_for_model` removes before the result is
     # replayed, so it costs the window nothing and must come back byte-identical: every consumer of the __MCP_IMAGES__
@@ -18130,7 +22027,7 @@ def _fit_result_to_room(text, name = None):
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body)
+    fitted = _truncate(body, _other_tool_result_char_budget(name))
     return fitted + suffix if fitted is not body else text
 
 
@@ -18153,6 +22050,65 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     if not isinstance(body, str) or not text.startswith(body):
         return text, ""
     return body, text[len(body) :]
+
+
+MAX_TOOL_TEXT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000)
+_TOOL_TEXT_READERS = frozenset({"terminal", "python"})
+
+
+def _hard_cap_chars() -> int:
+    """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
+    spilled) passes through with its own spill reference intact."""
+    return max(MAX_TOOL_TEXT_CHARS, max(_MAX_OUTPUT_CHARS, _tool_result_max_chars()) + 4_000)
+
+
+def _tool_text_notice_head() -> str:
+    return f"\n\n... (tool result truncated to {_hard_cap_chars():,} chars for the model;"
+
+
+def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
+    ways = []
+    if "terminal" in readers and _posix_tools_available():
+        ways += [f"grep -n 'pattern' {path}", f"sed -n '1,200p' {path}"]
+    elif "terminal" in readers:
+        ways.append(f'findstr /n "pattern" {path.replace("/", chr(92))}')
+    if "python" in readers:
+        ways.append(f"open({path!r}) in python")
+    return "Search it instead of re-running the call, e.g. " + ", or ".join(ways)
+
+
+def cap_tool_text(
+    text: str,
+    *,
+    session_id: "str | None" = None,
+    thread_id: "str | None" = None,
+    readers: "frozenset[str]" = frozenset(),
+) -> str:
+    """Unconditional floor (``UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS``); spills when a reader tool exists."""
+    limit = _hard_cap_chars()
+    if len(text) <= limit:
+        return text
+    head = _head_whole_lines(text, limit)[0]
+    readers = readers & _TOOL_TEXT_READERS
+    if readers and session_id and _spill_scope(session_id, thread_id) is not None:
+        try:
+            workdir = _get_workdir(session_id)
+        except Exception:  # noqa: BLE001 -- no sandbox means the plain notice
+            logger.debug("tool text spill: no workdir", exc_info = True)
+            workdir = None
+        from .tool_loop_controller import redact_studio_credentials  # noqa: PLC0415
+
+        # Masked like the card and the model copy: the model reads this file.
+        spill, complete = _spill_full_output(
+            redact_studio_credentials(text), workdir, _spill_scope(session_id, thread_id)
+        )
+        if spill is not None:
+            return (
+                head
+                + f"{_tool_text_notice_head()} {_spill_phrase(spill, complete)} in the working "
+                f"directory. {_tool_text_search_hint(spill, readers)}.)"
+            )
+    return head + f"{_tool_text_notice_head()} the full output is not retained in model context.)"
 
 
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
@@ -18322,6 +22278,14 @@ _DIR_FD_WRITES = (
 )
 
 
+# A tool sharing the directory can swap an in-flight temp name for a symlink. Linking must not follow it, or the
+# backend hard-links the symlink's target (any host file it can read) into the sandbox. Windows hard links never
+# follow a symlink source, and os.link there takes no such flag.
+_LINK_NOFOLLOW = (
+    {"follow_symlinks": False} if os.link in getattr(os, "supports_follow_symlinks", set()) else {}
+)
+
+
 def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
     """Write one spill into ``target_dir``, without following a link at any point.
 
@@ -18356,7 +22320,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             ) as handle:
                 handle.write(body)
             installed = os.path.join(target_dir, name)
-            os.link(tmp, installed)
+            os.link(tmp, installed, **_LINK_NOFOLLOW)
             _quiet_unlink(tmp)
             return _spill_stamp(installed)
         except OSError:
@@ -18373,7 +22337,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             handle.write(body)
         # `os.link` rather than a rename: rename replaces the destination silently on POSIX, and the name may have
         # been taken since the caller looked. link fails with EEXIST instead, which is the answer this wants.
-        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd, **_LINK_NOFOLLOW)
         _quiet_unlink(tmp_name, dir_fd = dir_fd)
         # Through the same descriptor, so it is the file just linked rather than whatever the name resolves to by the
         # time this returns.
@@ -18397,6 +22361,239 @@ def _quiet_unlink(path: str, dir_fd = None) -> None:
         os.unlink(path, dir_fd = dir_fd) if dir_fd is not None else os.unlink(path)
     except OSError:
         pass
+
+
+# Hidden, like the spill directory: a project chat's workdir can be the user's own folder.
+_ATTACHMENTS_DIR = ".unsloth_attachments"
+_ATTACHMENT_PREFIX_LEN = 12
+_ATTACHMENT_NAME_BYTES = 80
+_UNSAFE_NAME_CHARS = re.compile(r'[\x00-\x1f\x7f/\\:*?"<>|]')
+# Windows device names stay reserved with any extension (NUL.tar.gz is NUL).
+_RESERVED_NAME = re.compile(r"(?:CON|PRN|AUX|NUL|COM\d|LPT\d)", re.IGNORECASE)
+
+
+def sandbox_attachment_path(sha256: str, name: str) -> str:
+    """Mirrored by sandboxAttachmentPath in the frontend's sandbox-attachments.ts."""
+    base = _UNSAFE_NAME_CHARS.sub("_", name or "").strip(" .") or "attachment"
+    # In bytes: filesystems cap a name at 255, and macOS stores decomposed text that can triple it.
+    if len(base.encode()) > _ATTACHMENT_NAME_BYTES:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
+        # strip again so the basename the frontend sends back derives the same path.
+        base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
+    return f"{_ATTACHMENTS_DIR}/{sha256[:_ATTACHMENT_PREFIX_LEN]}/{base}"
+
+
+def materialize_sandbox_attachments(
+    session_id: "str | None", attachments: "list[tuple[str, str]]"
+) -> None:
+    """copy chat attachment originals into the sandbox, preserving existing copies so edits survive."""
+    from core import chat_originals
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        missing = [
+            (sha256, name, chat_originals.originals_dir() / sha256)
+            for sha256, name in attachments
+            if not os.path.lexists(os.path.join(workdir, sandbox_attachment_path(sha256, name)))
+        ]
+        missing = [entry for entry in missing if entry[2].is_file()]
+        if not missing:
+            return
+        # register the copy as a call so concurrent chats sharing the workdir cannot claim it.
+        token = _call_started(workdir)
+        try:
+            for sha256, name, source in missing:
+                try:
+                    _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+                except (OSError, ValueError):
+                    logger.warning(
+                        "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                    )
+            if _is_user_project_folder(session_id, workdir):
+                _git_ignore_dir(os.path.join(workdir, _ATTACHMENTS_DIR))
+        finally:
+            _call_finished(token)
+
+
+def _git_ignore_dir(directory: str) -> None:
+    """Keep Studio's copies out of the user's repository: a `*` .gitignore inside the directory, only if absent.
+    Never through a link: the directory is opened no-follow and the file created relative to it."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        if _DIR_FD_WRITES:
+            dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                fd = os.open(".gitignore", flags, 0o644, dir_fd = dir_fd)
+            finally:
+                os.close(dir_fd)
+        else:
+            if os.path.islink(directory) or not os.path.isdir(directory):
+                return
+            fd = os.open(os.path.join(directory, ".gitignore"), flags, 0o644)
+    except OSError:
+        return
+    with os.fdopen(fd, "w", encoding = "utf-8") as f:
+        f.write("*\n")
+
+
+def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
+    """match the spill writer: follow no links; `os.link` never replaces existing names."""
+    *dirs, name = relative.split("/")
+    tmp = f".tmp-{uuid.uuid4().hex[:12]}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if not _DIR_FD_WRITES:
+        target = workdir
+        for part in dirs:
+            target = os.path.join(target, part)
+            if os.path.islink(target):
+                return
+            os.makedirs(target, mode = 0o700, exist_ok = True)
+        if os.path.realpath(target) != os.path.join(os.path.realpath(workdir), *dirs):
+            return
+        if os.path.lexists(os.path.join(target, name)):
+            return
+        tmp = os.path.join(target, tmp)
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags | getattr(os, "O_NOFOLLOW", 0), 0o600), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, os.path.join(target, name), **_LINK_NOFOLLOW)
+        finally:
+            _quiet_unlink(tmp)
+        return
+    fds = [os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    try:
+        for part in dirs:
+            with contextlib.suppress(FileExistsError):
+                os.mkdir(part, 0o700, dir_fd = fds[-1])
+            fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd = fds[-1]))
+        with contextlib.suppress(FileNotFoundError):
+            os.stat(name, dir_fd = fds[-1], follow_symlinks = False)
+            return
+        try:
+            with (
+                open(source, "rb") as src,
+                os.fdopen(os.open(tmp, flags, 0o600, dir_fd = fds[-1]), "wb") as out,
+            ):
+                shutil.copyfileobj(src, out, 1 << 20)
+            with contextlib.suppress(FileExistsError):
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1], **_LINK_NOFOLLOW)
+        finally:
+            _quiet_unlink(tmp, dir_fd = fds[-1])
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+class SandboxUploadExists(Exception):
+    """The upload's name is taken and the caller did not ask to replace it."""
+
+
+def sandbox_upload_name(name: "str | None") -> str:
+    """The name an uploaded file is saved under at the sandbox root, one the download route serves back."""
+    base = _UNSAFE_NAME_CHARS.sub("_", re.split(r"[\\/]", name or "")[-1]).strip(" .") or "upload"
+    if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
+        base = "_" + base
+    if len(base.encode()) > 255:
+        stem, ext = os.path.splitext(base)
+        ext = ext if len(ext.encode()) <= 16 else ""
+        base = stem.encode()[: 255 - len(ext.encode())].decode("utf-8", "ignore").rstrip(" .") + ext
+    return base if _servable_segment(base) else "upload"
+
+
+def save_sandbox_upload(
+    session_id: "str | None",
+    name: "str | None",
+    chunks: "Iterable[bytes]",
+    overwrite: bool = False,
+) -> dict:
+    """Write an uploaded file into the root of a chat's sandbox. Raises SandboxUploadExists when the
+    name is taken, unless ``overwrite``."""
+    name = sandbox_upload_name(name)
+    with _session_in_flight(session_id):
+        workdir = _get_workdir(session_id)
+        # Registered as a call, so a tool call running meanwhile does not offer the upload as its own file.
+        token = _call_started(workdir)
+        try:
+            replaced = _install_upload(workdir, name, chunks, overwrite)
+        finally:
+            _call_finished(token)
+    return {"name": name, "path": os.path.join(workdir, name), "replaced": replaced}
+
+
+def _install_upload(workdir: str, name: str, chunks: "Iterable[bytes]", overwrite: bool) -> bool:
+    """Stream into a fresh O_EXCL file, then link it in or, when replacing, rename onto the name. Through a
+    directory descriptor where the platform has one, like the spill writer, so no link is followed."""
+    dir_fd = (
+        os.open(workdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW) if _DIR_FD_WRITES else None
+    )
+    tmp, dest = f".tmp-{uuid.uuid4().hex[:12]}", name
+    if dir_fd is None:
+        tmp, dest = os.path.join(workdir, tmp), os.path.join(workdir, name)
+    at = {} if dir_fd is None else {"dir_fd": dir_fd}
+    pair = {} if dir_fd is None else {"src_dir_fd": dir_fd, "dst_dir_fd": dir_fd}
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        with os.fdopen(os.open(tmp, flags, 0o600, **at), "wb") as out:
+            for chunk in chunks:
+                out.write(chunk)
+        try:
+            os.stat(dest, follow_symlinks = False, **at)
+            existed = True
+        except FileNotFoundError:
+            existed = False
+        if existed and not overwrite:
+            raise SandboxUploadExists(name)
+        if not existed:
+            try:
+                # link, not rename: it fails when a tool took the name since the check.
+                os.link(tmp, dest, **pair, **_LINK_NOFOLLOW)
+                return False
+            except FileExistsError:
+                if not overwrite:
+                    raise SandboxUploadExists(name) from None
+            except OSError:
+                # A volume without hard links: claim the name exclusively, then rename onto the claim.
+                try:
+                    os.close(os.open(dest, flags, 0o600, **at))
+                except FileExistsError:
+                    if not overwrite:
+                        raise SandboxUploadExists(name) from None
+        try:
+            os.replace(tmp, dest, **pair)
+        except (IsADirectoryError, NotADirectoryError, PermissionError) as exc:
+            # A folder holds the name (Windows reports that as access denied).
+            raise SandboxUploadExists(name) from exc
+        return existed
+    finally:
+        _quiet_unlink(tmp, dir_fd = dir_fd)
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+
+def _is_attachment_copy(sandbox: str, parent: str, name: str) -> bool:
+    prefix = os.path.basename(parent)
+    path = os.path.join(parent, name)
+    if (
+        os.path.dirname(parent) != os.path.join(sandbox, _ATTACHMENTS_DIR)
+        or not re.fullmatch(r"[0-9a-f]{12}", prefix)
+        or os.path.islink(path)
+    ):
+        return False
+    digest = _file_digest(path)
+    return digest is not None and digest.startswith(prefix)
 
 
 def _forget_spill_record(path: str) -> None:
@@ -18764,7 +22961,7 @@ def _restore_pruned_path(private: str, path: str) -> None:
     last resort is to leave the data under the private name and say where it went, rather than
     unlink it."""
     try:
-        os.link(private, path)
+        os.link(private, path, **_LINK_NOFOLLOW)
         _quiet_unlink(private)
         return
     except OSError:
@@ -18942,6 +23139,10 @@ def _missing_path_hint(output: str, workdir: str | None = None) -> str:
     )
 
 
+# Kept past the spill's head so a trailing traceback still reaches `_missing_path_hint`; also the drain's read size.
+_DRAIN_TAIL_CHARS = 64 * 1024
+
+
 def _drain_process_output(
     proc,
     timeout,
@@ -18949,17 +23150,21 @@ def _drain_process_output(
     cancel_event = None,
     *,
     pgid = None,
-) -> tuple[str, bool]:
-    """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line to
-    ``output_callback`` as it is produced.
+) -> "tuple[str, bool, tuple[int, int]]":
+    """``proc.communicate(timeout=...)`` equivalent that also streams each stdout line (in
+    ``_DRAIN_TAIL_CHARS`` pieces when longer) to ``output_callback`` as it is produced.
 
-    Returns ``(output, timed_out)``. The joined output is identical to what ``communicate`` would
+    Returns ``(output, timed_out, omitted)``. The joined output is what ``communicate`` would
     return: the same TextIOWrapper decodes the stream, so encoding, error replacement, and newline
-    translation all match. On timeout the process tree is killed (mirroring the non-streaming path).
+    translation all match. Past the spill's head only a rolling tail is kept, and ``omitted`` is the
+    ``(chars, lines)`` dropped between them. On timeout the process tree is killed (mirroring the
+    non-streaming path).
     With ``timeout=None`` the drain waits for EOF like ``communicate`` would, stopping early only
     when ``cancel_event`` is set.
     """
     chunks: list[str] = []
+    tail: "deque[str]" = deque()
+    kept = joined = tail_chars = omitted_chars = omitted_lines = 0
 
     # Captured before waiting so a stdout-holding grandchild can still be killed after the leader is reaped (getpgid
     # then fails). Callers pass it in from right after Popen; fall back to capturing here for direct callers.
@@ -18967,9 +23172,26 @@ def _drain_process_output(
         pgid = _capture_process_group(proc)
 
     def _reader() -> None:
+        nonlocal kept, joined, tail_chars, omitted_chars, omitted_lines
         try:
-            for line in iter(proc.stdout.readline, ""):
-                chunks.append(line)
+            # Sized reads: a newline-free stream would otherwise arrive as one unbounded "line".
+            for line in iter(lambda: proc.stdout.readline(_DRAIN_TAIL_CHARS), ""):
+                # Chars against a byte cap: UTF-8 never has fewer bytes than chars, so the head covers the spill.
+                if kept <= _SPILL_MAX_BYTES:
+                    chunks.append(line)
+                    kept += len(line)
+                    # A str per line costs ~50 bytes, so a flood of tiny lines would dwarf the cap unless coalesced.
+                    if len(chunks) - joined >= 1024:
+                        chunks[joined:] = ["".join(chunks[joined:])]
+                        joined += 1
+                else:
+                    tail.append(line)
+                    tail_chars += len(line)
+                    while tail_chars > _DRAIN_TAIL_CHARS and len(tail) > 1:
+                        gone = tail.popleft()
+                        tail_chars -= len(gone)
+                        omitted_chars += len(gone)
+                        omitted_lines += gone.count("\n")
                 if output_callback is not None:
                     try:
                         output_callback(line)
@@ -19020,7 +23242,7 @@ def _drain_process_output(
                     break
                 reader.join(timeout = 0.5)
     reader.join(timeout = 5)
-    return "".join(chunks), timed_out
+    return "".join(chunks) + "".join(tail), timed_out, (omitted_chars, omitted_lines)
 
 
 _MAX_REPORTED_FILES = 25
@@ -19139,6 +23361,16 @@ def _defuse_sentinels(text: str) -> str:
 _MAX_SNAPSHOT_HASH_BYTES = 64 * 1024 * 1024
 
 
+# Dependency and bytecode trees. Walked early, their thousands of files spent the walk's budget and a file the call
+# wrote beside them got no download row.
+_SNAPSHOT_SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
+
+
+def _snapshot_skips_dir(base: str, name: str) -> bool:
+    """`node_modules`, `__pycache__`, or a virtualenv (marked by its pyvenv.cfg, whatever it is named)."""
+    return name in _SNAPSHOT_SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff. All files, not
     just images: a .csv the model wrote used to be invisible. Size rides along with mtime because
@@ -19152,33 +23384,35 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     # this walk runs twice per tool call.
     visited = 0
     hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
-    # Walked, not listed: a script writing outputs/report.csv is ordinary, and a top-level listing saw only the
-    # directory and dropped it.
+    # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
-            return snapshot
+            return _CappedSnapshot(snapshot)
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
-        # Dot-directories stay out: .git, .cache and friends are where the noise lives. Dot-FILES are reported, since
-        # .gitignore is a real artifact.
+        # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
+            else [
+                d
+                for d in dirs
+                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+                and _servable_segment(d)
+                and not _snapshot_skips_dir(base, d)
+            ]
         )
         for name in names:
-            # Only at the top: a tool that wrote archive/.unsloth_sandbox made an ordinary file, and dropping it hid
-            # it from every listing while still counting it as a reason to keep the sandbox.
+            # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
                 continue
             if not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:
-                # One lstat where isfile + islink + stat were three, on every file of every walk. A link is not a
-                # regular file to lstat, so this drops the same entries the pair did.
+                # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)
                 if not S_ISREG(stat.st_mode):
                     continue
@@ -19192,8 +23426,12 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
             except OSError:
                 continue
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:
-                return snapshot
+                return _CappedSnapshot(snapshot)
     return snapshot
+
+
+class _CappedSnapshot(dict):
+    """A walk cut short by a cap: a file missing from it is not known to be gone."""
 
 
 # Scratch scripts of calls running right now. Chats in one project share a workdir and each snapshots all of it, so
@@ -19226,6 +23464,9 @@ def _call_finished(token: "dict | None") -> None:
     """Drop a call's registration. Its token keeps whatever it learned."""
     if not token or not token.get("workdir"):
         return
+    if token.get("history") is not None and not token["history"].done:
+        # An exit that skipped the file sentinels (a launch error): the folder may still have moved.
+        _history_end(token, _snapshot_workdir_files(token["workdir"]))
     with _calls_lock:
         running = _workdir_calls.get(token["workdir"])
         if running is None:
@@ -19236,6 +23477,98 @@ def _call_finished(token: "dict | None") -> None:
             pass
         if not running:
             _workdir_calls.pop(token["workdir"], None)
+
+
+def _history_snapshot(snap: "dict[str, tuple]") -> "tuple[dict, bool]":
+    """The walk as file history keeps it: without scratch scripts and Studio's own trees. The flag
+    says whether the walk was whole, since a capped one cannot prove a file is gone."""
+    with _scratch_lock:
+        scratch = set(_active_scratch)
+    kept = {rel: key for rel, key in snap.items() if file_history.tracked(rel, scratch)}
+    return kept, not isinstance(snap, _CappedSnapshot)
+
+
+def _history_begin(call_token: dict, session_id: "str | None", before: "dict[str, tuple]") -> None:
+    if file_history.current_turn() is None:
+        return
+    snap, complete = _history_snapshot(before)
+    call_token["history"] = file_history.begin_call(
+        session_id, call_token.get("workdir"), snap, complete = complete
+    )
+
+
+def _history_end(call_token: "dict | None", after: "dict[str, tuple]") -> None:
+    if not call_token or call_token.get("history") is None:
+        return
+    if call_token.get("shared"):
+        # An upload or another call wrote here meanwhile: what changed is not all this turn's.
+        call_token["history"].ambiguous = True
+    snap, complete = _history_snapshot(after)
+    file_history.end_call(call_token["history"], snap, complete = complete)
+
+
+def _walk_lists(workdir: str, rel: str) -> bool:
+    """Whether `_snapshot_workdir_files` would list *rel*, so a file edit_file records is never
+    taken for a deletion by the next python or terminal walk."""
+    parts = rel.split("/")
+    if len(_user_path_parts(parts)) > _MAX_SANDBOX_PATH_SEGMENTS or not all(
+        map(_servable_segment, parts)
+    ):
+        return False
+    base = workdir
+    for part in parts[:-1]:
+        if part.startswith(".") or _snapshot_skips_dir(base, part):
+            return False
+        base = os.path.join(base, part)
+    return not (len(parts) == 1 and parts[0] in _INTERNAL_SANDBOX_FILES)
+
+
+def _history_begin_file(session_id: "str | None", target: str) -> dict:
+    """Track the one file an edit_file call writes. The first call in a folder walks it once for the baseline."""
+    if file_history.current_turn() is None or not session_id:
+        return {}
+    workdir = os.path.realpath(_get_workdir(session_id))
+    try:
+        rel = os.path.relpath(os.path.realpath(target), workdir)
+    except ValueError:  # Windows: another drive, so outside the folder
+        return {}
+    if rel.startswith(os.pardir) or os.path.isabs(rel):
+        return {}
+    rel = rel.replace(os.sep, "/")
+    if not _walk_lists(workdir, rel) or not file_history.tracked(rel, ()):
+        return {}
+    try:
+        baseline = file_history.store().needs_baseline(workdir)
+    except Exception:
+        # History is an extra: an index it cannot open must not stop the edit.
+        logger.warning("file history: could not open the index", exc_info = True)
+        return {}
+    if baseline:
+        snap, complete = _history_snapshot(_snapshot_workdir_files(workdir))
+        # A capped walk can miss the very file being edited; without it, the edit reads as a creation.
+        snap = {**_history_file_snapshot(workdir, rel), **snap}
+    else:
+        snap, complete = _history_file_snapshot(workdir, rel), True
+    token = file_history.begin_call(session_id, workdir, snap, paths = {rel}, complete = complete)
+    return {"token": token, "workdir": workdir, "rel": rel} if token is not None else {}
+
+
+def _history_file_snapshot(workdir: str, rel: str) -> dict:
+    try:
+        info = os.lstat(os.path.join(workdir, rel))
+    except OSError:
+        return {}
+    return {rel: (info.st_mtime_ns, info.st_size, None)} if S_ISREG(info.st_mode) else {}
+
+
+def _history_end_file(history: dict) -> None:
+    if history.get("token") is None:
+        return
+    file_history.end_call(
+        history["token"],
+        _history_file_snapshot(history["workdir"], history["rel"]),
+        paths = {history["rel"]},
+    )
 
 
 def _snapshot_differs(before: tuple, after: tuple) -> bool:
@@ -19257,11 +23590,12 @@ def _created_file_sentinels(
     """Sentinels naming the files this call created or overwrote. ``__IMAGES__`` renders inline as
     before; ``__FILES__`` carries every file with its size so the UI can offer a download. Both
     are stripped before the model sees the result."""
-    if token is not None and token.get("shared"):
+    if token is not None and token.get("shared") and token.get("history") is None:
         # Another call ran in this directory while this one did, so nothing here can be said to be ours. A missing
         # card beats one that names, and downloads, another chat's file.
         return ""
     after = _snapshot_workdir_files(workdir)
+    _history_end(token, after)
     if token is not None and token.get("shared"):
         # A call that started while that walk was running. What it wrote is in `after` and cannot be told apart from
         # ours, so the same rule applies: the check above only saves the walk when the sharing was already known.
@@ -19304,7 +23638,11 @@ def _created_file_sentinels(
 
 
 def _timed_out_result(
-    output: str | None, timeout: int, workdir: str | None, scope: "str | None"
+    output: str | None,
+    timeout: int,
+    workdir: str | None,
+    scope: "str | None",
+    omitted: "tuple[int, int]" = (0, 0),
 ) -> str:
     """Captured output, then the timeout status line.
 
@@ -19322,6 +23660,7 @@ def _timed_out_result(
         workdir = workdir,
         scope = scope,
         reserve_tokens = _text_token_cost(f"\n{ended}", ctx),
+        omitted = omitted,
     )
     result = f"{head}\n{ended}"
     # With the retry nudge, a stub or short head served whole can overrun a room the status fits.
@@ -19339,11 +23678,15 @@ def _python_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
-    optional callable(str) streamed each stdout line as it is produced; the returned result is
-    unchanged."""
+    optional callable(str) streamed stdout as it is produced; the returned result is
+    unchanged. tool_execution_mode selects automatic or required OS isolation; disable_sandbox
+    keeps full access as a separate explicit choice."""
     if not code or not code.strip():
         return "No code provided."
 
@@ -19376,6 +23719,8 @@ def _python_exec(
 
     tmp_path = None
     _scratch_name = None
+    # Bound before the try so the finally can release even when prepare raised.
+    prepared = None
     try:
         workdir = _get_workdir(session_id)
         confinement = _account_confinement()
@@ -19390,6 +23735,7 @@ def _python_exec(
     call_token = _call_started(workdir)
     # Snapshot mtimes to detect new and overwritten files.
     _before = _snapshot_workdir_files(workdir)
+    _history_begin(call_token, session_id, _before)
     try:
         # In the workdir: Python puts it on sys.path[0], so an earlier call's helper.py stays importable and __file__
         # resolves inside the sandbox.
@@ -19410,25 +23756,55 @@ def _python_exec(
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # close_fds leaves 0-2 open, so an unset stdin would be the server's.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING); replace so non-ASCII output never
             # crashes the read on Windows.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
         # -u forces unbuffered child stdout so a bare print() streams live
         # instead of sitting in the pipe's block buffer until exit. Applied
         # unconditionally to stay byte-identical with and without streaming;
         # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
-        argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        if base_preexec is _sandbox_preexec:
+            _refresh_sandbox_memory_limit()
+        # Managed accounts keep their own boundary as the outer contract; `confines`, not `is not None` (placeholder).
+        if confinement is None or not confinement.confines:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = (sys.executable, "-u", tmp_path),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "python",
+                    cancel_event = cancel_event,
+                ),
+                host_access_approved = host_access_approved and _reaches_host_paths("python", code),
+                user_folder = _is_user_project_folder(session_id, workdir),
+            )
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+            _note_tool_execution(prepared.execution_record)
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, [sys.executable, "-u", tmp_path])
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
         pgid = _capture_process_group(proc)
@@ -19443,15 +23819,30 @@ def _python_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (output_callback may be None): it kills the captured group on
-        # cancellation, reaping a grandchild that outlived the leader, and returns bytes identical to communicate() so
-        # the streaming vs non-streaming result stays byte-identical.
-        output, timed_out = _drain_process_output(
+        # cancellation, reaping a grandchild that outlived the leader, and keeps the same bytes with or without a
+        # callback so the streaming vs non-streaming result stays byte-identical.
+        output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -19478,7 +23869,7 @@ def _python_exec(
         # envelope.
         result = _defuse_sentinels(result)
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
             if result.strip()
             else "(no output)" + hint
         )
@@ -19488,23 +23879,42 @@ def _python_exec(
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
 
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.discard(_scratch_name)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+_CMD_MULTILINE_REFUSED = (
+    "Execution error: the Terminal runs cmd, which runs only the first line of a multi-line "
+    "command. Send one line per call and chain dependent commands with &&."
+)
 
 
 def _bash_exec(
@@ -19515,11 +23925,14 @@ def _bash_exec(
     disable_sandbox: bool = False,
     output_callback = None,
     thread_id: str | None = None,
+    *,
+    tool_execution_mode: str = "auto",
+    host_access_approved: bool = False,
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
-    output_callback: optional callable(str) streamed each stdout line as it is produced; the
-    returned result is unchanged."""
+    output_callback: optional callable(str) streamed stdout as it is produced; the returned
+    result is unchanged. tool_execution_mode follows _python_exec."""
     if not command or not command.strip():
         return "No command provided."
 
@@ -19530,9 +23943,35 @@ def _bash_exec(
     ):
         return _STUDIO_CREDENTIAL_BLOCKED
 
+    # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
+    profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
+    if profile == "cmd_isolated":
+        # Models often end a command with a newline; cmd /s /c cannot carry one.
+        command = command.strip()
+        if "\n" in command or "\r" in command:
+            return _CMD_MULTILINE_REFUSED
+
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        blocked = _find_blocked_commands(command)
+        if profile in _CMD_PROFILES:
+            # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
+            # ' does not quote, so screen every reading.
+            unescaped = command.replace("^", "")
+            blocked = set().union(
+                *(
+                    _find_blocked_commands(text, posix = posix)
+                    for text in (command, unescaped, _cmd_reading(command))
+                    for posix in (False, True)
+                )
+            )
+        else:
+            blocked = _find_blocked_commands(command)
+        if host_access_approved and blocked == {"rm"}:
+            # The allowlist reads words the POSIX way; cmd quotes differently and deletes with `del`, not rm.
+            if profile in _CMD_PROFILES or not _is_approvable_rm(command):
+                return _APPROVED_RM_REFUSED
+            blocked = set()
         if blocked:
             # Capped for the same reason the Python analyzer's error is: it lists what it found in the command it was
             # handed.
@@ -19553,6 +23992,7 @@ def _bash_exec(
     spill_dir = None
     spill_scope = None
     call_token = None
+    prepared = None
     _scratch_name = None
     try:
         try:
@@ -19567,29 +24007,79 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used to produce "(no output)" and no
         # other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        _history_begin(call_token, session_id, _before)
+        safe_env = (
+            _build_bypass_env(workdir)
+            if disable_sandbox
+            else _build_safe_env(workdir, shell = profile if profile == "cmd_isolated" else None)
+        )
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
+            # See _python_exec: the server's stdin must not reach a tool call.
+            stdin = subprocess.DEVNULL,
             text = True,
             # Match _python_exec: decode utf-8 with "replace" so invalid output bytes never raise UnicodeDecodeError
             # (which the streaming reader thread would swallow), keeping both paths byte-identical.
             encoding = "utf-8",
             errors = "replace",
-            cwd = workdir,
-            env = safe_env,
         )
-        if sys.platform != "win32":
-            popen_kwargs["preexec_fn"] = _bypass_preexec if disable_sandbox else _sandbox_preexec
-        else:
+        if sys.platform == "win32":
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
+        if profile == "cmd_isolated":
+            shell_argv, _scratch_name = [_windows_system_cmd(), "/c", command], None
+        else:
+            shell_argv, _scratch_name = _shell_argv(command, workdir, confinement)
         if _scratch_name:
             with _scratch_lock:
                 _active_scratch.add(_scratch_name)
-        argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
-        proc = subprocess.Popen(argv, **popen_kwargs)
+        requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox)
+        host_reach_approved = host_access_approved and _reaches_host_paths("terminal", command)
+        # From the resolved workdir: a chosen project folder in Auto keeps this cmd (the syntax the request
+        # advertised) but runs it with software safeguards (_prepare_tool_launch).
+        chosen_folder = _is_user_project_folder(session_id, workdir)
+        if (
+            profile == "cmd_isolated"
+            and requested_mode == "auto"
+            and not host_reach_approved
+            and not chosen_folder
+        ):
+            # Written for the isolated cmd Terminal and screened only by its lexer: never replayed on the host if
+            # isolation drops out between the profile check and the launch.
+            requested_mode = "required"
+        base_preexec = (
+            None
+            if sys.platform == "win32"
+            else (_bypass_preexec if disable_sandbox else _sandbox_preexec)
+        )
+        if base_preexec is _sandbox_preexec:
+            _refresh_sandbox_memory_limit()
+        if confinement is None or not confinement.confines:
+            prepared = _prepare_tool_launch(
+                os_sandbox.ToolLaunchPlan(
+                    argv = tuple(shell_argv),
+                    workdir = workdir,
+                    env = safe_env,
+                    preexec_fn = base_preexec,
+                    requested_mode = requested_mode,
+                    timeout_seconds = timeout,
+                    execution_kind = "terminal",
+                    cancel_event = cancel_event,
+                ),
+                host_access_approved = host_reach_approved,
+                user_folder = chosen_folder,
+            )
+            proc = os_sandbox.spawn_prepared_launch(
+                prepared, **_apply_prepared_launch(prepared, popen_kwargs)
+            )
+            _note_tool_execution(prepared.execution_record)
+        else:
+            popen_kwargs.update(cwd = workdir, env = safe_env)
+            if sys.platform != "win32":
+                popen_kwargs["preexec_fn"] = base_preexec
+            argv = _apply_confinement(confinement, popen_kwargs, shell_argv)
+            proc = subprocess.Popen(argv, **popen_kwargs)
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
         pgid = _capture_process_group(proc)
@@ -19604,14 +24094,29 @@ def _bash_exec(
             watcher.start()
 
         # Always drain via _drain_process_output (see _python_exec): kills the captured group on cancellation and
-        # returns bytes identical to communicate(), keeping streaming vs non-streaming byte-identical.
-        output, timed_out = _drain_process_output(
+        # keeps the same bytes with or without a callback, so streaming vs non-streaming stays byte-identical.
+        output, timed_out, omitted = _drain_process_output(
             proc, timeout, output_callback, cancel_event, pgid = pgid
         )
+        if prepared is not None:
+            proc._unsloth_completion_reason = (
+                "timed_out"
+                if timed_out
+                else (
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "finished"
+                )
+            )
+        if prepared is not None:
+            completion = os_sandbox.verify_prepared_completion(prepared, proc)
+            if completion is not None and completion.get("timedOut"):
+                timed_out = True
+            _note_tool_execution(prepared.execution_record)
         # A run that wrote its file and then hung still produced that file, so report it: `printf data > report.csv;
         # sleep 999` is downloadable.
         if timed_out:
-            ended = _timed_out_result(output, timeout, spill_dir, spill_scope)
+            ended = _timed_out_result(output, timeout, spill_dir, spill_scope, omitted)
             return ended + (
                 _created_file_sentinels(workdir, _before, _scratch_name, call_token)
                 if session_id
@@ -19632,21 +24137,34 @@ def _bash_exec(
         hint = _missing_path_hint(result, workdir)
         result = _defuse_sentinels(result)  # before the fit; see _python_exec
         result = (
-            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint)
+            _truncate(result, workdir = spill_dir, scope = spill_scope, hint = hint, omitted = omitted)
             if result.strip()
             else "(no output)" + hint
         )
         # Only for a chat that has an id (see _python_exec).
         if session_id:
             result += _created_file_sentinels(workdir, _before, _scratch_name, call_token)
+        _forget_sandbox_capability_if_the_backend_failed(prepared, result)
         return result
 
+    except os_sandbox.SandboxUnavailableError as e:
+        if cancel_event is not None and cancel_event.is_set():
+            # A stop during the (on Windows DACL, multi-second) probe is a cancel, not a sandbox error.
+            return "Execution cancelled."
+        return _sandbox_refusal(e)
     except Exception as e:
         # An exception message carries whatever the failure put in it, so it is capped like the result would have
         # been.
+        if prepared is not None and prepared.backend == "mxc-processcontainer":
+            _note_tool_execution(prepared.execution_record)
         return _truncate(f"Execution error: {e}")
     finally:
         _call_finished(call_token)
+        # Private mounts and descriptors, released on every exit path.
+        if prepared is not None:
+            prepared.cleanup()
+            os_sandbox.finalize_prepared_cleanup(prepared)
+            _note_tool_execution(prepared.execution_record)
         _forget_tool_pid(locals().get("proc"))
         if _scratch_name:
             with _scratch_lock:

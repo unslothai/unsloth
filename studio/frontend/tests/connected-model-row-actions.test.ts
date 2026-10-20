@@ -47,11 +47,11 @@ test("a connected row draws its badges through ModelRow", () => {
   // drop there could not be honoured.
   assert.match(
     pickers,
-    /pinnedConnectedRows\.map\(\(model\) =>\s*renderConnectedModelRow\(model, true, true\)/,
+    /pinnedConnectedRows\.map\(\(model\) =>\s*renderPinnedDragRow\(\s*pinnedConnectedDrag,\s*model\.id,\s*renderConnectedModelRow\(model, true\)/,
   );
   assert.match(
     pickers,
-    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, false, !headed\)/,
+    /group\.models\.map\(\(model\) =>\s*renderConnectedModelRow\(model, !headed\)/,
   );
 });
 
@@ -103,7 +103,11 @@ test("modality comes from the resolvers the app already has", () => {
     audioAdapter,
     /const activeModel = state\.models\.find\(\(m\) => m\.id === checkpoint\);/,
   );
-  assert.match(audioAdapter, /\} else if \(!activeModel\?\.hasAudioInput\) \{/);
+  assert.match(audioAdapter, /if \(modelLoaded && !activeModel\?\.hasAudioInput\) \{/);
+  assert.match(
+    readSrc("features/chat/lib/attached-media-gate.ts"),
+    /if \(audio && !activeModel\?\.hasAudioInput\) \{/,
+  );
   // So the filter drops its Audio option rather than offering one that matches nothing.
   assert.match(
     pickers,
@@ -368,7 +372,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   const chatPage = readSrc("features/chat/chat-page.tsx");
   assert.match(
     chatPage,
-    /const activePinnedEffort = useModelReasoningEffortStore\(\s*\(state\) => state\.effortByModel\[inferenceParams\.checkpoint\],/,
+    /const activePinnedEffort = useModelReasoningEffortStore\(\s*\(state\) => state\.effortByModel\[inferenceCheckpoint\],/,
   );
   assert.match(
     chatPage,
@@ -379,7 +383,7 @@ test("per-model prompt and cap reuse the memory Chat already keeps", () => {
   // one, and the pin effect's own guard sees no change in the stored string.
   assert.match(
     chatPage,
-    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceParams\.checkpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*apiType: provider\?\.apiType,\s*\}\);\s*\}, \[activePinnedEffort,/,
+    /reconcilePinnedReasoningEffort\(\{\s*checkpoint: inferenceCheckpoint,\s*caps,\s*providerType: provider\?\.providerType,\s*apiType: provider\?\.apiType,\s*\}\);\s*\}, \[activePinnedEffort,/,
   );
   assert.match(
     chatPage,
@@ -539,8 +543,8 @@ test("live effort edits use the shared runtime action", () => {
 test("a row with no heading over it still names its connection", () => {
   // Pinned rows and the name-sorted flat list have no provider heading, and two connections can
   // serve one model id, so the tooltip carries the connection name those rows have nowhere else.
-  assert.match(pickers, /renderConnectedModelRow\(model, true, true\)/);
-  assert.match(pickers, /renderConnectedModelRow\(model, false, !headed\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, true\)/);
+  assert.match(pickers, /renderConnectedModelRow\(model, !headed\)/);
   assert.match(pickers, /<span className="block text-ui-10 mt-1">\s*\{model\.providerName\}/);
   // No logo in the leading slot: down the pinned group it read as a second glyph column, and a
   // row is there to carry its name. So nothing goes in the slot at all now.
@@ -640,7 +644,7 @@ test("a pinned reasoning effort wins, unless the catalogue withdrew it", () => {
   );
   assert.match(
     chatPage,
-    /externalReasoningTakesEffort\(reasoningCaps\)\s*\? pinnedReasoningEffort\(inferenceParams\.checkpoint, effortLevels\)/,
+    /externalReasoningTakesEffort\(reasoningCaps\)\s*\? pinnedReasoningEffort\(inferenceCheckpoint, effortLevels\)/,
   );
   // Both record the level the pin takes the place of, so clearing it can put that back.
   assert.match(
@@ -655,7 +659,7 @@ test("a pinned reasoning effort wins, unless the catalogue withdrew it", () => {
   // that used to put the provider default back over the pin.
   assert.match(
     chatPage,
-    /\}, \[externalProvidersForChat, inferenceParams\.checkpoint, settingsHydrated\]\);/,
+    /\}, \[externalProvidersForChat, inferenceCheckpoint, settingsHydrated\]\);/,
   );
   assert.doesNotMatch(chatPage, /const anthropicTopEffort =/);
 });
@@ -725,7 +729,7 @@ test("reasoning is read through the resolver the composer uses", () => {
   for (const source of [infoDialog, settingsDialog]) {
     assert.match(
       source,
-      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*baseUrl,\s*apiType,\s*\}\)/,
+      /getExternalReasoningCapabilities\(providerType, modelId, \{\s*isReasoningProvider,\s*reasoningConfig,\s*baseUrl,\s*apiType,\s*\}\)/,
     );
     // "none" is the off switch, not a level on offer.
     assert.match(source, /\(level\) => level !== "none"/);
@@ -805,4 +809,16 @@ test("a served catalogue cannot take away a context window it has no field for",
   assert.equal(resolveModelCatalogEntry("openai", "gpt-4-turbo")?.contextLength, bundled);
 
   setModelsDevCatalog({ fetched_at: Date.now(), providers: {} } as never);
+});
+
+test("connection saves write back the live store, not the render snapshot", () => {
+  const liveWrites = providersDialog.match(
+    /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
+  );
+  assert.equal(liveWrites?.length, 3);
+  assert.match(providersDialog, /models: keepSavedModels \? undefined : modelsToSave,/);
+  assert.match(providersDialog, /availableModels: keepSavedModels \? undefined : availableModelsToSave,/);
+  // An empty response (row never backfilled) keeps this browser's lists instead of blanking them.
+  assert.match(providersDialog, /updated\.models\?\.length \? updated\.models : existing\.models/);
+  assert.match(providersDialog, /updated\.available_models\?\.length\s*\?\s*updated\.available_models\s*:\s*existing\.availableModels/);
 });

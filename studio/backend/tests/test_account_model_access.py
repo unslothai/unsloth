@@ -38,7 +38,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(
         access,
         "HfApi",
-        lambda: SimpleNamespace(
+        lambda **_k: SimpleNamespace(
             repo_info = lambda *a, **k: (_ for _ in ()).throw(OSError("offline"))
         ),
     )
@@ -67,7 +67,7 @@ def test_public_proof_is_anonymous_cached_and_fail_closed(monkeypatch, answer, v
             gated = answer == "gated",
         )
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = info))
+    monkeypatch.setattr(access, "HfApi", lambda **_k: SimpleNamespace(repo_info = info))
     assert run_as(ALICE, access.repo_visible, "Org/Secret", repo_type) is visible
     assert run_as(BOB, access.repo_visible, "Org/Secret", repo_type) is visible
     assert calls == [("Org/Secret", {"repo_type": repo_type, "token": False, "timeout": 5.0})]
@@ -93,9 +93,11 @@ def test_a_proven_public_repo_stays_visible_when_the_hub_cannot_be_asked(
             )
         raise OSError("Hub unavailable")
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = info))
+    monkeypatch.setattr(access, "HfApi", lambda **_k: SimpleNamespace(repo_info = info))
     assert run_as(ALICE, access.repo_visible, "Org/Public")
-    assert json.loads(access._public_verdicts_path().read_text()).keys() == {"model:org/public"}
+    assert json.loads(access._public_verdicts_path().read_text()).keys() == {
+        "https://huggingface.co|model:org/public"
+    }
     assert access._public_verdicts_path().is_relative_to(tmp_path / "cache")
 
     access._public_repos.clear()
@@ -111,7 +113,7 @@ def test_a_proven_public_repo_stays_visible_when_the_hub_cannot_be_asked(
     def definitive(repo, **kwargs):
         raise error
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = definitive))
+    monkeypatch.setattr(access, "HfApi", lambda **_k: SimpleNamespace(repo_info = definitive))
     assert not run_as(ALICE, access.repo_visible, "org/public")
     assert json.loads(access._public_verdicts_path().read_text()) == {}
 
@@ -193,7 +195,7 @@ def test_concurrent_misses_ask_the_hub_once_per_repo(monkeypatch):
     calls = []
     barrier = threading.Barrier(8)
 
-    def answer(repo_id, repo_type):
+    def answer(repo_id, repo_type, **_k):
         calls.append(repo_id)
         barrier.wait(timeout = 30)
         time.sleep(0.02)
@@ -227,7 +229,7 @@ def test_a_listing_probes_its_unknown_repos_together(monkeypatch):
     assert together > 1, f"_PROBE_FANOUT is {access._PROBE_FANOUT}; the listing is serial"
     barrier = threading.Barrier(together)
 
-    def answer(*_args):
+    def answer(*_args, **_k):
         barrier.wait(timeout = 30)
         return True
 
@@ -237,7 +239,7 @@ def test_a_listing_probes_its_unknown_repos_together(monkeypatch):
 
 def test_a_warm_listing_asks_the_hub_nothing(monkeypatch):
     rows = [{"repo_id": f"org/warm-{index}"} for index in range(4)]
-    monkeypatch.setattr(access, "_hub_public_answer", lambda *a: True)
+    monkeypatch.setattr(access, "_hub_public_answer", lambda *a, **_k: True)
     assert len(run_as(ALICE, access.filter_model_rows, rows)) == 4
 
     def unexpected(*args):
@@ -392,7 +394,7 @@ def test_download_ownership_lands_before_the_hub_authorization(monkeypatch):
         seen["alice"] = run_as(ALICE, download_lifecycle.download_belongs_to_account, registry, key)
         return SimpleNamespace(gated = False)
 
-    monkeypatch.setattr(access, "HfApi", lambda: SimpleNamespace(repo_info = repo_info))
+    monkeypatch.setattr(access, "HfApi", lambda **_k: SimpleNamespace(repo_info = repo_info))
 
     def spawn():
         raise OSError("no worker in this test")
@@ -500,7 +502,7 @@ def test_gated_metadata_alone_is_not_download_authorization(monkeypatch, authori
     monkeypatch.setattr(
         access,
         "HfApi",
-        lambda: SimpleNamespace(
+        lambda **_k: SimpleNamespace(
             repo_info = lambda *a, **k: SimpleNamespace(gated = True), auth_check = check
         ),
     )
@@ -517,27 +519,29 @@ def test_a_persisted_public_proof_expires_rather_than_outliving_a_privacy_change
     monkeypatch.setattr(
         access,
         "HfApi",
-        lambda: SimpleNamespace(
+        lambda **_k: SimpleNamespace(
             repo_info = lambda *a, **k: SimpleNamespace(private = False, gated = False)
         ),
     )
     assert run_as(ALICE, access.repo_visible, "Org/Public")
     path = access._public_verdicts_path()
-    assert json.loads(path.read_text()).keys() == {"model:org/public"}
+    assert json.loads(path.read_text()).keys() == {"https://huggingface.co|model:org/public"}
 
     monkeypatch.setattr(
         access,
         "HfApi",
-        lambda: SimpleNamespace(
+        lambda **_k: SimpleNamespace(
             repo_info = lambda *a, **k: (_ for _ in ()).throw(OSError("Hub unavailable"))
         ),
     )
     access._public_repos.clear()
-    path.write_text(json.dumps({"model:org/public": time.time() - 3600}))
+    path.write_text(json.dumps({"https://huggingface.co|model:org/public": time.time() - 3600}))
     assert run_as(BOB, access.repo_visible, "org/public"), "a proof inside the bound still carries"
 
     access._public_repos.clear()
-    path.write_text(json.dumps({"model:org/public": time.time() - 30 * 24 * 3600}))
+    path.write_text(
+        json.dumps({"https://huggingface.co|model:org/public": time.time() - 30 * 24 * 3600})
+    )
     assert not run_as(BOB, access.repo_visible, "org/public")
     assert not run_as(ALICE, access.repo_visible, "org/public")
 

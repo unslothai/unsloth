@@ -88,6 +88,23 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
     """
     if not candidate:
         return default
+    canonical, reason = _check(candidate)
+    if canonical is not None:
+        return canonical
+    if candidate not in _rejected_warned:
+        _rejected_warned.add(candidate)
+        logger.warning(
+            "%s=%r %s; ignoring it and using %s instead.",
+            var_name,
+            candidate,
+            reason,
+            default,
+        )
+    return default
+
+
+def _check(candidate: str) -> tuple[str | None, str | None]:
+    """``(canonical, None)`` for a usable endpoint, else ``(None, reason)``."""
     if any(ch in _FORBIDDEN_CHARS for ch in candidate) or any(
         ord(ch) < 0x20 or ord(ch) == 0x7F for ch in candidate
     ):
@@ -122,17 +139,25 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
             )
         else:
             # Folded: RFC 3986 3.1, and the frontend keys its cache on this string.
-            return _canonical(parts, parts.scheme + candidate[len(parts.scheme) :])
-    if candidate not in _rejected_warned:
-        _rejected_warned.add(candidate)
-        logger.warning(
-            "%s=%r %s; ignoring it and using %s instead.",
-            var_name,
-            candidate,
-            reason,
-            default,
-        )
-    return default
+            return _canonical(parts, parts.scheme + candidate[len(parts.scheme) :]), None
+    return None, reason
+
+
+def validate_hub_endpoint(raw: str) -> str:
+    """A user-entered endpoint in the form the env vars carry; ``""`` means the official Hub.
+
+    Same rules the environment values are held to, but a rejected value raises
+    ``ValueError`` with the reason instead of silently falling back.
+    """
+    value = raw.strip().rstrip("/")
+    if not value:
+        return ""
+    if "://" not in value:
+        value = "https://" + value
+    canonical, reason = _check(value)
+    if canonical is None:
+        raise ValueError(f"The endpoint {reason}.")
+    return canonical
 
 
 def is_private_host(hostname: str | None) -> bool:
@@ -253,7 +278,7 @@ def normalize_hf_endpoint_env() -> None:
         os.environ["HF_ENDPOINT"] = endpoint
 
 
-def csp_connect_sources() -> tuple[str, str]:
+def csp_connect_sources() -> tuple[str, ...]:
     """The two endpoints as CSP ``connect-src`` sources, i.e. origins only.
 
     A CSP host-source carrying a path is matched *exactly* unless the path ends
@@ -262,8 +287,18 @@ def csp_connect_sources() -> tuple[str, str]:
     ``/hf/api/models`` request under it, in Chrome, Edge, Firefox and Safari
     alike. The path belongs in the request URL, not in the policy, so the source
     is reduced to scheme://host[:port].
+
+    A settings-saved endpoint stays out: the browser reaches it through the backend
+    relay, and this policy goes to every client, where a private address must not show.
     """
-    return (_origin_of(get_hf_endpoint()), _origin_of(get_hf_datasets_server()))
+    from utils.hub_settings import saved_only_endpoints
+
+    hidden = saved_only_endpoints()
+    return tuple(
+        _origin_of(endpoint)
+        for endpoint in (browser_hf_endpoint(), get_hf_datasets_server())
+        if endpoint not in hidden
+    )
 
 
 def csp_asset_sources() -> tuple[str, ...]:
@@ -296,6 +331,13 @@ def get_hf_endpoint() -> str:
     return _sanitize(hf_endpoint_url().rstrip("/"), _DEFAULT_HF_ENDPOINT, "HF_ENDPOINT")
 
 
+def browser_hf_endpoint() -> str:
+    """The endpoint the browser uses. The ModelScope adapter's loopback listener is for
+    this process only; the browser reaches ModelScope through its authenticated mount."""
+    from utils.hub_settings import MODELSCOPE, active_source
+    return _DEFAULT_HF_ENDPOINT if active_source() == MODELSCOPE else get_hf_endpoint()
+
+
 def get_hf_datasets_server() -> str:
     """Return the datasets-server base URL (no trailing slash).
 
@@ -309,7 +351,7 @@ def get_hf_datasets_server() -> str:
         endpoint = raw if "://" in raw else "https://" + raw
         return _sanitize(endpoint.rstrip("/"), _DEFAULT_DATASETS_SERVER, "HF_DATASETS_SERVER")
     global _ds_mirror_warned
-    if not _ds_mirror_warned and get_hf_endpoint() != _DEFAULT_HF_ENDPOINT:
+    if not _ds_mirror_warned and browser_hf_endpoint() != _DEFAULT_HF_ENDPOINT:
         _ds_mirror_warned = True
         logger.warning(
             "HF_ENDPOINT is set to %s but HF_DATASETS_SERVER is unset; "

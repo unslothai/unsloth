@@ -18,6 +18,8 @@ import {
   subscribeModalLayer,
 } from "@/components/ui/tooltip-modal-layer";
 import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
+import { isTouchClick } from "@/components/ui/touch-click";
+import { roundIfSingleLine } from "@/lib/tooltip-pill";
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
@@ -85,21 +87,7 @@ function getServerModalBlock(): boolean {
   return false;
 }
 
-/** Tap-to-pin is for touch, which has no hover. The click's own pointerType is the only thing
-* that answers for the pointer actually used: the media query reports the primary device, so on
-* a hybrid it mislabels every event. Keyboard activation reports "", which correctly does not pin. */
-function isTouchClick(event: React.MouseEvent): boolean {
-  const pointerType = (event.nativeEvent as Partial<PointerEvent>).pointerType;
-  if (typeof pointerType === "string") return pointerType === "touch";
-  // No PointerEvent (older WebViews): fall back to the device class.
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(pointer: coarse)").matches
-  );
-}
-
-// Default to instant open (no hover delay): icon labels, nav labels and the token calculators
+// Default to instant open (no hover delay): icon labels and the token calculators
 // should feel snappy. Consumers that want a delay pass an explicit `delayDuration`.
 function TooltipProvider({
   delayDuration = 0,
@@ -281,6 +269,7 @@ function TooltipContent({
   variant = "default",
   className,
   sideOffset = 0,
+  collisionPadding = 8,
   children,
   ref,
   ...props
@@ -293,14 +282,7 @@ function TooltipContent({
   const contentRef = useCallback(
     (el: React.ComponentRef<typeof TooltipPrimitive.Content> | null) => {
       assignRef(ref, el);
-      if (!el || variant !== "default") return;
-      const cs = getComputedStyle(el);
-      const lineHeight = Number.parseFloat(cs.lineHeight) || 16;
-      const innerHeight =
-        el.clientHeight -
-        Number.parseFloat(cs.paddingTop) -
-        Number.parseFloat(cs.paddingBottom);
-      el.classList.toggle("rounded-full!", innerHeight < lineHeight * 1.5);
+      if (variant === "default") roundIfSingleLine(el);
     },
     [ref, variant],
   );
@@ -310,8 +292,9 @@ function TooltipContent({
         ref={contentRef}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         className={cn(
-          "z-[999999] w-fit max-w-xs",
+          "z-[999999] w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-[state=delayed-open]:ease-out",
           variant === "default" && "tooltip-compact",
           variant === "rich" && "tooltip-rich",
           className,

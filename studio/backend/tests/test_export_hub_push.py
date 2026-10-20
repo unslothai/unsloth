@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import sys
 import tempfile
@@ -10,6 +11,8 @@ import types
 from pathlib import Path
 
 import pytest
+from huggingface_hub import constants as hf_constants
+from huggingface_hub import get_token as hf_get_token
 
 
 _HELPERS_SPEC = importlib.util.spec_from_file_location(
@@ -212,6 +215,27 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
     assert seen["uploaded"] == ["model.safetensors"]
 
 
+def test_whisper_merged_export_is_a_16bit_merge(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    backend._audio_type = "whisper"
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+
+    success, message, _ = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
 @pytest.mark.parametrize("roomier", ["temp", "export", "export_but_unwritable"])
 def test_merged_export_push_stages_the_clean_save_where_there_is_room(
     tmp_path, monkeypatch, roomier
@@ -373,6 +397,169 @@ def test_merged_export_push_card_does_not_name_a_local_base_model(tmp_path, monk
     assert success is True, message
     assert "base_model: owner/model" in seen["card"]
     assert str(tmp_path) not in seen["card"]
+
+
+_MLX_MERGED_FILES = ["README.md", "model.safetensors", "model.safetensors.index.json"]
+
+
+class _MlxMergeModel(_Model):
+    def __init__(self, hf_api):
+        super().__init__()
+        self.hf_api = hf_api
+
+    def save_pretrained_merged(
+        self,
+        save_directory,
+        tokenizer,
+        save_method = None,
+        token = None,
+    ):
+        self.merges.append(save_method)
+        output = Path(save_directory)
+        output.mkdir(parents = True, exist_ok = True)
+        for name in _MLX_MERGED_FILES:
+            (output / name).write_bytes(b"merged")
+
+    def push_to_hub_merged(
+        self,
+        repo_id,
+        tokenizer,
+        save_directory = None,
+        token = None,
+        private = None,
+    ):
+        api = self.hf_api(token = token)
+        api.create_repo(repo_id, private = private, exist_ok = True)
+        if private is not None:
+            api.update_repo_settings(repo_id = repo_id, private = private, repo_type = "model")
+        api.upload_folder(folder_path = str(save_directory), repo_id = repo_id, repo_type = "model")
+
+
+# export -> (ExportBackend method, is_peft, extra kwargs, save_method)
+_MLX_EXPORTS = {
+    "merged": ("export_merged_model", True, {}, "merged_16bit"),
+    "merged_4bit": ("export_merged_model", True, {"format_type": "4-bit (FP4)"}, "merged_4bit"),
+    "base": ("export_base_model", False, {}, "merged_16bit"),
+}
+
+
+def _mlx_backend(monkeypatch, name, calls, seen, export):
+    method, is_peft, kwargs, _save_method = _MLX_EXPORTS[export]
+    backend = _non_mlx_backend(monkeypatch, name, calls, seen)
+    export_module = sys.modules[type(backend).__module__]
+    monkeypatch.setattr(export_module, "_IS_MLX", True)
+    monkeypatch.setattr(export_module, "_export_runtime_available", lambda: True)
+    backend.current_model = _MlxMergeModel(export_module.HfApi)
+    backend.is_peft = is_peft
+    return backend, functools.partial(getattr(backend, method), **kwargs)
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+def test_mlx_export_push_keeps_the_export_metadata_out_of_the_repo(tmp_path, monkeypatch, export):
+    calls: list[str] = []
+    seen: dict = {}
+    backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_fresh_backend", calls, seen, export
+    )
+
+    success, message, output_path = push(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == _MLX_MERGED_FILES
+    assert seen["upload_repo"] == "owner/model"
+    assert Path(output_path, "export_metadata.json").is_file()
+    assert backend.current_model.merges == [_MLX_EXPORTS[export][3]]
+    assert seen["folder"] == output_path
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+def test_mlx_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
+    tmp_path, monkeypatch, export
+):
+    calls: list[str] = []
+    seen: dict = {}
+    backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_reused_backend", calls, seen, export
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+    (export_dir / "adapters.safetensors").write_bytes(b"lora")
+
+    success, message, output_path = push(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert seen["uploaded"] == _MLX_MERGED_FILES
+    assert output_path == str(export_dir.resolve())
+    assert backend.current_model.merges == [_MLX_EXPORTS[export][3]] * 2
+    assert seen["folder"] != output_path
+    assert not Path(seen["folder"]).exists()
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+def test_mlx_export_staging_failure_leaves_the_hub_untouched(tmp_path, monkeypatch, export):
+    calls: list[str] = []
+    seen: dict = {}
+    backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_stage_failure", calls, seen, export
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "old.gguf").write_bytes(b"GGUF")
+    save = backend.current_model.save_pretrained_merged
+
+    def fail_staging(directory, *args, **kwargs):
+        save(directory, *args, **kwargs)
+        if len(backend.current_model.merges) == 2:
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(backend.current_model, "save_pretrained_merged", fail_staging)
+    success, message, _path = push(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+
+    assert success is False
+    assert "No space left on device" in message
+    assert Path(export_dir, "model.safetensors").is_file()
+    assert calls == []
+
+
+@pytest.mark.parametrize("export", _MLX_EXPORTS)
+@pytest.mark.parametrize("private", [True, False])
+def test_mlx_export_push_never_makes_an_existing_private_repo_public(
+    tmp_path, monkeypatch, private, export
+):
+    calls: list[str] = []
+    seen: dict = {}
+    _backend, push = _mlx_backend(
+        monkeypatch, "test_export_hub_push_mlx_private_backend", calls, seen, export
+    )
+
+    success, message, _path = push(
+        str(tmp_path / "export"),
+        push_to_hub = True,
+        repo_id = "owner/model",
+        hf_token = "hf_fake",
+        private = private,
+    )
+
+    assert success is True, message
+    visibility = ["update_repo_settings"] if private else []
+    assert calls == ["create_repo", *visibility, "upload_folder"]
+    assert seen.get("visibility") == (
+        {"repo_id": "owner/model", "private": True} if private else None
+    )
+    assert seen["uploaded"] == _MLX_MERGED_FILES
 
 
 def test_base_export_push_keeps_the_export_metadata_out_of_the_repo(tmp_path, monkeypatch):
@@ -746,3 +933,73 @@ def test_lora_gguf_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
     assert Path(seen["folder"]).name == export_dir.name
     assert not Path(seen["folder"]).exists()
     assert seen["uploaded"] == _LORA_GGUF_FILES
+
+
+class _GgufModel:
+    def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+        output = Path(f"{model_save_path}_gguf")
+        output.mkdir(parents = True)
+        (output / f"model.{quantization_method}.gguf").write_bytes(b"GGUF")
+
+
+def _gguf_model_backend(monkeypatch, calls, seen):
+    _HELPERS._install_export_backend_stubs(monkeypatch)
+    module = _HELPERS._load_module(
+        "test_export_hub_push_cli_login_gguf_backend", "core/export/export.py", monkeypatch
+    )
+    _HELPERS._patch_hub(monkeypatch, module, calls, seen)
+    return _HELPERS._export_backend(module, _GgufModel)
+
+
+def _push_without_a_token(monkeypatch, export, save_directory, calls, seen):
+    if export == "gguf":
+        backend = _gguf_model_backend(monkeypatch, calls, seen)
+        push = functools.partial(backend.export_gguf, quantization_method = "Q4_K_M")
+    elif export == "lora":
+        _module, backend, _gguf, _uploads = _lora_backend(
+            monkeypatch, "test_export_hub_push_cli_login_lora_backend", calls, seen, "adapter"
+        )
+        push = backend.export_lora_adapter
+    else:
+        backend = _non_mlx_backend(
+            monkeypatch, f"test_export_hub_push_cli_login_{export}_backend", calls, seen
+        )
+        push = getattr(backend, f"export_{export}_model")
+    monkeypatch.setattr(sys.modules["huggingface_hub"], "get_token", hf_get_token, raising = False)
+    return push(save_directory, push_to_hub = True, repo_id = "model", hf_token = None)
+
+
+@pytest.mark.parametrize("export", ["base", "merged", "lora", "gguf"])
+def test_hub_push_with_no_token_uses_the_cli_login(tmp_path, monkeypatch, export):
+    login = tmp_path / "hf_token"
+    login.write_text("hf_cli_login")
+    monkeypatch.setattr(hf_constants, "HF_TOKEN_PATH", str(login))
+    for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_OIDC_RESOURCE"):
+        monkeypatch.delenv(key, raising = False)
+    calls: list[str] = []
+    seen: dict = {}
+
+    success, message, _path = _push_without_a_token(
+        monkeypatch, export, str(tmp_path / "export"), calls, seen
+    )
+
+    assert success is True, message
+    assert seen["token"] == "hf_cli_login"
+    assert calls[0] == "create_repo"
+
+
+@pytest.mark.parametrize("export", ["base", "merged", "lora", "gguf"])
+def test_hub_push_with_no_token_and_no_cli_login_is_refused(tmp_path, monkeypatch, export):
+    monkeypatch.setattr(hf_constants, "HF_TOKEN_PATH", str(tmp_path / "missing"))
+    for key in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_OIDC_RESOURCE"):
+        monkeypatch.delenv(key, raising = False)
+    calls: list[str] = []
+    seen: dict = {}
+
+    success, message, _path = _push_without_a_token(
+        monkeypatch, export, str(tmp_path / "export"), calls, seen
+    )
+
+    assert success is False
+    assert "Hugging Face token required" in message
+    assert calls == []

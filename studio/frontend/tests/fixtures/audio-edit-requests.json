@@ -1,0 +1,294 @@
+{
+  "_comment": "Golden Edit requests shared by tests/audio-edit-adapters.test.ts and backend tests/test_audio_edit_requests.py. run_body is POST /api/inference/audio/run; runtime is what the server posts to audio.cpp, with <model>, <recording> and <result of call N> standing in for server values.",
+  "cases": [
+    {
+      "name": "dots two subs",
+      "family": "dots_tts",
+      "input": {
+        "original": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "edited": "Okay, I'm Sam and what you just heard wasn't a robot voice.",
+        "mode": "words",
+        "advanced": {}
+      },
+      "run_body": {
+        "workflow": "edit",
+        "text": "Okay, I'm Sam and what you just heard wasn't a robot voice.",
+        "inputs": {
+          "source": {
+            "input_id": "in_0123456789abcdef"
+          },
+          "reference_text": "Okay, I'm Cemo and what you just heard wasn't a human voice."
+        },
+        "edit": {
+          "mode": "words",
+          "markup": "Okay, I'm <sub targ=\"Sam\">Cemo</sub> and what you just heard wasn't a <sub targ=\"robot\">human</sub> voice."
+        }
+      },
+      "runtime": [
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "text": "Okay, I'm <sub targ=\"Sam\">Cemo</sub> and what you just heard wasn't a <sub targ=\"robot\">human</sub> voice.",
+            "source_audio": "<recording>",
+            "options": {
+              "template_name": "edit"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "dots delete and insert",
+      "family": "dots_tts",
+      "input": {
+        "original": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "edited": "Okay, I'm Cemo and what you heard really wasn't a human voice.",
+        "mode": "words",
+        "advanced": {}
+      },
+      "run_body": {
+        "workflow": "edit",
+        "text": "Okay, I'm Cemo and what you heard really wasn't a human voice.",
+        "inputs": {
+          "source": {
+            "input_id": "in_0123456789abcdef"
+          },
+          "reference_text": "Okay, I'm Cemo and what you just heard wasn't a human voice."
+        },
+        "edit": {
+          "mode": "words",
+          "markup": "Okay, I'm Cemo and what you <del>just</del> heard <ins>really</ins> wasn't a human voice."
+        }
+      },
+      "runtime": [
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "text": "Okay, I'm Cemo and what you <del>just</del> heard <ins>really</ins> wasn't a human voice.",
+            "source_audio": "<recording>",
+            "options": {
+              "template_name": "edit"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "dots multi-word sub",
+      "family": "dots_tts",
+      "input": {
+        "original": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "edited": "Okay, I'm Cemo and what you just heard wasn't a robot sound.",
+        "mode": "words",
+        "advanced": {}
+      },
+      "run_body": {
+        "workflow": "edit",
+        "text": "Okay, I'm Cemo and what you just heard wasn't a robot sound.",
+        "inputs": {
+          "source": {
+            "input_id": "in_0123456789abcdef"
+          },
+          "reference_text": "Okay, I'm Cemo and what you just heard wasn't a human voice."
+        },
+        "edit": {
+          "mode": "words",
+          "markup": "Okay, I'm Cemo and what you just heard wasn't a <sub targ=\"robot sound.\">human voice.</sub>"
+        }
+      },
+      "runtime": [
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "text": "Okay, I'm Cemo and what you just heard wasn't a <sub targ=\"robot sound.\">human voice.</sub>",
+            "source_audio": "<recording>",
+            "options": {
+              "template_name": "edit"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "vevo2 words",
+      "family": "vevo2",
+      "input": {
+        "original": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "edited": "Okay, I'm Cemo and what you just heard wasn't a robot voice.",
+        "mode": "words",
+        "advanced": {}
+      },
+      "run_body": {
+        "workflow": "edit",
+        "text": "Okay, I'm Cemo and what you just heard wasn't a robot voice.",
+        "inputs": {
+          "source": {
+            "input_id": "in_0123456789abcdef"
+          },
+          "reference_text": "Okay, I'm Cemo and what you just heard wasn't a human voice."
+        },
+        "edit": {
+          "mode": "words"
+        }
+      },
+      "runtime": [
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "route": "editing",
+            "source_audio": "<recording>",
+            "target_text": "Okay, I'm Cemo and what you just heard wasn't a robot voice.",
+            "reference_text": "Okay, I'm Cemo and what you just heard wasn't a human voice."
+          }
+        }
+      ]
+    },
+    {
+      "name": "firered two replaces chained",
+      "family": "firered_audio",
+      "input": {
+        "original": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "edited": "Okay, I'm Sam and what you just heard wasn't a robot voice.",
+        "mode": "words",
+        "advanced": {}
+      },
+      "run_body": {
+        "workflow": "edit",
+        "text": "Okay, I'm Sam and what you just heard wasn't a robot voice.",
+        "inputs": {
+          "source": {
+            "input_id": "in_0123456789abcdef"
+          },
+          "reference_text": "Okay, I'm Cemo and what you just heard wasn't a human voice."
+        },
+        "edit": {
+          "mode": "words",
+          "instructions": [
+            "Replace 'Cemo' with 'Sam'.",
+            "Replace 'human' with 'robot'."
+          ]
+        }
+      },
+      "runtime": [
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "audio": "<recording>",
+            "options": {
+              "template_name": "semantic_edit",
+              "instruction": "Replace 'Cemo' with 'Sam'."
+            }
+          }
+        },
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "audio": "<result of call 1>",
+            "options": {
+              "template_name": "semantic_edit",
+              "instruction": "Replace 'human' with 'robot'."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "firered insert before",
+      "family": "firered_audio",
+      "input": {
+        "original": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "edited": "Okay, I'm Cemo and what you just heard really wasn't a human voice.",
+        "mode": "words",
+        "advanced": {}
+      },
+      "run_body": {
+        "workflow": "edit",
+        "text": "Okay, I'm Cemo and what you just heard really wasn't a human voice.",
+        "inputs": {
+          "source": {
+            "input_id": "in_0123456789abcdef"
+          },
+          "reference_text": "Okay, I'm Cemo and what you just heard wasn't a human voice."
+        },
+        "edit": {
+          "mode": "words",
+          "instructions": [
+            "Insert 'really' before 'wasn't'."
+          ]
+        }
+      },
+      "runtime": [
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "audio": "<recording>",
+            "options": {
+              "template_name": "semantic_edit",
+              "instruction": "Insert 'really' before 'wasn't'."
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "firered delivery speed and pitch",
+      "family": "firered_audio",
+      "input": {
+        "original": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "edited": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "mode": "delivery",
+        "delivery": {
+          "speed": 1.5,
+          "pitchSteps": 3
+        },
+        "advanced": {}
+      },
+      "run_body": {
+        "workflow": "edit",
+        "text": "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+        "inputs": {
+          "source": {
+            "input_id": "in_0123456789abcdef"
+          },
+          "reference_text": "Okay, I'm Cemo and what you just heard wasn't a human voice."
+        },
+        "edit": {
+          "mode": "delivery",
+          "speed": 1.5,
+          "pitch_steps": 3
+        }
+      },
+      "runtime": [
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "audio": "<recording>",
+            "options": {
+              "template_name": "acoustic_edit",
+              "instruction": "adjust the speed to 1.5x"
+            }
+          }
+        },
+        {
+          "path": "/v1/tasks/run",
+          "body": {
+            "model": "<model>",
+            "audio": "<result of call 1>",
+            "options": {
+              "template_name": "acoustic_edit",
+              "instruction": "shift the pitch by 3 steps"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

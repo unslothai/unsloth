@@ -26,6 +26,18 @@ import { en } from "../src/i18n/locales/en.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
+type DialogState = {
+  logFamilyRequested: string | null;
+  logSourcePathRequested: string | null;
+  consumeLogFamilyRequest: () => void;
+};
+
+const IDLE_DIALOG_STATE: DialogState = {
+  logFamilyRequested: null,
+  logSourcePathRequested: null,
+  consumeLogFamilyRequest: () => {},
+};
+
 const API_URL = new URL(
   "../src/features/settings/api/debug-logs.ts",
   import.meta.url,
@@ -164,6 +176,8 @@ function makeWorld(options: {
         );
       },
     },
+    // The selected mode's sliding pill is decoration, not under test.
+    "@/components/segmented-control": { SegmentedPill: () => null },
     // pass-through wrappers: the markup around the buttons is not under test
     "@/components/ui/input-group": {
       InputGroup: passthrough,
@@ -190,6 +204,7 @@ function makeWorld(options: {
     "@/features/hub": { formatBytes: (bytes: number) => `${bytes} B` },
     "@/i18n": { useT: () => t },
     "@/lib/api-base": apiStubs["@/lib/api-base"],
+    "@/lib/chevron-icons": { ChevronDownDoubleStandardIcon: [] },
     "@/lib/strip-ansi": { stripAnsi: (value: string) => value },
     "@/lib/toast": { toast },
     "@/lib/utils": {
@@ -208,6 +223,15 @@ function makeWorld(options: {
     },
     "../lib/debug-log-buffer": debugLogBuffer,
     "../lib/debug-log-error": debugLogError,
+    "../stores/settings-dialog-store": {
+      useSettingsDialogStore: Object.assign(
+        (selector?: (state: DialogState) => unknown) =>
+          selector ? selector(IDLE_DIALOG_STATE) : IDLE_DIALOG_STATE,
+        { getState: () => IDLE_DIALOG_STATE },
+      ),
+      pendingLogRequestKey: () => "|",
+      NO_PENDING_LOG_REQUEST: "|",
+    },
   });
 
   function render(): string {
@@ -304,9 +328,9 @@ test("openLogsFolder preserves the selected path with an older backend", async (
 });
 
 test("an export that works does not touch the session", async () => {
-  // refreshSession clears both stored tokens on ANY non-2xx, so refreshing
-  // before every export would let a transient 500 on /api/auth/refresh sign the
-  // user out of the whole app just for clicking Download all logs.
+  // refreshSession rotates the stored pair, so refreshing before every export
+  // would spend a refresh token, and risk a sign-out, just for clicking
+  // Download all logs.
   const world = makeWorld({
     isTauri: true,
     invoke: async () => SAVED_PATH,
@@ -366,7 +390,11 @@ test("a failure that is not a 401 never reaches for the refresh token", async ()
   });
 
   await assert.rejects(() => world.api.exportAllLogs());
-  assert.equal(world.refreshes.length, 0, "a 500 is not an authentication problem");
+  assert.equal(
+    world.refreshes.length,
+    0,
+    "a 500 is not an authentication problem",
+  );
   assert.equal(world.invokes.length, 1);
 });
 

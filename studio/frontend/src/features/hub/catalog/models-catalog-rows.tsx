@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
+import { isChatGgufTask, reconcileGgufPinsAfterDelete } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+
 import {
   Tooltip,
   TooltipContent,
@@ -9,7 +12,10 @@ import {
 import {
   type GgufVariantDetail,
   deleteCachedDataset,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
@@ -53,6 +59,7 @@ import type {
   DiscoverRow,
   LocalInventoryRow,
 } from "../types";
+import { DOWNLOADING_DOT_CLASS } from "./dot-tag";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs } from "./shared";
 
@@ -184,11 +191,10 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
-                  {/* Brightened for the dark tooltip: muted grey reads poorly there. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
-                    className="text-ui-11 text-white/70"
+                    className="text-ui-11 text-(--tooltip-muted)"
                   />
                 </span>
               </li>
@@ -303,11 +309,13 @@ function CatalogRow({
   );
 }
 
+export { DOWNLOADING_DOT_CLASS };
+
 function StatusDot({
   tone,
   label,
 }: {
-  tone: "warning" | "danger" | "success";
+  tone: "warning" | "danger" | "success" | "downloading";
   label: string;
 }) {
   const toneClass =
@@ -315,13 +323,23 @@ function StatusDot({
       ? "bg-status-warning"
       : tone === "danger"
         ? "bg-status-danger"
-        : "bg-status-success";
+        : tone === "downloading"
+          ? DOWNLOADING_DOT_CLASS
+          : "bg-status-success";
   return (
     <span
       role="img"
       aria-label={label}
       className={cn("inline-block size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full", toneClass)}
     />
+  );
+}
+
+function PartialStatusDot({ downloading }: { downloading: boolean }) {
+  return downloading ? (
+    <StatusDot tone="downloading" label="Downloading" />
+  ) : (
+    <StatusDot tone="warning" label="Partial download" />
   );
 }
 
@@ -351,6 +369,7 @@ export function buildRowStatusTooltip({
   isAdapter,
   isAvailableOnDevice,
   partialRepoId,
+  downloading = false,
   unsupported,
   unsupportedReason,
   resourceLabel = "model",
@@ -359,6 +378,7 @@ export function buildRowStatusTooltip({
   isAdapter?: boolean;
   isAvailableOnDevice?: boolean;
   partialRepoId?: string;
+  downloading?: boolean;
   unsupported?: boolean;
   unsupportedReason?: string | null;
   resourceLabel?: "model" | "dataset";
@@ -380,7 +400,14 @@ export function buildRowStatusTooltip({
     );
   }
 
-  if (partialRepoId) {
+  if (partialRepoId && downloading) {
+    lines.push(
+      <TooltipLegendRow key="downloading" toneClass={DOWNLOADING_DOT_CLASS}>
+        Downloading <span className="font-medium">{partialRepoId}</span>.
+        Progress is in the downloads panel.
+      </TooltipLegendRow>,
+    );
+  } else if (partialRepoId) {
     lines.push(
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
@@ -402,11 +429,11 @@ export function buildRowStatusTooltip({
           This {resourceLabel} may not be supported yet.
         </span>
         {unsupportedReason && (
-          <span className="mt-0.5 block text-white/75">
+          <span className="mt-0.5 block text-(--tooltip-muted)">
             {unsupportedReason}
           </span>
         )}
-        <span className="mt-0.5 block text-white/75">
+        <span className="mt-0.5 block text-(--tooltip-muted)">
           Still downloadable to your Hugging Face cache.
         </span>
       </TooltipLegendRow>,
@@ -430,6 +457,8 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const support = useMemo(
     () =>
       isDataset
@@ -441,8 +470,10 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
             libraryName: row.result.libraryName,
             deviceType,
             quantMethod: row.result.quantMethod,
+            vllmAvailable,
+            vllmPlatform,
           }),
-    [isDataset, row.id, row.result, deviceType],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable, vllmPlatform],
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
@@ -450,11 +481,13 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
     row.isAvailableOnDevice && row.isPartialOnDevice
       ? row.result.id
       : undefined;
+  const downloading = Boolean(partialRepoId && row.isDownloadingOnDevice);
   const tooltip = buildRowStatusTooltip({
     isGguf: row.result.isGguf,
     isAdapter: false,
     isAvailableOnDevice: row.isAvailableOnDevice,
     partialRepoId,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -495,7 +528,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
                 <StatusDot tone="danger" label="May not be supported yet" />
               )}
               {row.isAvailableOnDevice && row.isPartialOnDevice && (
-                <StatusDot tone="warning" label="Partial download" />
+                <PartialStatusDot downloading={downloading} />
               )}
               {row.isAvailableOnDevice && !row.isPartialOnDevice && (
                 <StatusDot tone="success" label="On device" />
@@ -559,6 +592,8 @@ export const InventoryRow = memo(function InventoryRow({
       ? row.repoId
       : (row.repoId ?? row.baseModelHubId ?? row.baseModel ?? row.loadId);
   const rowTagsSignature = row.tags?.join("\u0001") ?? "";
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unsupported = useMemo(() => {
     if (isDataset) return false;
     const classified = classifyUnslothSupport({
@@ -568,6 +603,8 @@ export const InventoryRow = memo(function InventoryRow({
       libraryName: row.libraryName,
       quantMethod: row.quantMethod,
       deviceType,
+      vllmAvailable,
+      vllmPlatform,
     });
     // Images/Video run these, so they are not unsupported to a user.
     return classified.status === "unsupported" && !classified.supportedIn;
@@ -579,6 +616,8 @@ export const InventoryRow = memo(function InventoryRow({
     row.libraryName,
     row.quantMethod,
     deviceType,
+    vllmAvailable,
+    vllmPlatform,
   ]);
   const handleClick = useCallback(() => onSelect(row.id), [onSelect, row.id]);
   const title = row.kind === "cache" ? row.repo : row.title;
@@ -595,16 +634,26 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : null;
   const canDelete = cacheDeletableRepoId !== null;
-  const partialRepoId = row.partial
-    ? row.kind === "cache"
-      ? row.repoId
-      : (row.repoId ?? row.loadId)
-    : undefined;
+  const localActionPath =
+    !isDataset &&
+    row.kind === "local" &&
+    row.source !== "hf_cache" &&
+    row.path
+      ? row.path
+      : null;
+  const partialRepoId =
+    row.partial && !row.companionPrefetch
+      ? row.kind === "cache"
+        ? row.repoId
+        : (row.repoId ?? row.loadId)
+      : undefined;
+  const downloading = Boolean(partialRepoId && row.downloading);
   const tooltip = buildRowStatusTooltip({
     isGguf: showFormatDot && row.isGguf,
     isAdapter: showFormatDot && row.modelFormat === "adapter",
-    isAvailableOnDevice: !partialRepoId,
+    isAvailableOnDevice: !row.partial,
     partialRepoId,
+    downloading,
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
@@ -657,8 +706,8 @@ export const InventoryRow = memo(function InventoryRow({
         />
       )}
       {partialRepoId ? (
-        <StatusDot tone="warning" label="Partial download" />
-      ) : (
+        <PartialStatusDot downloading={downloading} />
+      ) : row.companionPrefetch ? null : (
         <StatusDot tone="success" label="On device" />
       )}
       {unsupported && (
@@ -672,7 +721,7 @@ export const InventoryRow = memo(function InventoryRow({
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
-        {partialRepoId && <StatusDot tone="warning" label="Partial download" />}
+        {partialRepoId && <PartialStatusDot downloading={downloading} />}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}
@@ -701,14 +750,13 @@ export const InventoryRow = memo(function InventoryRow({
     deletableRepoId ? (
       <ModelRowMenu
         ariaLabel={`More options for ${deletableRepoId ?? rowModelId}`}
-        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        iconClassName="size-4"
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
         pin={
           isDataset || !deletableRepoId
             ? undefined
             : {
                 pinned: rowPinned,
-                pinLabel: "Pin to top",
+                pinLabel: "Pin",
                 unpinLabel: "Unpin",
                 onToggle: () => togglePinned(deletableRepoId),
               }
@@ -750,13 +798,45 @@ export const InventoryRow = memo(function InventoryRow({
                 undefined,
                 rowCachePath,
               );
-              // Deleted repos can't stay pinned: drop the repo pin and any of
-              // its per-quant pins so stale rows don't linger up top.
-              usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
+              if (row.isGguf && isChatGgufTask(row.pipelineTag)) {
+                await reconcileGgufPinsAfterDelete(
+                  deletableRepoId,
+                  useHfTokenStore.getState().token || undefined,
+                );
+              } else {
+                usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
+              }
             }
           },
           onDeleted: onChange,
         } : undefined}
+      />
+    ) : localActionPath && row.kind === "local" ? (
+      <ModelRowMenu
+        ariaLabel={`More options for ${rowModelId}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        onReveal={() => revealLocalModel(localActionPath, row.loadId)}
+        del={
+          DELETABLE_LOCAL_SOURCES.has(row.source)
+            ? {
+                title: "Delete local model?",
+                description: (
+                  <>
+                    This will permanently remove{" "}
+                    <span className="font-medium text-foreground">{title}</span>{" "}
+                    from{" "}
+                    <span className="break-all font-mono text-xs">
+                      {localActionPath}
+                    </span>
+                    .
+                  </>
+                ),
+                successMessage: `Deleted ${title}`,
+                onConfirm: () => deleteLocalModel(localActionPath, row.loadId),
+                onDeleted: onChange,
+              }
+            : undefined
+        }
       />
     ) : null;
 

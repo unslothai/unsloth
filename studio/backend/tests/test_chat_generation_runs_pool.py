@@ -9,8 +9,14 @@ database. These are the properties that make that safe to do; each fails if the 
 """
 
 import gc
+import os
+import signal
 import sqlite3
+import subprocess
+import sys
+import textwrap
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -252,6 +258,46 @@ def test_a_short_lived_threads_connection_is_released_when_it_exits():
     with runs_db._pool_lock:
         alive = [ref for ref in runs_db._pool_registry if ref() is not None]
     assert alive == [], "a dead thread must leave nothing behind in the registry"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "preexec_fn needs fork")
+def test_spawning_a_tool_while_another_thread_is_inside_sqlite_does_not_hang(tmp_path):
+    script = textwrap.dedent(
+        """
+        import subprocess, sys, threading
+        from storage import chat_generation_runs_db as runs_db
+
+        inside = threading.Event()
+        release = threading.Event()
+
+        def block():
+            inside.set()
+            release.wait()
+            return 1
+
+        def query():
+            conn = runs_db._connect()
+            conn.create_function("block", 0, block)
+            conn.execute("SELECT block()").fetchone()
+            conn.close()
+
+        worker = threading.Thread(target = query)
+        worker.start()
+        inside.wait()
+        subprocess.Popen([sys.executable, "-c", "pass"], preexec_fn = lambda: None).wait()
+        release.set()
+        worker.join()
+        """
+    )
+    backend = Path(runs_db.__file__).resolve().parents[1]
+    env = {**os.environ, "UNSLOTH_STUDIO_HOME": str(tmp_path), "PYTHONPATH": str(backend)}
+    proc = subprocess.Popen([sys.executable, "-c", script], env = env, start_new_session = True)
+    try:
+        assert proc.wait(timeout = 60) == 0
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        pytest.fail("the forked child hung on a SQLite lock another thread held at the fork")
 
 
 def test_closing_the_keeper_drops_the_pool_even_when_there_was_no_keeper():

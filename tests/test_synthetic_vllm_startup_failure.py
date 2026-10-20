@@ -1,29 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""A vLLM server that never starts must stop SyntheticDataKit, not be ignored.
-
-`Meta_Synthetic_Data_Llama3_2_(3B).ipynb` on a Colab T4 lost its vLLM server at
-import time:
-
-    ImportError: cannot import name 'ProcessorMixin' from 'transformers'
-
-`SyntheticDataKit.__init__` printed the tails and `return`ed, so the notebook
-received a fully constructed object with no server behind it. `ingest`,
-`create` and `save-as` then each printed "VLLM server not available", wrote
-nothing, and still exited 0, because a `!` shell line does not raise on a
-non-zero status. The first thing that actually stopped the notebook was, five
-cells and fourteen error messages later:
-
-    FileNotFoundError: File data/final/arxiv_org_0_qa_pairs_ft.json does not
-    exist
-
-which names a file no step had ever been in a position to write, and points at
-`pd.read_json` rather than at the server.
-
-These drive the readiness path directly with fakes: no GPU, no vLLM, no
-network. `chunk_data` is covered separately in test_synthetic_chunk_data.py.
-"""
+"""A vLLM server that never starts must stop SyntheticDataKit, not leave a kit without one."""
 
 import re
 import threading
@@ -89,8 +67,7 @@ class _FakeProcess:
         return self._returncode
 
 
-# Every kit built here, kept alive past the end of the test that made it so the fixture below, and not the dying test
-# frame, decides when it is collected.
+# Kept alive so the fixture, not the dying test frame, decides when each kit is collected.
 _LIVE_KITS = []
 
 
@@ -105,20 +82,7 @@ def _kit(stdout_capture, stderr_capture, process):
 
 @pytest.fixture(autouse = True)
 def _retire_kits_without_reaping_a_server():
-    """Stop `__del__` running a real server teardown against a fake process.
-
-    `SyntheticDataKit.__del__` calls `cleanup()`, which ends in
-    `for _ in range(10): torch.cuda.empty_cache(); gc.collect()`. Ten full
-    collections cost about 3s per test when this file runs alone, but scale with
-    the live heap: inside the whole repo suite they cost about 40s per test, which
-    is why 15 of the 16 slowest tests in the suite are in this file.
-
-    None of these tests have a server to reap, and none of them assert on
-    `cleanup()`. `cleanup()` returns immediately when `vllm_process` is absent, so
-    dropping the attribute retires the kit without the collections. The teardown
-    the tests do care about, `terminate_tree` on the failure path, is asserted
-    inside the tests themselves and is untouched.
-    """
+    """Drops vllm_process so __del__ skips cleanup()'s slow gc loops; no test here has a server to reap."""
     yield
     while _LIVE_KITS:
         kit = _LIVE_KITS.pop()
@@ -236,9 +200,6 @@ def test_the_message_says_what_the_user_should_do_next():
     assert "FileNotFoundError" in message
 
 
-# --- the readiness probe --------------------------------------------------
-
-
 def test_check_vllm_status_is_false_when_nothing_is_listening(monkeypatch):
     import requests
 
@@ -299,13 +260,7 @@ def test_the_failure_path_is_not_a_bare_return_any_more():
     assert not re.search(r"terminate_tree\(self\.vllm_process\)\s*\n\s*return", source)
 
 
-# Both waits bound work by ELAPSED time.
-
-
-# --- the timeout is a deadline, not a number of laps ----------------------
-# Both waits bound work by ELAPSED time. Attempt counts and flat poll intervals
-# only agree with that when each attempt is instant, which is exactly what the
-# failing cases below are not.
+# Waits are bounded by elapsed time; attempt counts only agree when attempts are instant.
 class _RecordingCapture(_FakeCapture):
     """Remembers every timeout it was asked to wait for."""
 
@@ -362,7 +317,7 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
 
     calls = {"n": 0}
 
-    def stalled_check():
+    def stalled_check(port = 8000):
         calls["n"] += 1
         clock["now"] += 5.0
         return False
@@ -380,11 +335,7 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
 
 
 def test_an_unbounded_timeout_is_a_wait_not_a_type_error():
-    """`timeout = None` is a legal call meaning wait as long as it takes.
-
-    Deadline arithmetic on `None` raised `TypeError` seconds after vLLM was
-    spawned, losing both the wait asked for and the child started.
-    """
+    """timeout=None must mean wait without limit, not a TypeError from deadline arithmetic after spawn."""
     kit = _kit(
         _FakeCapture(ready = False, ready_after = 0.05),
         _FakeCapture(),
@@ -428,7 +379,7 @@ def test_the_metrics_wait_accepts_an_unbounded_timeout():
     """Same arithmetic, same fix, pinned so the helper is not left half done."""
     calls = {"n": 0}
 
-    def check():
+    def check(port = 8000):
         calls["n"] += 1
         return calls["n"] >= 3
 

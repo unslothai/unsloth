@@ -91,6 +91,34 @@ def test_cache_key_sensitive_to_model_dims(field, value):
     assert cc.cache_key(efp, cc.model_fingerprint(**base)) != k0
 
 
+def test_vae_decode_flag_changes_the_key():
+    efp = cc.environment_fingerprint()
+    base = dict(
+        family = "flux.1",
+        transformer = _transformer(),
+        dtype = "bf16",
+        quant = None,
+        attention_backend = "x",
+        compile_kwargs = {"fullgraph": True, "dynamic": True, "vae_decode": False},
+    )
+    k0 = cc.cache_key(efp, cc.model_fingerprint(**base))
+    base["compile_kwargs"] = {"fullgraph": True, "dynamic": True, "vae_decode": True}
+    assert cc.cache_key(efp, cc.model_fingerprint(**base)) != k0
+
+
+def test_a_load_whose_vae_decision_did_not_move_keeps_its_bundle_key():
+    # Keys saved before the flag existed are {fullgraph, dynamic, ...}: an eager decode must still hit them after update.
+    efp = cc.environment_fingerprint()
+    base = dict(
+        family = "flux.1", transformer = _transformer(), dtype = "bf16", quant = None, attention_backend = "x"
+    )
+    before = cc.model_fingerprint(**base, compile_kwargs = {"fullgraph": True, "dynamic": True})
+    after = cc.model_fingerprint(
+        **base, compile_kwargs = {"fullgraph": True, "dynamic": True, "vae_decode": False}
+    )
+    assert cc.cache_key(efp, after) == cc.cache_key(efp, before)
+
+
 def test_repeated_blocks_change_key():
     efp = cc.environment_fingerprint()
     k1 = cc.cache_key(
@@ -1164,7 +1192,401 @@ def test_a_failed_or_cancelled_render_still_dirties_the_bundle_after_a_recompile
     from core.inference import diffusion
 
     src = inspect.getsource(diffusion.DiffusionBackend)
-    before = src.index("graphs_before = dynamo_graph_count()")
+    before = src.index("graphs_before = fresh_compile_count()")
     handler = src.index("except BaseException:", before)
     reraise = src.index("raise\n", handler)
     assert "compile_cache.mark_recompiled(state.compile_cache_ctx)" in src[handler:reraise]
+
+
+# ---------------------------------------------------------------------------- eviction
+def _key_dir(root: Path, name: str, size: int, age_s: float) -> Path:
+    import os
+    import time
+
+    d = root / name
+    (d / "inductor").mkdir(parents = True)
+    (d / "inductor" / "blob").write_bytes(b"x" * size)
+    (d / cc._MANIFEST_NAME).write_text("{}")
+    used = d / cc._LAST_USED_NAME
+    used.write_text("")
+    t = time.time() - age_s
+    os.utime(used, (t, t))
+    return d
+
+
+def test_max_cache_bytes_env(monkeypatch):
+    monkeypatch.delenv(cc._ENV_MAX_GB, raising = False)
+    assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
+    monkeypatch.setenv(cc._ENV_MAX_GB, "0.5")
+    assert cc.max_cache_bytes() == 1 << 29
+    monkeypatch.setenv(cc._ENV_MAX_GB, "0")
+    assert cc.max_cache_bytes() is None
+    monkeypatch.setenv(cc._ENV_MAX_GB, "not-a-number")
+    assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
+    for raw in ("nan", "inf", "-inf"):
+        monkeypatch.setenv(cc._ENV_MAX_GB, raw)
+        assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
+
+
+def test_evict_removes_least_recently_used_keys_until_under_budget(tmp_path):
+    old = _key_dir(tmp_path, "a" * 32, 1000, age_s = 3 * 86400)
+    mid = _key_dir(tmp_path, "b" * 32, 1000, age_s = 2 * 86400)
+    new = _key_dir(tmp_path, "c" * 32, 1000, age_s = 1 * 86400)
+    removed = cc.evict(root = tmp_path, max_bytes = 2500)
+    assert removed == ["a" * 32]
+    assert not old.exists() and mid.exists() and new.exists()
+
+
+def test_evict_is_a_noop_under_budget_or_disabled(monkeypatch, tmp_path):
+    d = _key_dir(tmp_path, "a" * 32, 1000, age_s = 86400)
+    assert cc.evict(root = tmp_path, max_bytes = 10_000) == []
+    monkeypatch.setenv(cc._ENV_MAX_GB, "0")
+    assert cc.evict(root = tmp_path) == []
+    assert d.exists()
+
+
+def test_evict_spares_live_recent_and_foreign_dirs(tmp_path):
+    live = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    recent = _key_dir(tmp_path, "b" * 32, 1000, age_s = 60)
+    foreign = tmp_path / "not-a-key"
+    foreign.mkdir()
+    (foreign / "big").write_bytes(b"x" * 5000)
+    cc._register_live(live)
+    try:
+        assert cc.evict(root = tmp_path, max_bytes = 1) == []
+    finally:
+        cc._unregister_live(live)
+    assert live.exists() and recent.exists() and foreign.exists()
+    assert cc.evict(root = tmp_path, max_bytes = 1) == ["a" * 32]
+    assert foreign.exists()
+
+
+def test_save_evicts_other_keys_but_never_its_own(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    stale = _key_dir(tmp_path, "d" * 32, 4096, age_s = 30 * 86400)
+    monkeypatch.setenv(cc._ENV_MAX_GB, str(1024 / (1 << 30)))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    try:
+        assert cc.save(ctx) is True
+        assert not stale.exists()
+        assert ctx.dir.exists() and ctx.manifest_path.exists() and ctx.bundle.exists()
+    finally:
+        cc.restore(ctx)
+
+
+def test_begin_touches_last_used_and_restore_releases_the_key(
+    monkeypatch, tmp_path, fake_megacache
+):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert (ctx.dir / cc._LAST_USED_NAME).exists()
+    assert str(ctx.dir) in cc._live_dirs
+    cc.restore(ctx)
+    assert str(ctx.dir) not in cc._live_dirs
+
+
+def test_removed_key_reads_as_a_miss_not_a_broken_pair(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is True
+    cc.restore(ctx)
+    cc._remove_key_dir(ctx.dir)
+    ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    try:
+        assert ctx2.hit is False
+    finally:
+        cc.restore(ctx2)
+
+
+def test_fresh_compile_count_ignores_a_retrace_the_cache_serves():
+    pytest.importorskip("torch")
+    from torch._dynamo.utils import counters
+
+    from core.inference import diffusion_speed as ds_mod
+
+    graphs, misses = ds_mod.dynamo_graph_count(), ds_mod.fresh_compile_count()
+    counters["stats"]["unique_graphs"] += 3
+    counters["inductor"]["fxgraph_cache_hit"] += 3
+    try:
+        assert ds_mod.dynamo_graph_count() == graphs + 3
+        assert ds_mod.fresh_compile_count() == misses
+        counters["inductor"]["fxgraph_cache_miss"] += 1
+        assert ds_mod.fresh_compile_count() == misses + 1
+    finally:
+        counters["stats"]["unique_graphs"] -= 3
+        counters["inductor"]["fxgraph_cache_hit"] -= 3
+        counters["inductor"]["fxgraph_cache_miss"] -= 1
+
+
+def test_a_render_marks_its_key_used_before_it_compiles(monkeypatch, tmp_path):
+    import os
+    import time
+
+    ctx = cc.CacheContext(
+        key = "e" * 32,
+        dir = tmp_path / ("e" * 32),
+        bundle = tmp_path / "b",
+        manifest_path = tmp_path / "m",
+        env_fp = {},
+        model_fp = {},
+        mode = "auto",
+    )
+    d = _key_dir(tmp_path, "e" * 32, 1000, age_s = 5 * 86400)
+    ctx.last_touch = time.time() - 2 * cc._TOUCH_INTERVAL_SECONDS
+    cc.note_use(ctx)
+    assert time.time() - os.stat(d / cc._LAST_USED_NAME).st_mtime < 60
+    assert cc.evict(root = tmp_path, max_bytes = 1) == []
+    stamp = os.stat(d / cc._LAST_USED_NAME).st_mtime
+    cc.note_use(ctx)
+    assert os.stat(d / cc._LAST_USED_NAME).st_mtime == stamp
+    cc.note_use(None)
+
+
+def test_generate_marks_the_key_used_before_the_render():
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    before = src.index("graphs_before = fresh_compile_count()")
+    render = src.index("pending = list(chunks)", before)
+    assert "compile_cache.note_use(state.compile_cache_ctx)" in src[before:render]
+
+
+def test_evict_rereads_last_used_before_deleting(monkeypatch, tmp_path):
+    import os
+    import time
+
+    old = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    other = _key_dir(tmp_path, "b" * 32, 1000, age_s = 4 * 86400)
+    real_dir_bytes = cc._dir_bytes
+
+    def dir_bytes_then_claim(path):
+        size = real_dir_bytes(path)
+        if path == old:
+            now = time.time()
+            os.utime(old / cc._LAST_USED_NAME, (now, now))
+        return size
+
+    monkeypatch.setattr(cc, "_dir_bytes", dir_bytes_then_claim)
+    assert cc.evict(root = tmp_path, max_bytes = 1500) == ["b" * 32]
+    assert old.exists() and not other.exists()
+
+
+def test_evict_counts_only_what_it_actually_removed(monkeypatch, tmp_path):
+    import shutil
+
+    stuck = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    nxt = _key_dir(tmp_path, "b" * 32, 1000, age_s = 4 * 86400)
+    keep = _key_dir(tmp_path, "c" * 32, 1000, age_s = 3 * 86400)
+    real_rmtree = shutil.rmtree
+
+    def rmtree_keeps_the_oldest(path, *args, **kwargs):
+        if str(path).startswith(str(stuck)) or "a" * 32 in str(path):
+            return
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", rmtree_keeps_the_oldest)
+    cc.evict(root = tmp_path, max_bytes = 2500)
+    assert not nxt.exists() and keep.exists()
+    assert cc._dir_bytes(tmp_path) <= 2500
+    monkeypatch.setattr(shutil, "rmtree", real_rmtree)
+    cc.evict(root = tmp_path, max_bytes = 2500)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c" * 32]
+
+
+def test_evict_skips_a_key_it_cannot_take_and_moves_on(monkeypatch, tmp_path):
+    import os
+
+    held = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    nxt = _key_dir(tmp_path, "b" * 32, 1000, age_s = 4 * 86400)
+    real_rename = os.rename
+
+    def rename_refuses_held(src, dst):
+        if str(src) == str(held):
+            raise PermissionError("in use by another process")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", rename_refuses_held)
+    assert cc.evict(root = tmp_path, max_bytes = 1500) == ["b" * 32]
+    assert held.exists() and (held / cc._MANIFEST_NAME).exists() and not nxt.exists()
+
+
+def test_a_warm_hit_enforces_the_budget_without_a_save(monkeypatch, tmp_path, fake_megacache):
+    monkeypatch.setenv(cc._ENV_MODE, "auto")
+    monkeypatch.delenv(cc._ENV_SAVE, raising = False)
+    monkeypatch.setenv(cc._ENV_SYNC, "1")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    assert cc.save(ctx) is True
+    cc.restore(ctx)
+    stale = _key_dir(tmp_path, "d" * 32, 4096, age_s = 30 * 86400)
+    monkeypatch.setenv(cc._ENV_MAX_GB, str(1024 / (1 << 30)))
+    monkeypatch.setenv(cc._ENV_SAVE, "0")
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    cc.restore(ctx)
+    assert stale.exists()
+    monkeypatch.delenv(cc._ENV_SAVE)
+    ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
+    try:
+        assert ctx.hit is True and ctx.saved is True
+        assert cc.save_async(ctx) is False
+        assert not stale.exists()
+        assert ctx.manifest_path.exists() and ctx.bundle.exists()
+    finally:
+        cc.restore(ctx)
+
+
+def test_max_cache_bytes_overflowing_value_keeps_the_default(monkeypatch):
+    monkeypatch.setenv(cc._ENV_MAX_GB, "1e300")
+    assert cc.max_cache_bytes() == int(cc._DEFAULT_MAX_GB * (1 << 30))
+
+
+def test_evict_counts_a_key_another_evictor_took(monkeypatch, tmp_path):
+    import os
+    import shutil
+
+    taken = _key_dir(tmp_path, "a" * 32, 1000, age_s = 5 * 86400)
+    nxt = _key_dir(tmp_path, "b" * 32, 1000, age_s = 4 * 86400)
+    real_rename = os.rename
+
+    def another_process_got_there_first(src, dst):
+        if str(src) == str(taken):
+            shutil.rmtree(taken)
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(os, "rename", another_process_got_there_first)
+    assert cc.evict(root = tmp_path, max_bytes = 1500) == []
+    assert not taken.exists() and nxt.exists()
+
+
+def _bundle_ctx(tmp_path):
+    return cc.CacheContext(
+        key = "abc",
+        dir = tmp_path / "abc",
+        bundle = tmp_path / "abc" / "cache.bin",
+        manifest_path = tmp_path / "abc" / "manifest.json",
+        env_fp = "e",
+        model_fp = "m",
+        mode = "auto",
+    )
+
+
+def _grouped_mega_cache():
+    # The per-type group format these tests exercise is torch 2.8+; torch 2.7 wrote one flat artifact list.
+    cache_mod = pytest.importorskip("torch.compiler._cache")
+    if not hasattr(cache_mod, "_deserialize_single_cache"):
+        pytest.skip("torch build without per-type artifact groups")
+    return cache_mod
+
+
+def test_a_resave_after_a_recompile_restores_every_graph(tmp_path, monkeypatch):
+    # Before the merge, a re-saved bundle restored only the newest per-type group (torch loads them with dict()).
+    _grouped_mega_cache()
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "first-resolution", b"one")
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "second-resolution", b"two")
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        data = (ctx.dir / manifest["bundle"]).read_bytes()
+        restored = M.deserialize(data)
+        assert sorted(a.key for a in restored["inductor"]) == [
+            "first-resolution",
+            "second-resolution",
+        ]
+    finally:
+        M.clear()
+
+
+def test_a_resave_keeps_both_contents_of_a_repeated_inductor_key(tmp_path, monkeypatch):
+    _grouped_mega_cache()
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "kept", b"one")
+        M.record_artifact("inductor", "tuned", b"old")
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "tuned", b"new")
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        restored = M.deserialize((ctx.dir / manifest["bundle"]).read_bytes())
+        assert [(a.key, bytes(a.content)) for a in restored["inductor"]] == [
+            ("kept", b"one"),
+            ("tuned", b"old"),
+            ("tuned", b"new"),
+        ]
+    finally:
+        M.clear()
+
+
+def test_a_resave_keeps_every_guarded_candidate_and_applies_a_repeated_autotune_key_last(
+    tmp_path, monkeypatch
+):
+    # Inductor candidates sharing a key are separate guarded entries; an autotune key is one slot, written in order.
+    _grouped_mega_cache()
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "graph", b"shape-a")
+        M.record_artifact("autotune", "kernel", {"best": "old"})
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "graph", b"shape-b")
+        M.record_artifact("autotune", "kernel", {"best": "new"})
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        restored = M.deserialize((ctx.dir / manifest["bundle"]).read_bytes())
+        assert sorted(bytes(a.content) for a in restored["inductor"]) == [b"shape-a", b"shape-b"]
+        assert json.loads(restored["autotune"][-1].content) == {"best": "new"}
+    finally:
+        M.clear()
+
+
+def test_the_bundle_is_serialised_under_torch_compile_lock(tmp_path, monkeypatch):
+    # An artifact recorded while torch serialises is cleared from the pending list but stays "seen": lost for good.
+    # A compile on another thread (a render, a background compile) records under compile_lock, so the save takes it.
+    import threading
+
+    import torch
+    from torch._dynamo import convert_frame
+
+    lock = threading.RLock()
+    held = []
+
+    def save():
+        held.append(lock._is_owned())
+        return None
+
+    monkeypatch.setattr(convert_frame, "compile_lock", lock)
+    # raising=False: torch 2.6 has no Mega-cache API, the lock is what is under test
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", save, raising = False)
+    cc._write_bundle(_bundle_ctx(tmp_path), None)
+    assert held == [True]
+
+
+def test_a_flat_artifact_list_is_saved_as_is_without_a_warning(monkeypatch):
+    # torch 2.7 (flat artifact list, no _deserialize_single_cache): saves must not log a merge failure.
+    cache_mod = pytest.importorskip("torch.compiler._cache")
+    monkeypatch.delattr(cache_mod, "_deserialize_single_cache", raising = False)
+    warnings = []
+    logger = types.SimpleNamespace(warning = lambda *a: warnings.append(a))
+    assert cc._one_group_per_type(b"flat-list-bundle", logger) == b"flat-list-bundle"
+    assert warnings == []

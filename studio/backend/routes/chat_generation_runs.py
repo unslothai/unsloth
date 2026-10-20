@@ -21,12 +21,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
 from auth import policy
-from state import active_generations, run_subscribers
+from state import active_generations, run_subscribers, unattended_runs
 from utils.account_context import current_account, current_account_id, run_as
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
 from utils.api_errors import safe_validation_errors
+from utils.current_date_prompt_settings import (
+    CURRENT_DATE_TIMEZONE_HEADER,
+    CURRENT_DATE_TIMEZONE_OFFSET_HEADER,
+)
 
 router = APIRouter()
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(
@@ -67,7 +71,9 @@ _EXTERNAL_ROUTING_FIELDS = {
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
+    "extra_audio_base64",
     "video_base64",
+    "mcp_image",
 }
 _SQLITE_MAX_INTEGER = 9_223_372_036_854_775_807
 _ENVELOPE_MAX_DEPTH = 64
@@ -82,6 +88,9 @@ class CreateChatGenerationRun(BaseModel):
     userMessageId: str = Field(min_length = 1, max_length = 256)
     assistantMessageId: str = Field(min_length = 1, max_length = 256)
     requestPayload: dict[str, Any]
+    # The owner's "stop when I close the tab": cancel the run once no tab has followed it for a
+    # while (state/unattended_runs.py) rather than letting it finish in the background.
+    stopWhenUnattended: bool = False
 
 
 def _normalized_key(key: object) -> str:
@@ -156,12 +165,14 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         ) from exc
     # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
     from routes.inference import (
+        _admit_tool_access,
         _messages_have_embedded_image,
         _messages_have_input_audio,
         _reject_unsupported_content_parts,
         _request_has_video,
     )
 
+    _admit_tool_access(request)
     _reject_unsupported_content_parts(request)
 
     # Message content/reasoning are user-authored data, not routing configuration. Scan every
@@ -234,6 +245,10 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     if (request.n or 1) != 1:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
     sanitized = request.model_dump(mode = "json", exclude_none = True)
+    if request.permission_mode == "off" and not request._off_confirm_opt_out:
+        # The validator forces confirm_tool_calls=False for "off"; persisted, the replay would read that as the
+        # caller's explicit opt-out and never arm the no-OS-sandbox confirm gate.
+        sanitized.pop("confirm_tool_calls", None)
     for field in _EXTERNAL_ROUTING_FIELDS:
         sanitized.pop(field, None)
     sanitized["stream"] = True
@@ -241,6 +256,14 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     sanitized["cancel_id"] = payload.runId
     sanitized["generation_run_id"] = payload.runId
     return sanitized
+
+
+def _timezone_headers(request: Request) -> dict[str, str]:
+    return {
+        name: value
+        for name in (CURRENT_DATE_TIMEZONE_HEADER, CURRENT_DATE_TIMEZONE_OFFSET_HEADER)
+        if 0 < len(value := request.headers.get(name, "").strip()) <= 64
+    }
 
 
 def _require_run(run_id: str) -> dict[str, Any]:
@@ -264,6 +287,37 @@ def cancel_account_run(request: Request, run_id: str, *, supervisor_name: str) -
         from routes.inference import _cancel_by_cancel_id_or_stash
         active_generations.cancel_run(run_id)
         _cancel_by_cancel_id_or_stash(run_id)
+
+
+def _watch_unattended(request: Request, run_id: str) -> None:
+    """Cancel ``run_id`` the way the cancel route does once no tab is following it."""
+    account = current_account()
+
+    def settled() -> bool:
+        run = run_as(account, db.get_run, run_id)
+        return run is None or run["status"] in db.TERMINAL_STATUSES or bool(run["cancelRequested"])
+
+    async def cancel() -> None:
+        run = await asyncio.to_thread(run_as, account, db.request_cancel, run_id)
+        if (
+            run is not None
+            and run["status"] in {"cancelling", "cancelled"}
+            and (
+                getattr(request.app.state, "chat_generation_supervisor", None) is not None
+                or policy.installation_has_managed_accounts()
+            )
+        ):
+            # On the loop: the supervisor's cancel may cancel its asyncio task.
+            run_as(
+                account,
+                cancel_account_run,
+                request,
+                run_id,
+                supervisor_name = "chat_generation_supervisor",
+            )
+
+    # The id the events stream stamps, under the same account it stamps it with.
+    unattended_runs.watch(run_id, current_account_id() or "", settled = settled, cancel = cancel)
 
 
 def _require_available_supervisor_run_id(run_id: str) -> None:
@@ -299,6 +353,11 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
+    from routes.inference import _request_used_api_key
+
+    sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
+    if timezone_headers := _timezone_headers(request):
+        sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers
     # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
     # after an unload/swap, never mid-swap.
     async with inference_lifecycle_gate():
@@ -328,6 +387,8 @@ async def create_chat_generation_run(
                 thread_id = run["threadId"],
                 model = run["requestPayload"].get("model"),
             )
+    if payload.stopWhenUnattended and run["status"] not in db.TERMINAL_STATUSES:
+        _watch_unattended(request, run["id"])
     return {**run, "created": created}
 
 

@@ -3,18 +3,15 @@
 
 import { useMemo } from "react";
 import { modelConfigInstanceKey } from "../model-config/config-signature";
-import {
-  isOllamaLinkPath,
-  isStandaloneGgufPath,
-} from "../model-config/model-identity";
+import { residentModelConfigTarget } from "../model-config/model-config-handoff";
 import type { PerModelConfig } from "../model-config/per-model-config";
 import { ModelConfigPage } from "./model-config-page";
-import type { ModelPickTarget } from "./model-selector/types";
 
 interface SidebarModelConfigProps {
   modelId: string;
   ggufVariant: string | null;
   isGguf: boolean;
+  isLora: boolean;
   isDiffusion: boolean;
   nativeContextLength: number | null;
   loadedContextLength: number | null;
@@ -22,56 +19,32 @@ interface SidebarModelConfigProps {
   onReload: (config: PerModelConfig) => void;
 }
 
-const TRAILING_SEPARATORS = /[\\/]+$/;
-
-function leafName(id: string): string {
-  const trimmed = id.replace(TRAILING_SEPARATORS, "");
-  const separator = Math.max(
-    trimmed.lastIndexOf("/"),
-    trimmed.lastIndexOf("\\"),
-  );
-  return separator >= 0 ? trimmed.slice(separator + 1) : trimmed;
-}
-
 export function SidebarModelConfig({
   modelId,
   ggufVariant,
   isGguf,
+  isLora,
   isDiffusion,
   nativeContextLength,
   loadedContextLength,
   loadedConfig,
   onReload,
 }: SidebarModelConfigProps) {
-  // A standalone .gguf has no quant to choose between, but the loader labels it from its filename and
-  // /status echoes that back. Keying settings by it would write "<path>:Q4_K_M" while all other
-  // settings entry points use the bare path.
-  const settingsGgufVariant = isStandaloneGgufPath(modelId)
-    ? null
-    : ggufVariant;
-  const target = useMemo<ModelPickTarget>(() => {
-    const leaf = leafName(modelId);
-    return {
-      id: modelId,
-      displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
-      ggufVariant: settingsGgufVariant,
-      isGguf,
-      // A materialized Ollama link sits in a dir the resolver skips, so do not mirror it.
-      apiLoadable: isGguf && !isOllamaLinkPath(modelId),
-      meta: {
-        source: "local",
-        isLora: false,
-        ggufVariant: settingsGgufVariant ?? undefined,
+  const target = useMemo(
+    () =>
+      residentModelConfigTarget({
+        modelId,
+        ggufVariant,
         isGguf,
-        isDownloaded: true,
+        isLora,
         contextLength: nativeContextLength,
-      },
-    };
-  }, [modelId, ggufVariant, settingsGgufVariant, isGguf, nativeContextLength]);
+      }),
+    [modelId, ggufVariant, isGguf, isLora, nativeContextLength],
+  );
 
   return (
     <ModelConfigPage
-      key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}
+      key={modelConfigInstanceKey(modelId, target.ggufVariant, loadedConfig)}
       target={target}
       onRun={onReload}
       loadedConfig={loadedConfig}

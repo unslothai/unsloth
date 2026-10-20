@@ -48,6 +48,7 @@ from core.inference.memory_contract import (  # noqa: E402
 _BREAKDOWN = SimpleNamespace(
     weights_bytes = 5_000_000_000,  # resident: quant + projector + drafter
     kv_bytes = 3_000_000_000,
+    kv_checkpoint_bytes = 600_000_000,
     compute_bytes = 700_000_000,
     drafter_runtime_bytes = 400_000_000,
     drafter_runtime_gpu_bytes = 250_000_000,
@@ -204,6 +205,11 @@ class TestTheLegacyProjections:
         assert (
             out["weights_bytes"] == _BREAKDOWN.weights_bytes
         ), "the Load Model panel itemizes weights_bytes as every resident file"
+
+    def test_estimate_memory_carries_the_checkpoint_share(self, estimate):
+        out = project_estimate_memory_response(estimate)
+        assert out["kv_checkpoint_bytes"] == _BREAKDOWN.kv_checkpoint_bytes
+        assert out["kv_bytes"] == _BREAKDOWN.kv_bytes
 
     def test_kv_cache_estimate_gets_the_quant_file(self, estimate):
         out = project_kv_cache_estimate(estimate)

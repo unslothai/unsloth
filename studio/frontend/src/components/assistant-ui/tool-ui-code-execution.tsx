@@ -3,15 +3,17 @@
 
 "use client";
 
+import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { FileTextIcon, TerminalIcon } from "lucide-react";
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
+import { TerminalIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { isToolCallRunning, toolArgText } from "./tool-arg-text";
-import { memo, useMemo } from "react";
+import { type ComponentType, memo, useMemo } from "react";
 import { useToolAwaitingApproval } from "@/features/chat";
 import {
   ToolFallbackContent,
@@ -109,9 +111,9 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
 
   let runningLabel: string;
   let completedLabel: string;
-  let Icon = TerminalIcon;
+  let Icon: ComponentType<{ className?: string }> = TerminalIcon;
   if (kind === "text_editor") {
-    Icon = FileTextIcon;
+    Icon = FileGlyph;
     if (command === "view") {
       runningLabel = path ? `Viewing ${path}…` : "Viewing file…";
       completedLabel = path ? `Viewed ${path}` : "Viewed file";
@@ -133,12 +135,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   // Collapse the card once the model resumes streaming prose after the tool
   // call (mirrors WebSearchToolUI) so it doesn't crowd the final answer.
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (p) =>
-        p.type === "text" &&
-        "text" in p &&
-        (p as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
   // Ask permission gates every local tool call, and what is being approved
   // lives inside the content while Allow/Deny render outside it.

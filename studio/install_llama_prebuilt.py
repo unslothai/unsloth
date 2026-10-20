@@ -10,8 +10,10 @@ import argparse
 import atexit
 import errno
 import fnmatch
+import functools
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -128,6 +130,10 @@ WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 # cannot reach the managed-memory faults. An allowlist because CDNA ships no Vulkan ICD.
 VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
+# No ROCm torch wheel and no linux-rocm bundle covers these, so a HIP source build has no
+# rocBLAS kernels for them. Mirrors install_python_stack._LINUX_UNCOVERED_AMD_GFX.
+LINUX_NO_ROCM_GFX_TARGETS = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
 # install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
 # duplicated rather than imported because this module is vendored standalone into the backend.
@@ -161,8 +167,8 @@ UPSTREAM_WINDOWS_HIP_GFX_TARGETS = frozenset(
 )
 
 # install_kinds that really are a Vulkan bundle. A Vulkan request can still end on a CPU
-# bundle (no Vulkan archive on Windows arm64; x64 falls through when it is missing or fails
-# validation), so check against this to keep the marker honest (#7357).
+# bundle (it falls through when the Vulkan archive is missing or fails validation), so check
+# against this to keep the marker honest (#7357).
 # Derived from the shared vocabulary rather than spelled out again: a new Vulkan bundle
 # family added to INSTALL_KIND_BACKENDS must not be missed here.
 VULKAN_INSTALL_KINDS = frozenset(
@@ -419,9 +425,15 @@ class HostInfo:
     has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = field(default_factory = list)
+    # rocm_gfx_target is a forwarded arch the probe never reported, not the probe's pick.
+    rocm_gfx_forwarded: bool = False
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Skips a macos prebuilt whose minimum-OS exceeds this host.
     macos_version: tuple[int, int] | None = None
+    # Set only by _vulkan_only_host. The Windows arm64 branches read it, not has_intel_gpu.
+    vulkan_routed: bool = False
+    # Set only by the probe route: the installed Vulkan bundle must itself list a Vulkan GPU.
+    vulkan_device_required: bool = False
 
 
 @dataclass
@@ -1378,6 +1390,21 @@ def direct_upstream_release_plan(
                 )
             )
             attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
+        # Upstream ships win-vulkan-arm64 since b11396; CPU bundle still last.
+        if host.vulkan_routed:
+            vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-arm64.zip"
+            vulkan_url = assets.get(vulkan_asset)
+            if vulkan_url:
+                attempts.append(
+                    AssetChoice(
+                        repo = repo,
+                        tag = release_tag,
+                        name = vulkan_asset,
+                        url = vulkan_url,
+                        source_label = "upstream",
+                        install_kind = "windows-arm64-vulkan",
+                    )
+                )
         # Upstream ggml-org/llama.cpp ships llama-bNNNN-bin-win-cpu-arm64.zip
         # (visible in the b9334 release manifest). Without this branch the
         # selector returned 0 attempts and the installer fell back to a
@@ -1993,13 +2020,66 @@ def _warn_uncovered_cuda_host(
     log(message)
 
 
+def _mask_widened_sms(host: HostInfo) -> list[str] | None:
+    """Every physical SM when CUDA_VISIBLE_DEVICES hides a card with an SM the visible ones lack.
+
+    The mask is per process, the install tree is not: a bundle cut to the visible cards dies
+    with "no kernel image" on the hidden one once the mask is gone, and torch / setup.sh
+    already target every physical GPU. Coverage only widens; the mask still picks the card
+    at runtime. None when nothing is hidden or the physical caps are unknown, and when the
+    visible caps are unknown: the visible-only path's unknown-GPU safeguard then decides.
+    """
+    visible = normalize_compute_caps(host.compute_caps)
+    physical = normalize_compute_caps(host.physical_compute_caps)
+    if not visible or not physical or set(physical) <= set(visible):
+        return None
+    return normalize_compute_caps(physical + visible)
+
+
 def linux_cuda_choice_from_release(
     host: HostInfo,
     release: PublishedReleaseBundle,
     preferred_runtime_line: str | None = None,
     selection_preamble: Iterable[str] = (),
+    host_sms: list[str] | None = None,
 ) -> LinuxCudaSelection | None:
-    host_sms = normalize_compute_caps(host.compute_caps)
+    selection_preamble = list(selection_preamble)
+    # An explicit host_sms is the widened try, whose miss falls back rather than warns.
+    warn_uncovered = host_sms is None
+    if host_sms is None:
+        widened_sms = _mask_widened_sms(host)
+        if widened_sms is not None:
+            widened = linux_cuda_choice_from_release(
+                host,
+                release,
+                preferred_runtime_line,
+                selection_preamble
+                + [
+                    "linux_cuda_selection: covering the GPUs CUDA_VISIBLE_DEVICES hides, "
+                    f"physical_sms={','.join(widened_sms)}"
+                ],
+                host_sms = widened_sms,
+            )
+            if widened is not None:
+                # The visible-only picks stay as later attempts, should the wider one fail.
+                visible = linux_cuda_choice_from_release(
+                    host,
+                    release,
+                    preferred_runtime_line,
+                    selection_preamble,
+                    host_sms = normalize_compute_caps(host.compute_caps),
+                )
+                names = {a.name for a in widened.attempts}
+                widened.attempts.extend(
+                    a for a in (visible.attempts if visible else []) if a.name not in names
+                )
+                return widened
+            # No bundle covers every physical card: keep the visible-only choice.
+            selection_preamble.append(
+                "linux_cuda_selection: no bundle covers physical_sms="
+                f"{','.join(widened_sms)}; selecting for the visible GPUs"
+            )
+        host_sms = normalize_compute_caps(host.compute_caps)
     detected_runtime_lines, runtime_dirs = detected_linux_runtime_lines()
     driver_runtime_lines = compatible_linux_runtime_lines(host)
     runtime_lines = [
@@ -2053,6 +2133,12 @@ def linux_cuda_choice_from_release(
         selection_log.append(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
         )
+        if not warn_uncovered:
+            return None
+        if driver_below_cuda_prebuilt_floor(host):
+            floor_message = cuda_driver_floor_message(host)
+            selection_log.append(f"linux_cuda_selection: {floor_message}")
+            log(floor_message)
         _warn_uncovered_cuda_host(
             host_sms,
             detected_runtime_lines,
@@ -2208,13 +2294,14 @@ def linux_cuda_choice_from_release(
             add_attempt(artifact, url, "portable fallback for runtime line")
 
     if not attempts:
-        _warn_uncovered_cuda_host(
-            host_sms,
-            detected_runtime_lines,
-            driver_runtime_lines,
-            published_artifacts,
-            host.is_arm64,
-        )
+        if warn_uncovered:
+            _warn_uncovered_cuda_host(
+                host_sms,
+                detected_runtime_lines,
+                driver_runtime_lines,
+                published_artifacts,
+                host.is_arm64,
+            )
         return None
 
     selection_log.append(
@@ -2765,7 +2852,11 @@ def _list_rocm_gfx_targets(out: str) -> list[str]:
     return _tokens
 
 
-def _pick_rocm_gfx_target(out: str) -> str | None:
+def _pick_rocm_gfx_target(
+    out: str,
+    rocr_filtered: bool = False,
+    hip_filtered: bool = False,
+) -> str | None:
     """Choose the gfx target rocminfo / hipinfo report for the active GPU.
 
     A bare first-match picked the wrong device on mixed APU + dGPU hosts (Strix Halo gfx1151
@@ -2778,18 +2869,42 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     same rule and gfx906 exclusion as _amd_prefer_discrete_gfx in install.sh / studio/setup.sh;
     an all-integrated host keeps its own arch. A mask is never second-guessed at ANY value,
     including one this cannot resolve: HIP_VISIBLE_DEVICES=N is the #7624 / #7669 workaround.
+
+    hip_filtered: the output came from a HIP application (Windows hipinfo), which HIP_VISIBLE_DEVICES
+    / CUDA_VISIBLE_DEVICES already filtered and renumbered, so the selected device is survivor 0.
     """
     _tokens = _list_rocm_gfx_targets(out)
     if not _tokens:
         return None
 
+    # hipinfo is already filtered by HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES (never ROCR on
+    # Windows): with either set, the selected device is survivor 0.
+    if hip_filtered:
+        _hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
+        if _hip_vis is None:
+            # An all-hiding ROCR mask still means no GPU, as before survivor indexing.
+            _rocr_vis = os.environ.get("ROCR_VISIBLE_DEVICES")
+            if _rocr_vis is not None and _rocr_vis.strip() in ("", "-1"):
+                return None
+            _hip_vis = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if _hip_vis is not None:
+            return None if _hip_vis.strip() in ("", "-1") else _tokens[0]
+
     _vis_raw = None
-    # AMD's HIP runtime honours all three env vars with identical semantics.
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+    # rocminfo output is already ROCr-filtered and renumbered: only HIP-layer masks index it.
+    _masks = (
+        ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+        if rocr_filtered
+        else ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    )
+    for _env in _masks:
         _val = os.environ.get(_env)
         if _val is not None:
             _vis_raw = _val
             break
+    # Still an explicit selection: survivor 0, so the discrete repick below must not override it.
+    if _vis_raw is None and rocr_filtered and os.environ.get("ROCR_VISIBLE_DEVICES") is not None:
+        _vis_raw = "0" if os.environ["ROCR_VISIBLE_DEVICES"].strip() not in ("", "-1") else ""
     if _vis_raw is not None:
         _vis = _vis_raw.strip()
         # Empty or "-1" means "no AMD GPU visible" (matches the rest of Unsloth).
@@ -3104,7 +3219,9 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 if _check(_result.stdout):
                     has_rocm = True
                     rocm_gfx_targets = _list_rocm_gfx_targets(_result.stdout)
-                    rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
+                    rocm_gfx_target = _pick_rocm_gfx_target(
+                        _result.stdout, rocr_filtered = _cmd[0] == "rocminfo"
+                    )
                     break
     elif is_windows and (probe_rocm_with_nvidia or not has_usable_nvidia):
         # Windows: prefer active probes that validate GPU presence.
@@ -3150,7 +3267,9 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     has_rocm = True
                     # hipinfo reports "gcnArchName: gfx1100" -- extract if present
                     rocm_gfx_targets = _list_rocm_gfx_targets(_result.stdout)
-                    rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
+                    rocm_gfx_target = _pick_rocm_gfx_target(
+                        _result.stdout, hip_filtered = _cmd[0] == "hipinfo"
+                    )
                     break
         # Note: amdhip64.dll presence alone is NOT treated as GPU evidence
         # since the HIP SDK can be installed without an AMD GPU.
@@ -3326,6 +3445,7 @@ def _apply_host_overrides(
             # that card regardless of HIP_VISIBLE_DEVICES. An empty probe still yields
             # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
             rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
+            rocm_gfx_forwarded = gfx not in _physical,
         )
     # The arch a previous install recorded, replayed by the updater. A remembered
     # probe result, not an operator override, so it only fills a gap: a host whose
@@ -3364,13 +3484,17 @@ def detected_windows_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
     return _core.detected_windows_runtime_lines(_OPS)
 
 
+driver_below_cuda_prebuilt_floor = _core.driver_below_cuda_prebuilt_floor
+cuda_driver_floor_message = _core.cuda_driver_floor_message
+
+
 def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, _minor = host.driver_cuda_version
     # cuda12 app bundles are toolkit-12.8 builds with bundled runtime libs; CUDA
-    # minor-version compatibility runs them on any 12.x driver, same as Linux.
-    if major < _MIN_CUDA_MAJOR:
+    # minor-version compatibility runs them on a 12.x driver from 12.4 on (#12842).
+    if major < _MIN_CUDA_MAJOR or driver_below_cuda_prebuilt_floor(host):
         return []
     return _cuda_runtime_lines_for_major(major)
 
@@ -3587,7 +3711,49 @@ def published_windows_cuda_attempts(
     preferred_runtime_line: str | None,
     selection_preamble: Iterable[str] = (),
     arch: str | None = None,
+    host_sms: list[str] | None = None,
 ) -> list[AssetChoice]:
+    selection_preamble = list(selection_preamble)
+    # The widened try logs nothing a visible-only retry would repeat.
+    log_floor = host_sms is None
+    if host_sms is None:
+        # As linux_cuda_choice_from_release: cover the cards the mask hides when a bundle can.
+        widened_sms = _mask_widened_sms(host)
+        if widened_sms is not None:
+            widened = published_windows_cuda_attempts(
+                host,
+                release,
+                preferred_runtime_line,
+                selection_preamble
+                + [
+                    "windows_cuda_selection: covering the GPUs CUDA_VISIBLE_DEVICES hides, "
+                    f"physical_sms={','.join(widened_sms)}"
+                ],
+                arch = arch,
+                host_sms = widened_sms,
+            )
+            # Only bundles whose SM metadata proves they cover every card count as widening.
+            widened = [
+                a
+                for a in widened
+                if a.supported_sms and a.min_sm is not None and a.max_sm is not None
+            ]
+            if widened:
+                names = {a.name for a in widened}
+                visible = published_windows_cuda_attempts(
+                    host,
+                    release,
+                    preferred_runtime_line,
+                    selection_preamble,
+                    arch = arch,
+                    host_sms = normalize_compute_caps(host.compute_caps),
+                )
+                return widened + [a for a in visible if a.name not in names]
+            selection_preamble.append(
+                "windows_cuda_selection: no bundle covers physical_sms="
+                f"{','.join(widened_sms)}; selecting for the visible GPUs"
+            )
+        host_sms = normalize_compute_caps(host.compute_caps)
     if arch is None:
         arch = windows_cuda_arch_for_host(host)
     install_kind = windows_cuda_install_kind_for_arch(arch)
@@ -3646,8 +3812,12 @@ def published_windows_cuda_attempts(
             "windows_cuda_selection: app-bundle runtime lines (major-gated)="
             + (",".join(ordered_lines) if ordered_lines else "none")
         )
+        if driver_below_cuda_prebuilt_floor(host):
+            floor_message = cuda_driver_floor_message(host)
+            selection_log.append(f"windows_cuda_selection: {floor_message}")
+            if log_floor:
+                log(floor_message)
 
-    host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
     for runtime_line in ordered_lines:
         if not runtime_line:
@@ -4129,6 +4299,23 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             if attempts:
                 return attempts[0]
             log("no compatible Windows ARM64 CUDA asset was found -- falling back to CPU")
+        if host.vulkan_routed:
+            vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-arm64.zip"
+            if vulkan_name in upstream_assets:
+                log(
+                    f"Vulkan requested on Windows ARM64 -- using upstream Vulkan prebuilt {vulkan_name}"
+                )
+                return AssetChoice(
+                    repo = UPSTREAM_REPO,
+                    tag = llama_tag,
+                    name = vulkan_name,
+                    url = upstream_assets[vulkan_name],
+                    source_label = "upstream",
+                    install_kind = "windows-arm64-vulkan",
+                )
+            log(
+                "Vulkan requested on Windows ARM64 but no Vulkan prebuilt found -- falling back to CPU"
+            )
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-arm64.zip"
         if upstream_name not in upstream_assets:
             raise PrebuiltFallback("upstream Windows ARM64 CPU asset was not found")
@@ -4191,6 +4378,30 @@ def resolve_release_asset_choice(
     )
     if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
         selection_host = masked_host or host
+        if driver_below_cuda_prebuilt_floor(selection_host):
+            # #12842, #13662: the source fallback needs a toolkit this driver runs, which winget
+            # rarely offers. Vulkan still runs on the NVIDIA GPU; CPU after it. Not under a CUDA
+            # mask: Vulkan ignores it, so it could take a card the caller hid.
+            vulkan_choice = (
+                published_asset_choice_for_kind(release, "windows-vulkan", host = host)
+                if masked_host is None
+                else None
+            )
+            choices = [
+                choice
+                for choice in (
+                    vulkan_choice,
+                    published_asset_choice_for_kind(release, "windows-cpu"),
+                )
+                if choice is not None
+            ]
+            if choices:
+                bundle = "Vulkan" if vulkan_choice is not None else "CPU"
+                log(
+                    f"{cuda_driver_floor_message(selection_host)} Installing the {bundle} "
+                    "bundle for now."
+                )
+                return apply_approved_hashes(choices, checksums)
         torch_preference = detect_torch_cuda_runtime_preference(
             selection_host, gpu_hidden_by_mask = masked_host is not None
         )
@@ -4211,6 +4422,12 @@ def resolve_release_asset_choice(
                     "published Windows CUDA assets ignored for install planning: "
                     f"{release.repo}@{release.release_tag} ({exc})"
                 )
+        if release.repo == DEFAULT_PUBLISHED_REPO:
+            # Prebuilts come only from the fork's own release, never upstream ggml-org's.
+            raise PrebuiltFallback(
+                f"no published Windows CUDA bundle in {release.repo}@{release.release_tag} "
+                "covers this host"
+            )
         upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
         upstream_attempts = _drop_blackwell_incapable_windows_cuda(
             selection_host,
@@ -4248,8 +4465,27 @@ def resolve_release_asset_choice(
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
-        # Prefer a CUDA bundle, as x64 does: the published windows-arm64-cuda artifact first, then
-        # upstream's -arm64 zip, both hash-gated. The opt-out gates the WHOLE branch.
+        if host.vulkan_routed:
+            vulkan_choice = published_asset_choice_for_kind(
+                release, "windows-arm64-vulkan", host = host
+            )
+            if vulkan_choice is None:
+                log(
+                    f"no published Windows ARM64 Vulkan bundle in {release.repo}@"
+                    f"{release.release_tag}; falling through to the ARM64 CPU bundle."
+                )
+            choices = [
+                choice
+                for choice in (
+                    vulkan_choice,
+                    published_asset_choice_for_kind(release, "windows-arm64"),
+                )
+                if choice is not None
+            ]
+            if choices:
+                return apply_approved_hashes(choices, checksums)
+        # A host the fork's windows-arm64-cuda bundle does not cover takes its ARM64 CPU bundle.
+        # The opt-out gates the WHOLE branch.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             published_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
@@ -4270,50 +4506,10 @@ def resolve_release_asset_choice(
                         "published Windows ARM64 CUDA assets ignored for install planning: "
                         f"{release.repo}@{release.release_tag} ({exc})"
                     )
-            # Same rule as the digest fetch below: a rate limit, an outage or a malformed payload from the
-            # release API costs the CUDA bundle, never the install; the ARM64 CPU bundle is still there.
-            try:
-                upstream_arm64_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
-            except Exception as exc:
-                log(
-                    f"could not list the upstream {UPSTREAM_REPO}@{llama_tag} release assets "
-                    f"({exc}); falling through to the ARM64 CPU bundle."
-                )
-                upstream_arm64_assets = {}
-            upstream_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
-                host,
-                resolve_windows_cuda_choices(
-                    host,
-                    llama_tag,
-                    upstream_arm64_assets,
-                    arch = "arm64",
-                ),
+            log(
+                f"no published Windows ARM64 CUDA bundle in {release.repo}@{release.release_tag} "
+                "covers this GPU; falling through to the ARM64 CPU bundle."
             )
-            if upstream_arm64_cuda:
-                try:
-                    return apply_approved_hashes(upstream_arm64_cuda, checksums)
-                except PrebuiltFallback as exc:
-                    # The fork publishes no windows-arm64-cuda bundle yet, so take upstream ggml-org's, the same release this fork
-                    # repackages. Verified against GitHub's per-asset digest; an asset it states no digest for is refused, not installed.
-                    verified = _apply_release_digests(
-                        upstream_arm64_cuda,
-                        github_release_asset_digests(UPSTREAM_REPO, llama_tag),
-                    )
-                    if verified:
-                        log(
-                            "no approved checksum covers a Windows ARM64 CUDA bundle "
-                            f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "
-                            f"{verified[0].name}, verified against the release asset digest "
-                            "GitHub reports. Set UNSLOTH_LLAMA_ARM64_CUDA=0 to use the CPU "
-                            "bundle instead."
-                        )
-                        return verified
-                    log(
-                        "no approved checksum covers a Windows ARM64 CUDA bundle "
-                        f"({exc}), and GitHub reports no asset digest for the upstream "
-                        f"{UPSTREAM_REPO} bundle either; refusing to install it unverified "
-                        "and falling through to the ARM64 CPU bundle."
-                    )
         published_choice = published_asset_choice_for_kind(release, "windows-arm64")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
@@ -4329,6 +4525,12 @@ def resolve_release_asset_choice(
                 f"{release.repo}@{release.release_tag} {published_choice.name} ({exc})"
             )
 
+    if release.repo == DEFAULT_PUBLISHED_REPO:
+        # The upstream filename resolver below lists ggml-org's release; the fork never uses it.
+        raise PrebuiltFallback(
+            f"no compatible published prebuilt in {release.repo}@{release.release_tag} "
+            f"for {host.system} {host.machine}"
+        )
     return apply_approved_hashes(
         [resolve_asset_choice(host, llama_tag)],
         checksums,
@@ -4372,12 +4574,21 @@ def copy_globs(
         shutil.copy2(path, destination / name)
 
 
-def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
+def ensure_converter_scripts(
+    install_dir: Path,
+    llama_tag: str,
+    *,
+    repo: str | None = None,
+    release_tag: str | None = None,
+) -> None:
     canonical = install_dir / "convert_hf_to_gguf.py"
     if not canonical.exists():
-        # Hydrated source tree should have placed this file already.
-        # Fall back to a network fetch so the install is not blocked.
-        raw_base = f"https://raw.githubusercontent.com/ggml-org/llama.cpp/{llama_tag}"
+        # Hydration normally placed it; else the fork at the installed mix tag (bare bNNNN tags are not pushed).
+        source_repo = repo or DEFAULT_PUBLISHED_REPO
+        ref = release_tag or llama_tag
+        raw_base = (
+            f"https://raw.githubusercontent.com/{source_repo}/{urllib.parse.quote(ref, safe = '')}"
+        )
         source_url = f"{raw_base}/convert_hf_to_gguf.py"
         data = download_bytes(
             source_url,
@@ -4433,10 +4644,8 @@ def ensure_diffusion_visual_server(
         return
 
     try:
-        assets = github_release_assets(DEFAULT_PUBLISHED_REPO, release_tag)
         match = None
-        unapproved_matches: list[str] = []
-        for asset_name, url in assets.items():
+        for asset_name, approved in approved_checksums.artifacts.items():
             low = asset_name.lower()
             if "llama-diffusion-gemma-visual-server" not in low:
                 continue
@@ -4444,28 +4653,18 @@ def ensure_diffusion_visual_server(
                 continue
             if (not host.is_windows) and low.endswith(".exe"):
                 continue
-            # This binary is chmod'd executable and later launched by the
-            # backend, so it must be covered by the approved checksum manifest
-            # just like every other prebuilt artifact. An asset that matches the
-            # name but is missing from the manifest is refused rather than run.
-            approved = approved_checksums.artifacts.get(asset_name)
-            if approved is None:
-                unapproved_matches.append(asset_name)
+            if approved.repo and approved.repo != DEFAULT_PUBLISHED_REPO:
+                continue
+            url = release_asset_download_url(DEFAULT_PUBLISHED_REPO, release_tag, asset_name)
+            if not url:
                 continue
             match = (asset_name, url, approved.sha256)
             break
         if match is None:
-            if unapproved_matches:
-                log(
-                    "diffusion visual server asset(s) were present but omitted from the "
-                    "approved checksum manifest; refusing unverified native executable: "
-                    + ", ".join(unapproved_matches)
-                )
-            else:
-                log(
-                    "diffusion visual server not found in the published release; native "
-                    "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
-                )
+            log(
+                "diffusion visual server not in the approved checksum manifest for this "
+                "release; native DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
+            )
             return
         bin_dir.mkdir(parents = True, exist_ok = True)
         download_file_verified(
@@ -4725,6 +4924,7 @@ def runtime_patterns_for_install_kind(
         "windows-arm64-cuda",
         "windows-hip",
         "windows-vulkan",
+        "windows-arm64-vulkan",
         "windows-rocm",
         "windows-arm64",
     }:
@@ -4778,10 +4978,8 @@ def prune_install_staging_root(install_dir: Path) -> None:
 
 
 def create_install_staging_dir(install_dir: Path) -> Path:
-    staging_dir = Path(
-        tempfile.mkdtemp(
-            prefix = f"{install_dir.name}.staging-", dir = install_staging_root(install_dir)
-        )
+    staging_dir = _core.make_staging_dir(
+        install_staging_root(install_dir), f"{install_dir.name}.staging-"
     )
     log(f"created install staging dir {staging_dir}")
     return staging_dir
@@ -4799,15 +4997,69 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+def blocked_replace_hint(winerror: object) -> str:
+    # 5 is also what a scanner holding a handle returns (is_busy_lock_error: busy).
+    if winerror == 5:
+        return (
+            "access is denied -- a scanner or running process may still hold a handle, "
+            "or the ACLs are broken"
+        )
+    if winerror == 145:
+        return "the directory is not empty yet -- an earlier copy is still being removed"
+    return "a scanner is likely still holding the install open"
+
+
+def _tree_link_state(root: Path) -> str:
+    """Return "link", "unreadable" (root or a directory not readable) or "clean"."""
+    try:
+        root.lstat()
+    except OSError:
+        return "unreadable"
+    if _is_link_or_junction(root):
+        return "link"
+    unreadable: list[OSError] = []
+    for current_dir, dirnames, filenames in os.walk(
+        root, followlinks = False, onerror = unreadable.append
+    ):
+        current_path = type(root)(current_dir)
+        if any(_is_link_or_junction(current_path / name) for name in (*dirnames, *filenames)):
+            return "link"
+    return "unreadable" if unreadable else "clean"
+
+
+def log_acl_repair(path: Path) -> None:
+    # Printed, never run: repairing permissions is the user's call (#9928).
+    # takeown /R and icacls /T follow links, so recursion is offered only for a tree
+    # fully listed and link-free; otherwise just the root, which is not a link.
+    state = _tree_link_state(path)
+    if state == "link":
+        log(f"rename still denied after retrying; {path} contains a link, check its permissions")
+    else:
+        log(
+            "rename still denied after retrying; if the permissions on this tree are broken, run in an elevated PowerShell:"
+        )
+        recursive = state == "clean"
+        log(f'takeown /F "{path}"' + (" /R /D Y" if recursive else ""))
+        # /L: if an unreadable root is a link after all, reset the link, not its target.
+        log(f'icacls "{path}" /reset' + (" /T" if recursive else " /L"))
+        if not recursive:
+            log("then run the install again")
+    log(
+        "if access stays denied, Controlled folder access or antivirus may be blocking "
+        "the path: allow or exclude it there"
+    )
+
+
 def replace_with_busy_retry(
     src: Path,
     dst: Path,
     *,
     attempts: int = 8,
+    acl_repair: bool = True,
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 means a scanner still holds a handle inside the tree,
+    WinError 5/32/145 usually means a scanner holds a handle inside the tree,
     which clears in a second or two; without a backoff that turns an update
     into a failure, and on the aside-move of the *existing* install that is the
     failure this installer most needs to avoid. Mirrors the Node installer's
@@ -4823,12 +5075,16 @@ def replace_with_busy_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (5, 32, 145)
             if not transient or attempt == attempts - 1:
+                if acl_repair and transient and winerror == 5:
+                    # src, not dst: the aside-move's dst does not exist yet.
+                    log_acl_repair(src)
                 raise
             log(
-                f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- a scanner is likely still holding the install open"
+                f"rename {src.name} -> {dst.name} blocked ({winerror}), retrying in "
+                f"{delay:.2f}s -- {blocked_replace_hint(winerror)}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
@@ -5222,7 +5478,8 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
                 restore_attempted = True
                 try:
-                    replace_with_busy_retry(rollback_dir, install_dir)
+                    # A copy fallback follows, so ACL advice here could name a tree it then removes.
+                    replace_with_busy_retry(rollback_dir, install_dir, acl_repair = False)
                 except OSError as restore_exc:
                     # The rename is the one-step restore; when it cannot run,
                     # the rollback tree is the sole remaining llama.cpp, so a
@@ -5383,6 +5640,17 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         prune_install_staging_root(install_dir)
 
 
+def ensure_fit_params_executable(install_dir: Path) -> None:
+    """The guarded extractor leaves the optional Metal probe 0644 (#12901); reuse paths repair old installs."""
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    try:
+        if helper.is_file() and not helper.is_symlink():
+            if stat.S_IMODE(helper.stat().st_mode) & 0o111 != 0o111:
+                os.chmod(helper, 0o755)
+    except OSError:
+        pass
+
+
 def install_from_archives(
     choice: AssetChoice, host: HostInfo, install_dir: Path, work_dir: Path
 ) -> tuple[Path, Path]:
@@ -5469,6 +5737,7 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
+    ensure_fit_params_executable(install_dir)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"
@@ -6510,6 +6779,7 @@ def validate_server(
             "windows-arm64-cuda",
             "windows-hip",
             "windows-vulkan",
+            "windows-arm64-vulkan",
             "windows-rocm",
             "macos-arm64",
         }
@@ -7229,6 +7499,13 @@ def _fork_manifest_release_plans(
                 last_error = exc
                 if not allow_older_release_fallback:
                     raise
+                # #12842: the floor is the host's, so every older release fails alike.
+                if (
+                    (host.is_linux or host.is_windows)
+                    and host.has_physical_nvidia
+                    and driver_below_cuda_prebuilt_floor(host)
+                ):
+                    raise PrebuiltFallback(cuda_driver_floor_message(host)) from exc
                 log(
                     "published release skipped for install planning: "
                     f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"
@@ -7361,6 +7638,12 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
             list(host.driver_cuda_version) if host.driver_cuda_version else None
         ),
         "compute_caps": _sorted_labels(host.compute_caps),
+        # Only when a mask hides another SM (the selectors then widen), so other hosts keep their profile.
+        **(
+            {"physical_compute_caps": _sorted_labels(host.physical_compute_caps)}
+            if _mask_widened_sms(host) is not None
+            else {}
+        ),
         "has_rocm": bool(host.has_rocm),
         # Upstream ROCm assets go by the runtime's major.minor, which the GPU fields do not carry.
         "rocm_runtime": _rocm_runtime_for_profile(host),
@@ -8085,7 +8368,7 @@ def runtime_payload_health_groups(
         # left the group satisfied by three libraries that cannot stand in for it.
         # Measured on app-b10798-mix-659e406-windows-x64-rocm-gfx1150.zip.
         return _windows_shared_groups(source_label, tag) + [["ggml-hip*.dll"]]
-    if install_kind == "windows-vulkan":
+    if install_kind in {"windows-vulkan", "windows-arm64-vulkan"}:
         groups = _windows_shared_groups(source_label, tag) + [["ggml-vulkan.dll"]]
         if source_label == "published":
             groups.append(["llama-diffusion-gemma-visual-server.exe"])
@@ -9523,6 +9806,10 @@ def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
     """
     if not (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
         return True
+    # #12842: below the floor a CUDA prebuilt still answers --version but loads no kernel.
+    marker = load_prebuilt_metadata(install_dir) or {}
+    if marker_backend(marker) == "cuda" and driver_below_cuda_prebuilt_floor(host):
+        return False
     return _existing_install_runs(install_dir, host)
 
 
@@ -9666,6 +9953,29 @@ def existing_install_matches_plan(
     )
 
 
+_LISTED_VULKAN_DEVICE_RE = re.compile(r"^\s*Vulkan\d+:", re.MULTILINE)
+
+
+def bundle_lists_vulkan_device(server_path: Path, install_dir: Path, host: HostInfo) -> bool:
+    """Whether llama.cpp itself, from the installed bundle, enumerates a Vulkan GPU."""
+    try:
+        result = subprocess.run(
+            [str(server_path), "--list-devices"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            # Device init compiles every shader pipeline, over a minute on a loaded host.
+            timeout = 180,
+            env = binary_env(server_path, install_dir, host),
+            **windows_hidden_subprocess_kwargs(),
+        )
+    except Exception as exc:
+        log(f"llama-server --list-devices failed: {exc}")
+        return False
+    return result.returncode == 0 and bool(_LISTED_VULKAN_DEVICE_RE.search(result.stdout or ""))
+
+
 def validate_prebuilt_choice(
     choice: AssetChoice,
     host: HostInfo,
@@ -9726,6 +10036,15 @@ def validate_prebuilt_choice(
         (server_path, quantize_path), install_dir, host
     )
     ensure_repo_shape(install_dir)
+    if (
+        host.vulkan_device_required
+        and choice.install_kind in VULKAN_INSTALL_KINDS
+        and not bundle_lists_vulkan_device(server_path, install_dir, host)
+    ):
+        # The bundle runs on CPU without a device, so validation alone would keep it.
+        raise PrebuiltFallback(
+            f"{choice.name} lists no Vulkan GPU on this host; using the CPU bundle instead"
+        )
     write_prebuilt_metadata(
         install_dir,
         host = host,
@@ -10026,6 +10345,114 @@ def _vulkan_visible_device_mask_set() -> bool:
     return os.environ.get("GGML_VK_VISIBLE_DEVICES") is not None
 
 
+# The checks ggml_vk_instance_init applies before it takes a device: a Vulkan 1.2 loader,
+# then a discrete or integrated GPU with 16-bit storage buffers (ggml_vk_device_is_supported).
+_VULKAN_DEVICE_PROBE = r"""
+import ctypes as c, json, os, sys
+if sys.platform == "win32":
+    root = os.environ.get("SystemRoot") or r"C:\Windows"
+    lib = c.WinDLL(os.path.join(root, "System32", "vulkan-1.dll"))
+else:
+    lib = c.CDLL("libvulkan.so.1")
+P, U32 = c.c_void_p, c.c_uint32
+def fn(name, *args):
+    f = getattr(lib, name)
+    f.argtypes, f.restype = list(args), c.c_int32
+    return f
+class App(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("name", c.c_char_p), ("ver", U32),
+                ("engine", c.c_char_p), ("engineVer", U32), ("api", U32)]
+class Create(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("flags", U32), ("app", P),
+                ("nLayers", U32), ("layers", P), ("nExts", U32), ("exts", P)]
+class Driver(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("id", c.c_int32),
+                ("slack", c.c_char * 1024)]
+class Props(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("api", U32), ("driverVersion", U32),
+                ("vendor", U32), ("device", U32), ("type", c.c_int32),
+                ("name", c.c_char * 256), ("slack", c.c_uint64 * 256)]
+class Vk11(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("bits", U32 * 32)]
+class Features(c.Structure):
+    _fields_ = [("sType", c.c_int32), ("pNext", P), ("bits", U32 * 128)]
+V12 = (1 << 22) | (2 << 12)
+version = U32(1 << 22)
+if hasattr(lib, "vkEnumerateInstanceVersion"):
+    fn("vkEnumerateInstanceVersion", c.POINTER(U32))(c.byref(version))
+devices = []
+if version.value >= V12:
+    app = App(0, None, b"unsloth", 1, None, 0, version.value)
+    instance = P()
+    if fn("vkCreateInstance", P, P, P)(c.byref(Create(1, None, 0, c.addressof(app))), None, c.byref(instance)) == 0:
+        enum = fn("vkEnumeratePhysicalDevices", P, c.POINTER(U32), P)
+        count = U32(0)
+        enum(instance, c.byref(count), None)
+        handles = (P * count.value)()
+        enum(instance, c.byref(count), handles)
+        get_props = fn("vkGetPhysicalDeviceProperties2", P, P)
+        get_features = fn("vkGetPhysicalDeviceFeatures2", P, P)
+        for handle in handles[: count.value]:
+            driver = Driver(1000196000)
+            props = Props(1000059001, c.addressof(driver))
+            get_props(handle, c.byref(props))
+            fp16 = False
+            if props.api >= V12:
+                vk11 = Vk11(49)
+                get_features(handle, c.byref(Features(1000059000, c.addressof(vk11))))
+                fp16 = bool(vk11.bits[0])
+            devices.append({"vendor": props.vendor, "type": props.type, "api": props.api,
+                            "driver": driver.id, "fp16": fp16,
+                            "name": props.name.decode("utf-8", "replace")})
+        fn("vkDestroyInstance", P, P)(instance, None)
+print(json.dumps(devices))
+"""
+# VK_DRIVER_ID_GOOGLE_SWIFTSHADER, _MESA_LLVMPIPE (software), _MESA_DOZEN (Vulkan over D3D12).
+_VULKAN_SKIPPED_DRIVER_IDS = frozenset({10, 13, 23})
+
+
+@functools.lru_cache(maxsize = 1)
+def _vulkan_gpu_devices() -> tuple[str, ...]:
+    """Names of the GPUs the Vulkan bundle would run on; empty when none or the probe fails.
+
+    A child process, since loading a broken driver can take its caller down with it.
+    UNSLOTH_VULKAN_DEVICE_PROBE=0 turns it off.
+    """
+    if os.environ.get("UNSLOTH_VULKAN_DEVICE_PROBE", "1") == "0":
+        return ()
+    try:
+        result = run_capture([sys.executable, "-I", "-c", _VULKAN_DEVICE_PROBE], timeout = 30)
+        devices = json.loads(result.stdout.strip().splitlines()[-1])
+    except Exception:
+        return ()
+    if result.returncode != 0 or not isinstance(devices, list):
+        return ()
+    # Vulkan ignores the CUDA and HIP masks, so a vendor the caller hid stays hidden.
+    hidden_vendors = set()
+    if os.environ.get("CUDA_VISIBLE_DEVICES") is not None:
+        hidden_vendors.add(0x10DE)
+    if (
+        _hip_visible_device_mask_set()
+        if sys.platform == "win32"
+        else os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+    ):
+        hidden_vendors.add(0x1002)
+    names = []
+    for device in devices:
+        try:
+            if (
+                device["type"] in (1, 2)
+                and device["api"] >= (1 << 22) | (2 << 12)
+                and device["fp16"]
+                and device["driver"] not in _VULKAN_SKIPPED_DRIVER_IDS
+                and device["vendor"] not in hidden_vendors
+            ):
+                names.append(str(device["name"]))
+        except (KeyError, TypeError):
+            continue
+    return tuple(names)
+
+
 def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
     """gfx targets the Windows HIP bundle of ``published_repo`` is actually built for.
 
@@ -10064,7 +10491,8 @@ def _host_has_windows_hip_prebuilt_gfx(host: HostInfo, published_repo: str | Non
 
 
 def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | None = None) -> bool:
-    """True when NO AMD GPU on the host reaches the Windows HIP prebuilt floor."""
+    """True when no AMD GPU on the host reaches the Windows HIP prebuilt floor, or the
+    unmasked probe's own pick has no Windows HIP bundle."""
     active = _active_rocm_gfx_target(host)
     if not active:
         # ROCm confirmed but gfx unknown (--has-rocm only): keep the HIP / fork / source path.
@@ -10082,8 +10510,8 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     # GGML_VK_VISIBLE_DEVICES and Vulkan ordinals), so masking down to a below-floor card
     # must not route the install to Vulkan: the installed backend would happily enumerate
     # the HIP-capable card the user deliberately hid, possibly one reserved for another
-    # workload. Auto-fall back only when no AMD device on the box can be exposed to HIP; an
-    # explicit vulkan opt-in is unaffected.
+    # workload. Under a mask, auto-fall back only when no AMD device on the box can be exposed
+    # to HIP; an explicit vulkan opt-in is unaffected.
     #
     # Under a mask the probe cannot supply that inventory at all (hipinfo sees only visible
     # devices), so "no AMD GPU here reaches the floor" is unprovable and guessing wrong is
@@ -10094,6 +10522,19 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     if _hip_visible_device_mask_set():
         return False
     targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
+    # Mixed host whose active card has no HIP bundle (gfx1010 at device 0 beside a gfx1034):
+    # no HIP prebuilt can serve the card HIP runs on, while Vulkan runs on both. Only when the
+    # active arch is the unmasked probe's own pick: a forwarded arch the probe never reported,
+    # or UNSLOTH_ROCM_GFX_ARCH, keeps the all-cards rule. Any NVIDIA trace also keeps it:
+    # following ROCm torch clears has_physical_nvidia, but Vulkan would still see that card.
+    if (
+        not os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+        and not host.rocm_gfx_forwarded
+        and not (host.nvidia_smi or host.physical_compute_caps or host.compute_caps)
+        and active == _pick_rocm_gfx_target(" ".join(targets))
+        and not _gfx_is_windows_hip_supported(active, published_repo)
+    ):
+        return True
     return not any(_gfx_is_windows_hip_supported(target, published_repo) for target in targets)
 
 
@@ -10504,13 +10945,24 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
     return _amd_vulkan_icd_present()
 
 
-def _has_no_vulkan_prebuilt(host: HostInfo) -> bool:
-    """Platforms that ship no Vulkan prebuilt at all, so routing there is pointless.
-
-    Upstream builds win-vulkan for x64 only; Windows arm64 gets CPU plus opencl-adreno, so
-    rewriting it to Vulkan-only would just swap the published bundle for the upstream CPU
-    one. macOS is handled separately (Metal)."""
-    return host.is_windows and host.is_arm64
+def _should_auto_vulkan_for_amd_linux(host: HostInfo) -> bool:
+    """Linux counterpart of _should_auto_vulkan_for_amd_windows: ROCm userspace is installed
+    but no AMD GPU here has ROCm kernels (RDNA 1, Polaris), so HIP would source-build into a
+    binary that cannot run. Same guards as the integrated-GPU preference, plus an explicit
+    HSA_OVERRIDE_GFX_VERSION, which means the user runs this card on ROCm on purpose."""
+    active = _active_rocm_gfx_target(host)
+    if not active:
+        return False
+    if not (host.is_linux and host.has_rocm and not host.has_physical_nvidia):
+        return False
+    if _hip_visible_device_mask_set() or _vulkan_visible_device_mask_set():
+        return False
+    if os.environ.get("HSA_OVERRIDE_GFX_VERSION"):
+        return False
+    targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
+    if not all(target in LINUX_NO_ROCM_GFX_TARGETS for target in targets):
+        return False
+    return _amd_vulkan_icd_present()
 
 
 def _vulkan_only_host(host: HostInfo) -> HostInfo:
@@ -10529,6 +10981,7 @@ def _vulkan_only_host(host: HostInfo) -> HostInfo:
         rocm_gfx_target = None,
         rocm_gfx_targets = [],
         has_intel_gpu = True,
+        vulkan_routed = True,
     )
 
 
@@ -10570,15 +11023,18 @@ def _route_to_vulkan_prebuilt(
     """Point a Vulkan-capable host at the selected repository's Vulkan prebuilt.
 
     The default Unsloth release manifest includes Vulkan app bundles, including the
-    DiffusionGemma visual server. Three triggers route here, all suppressed when a CPU
+    DiffusionGemma visual server. These triggers route here, all suppressed when a CPU
     flag (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
       * ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
         ``--llama-backend vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
-      * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357);
+      * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357), and
+        so does Linux AMD whose every gfx has no ROCm kernels;
       * an AMD host whose every GPU is an integrated part Vulkan serves better prefers
         Vulkan over the HIP bundle it could otherwise run;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
-        has_intel_gpu probe.
+        has_intel_gpu probe;
+      * any other non-macOS host that would get the CPU bundle, when the Vulkan loader
+        enumerates a GPU llama.cpp accepts (Snapdragon X, Linux arm64 GPUs, nouveau).
     Applied by BOTH the install path and the --resolve-prebuilt probe so the "is a prebuilt
     available" answer matches what actually gets installed.
 
@@ -10589,7 +11045,9 @@ def _route_to_vulkan_prebuilt(
     explicit_backend = resolved_llama_backend(llama_backend)
     # Host-only test, so a forced Vulkan run can still tell this box would have
     # routed itself to Vulkan anyway.
-    amd_no_hip_host = _should_auto_vulkan_for_amd_windows(host, published_repo)
+    amd_no_hip_host = _should_auto_vulkan_for_amd_windows(
+        host, published_repo
+    ) or _should_auto_vulkan_for_amd_linux(host)
     amd_igpu_host = _should_prefer_vulkan_for_amd_igpu(host)
     # Auto-fall back only when the run named no accelerator: an explicit hip/cpu/cuda is
     # the opt-out. "auto" names detection itself, so it keeps both automatic routes.
@@ -10598,10 +11056,26 @@ def _route_to_vulkan_prebuilt(
     auto_igpu = detecting and amd_igpu_host
     # No PHYSICAL NVIDIA, not merely no usable one: Vulkan ignores CUDA_VISIBLE_DEVICES, so
     # auto-routing a host that hides its NVIDIA card would let it grab the reserved GPU.
+    # Not Windows arm64: a stale Intel adapter entry there names no GPU; the probe below decides.
     auto_intel = (
-        detecting and host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm
+        detecting
+        and host.has_intel_gpu
+        and not host.has_physical_nvidia
+        and not host.has_rocm
+        and not (host.is_windows and host.is_arm64)
     )
-    if force_cpu or not (forced or auto_intel or auto_no_hip or auto_igpu):
+    # Probe last so only hosts otherwise headed for the CPU bundle pay for it; CPU stays the fallback.
+    auto_device = (
+        detecting
+        and not (forced or force_cpu or auto_intel or auto_no_hip or auto_igpu)
+        and not host.is_macos
+        and not host.has_physical_nvidia
+        and not host.has_rocm
+        and not (host.is_x86_64 and host.has_amd_gpu_without_rocm)
+        and not _vulkan_visible_device_mask_set()
+        and bool(_vulkan_gpu_devices())
+    )
+    if force_cpu or not (forced or auto_intel or auto_no_hip or auto_igpu or auto_device):
         return host, published_repo, published_release_tag, None
     if host.is_macos:
         if forced:
@@ -10610,19 +11084,19 @@ def _route_to_vulkan_prebuilt(
                 "(Metal is used; there is no Vulkan prebuilt)"
             )
         return host, published_repo, published_release_tag, None
-    if _has_no_vulkan_prebuilt(host):
-        if forced:
-            log(
-                "Vulkan llama.cpp backend requested on Windows arm64, but no "
-                "compatible Vulkan bundle is published"
-            )
-        return host, published_repo, published_release_tag, None
     if auto_no_hip:
         active = _active_rocm_gfx_target(host) or "unknown"
-        log(
-            "Active AMD GPU arch is not supported by the Windows HIP prebuilt "
-            f"({active}); installing the Vulkan llama.cpp prebuilt instead"
-        )
+        if host.is_linux:
+            log(
+                f"AMD GPU arch {active} has no ROCm kernels; installing the Vulkan "
+                "llama.cpp prebuilt instead"
+            )
+        else:
+            log(
+                "Active AMD GPU arch is not supported by the Windows HIP prebuilt "
+                f"({active}); installing the Vulkan llama.cpp prebuilt, which runs on "
+                "every AMD GPU here"
+            )
         host = _vulkan_only_host(host)
         persist_backend = "auto"
     elif auto_igpu:
@@ -10645,23 +11119,19 @@ def _route_to_vulkan_prebuilt(
         # same. Persist it as automatic so pre-#8050 installs (and the --llama-backend
         # vulkan every update re-asserts) stay eligible for the CPU crash recovery.
         persist_backend = "auto" if (amd_no_hip_host or amd_igpu_host) else "vulkan"
-    else:
+    elif auto_intel:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
-    # The fork manifest's Vulkan app bundles are x64 only, and the architecture
-    # filter in published_asset_choice_for_kind rejects them for an ARM64 host, so
-    # the fork planner returns no Vulkan attempt at all there. Strict Vulkan
-    # filtering then drops the ARM64 CPU attempt too and the install resolves to
-    # nothing. Upstream does publish llama-<tag>-bin-ubuntu-vulkan-arm64.tar.gz, so
-    # keep routing Linux ARM64 there (Windows arm64 exits above via
-    # _has_no_vulkan_prebuilt, macOS via the Metal branch).
-    if (published_repo or DEFAULT_PUBLISHED_REPO) == DEFAULT_PUBLISHED_REPO and (
-        host.is_linux and host.is_arm64
-    ):
-        # Fork and upstream use different tag namespaces (fork b9596-mix-<sha> vs
-        # upstream b9596), so carrying a fork pin over would make the upstream
-        # resolver query a release that does not exist.
-        return host, UPSTREAM_REPO, "", persist_backend
+    else:
+        names = ", ".join(dict.fromkeys(_vulkan_gpu_devices()))
+        log(
+            f"Vulkan GPU found ({names}); installing the Vulkan llama.cpp prebuilt, "
+            "with the CPU bundle as fallback"
+        )
+        host = dataclasses_replace(_vulkan_only_host(host), vulkan_device_required = True)
+        # Detected, like the Intel route: updates re-detect and the CPU crash recovery holds.
+        persist_backend = None
+    # A fork release without a linux-vulkan-arm64 bundle source-builds; no upstream prebuilt.
     return host, published_repo, published_release_tag, persist_backend
 
 
@@ -10851,6 +11321,61 @@ class BackendRoute:
     rocm_fallback_host: HostInfo | None = None
 
 
+# Quoted values only: non-ROCm builds write `hip: Optional[str] = None`. Mirrors install_python_stack.
+_TORCH_VERSION_PY_HIP_RE = re.compile(r"""^hip\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE)
+# AMD's Radeon SDK wheels leave hip None and carry the tag here (2.9.0+rocmsdk20251116).
+_TORCH_VERSION_PY_VERSION_RE = re.compile(
+    r"""^__version__\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE
+)
+
+
+def _torch_version_py_is_rocm(version_py: Path) -> bool | None:
+    try:
+        text = version_py.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    hip = _TORCH_VERSION_PY_HIP_RE.search(text)
+    version = _TORCH_VERSION_PY_VERSION_RE.search(text)
+    return bool((hip and hip.group(1)) or (version and "rocm" in version.group(1).lower()))
+
+
+def _installed_torch_is_rocm() -> bool | None:
+    """Read off disk: importing torch here is slow and can fail."""
+    try:
+        spec = importlib.util.find_spec("torch")
+        if spec is None or not spec.origin:
+            return None
+        return _torch_version_py_is_rocm(Path(spec.origin).with_name("version.py"))
+    except Exception:
+        return None
+
+
+def _rocm_torch_preferred() -> bool:
+    if (os.environ.get("UNSLOTH_FORCE_ROCM_TORCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return True
+    return _installed_torch_is_rocm() is True
+
+
+def _auto_host_following_rocm_torch(host: HostInfo) -> HostInfo:
+    """Only moves off CUDA on live AMD evidence (stale ROCm torch keeps CUDA)."""
+    if not host.has_usable_nvidia:
+        return host
+    probed = host if host.has_rocm else detect_host(probe_rocm_with_nvidia = True)
+    # Marker-replayed arches outlive a removed card; setup.sh forwards none while NVIDIA is usable.
+    if not (probed.has_rocm or _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_ARCH"))):
+        return host
+    log(
+        "ROCm torch is installed or requested; Automatic prefers the ROCm llama.cpp build "
+        "over CUDA on this mixed NVIDIA+AMD host"
+    )
+    return dataclasses_replace(probed, has_physical_nvidia = False, has_usable_nvidia = False)
+
+
 def route_backend_request(
     *,
     backend: str | None,
@@ -10880,6 +11405,8 @@ def route_backend_request(
             has_physical_nvidia = False,
             has_usable_nvidia = False,
         )
+    elif backend in (None, "auto") and _rocm_torch_preferred():
+        detected_host = _auto_host_following_rocm_torch(detected_host)
     force_cpu = cpu_mechanism or backend == "cpu"
     resolved_host = _apply_host_overrides(
         detected_host,
@@ -11017,9 +11544,15 @@ def select_backend_install(
             cpu_mechanism = cpu_mechanism,
             host = host,
         )
-    requested_tag, release_plans = resolve_simple_install_release_plans(
-        llama_tag, route.host, route.published_repo, route.published_release_tag
-    )
+    try:
+        requested_tag, release_plans = resolve_simple_install_release_plans(
+            llama_tag, route.host, route.published_repo, route.published_release_tag
+        )
+    except PrebuiltFallback as exc:
+        # #12842: a stored cuda choice must fall back to detection, not fail the update.
+        if route.backend == "cuda" and driver_below_cuda_prebuilt_floor(route.host):
+            raise BackendUnavailable(str(exc)) from exc
+        raise
     if route.rocm_fallback_host is not None:
         release_plans = _with_rocm_behind_vulkan(
             release_plans,
@@ -11194,6 +11727,7 @@ def install_prebuilt(
                 # honour; a request read back off the marker retries when something moves.
                 backend_request_mandatory = backend_mandatory,
             ):
+                ensure_fit_params_executable(install_dir)
                 return
             # A request detection had to replace; kept so the marker records the CHOICE.
             unhonoured_request: str | None = None
@@ -11230,6 +11764,7 @@ def install_prebuilt(
                 plan: InstallReleasePlan, reused: AssetChoice, used_fallback: bool
             ) -> None:
                 """Update selection fields when the existing bundle is reused."""
+                ensure_fit_params_executable(install_dir)
                 sync_marker_selection(
                     install_dir,
                     choice = reused,
@@ -11337,7 +11872,12 @@ def install_prebuilt(
 
                     activate_install_tree(selected_staging_dir, install_dir, host)
                     try:
-                        ensure_converter_scripts(install_dir, plan.llama_tag)
+                        ensure_converter_scripts(
+                            install_dir,
+                            plan.llama_tag,
+                            repo = published_repo or DEFAULT_PUBLISHED_REPO,
+                            release_tag = plan.release_tag,
+                        )
                     except Exception as exc:
                         log(
                             "converter script fetch failed after activation; install remains valid "
@@ -11396,6 +11936,7 @@ def install_prebuilt(
         ):
             log("prebuilt update unavailable; keeping the existing complete install")
             log(f"prebuilt update reason: {exc}")
+            ensure_fit_params_executable(install_dir)
             return
         log(
             "prebuilt install failed; preserving the selected backend"

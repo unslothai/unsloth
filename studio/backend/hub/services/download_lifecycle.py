@@ -19,6 +19,7 @@ from hub.services.models import account_access
 from utils.account_context import OWNER_ACCOUNT_ID, account_thread, current_account_id
 
 from hub.schemas.downloads import ActiveDownload, DownloadJobState
+from hub.utils import download_heartbeat
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
@@ -145,17 +146,13 @@ def largest_download_file_bytes(
     )
     if not siblings:
         return None
-    from hub.utils.gguf_plan import (
-        build_gguf_variant_plans,
-        expected_file_from_sibling,
-        plan_for_variant,
-    )
+    from hub.utils.gguf_plan import expected_file_from_sibling, resolve_variant_plan
 
     wanted = {f for f in (files or []) if f}
     if wanted:
         chosen = [s for s in siblings if getattr(s, "rfilename", None) in wanted]
     elif variant:
-        plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
+        plan = resolve_variant_plan(siblings, variant)
         if plan is None:
             # An unresolvable variant is the worker's error to report, not a transport verdict.
             return None
@@ -433,7 +430,11 @@ def spawn_worker(
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
     proc = None
     files_manifest = None
+    heartbeat = None
     try:
+        if use_xet:
+            heartbeat = download_heartbeat.new_path()
+            args = [*args, "--heartbeat", heartbeat]
         if files:
             files_manifest = write_files_manifest(files)
             args = [*args, "--files-json", files_manifest]
@@ -456,6 +457,8 @@ def spawn_worker(
         )
         return proc
     finally:
+        if proc is None:
+            download_heartbeat.remove(heartbeat)
         if proc is None and files_manifest is not None:
             try:
                 Path(files_manifest).unlink(missing_ok = True)
@@ -534,15 +537,24 @@ def classify_exit(rc: int, *, cancel_requested: bool = False) -> str:
     return "error"
 
 
-def _cleanup_worker_files_manifest(proc: subprocess.Popen) -> None:
+def _worker_arg(proc: subprocess.Popen, flag: str) -> Optional[str]:
     args = getattr(proc, "args", None)
-    if not isinstance(args, (list, tuple)) or "--files-json" not in args:
+    if not isinstance(args, (list, tuple)) or flag not in args:
+        return None
+    index = args.index(flag) + 1
+    return str(args[index]) if index < len(args) else None
+
+
+def _cleanup_worker_files(proc: subprocess.Popen) -> None:
+    heartbeat = _worker_arg(proc, "--heartbeat")
+    files_manifest = _worker_arg(proc, "--files-json")
+    if (heartbeat is None and files_manifest is None) or proc.poll() is None:
         return
-    index = args.index("--files-json") + 1
-    if index >= len(args) or proc.poll() is None:
+    download_heartbeat.remove(heartbeat)
+    if files_manifest is None:
         return
     try:
-        Path(args[index]).unlink(missing_ok = True)
+        Path(files_manifest).unlink(missing_ok = True)
     except OSError:
         logger.warning("Could not remove the exited worker's download files manifest")
 
@@ -570,7 +582,7 @@ def finalize_worker_exit(
     """
     stderr_data = drain_stderr_excerpt(proc.stderr)
     rc = proc.wait()
-    _cleanup_worker_files_manifest(proc)
+    _cleanup_worker_files(proc)
     cancel_requested = registry.cancel_requested(key)
     if not registry.drop_process(key, proc):
         return "idle"
@@ -580,10 +592,24 @@ def finalize_worker_exit(
     )
     metadata = registry.get_job_metadata(key)
     state = classify_exit(rc, cancel_requested = cancel_requested)
+    if repo_type == "model" and state == "complete":
+        # Only on completion: another backend may still be downloading a cancelled key.
+        try:
+            from core.inference.audio_cpp_models import forget_job_row
+            forget_job_row(repo_id, download_registry.variant_from_key(key))
+        except Exception:
+            logger.debug("audio.cpp download row was not pruned", exc_info = True)
     if state == "complete":
         if repo_id and repo_type:
             account_access.record_model_grant(repo_id, repo_type)
         hf_cache_scan.invalidate_hf_cache_scans()
+        if repo_type == "model":
+            # audio.cpp remembers a cache miss (the timing aligner) for 20 s; the UI re-reads it on complete.
+            try:
+                from core.inference.audio_cpp_models import forget
+                forget()
+            except Exception:
+                logger.debug("audio.cpp resolve cache was not cleared", exc_info = True)
         registry.set_job(key, "complete")
         # Where /v1 learns a new model exists: its resolver answers from a cached scan with no watcher, so it would report the model absent and serve whatever is resident. Models only, since noting a dataset id as a local model would refuse a bare request naming it instead of letting a foreign id fall through.
         if repo_type == "model":
@@ -988,7 +1014,7 @@ def kill_and_reap_process(
         logger.warning(f"Cancelled worker for {label} did not exit after SIGKILL")
     except Exception:
         pass
-    _cleanup_worker_files_manifest(proc)
+    _cleanup_worker_files(proc)
 
 
 def _record_xet_failure(reason: str, logger) -> None:
@@ -1058,6 +1084,38 @@ def _record_xet_success(logger) -> None:
         logger.debug("could not record Xet outcome: %s", exc)
 
 
+def _stall_window() -> float:
+    import importlib
+
+    default = float(
+        getattr(importlib.import_module("utils.hf_xet_fallback"), "DEFAULT_STALL_TIMEOUT", 30.0)
+    )
+    try:
+        value = float(os.environ.get("UNSLOTH_XET_STALL_TIMEOUT") or default)
+    except ValueError:
+        return default
+    return value if 0 < value < float("inf") else default
+
+
+class _WatchdogHandle:
+    def __init__(self) -> None:
+        self._inner = None
+        self._stopped = False
+        self._lock = threading.Lock()
+
+    def bind(self, inner) -> None:
+        with self._lock:
+            self._inner = inner
+            if self._stopped and inner is not None:
+                inner.set()
+
+    def set(self) -> None:
+        with self._lock:
+            self._stopped = True
+            if self._inner is not None:
+                self._inner.set()
+
+
 def _start_stall_watchdog(
     registry: download_registry.DownloadRegistry,
     key: str,
@@ -1079,10 +1137,42 @@ def _start_stall_watchdog(
 
     metadata = registry.get_job_metadata(key)
     cache_dir = getattr(metadata, "hub_cache", None) if metadata is not None else None
+    heartbeat = _worker_arg(proc, "--heartbeat")
+    handle = _WatchdogHandle()
+    window = _stall_window()
+    last_beat = download_heartbeat.read(heartbeat) or 0
+
+    def _transfer_advanced() -> bool:
+        nonlocal last_beat
+        beat = download_heartbeat.read(heartbeat)
+        age = download_heartbeat.age(heartbeat)
+        if beat is None or age is None or beat <= last_beat or age > window:
+            return False
+        last_beat = beat
+        return True
 
     def _on_stall(message: str) -> None:
+        if _transfer_advanced():
+            rearmed = _arm()
+            if rearmed is not None:
+                logger.info(
+                    "%s %s for %s, but the worker is still receiving data; re-arming the watchdog",
+                    log_prefix,
+                    message,
+                    label,
+                )
+                handle.bind(rearmed)
+                return
+            logger.warning(
+                "%s could not re-arm the stall watchdog for %s; treating the verdict as final",
+                log_prefix,
+                label,
+            )
         logger.warning(
-            "%s %s for %s; killing the worker to retry over HTTP", log_prefix, message, label
+            "%s %s for %s; killing the worker so the recovery ladder can retry",
+            log_prefix,
+            message,
+            label,
         )
         on_stall(message)
         try:
@@ -1093,22 +1183,29 @@ def _start_stall_watchdog(
         except Exception:
             logger.exception("%s failed to kill stalled worker for %s", log_prefix, label)
 
-    try:
-        return start_watchdog(
-            repo_ids = [repo_id],
-            repo_type = repo_type,
-            cache_dir = cache_dir,
-            on_stall = _on_stall,
-            child_pid = proc.pid,
-            # Scope the measurement to partials this worker holds open; otherwise the shared helper stays repo-wide, child_pid does nothing, and two concurrent same-transport GGUF variants of one repo reset each other's stall timer. The DATA clock only: before its first byte a variant is still covered by the repo-wide peer-progress check.
-            watch_new_partials_only = True,
-            # The shared 90s zero-byte default assumes a single-file download whose pre-byte phase is one HEAD; snapshot_download(max_workers=1) does a model_info lookup plus one sequential HEAD per file, which for an already-cached repo is the entire job with no byte written.
-            connect_timeout = 600.0,
-            xet_disabled = False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("%s could not start stall watchdog for %s: %s", log_prefix, label, exc)
+    def _arm():
+        try:
+            return start_watchdog(
+                repo_ids = [repo_id],
+                repo_type = repo_type,
+                cache_dir = cache_dir,
+                on_stall = _on_stall,
+                child_pid = proc.pid,
+                # Scope the measurement to partials this worker holds open; otherwise the shared helper stays repo-wide, child_pid does nothing, and two concurrent same-transport GGUF variants of one repo reset each other's stall timer. The DATA clock only: before its first byte a variant is still covered by the repo-wide peer-progress check.
+                watch_new_partials_only = True,
+                # The shared 90s zero-byte default assumes a single-file download whose pre-byte phase is one HEAD; snapshot_download(max_workers=1) does a model_info lookup plus one sequential HEAD per file, which for an already-cached repo is the entire job with no byte written.
+                connect_timeout = 600.0,
+                xet_disabled = False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("%s could not start stall watchdog for %s: %s", log_prefix, label, exc)
+            return None
+
+    inner = _arm()
+    if inner is None:
         return None
+    handle.bind(inner)
+    return handle
 
 
 def register_worker(
@@ -1554,6 +1651,8 @@ def active_download_refs(
                 cancel_transport = (
                     metadata.cancel_marker_transport if metadata is not None else None
                 ),
+                owner = metadata.owner if metadata is not None else None,
+                load_attached = metadata.load_attached if metadata is not None else None,
                 state = ref.state,
                 generation = ref.generation,
                 files = scoped_files or None,

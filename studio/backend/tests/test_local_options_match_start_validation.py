@@ -114,3 +114,77 @@ def test_the_two_grammars_agree_over_a_generated_alphabet():
             if offered_subset is not None and not _subset_accepted(offered_subset):
                 mismatches.append(("subset offered, start rejects", value, offered_subset))
     assert not mismatches, mismatches
+
+
+def _hub_options(
+    monkeypatch,
+    factory,
+    refuse = lambda *a, **k: None,
+    info = lambda self, repo, token, timeout: type("I", (), {"sha": "c0ffee" if timeout else None}),
+):
+    import datasets.load
+    from hub.schemas.datasets import HubDatasetOptionsRequest
+    from hub.services.datasets.local_options import hub_dataset_options
+    from hub.utils import dataset_cache
+
+    monkeypatch.setattr(dataset_cache, "refuse_unauthorized_dataset_preview", refuse)
+    monkeypatch.setattr(datasets.load, "dataset_module_factory", factory)
+    monkeypatch.setattr("huggingface_hub.HfApi.dataset_info", info)
+    return hub_dataset_options(HubDatasetOptionsRequest(dataset_name = " org/data "), "hf_x")
+
+
+def test_hub_options_come_from_the_repo_files_not_card_only_configs(monkeypatch):
+    from types import SimpleNamespace as NS
+    from datasets import NamedSplit
+
+    configs = [
+        NS(name = "cola", data_files = {"validation": 0, NamedSplit("train"): 0}),
+        NS(name = "../x", data_files = {"train": 0}),
+    ]
+    module = NS(
+        builder_configs_parameters = NS(builder_configs = configs),
+        dataset_infos = {"ax": NS(splits = {"test": 0})},
+    )
+    tokens = []
+    response = _hub_options(
+        monkeypatch,
+        lambda repo, revision, download_config: tokens.append(
+            (repo, revision, download_config.token)
+        )
+        or module,
+    )
+    assert ([(o.config, o.split) for o in response.splits], tokens) == (
+        [("cola", "train"), ("cola", "validation")],
+        [("org/data", "c0ffee", "hf_x")],
+    )
+
+
+def _raises(error):
+    def raise_(*_a, **_k):
+        raise error
+
+    return raise_
+
+
+@pytest.mark.parametrize(
+    "error, status",
+    [
+        (RuntimeError("Dataset scripts are no longer supported"), 400),
+        (FileNotFoundError("gone"), 404),
+    ],
+)
+def test_an_unresolvable_hub_dataset_is_a_client_error(monkeypatch, error, status):
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as caught:
+        _hub_options(monkeypatch, _raises(error))
+    assert (caught.value.status_code, str(error) in caught.value.detail) == (status, True)
+
+
+def test_the_hub_options_preview_gate_runs_before_any_fetch(monkeypatch):
+    with pytest.raises(LookupError):
+        _hub_options(
+            monkeypatch,
+            _raises(AssertionError()),
+            refuse = _raises(LookupError()),
+            info = _raises(AssertionError()),
+        )

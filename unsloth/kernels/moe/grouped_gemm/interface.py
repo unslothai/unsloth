@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
+import copy
+import functools
+import inspect
 import logging
 import warnings
+from typing import Optional
 from dataclasses import asdict
 from unsloth import DEVICE_TYPE
+from unsloth.device_type import cuda_visible_capabilities
+from unsloth.kernels.utils import torch_gpu_device
 
 import torch
 import triton
@@ -34,12 +40,16 @@ logger.addHandler(ch)
 
 
 # Precompute TMA support (NVIDIA capability >= 9 plus a triton carrying make_tensor_descriptor) to avoid graph breaks.
+# Process-wide, so every visible card must be sm90+ (experts may sit on any); an unreadable card means False.
 def _check_tma_support():
     if DEVICE_TYPE in ("xpu", "hip"):
         return False
     import triton.language as tl
 
-    gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
+    caps = cuda_visible_capabilities()
+    gpu_supports_tma = (
+        bool(caps) and len(caps) == torch.cuda.device_count() and min(c[0] for c in caps) >= 9
+    )
     triton_has_tma_api = hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -48,18 +58,27 @@ def _check_tma_support():
 
 _SUPPORTS_TMA = _check_tma_support()
 
+_DEVICE_AUTOTUNERS = {}
+
+
+def _autotuner_for(kernel, device):
+    """Triton's autotune key omits the device, so on several GPUs each card tunes its own copy."""
+    if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
+        return kernel
+    key = (id(kernel), device.index)
+    if key not in _DEVICE_AUTOTUNERS:
+        tuner = copy.copy(kernel)
+        tuner.cache = {}
+        _DEVICE_AUTOTUNERS[key] = tuner
+    return _DEVICE_AUTOTUNERS[key]
+
+
 # triton.set_allocator is Triton 3.0+.
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
 
 
 def supports_tma():
     return _SUPPORTS_TMA
-
-
-try:
-    from torch.compiler import allow_in_graph
-except ImportError:
-    from torch._dynamo import allow_in_graph
 
 
 def _is_tracing(*tensors):
@@ -72,6 +91,7 @@ def _is_tracing(*tensors):
 
 
 _per_device_alloc_fns = {}
+_FUSED_MUL_WARN = False
 
 
 def get_per_device_per_stream_alloc_fn(device):
@@ -101,8 +121,7 @@ def log_kernel_info(
         logger.debug(f"{kernel_name} autotuned best_config: {best_config}")
 
 
-@allow_in_graph
-def grouped_gemm_forward(
+def _grouped_gemm_forward_impl(
     X: torch.Tensor,
     W: torch.Tensor,
     topk: int,
@@ -112,7 +131,6 @@ def grouped_gemm_forward(
     permute_x: bool = False,
     permute_y: bool = False,
     fuse_mul_post: bool = False,
-    # Autotuning -- overrides manual kernel params when True
     autotune: bool = False,
     # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
@@ -217,7 +235,7 @@ def grouped_gemm_forward(
 
     y = torch.empty((total_tokens, N), device = X.device, dtype = X.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+    NUM_SMS = torch.cuda.get_device_properties(X.device).multi_processor_count
 
     def grid(META):
         return (NUM_SMS,)
@@ -263,11 +281,19 @@ def grouped_gemm_forward(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_forward_kernel if autotune else _grouped_gemm_forward_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_forward_kernel, X.device)
+        if autotune
+        else _grouped_gemm_forward_kernel
+    )
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        # Triton launches on the current device: pin it to the operands' card.
+        with torch_gpu_device(X.device):
+            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                **kernel_args, enable_fp_fusion = True
+            )
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
         else:
@@ -276,8 +302,7 @@ def grouped_gemm_forward(
     return y
 
 
-@allow_in_graph
-def grouped_gemm_dX(
+def _grouped_gemm_dX_impl(
     dY: torch.Tensor,
     W: torch.Tensor,
     gather_indices: torch.Tensor,
@@ -361,7 +386,7 @@ def grouped_gemm_dX(
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+    NUM_SMS = torch.cuda.get_device_properties(dY.device).multi_processor_count
 
     def grid(META):
         return (NUM_SMS,)
@@ -404,11 +429,18 @@ def grouped_gemm_dX(
                 "USE_TMA_STORE": use_tma_store,
             }
         )
-    kernel = _autotuned_grouped_gemm_dX_kernel if autotune else _grouped_gemm_dX_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_dX_kernel, dY.device)
+        if autotune
+        else _grouped_gemm_dX_kernel
+    )
 
     is_fake = _is_tracing(dY, W)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        with torch_gpu_device(dY.device):
+            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                **kernel_args, enable_fp_fusion = True
+            )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -417,8 +449,7 @@ def grouped_gemm_dX(
     return dX
 
 
-@allow_in_graph
-def grouped_gemm_dW(
+def _grouped_gemm_dW_impl(
     X: torch.Tensor,
     dY: torch.Tensor,
     m_sizes: torch.Tensor,
@@ -447,7 +478,7 @@ def grouped_gemm_dW(
     """
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count if not debug else 1
+    NUM_SMS = torch.cuda.get_device_properties(X.device).multi_processor_count if not debug else 1
     X = X.view(-1, X.shape[-1]).contiguous()
     dY = dY.contiguous()
     m_sizes = m_sizes.contiguous()
@@ -534,7 +565,6 @@ def grouped_gemm_dW(
         "NUM_SMS": NUM_SMS,
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        "FLATTEN": flatten,
     }
 
     if not autotune:
@@ -551,11 +581,18 @@ def grouped_gemm_dW(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_dW_kernel if autotune else _grouped_gemm_dW_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device)
+        if autotune
+        else _grouped_gemm_dW_kernel
+    )
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:
-        compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](**kernel_args)
+        with torch_gpu_device(X.device):
+            compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
+                **kernel_args, enable_fp_fusion = True
+            )
 
         if autotune:
             log_kernel_info(compiled_kernel, kernel.best_config)
@@ -563,6 +600,100 @@ def grouped_gemm_dW(
             log_kernel_info(compiled_kernel)
 
     return dW
+
+
+# Opaque ops: allow_in_graph let AOT trace the body on fake tensors, keeping torch.empty and dropping the launch.
+# Not triton_op: torch.compile rejects prune_configs_by on triton.autotune.
+def _fwd_fake(X, W, topk, m_sizes, gather_indices, topk_weights, permute_x, permute_y, *args):
+    N = W.shape[1] if W.ndim == 3 else W.shape[0] // m_sizes.shape[0]
+    total_tokens = gather_indices.shape[0] if (permute_x or permute_y) else X.numel() // X.shape[-1]
+    return X.new_empty((total_tokens, N))
+
+
+def _dX_fake(dY, W, gather_indices, m_sizes, topk, *args):
+    total_tokens = (
+        gather_indices.shape[0] if gather_indices is not None else dY.numel() // dY.shape[-1]
+    )
+    return dY.new_empty((total_tokens, W.shape[-1]))
+
+
+def _dW_fake(X, dY, m_sizes, *args):
+    return X.new_empty((m_sizes.shape[0], dY.shape[-1], X.shape[-1]))
+
+
+_OPTIONAL_TENSORS = ("gather_indices", "topk_weights")
+
+
+def _make_op(name, impl, fake):
+    """torch.library.custom_op (torch >= 2.4) over impl; torch.compiler.disable where it is missing."""
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return torch._dynamo.disable(impl)
+    existing = getattr(getattr(torch.ops, "unsloth", None), name, None)
+    if existing is not None:
+        # grouped_gemm is also importable as a top-level package (glm4_moe, tests): reuse the registration.
+        return existing
+    params = [
+        p.replace(
+            default = inspect.Parameter.empty,
+            annotation = Optional[torch.Tensor] if p.name in _OPTIONAL_TENSORS else p.annotation,
+        )
+        for p in inspect.signature(impl).parameters.values()
+    ]
+    names = [p.name for p in params]
+
+    def op(*args):
+        return impl(**dict(zip(names, args)))
+
+    op.__signature__ = inspect.Signature(params, return_annotation = torch.Tensor)
+    op.__name__ = name
+    op = custom_op(f"unsloth::{name}", op, mutates_args = ())
+    op.register_fake(fake)
+    return op
+
+
+_grouped_gemm_forward_op = _make_op("grouped_gemm_forward", _grouped_gemm_forward_impl, _fwd_fake)
+_grouped_gemm_dX_op = _make_op("grouped_gemm_dX", _grouped_gemm_dX_impl, _dX_fake)
+_grouped_gemm_dW_op = _make_op("grouped_gemm_dW", _grouped_gemm_dW_impl, _dW_fake)
+
+
+def _signature(impl):
+    params = inspect.signature(impl).parameters.values()
+    return tuple(p.name for p in params), {
+        p.name: p.default for p in params if p.default is not p.empty
+    }
+
+
+_SIGNATURES = {
+    impl: _signature(impl)
+    for impl in (_grouped_gemm_forward_impl, _grouped_gemm_dX_impl, _grouped_gemm_dW_impl)
+}
+
+
+def _dispatch(impl, op, args, kwargs):
+    names, defaults = _SIGNATURES[impl]
+    bound = dict(defaults)
+    bound.update(zip(names, args))
+    bound.update(kwargs)
+    # Eager calls skip the custom-op dispatcher; traced calls (dynamo, or fake tensors under make_fx) need the op.
+    if torch.compiler.is_compiling() or _is_tracing(bound[names[0]], bound[names[1]]):
+        return op(*[bound[n] for n in names])
+    return impl(**bound)
+
+
+@functools.wraps(_grouped_gemm_forward_impl)
+def grouped_gemm_forward(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_forward_impl, _grouped_gemm_forward_op, args, kwargs)
+
+
+@functools.wraps(_grouped_gemm_dX_impl)
+def grouped_gemm_dX(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_dX_impl, _grouped_gemm_dX_op, args, kwargs)
+
+
+@functools.wraps(_grouped_gemm_dW_impl)
+def grouped_gemm_dW(*args, **kwargs) -> torch.Tensor:
+    return _dispatch(_grouped_gemm_dW_impl, _grouped_gemm_dW_op, args, kwargs)
 
 
 class GroupedGemm(torch.autograd.Function):
@@ -631,12 +762,17 @@ class GroupedGemm(torch.autograd.Function):
         topk = ctx.topk
         permute_x = ctx.permute_x
         permute_y = ctx.permute_y
-        fuse_mul_post = ctx.fuse_mul_post
         kernel_config_bwd_dX = ctx.kernel_config_bwd_dX
         kernel_config_bwd_dW = ctx.kernel_config_bwd_dW
         autotune = ctx.autotune
-        dX_only = ctx.dX_only
-        dW_only = ctx.dW_only
+        assert (
+            not ctx.fuse_mul_post
+        ), "fused_mul should only be used for inference, not for training"
+        # Frozen W (LoRA, dequantized experts) or X: skip its kernel and buffer, as autograd does for _grouped_mm.
+        dX_only = ctx.dX_only or not ctx.needs_input_grad[1]
+        dW_only = ctx.dW_only or not ctx.needs_input_grad[0]
+        if dX_only and dW_only:
+            return (None,) * 15
 
         if not autotune:
             if not dW_only:
@@ -647,8 +783,6 @@ class GroupedGemm(torch.autograd.Function):
                 assert (
                     kernel_config_bwd_dW is not None
                 ), "kernel_config_bwd_dW must be provided if autotune is False"
-
-        assert not fuse_mul_post, "fused_mul should only be used for inference, not for training"
 
         if not dX_only:
             bwd_dW_config = {}

@@ -483,16 +483,12 @@ def _scan_hf_dataset_caches() -> list[dict]:
                 # str(...) guards against the library switching repo_type to an Enum.
                 if str(repo_info.repo_type) != "dataset":
                     continue
-                total_size = int(getattr(repo_info, "size_on_disk", 0) or 0)
-                if total_size == 0:
-                    unique_blobs: dict[str, int] = {}
-                    for rev in repo_info.revisions:
-                        rev_id = getattr(rev, "commit_hash", None) or str(id(rev))
-                        for f in rev.files:
-                            blob_path = getattr(f, "blob_path", None)
-                            key = str(blob_path) if blob_path else f"{rev_id}:{f.file_name}"
-                            unique_blobs[key] = int(f.size_on_disk or 0)
-                    total_size = sum(unique_blobs.values())
+                from hub.services.models.cache_inventory import repo_unique_size_bytes
+
+                # repo_info.size_on_disk counts a hard-linked revision (snapshot reuse) twice.
+                total_size = repo_unique_size_bytes(repo_info) or int(
+                    getattr(repo_info, "size_on_disk", 0) or 0
+                )
                 key = repo_info.repo_id.lower()
                 existing = seen_lower.get(key)
                 cache_dir = Path(repo_info.repo_path)

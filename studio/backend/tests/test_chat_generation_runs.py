@@ -417,6 +417,57 @@ def test_explicit_edit_keeps_display_metadata_but_not_the_run_claim(chat_home):
     assert runs_db.get_run("run-1", "alice") is None
 
 
+@pytest.mark.parametrize(
+    "finish_reason, tab_reason",
+    [("stop", "empty"), ("length", "context_window")],
+)
+def test_finished_generation_whose_settle_was_refused_can_still_be_edited(
+    chat_home, finish_reason, tab_reason
+):
+    """#13938: a settle whose `incomplete` disagrees with the producer's is refused, so the row
+    never gets generationSettled; the run is finished, so an edit must still detach it."""
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    assert runs_db.finish_run(
+        "run-1", worker_token = token, status = "completed", finish_reason = finish_reason
+    )
+    run = runs_db.get_run("run-1", "alice")
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    settle = json.loads(json.dumps(stored))
+    settle["metadata"].update(
+        {
+            "generationSeq": run["lastEventSeq"],
+            "generationStatus": "completed",
+            "generationSettled": True,
+            "incomplete": {"reason": tab_reason},
+        }
+    )
+    studio_db.sync_chat_messages("thread-1", [settle])
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert stored["metadata"].get("generationSettled") is not True, "the settle landed"
+
+    edited = {key: value for key, value in stored.items() if key != "metadata"}
+    edited["content"] = [{"type": "text", "text": "edited"}]
+    edited["metadata"] = {"incomplete": {"reason": tab_reason}}
+    saved = studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert saved["content"] == [{"type": "text", "text": "edited"}]
+    assert runs_db.get_run("run-1", "alice") is None
+    _assert_protected(settle)
+
+
+def test_running_generation_still_cannot_be_explicitly_edited(chat_home):
+    _create()
+    token = runs_db.get_worker_token("run-1")
+    assert runs_db.mark_running("run-1", token)
+    stored = studio_db.get_chat_message("thread-1", "assistant-1")
+    edited = {key: value for key, value in stored.items() if key != "metadata"}
+    edited["content"] = [{"type": "text", "text": "edited"}]
+    with pytest.raises(studio_db.ChatMessageProtectedError):
+        studio_db.upsert_chat_message(edited, allow_generation_edit = True)
+    assert runs_db.get_run("run-1", "alice")["status"] == "running"
+
+
 def test_batched_events_have_gapless_cursor_and_terminal_flush(chat_home):
     run, _created = _create()
     worker_token = runs_db.get_worker_token("run-1")
@@ -663,6 +714,24 @@ def test_request_sanitization_pins_server_owned_fields():
     assert sanitized["stream"] is True
     assert sanitized["cancel_id"] == "run-1"
     assert sanitized["thread_id"] == "thread-1"
+
+
+def test_run_automatically_replays_with_the_no_sandbox_gate_armed():
+    from models.inference import ChatCompletionRequest
+
+    sanitized = _sanitize_request(_model(permission_mode = "off"))
+    assert "confirm_tool_calls" not in sanitized
+    replayed = ChatCompletionRequest.model_validate(sanitized)
+    assert replayed.permission_mode == "off" and replayed.confirm_tool_calls is False
+    assert replayed._off_confirm_opt_out is False
+
+
+def test_an_explicit_off_opt_out_survives_the_replay():
+    from models.inference import ChatCompletionRequest
+
+    sanitized = _sanitize_request(_model(permission_mode = "off", confirm_tool_calls = False))
+    replayed = ChatCompletionRequest.model_validate(sanitized)
+    assert replayed._off_confirm_opt_out is True
 
 
 def test_request_sanitization_treats_message_text_as_data():

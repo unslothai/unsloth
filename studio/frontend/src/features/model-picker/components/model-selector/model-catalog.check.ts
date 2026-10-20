@@ -8,6 +8,12 @@
 
 import assert from "node:assert/strict";
 
+import { umbrellaFolderFindings } from "../../../audio/audio-catalog-rows.ts";
+import {
+  AUDIO_CPP_REPO,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
+
 import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
   AUDIO_CATALOG,
@@ -117,6 +123,70 @@ assert.ok(qwen21);
 assert.equal(qwen21.canonicalId, "unsloth/Qwen-Image-2.1");
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-FP8", IMAGE_CATALOG), qwen21);
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-INT8", IMAGE_CATALOG), qwen21);
+// Turbo is its own group, prequant repo included: its checkpoints are baked from a different denoiser.
+const qwen21Turbo = groupForRepoId("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG);
+assert.ok(qwen21Turbo);
+assert.equal(qwen21Turbo.canonicalId, "Qwen/Qwen-Image-2.1-Turbo");
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-FP8", IMAGE_CATALOG), qwen21Turbo);
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG), qwen21Turbo);
+assert.equal(loadSpecFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canonicalId, "unsloth/Qwen-Image-2.1");
+{
+  const qwen21 = groupForRepoId("unsloth/Qwen-Image-2.1", IMAGE_CATALOG);
+  assert.ok(qwen21);
+  for (const host of [
+    { gpuGb: 0, systemRamGb: 64 },
+    { gpuGb: 12, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] },
+    { gpuGb: 24, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] },
+    { gpuGb: 80, systemRamGb: 256, denseQuantSchemes: ["int8", "fp8"] },
+  ]) {
+    const input = { ...host, isDownloaded: () => false };
+    const base = pickDefaultArtifact(qwen21, input);
+    const turbo = pickDefaultArtifact(qwen21Turbo, input);
+    assert.equal(turbo.format, base.format, JSON.stringify(host));
+    assert.equal(
+      turbo.repoId,
+      base.format === "gguf" ? "unsloth/Qwen-Image-2.1-Turbo-GGUF" : "Qwen/Qwen-Image-2.1-Turbo",
+    );
+  }
+  assert.equal(
+    curatedRowLabelFor("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    "Qwen-Image 2.1 Turbo (Fast FP8)",
+  );
+  assert.equal(
+    curatedRowLabelFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    "Qwen-Image-2.1-Turbo-GGUF (Slow)",
+  );
+}
+// FLUX.3 Klein: a dense row on the gated BFL id (fetched from the FP8 repo), so it reads "Fast FP8" like 2.1.
+for (const [base, fp8Repo, name] of [
+  ["black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8", "FLUX.3 Image Klein"],
+  ["black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8", "FLUX.3 Image Klein Base"],
+] as const) {
+  const group = groupForRepoId(base, IMAGE_CATALOG);
+  assert.ok(group, base);
+  assert.equal(groupForRepoId(fp8Repo, IMAGE_CATALOG), group, fp8Repo);
+  assert.equal(groupForRepoId(`unsloth/${base.split("/")[1]}-GGUF`, IMAGE_CATALOG), group, base);
+  assert.equal(curatedRowLabelFor(base, IMAGE_CATALOG, "dense-quant", ["int8", "fp8"])?.name, `${name} (Fast FP8)`);
+  assert.equal(
+    curatedRowLabelFor(`unsloth/${base.split("/")[1]}-GGUF`, IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    `${base.split("/")[1]}-GGUF (Slow)`,
+  );
+}
+assert.equal(
+  IMAGE_CATALOG.find((g) => g.pinToTop)?.canonicalId,
+  "black-forest-labs/flux-3-image-klein",
+);
+// The pinned Fast FP8 row must survive "Fit on device" on a 24 GB card (6.0 GiB DiT + 8.6 GiB companions, under
+// the 70% rule), else the Slow GGUF row takes the top. A host without the dense quant sizes it in bf16 and drops it.
+for (const id of ["black-forest-labs/flux-3-image-klein", "black-forest-labs/flux-3-image-klein-base"]) {
+  assert.equal(
+    curatedArtifactFitsDevice(id, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] }),
+    true,
+    id,
+  );
+  assert.equal(curatedArtifactFitsDevice(id, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 64 }), false, id);
+}
 assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
 assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
@@ -132,6 +202,37 @@ assert.equal(groupForRepoId("lightricks/ltx-2.3", VIDEO_CATALOG), ltx23);
 assert.equal(groupForRepoId("lightricks/ltx-2.3-fp8", VIDEO_CATALOG), ltx23);
 // ...but the LTX-2.0 base stays its own group (different model).
 assert.notEqual(groupForRepoId("Lightricks/LTX-2", VIDEO_CATALOG), ltx23);
+// LTX-2.5 is its own group (different DiT and encoder); the hosted prequant repo id finds it, never 2.3.
+const ltx25 = groupForRepoId("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG);
+assert.ok(ltx25);
+assert.notEqual(ltx25, ltx23);
+assert.equal(groupForRepoId("unsloth/LTX-2.5-FP8", VIDEO_CATALOG), ltx25);
+assert.equal(groupForRepoId("lightricks/ltx-2.5-diffusers", VIDEO_CATALOG), ltx25);
+assert.equal(curatedArtifactTakesDenseQuant("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG), true);
+assert.equal(
+  curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name,
+  "LTX 2.5 distilled (Diffusers) (Fast FP8)",
+);
+assert.equal(
+  curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "dense-quant", ["int8", "fp8"])?.name,
+  "LTX 2.5 distilled (Diffusers) (Fast FP8)",
+);
+// Only a host that runs the dense quant gets the qualifier; other video rows stay bare there.
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "accelerated")?.name, "LTX 2.5 distilled (Diffusers)");
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "gguf-only")?.name, "LTX 2.5 distilled (Diffusers)");
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name, "LTX 2 (base)");
+// The GGUF quants join the same group, never 2.3.
+assert.equal(groupForRepoId("unsloth/LTX-2.5-GGUF", VIDEO_CATALOG), ltx25);
+assert.equal(groupForRepoId("unsloth/ltx-2.5-gguf", VIDEO_CATALOG), ltx25);
+assert.notEqual(groupForRepoId("unsloth/LTX-2.5-GGUF", VIDEO_CATALOG), ltx23);
+assert.deepEqual(
+  ltx25.artifacts.map((a) => [a.repoId, a.loadKind]),
+  [
+    ["Lightricks/LTX-2.5-Diffusers", "pipeline"],
+    ["Lightricks/LTX-2.5", "single_file"],
+    ["unsloth/LTX-2.5-GGUF", "gguf"],
+  ],
+);
 // SDXL Turbo and Base stay separate groups (different checkpoints).
 assert.notEqual(
   groupForRepoId("stabilityai/sdxl-turbo", IMAGE_CATALOG),
@@ -222,6 +323,8 @@ for (const id of [
   "unsloth/FLUX.1-dev-GGUF",
   "unsloth/FLUX.2-klein-4B-GGUF",
   "unsloth/FLUX.2-klein-9B-GGUF",
+  "unsloth/flux-3-image-klein-GGUF",
+  "unsloth/flux-3-image-klein-base-GGUF",
   "unsloth/Qwen-Image-Edit-2511-GGUF",
   "unsloth/FLUX.1-Kontext-dev-GGUF",
   ...Object.keys(OLD_SAFETENSORS_MODELS),
@@ -233,6 +336,8 @@ for (const id of [
 const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id));
 for (const id of [
   "unsloth/LTX-2.3-GGUF",
+  "unsloth/LTX-2.5-GGUF",
+  "Lightricks/LTX-2.5-Diffusers",
   "unsloth/MiniMax-H3-GGUF",
   ...OLD_PIPELINE_MODELS,
 ]) {
@@ -492,14 +597,22 @@ assert.deepEqual(
   catalogToModelOptions(VIDEO_CATALOG, "unknown").map((o) => o.id),
   catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id),
 );
-// Every GGUF row ends in the suffix, whoever published it.
+// Every GGUF row ends in the suffix, whoever published it. The llama.cpp Qwen3-ASR repos share
+// their name with a bundled folder, so only they carry a runtime tag.
+const LLAMA_CPP_TWINS = new Set([
+  "unslothai/Qwen3-ASR-0.6B-GGUF",
+  "unslothai/Qwen3-ASR-1.7B-GGUF",
+]);
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
       if (artifact.format !== "gguf") continue;
       const row = curatedRowLabelFor(artifact.repoId, catalog);
       assert.ok(row?.name.endsWith("-GGUF"), `${artifact.repoId} row reads "${row?.name}"`);
-      assert.deepEqual(row?.tags, []);
+      assert.deepEqual(
+        row?.tags,
+        LLAMA_CPP_TWINS.has(artifact.repoId) ? ["llama.cpp"] : [],
+      );
     }
   }
 }
@@ -946,6 +1059,53 @@ assert.equal(
     .format,
   "bf16",
 );
+// The 30 GiB tier streams an int8 denoiser, which needs group offload that swaps torchao weights
+// (diffusers >= 0.40). Unknown or unsupported keeps the host on the runnable GGUF row.
+for (const quantisedStreaming of [undefined, false]) {
+  assert.equal(
+    pickDefaultArtifact(h3, {
+      gpuGb: 32,
+      systemRamGb: 80,
+      quantisedStreaming,
+      isDownloaded: notDownloaded,
+    }).format,
+    "gguf",
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+      gpuGb: 32,
+      systemRamGb: 80,
+      quantisedStreaming,
+    }),
+    false,
+  );
+}
+assert.equal(
+  pickDefaultArtifact(h3, {
+    gpuGb: 32,
+    systemRamGb: 80,
+    quantisedStreaming: true,
+    isDownloaded: notDownloaded,
+  }).format,
+  "bf16",
+);
+assert.equal(
+  curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+    gpuGb: 32,
+    systemRamGb: 80,
+    quantisedStreaming: true,
+  }),
+  true,
+);
+// The resident tiers need no streaming.
+assert.equal(
+  curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+    gpuGb: 74,
+    systemRamGb: 140,
+    quantisedStreaming: false,
+  }),
+  true,
+);
 
 // Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget but fits an 80 GB GPU (budget 56)
 // and wins there.
@@ -1126,6 +1286,10 @@ const PREQUANT_ROWS = [
   ["Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512-FP8"],
   ["black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell-FP8"],
   ["krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo-FP8"],
+  ["Qwen/Qwen-Image-2.1", "unsloth/Qwen-Image-2.1-FP8"],
+  ["Qwen/Qwen-Image-2.1-Turbo", "unsloth/Qwen-Image-2.1-Turbo-FP8"],
+  ["black-forest-labs/flux-3-image-klein", "unsloth/flux-3-image-klein-FP8"],
+  ["black-forest-labs/flux-3-image-klein-base", "unsloth/flux-3-image-klein-base-FP8"],
 ] as const;
 
 for (const [id, repo] of PREQUANT_ROWS) {
@@ -1158,16 +1322,16 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// Z-Image-Turbo needs 42.9 GB of card dense and 34.9 GB pre-quantised under the 70% rule.
+// Z-Image-Turbo: 27.3 GB card dense (bf16, not the fp32 download), 19.3 GB pre-quantised, under the 70% rule.
 const zTurboId = "unsloth/Z-Image-Turbo";
 assert.equal(
-  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 40, systemRamGb: 128 }),
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 128 }),
   false,
 );
 for (const schemes of [["fp8"], ["int8"]]) {
   assert.equal(
     curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-      gpuGb: 40,
+      gpuGb: 24,
       systemRamGb: 128,
       denseQuantSchemes: schemes,
     }),
@@ -1177,11 +1341,15 @@ for (const schemes of [["fp8"], ["int8"]]) {
 }
 assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     denseQuantSchemes: [],
   }),
   false,
+);
+assert.equal(
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 32, systemRamGb: 128 }),
+  true,
 );
 assert.equal(
   curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
@@ -1274,7 +1442,7 @@ const zTurboGroup = groupForRepoId(zTurboId, IMAGE_CATALOG);
 assert.ok(zTurboGroup);
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     isDownloaded: notDownloaded,
   }).format,
@@ -1292,6 +1460,15 @@ assert.equal(
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
     gpuGb: 24,
+    systemRamGb: 128,
+    denseQuantSchemes: ["fp8"],
+    isDownloaded: notDownloaded,
+  }).repoId,
+  zTurboId,
+);
+assert.equal(
+  pickDefaultArtifact(zTurboGroup, {
+    gpuGb: 16,
     systemRamGb: 128,
     denseQuantSchemes: ["fp8"],
     isDownloaded: notDownloaded,
@@ -1427,13 +1604,18 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
   networkDeadlineAt = Date.now() + NETWORK_DEADLINE_MS;
   const failures: string[] = [];
   const groups = catalogs.flat();
-  // One metadata call per repo id, however many artifacts share it.
+  // One metadata call per repo id, however many artifacts share it. A package folder id names a folder
+  // of one shared repo, so every one of them is checked against that repo.
   const artifactsByRepo = new Map<string, ModelArtifact[]>();
   for (const group of groups) {
     for (const artifact of group.artifacts) {
-      const bucket = artifactsByRepo.get(artifact.repoId);
+      // A gated vendor id the backend fetches from an open mirror is judged by that mirror.
+      const hubRepo =
+        artifact.fetchedFrom ??
+        (isAudioCppFolderId(artifact.repoId) ? AUDIO_CPP_REPO : artifact.repoId);
+      const bucket = artifactsByRepo.get(hubRepo);
       if (bucket) bucket.push(artifact);
-      else artifactsByRepo.set(artifact.repoId, [artifact]);
+      else artifactsByRepo.set(hubRepo, [artifact]);
     }
   }
 
@@ -1476,6 +1658,28 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
       }
     }
 
+    for (const artifact of artifacts) {
+      if (!isAudioCppFolderId(artifact.repoId)) continue;
+      // The package folder is the id's first segment past the repo.
+      const folder = artifact.repoId.slice(AUDIO_CPP_REPO.length + 1).split("/")[0];
+      if (!(repo.siblings ?? []).some((s) => s.rfilename.startsWith(`${folder}/`))) {
+        failures.push(`${artifact.repoId}: ${repoId} has no '${folder}/' folder`);
+      }
+    }
+
+    if (repoId === AUDIO_CPP_REPO) {
+      const folders = new Set(
+        (repo.siblings ?? [])
+          .map((s) => s.rfilename.split("/"))
+          .filter((parts) => parts.length > 1)
+          .map((parts) => parts[0]),
+      );
+      // A new folder is only a warning: the backend catalog lists it without a seed edit.
+      const findings = umbrellaFolderFindings(folders);
+      for (const warning of findings.warnings) console.warn(`::warning::${warning}`);
+      failures.push(...findings.failures);
+    }
+
     const declaredFiles = [
       ...new Set(artifacts.map((a) => a.filename).filter((f): f is string => Boolean(f))),
     ];
@@ -1505,7 +1709,9 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
   // Advisory only. A canonicalId is a display/grouping key and 15 are deliberately not repos;
   // but one that is both `unsloth/*`-shaped and dead clears every owner guard in the app.
-  const artifactIds = new Set([...artifactsByRepo.keys()].map((id) => id.toLowerCase()));
+  const artifactIds = new Set(
+    groups.flatMap((g) => g.artifacts.map((a) => a.repoId.toLowerCase())),
+  );
   const orphans = groups
     .map((g) => g.canonicalId)
     .filter((id) => !artifactIds.has(id.toLowerCase()));
@@ -1524,7 +1730,10 @@ async function checkCatalogAgainstTheHub(catalogs: CatalogGroup[][]): Promise<st
 
 if (process.argv.includes("--network")) {
   console.log("model-catalog check: --network, asking the Hub about every declared artifact...");
-  const failures = await checkCatalogAgainstTheHub([IMAGE_CATALOG, VIDEO_CATALOG]);
+  const audioCppGroups = AUDIO_CATALOG.filter((group) =>
+    group.artifacts.some((artifact) => isAudioCppFolderId(artifact.repoId)),
+  );
+  const failures = await checkCatalogAgainstTheHub([IMAGE_CATALOG, VIDEO_CATALOG, audioCppGroups]);
   if (failures.length > 0) {
     for (const failure of failures) console.error(`::error::${failure}`);
     console.error(`model-catalog network check: ${failures.length} problem(s)`);

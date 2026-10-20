@@ -62,8 +62,6 @@ def _param_default(method, name):
 
 
 def _load_text_only_namespace():
-    # Exec the _utils text-only helpers into one namespace (no unsloth import), in dependency order so cross-references
-    # resolve.
     source = _source(UTILS_PATH)
     import transformers
     from packaging.version import Version
@@ -79,12 +77,14 @@ def _load_text_only_namespace():
         if isinstance(node, ast.FunctionDef)
     }
     for name in (
+        "_resolve_remote_model_class",
         "resolve_model_class",
         "_is_family_text_decoder",
         "_remap_text_only_skip_modules",
         "_get_text_only_config",
         "_get_text_only_key_mapping",
         "_apply_text_only_key_mapping",
+        "_drop_text_only_key_mapping",
     ):
         if name in funcs:
             exec(funcs[name], ns)
@@ -122,7 +122,6 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastLanguageModel", "from_pretrained")
 
-    # text_only defaults False (opt-in); both FastModel delegations forward it.
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
@@ -143,14 +142,12 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
 
 
 def test_fast_model_text_only_does_not_override_explicit_auto_model():
-    # AST-based so formatting/refactors that keep the structure do not break it.
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastModel", "from_pretrained")
 
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
-    # load_text_only is text_only AND a check that the caller did not pass auto_model.
     def _is_guarded_bool(value):
         names = _names_in(value)
         has_none_check = any(
@@ -176,7 +173,6 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
         )
 
     assert _forwards_kwarg(method)
-    # Falls back to the full model unless the family has its own text decoder.
     assert _calls_function(method, "_is_family_text_decoder")
     assert _assigns_name(
         method,
@@ -197,7 +193,6 @@ def test_fast_base_model_text_only_bypasses_vision_auto_model():
         "auto_model",
         lambda v: isinstance(v, ast.Name) and v.id == "AutoModelForCausalLM",
     )
-    # Text-only path: strip config, apply the family guard, inject the key remap.
     assert _calls_function(method, "_get_text_only_config")
     assert _calls_function(method, "_is_family_text_decoder")
     assert _calls_function(method, "_apply_text_only_key_mapping")
@@ -233,7 +228,6 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
 
 
 def test_helper_defined_once_in_utils_and_imported():
-    # _get_text_only_config defined only in _utils, imported by loader + vision.
     def _defines(path):
         return any(
             isinstance(n, ast.FunctionDef) and n.name == "_get_text_only_config"
@@ -261,7 +255,6 @@ def _load_util_func(name):
 
 
 def test_text_only_guard_predicate_across_vlm_families():
-    # Text-only taken only when the resolved class remaps VLM weights.
     transformers = pytest.importorskip("transformers")
     from transformers import AutoModelForCausalLM
 
@@ -275,11 +268,9 @@ def test_text_only_guard_predicate_across_vlm_families():
             getattr(cfg, "model_type", ""), getattr(text, "model_type", "")
         )
 
-    # Dedicated text decoder remaps language_model.* -> strip vision.
     assert takes_text_only(transformers.Gemma3Config()) is True
 
-    # No text class (Qwen2-VL/Mllama) or a generic reused decoder that would
-    # load random weights (Llava/PaliGemma/Idefics3/InternVL) -> keep full model.
+    # No text class, or a reused generic decoder that would load random weights: keep full model.
     for name in [
         "Qwen2VLConfig",
         "Qwen2_5_VLConfig",
@@ -303,13 +294,51 @@ def test_text_only_helper_preserves_quantization_config():
     config.quantization_config = sentinel
     text_config = helper(config, "google/gemma-3-27b-it")
     assert getattr(text_config, "quantization_config", None) is sentinel
-    # The parent's shared text sub-config must not be mutated.
     assert getattr(config.get_text_config(), "quantization_config", None) is None
 
 
+class _ReadOnlyTextConfigProxy:
+    # Mirrors unsloth_zoo's _Gemma4KVSharedSafeProxy.
+    __slots__ = ("_real",)
+
+    def __init__(self, real):
+        object.__setattr__(self, "_real", real)
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+
+def test_text_only_helper_copies_config_behind_read_only_proxy():
+    transformers = pytest.importorskip("transformers")
+    helper = _load_text_only_helper()
+    config = transformers.Gemma3Config()
+    real_text = config.get_text_config()
+    proxy = _ReadOnlyTextConfigProxy(real_text)
+    config.get_text_config = lambda *a, **k: proxy
+    sentinel = object()
+    config.quantization_config = sentinel
+    text_config = helper(config, "google/gemma-4-31B-it")
+    assert getattr(text_config, "quantization_config", None) is sentinel
+    assert type(text_config) is type(real_text)
+    assert text_config is not real_text
+    assert getattr(real_text, "quantization_config", None) is None
+
+
+def test_text_only_helper_unwraps_read_only_proxy_without_quantization():
+    transformers = pytest.importorskip("transformers")
+    ns = _load_text_only_namespace()
+    helper, resolve = ns["_get_text_only_config"], ns["resolve_model_class"]
+    config = transformers.Gemma3Config()
+    real_text = config.get_text_config()
+    config.get_text_config = lambda *a, **k: _ReadOnlyTextConfigProxy(real_text)
+    text_config = helper(config, "google/gemma-4-31B-it")
+    assert type(text_config) is type(real_text)
+    model_class = resolve(transformers.AutoModelForCausalLM, text_config)
+    assert model_class is not None and model_class.__name__ == "Gemma3ForCausalLM"
+
+
 def test_text_only_key_mapping_targets_published_prefixes():
-    # Remap the published VLM decoder prefixes, applying only on transformers >=5
-    # (on 4.x base_model_prefix handles it and a mapping hurts).
+    # Mapping applies only on transformers >=5; on 4.x base_model_prefix handles it.
     transformers = pytest.importorskip("transformers")
     get_key_mapping = _load_util_func("_get_text_only_key_mapping")
     mapping = get_key_mapping(transformers.Gemma3Config(), transformers.Gemma3TextConfig())
@@ -322,18 +351,13 @@ def test_text_only_key_mapping_targets_published_prefixes():
         assert mapping.get(r"^language_model\.lm_head\.") == "lm_head."
 
 
-def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_path):
-    # PR #5816: text-only loading of a Gemma 3 VLM checkpoint must load real language weights, not random ones.
-    # Fails on tf >=5 without the key_mapping fix.
-    transformers = pytest.importorskip("transformers")
-    torch = pytest.importorskip("torch")
+def _write_published_gemma3_checkpoint(tmp_path, sentinel):
     import shutil
+
+    import torch
+    import transformers
     from safetensors.torch import load_file, save_file
 
-    get_text_config = _load_text_only_helper()
-    get_key_mapping = _load_util_func("_get_text_only_key_mapping")
-
-    sentinel = 0.1234
     text_cfg = transformers.Gemma3TextConfig(
         hidden_size = 32,
         intermediate_size = 64,
@@ -376,8 +400,7 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     save_dir = tmp_path / "vlm"
     full_model.save_pretrained(save_dir, safe_serialization = True)
 
-    # tf >=5 saves under an outer "model." prefix;
-    # strip it to reproduce the language_model.model.* layout the published Gemma 3 checkpoints use.
+    # tf >=5 saves under an outer "model." prefix; strip it to match published Gemma 3 layout.
     real_dir = tmp_path / "real"
     real_dir.mkdir()
     weights = {}
@@ -393,6 +416,18 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
         if not p.name.endswith((".safetensors", ".bin", ".index.json")):
             shutil.copy(p, real_dir / p.name)
     save_file(weights, str(real_dir / "model.safetensors"))
+    return real_dir, full_config
+
+
+def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_path):
+    transformers = pytest.importorskip("transformers")
+    torch = pytest.importorskip("torch")
+
+    get_text_config = _load_text_only_helper()
+    get_key_mapping = _load_util_func("_get_text_only_key_mapping")
+
+    sentinel = 0.1234
+    real_dir, full_config = _write_published_gemma3_checkpoint(tmp_path, sentinel)
 
     text_config = get_text_config(full_config, "google/gemma-3-27b-it")
     load_kwargs = {}
@@ -416,3 +451,77 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     assert not any(
         "vision_tower" in n for n, _ in model.named_modules()
     ), "vision tower should be skipped on the text-only path"
+
+
+def test_gemma3_text_only_save_reloads_as_the_decoder(tmp_path):
+    # tf 5 save_pretrained reverses the load's key_mapping unless the loader drops it.
+    transformers = pytest.importorskip("transformers")
+    torch = pytest.importorskip("torch")
+    if int(transformers.__version__.split(".")[0]) < 5:
+        pytest.skip(
+            reason = "#12554: transformers 4 strips the wrapper prefix itself, so no key_mapping is added or dropped"
+        )
+    ns = _load_text_only_namespace()
+    ns["_parent_conversions_for_text_only"] = lambda model_type: []
+
+    real_dir, full_config = _write_published_gemma3_checkpoint(tmp_path, 0.1234)
+    text_config = ns["_get_text_only_config"](full_config, "google/gemma-3-4b-pt")
+    kwargs = {}
+    mapping = ns["_apply_text_only_key_mapping"](kwargs, full_config, text_config)
+    assert mapping and kwargs["key_mapping"] == mapping
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        real_dir,
+        config = text_config,
+        dtype = torch.float32,
+        local_files_only = True,
+        **kwargs,
+    )
+    ns["_drop_text_only_key_mapping"](model, mapping)
+
+    model.save_pretrained(tmp_path / "saved")
+    reloaded = transformers.AutoModelForCausalLM.from_pretrained(
+        tmp_path / "saved", dtype = torch.float32, local_files_only = True
+    )
+    expected, actual = model.state_dict(), reloaded.state_dict()
+    assert actual.keys() == expected.keys()
+    for name, tensor in expected.items():
+        assert torch.equal(actual[name], tensor), f"{name} was not reloaded from the save"
+
+
+def test_text_only_loaders_keep_the_key_mapping_they_drop():
+    def _from_apply(value):
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_apply_text_only_key_mapping"
+        )
+
+    for path, class_name in ((LOADER_PATH, "FastModel"), (VISION_PATH, "FastBaseModel")):
+        method = _class_method(ast.parse(_source(path)), class_name, "from_pretrained")
+        assert _assigns_name(method, "_text_key_mapping", _from_apply), class_name
+        assert _calls_function(method, "_drop_text_only_key_mapping"), class_name
+
+
+def _module_function(tree, name):
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} not found")
+
+
+def test_base_fast_generate_tolerates_missing_architectures():
+    method = _module_function(ast.parse(_source(VISION_PATH)), "unsloth_base_fast_generate")
+
+    def is_raw_architectures(node):
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "architectures"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "config"
+        )
+
+    for node in ast.walk(method):
+        if isinstance(node, ast.comprehension):
+            assert not is_raw_architectures(node.iter)
+        if isinstance(node, ast.Subscript):
+            assert not is_raw_architectures(node.value)

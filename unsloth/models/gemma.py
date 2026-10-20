@@ -10,9 +10,9 @@
 # limitations under the License.
 
 from .llama import *
-from .llama import _get_rope_theta
+from .llama import _get_rope_theta, _LazyDeviceScratch, _PerDeviceRopeCache
 from ._utils import __version__
-from ._utils import move_to_device, per_layer_device
+from ._utils import move_to_device, per_layer_device, embedding_applies_scale
 from unsloth_zoo.utils import _get_dtype, Version
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
@@ -20,7 +20,6 @@ from ..utils.packing import (
     build_xformers_block_causal_mask,
     get_packed_info_from_kwargs,
 )
-import math
 
 try:
     from transformers.models.gemma.modeling_gemma import (
@@ -118,7 +117,9 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, gemma = True, save_output = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -133,7 +134,9 @@ def GemmaDecoderLayer_fast_forward(
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm(
+            self.post_attention_layernorm, hidden_states, gemma = True, save_output = True
+        )
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
@@ -157,19 +160,17 @@ def GemmaModel_fast_forward_inference(
     attention_mask = None,
     **kwargs,
 ):
-    out_weights = tuple(
-        torch.empty_like(
-            self.model.layers[0].input_layernorm.weight,
-            dtype = torch.float32,
-            device = torch.device(x),
-        )
-        for x in range(DEVICE_COUNT)
+    norm_weight = self.model.layers[0].input_layernorm.weight
+    out_weights = _LazyDeviceScratch(
+        DEVICE_COUNT,
+        lambda device: torch.empty_like(norm_weight, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 is 55.5000 in bfloat16 against 55.4256 in float32, and 2048**0.5 is 45.2500 against 45.2548.
-    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
+    if not embedding_applies_scale(self.model.embed_tokens):
+        hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
@@ -189,9 +190,14 @@ def GemmaModel_fast_forward_inference(
     rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
+        if attention_mask is not None:
+            attention_mask = move_to_device(layer_device, attention_mask)
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(
@@ -217,6 +223,8 @@ def GemmaModel_fast_forward_inference(
         hidden_states = fast_geglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
+        if block_swap is not None:
+            block_swap.leave(idx)
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_rms_layernorm_inference_gemma(
         self.model.norm, hidden_states, out_weights[device_index]
@@ -232,7 +240,7 @@ def GemmaModel_fast_forward_inference(
 
 # Follows google-deepmind/gemma positional_embeddings.py#L45 line by line, which formulates cos and
 # sin differently from Llama.
-class GemmaFixedRotaryEmbedding(torch.nn.Module):
+class GemmaFixedRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
     # RoPE buffer precision is wrong, so cast to int64; see huggingface/transformers#28837 and microsoft/DeepSpeed#4932.
     def __init__(
         self,
@@ -264,14 +272,8 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.current_rope_size = min(4 * 8192, self.max_position_embeddings)
         self.multi_gpu_cos_cached = [None] * DEVICE_COUNT
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
-
-        # Build here to make `torch.jit.trace` work.
-        for device in range(DEVICE_COUNT):
-            self._set_cos_sin_cache(
-                seq_len = self.current_rope_size,
-                device = torch.device(device),
-                dtype = torch.get_default_dtype(),
-            )
+        # Built per device on first use, not for every visible GPU here.
+        self._init_rope_cache_state(torch.get_default_dtype())
 
         self.cos_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
@@ -301,41 +303,6 @@ class GemmaFixedRotaryEmbedding(torch.nn.Module):
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
-
-    def forward(
-        self,
-        x,
-        position_ids = None,
-        seq_len = None,
-    ):
-        if seq_len is not None and seq_len > self.current_rope_size:
-            self._set_cos_sin_cache(seq_len = seq_len, device = x.device, dtype = x.dtype)
-
-        device_index = x.device.index
-
-        return (
-            self.multi_gpu_cos_cached[device_index][:seq_len],
-            self.multi_gpu_sin_cached[device_index][:seq_len],
-        )
-
-    def get_cached(
-        self,
-        seq_len = None,
-        device_index = None,
-    ):
-        if device_index is None:
-            device_index = get_current_device()
-        return self.multi_gpu_cos_cached[device_index], self.multi_gpu_sin_cached[device_index]
-
-    def extend_rope_embedding(self, x, seq_len):
-        if seq_len <= self.current_rope_size:
-            return
-        # Iteratively grow by increments of 8192
-        self.current_rope_size = math.ceil(seq_len / 8192) * 8192
-        for device in range(DEVICE_COUNT):
-            self._set_cos_sin_cache(
-                self.current_rope_size, device = torch.device(device), dtype = x.dtype
-            )
 
 
 class GemmaFixedLinearScalingRotaryEmbedding(GemmaFixedRotaryEmbedding):

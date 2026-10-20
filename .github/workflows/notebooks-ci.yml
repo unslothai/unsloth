@@ -37,6 +37,19 @@ on:
       - 'tests/_zoo_aggressive_cuda_spoof.py'
       - 'tests/_torchcodec_stub.py'
       - '.github/workflows/notebooks-ci.yml'
+      # The smoke-install contract runs under pytest from the repo checkout, so the root
+      # conftest, the tests package, the tests/_shared helpers it loads
+      # (installer_venv_root.py imports studio/install_manifest.py) and the pytest
+      # config in pyproject.toml all shape the run.
+      - 'tests/conftest.py'
+      - 'tests/__init__.py'
+      - 'tests/_shared/**'
+      - 'studio/install_manifest.py'
+      - 'pyproject.toml'
+      # Every job here `uses:` the pip cache pair, so an edit to either action changes
+      # what it runs.
+      - '.github/actions/pip-cache-restore/**'
+      - '.github/actions/pip-cache-save/**'
   schedule:
     # Daily 06:17 UTC. Catches Colab preinstall bumps (the upstream image
     # is rebuilt roughly weekly) without us waiting on a PR. Off the
@@ -57,11 +70,10 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -338,18 +350,11 @@ jobs:
           # to let torchvision pull the right Pillow version.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
                       'torch>=2.8,<2.11' 'torchvision<0.26'
-          # Pin to the same versions update_all_notebooks.py installs in
-          # generated notebooks. Keep these in lockstep with PIN_TRL /
-          # PIN_TRANSFORMERS in unslothai/notebooks/update_all_notebooks.py.
-          # `triton` because unsloth/kernels and unsloth_zoo's compiler and
-          # loss_utils import it at module scope, so `import unsloth` needs it
-          # even though _gpu_init.py treats it as optional. Same rationale as
-          # consolidated-tests-ci.yml line 192-205.
-          # Pillow is listed explicitly as a defensive belt-and-braces
-          # next to torchvision (vision_utils crashes ModuleNotFoundError
-          # if torchvision skipped its Pillow dep for any reason).
-          pip install 'transformers>=4.56,<5.6' 'trl>=0.22,<0.26' 'accelerate>=1.0' \
-                      'datasets>=3.4,<5' 'peft>=0.15,<0.20' \
+          # Keep in lockstep with PIN_TRL / PIN_TRANSFORMERS in unslothai/notebooks/update_all_notebooks.py
+          # and pyproject's caps. triton: `import unsloth` needs it at module scope.
+          # datasets must exclude 4.4.0-4.5.0 (patch_datasets raises NotImplementedError there).
+          pip install 'transformers>=4.56,<=5.17.0' 'trl>=0.22,<=1.15.0' 'accelerate>=1.0' \
+                      'datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0' 'peft>=0.15,<0.20' \
                       'bitsandbytes>=0.43' 'sentencepiece' 'protobuf' triton \
                       Pillow safetensors tqdm packaging psutil
           # Converter deps (nbformat for notebook_to_python.py).
@@ -724,6 +729,15 @@ jobs:
         timeout-minutes: 10
         env:
           NOTEBOOK: ${{ matrix.notebook }}
+          # Run the install cell the way Colab does (checked on a live
+          # release-colab-external-images_20261014 runtime). The notebooks pick their
+          # Colab branch on any environment key containing "COLAB_", and Colab sets
+          # UV_SYSTEM_PYTHON so their `!uv pip install` lines target the system
+          # interpreter. Without both, the cell takes the non-Colab branch and uv stops
+          # with "No virtual environment found". The marker's name matches none of the
+          # COLAB_* keys Unsloth itself reads.
+          COLAB_SMOKE_SHAPED: '1'
+          UV_SYSTEM_PYTHON: 'true'
         run: |
           set -euo pipefail
           # Convert THIS notebook only, and take whatever file the converter

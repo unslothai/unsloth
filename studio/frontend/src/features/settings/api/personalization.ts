@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import type { ColorThemeId } from "../lib/color-themes";
 import type { AppearanceCustomization } from "../stores/appearance-custom-store";
 
 export type PersonalizationProfile = {
@@ -15,7 +16,7 @@ export type PersonalizationProfile = {
 
 export type PersonalizationAppearance = {
   theme: "light" | "dark" | "system";
-  palette: "standard" | "classic" | "minimal";
+  palette: ColorThemeId;
   language: string | null;
   customization: AppearanceCustomization;
 };
@@ -30,6 +31,7 @@ export type Personalization = {
   // client then keeps local values instead of the server-filled defaults.
   customizationSaved: boolean;
   chatWidthSaved?: boolean;
+  sentAttachmentsSaved?: boolean;
   paletteSaved: boolean;
   greetingSlothSaved: boolean;
 };
@@ -50,6 +52,7 @@ export async function savePersonalization(
     | "saved"
     | "customizationSaved"
     | "chatWidthSaved"
+    | "sentAttachmentsSaved"
     | "paletteSaved"
     | "greetingSlothSaved"
   >,

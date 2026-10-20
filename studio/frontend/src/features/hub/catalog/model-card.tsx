@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import {
   Tooltip,
   TooltipContent,
@@ -11,15 +12,19 @@ import { ownerPaletteColor } from "@/features/hub/lib/avatar-theme";
 import { buildAdaptiveCardAccentStyle } from "@/features/hub/lib/card-accent";
 import { useDominantColor } from "@/features/hub/lib/use-dominant-color";
 import { formatModelParamLabel } from "@/features/hub/lib/view-models";
-import { formatCompact } from "@/lib/utils";
+import { cn, formatCompact } from "@/lib/utils";
 import { Download01Icon, FavouriteIcon } from "@hugeicons/core-free-icons";
 import { type CSSProperties, memo, useMemo } from "react";
 import type { DiscoverRow } from "../types";
-import { StatChip, buildRowStatusTooltip } from "./models-catalog-rows";
+import {
+  DOWNLOADING_DOT_CLASS,
+  StatChip,
+  buildRowStatusTooltip,
+} from "./models-catalog-rows";
 import { OwnerAvatar, useAvatarImageUrl } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
 
-export const MODEL_CARD_WIDTH_PX = 204;
+export const MODEL_CARD_WIDTH_PX = 224;
 export const MODEL_CARD_HEIGHT_PX = 128;
 
 export type TrendingCardStyle = CSSProperties & {
@@ -235,6 +240,8 @@ export const ModelCard = memo(function ModelCard({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const support = useMemo(
     () =>
       isDataset
@@ -246,17 +253,21 @@ export const ModelCard = memo(function ModelCard({
             libraryName: row.result.libraryName,
             deviceType,
             quantMethod: row.result.quantMethod,
+            vllmAvailable,
+            vllmPlatform,
           }),
-    [isDataset, row.id, row.result, deviceType],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable, vllmPlatform],
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const partial = row.isAvailableOnDevice && row.isPartialOnDevice;
+  const downloading = partial && row.isDownloadingOnDevice === true;
   const onDevice = row.isAvailableOnDevice && !row.isPartialOnDevice;
   const topCapability = row.capabilities[0] ?? null;
   const sizeLabel = formatModelParamLabel(row.repo, row.result.totalParams);
   const hasSize = sizeLabel !== "N/A";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    downloading,
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -305,11 +316,21 @@ export const ModelCard = memo(function ModelCard({
             gated={row.result.gated}
             isPrivate={row.result.private}
           />
-          {partial && (
+          {partial && !downloading && (
             <span
               role="img"
               aria-label="Partial download"
               className="inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-warning"
+            />
+          )}
+          {partial && downloading && (
+            <span
+              role="img"
+              aria-label="Downloading"
+              className={cn(
+                "inline-block size-[calc(5px*var(--ui-space-scale,1))] rounded-full",
+                DOWNLOADING_DOT_CLASS,
+              )}
             />
           )}
           {unsupported && (

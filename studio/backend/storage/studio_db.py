@@ -7,6 +7,8 @@ Like auth/storage.py (module-level functions, raw sqlite3, per-function connecti
 and PRAGMA foreign_keys = ON for CASCADE deletes.
 """
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -15,14 +17,19 @@ import platform
 import re
 import shutil
 import sqlite3
+import stat
 import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
+from core import chat_originals
+from storage import sqlite_gate
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -31,6 +38,8 @@ from utils.paths import (
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths import path_utils as _path_utils
+from utils.paths.path_utils import macos_volume_ignores_case
 from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
     contains_sensitive_path_component as _shared_contains_sensitive_path_component,
@@ -72,6 +81,23 @@ def _denied_path_prefixes() -> list[str]:
     return []
 
 
+_WSL_WINDOWS_SYSTEM_DIRS = ("windows", "program files", "program files (x86)")
+
+
+def _is_wsl_windows_system_path(path: str) -> bool:
+    """``/mnt/<drive>/Windows`` and ``Program Files`` under WSL: the native-Windows denylist, case-folded like DrvFs."""
+    root = _path_utils._WSL_AUTOMOUNT_ROOT
+    if not _path_utils._IS_WSL or not path.startswith(root):
+        return False
+    parts = path[len(root) :].split("/")
+    return (
+        len(parts) >= 2
+        and len(parts[0]) == 1
+        and parts[0].isalpha()
+        and parts[1].casefold() in _WSL_WINDOWS_SYSTEM_DIRS
+    )
+
+
 def is_denied_system_path(path: str) -> bool:
     """True if *path* is, or descends from, a denied system directory.
 
@@ -80,14 +106,29 @@ def is_denied_system_path(path: str) -> bool:
     keeps Linux removable-media mounts browseable. Expects an already-resolved (realpath) path so
     symlinks cannot escape into a denied subtree.
     """
-    is_win = platform.system() == "Windows"
-    check = os.path.normcase(path) if is_win else path
+    system = platform.system()
+    fold = system == "Darwin" and macos_volume_ignores_case(path)
+    if system == "Windows":
+        check = os.path.normcase(path)
+        # realpath() keeps an extended-length prefix: \\?\C:\Windows is C:\Windows, and
+        # \\?\UNC\server\share is \\server\share. Self-contained: tests lift this function out.
+        for extended, plain in (("\\\\?\\unc\\", "\\\\"), ("\\\\?\\", "")):
+            if check.startswith(extended):
+                check = plain + check[len(extended) :]
+                break
+    elif fold:
+        # APFS and HFS+ ignore case unless formatted case-sensitive: /LIBRARY is /Library.
+        check = path.casefold()
+    else:
+        check = path
     for prefix in _denied_path_prefixes():
+        if fold:
+            prefix = prefix.casefold()
         if check == prefix or check.startswith(prefix + os.sep):
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
             return True
-    return False
+    return system == "Linux" and _is_wsl_windows_system_path(path)
 
 
 def _contains_sensitive_path_component(path: str) -> bool:
@@ -100,9 +141,14 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
+
+# Opens and closes serialized process-wide against the SQLite 3.51.0-3.51.1 deadlock (#10022).
+connect_studio_db = sqlite_gate.connect
+
+
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-_CHAT_ATTACHMENT_INVENTORY_VERSION = 1
+_CHAT_ATTACHMENT_INVENTORY_VERSION = 5
 
 
 def _project_slug(name: str) -> str:
@@ -381,10 +427,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS scan_folders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             path TEXT NOT NULL UNIQUE {collation},
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            recursive INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    if "recursive" not in {
+        row[1] for row in conn.execute("PRAGMA table_info(scan_folders)").fetchall()
+    }:
+        conn.execute("ALTER TABLE scan_folders ADD COLUMN recursive INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_projects (
@@ -403,6 +454,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     }
     if "root_path" not in chat_project_cols:
         conn.execute("ALTER TABLE chat_projects ADD COLUMN root_path TEXT")
+    # The user's folder, never deleted; only root_path (Studio's own) is removed on project delete.
+    if "working_folder" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder TEXT")
+    if "working_folder_identity" not in chat_project_cols:
+        conn.execute("ALTER TABLE chat_projects ADD COLUMN working_folder_identity TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_projects_archived_updated_at ON chat_projects(archived, updated_at)"
     )
@@ -426,6 +482,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             fork_boundary_message_id TEXT,
             fork_title_base TEXT,
             settings_json TEXT,
+            modified_at INTEGER,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
         """
@@ -462,6 +519,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Null on every earlier row, which then numbers from its whole title.
     if "fork_title_base" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_title_base TEXT")
+    # Last rename, move or (un)archive. Null until then.
+    if "modified_at" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN modified_at INTEGER")
     if "updated_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
         # Floor at created_at: forked threads copy older ancestor messages, so the fork's creation time wins.
@@ -601,10 +661,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             type TEXT,
             content_type TEXT,
             size_bytes INTEGER,
+            original_sha256 TEXT,
+            text_bytes INTEGER,
             PRIMARY KEY(message_id, attachment_id)
         ) WITHOUT ROWID
         """
     )
+    inventory_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_inventory)")
+    }
+    if "original_sha256" not in inventory_columns:
+        conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN original_sha256 TEXT")
+    if "text_bytes" not in inventory_columns:
+        conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN text_bytes INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_attachment_inventory_state (
@@ -705,6 +774,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
+    # Import ledger: without it a re-import cannot tell a turn deleted in Studio from a newly appended one.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS external_import_sessions (
+            source TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turns_imported INTEGER NOT NULL,
+            revision TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (source, session_id)
+        ) WITHOUT ROWID
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS prompt_entries (
@@ -732,6 +813,42 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipes (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            learning_recipe_id TEXT,
+            learning_recipe_title TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    # Deleted ids stay here so a stale tab or a re-run legacy import cannot bring them back.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_tombstones (
+            id TEXT NOT NULL PRIMARY KEY,
+            deleted_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_executions (
+            id TEXT NOT NULL PRIMARY KEY,
+            recipe_id TEXT NOT NULL REFERENCES data_recipes(id) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_data_recipe_executions_recipe"
+        " ON data_recipe_executions(recipe_id, created_at)"
     )
     conn.execute(
         """
@@ -880,6 +997,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    document_source_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(research_document_sources)").fetchall()
+    }
+    if "kind" not in document_source_cols:
+        conn.execute("ALTER TABLE research_document_sources ADD COLUMN kind TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_events (
@@ -1186,12 +1308,9 @@ def bulk_upsert_prompt_lists(lists: list[dict]) -> int:
         conn.close()
 
 
-def is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:
-    """Is this the writer lock being held elsewhere, rather than a real fault? sqlite reports it as
-    plain OperationalError, so the message is the only signal. Lives here because studio.db is the
-    contended file and several modules need the same answer; storage.api_usage_db delegates to it."""
-    message = str(exc).lower()
-    return "locked" in message or "busy" in message
+# Old names kept: storage.api_usage_db and core.research_runs import them from here.
+is_sqlite_busy_error = sqlite_gate.is_busy_error
+_apply_wal_synchronous = sqlite_gate.apply_wal_synchronous
 
 
 # sqlite's own default, kept for every caller that may run on the event loop
@@ -1200,25 +1319,6 @@ _BUSY_TIMEOUT_SECONDS = 5.0
 # only for the chat history transactions that run in Starlette's threadpool, where a large clear
 # can hold the writer lock past the default and the failure escapes as an unmapped 500
 _CONTENDED_BUSY_TIMEOUT_SECONDS = 30.0
-
-
-def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
-    """Drop to synchronous=NORMAL, but only while the file is really in WAL mode. Under WAL, sqlite
-    still defaults to synchronous=FULL, which fsyncs on every commit while holding the writer lock:
-    on a machine whose disk is busy one commit blocked for 37s, and every other writer spent that
-    window timing out with "database is locked". NORMAL is sqlite's own recommended pairing for WAL:
-    it can lose the last transactions to a host power loss, but the database is never corrupted and
-    commits stay durable across an application crash. The WAL check is not decoration. `PRAGMA
-    journal_mode=WAL` silently declines on filesystems without proper shared-memory support (network
-    shares, some FUSE and container-mounted paths), leaving the file on a rollback journal where
-    NORMAL drops the very fsync that keeps it consistent. Those installs keep FULL. journal_mode is
-    persistent in the file, so this reads what is in force rather than what was requested."""
-    try:
-        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-    except (sqlite3.Error, TypeError, IndexError):
-        return
-    if isinstance(mode, str) and mode.lower() == "wal":
-        conn.execute("PRAGMA synchronous=NORMAL")
 
 
 def reset_schema_state_for_tests() -> None:
@@ -1234,8 +1334,8 @@ def get_connection(
 ) -> sqlite3.Connection:
     db_path = studio_db_path()
     ensure_account_dir(db_path.parent)
-    conn = sqlite3.connect(
-        str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
+    conn = connect_studio_db(
+        db_path, timeout = busy_timeout_seconds, check_same_thread = check_same_thread
     )
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
@@ -1835,14 +1935,14 @@ def list_scan_folders() -> list[dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT id, path, created_at FROM scan_folders ORDER BY created_at"
+            "SELECT id, path, created_at, recursive FROM scan_folders ORDER BY created_at"
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [{**dict(row), "recursive": bool(row["recursive"])} for row in rows]
     finally:
         conn.close()
 
 
-def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
+def add_scan_folder_with_status(path: str, recursive: bool | None = None) -> tuple[dict, bool]:
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(path.strip()))
@@ -1885,21 +1985,29 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         # Windows: case-insensitive lookup so C:\Models and c:\models dedup.
         if is_win:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE",
                 (normalized,),
             ).fetchone()
         else:
             existing = conn.execute(
-                "SELECT id, path, created_at FROM scan_folders WHERE path = ?",
+                "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?",
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            return dict(existing), False
+            # None keeps the stored flag, so a re-add from export registration never resets it.
+            if recursive is None or bool(existing["recursive"]) == recursive:
+                return dict(existing), False
+            conn.execute(
+                "UPDATE scan_folders SET recursive = ? WHERE id = ?",
+                (int(recursive), existing["id"]),
+            )
+            conn.commit()
+            return {**dict(existing), "recursive": int(recursive)}, True
         inserted = False
         try:
             conn.execute(
-                "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
-                (normalized, now),
+                "INSERT INTO scan_folders (path, created_at, recursive) VALUES (?, ?, ?)",
+                (normalized, now, int(bool(recursive))),
             )
             conn.commit()
             inserted = True
@@ -1907,9 +2015,9 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
             pass  # duplicate; fall through to SELECT
         # Same collation as the pre-check to catch concurrent writes (Windows).
         fallback_sql = (
-            "SELECT id, path, created_at FROM scan_folders WHERE path = ? COLLATE NOCASE"
+            "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ? COLLATE NOCASE"
             if is_win
-            else "SELECT id, path, created_at FROM scan_folders WHERE path = ?"
+            else "SELECT id, path, created_at, recursive FROM scan_folders WHERE path = ?"
         )
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
@@ -1919,12 +2027,15 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
-    row, _ = add_scan_folder_with_status(path)
+def add_scan_folder(path: str, recursive: bool | None = None) -> dict:
+    row, _ = add_scan_folder_with_status(path, recursive)
     return row
 
 
 def remove_scan_folder(id: int) -> bool:
+    # sqlite INTEGER is signed 64-bit: binding a wider id raises instead of matching nothing.
+    if not -(2**63) <= id < 2**63:
+        return False
     conn = get_connection()
     try:
         cursor = conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
@@ -1964,6 +2075,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "forkedFromMessageId": data.get("forked_from_message_id"),
         "forkBoundaryMessageId": data.get("fork_boundary_message_id"),
         "forkTitleBase": data.get("fork_title_base"),
+        "modifiedAt": data.get("modified_at"),
     }
     if include_settings:
         thread["settings"] = _json_loads(data.get("settings_json"), None)
@@ -1979,6 +2091,8 @@ def _chat_project_from_row(row: sqlite3.Row) -> dict:
         "instructions": data.get("instructions") or "",
         "rootPath": root_path or None,
         "sandboxPath": os.path.join(root_path, "sandbox") if root_path else None,
+        "workingFolder": data.get("working_folder") or None,
+        "workingFolderIdentity": data.get("working_folder_identity") or None,
         "archived": bool(data["archived"]),
         "createdAt": data["created_at"],
         "updatedAt": data["updated_at"],
@@ -2111,6 +2225,7 @@ def update_chat_thread(
     expected_title: Optional[str] = None,
     expected_opening_message_id: Optional[str] = None,
     settings_write: Optional[dict] = None,
+    preserve_title_modified_at: bool = False,
 ) -> Optional[dict]:
     """Patch a thread. With expected_title, the write only lands while the row still holds that title,
     so a concurrent rename wins instead of being lost. expected_opening_message_id guards a title
@@ -2162,6 +2277,20 @@ def update_chat_thread(
             "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
         )
         values.append(patch.get("title"))
+    # Generated title refreshes preserve recency. Moves and (un)archives still stamp it.
+    # The CASE reads the pre-update row.
+    edited = [
+        (column, value)
+        for key, (column, value) in allowed.items()
+        if key in patch
+        and key in ("title", "projectId", "archived")
+        and not (key == "title" and preserve_title_modified_at)
+    ]
+    if edited:
+        changed = " OR ".join(f"{column} IS NOT ?" for column, _ in edited)
+        assignments.append(f"modified_at = CASE WHEN {changed} THEN ? ELSE modified_at END")
+        values.extend(value for _, value in edited)
+        values.append(int(time.time() * 1000))
     if not assignments and settings_write is None:
         return get_chat_thread(id)
 
@@ -2353,6 +2482,237 @@ def list_chat_threads(
         conn.close()
 
 
+SIDEBAR_ROWS_CURSOR_VERSION = 2
+SIDEBAR_ROWS_MAX_LIMIT = 200
+
+_SIDEBAR_ROW_ID_SQL = "COALESCE(NULLIF(pair_id, ''), id)"
+_SIDEBAR_ACTIVITY_SQL = "COALESCE(updated_at, created_at)"
+
+
+class SidebarCursorError(ValueError):
+    """A cursor this listing did not issue, or one issued for another sort."""
+
+
+def encode_sidebar_cursor(payload: dict) -> str:
+    raw = json.dumps({"v": SIDEBAR_ROWS_CURSOR_VERSION, **payload}, separators = (",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_sidebar_cursor(cursor: str, sort: str) -> dict:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    except (binascii.Error, UnicodeError, ValueError) as exc:
+        raise SidebarCursorError("Malformed cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != SIDEBAR_ROWS_CURSOR_VERSION:
+        raise SidebarCursorError("Unsupported cursor version")
+    if payload.get("s") != sort:
+        raise SidebarCursorError("Cursor was issued for another sort")
+    keys = ("o",) if sort == "manual" else ("u", "c", "r")
+    # SQLite binds 64-bit integers only; the exclusive lower bound keeps `-r` in range too
+    if not all(type(v) is int and -(2**63) < v < 2**63 for v in map(payload.get, keys)):
+        raise SidebarCursorError("Malformed cursor")
+    if sort == "manual" and payload["o"] < 0:
+        raise SidebarCursorError("Malformed cursor")
+    return payload
+
+
+def list_chat_sidebar_rows(
+    *,
+    archived: bool = False,
+    project_id: str | None = None,
+    unfiled_only: bool = False,
+    include_ids: list[str] | None = None,
+    exclude_ids: list[str] | None = None,
+    sort: str = "updated",
+    manual_order: list[str] | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+) -> dict:
+    """One page of sidebar rows, grouped (before the limit) and ordered as the frontend's groupThreads
+    does. `updated` pages by keyset; `manual` follows applyManualOrder and pages by offset."""
+    position = decode_sidebar_cursor(cursor, sort) if cursor else None
+
+    filters: list[str] = []
+    filter_values: list[object] = []
+    if include_ids is not None:
+        # a row id, or any member thread id: a running compare pane names its pair by its own id. Only a
+        # pane on this side of the archive filter counts, as the full list filters panes before matching
+        filters.append(
+            "(rows.row_id IN (SELECT value FROM json_each(?)) OR rows.row_id IN ("
+            f"SELECT {_SIDEBAR_ROW_ID_SQL} FROM chat_threads WHERE id IN (SELECT value FROM json_each(?))"
+            " AND (COALESCE(archived, 0) <> 0) = ?))"
+        )
+        filter_values += [json.dumps(include_ids), json.dumps(include_ids), 1 if archived else 0]
+    if exclude_ids:
+        filters.append("rows.row_id NOT IN (SELECT value FROM json_each(?))")
+        filter_values.append(json.dumps(exclude_ids))
+    if project_id is not None:
+        filters.append("rows.project_id = ?")
+        filter_values.append(project_id)
+    if unfiled_only:
+        filters.append("rows.project_id IS NULL")
+
+    # Last occurrence wins, as `new Map(order.map((id, i) => [id, i]))` does.
+    ranks_json = json.dumps(manual_order or []) if sort == "manual" else "[]"
+    base = f"""
+        WITH members AS (
+            SELECT {_SIDEBAR_ROW_ID_SQL} AS row_id,
+                   CASE WHEN COALESCE(pair_id, '') <> '' THEN 1 ELSE 0 END AS is_pair,
+                   title,
+                   NULLIF(project_id, '') AS project_id,
+                   created_at,
+                   {_SIDEBAR_ACTIVITY_SQL} AS activity_at,
+                   NULLIF(modified_at, 0) AS modified_at,
+                   CASE WHEN COALESCE(forked_from_thread_id, '') <> '' THEN 1 ELSE 0 END AS is_fork,
+                   rowid AS member_rowid,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY {_SIDEBAR_ROW_ID_SQL}
+                       ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                   ) AS member_rank
+            FROM chat_threads
+            WHERE (COALESCE(archived, 0) <> 0) = ?
+        ),
+        rows AS (
+            SELECT row_id,
+                   MAX(is_pair) AS is_pair,
+                   MAX(created_at) AS created_at,
+                   MAX(activity_at) AS updated_at,
+                   MAX(modified_at) AS modified_at,
+                   MAX(CASE WHEN member_rank = 1 THEN title END) AS title,
+                   MAX(CASE WHEN member_rank = 1 THEN project_id END) AS project_id,
+                   MAX(CASE WHEN member_rank = 1 THEN is_fork END) AS is_fork,
+                   -- groupThreads sorts stably, so rows tied on updatedAt keep list order: their newest
+                   -- member's created_at DESC, then storage order.
+                   MAX(CASE WHEN member_rank = 1 THEN created_at END) AS lead_created_at,
+                   MAX(CASE WHEN member_rank = 1 THEN member_rowid END) AS lead_rowid
+            FROM members
+            GROUP BY row_id
+        ),
+        ranks AS (
+            SELECT value AS row_id, MAX(CAST(key AS INTEGER)) AS manual_rank
+            FROM json_each(?)
+            GROUP BY value
+        ),
+        eligible AS (
+            SELECT rows.*, ranks.manual_rank
+            FROM rows LEFT JOIN ranks ON ranks.row_id = rows.row_id
+            {"WHERE " + " AND ".join(filters) if filters else ""}
+        )
+    """
+    base_values: list[object] = [1 if archived else 0, ranks_json, *filter_values]
+
+    page_values = list(base_values)
+    if sort == "updated":
+        where = ""
+        if position is not None:
+            where = "WHERE (updated_at, lead_created_at, -lead_rowid) < (?, ?, ?)"
+            page_values += [position["u"], position["c"], -position["r"]]
+        page_sql = (
+            f"{base} SELECT * FROM (SELECT *, COUNT(*) OVER () AS total FROM eligible) {where} "
+            "ORDER BY updated_at DESC, lead_created_at DESC, lead_rowid ASC LIMIT ?"
+        )
+        page_values.append(limit + 1)
+    else:
+        offset = position["o"] if position is not None else 0
+        page_sql = (
+            f"{base} SELECT *, COUNT(*) OVER () AS total FROM eligible "
+            "ORDER BY manual_rank IS NOT NULL, manual_rank ASC, updated_at DESC, lead_created_at DESC, lead_rowid ASC "
+            "LIMIT ? OFFSET ?"
+        )
+        page_values += [limit + 1, offset]
+
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN")
+        page = conn.execute(page_sql, page_values).fetchall()
+        if page:
+            total = page[0]["total"]
+        else:
+            total = conn.execute(f"{base} SELECT COUNT(*) FROM eligible", base_values).fetchone()[0]
+        has_more = len(page) > limit
+        page = page[:limit]
+        members_by_row: dict[str, list[sqlite3.Row]] = {row["row_id"]: [] for row in page}
+        if page:
+            row_ids = json.dumps(list(members_by_row))
+            for member in conn.execute(
+                f"""
+                SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id, NULLIF(model_id, '') AS model_id, title
+                FROM chat_threads
+                WHERE (COALESCE(archived, 0) <> 0) = ?
+                  AND (
+                      pair_id IN (SELECT value FROM json_each(?))
+                      OR (COALESCE(pair_id, '') = '' AND id IN (SELECT value FROM json_each(?)))
+                  )
+                ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                """,
+                (1 if archived else 0, row_ids, row_ids),
+            ):
+                members_by_row[member["row_id"]].append(member)
+        conn.commit()
+    finally:
+        conn.close()
+
+    rows: list[dict] = []
+    for row in page:
+        members = members_by_row[row["row_id"]]
+        model_ids: list[str] = []
+        for member in members:
+            if member["model_id"] and member["model_id"] not in model_ids:
+                model_ids.append(member["model_id"])
+        item: dict[str, Any] = {
+            "id": row["row_id"],
+            "type": "compare" if row["is_pair"] else "single",
+            "threadIds": [member["id"] for member in members],
+            "title": row["title"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "projectId": row["project_id"],
+        }
+        if row["modified_at"]:
+            item["modifiedAt"] = row["modified_at"]
+        if model_ids:
+            item["modelIds"] = model_ids
+        if not row["is_pair"]:
+            item["isFork"] = bool(row["is_fork"])
+        else:
+            item["threadTitles"] = [member["title"] or "" for member in members]
+        rows.append(item)
+
+    next_cursor = None
+    if has_more and page:
+        if sort == "updated":
+            last = page[-1]
+            next_cursor = encode_sidebar_cursor(
+                {
+                    "s": "updated",
+                    "u": last["updated_at"],
+                    "c": last["lead_created_at"],
+                    "r": last["lead_rowid"],
+                }
+            )
+        else:
+            offset = (position["o"] if position is not None else 0) + len(page)
+            next_cursor = encode_sidebar_cursor({"s": "manual", "o": offset})
+    return {"rows": rows, "nextCursor": next_cursor, "hasMore": has_more, "total": total}
+
+
+def lookup_chat_sidebar_row_ids(thread_ids: list[str]) -> dict[str, str]:
+    """The sidebar row each existing thread belongs to; unknown ids are left out."""
+    if not thread_ids:
+        return {}
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"SELECT id, {_SIDEBAR_ROW_ID_SQL} AS row_id FROM chat_threads "
+            "WHERE id IN (SELECT value FROM json_each(?))",
+            (json.dumps(thread_ids),),
+        ).fetchall()
+        return {row["id"]: row["row_id"] for row in rows}
+    finally:
+        conn.close()
+
+
 def build_chat_history_export() -> tuple[list[dict], list[dict], list[dict]]:
     conn = get_connection()
     try:
@@ -2404,6 +2764,18 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
             "UPDATE chat_threads SET forked_from_thread_id = ? WHERE id = ?",
             (source_id, row["id"]),
         )
+
+
+def lift_chat_thread_tombstones(thread_ids: Iterable[str]) -> None:
+    """Forget these deleted thread ids, so an import into an emptied Studio can recreate them."""
+    conn = get_connection()
+    try:
+        conn.executemany(
+            "DELETE FROM chat_thread_tombstones WHERE id = ?", [(i,) for i in set(thread_ids)]
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _tombstone_chat_threads(conn: sqlite3.Connection, thread_ids: Iterable[str]) -> None:
@@ -2710,7 +3082,39 @@ def count_chat_threads() -> int:
         conn.close()
 
 
-def upsert_chat_project(project: dict) -> dict:
+def _unretire_project_rag_scope(project_id: str) -> None:
+    """Give a recreated project id back its RAG scope (#10567).
+
+    Runs after the Studio row commits and under the scope lock the delete route purges in, so a
+    purged tombstone left by a racing delete is cleared instead of disabling RAG for good. The
+    owner is re-read under the lock: a delete that won it must keep its tombstone.
+    """
+    from utils.paths import rag_db_path
+    try:
+        if not rag_db_path().exists():
+            return
+        from core.rag import folder_sync, store as rag_store
+
+        scope = rag_store.project_scope(project_id)
+        with folder_sync.scope_lock(scope):
+            if get_chat_project(project_id) is None:
+                return
+            folder_sync.unretire_scope(scope)
+    except Exception:
+        logger.warning(
+            "could not clear RAG retirement for project %s after the Studio row committed",
+            project_id,
+            exc_info = True,
+        )
+
+
+class ProjectWorkingFolderConflictError(ValueError):
+    pass
+
+
+def upsert_chat_project(
+    project: dict, *, working_folder: Optional[tuple[str, tuple[int, int]]] = None
+) -> dict:
     existing = get_chat_project(project["id"])
     root_path = existing.get("rootPath") if existing else None
     if not root_path:
@@ -2718,6 +3122,15 @@ def upsert_chat_project(project: dict) -> dict:
     root_path = _ensure_project_workspace(root_path)
     conn = get_connection()
     try:
+        if working_folder is not None:
+            # Create-only: an existing project changes its folder via the working-folder route.
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM chat_projects WHERE id = ?", (project["id"],)
+            ).fetchone():
+                raise ProjectWorkingFolderConflictError(
+                    "This project already exists. Change its working folder from Edit project."
+                )
         conn.execute(
             """
             INSERT INTO chat_projects
@@ -2741,10 +3154,18 @@ def upsert_chat_project(project: dict) -> dict:
                 int(project["updatedAt"]),
             ),
         )
+        if working_folder is not None:
+            path, (device, inode) = working_folder
+            conn.execute(
+                "UPDATE chat_projects SET working_folder = ?, working_folder_identity = ? WHERE id = ?",
+                (path, f"{device}:{inode}", project["id"]),
+            )
         conn.commit()
-        return get_chat_project(project["id"]) or project
+        saved = get_chat_project(project["id"]) or project
     finally:
         conn.close()
+    _unretire_project_rag_scope(project["id"])
+    return saved
 
 
 def update_chat_project(id: str, patch: dict) -> Optional[dict]:
@@ -2775,6 +3196,52 @@ def update_chat_project(id: str, patch: dict) -> Optional[dict]:
         return _chat_project_from_row(row) if row is not None else None
     finally:
         conn.close()
+
+
+def set_chat_project_working_folder(
+    id: str,
+    path: Optional[str],
+    identity: Optional[tuple[int, int]] = None,
+) -> Optional[dict]:
+    """The managed workspace is kept, so switching back finds its files."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE chat_projects SET working_folder = ?, working_folder_identity = ?, "
+            "updated_at = ? WHERE id = ?",
+            (
+                path or None,
+                f"{identity[0]}:{identity[1]}" if path and identity else None,
+                int(time.time() * 1000),
+                id,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM chat_projects WHERE id = ?", (id,)).fetchone()
+        return _chat_project_from_row(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def available_project_working_folder(project: Optional[dict]) -> Optional[str]:
+    """None unless still the picked directory: the identity check stops a new dir at the old path inheriting the grant."""
+    path = (project or {}).get("workingFolder")
+    if not path or not is_owner_context():
+        return None
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return None
+    identity = (project or {}).get("workingFolderIdentity")
+    if identity and identity != f"{st.st_dev}:{st.st_ino}":
+        return None
+    real = os.path.realpath(path)
+    # Reached through a new ancestor link, the same inode sits somewhere else: not the folder picked.
+    if os.path.normcase(real) != os.path.normcase(path):
+        return None
+    return real
 
 
 def ensure_chat_project_workspace(id: str) -> Optional[dict]:
@@ -2814,13 +3281,43 @@ def get_chat_project(id: str) -> Optional[dict]:
 
 
 def list_chat_projects(include_archived: bool = False) -> list[dict]:
+    """Projects with `lastActivityAt`: their own last edit or newest unarchived chat, whichever is later."""
     conn = get_connection()
     try:
-        where = "" if include_archived else "WHERE archived = 0"
+        where = "" if include_archived else "WHERE p.archived = 0"
         rows = conn.execute(
-            f"SELECT * FROM chat_projects {where} ORDER BY updated_at DESC"
+            f"""
+            SELECT p.*,
+                   MAX(
+                       COALESCE(p.updated_at, p.created_at),
+                       COALESCE(chats.last_chat_at, 0)
+                   ) AS last_activity_at
+            FROM chat_projects p
+            LEFT JOIN (
+                -- one row per sidebar row, as the sidebar groups it: a compare pair's activity is its
+                -- newest pane's and counts for that pane's project only
+                SELECT project_id, MAX(row_activity) AS last_chat_at
+                FROM (
+                    SELECT NULLIF(project_id, '') AS project_id,
+                           MAX({_SIDEBAR_ACTIVITY_SQL}) OVER (PARTITION BY {_SIDEBAR_ROW_ID_SQL}) AS row_activity,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY {_SIDEBAR_ROW_ID_SQL}
+                               ORDER BY {_SIDEBAR_ACTIVITY_SQL} DESC, created_at DESC, rowid ASC
+                           ) AS member_rank
+                    FROM chat_threads
+                    WHERE COALESCE(archived, 0) = 0
+                )
+                WHERE member_rank = 1 AND project_id IS NOT NULL
+                GROUP BY project_id
+            ) chats ON chats.project_id = p.id
+            {where}
+            ORDER BY p.updated_at DESC
+            """
         ).fetchall()
-        return [_chat_project_from_row(row) for row in rows]
+        return [
+            {**_chat_project_from_row(row), "lastActivityAt": row["last_activity_at"]}
+            for row in rows
+        ]
     finally:
         conn.close()
 
@@ -3013,6 +3510,17 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
         ).fetchall()
         for message_id in row
         if message_id is not None
+    }
+
+
+def _research_assistant_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT assistant_message_id FROM research_runs "
+            "WHERE thread_id = ? AND assistant_message_id IS NOT NULL",
+            (thread_id,),
+        ).fetchall()
     }
 
 
@@ -3257,9 +3765,17 @@ def _guard_server_managed_messages(
     allow_research_update: bool = False,
 ) -> None:
     generation = _generation_message_ids(conn, thread_id)
-    protected = set(generation)
-    if not allow_research_update:
-        protected.update(_research_message_ids(conn, thread_id))
+    if allow_research_update:
+        # A deep research run is handed off from a chat generation and reports into that
+        # generation's assistant message. Once the generation has settled, the research run
+        # is the message's only writer, so its authorized updates must not be held to the
+        # generation's monotonic-update rules.
+        generation -= _research_assistant_message_ids(
+            conn, thread_id
+        ) & _terminal_generation_message_ids(conn, thread_id)
+        protected = set(generation)
+    else:
+        protected = generation | _research_message_ids(conn, thread_id)
     if not protected:
         return
     for message in messages:
@@ -3273,6 +3789,33 @@ def _guard_server_managed_messages(
             and _research_message_would_change(conn, thread_id, message, pruned)
         ):
             raise ChatMessageProtectedError("server-managed generation messages cannot be edited")
+
+
+def _settle_handed_off_generation(conn: sqlite3.Connection, message: dict) -> dict:
+    # The live tab hands off before settling, so an unsettled row would be replayed by generation
+    # recovery on the next load and its settle write would replace the research report.
+    metadata = message.get("metadata")
+    if not isinstance(metadata, dict):
+        return message
+    row = conn.execute(
+        """SELECT id, status, last_event_seq FROM chat_generation_runs
+           WHERE thread_id = ? AND assistant_message_id = ?
+             AND status IN ('cancelled', 'completed', 'failed')""",
+        (message["threadId"], str(message["id"])),
+    ).fetchone()
+    if row is None or metadata.get("generationRunId") != row["id"]:
+        return message
+    # The research status now reports the outcome, not the acknowledgement's length/interrupt mark.
+    metadata = {key: value for key, value in metadata.items() if key != "incomplete"}
+    return {
+        **message,
+        "metadata": {
+            **metadata,
+            "generationStatus": row["status"],
+            "generationSeq": int(row["last_event_seq"]),
+            "generationSettled": True,
+        },
+    }
 
 
 def _detach_terminal_generation_for_edit(
@@ -3290,11 +3833,12 @@ def _detach_terminal_generation_for_edit(
         return False
     stored_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
     incoming_metadata = message.get("metadata")
+    # Not generationSettled: a settle whose `incomplete` disagrees with the producer's is refused,
+    # so a finished reply would never become editable (#13938). The run status above decides.
     if (
         not isinstance(stored_metadata, dict)
         or stored_metadata.get("serverManaged") is not True
         or stored_metadata.get("generationRunId") != row["run_id"]
-        or stored_metadata.get("generationSettled") is not True
         or isinstance(incoming_metadata, dict)
         and incoming_metadata.get("serverManaged") is True
         or str(message.get("role")) != str(row["role"])
@@ -3356,35 +3900,57 @@ def _content_part_id(part: dict) -> Optional[str]:
     return f"{_CONTENT_PART_ID_PREFIX}{hashlib.sha256(canonical).hexdigest()}"
 
 
-def _chat_attachment_tombstones_for_messages(
+def _chat_message_revision(metadata: Any) -> int:
+    revision = metadata.get("revision") if isinstance(metadata, dict) else None
+    return revision if type(revision) is int and revision > 0 else 0
+
+
+def _chat_attachment_deletions_for_messages(
     conn: sqlite3.Connection, thread_id: str, message_ids: list[str]
-) -> dict[str, set[str]]:
-    tombstones = {message_id: set() for message_id in message_ids}
+) -> dict[str, tuple[set[str], int]]:
+    deletions: dict[str, tuple[set[str], int]] = {}
     unique_ids = list(dict.fromkeys(message_ids))
     for start in range(0, len(unique_ids), _SQLITE_IN_CHUNK_SIZE):
         chunk = unique_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
         placeholders = ",".join("?" for _ in chunk)
         rows = conn.execute(
             f"""
-            SELECT message_id, attachment_id
-            FROM chat_attachment_tombstones
-            WHERE thread_id = ? AND message_id IN ({placeholders})
+            SELECT t.message_id, t.attachment_id, m.metadata_json
+            FROM chat_attachment_tombstones AS t
+            LEFT JOIN chat_messages AS m ON m.id = t.message_id AND m.thread_id = t.thread_id
+            WHERE t.thread_id = ? AND t.message_id IN ({placeholders})
             """,
             (thread_id, *chunk),
         ).fetchall()
         for row in rows:
-            tombstones[row["message_id"]].add(row["attachment_id"])
-    return tombstones
+            message_id = row["message_id"]
+            if message_id not in deletions:
+                deletions[message_id] = (
+                    set(),
+                    _chat_message_revision(_json_loads(row["metadata_json"], {})),
+                )
+            deletions[message_id][0].add(row["attachment_id"])
+    return deletions
 
 
-def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict:
+def _reconcile_chat_message_uploads(
+    message: dict,
+    tombstones: set[str],
+    stored_revision: int = 0,
+) -> dict:
     """Strip uploads previously deleted through the Data tab from a stale write."""
     if not tombstones:
         return message
 
     reconciled = dict(message)
+    removed_ids: set[str] = set()
     attachments = message.get("attachments")
     if isinstance(attachments, list):
+        removed_ids.update(
+            str(attachment.get("id") or "")
+            for attachment in attachments
+            if isinstance(attachment, dict) and str(attachment.get("id") or "") in tombstones
+        )
         reconciled["attachments"] = [
             attachment
             for attachment in attachments
@@ -3393,11 +3959,22 @@ def _reconcile_chat_message_uploads(message: dict, tombstones: set[str]) -> dict
 
     content = message.get("content")
     if isinstance(content, list):
-        reconciled["content"] = [
-            part
-            for part in content
-            if not (isinstance(part, dict) and (_content_part_id(part) or "") in tombstones)
-        ]
+        kept_content = []
+        for part in content:
+            part_id = _content_part_id(part) if isinstance(part, dict) else None
+            if part_id is not None and part_id in tombstones:
+                removed_ids.add(part_id)
+            else:
+                kept_content.append(part)
+        reconciled["content"] = kept_content
+    metadata = message.get("metadata")
+    incoming_revision = _chat_message_revision(metadata)
+    revision = max(stored_revision, incoming_revision + len(removed_ids))
+    if revision != incoming_revision:
+        reconciled["metadata"] = {
+            **(metadata if isinstance(metadata, dict) else {}),
+            "revision": revision,
+        }
     return reconciled
 
 
@@ -3454,6 +4031,8 @@ def _chat_attachment_inventory_entries(
                 "type": _chat_attachment_metadata_text(attachment.get("type")),
                 "contentType": _chat_attachment_metadata_text(attachment.get("contentType")),
                 "sizeBytes": _chat_attachment_size_bytes(attachment),
+                "originalSha256": chat_originals.attachment_sha256(attachment),
+                "textBytes": _chat_attachment_text_bytes(attachment),
             }
         )
     return entries
@@ -3481,8 +4060,9 @@ def _replace_chat_attachment_inventory(
     conn.executemany(
         """
         INSERT INTO chat_attachment_inventory
-            (message_id, attachment_id, name, type, content_type, size_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (message_id, attachment_id, name, type, content_type, size_bytes, original_sha256,
+             text_bytes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -3492,6 +4072,8 @@ def _replace_chat_attachment_inventory(
                 entry["type"],
                 entry["contentType"],
                 entry["sizeBytes"],
+                entry["originalSha256"],
+                entry["textBytes"],
             )
             for entry in entries
         ],
@@ -3621,19 +4203,21 @@ def upsert_chat_message(
             [message],
             allow_research_update = allow_research_update,
         )
+        if allow_research_update:
+            message = _settle_handed_off_generation(conn, message)
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],
             [message["id"]],
         )
-        tombstones = _chat_attachment_tombstones_for_messages(
+        deletions = _chat_attachment_deletions_for_messages(
             conn,
             message["threadId"],
             [message["id"]],
         )
         reconciled = _reconcile_chat_message_uploads(
             message,
-            tombstones.get(message["id"], set()),
+            *deletions.get(message["id"], (set(), 0)),
         )
         content_json = json.dumps(reconciled.get("content", []))
         attachments_json = (
@@ -3773,13 +4357,14 @@ def sync_chat_messages(
             thread_id,
             [m["id"] for m in messages],
         )
-        tombstones = _chat_attachment_tombstones_for_messages(
+        deletions = _chat_attachment_deletions_for_messages(
             conn,
             thread_id,
             [m["id"] for m in messages],
         )
         reconciled_messages = [
-            _reconcile_chat_message_uploads(m, tombstones.get(m["id"], set())) for m in messages
+            _reconcile_chat_message_uploads(m, *deletions.get(m["id"], (set(), 0)))
+            for m in messages
         ]
         serialized_messages = [
             (
@@ -3928,9 +4513,19 @@ def _reseat_protected_messages(conn, thread_id: str, reseat_parents: dict) -> No
     parents they pointed at need not, and a dangling parent makes the whole thread unimportable on
     the next load rather than just that turn."""
     for message_id, parent_id in reseat_parents.items():
+        row = conn.execute(
+            "SELECT parent_id, metadata_json FROM chat_messages WHERE thread_id = ? AND id = ?",
+            (thread_id, message_id),
+        ).fetchone()
+        if row is None or (row["parent_id"] or None) == parent_id:
+            continue
+        metadata = _json_loads(row["metadata_json"], {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["revision"] = _chat_message_revision(metadata) + 1
         conn.execute(
-            "UPDATE chat_messages SET parent_id = ? WHERE thread_id = ? AND id = ?",
-            (parent_id, thread_id, message_id),
+            "UPDATE chat_messages SET parent_id = ?, metadata_json = ? WHERE thread_id = ? AND id = ?",
+            (parent_id, json.dumps(metadata), thread_id, message_id),
         )
 
 
@@ -4204,6 +4799,41 @@ def fork_chat_thread(
         conn.close()
 
 
+def remap_chat_thread_document_ids(thread_id: str, document_ids: dict[str, str]) -> None:
+    if not document_ids:
+        return
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_chat_attachment_inventory_current(conn)
+        rows = conn.execute(
+            "SELECT id, content_json, attachments_json, metadata_json FROM chat_messages "
+            "WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchall()
+        for row in rows:
+            content_json, metadata_json = row["content_json"], row["metadata_json"]
+            for old, new in document_ids.items():
+                content_json = content_json.replace(old, new)
+                metadata_json = metadata_json and metadata_json.replace(old, new)
+            if (content_json, metadata_json) != (row["content_json"], row["metadata_json"]):
+                conn.execute(
+                    "UPDATE chat_messages SET content_json = ?, metadata_json = ? "
+                    "WHERE thread_id = ? AND id = ?",
+                    (content_json, metadata_json, thread_id, row["id"]),
+                )
+                _replace_chat_attachment_inventory(
+                    conn, row["id"], row["attachments_json"], content_json
+                )
+        _mark_chat_attachment_inventory_clean(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def count_forks_for_message(thread_id: str, message_id: str) -> int:
     conn = get_connection()
     try:
@@ -4291,6 +4921,9 @@ def _blob_part_base64_len(part: dict) -> int:
         data = audio.get("data")
         if isinstance(data, str) and _is_locally_stored_blob(data):
             return len(data)
+    data = part.get("data")
+    if part.get("type") == "file" and isinstance(data, str) and _is_locally_stored_blob(data):
+        return len(data.rsplit(",", 1)[-1])
     return 0
 
 
@@ -4301,10 +4934,26 @@ def _attachment_content_parts(attachment: dict) -> list[dict]:
     return [part for part in content if isinstance(part, dict)]
 
 
+def _chat_attachment_text_bytes(attachment: dict) -> Optional[int]:
+    """UTF-8 size of a kept original's extracted text, which the database stores as well. None
+    without an original, whose size already counts its text."""
+    if chat_originals.attachment_sha256(attachment) is None:
+        return None
+    return sum(
+        len(part["text"].encode("utf-8", errors = "ignore"))
+        for part in _attachment_content_parts(attachment)
+        if isinstance(part.get("text"), str)
+    )
+
+
 def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
-    """Approximate stored size of one attachment's content parts. Image and audio parts hold base64
-    payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their character length.
-    None when there is no sizable content."""
+    """Approximate stored size of one attachment's content parts. Image, audio and file (video)
+    parts hold base64 payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their
+    character length. None when there is no sizable content. A document whose original file is kept
+    counts that file instead of its extracted text."""
+    original_size = chat_originals.attachment_size(attachment)
+    if original_size is not None:
+        return original_size
     total = 0
     found = False
     for part in _attachment_content_parts(attachment):
@@ -4318,6 +4967,46 @@ def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
             total += len(text.encode("utf-8", errors = "ignore"))
             found = True
     return total if found else None
+
+
+_AUDIO_FORMAT_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "ogg": "audio/ogg",
+    "flac": "audio/flac",
+}
+
+
+def _content_part_audio_type(audio: Any) -> Optional[str]:
+    """An audio part's type: its data URL's, its format's, or else its bytes' own header, since a
+    compare chat stores bare base64 with neither."""
+    data = audio
+    if isinstance(audio, dict):
+        known = _AUDIO_FORMAT_TYPES.get(str(audio.get("format") or "").lower())
+        if known:
+            return known
+        data = audio.get("data")
+    if not isinstance(data, str):
+        return None
+    data = data.strip()
+    if data[:5].lower() == "data:":
+        header, _, data = data.partition(",")
+        declared = header[5:].split(";", 1)[0].strip().lower()
+        if declared.startswith("audio/"):
+            return declared
+    try:
+        head = base64.b64decode(data[:16])
+    except (binascii.Error, ValueError):
+        return None
+    if head.startswith(b"RIFF") and head[8:12] == b"WAVE":
+        return "audio/wav"
+    if head.startswith(b"ID3") or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0):
+        return "audio/mpeg"
+    if head.startswith(b"OggS"):
+        return "audio/ogg"
+    if head.startswith(b"fLaC"):
+        return "audio/flac"
+    return None
 
 
 def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
@@ -4340,7 +5029,9 @@ def _content_part_attachments(content_json: Optional[str]) -> list[dict]:
         kind, value = payload
         content_type = None
         part_name = part.get("name")
-        if isinstance(value, str) and value[:5].lower() == "data:":
+        if kind == "audio":
+            content_type = _content_part_audio_type(value)
+        elif isinstance(value, str) and value[:5].lower() == "data:":
             content_type = value[5:].split(";", 1)[0].split(",", 1)[0] or None
         out.append(
             {
@@ -4370,7 +5061,7 @@ def list_chat_attachments_page(
         rows = conn.execute(
             """
             SELECT i.attachment_id, i.name, i.type, i.content_type,
-                   i.size_bytes, m.id AS message_id, m.thread_id,
+                   i.size_bytes, i.original_sha256, i.text_bytes, m.id AS message_id, m.thread_id,
                    m.created_at, t.title AS thread_title, t.pair_id
             FROM chat_attachment_inventory i
             JOIN chat_messages m ON m.id = i.message_id
@@ -4385,6 +5076,7 @@ def list_chat_attachments_page(
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
+    originals = chat_originals.originals_dir()
     attachments = [
         {
             "id": row["attachment_id"],
@@ -4396,11 +5088,49 @@ def list_chat_attachments_page(
             "type": row["type"],
             "contentType": row["content_type"],
             "sizeBytes": row["size_bytes"],
+            "originalSha256": row["original_sha256"],
+            "textBytes": row["text_bytes"],
+            "hasOriginal": bool(row["original_sha256"])
+            and (originals / row["original_sha256"]).is_file(),
             "createdAt": row["created_at"],
         }
         for row in page_rows
     ]
     return attachments, offset + limit if has_more else None
+
+
+def referenced_chat_original_hashes() -> set[str]:
+    """Every stored original a chat attachment still points at."""
+    conn = get_connection()
+    try:
+        _ensure_chat_attachment_inventory_current(conn)
+        rows = conn.execute(
+            "SELECT DISTINCT original_sha256 FROM chat_attachment_inventory"
+            " WHERE original_sha256 IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {row[0] for row in rows}
+
+
+@contextmanager
+def chat_original_unreferenced(sha256: str) -> Iterator[bool]:
+    """Whether no attachment references ``sha256``, with the write lock held until the block
+    ends: a message that would reference it waits, so it cannot do so while the file is removed."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_chat_attachment_inventory_current(conn)
+        row = conn.execute(
+            "SELECT 1 FROM chat_attachment_inventory WHERE original_sha256 = ? LIMIT 1", (sha256,)
+        ).fetchone()
+        yield row is None
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def list_chat_attachments() -> list[dict]:
@@ -4478,7 +5208,7 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         _ensure_chat_attachment_inventory_current(conn)
         row = conn.execute(
             """
-            SELECT thread_id, attachments_json, content_json
+            SELECT thread_id, attachments_json, content_json, metadata_json
             FROM chat_messages WHERE id = ?
             """,
             (message_id,),
@@ -4527,13 +5257,17 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if not deleted_attachment and not deleted_content:
             conn.rollback()
             return False
+        metadata = _json_loads(row["metadata_json"], {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["revision"] = _chat_message_revision(metadata) + 1
         conn.execute(
             """
             UPDATE chat_messages
-            SET attachments_json = ?, content_json = ?
+            SET attachments_json = ?, content_json = ?, metadata_json = ?
             WHERE id = ?
             """,
-            (updated_attachments_json, updated_content_json, message_id),
+            (updated_attachments_json, updated_content_json, json.dumps(metadata), message_id),
         )
         _record_chat_attachment_tombstone(
             conn,
@@ -4555,6 +5289,49 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         raise
     finally:
         conn.close()
+
+
+def count_chat_messages_for_threads(thread_ids: list[str]) -> dict[str, int]:
+    """User and assistant messages per thread on its newest branch, without reading bodies.
+
+    Mirrors the frontend's ``summarizeChatMessages``. Unknown ids count 0.
+    """
+    unique_thread_ids = list(dict.fromkeys(thread_ids))
+    rows_by_thread: dict[str, list[tuple[str, Optional[str], str, int]]] = {
+        tid: [] for tid in unique_thread_ids
+    }
+    if not unique_thread_ids:
+        return {}
+    conn = get_connection()
+    try:
+        for start in range(0, len(unique_thread_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = unique_thread_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in conn.execute(
+                f"""
+                SELECT thread_id, id, parent_id, role, created_at FROM chat_messages
+                WHERE thread_id IN ({placeholders})
+                ORDER BY created_at ASC, id ASC
+                """,
+                chunk,
+            ):
+                rows_by_thread[row[0]].append((row[1], row[2], row[3], row[4]))
+    finally:
+        conn.close()
+    counts: dict[str, int] = {}
+    for tid, rows in rows_by_thread.items():
+        path = rows
+        if any(parent for _, parent, _, _ in rows):
+            by_id = {row[0]: row for row in rows}
+            # First newest message, matching the frontend.
+            at = max(rows, key = lambda row: row[3]) if rows else None
+            path, seen = [], set()
+            while at is not None and at[0] not in seen:
+                seen.add(at[0])
+                path.append(at)
+                at = by_id.get(at[1]) if at[1] else None
+        counts[tid] = sum(1 for _, _, role, _ in path if role in ("user", "assistant"))
+    return counts
 
 
 def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
@@ -4614,17 +5391,30 @@ def get_app_settings(keys: list[str]) -> dict[str, Any]:
         conn.close()
 
 
-def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
-    """Write ``value`` to ``key`` only while it still holds ``expected``. A read-then-upsert cannot
-    express "clear this flag": another save committing in the gap is silently reverted by the write
-    that follows it. Comparing inside one immediate transaction makes a losing update a no-op
-    instead. Returns whether the write happened."""
+def compare_and_set_app_setting(
+    key: str,
+    expected: Any,
+    value: Any,
+    *,
+    absent: tuple[str, ...] = (),
+) -> bool:
+    """Write ``value`` to ``key`` only while it still holds ``expected`` and no key in ``absent``
+    is set. A read-then-upsert cannot express "clear this flag": another save committing in the
+    gap is silently reverted by the write that follows it. Comparing inside one immediate
+    transaction makes a losing update a no-op instead. Returns whether the write happened."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
         current = _json_loads(row["value_json"], None) if row is not None else None
-        if current != expected:
+        present = (
+            absent
+            and conn.execute(
+                f"SELECT 1 FROM app_settings WHERE key IN ({', '.join('?' * len(absent))}) LIMIT 1",
+                absent,
+            ).fetchone()
+        )
+        if current != expected or present:
             conn.rollback()
             return False
         conn.execute(
@@ -4991,5 +5781,44 @@ def upsert_chat_legacy_imports(legacy_thread_ids: list[str]) -> tuple[int, int]:
                 inserted += 1
         conn.commit()
         return len(ids), inserted
+    finally:
+        conn.close()
+
+
+def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int, str]]:
+    """(turns brought over, source revision they came from), or None if never imported."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT turns_imported, revision FROM external_import_sessions"
+            " WHERE source = ? AND session_id = ?",
+            (source, session_id),
+        ).fetchone()
+        return None if row is None else (row["turns_imported"], row["revision"])
+    finally:
+        conn.close()
+
+
+def record_external_import_mark(
+    source: str,
+    session_id: str,
+    turns: int,
+    revision: str = "",
+) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source, session_id) DO UPDATE SET
+                turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
+                    THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+                    ELSE excluded.turns_imported END,
+                revision = excluded.revision
+            """,
+            (source, session_id, int(turns), revision),
+        )
+        conn.commit()
     finally:
         conn.close()

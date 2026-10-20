@@ -17,12 +17,13 @@ import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional, Union
 
 from core.inference import gallery_flags
 from loggers import get_logger
 from utils.account_context import is_owner_context
 from utils.paths import ensure_account_dir, ensure_dir, studio_root
+from utils.paths.relocations import location_dir
 from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
@@ -32,11 +33,13 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _JOB_OUTCOME_KEY = "_worker_outcome"
 _job_lock = threading.Lock()
 _THUMBNAIL_WIDTH = 192
+# A frame PNG is decoded and encoded whole, so refuse anything past 8K square.
+_FRAME_MAX_PIXELS = 8192 * 8192
 
 
 def gallery_dir() -> Path:
     if is_owner_context():
-        return ensure_dir(studio_root() / "videos")
+        return location_dir("videos", studio_root() / "videos")
     return ensure_account_dir(account_path("videos"))
 
 
@@ -198,26 +201,50 @@ def thumbnail(video_id: str) -> Optional[bytes]:
     path = owned_video_path(video_id)
     if path is None:
         return None
-    return _thumbnail_webp(path)
+    return first_frame_webp(path)
 
 
-def _thumbnail_webp(path: Path) -> bytes:
+def first_frame_webp(
+    source: Union[Path, BinaryIO],
+    width: int = _THUMBNAIL_WIDTH,
+    *,
+    container: Optional[str] = None,
+    max_pixels: Optional[int] = None,
+    max_height: Optional[int] = None,
+) -> bytes:
+    """The first frame of a clip (a file or an open binary stream), at most `width` wide and
+    `max_height` tall (four widths unless given), as WebP.
+
+    ``container`` forces the demuxer instead of probing for one, and then nothing but the stream
+    itself is read: a probed HLS or concat playlist names other files to open. ``max_pixels``
+    refuses a frame larger than that before it is decoded."""
     import io
+
     try:
         import av
         from PIL import Image
     except Exception as exc:  # noqa: BLE001 -- a missing decoder dependency makes thumbnails unavailable
         raise RuntimeError("Thumbnail generation needs the 'av' and 'Pillow' packages.") from exc
+    if isinstance(source, Path):
+        target, protocols = str(source), "file"
+    else:
+        target, protocols = source, "none"
+    options = {"protocol_whitelist": protocols} if container else {}
     try:
-        with av.open(str(path)) as src:
+        with av.open(target, format = container, options = options) as src:
             if not src.streams.video:
                 raise RuntimeError("Thumbnail generation failed: the clip has no video stream.")
-            frame = next(src.decode(src.streams.video[0]), None)
+            stream = src.streams.video[0]
+            if max_pixels is not None:
+                if stream.width * stream.height > max_pixels:
+                    raise RuntimeError(f"{stream.width}x{stream.height} is too large to thumbnail.")
+                stream.codec_context.options = {"max_pixels": str(max_pixels)}
+            frame = next(src.decode(stream), None)
             if frame is None:
                 raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
             image = frame.to_image()
-            if image.width > _THUMBNAIL_WIDTH:
-                scale = _THUMBNAIL_WIDTH / image.width
+            scale = min(1, width / image.width, (max_height or width * 4) / image.height)
+            if scale < 1:
                 image = image.resize(
                     (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
                     Image.LANCZOS,
@@ -229,6 +256,82 @@ def _thumbnail_webp(path: Path) -> bytes:
         raise
     except Exception as exc:  # noqa: BLE001 -- surface decoder / WebP encoder failures
         raise RuntimeError(f"Thumbnail generation failed to decode the clip: {exc}") from exc
+
+
+def _frame_time(frame) -> float:
+    return float(frame.time) if frame.time is not None else 0.0
+
+
+def frame_png(
+    source: Path,
+    at: str = "first",
+    max_px: Optional[int] = None,
+) -> bytes:
+    """One frame of a clip as PNG: ``first``, ``last`` or the frame shown at ``at`` seconds,
+    scaled to fit ``max_px`` when given. ValueError for a bad or past-end ``at`` or a clip PyAV
+    cannot decode; FileNotFoundError when the file is gone."""
+    import io
+    import math
+
+    text = str(at).strip().lower()
+    seconds: Optional[float] = None
+    if text not in ("first", "last"):
+        try:
+            seconds = float(text)
+        except ValueError:
+            seconds = None
+        if seconds is None or not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("at must be 'first', 'last' or a time in seconds.")
+    try:
+        import av
+        from PIL import Image
+    except Exception as exc:  # noqa: BLE001 -- a missing decoder dependency
+        raise RuntimeError("Frame extraction needs the 'av' and 'Pillow' packages.") from exc
+    try:
+        with av.open(str(source)) as src:
+            if not src.streams.video:
+                raise ValueError("This clip has no video stream.")
+            stream = src.streams.video[0]
+            if stream.width * stream.height > _FRAME_MAX_PIXELS:
+                raise ValueError(f"{stream.width}x{stream.height} is too large to extract.")
+            duration = (src.duration or 0) / 1_000_000
+            if not duration and stream.duration is not None and stream.time_base:
+                duration = float(stream.duration * stream.time_base)
+            # Frame times and seeks are absolute; ``at`` counts from the stream's first timestamp.
+            origin = float(stream.start_time * stream.time_base) if stream.start_time else 0.0
+            frame = None
+            if text == "first":
+                frame = next(src.decode(stream), None)
+            elif seconds is not None:
+                if duration and seconds > duration:
+                    raise ValueError(
+                        f"at={seconds:g} is past the end of the clip ({duration:.2f} s)."
+                    )
+                src.seek(int((origin + seconds) / stream.time_base), stream = stream, backward = True)
+                for candidate in src.decode(stream):
+                    if frame is not None and _frame_time(candidate) > origin + seconds + 1e-6:
+                        break
+                    frame = candidate
+            else:
+                # Seek close to the end and keep the final frame; a failed seek falls back to a full decode.
+                for start in (max(0.0, duration - 2.0), 0.0):
+                    src.seek(int((origin + start) / stream.time_base), stream = stream, backward = True)
+                    for candidate in src.decode(stream):
+                        frame = candidate
+                    if frame is not None or start == 0.0:
+                        break
+            if frame is None:
+                raise ValueError("This clip has no decodable frame there.")
+            image = frame.to_image()
+    except FileNotFoundError:
+        raise
+    except av.error.FFmpegError:
+        raise ValueError("This clip could not be decoded.") from None
+    if max_px:
+        image.thumbnail((max_px, max_px), Image.LANCZOS)
+    buf = io.BytesIO()
+    image.save(buf, format = "PNG")
+    return buf.getvalue()
 
 
 def transcode_to_file(video_id: str, fmt: str) -> Optional[Path]:

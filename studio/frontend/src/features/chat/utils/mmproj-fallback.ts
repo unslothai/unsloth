@@ -60,8 +60,11 @@ export function loadFallbackNotice(
   baseTitle: string,
   cpuFallbackReason: CpuFallbackReason | null | undefined,
   mmprojFallbackReason: MmprojFallbackReason | null | undefined,
+  offloadNotice?: { titleSuffix: string; description: string } | null,
 ): { title: string; description: string | undefined; degraded: boolean } {
   const textOnly = isTextOnlyMmprojFallback(mmprojFallbackReason);
+  // A known CPU fallback already explains where the layers went.
+  const offload = cpuFallbackReason ? null : (offloadNotice ?? null);
 
   // When the whole model is on the CPU, saying the projector is too adds nothing. Losing vision
   // entirely is a different fact and is always said.
@@ -70,6 +73,10 @@ export function loadFallbackNotice(
     suffix = " on CPU, without vision";
   } else if (cpuFallbackReason) {
     suffix = " on CPU";
+  } else if (offload) {
+    suffix = textOnly
+      ? `${offload.titleSuffix}, without vision`
+      : offload.titleSuffix;
   } else if (mmprojFallbackReason === "cpu_offload") {
     suffix = " with vision on CPU";
   } else if (textOnly) {
@@ -81,6 +88,9 @@ export function loadFallbackNotice(
   if (cpuFallbackReason) {
     parts.push(CPU_FALLBACK_MESSAGE);
   }
+  if (offload) {
+    parts.push(offload.description);
+  }
   if (mmprojFallbackReason) {
     parts.push(mmprojFallbackMessage(mmprojFallbackReason));
   }
@@ -88,6 +98,6 @@ export function loadFallbackNotice(
   return {
     title: `${baseTitle}${suffix}`,
     description: parts.length > 0 ? parts.join(" ") : undefined,
-    degraded: Boolean(cpuFallbackReason || mmprojFallbackReason),
+    degraded: Boolean(cpuFallbackReason || offload || mmprojFallbackReason),
   };
 }

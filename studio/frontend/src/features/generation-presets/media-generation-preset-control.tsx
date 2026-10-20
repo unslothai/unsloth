@@ -9,7 +9,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { Bookmark, Check, ChevronDown, Trash2 } from "lucide-react";
+import { Bookmark, Check, ChevronDown, ImageUp, Trash2 } from "lucide-react";
 import { Fragment, useState } from "react";
 import { DEFAULT_PRESET_NAME } from "./preset-policy";
 
@@ -22,6 +22,7 @@ interface MediaGenerationPresetControlProps {
   onSelect: (name: string) => void;
   onSave: (name: string) => Promise<string | null>;
   onDelete: () => Promise<boolean>;
+  onImportFromImage?: () => void;
 }
 
 export function MediaGenerationPresetControl({
@@ -33,6 +34,7 @@ export function MediaGenerationPresetControl({
   onSelect,
   onSave,
   onDelete,
+  onImportFromImage,
 }: MediaGenerationPresetControlProps) {
   const [open, setOpen] = useState(false);
   const [draftName, setDraftName] = useState<string | null>(null);
@@ -127,8 +129,10 @@ export function MediaGenerationPresetControl({
         align="end"
         sideOffset={8}
         collisionPadding={12}
-        className="max-h-[var(--radix-popover-content-available-height)] w-[min(320px,calc(100vw-24px))] gap-0 overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl border-border/70 p-0 shadow-xl"
+        className="max-h-[var(--radix-popover-content-available-height)] w-[min(320px,calc(100vw-24px))] gap-0 overflow-hidden rounded-xl border-border/70 p-0 shadow-xl"
       >
+        {/* The list gives way on a short window, not the popover: a scrollbar on the rounded,
+            shadowed surface squares its corners. */}
         <div className="shrink-0 border-b border-border/60 px-4 py-3.5">
           <div className="flex items-center justify-between gap-3">
             <p className="font-heading text-sm font-medium">
@@ -142,7 +146,7 @@ export function MediaGenerationPresetControl({
           </div>
         </div>
 
-        <div className="max-h-48 shrink-0 overflow-y-auto p-2">
+        <div className="max-h-48 min-h-0 overflow-y-auto overscroll-contain p-2">
           {presets.map((preset, index) => {
             const isActive = preset.name === activePreset;
 
@@ -212,6 +216,20 @@ export function MediaGenerationPresetControl({
               {saveLabel}
             </Button>
           </div>
+          {onImportFromImage ? (
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => {
+                changeOpen(false);
+                onImportFromImage();
+              }}
+              className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg text-xs text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <ImageUp className="size-3.5" />
+              Load settings from an image
+            </button>
+          ) : null}
           {activeIsCustom ? (
             <button
               type="button"

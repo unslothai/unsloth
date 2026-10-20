@@ -35,11 +35,70 @@ const FAILURE_CONTEXT_LINE_BYTES: usize = 1_000;
 /// Clear labels are a small fixed set; this only bounds a pathological producer.
 const MAX_UNPAIRED_CLEARS: usize = 64;
 
+/// Child-process text that `std` would classify as `ErrorKind::StorageFull`.
+/// uv prints `std::io::Error`'s Display, `{strerror} (os error {code})`:
+/// <https://github.com/rust-lang/rust/blob/master/library/core/src/io/error.rs>
+///
+/// The numeric codes are cfg-gated the same way `std` maps them. On Unix only
+/// ENOSPC (28, "No space left on device") is `StorageFull`; 39 is ENOTEMPTY and
+/// on Linux 112 is EHOSTDOWN. On Windows, 112 and 39 are `ERROR_DISK_FULL` and
+/// `ERROR_HANDLE_DISK_FULL`, and 28 is not a full disk:
+/// <https://github.com/rust-lang/rust/blob/master/library/std/src/sys/io/error/unix.rs>
+/// <https://github.com/rust-lang/rust/blob/master/library/std/src/sys/io/error/windows.rs>
+///
+/// Parentheses keep "(os error 28)" from matching "(os error 280)".
+fn is_disk_full_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    #[cfg(windows)]
+    {
+        lower.contains("not enough space on the disk")
+            || lower.contains("(os error 112)")
+            || lower.contains("(os error 39)")
+    }
+    #[cfg(not(windows))]
+    {
+        lower.contains("no space left on device") || lower.contains("(os error 28)")
+    }
+}
+
+/// install.sh (`_set_disk_full_suffix`) and install.ps1 append this to their
+/// `[TAURI:ERROR_DEFAULT]` message when the studio home has under 64 MiB free.
+/// It is the installers' own English text, so it is the same on every OS.
+const INSTALLER_DISK_FULL_PHRASE: &str = "so the disk is full";
+
 fn generic_failure_message(code: i32) -> String {
     format!(
         "Installation failed with exit code {}. Open the installer logs for details.",
         code
     )
+}
+
+/// Open rather than check existence: security software can block reads without removing the file.
+fn unavailable_script_message(script: &Path) -> Option<String> {
+    let err = std::fs::File::open(script).err()?;
+    let name = script
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| script.display().to_string());
+    warn!("[install] cannot open {}: {err}", script.display());
+    Some(format!(
+        "Installation failed: {name}, which Unsloth needs to finish setting up, is missing or \
+         cannot be read. Security software may have quarantined or blocked it. Restore it from \
+         quarantine or reinstall Unsloth, then try again."
+    ))
+}
+
+/// Recheck for quarantine during launch, but prefer AMSI and structured installer errors.
+fn failure_message(context: &InstallFailureContext, code: i32, script: &Path) -> String {
+    if context.security_block.is_none()
+        && context.explicit_error.is_none()
+        && context.default_error.is_none()
+    {
+        if let Some(message) = unavailable_script_message(script) {
+            return message;
+        }
+    }
+    context.message(code)
 }
 
 /// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
@@ -161,6 +220,17 @@ struct InstallFailureContext {
     unpaired_clears: HashMap<(String, InstallOutputStream), usize>,
     started: bool,
     output_tail: VecDeque<InstallOutputLine>,
+    /// The disk-full line from this stream, kept even after the 8-line tail has
+    /// moved on. uv follows "No space left on device" with a dependency footer
+    /// whose last line is only the package that was unpacking (`sounddevice`),
+    /// and that footer is what the summary would otherwise show. Cleared with
+    /// the stream so a later step does not inherit it.
+    disk_full_line: Option<(InstallOutputStream, String)>,
+    /// True when `explicit_error` was taken from `disk_full_line`. This is the
+    /// flag the UI trusts; it does not re-read OS error numbers.
+    disk_full: bool,
+    /// True when `default_error` is the installer's own low-space diagnosis.
+    default_disk_full: bool,
 }
 
 impl InstallFailureContext {
@@ -182,6 +252,7 @@ impl InstallFailureContext {
             if !message.is_empty() {
                 self.explicit_error = Some(Self::bounded_line(message));
                 self.explicit_error_stream = Some(InstallOutputStream::Stdout);
+                self.disk_full = false;
             }
             return false;
         }
@@ -193,6 +264,7 @@ impl InstallFailureContext {
             let message = message.trim();
             if !message.is_empty() {
                 self.default_error = Some(Self::bounded_line(message));
+                self.default_disk_full = message.contains(INSTALLER_DISK_FULL_PHRASE);
             }
             return true;
         }
@@ -222,12 +294,23 @@ impl InstallFailureContext {
 
     fn capture_output_error(&mut self, stream: InstallOutputStream, fallback: &str) {
         let fallback = fallback.trim();
+        let from_disk = self
+            .disk_full_line
+            .as_ref()
+            .is_some_and(|(seen, _)| *seen == stream);
         let detail = self
-            .output_tail
-            .iter()
-            .rev()
-            .find(|line| line.stream == stream)
-            .map(|line| line.text.as_str());
+            .disk_full_line
+            .as_ref()
+            .filter(|(seen, _)| *seen == stream)
+            .map(|(_, text)| text.clone())
+            .or_else(|| {
+                self.output_tail
+                    .iter()
+                    .rev()
+                    .find(|line| line.stream == stream)
+                    .map(|line| line.text.clone())
+            });
+        let detail = detail.as_deref();
         if let Some(error) = match (fallback.is_empty(), detail) {
             (_, Some(detail)) if fallback == detail => Some(detail.to_owned()),
             (false, Some(detail)) => Some(Self::bounded_line(&format!("{fallback}: {detail}"))),
@@ -237,6 +320,7 @@ impl InstallFailureContext {
         } {
             self.explicit_error = Some(error);
             self.explicit_error_stream = Some(stream);
+            self.disk_full = from_disk;
         }
     }
 
@@ -290,15 +374,24 @@ impl InstallFailureContext {
         if self.explicit_error_stream == Some(stream) {
             self.explicit_error = None;
             self.explicit_error_stream = None;
+            self.disk_full = false;
         }
         if stream == InstallOutputStream::Stdout {
             self.default_error = None;
+            self.default_disk_full = false;
         }
         self.clear_stream(stream);
     }
 
     fn clear_stream(&mut self, stream: InstallOutputStream) {
         self.output_tail.retain(|line| line.stream != stream);
+        if self
+            .disk_full_line
+            .as_ref()
+            .is_some_and(|(seen, _)| *seen == stream)
+        {
+            self.disk_full_line = None;
+        }
     }
 
     fn push_output(&mut self, stream: InstallOutputStream, text: &str) {
@@ -307,6 +400,9 @@ impl InstallFailureContext {
             return;
         }
         let text = Self::bounded_line(text);
+        if is_disk_full_text(&text) {
+            self.disk_full_line = Some((stream, text.clone()));
+        }
         self.output_tail
             .push_back(InstallOutputLine { stream, text });
         while self.output_tail.len() > FAILURE_CONTEXT_LINES {
@@ -320,6 +416,15 @@ impl InstallFailureContext {
             diagnostics::valid_utf8_boundary(&text, text.len().min(FAILURE_CONTEXT_LINE_BYTES));
         text.truncate(boundary);
         text
+    }
+
+    /// Whether the failure `message` reports is a full disk: a disk-full output line
+    /// became the error, or the installer's low-space default is what gets shown.
+    fn reports_disk_full(&self) -> bool {
+        self.disk_full
+            || (self.explicit_error.is_none()
+                && self.default_error.is_some()
+                && self.default_disk_full)
     }
 
     fn message(&self, code: i32) -> String {
@@ -519,9 +624,22 @@ fn emit_mode_progress(app: &AppHandle, mode: InstallEventMode, message: &str) {
     let _ = app.emit(mode.progress_event(), message);
 }
 
-fn emit_failed(app: &AppHandle, message: &str) {
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallFailedEvent {
+    message: String,
+    disk_full: bool,
+}
+
+fn emit_failed(app: &AppHandle, message: &str, disk_full: bool) {
     error!("[install] FAILED: {}", message);
-    let _ = app.emit("install-failed", message);
+    let _ = app.emit(
+        "install-failed",
+        InstallFailedEvent {
+            message: message.to_owned(),
+            disk_full,
+        },
+    );
 }
 
 fn emit_complete(app: &AppHandle) {
@@ -538,6 +656,7 @@ fn spawn_script(
     script: &Path,
     args: &[String],
     state: &InstallState,
+    extra_env: &[(&str, &str)],
 ) -> Result<
     (
         Option<std::process::ChildStdout>,
@@ -578,18 +697,28 @@ fn spawn_script(
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // Tauri only does default-root installs; install.sh / install.ps1 reject
-    // these under --tauri. Scrub so an inherited value can't trip the guard.
+    // install.sh / install.ps1 reject inherited custom roots under --tauri, so
+    // scrub them and pass only the desktop's chosen root, with its flag.
     // Applied by hand here, the one managed spawn outside
     // apply_managed_cli_context: the Python setup.sh starts reads whatever is
     // exported, even though setup.sh assigns UNSLOTH_HOME itself.
     for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
     }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        // Re-checked here, not only when chosen: files may have landed in the folder since.
+        crate::studio_home::validate_root(&root)?;
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+        cmd.env(crate::studio_home::DESKTOP_CHOSEN_HOME_ENV, "1");
+        cmd.env("UNSLOTH_ISOLATE_UV_CACHE", "1");
+    }
     cmd.env(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",
         crate::preflight::expected_backend_version(),
     );
+    for (name, value) in extra_env {
+        cmd.env(name, value);
+    }
 
     // We decode this child as UTF-8 below, so its Python descendants must emit
     // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
@@ -823,15 +952,26 @@ pub fn run_install(
     app: AppHandle,
     state: InstallState,
     diagnostics: DiagnosticsState,
+    skip_long_paths: bool,
+    no_torch: bool,
 ) -> Result<(), String> {
-    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None)
+    let env = InstallerEnv {
+        upgrade_torch: false,
+        skip_long_paths,
+        no_torch,
+    };
+    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None, env)
 }
 
+/// `upgrade_torch` is Settings' manual "Repair installation": the user asked for a reinstall,
+/// so the installer may move to the newest supported PyTorch instead of keeping the resident one.
+/// The startup auto-repair passes false and keeps it.
 pub(crate) fn run_install_for_repair(
     app: AppHandle,
     state: InstallState,
     diagnostics: DiagnosticsState,
     repair_group_id: String,
+    upgrade_torch: bool,
 ) -> Result<(), String> {
     run_install_with_event_mode(
         app,
@@ -839,7 +979,50 @@ pub(crate) fn run_install_for_repair(
         diagnostics,
         InstallEventMode::Repair,
         Some(repair_group_id),
+        InstallerEnv {
+            upgrade_torch,
+            skip_long_paths: false,
+            // The installers read the mode from the environment only; the manual repair is the
+            // user asking for PyTorch back (its dialog says so).
+            no_torch: !upgrade_torch
+                && crate::studio_home::studio_root().is_some_and(|root| recorded_no_torch(&root)),
+        },
     )
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct InstallerEnv {
+    upgrade_torch: bool,
+    skip_long_paths: bool,
+    no_torch: bool,
+}
+
+/// Whether the managed venv under `root` was installed GGUF-only. Mirrors
+/// install_manifest.recorded_no_torch: the manifest key wins, the marker answers only when
+/// the manifest is missing (an interrupted pass) or predates the key.
+fn recorded_no_torch(root: &Path) -> bool {
+    let venv = root.join("unsloth_studio");
+    let recorded = std::fs::read_to_string(venv.join("unsloth_install_manifest.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|manifest| manifest.get("no_torch").and_then(|v| v.as_bool()));
+    recorded.unwrap_or_else(|| venv.join(".unsloth-no-torch").is_file())
+}
+
+/// Extra environment for the installer child. UNSLOTH_TORCH_UPGRADE=1 is install.sh's and
+/// install.ps1's opt-out from keeping an existing install's torch release.
+/// UNSLOTH_SKIP_LONG_PATHS=1: Long Paths declined on the startup screen, so setup.ps1 skips its UAC.
+fn installer_env(env: InstallerEnv) -> Vec<(&'static str, &'static str)> {
+    let mut vars = Vec::new();
+    if env.upgrade_torch {
+        vars.push(("UNSLOTH_TORCH_UPGRADE", "1"));
+    }
+    if env.skip_long_paths {
+        vars.push(("UNSLOTH_SKIP_LONG_PATHS", "1"));
+    }
+    // Always set, so an UNSLOTH_NO_TORCH inherited by the app cannot override the choice.
+    vars.push(("UNSLOTH_NO_TORCH", if env.no_torch { "1" } else { "0" }));
+    vars
 }
 
 fn run_install_with_event_mode(
@@ -848,6 +1031,7 @@ fn run_install_with_event_mode(
     diagnostics: DiagnosticsState,
     event_mode: InstallEventMode,
     repair_group_id: Option<String>,
+    env: InstallerEnv,
 ) -> Result<(), String> {
     let attempt = match repair_group_id.as_deref() {
         Some(group_id) => diagnostics::begin_repair_child(&diagnostics, group_id, "install"),
@@ -878,13 +1062,22 @@ fn run_install_with_event_mode(
         "meta",
         &format!("Using script: {}", script.display()),
     );
+    if let Some(msg) = unavailable_script_message(&script) {
+        diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
+        clear_current_attempt(&state);
+        if event_mode.emit_terminal_events() {
+            emit_failed(&app, &msg, false);
+        }
+        return Err(msg);
+    }
     emit_mode_progress(
         &app,
         event_mode,
         &format!("Using script: {}", script.display()),
     );
 
-    let (stdout, stderr) = match spawn_script(&script, &args, &state) {
+    let extra_env = installer_env(env);
+    let (stdout, stderr) = match spawn_script(&script, &args, &state, &extra_env) {
         Ok(handles) => handles,
         Err(msg) => {
             diagnostics::finish_attempt(
@@ -951,10 +1144,15 @@ fn run_install_with_event_mode(
                 let _ = app.emit(event_mode.needs_elevation_event(), &packages);
                 Err("NEEDS_ELEVATION".to_string())
             } else {
-                let msg = failure_context
+                let (msg, disk_full) = failure_context
                     .lock()
-                    .map(|context| context.message(code))
-                    .unwrap_or_else(|_| generic_failure_message(code));
+                    .map(|context| {
+                        (
+                            failure_message(&context, code, &script),
+                            context.reports_disk_full(),
+                        )
+                    })
+                    .unwrap_or_else(|_| (generic_failure_message(code), false));
                 diagnostics::finish_attempt(
                     &diagnostics,
                     &attempt,
@@ -964,7 +1162,7 @@ fn run_install_with_event_mode(
                 );
                 clear_current_attempt(&state);
                 if event_mode.emit_terminal_events() {
-                    emit_failed(&app, &msg);
+                    emit_failed(&app, &msg, disk_full);
                 }
                 Err(msg)
             }
@@ -979,7 +1177,7 @@ fn run_install_with_event_mode(
             diagnostics::finish_attempt(&diagnostics, &attempt, None, false, Some(msg.clone()));
             clear_current_attempt(&state);
             if event_mode.emit_terminal_events() {
-                emit_failed(&app, &msg);
+                emit_failed(&app, &msg, false);
             }
             Err(msg)
         }
@@ -1047,6 +1245,18 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
             Some("intentional_stop".to_string()),
         );
     }
+}
+
+/// Runs `operation` under the install lock with no installer running (spawn_script reads the root under it).
+pub fn while_install_idle<T>(
+    state: &InstallState,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let install = state.lock().map_err(|e| e.to_string())?;
+    if install.child.is_some() {
+        return Err("Installation is already running.".to_string());
+    }
+    operation()
 }
 
 /// True while an installer runs; quitting now would leave a broken venv.
@@ -1123,6 +1333,10 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     }
 }
 
+/// Run by absolute path: the elevated command must not resolve `apt-get` through a PATH the user controls.
+#[cfg(target_os = "linux")]
+const APT_GET: &str = "/usr/bin/apt-get";
+
 /// Install apt system packages with elevated permissions (Linux only).
 /// Uses `elevated-command` crate for native auth dialog.
 #[cfg(target_os = "linux")]
@@ -1167,7 +1381,7 @@ pub fn install_system_packages(
     // install.sh reports Debian package names. Do not pass them to dnf,
     // zypper, or pacman where names differ; show an explicit support boundary
     // instead of offering an elevation flow that is likely to fail.
-    if !Path::new("/usr/bin/apt-get").exists() {
+    if !Path::new(APT_GET).exists() {
         let msg = "Automatic system package installation is supported on apt-based Linux distributions (Ubuntu/Debian) only. Install the missing dependencies with your package manager and retry."
             .to_string();
         finish_elevation_failure(diagnostics, elevation_attempt.as_ref(), None, msg.clone());
@@ -1180,7 +1394,7 @@ pub fn install_system_packages(
         packages.join(", ")
     );
 
-    let mut update_cmd = StdCommand::new("apt-get");
+    let mut update_cmd = StdCommand::new(APT_GET);
     update_cmd.args(["update", "-y"]);
     match elevated_command::Command::new(update_cmd).output() {
         Ok(elevated_update) => {
@@ -1233,7 +1447,7 @@ pub fn install_system_packages(
         }
     }
 
-    let mut install_cmd = StdCommand::new("apt-get");
+    let mut install_cmd = StdCommand::new(APT_GET);
     install_cmd.args(["install", "-y"]).args(packages);
 
     let elevated_install = match elevated_command::Command::new(install_cmd).output() {
@@ -1493,6 +1707,86 @@ mod tests {
     }
 
     #[test]
+    fn only_a_manual_repair_asks_the_installer_for_a_newer_torch() {
+        let upgrade = InstallerEnv {
+            upgrade_torch: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            installer_env(upgrade),
+            vec![("UNSLOTH_TORCH_UPGRADE", "1"), ("UNSLOTH_NO_TORCH", "0")]
+        );
+        assert_eq!(
+            installer_env(InstallerEnv::default()),
+            vec![("UNSLOTH_NO_TORCH", "0")]
+        );
+    }
+
+    #[test]
+    fn a_declined_long_paths_prompt_reaches_setup_ps1() {
+        let skip = InstallerEnv {
+            skip_long_paths: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            installer_env(skip),
+            vec![("UNSLOTH_SKIP_LONG_PATHS", "1"), ("UNSLOTH_NO_TORCH", "0")]
+        );
+        let both = InstallerEnv {
+            upgrade_torch: true,
+            skip_long_paths: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            installer_env(both),
+            vec![
+                ("UNSLOTH_TORCH_UPGRADE", "1"),
+                ("UNSLOTH_SKIP_LONG_PATHS", "1"),
+                ("UNSLOTH_NO_TORCH", "0")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_chat_only_install_reaches_the_installer_as_no_torch() {
+        let chat_only = InstallerEnv {
+            no_torch: true,
+            ..Default::default()
+        };
+        assert_eq!(installer_env(chat_only), vec![("UNSLOTH_NO_TORCH", "1")]);
+    }
+
+    #[test]
+    fn recorded_no_torch_reads_the_marker_then_the_manifest() {
+        let root = std::env::temp_dir().join(format!(
+            "unsloth-recorded-no-torch-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let venv = root.join("unsloth_studio");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!recorded_no_torch(&root));
+        std::fs::create_dir_all(&venv).unwrap();
+        assert!(!recorded_no_torch(&root));
+
+        let manifest = venv.join("unsloth_install_manifest.json");
+        std::fs::write(&manifest, r#"{"no_torch": false}"#).unwrap();
+        assert!(!recorded_no_torch(&root));
+        std::fs::write(&manifest, r#"{"no_torch": true}"#).unwrap();
+        assert!(recorded_no_torch(&root));
+        std::fs::write(&manifest, "not json").unwrap();
+        assert!(!recorded_no_torch(&root));
+
+        std::fs::write(venv.join(".unsloth-no-torch"), "").unwrap();
+        assert!(recorded_no_torch(&root));
+        std::fs::write(&manifest, "{}").unwrap();
+        assert!(recorded_no_torch(&root));
+        std::fs::write(&manifest, r#"{"no_torch": false}"#).unwrap();
+        assert!(!recorded_no_torch(&root));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn repair_install_mode_uses_repair_elevation_event() {
         assert_eq!(
             InstallEventMode::Full.needs_elevation_event(),
@@ -1533,6 +1827,106 @@ mod tests {
         assert!(message.contains("only diagnostic logs may have been written"), "{message}");
         // We cannot know a verdict is wrong, so the text must not assert it.
         assert!(!message.contains("This is a false positive"), "{message}");
+    }
+
+    // PowerShell 5.1 prints its logo even with -NoLogo when the script is missing.
+    // Model stdout arriving last, hiding the stderr error.
+    fn observe_missing_script_output(context: &mut InstallFailureContext) {
+        context.observe_stderr(concat!(
+            r"The argument 'C:\Users\Owner\AppData\Local\Unsloth\install.ps1' ",
+            "to the -File parameter does not exist. Provide the path to an existing '.ps1' file as ",
+            "an argument to the -File parameter.",
+        ));
+        context.observe_stdout("Windows PowerShell");
+        context.observe_stdout("Copyright (C) Microsoft Corporation. All rights reserved.");
+    }
+
+    #[test]
+    fn a_quarantined_script_is_reported_instead_of_the_powershell_logo() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        let mut context = InstallFailureContext::default();
+        observe_missing_script_output(&mut context);
+        assert!(context.message(1).contains("Copyright (C) Microsoft"));
+
+        let message = failure_message(&context, 1, &script);
+        assert!(message.contains("install.ps1, which Unsloth needs"), "{message}");
+        assert!(message.contains("quarantined"), "{message}");
+        assert!(!message.contains("Copyright"), "{message}");
+        assert_eq!(Some(message), unavailable_script_message(&script));
+    }
+
+    #[test]
+    fn a_script_that_is_still_there_keeps_the_captured_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        std::fs::write(&script, "exit 1\r\n").expect("write script");
+        assert_eq!(unavailable_script_message(&script), None);
+
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] Python could not be installed");
+        assert_eq!(
+            failure_message(&context, 1, &script),
+            "Installation failed: Python could not be installed"
+        );
+    }
+
+    #[test]
+    fn a_removed_script_does_not_hide_a_structured_failure() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        assert!(unavailable_script_message(&script).is_some());
+
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:STEP] Installing Python");
+        context.observe_stdout("[TAURI:ERROR] Python could not be installed");
+        assert_eq!(
+            failure_message(&context, 1, &script),
+            "Installation failed: Python could not be installed"
+        );
+    }
+
+    #[test]
+    fn an_amsi_block_keeps_its_guidance_when_the_script_is_then_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = dir.path().join("install.ps1");
+        let mut context = InstallFailureContext::default();
+        for line in AMSI_BLOCK_STDERR {
+            context.observe_stderr(line);
+        }
+        let message = failure_message(&context, 1, &script);
+        assert_eq!(message, context.message(1));
+        assert!(message.contains(AMSI_MALWARE_GUIDANCE_PRE_START), "{message}");
+    }
+
+    // Exercise the real interpreter with the app's launch arguments.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_given_a_missing_script_is_reported_as_missing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = std::fs::canonicalize(dir.path())
+            .expect("canonicalize")
+            .join("install.ps1");
+        let output = Command::new(powershell_exe())
+            .args(powershell_launch_args(&script))
+            .output()
+            .expect("spawn powershell");
+        assert!(!output.status.success());
+
+        let mut context = InstallFailureContext::default();
+        for line in String::from_utf8_lossy(&output.stderr).lines() {
+            context.observe_stderr(line);
+        }
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            context.observe_stdout(line);
+        }
+        let message = failure_message(&context, output.status.code().unwrap_or(-1), &script);
+        assert!(
+            message.contains("install.ps1, which Unsloth needs"),
+            "{message}\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -1768,6 +2162,97 @@ mod tests {
     }
 
     #[test]
+    fn disk_full_is_reported_instead_of_the_package_footer() {
+        let cause = if cfg!(windows) {
+            "There is not enough space on the disk. (os error 112)"
+        } else {
+            "No space left on device (os error 28)"
+        };
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("  ╰─▶ failed to create file");
+        context.observe_stderr(cause);
+        // Longer than FAILURE_CONTEXT_LINES, which is what hid the cause: uv's
+        // help footer ends on the package name that was being unpacked.
+        for _ in 0..FAILURE_CONTEXT_LINES {
+            context.observe_stderr("        depends on `unsloth-zoo` which depends on `mlx-audio`");
+        }
+        context.observe_stderr("        `sounddevice`");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install unsloth failed (exit code 1)"));
+        assert!(context.disk_full);
+        assert_eq!(
+            context.message(1),
+            format!("Installation failed: install unsloth failed (exit code 1): {cause}")
+        );
+    }
+
+    #[test]
+    fn disk_full_matches_storage_full_for_this_os_only() {
+        assert_eq!(
+            is_disk_full_text("No space left on device (os error 28)"),
+            cfg!(not(windows))
+        );
+        assert_eq!(
+            is_disk_full_text("There is not enough space on the disk. (os error 112)"),
+            cfg!(windows)
+        );
+        assert_eq!(is_disk_full_text("(os error 39)"), cfg!(windows));
+        // Linux 112 is EHOSTDOWN. Windows 28 is not a full disk.
+        assert_eq!(
+            is_disk_full_text("Host is down (os error 112)"),
+            cfg!(windows)
+        );
+        assert!(!is_disk_full_text("enospc"));
+        assert!(!is_disk_full_text("Disk quota exceeded"));
+        assert!(!is_disk_full_text("os error 280"));
+    }
+
+    #[test]
+    fn installer_low_space_default_reports_disk_full() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("Finishing setup");
+        assert!(context.observe_stdout(
+            "[TAURI:ERROR_DEFAULT] studio setup failed (exit code 1): /tmp/studio has only 12 MB free, so the disk is full, which is very likely the cause. Free some space and re-run."
+        ));
+        assert!(context.reports_disk_full());
+        assert!(context.message(1).contains("so the disk is full"));
+    }
+
+    #[test]
+    fn explicit_setup_error_wins_over_the_low_space_default() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] llama.cpp setup did not produce a usable server");
+        assert!(context.observe_stdout(
+            "[TAURI:ERROR_DEFAULT] studio setup failed (exit code 1): /tmp/studio has only 12 MB free, so the disk is full, which is very likely the cause. Free some space and re-run."
+        ));
+        assert!(!context.reports_disk_full());
+        assert_eq!(
+            context.message(1),
+            "Installation failed: llama.cpp setup did not produce a usable server"
+        );
+    }
+
+    #[test]
+    fn plain_setup_default_is_not_disk_full() {
+        let mut context = InstallFailureContext::default();
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 4)"));
+        assert!(!context.reports_disk_full());
+    }
+
+    #[test]
+    fn disk_full_does_not_survive_a_cleared_stream() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stderr("No space left on device (os error 28)");
+        assert!(context.observe_stderr("[TAURI:OUTPUT_CLEAR] install unsloth"));
+        context.observe_stderr("resolver error: package not found");
+        assert!(context.observe_stderr("[TAURI:ERROR_OUTPUT] install unsloth failed (exit code 1)"));
+        assert!(!context.disk_full);
+        assert_eq!(
+            context.message(1),
+            "Installation failed: install unsloth failed (exit code 1): resolver error: package not found"
+        );
+    }
+
+    #[test]
     fn command_error_without_output_uses_its_fallback() {
         let mut context = InstallFailureContext::default();
         context.observe_stdout("unrelated output from an earlier step");
@@ -1852,6 +2337,12 @@ mod tests {
         context.observe_stdout(
             "whisper.cpp    prebuilt install failed; browser and Transformers dictation remain available",
         );
+        context.observe_stderr(
+            "error: staged audiocpp_server --help exited 127; this host cannot run the bundle, keeping the existing install:",
+        );
+        context.observe_stdout(
+            "audio.cpp      prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available",
+        );
         for index in 0..10 {
             context.observe_stdout(&format!("setup footer line {index}"));
         }
@@ -1867,6 +2358,7 @@ mod tests {
         let mut context = InstallFailureContext::default();
         context.observe_stdout("long paths failed to enable");
         context.observe_stderr("Triton install failed; torch.compile may not work");
+        context.observe_stdout("audio.cpp      install busy; keeping existing runtime");
         assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 3)"));
         assert_eq!(
             context.message(3),

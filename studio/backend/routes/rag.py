@@ -6,7 +6,8 @@ access, not data.
 
 Without a working sqlite-vec the router still mounts, and one contract covers every endpoint. The KB list is
 polled, so it answers 200 with an empty list carrying an availability marker, which is what lets a client tell
-an empty store from a machine where RAG cannot run. Every other endpoint answers 503 stating the same reason.
+an empty store from a machine where RAG cannot run. Every other endpoint but /extract-text, which only parses,
+answers 503 stating the same reason.
 Nothing logs a traceback for it: the condition is fixed for the session and rag_db warns about it exactly once.
 """
 
@@ -32,7 +33,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject, request_admitted_without_credential
-from core.rag import config, folder_sync, ingestion, retrieval, store
+from core.rag import config, folder_sync, ingestion, reembed, retrieval, store
 from storage import rag_db
 from utils.account_context import (
     OWNER,
@@ -327,6 +328,12 @@ def _folder_view(row: dict) -> dict:
         if row["status"] in {"error", "retired"}
         else "idle"
     )
+    try:
+        report = json.loads(row.get("scan_report") or "{}")
+    except ValueError:
+        report = {}
+    if not isinstance(report, dict):
+        report = {}
     return {
         "id": row["id"],
         "displayName": row["name"],
@@ -335,6 +342,10 @@ def _folder_view(row: dict) -> dict:
         "status": status,
         "error": row.get("last_error"),
         "lastSyncedAt": row.get("last_scan_at"),
+        "lastChangedAt": row.get("last_change_at"),
+        "skipped": report.get("skipped") or {},
+        "failures": report.get("failures") or [],
+        "failureCount": report.get("failureCount") or 0,
         "documentCount": row.get("file_count", 0),
         "activeJobId": row.get("active_job_id"),
         "scopeName": row.get("scope_name"),
@@ -386,6 +397,7 @@ def _require_document_owner(conn: sqlite3.Connection, document: dict) -> None:
 
 
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
+    from utils.native_path_leases import redact_native_paths
     path, signed_identity = _resolve_linked_folder_path(payload.native_path_lease)
     try:
         with folder_sync.scope_lock(_scope_for_owner(scope_type, scope_id)):
@@ -398,10 +410,20 @@ def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderReq
                 name = payload.name,
                 auto_sync = payload.auto_sync,
             )
+        job = folder_sync.get_job(job_id)
+        return {"linkedFolder": _folder_view(folder), "job": _folder_job_view(job)}
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    job = folder_sync.get_job(job_id)
-    return {"linkedFolder": _folder_view(folder), "job": _folder_job_view(job)}
+    except Exception as exc:
+        # Not left to escape: an unhandled 500 has no CORS headers, so the desktop resent the POST and
+        # its spent grant answered "already used" instead of this error (#13093).
+        logger.exception("linked folder creation failed")
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Could not link the folder: {redact_native_paths(str(exc) or type(exc).__name__)}",
+        ) from exc
 
 
 @router.get("/knowledge-bases")
@@ -826,6 +848,52 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
         conn.close()
 
 
+def _reembed_view(job: dict | None) -> dict | None:
+    if job is None:
+        return None
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "done": job["done"],
+        "failed": job["failed"],
+        "remaining": job["remaining"],
+        "clippedChunks": job["clipped_chunks"],
+        "progress": job["progress"],
+        "error": job["error"],
+    }
+
+
+@router.get("/reembed")
+def reembed_status(subject: str = Depends(get_current_subject)) -> dict:
+    """Documents indexed under another embedder than the current one, and the re-embed job."""
+    _require_rag()
+    # Job first: one ending between the reads still says running, so the client polls for the counts.
+    job = _reembed_view(reembed.status())
+    with _rag_unavailable_as_503():
+        stale = reembed.stale_counts()
+    return {
+        "staleDocuments": stale["documents"],
+        "staleArchived": stale["archived"],
+        "job": job,
+    }
+
+
+@router.post("/reembed")
+def start_reembed(subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    with _rag_unavailable_as_503():
+        return {"job": _reembed_view(reembed.start())}
+
+
+@router.post("/reembed/cancel")
+def cancel_reembed(subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    job = reembed.cancel()
+    if job is None:
+        raise HTTPException(status_code = 404, detail = "No re-embed job")
+    return {"job": _reembed_view(job)}
+
+
 @router.get("/jobs/{job_id}")
 def job_status(job_id: str, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
@@ -883,6 +951,7 @@ def _folder_job_view(row: dict) -> dict:
         "processedFiles": processed,
         "indexedFiles": (row.get("added") or 0) + (row.get("changed") or 0),
         "removedFiles": row.get("deleted") or 0,
+        "renamedFiles": row.get("renamed") or 0,
         "failedFiles": row.get("failed") or 0,
         "error": row.get("error"),
         "createdAt": row.get("created_at"),
@@ -930,6 +999,45 @@ def folder_job_events(
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# MAX_TEXT_ATTACHMENT_BYTES in text-attachment-accept.ts: the composer's ceiling for inline text.
+_EXTRACT_TEXT_MAX_BYTES = 20 * 1024 * 1024
+
+
+# Not gated on sqlite-vec: the composer inlines the text of files its browser readers cannot open.
+@router.post("/extract-text")
+def extract_text(file: UploadFile = File(...), subject: str = Depends(get_current_subject)) -> dict:
+    from core.rag import parsers
+
+    stored_path, filename, _digest = _save_upload(file)
+    try:
+        pages = parsers.parse(stored_path)
+    except ImportError as exc:
+        raise HTTPException(status_code = 503, detail = f"{filename} could not be read: {exc}") from exc
+    # Not only ValueError: python-docx raises its own errors for a damaged .docm/.dotx.
+    except Exception as exc:
+        raise HTTPException(status_code = 422, detail = f"{filename} could not be read: {exc}") from exc
+    finally:
+        _remove_stored_upload(stored_path)
+    # Capped page by page: joining everything first would hold a huge extraction several times over.
+    parts: list[bytes] = []
+    room = _EXTRACT_TEXT_MAX_BYTES
+    truncated = False
+    for page in pages:
+        chunk = page.text.strip().encode("utf-8")
+        if not chunk:
+            continue
+        if parts:
+            chunk = b"\n\n" + chunk
+        if len(chunk) > room:
+            parts.append(chunk[:room])
+            truncated = True
+            break
+        parts.append(chunk)
+        room -= len(chunk)
+    text = b"".join(parts).decode("utf-8", errors = "ignore")
+    return {"filename": filename, "text": text, "truncated": truncated}
 
 
 @router.post("/search")
@@ -1037,48 +1145,6 @@ def _verify_document_token(document_id: str, token: str) -> AccountContext | Non
 
     account = get_account_by_id(account_id)
     return None if account is None or account.is_owner else account
-
-
-@router.get("/documents/{document_id}/preview-target")
-def preview_target(
-    document_id: str,
-    chunk_id: str | None = Query(default = None),
-    subject: str = Depends(get_current_subject),
-) -> dict:
-    """Resolve a citation to filename, page, and highlight regions."""
-    _require_rag()
-    conn = _rag_connection()
-    try:
-        doc = store.get_visible_document(conn, document_id)
-        if doc is None:
-            raise HTTPException(status_code = 404, detail = "Document not found")
-        _require_document_owner(conn, doc)
-        ext = os.path.splitext(doc["filename"])[1].lower()
-        out = {
-            "documentId": document_id,
-            "filename": doc["filename"],
-            "mediaKind": "pdf" if ext == ".pdf" else "text",
-            "targetPage": None,
-            "pdfRegions": [],
-            "text": None,
-        }
-        if chunk_id:
-            row = conn.execute(
-                "SELECT text, page_number, pdf_regions_json FROM chunks "
-                "WHERE id=? AND document_id=?",
-                (chunk_id, document_id),
-            ).fetchone()
-            if row is not None:
-                out["text"] = row["text"]
-                out["targetPage"] = row["page_number"]
-                if row["pdf_regions_json"]:
-                    try:
-                        out["pdfRegions"] = json.loads(row["pdf_regions_json"])
-                    except Exception:
-                        out["pdfRegions"] = []
-        return out
-    finally:
-        conn.close()
 
 
 @router.get("/documents/{document_id}/file-url")

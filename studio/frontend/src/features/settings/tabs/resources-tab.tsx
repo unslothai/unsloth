@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  MONITOR_DETAIL_METRICS,
+  formatPower,
+  formatTemperature,
+  gpuTelemetryRows,
+  selectedDetailMetrics,
+} from "@/components/monitor-details";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
@@ -17,6 +25,7 @@ import {
   sharedMemoryAvailableGb,
 } from "@/hooks/gpu-memory-display";
 import {
+  deviceSharedMemorySplitGb,
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
   resolveGpuVramUsedGb,
@@ -29,6 +38,7 @@ import {
 } from "@/hooks/use-system";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
@@ -38,6 +48,7 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { InferenceEnginesSection } from "@/features/model-picker/components/inference-engines";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { CacheStorageRows } from "../components/cache-storage-rows";
 import { LlamaBackendSection } from "../components/llama-backend-section";
@@ -46,7 +57,7 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { FolderOpenIcon, LayersIcon } from "lucide-react";
 
@@ -234,11 +245,24 @@ interface GpuTorchMismatch {
   reason?: string;
   torch_version?: string | null;
   physical_count?: number;
+  /** An AMD device node this account cannot open, and the command that opens it. */
+  permission_hint?: string | null;
+  /** The closed node fully explains a ROCm wheel, so the reinstall advice is wrong. */
+  permission_hint_only?: boolean;
+}
+
+/** /api/system's `gpu.driver_warning`: a Windows AMD driver with the idle-eviction bug
+ * (ROCm/TheRock#7221). "critical" when the host has more than one GPU. */
+interface GpuDriverWarning {
+  driver_version?: string;
+  severity?: "warning" | "critical";
+  link?: string;
 }
 
 type GpuPhysicalInventory = SystemGpuInfo & {
   physical_devices?: PhysicalGpuDevice[];
   mismatch?: GpuTorchMismatch | null;
+  driver_warning?: GpuDriverWarning | null;
 };
 
 export function ResourcesTab() {
@@ -247,13 +271,28 @@ export function ResourcesTab() {
   const setLiveUpdates = useSettingsPanelPrefsStore(
     (s) => s.setResourcesLiveUpdates,
   );
-  const { isOpen, setIsOpen } = useMonitorOverlayStore();
+  const dismissedDriverWarning = useSettingsPanelPrefsStore(
+    (s) => s.dismissedDriverWarning,
+  );
+  const dismissDriverWarning = useSettingsPanelPrefsStore(
+    (s) => s.dismissDriverWarning,
+  );
+  const {
+    isOpen,
+    setIsOpen,
+    showDetails,
+    setShowDetails,
+    detailMetrics: storedDetailMetrics,
+    setDetailMetric,
+  } = useMonitorOverlayStore();
+  const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   // always fetch once: the switch is persisted now, so gating the hook on it
   // would leave a session that opens with it off reading zeros forever.
   const systemInfo = useSystemInfo({
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const storageSectionRef = useRef<HTMLElement | null>(null);
+  const modelMemoryRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
     (s) => s.consumeScrollTarget,
@@ -277,6 +316,10 @@ export function ResourcesTab() {
   const inferenceVramTotal = separateInferenceGpu
     ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
+  const telemetryRows =
+    showDetails && displayedGpu?.available
+      ? gpuTelemetryRows(displayedGpu.devices, detailMetrics)
+      : [];
 
   useEffect(() => {
     let cancelled = false;
@@ -296,13 +339,20 @@ export function ResourcesTab() {
   }, []);
 
   useEffect(() => {
-    if (scrollTarget !== "resources-caches") return;
+    const target = scrollTarget;
+    const sectionRef =
+      target === "resources-caches"
+        ? storageSectionRef
+        : target === "resources-model-memory"
+          ? modelMemoryRef
+          : null;
+    if (!target || !sectionRef) return;
     const frame = window.requestAnimationFrame(() => {
-      storageSectionRef.current?.scrollIntoView({
+      sectionRef.current?.scrollIntoView({
         block: "start",
         behavior: "smooth",
       });
-      consumeScrollTarget("resources-caches");
+      consumeScrollTarget(target);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
@@ -317,6 +367,14 @@ export function ResourcesTab() {
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
     const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
+    const modelsDisk = systemInfo.models_disk ?? null;
+    const modelsDiskUsed = modelsDisk
+      ? Math.max(0, modelsDisk.total_gb - modelsDisk.free_gb)
+      : 0;
+    const modelsDiskPercent =
+      modelsDisk && modelsDisk.total_gb > 0
+        ? (modelsDiskUsed / modelsDisk.total_gb) * 100
+        : 0;
     const display = gpuMemoryDisplay(displayedGpu);
     const usageDevices = display.usageDevices;
     const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
@@ -354,6 +412,9 @@ export function ResourcesTab() {
       diskFree,
       diskUsed,
       diskPercent,
+      modelsDisk,
+      modelsDiskUsed,
+      modelsDiskPercent,
       vramTotal,
       vramDedicated: gpuMemoryTotals.dedicated,
       vramShared: gpuMemoryTotals.shared,
@@ -482,18 +543,26 @@ export function ResourcesTab() {
   const physicalDevices = gpuMismatch
     ? (gpuInventory?.physical_devices ?? [])
     : [];
+  const rawDriverWarning = gpuInventory?.driver_warning ?? null;
+  const driverWarning =
+    rawDriverWarning?.driver_version &&
+    rawDriverWarning.driver_version !== dismissedDriverWarning
+      ? rawDriverWarning
+      : null;
   // A CPU-only wheel is fixed by reinstalling torch, a dead runtime by the driver.
-  const gpuMismatchMessage = gpuMismatch
-    ? t(
-        gpuMismatch.reason === "torch_cpu_build"
-          ? "settings.resources.gpu.mismatchCpuBuild"
-          : "settings.resources.gpu.mismatchUnavailable",
-        { version: gpuMismatch.torch_version ?? unknownLabel },
-      )
-    : null;
+  const gpuPermissionHint = gpuMismatch?.permission_hint ?? null;
+  const gpuMismatchMessage =
+    gpuMismatch && !(gpuPermissionHint && gpuMismatch.permission_hint_only)
+      ? t(
+          gpuMismatch.reason === "torch_cpu_build"
+            ? "settings.resources.gpu.mismatchCpuBuild"
+            : "settings.resources.gpu.mismatchUnavailable",
+          { version: gpuMismatch.torch_version ?? unknownLabel },
+        )
+      : null;
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-1">
           <h1 className="text-xl font-semibold font-heading">
@@ -541,6 +610,7 @@ export function ResourcesTab() {
                   : t("settings.resources.liveMonitor.currentLoad")
             }
             percent={hostUnread ? null : (systemInfo.cpu?.usage_percent ?? 0)}
+            showUsage={!showDetails || detailMetrics.has("cpuLoad")}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
@@ -570,6 +640,22 @@ export function ResourcesTab() {
             }
             percent={hostUnread ? null : metrics.diskPercent}
           />
+          {metrics.modelsDisk && (
+            <MetricTile
+              label={t("settings.resources.liveMonitor.modelsDisk")}
+              value={hostReading(
+                `${formatGb(metrics.modelsDiskUsed)} / ${formatGb(metrics.modelsDisk.total_gb)}`,
+              )}
+              detail={
+                hostUnread
+                  ? hostUnreadDetail
+                  : t("settings.resources.liveMonitor.free", {
+                      value: formatGb(metrics.modelsDisk.free_gb),
+                    })
+              }
+              percent={hostUnread ? null : metrics.modelsDiskPercent}
+            />
+          )}
           <MetricTile
             label={t(
               memoryDisplay.sharedOnly
@@ -618,18 +704,133 @@ export function ResourcesTab() {
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
+          {telemetryRows.map((row) => (
+            <MetricTile
+              key={row.key}
+              label={row.name}
+              value={
+                [
+                  row.temperatureC !== null
+                    ? formatTemperature(row.temperatureC)
+                    : null,
+                  row.powerDrawW !== null
+                    ? formatPower(row.powerDrawW, row.powerLimitW)
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") ||
+                (row.loadPct !== null ? `${Math.round(row.loadPct)}%` : "--")
+              }
+              detail={[
+                row.temperatureC !== null &&
+                  t("settings.resources.liveMonitor.temperature"),
+                row.powerDrawW !== null &&
+                  t("settings.resources.liveMonitor.power"),
+                row.loadPct !== null &&
+                  t("settings.resources.liveMonitor.gpuLoad"),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              showUsage={row.loadPct !== null}
+              percent={hostUnread ? null : row.loadPct}
+            />
+          ))}
         </div>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.detailedView")}
+          description={t(
+            "settings.resources.liveMonitor.detailedViewDescription",
+          )}
+          className="border-t border-border/60"
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.detailedView")}
+            checked={showDetails}
+            onCheckedChange={setShowDetails}
+          />
+        </SettingsRow>
+        {showDetails && (
+          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
+            {MONITOR_DETAIL_METRICS.map((metric) => {
+              const label = t(`settings.resources.liveMonitor.${metric}`);
+              return (
+                <label
+                  key={metric}
+                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
+                >
+                  <Checkbox
+                    checked={detailMetrics.has(metric)}
+                    onCheckedChange={(checked) =>
+                      setDetailMetric(metric, checked === true)
+                    }
+                    aria-label={label}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+        )}
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
+        {driverWarning?.driver_version ? (
+          <div className="flex items-start justify-between gap-3 border-b border-border/60 py-3">
+            <p
+              className={cn(
+                "text-sm",
+                driverWarning.severity === "critical"
+                  ? "text-destructive"
+                  : "text-amber-600 dark:text-amber-400",
+              )}
+            >
+              {t("settings.resources.gpu.driverIdleEvict", {
+                version: driverWarning.driver_version,
+              })}{" "}
+              {driverWarning.link?.startsWith("https://") ? (
+                <a
+                  href={driverWarning.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  // target="_blank" has nowhere to go in the Tauri webview.
+                  onClick={(event) => {
+                    if (openLink(event.currentTarget.href))
+                      event.preventDefault();
+                  }}
+                  className="inline-flex items-center gap-0.5 font-medium underline underline-offset-2"
+                >
+                  {t("settings.resources.gpu.driverIdleEvictDetails")}
+                  <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+                </a>
+              ) : null}
+            </p>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 shrink-0 px-2 text-xs"
+              onClick={() =>
+                dismissDriverWarning(driverWarning.driver_version as string)
+              }
+            >
+              {t("settings.resources.gpu.dismissNotice")}
+            </Button>
+          </div>
+        ) : null}
         {/* Physically present, torch-unusable cards. Their own block, above the
             device rows and visually separate from them, because nothing here is
             selectable: the rows below are what a model can be loaded onto. */}
         {gpuMismatch ? (
           <div className="flex flex-col gap-2 border-b border-border/60 py-3">
-            <p className="text-sm text-amber-600 dark:text-amber-400">
-              {gpuMismatchMessage}
-            </p>
+            {gpuMismatchMessage && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                {gpuMismatchMessage}
+              </p>
+            )}
+            {gpuPermissionHint && (
+              <p className="select-text text-sm text-amber-600 dark:text-amber-400">
+                {gpuPermissionHint}
+              </p>
+            )}
             {physicalDevices.map((device, index) => (
               <div
                 key={`${device.vendor ?? "gpu"}-${device.index ?? index}-${device.name ?? ""}`}
@@ -668,6 +869,24 @@ export function ResourcesTab() {
               ) : (
                 ` · ${t("settings.resources.gpu.unavailable")}`
               )}
+              {separateInferenceGpu.available &&
+                inferenceDisplay.usageDevices.map((device, index) => (
+                  <span
+                    key={`${device.index ?? index}-${device.name ?? "gpu"}`}
+                    className="block normal-case"
+                  >
+                    {`${
+                      device.name ??
+                      t("settings.resources.gpu.deviceWithIndex", {
+                        index: deviceOrdinal(device) ?? index,
+                      })
+                    } · ${t("settings.resources.gpu.used", {
+                      value: isFiniteNumber(device.vram_used_gb)
+                        ? formatGiB(device.vram_used_gb)
+                        : unknownLabel,
+                    })}`}
+                  </span>
+                ))}
               {separateInferenceGpu.available &&
                 inferenceDisplay.sharedDevices.length > 0 && (
                   <span className="block normal-case">
@@ -712,6 +931,8 @@ export function ResourcesTab() {
             const percentText = isFiniteNumber(percent)
               ? formatPercent(safePercent)
               : unknownLabel;
+            // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
+            const sharedSplit = deviceSharedMemorySplitGb(device);
             return (
               // Name over backend on the left, figures over the meter on the
               // right. The meter tracks the figures' width rather than the
@@ -738,6 +959,10 @@ export function ResourcesTab() {
                       <span className="text-xs text-muted-foreground">
                         {t("settings.resources.gpu.sharedWithSystemRam")}
                       </span>
+                    ) : sharedSplit ? (
+                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                        {percentText}
+                      </span>
                     ) : (
                       <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
                         {percentText}{" "}
@@ -745,6 +970,17 @@ export function ResourcesTab() {
                       </span>
                     )}
                   </div>
+                  {/* Own line: beside the pill it truncates the backend label first. */}
+                  {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {sharedSplit.dedicated > 0
+                        ? t("settings.resources.environment.vramWithShared", {
+                            vram: formatGiB(sharedSplit.dedicated),
+                            shared: formatGiB(sharedSplit.shared),
+                          })
+                        : t("settings.resources.gpu.sharedWithSystemRam")}
+                    </div>
+                  ) : null}
                 </div>
                 {/* Meter under the figures, so it spans their width instead of
                     being squeezed into the gap beside them. Same 392px as the
@@ -815,8 +1051,9 @@ export function ResourcesTab() {
       {/* Below the GPU section it describes, above the memory settings that
           apply to whichever backend is selected. */}
       <LlamaBackendSection />
+      <InferenceEnginesSection />
 
-      <ModelMemorySection />
+      <ModelMemorySection ref={modelMemoryRef} />
 
       <SettingsSection
         ref={storageSectionRef}
@@ -832,13 +1069,52 @@ export function ResourcesTab() {
             free: formatGb(metrics.diskFree),
           })}
         />
+        {metrics.modelsDisk && (
+          <InfoRow
+            label={t("settings.resources.storage.modelsDisk")}
+            value={t("settings.resources.storage.diskUsage", {
+              used: formatGb(metrics.modelsDiskUsed),
+              total: formatGb(metrics.modelsDisk.total_gb),
+            })}
+            detail={t("settings.resources.storage.diskFree", {
+              free: formatGb(metrics.modelsDisk.free_gb),
+            })}
+          />
+        )}
         <SettingsRow
           label={t("settings.resources.storage.modelsFolder")}
           description={t("settings.resources.storage.modelsFolderDescription")}
           hint={t("settings.resources.storage.modelsFolderHint")}
           className="max-[840px]:flex-col max-[840px]:items-stretch max-[840px]:gap-2"
+          below={
+            cacheLocationDetail || hfCache?.isCustom ? (
+              <div className="w-[calc(392px*var(--ui-space-scale,1))] min-w-0 max-[840px]:w-full">
+                <div className="flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
+                  {cacheLocationDetail ? (
+                    <span
+                      title={cacheLocationDetail}
+                      className="min-w-0 truncate"
+                    >
+                      {cacheLocationDetail}
+                    </span>
+                  ) : null}
+                  {hfCache?.isCustom ? (
+                    <Button
+                      variant="link"
+                      size="xs"
+                      className="h-auto px-0 text-xs"
+                      disabled={cacheSaving}
+                      onClick={() => void saveCacheFolder(null)}
+                    >
+                      {t("settings.resources.storage.resetAction")}
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null
+          }
         >
-          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
+          <div className="grid w-[calc(392px*var(--ui-space-scale,1))] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 max-[840px]:w-full">
             <div className="relative min-w-0">
               <Input
                 readOnly
@@ -879,29 +1155,6 @@ export function ResourcesTab() {
             >
               {t("settings.resources.storage.changeAction")}
             </Button>
-            {cacheLocationDetail || hfCache?.isCustom ? (
-              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 pl-3.5 pr-1 text-xs text-muted-foreground">
-                {cacheLocationDetail ? (
-                  <span
-                    title={cacheLocationDetail}
-                    className="min-w-0 truncate"
-                  >
-                    {cacheLocationDetail}
-                  </span>
-                ) : null}
-                {hfCache?.isCustom ? (
-                  <Button
-                    variant="link"
-                    size="xs"
-                    className="h-auto px-0 text-xs"
-                    disabled={cacheSaving}
-                    onClick={() => void saveCacheFolder(null)}
-                  >
-                    {t("settings.resources.storage.resetAction")}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         </SettingsRow>
         <CacheStorageRows />

@@ -131,7 +131,7 @@ test("the browser message still points at the page permission", () => {
 test("every locale carries both blocked messages", () => {
   const locales = [
     "ar", "de", "en", "es", "fr", "hi",
-    "it", "ja", "ko", "pt-br", "ru", "zh-CN",
+    "it", "ja", "ko", "pt-br", "ru", "sv", "zh-CN",
   ];
   for (const locale of locales) {
     const source = readFileSync(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import {
   InputGroup,
@@ -25,24 +26,31 @@ import { useCopyFeedback } from "@/features/hub/hooks/use-copy-feedback";
 import { formatBytes } from "@/features/hub";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { ChevronDownDoubleStandardIcon } from "@/lib/chevron-icons";
 import { stripAnsi } from "@/lib/strip-ansi";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
-  ArrowDownDoubleIcon,
   Copy01Icon,
   Download01Icon,
   FolderOpenIcon,
   InformationCircleIcon,
-  RefreshIcon,
+  Refresh01Icon,
   Search01Icon,
   Shield01Icon,
   TextWrapIcon,
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   type DebugLogSource,
   LogExportError,
@@ -70,6 +78,11 @@ import {
   withRequestTimeout,
 } from "../lib/debug-log-buffer";
 import { isAbort, isLogSourceGone } from "../lib/debug-log-error";
+import {
+  NO_PENDING_LOG_REQUEST,
+  pendingLogRequestKey,
+  useSettingsDialogStore,
+} from "../stores/settings-dialog-store";
 
 const MODES: RefreshMode[] = ["live", "3s", "manual"];
 
@@ -136,6 +149,7 @@ function NoticeStrip({
 
 export function DebuggingTab() {
   const t = useT();
+  const pillId = useId();
   const [sources, setSources] = useState<DebugLogSource[]>([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
@@ -183,22 +197,54 @@ export function DebuggingTab() {
     }
   }, [mode]);
 
+  // Selection order: a response older than the last one that selected never overrides it.
+  const sourceFetchSeqRef = useRef(0);
+  const appliedSourceFetchRef = useRef(0);
+
   const refreshSources = useCallback(
     async (options: { signal?: AbortSignal; reselect?: boolean } = {}) => {
+      const seq = ++sourceFetchSeqRef.current;
       try {
         // Bounded like the tail read: the poll loop and its failure recovery
         // both await this, so an unanswered /sources would freeze both.
+        const requestedFor = pendingLogRequestKey(
+          useSettingsDialogStore.getState(),
+        );
+        const pendingPath =
+          useSettingsDialogStore.getState().logSourcePathRequested;
         const result = await withRequestTimeout(
-          (signal) => loadDebugLogSources(signal),
+          (signal) => loadDebugLogSources(signal, pendingPath),
           REQUEST_TIMEOUT_MS,
           options.signal,
         );
+        if (seq < appliedSourceFetchRef.current) return;
         setSources(result.sources);
         setLogRoot(result.logRoot);
+        const dialog = useSettingsDialogStore.getState();
+        const requested = dialog.logFamilyRequested;
+        const byPath = result.matchedSourceId
+          ? result.sources.find(
+              (source) => source.id === result.matchedSourceId,
+            )
+          : undefined;
+        const fromFailure =
+          byPath ??
+          (requested
+            ? result.sources.find((source) => source.family === requested)
+            : undefined);
+        // Only the request this fetch was made for.
+        const stillTheSameRequest =
+          pendingLogRequestKey(dialog) === requestedFor;
+        if (fromFailure && stillTheSameRequest)
+          useSettingsDialogStore.getState().consumeLogFamilyRequest();
+        if (fromFailure && !stillTheSameRequest) return;
+        appliedSourceFetchRef.current = seq;
         setSourceId((current) =>
-          options.reselect
-            ? result.defaultSourceId
-            : (current ?? result.defaultSourceId),
+          fromFailure
+            ? fromFailure.id
+            : options.reselect
+              ? result.defaultSourceId
+              : (current ?? result.defaultSourceId),
         );
       } catch {
         // The log read reports the real reason; this just leaves the picker empty.
@@ -212,6 +258,15 @@ export function DebuggingTab() {
     void refreshSources({ signal: controller.signal });
     return () => controller.abort();
   }, [refreshSources]);
+
+  // A request that arrives while this panel is ALREADY mounted.
+  const pendingLogRequest = useSettingsDialogStore(pendingLogRequestKey);
+  useEffect(() => {
+    if (pendingLogRequest === NO_PENDING_LOG_REQUEST) return;
+    const controller = new AbortController();
+    void refreshSources({ signal: controller.signal });
+    return () => controller.abort();
+  }, [pendingLogRequest, refreshSources]);
 
   const onPollFailed = useCallback(
     async (error: unknown, signal?: AbortSignal) => {
@@ -461,7 +516,7 @@ export function DebuggingTab() {
     );
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <SettingsSection
         title={t("settings.debugging.logSection")}
         description={t("settings.debugging.sourceHint")}
@@ -530,10 +585,11 @@ export function DebuggingTab() {
                     className={cn(
                       "relative flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors",
                       active
-                        ? "hub-tab-toggle-pill text-foreground"
+                        ? "text-foreground"
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
+                    {active && <SegmentedPill group={`${pillId}-mode`} />}
                     <span className="relative z-10">
                       {modeLabel(candidate)}
                     </span>
@@ -550,7 +606,7 @@ export function DebuggingTab() {
                 void poll();
               }}
             >
-              <HugeiconsIcon strokeWidth={1.75} icon={RefreshIcon} />
+              <HugeiconsIcon strokeWidth={1.75} icon={Refresh01Icon} />
               {t("settings.debugging.refreshNow")}
             </Button>
           </div>
@@ -676,7 +732,7 @@ export function DebuggingTab() {
             onScroll={onScroll}
             data-testid="debug-log-pane"
             className={cn(
-              "h-[min(26rem,45vh)] w-full overflow-auto [overflow-anchor:none] rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 font-mono text-ui-11 leading-[1.55] text-foreground/90 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
+              "h-[min(26rem,45vh)] w-full overflow-auto [overflow-anchor:none] scroll-rounded rounded-xl border border-border/60 bg-muted/20 px-3.5 py-3 font-mono text-ui-11 leading-[1.55] text-foreground/90 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]",
               wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre",
               !text && "text-muted-foreground",
             )}
@@ -694,7 +750,10 @@ export function DebuggingTab() {
               data-testid="debug-log-jump-to-latest"
               className="absolute right-3 bottom-3 rounded-full shadow-md"
             >
-              <HugeiconsIcon strokeWidth={1.75} icon={ArrowDownDoubleIcon} />
+              <HugeiconsIcon
+                strokeWidth={1.75}
+                icon={ChevronDownDoubleStandardIcon}
+              />
               {t("settings.debugging.jumpToLatest")}
             </Button>
           ) : null}
@@ -766,7 +825,7 @@ export function DebuggingTab() {
                   <HugeiconsIcon
                     strokeWidth={1.75}
                     icon={InformationCircleIcon}
-                    className="size-[var(--ui-icon-size-sm)]"
+                    className="size-[var(--ui-icon-size-hint)]"
                   />
                 </button>
               </TooltipTrigger>

@@ -16,7 +16,8 @@ export function exportFormatIncludesSiblings(format: string): boolean {
   return (
     format !== "jsonl-raw" &&
     format !== "jsonl-messages" &&
-    format !== "sharegpt"
+    format !== "sharegpt" &&
+    format !== "markdown"
   );
 }
 

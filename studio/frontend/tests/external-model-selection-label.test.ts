@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 import { modelDisplayName } from "../src/features/hub/lib/model-identity.ts";
 import type {
@@ -461,6 +461,7 @@ test("the dropped-model strings are translated everywhere", async () => {
     "ko",
     "pt-br",
     "ru",
+    "sv",
     "zh-CN",
   ];
   for (const locale of locales) {

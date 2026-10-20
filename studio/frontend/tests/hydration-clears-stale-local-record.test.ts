@@ -24,7 +24,7 @@ import {
 registerStoreStubResolver();
 const { storage } = installLocalStorageFake();
 
-const { fromApiOverride } = await import(
+const { fromApiOverride, toApiOverride } = await import(
   "../src/features/model-picker/api/model-overrides.ts"
 );
 const {
@@ -36,6 +36,26 @@ const {
 
 const MODEL = "unsloth/Model-GGUF";
 const VARIANT = "q4_k_m";
+
+test("int8 prefill reaches the server row only when on", () => {
+  const on = { ...DEFAULT_PER_MODEL_CONFIG, mlxInt8Prefill: true };
+  assert.equal(toApiOverride(on).mlx_int8_prefill, true);
+  assert.equal("mlx_int8_prefill" in toApiOverride(DEFAULT_PER_MODEL_CONFIG), false);
+  assert.equal(fromApiOverride({ mlx_int8_prefill: true }).mlxInt8Prefill, true);
+  assert.equal(fromApiOverride({}, on).mlxInt8Prefill, true);
+});
+
+test("a server row holding the superseded cache width hydrates as the single choice", () => {
+  assert.equal(fromApiOverride({ mlx_kv_bits: 8 }).mlxKvQuant, "8");
+  assert.equal(fromApiOverride({ mlx_kv_quant: "tq-4", mlx_kv_bits: 8 }).mlxKvQuant, "tq-4");
+  const local = { ...DEFAULT_PER_MODEL_CONFIG, mlxKvQuant: "tq-3.5" as const };
+  assert.equal(fromApiOverride({ mlx_kv_quant: "auto", mlx_kv_bits: 4 }, local).mlxKvQuant, null);
+  assert.equal(
+    fromApiOverride({ mlx_kv_quant: null } as never, local).mlxKvQuant,
+    null,
+  );
+  assert.equal(fromApiOverride({}, local).mlxKvQuant, "tq-3.5");
+});
 
 test("an explicit server clear leaves a config the panel must still persist", () => {
   // What this browser remembers: one flag, nothing else.
@@ -136,7 +156,7 @@ test("hydration does not mark itself saved when the write failed", () => {
 
   assert.match(
     src,
-    /const hydrationSaved = savePerModelConfig\( configId, target\.ggufVariant, rememberedConfig, hydrationEvicted, \); setSavedRemember\(hydrationSaved\);/,
+    /const hydrationSaved = savePerModelConfig\( configId, target\.ggufVariant, storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\), hydrationEvicted, \); setSavedRemember\(hydrationSaved\);/,
   );
 });
 
@@ -151,7 +171,7 @@ test("hydration propagates what its own write evicted", () => {
   // The write hands savePerModelConfig somewhere to report evictions.
   assert.match(
     src,
-    /savePerModelConfig\( configId, target\.ggufVariant, rememberedConfig, hydrationEvicted, \)/,
+    /savePerModelConfig\( configId, target\.ggufVariant, storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\), hydrationEvicted, \)/,
   );
   // And they are cleared the way the save path clears them: mirrored fields only.
   assert.match(

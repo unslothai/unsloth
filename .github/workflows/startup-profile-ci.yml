@@ -48,6 +48,14 @@ on:
       - 'studio/src-tauri/src/process.rs'
       - 'scripts/profile_startup.py'
       - '.github/workflows/startup-profile-ci.yml'
+      # The install step runs install.sh --local and install.ps1 --local on all three
+      # cells. The setup scripts listed above run every studio/install_*.py module and
+      # nvidia_probe.py, and the installers read the prebuilt pins, so these change what
+      # gets installed before the profile is taken.
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/node_prebuilt_pins.json'
       # The job profiles whatever `install.sh --local` built: the installers pick the
       # venv's Python and the dependency specs, and pyproject's include list is what
       # makes --local overlay studio.backend*.
@@ -73,7 +81,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

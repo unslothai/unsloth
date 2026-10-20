@@ -11,7 +11,7 @@ import {
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { DatasetSource } from "@/types/training";
-import { RefreshIcon, Rocket01Icon } from "@hugeicons/core-free-icons";
+import { Refresh01Icon, Rocket01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
 import { resolveStartTrainingButtonLabelKey } from "./start-training-cta-state";
@@ -175,7 +175,7 @@ export function StartTrainingCta() {
               className="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
               <HugeiconsIcon
-                icon={RefreshIcon}
+                icon={Refresh01Icon}
                 strokeWidth={1.75}
                 className="size-3"
               />

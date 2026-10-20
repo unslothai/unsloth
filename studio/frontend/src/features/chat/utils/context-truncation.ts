@@ -40,6 +40,58 @@ export function compactionBoundary(
   );
 }
 
+/** A saved-transcript boundary can stay put when a tool loop compacts its own messages. */
+export function shouldShowCompactionNotice(
+  truncation: ContextTruncation | undefined,
+  previousBoundary: number,
+): boolean {
+  return (
+    promptWasShortened(truncation) &&
+    (truncation.checkpoint_started === true ||
+      compactionBoundary(truncation) > previousBoundary)
+  );
+}
+
+/** afterToolCallId is null when the fit ran before the reply began. */
+export interface CompactionMarker {
+  afterToolCallId: string | null;
+  truncation: ContextTruncation;
+}
+
+/** A fit that recalled already emitted its `search_conversation`, which belongs after the cut. */
+export function compactionAnchorToolCallId(
+  toolCalls: ReadonlyArray<{ toolCallId?: unknown; toolName?: unknown }>,
+  truncation: ContextTruncation,
+): string | null {
+  let end = toolCalls.length;
+  if (
+    (truncation.recalled_chunks ?? 0) > 0 &&
+    toolCalls[end - 1]?.toolName === "search_conversation"
+  ) {
+    end -= 1;
+  }
+  const id = toolCalls[end - 1]?.toolCallId;
+  return typeof id === "string" ? id : null;
+}
+
+/** Skips the cut a tool loop replays every round. */
+export function appendCompactionMarker(
+  markers: CompactionMarker[] | undefined,
+  truncation: ContextTruncation,
+  afterToolCallId: string | null,
+): CompactionMarker[] | undefined {
+  if (!promptWasShortened(truncation)) return markers;
+  const last = markers?.[markers.length - 1];
+  if (
+    last &&
+    truncation.checkpoint_started !== true &&
+    compactionBoundary(truncation) <= compactionBoundary(last.truncation)
+  ) {
+    return markers;
+  }
+  return [...(markers ?? []), { afterToolCallId, truncation }];
+}
+
 function nonNegativeInt(value: number | undefined): number {
   // A propagated NaN would print "NaN tokens on its own" at the user.
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;
@@ -100,6 +152,15 @@ export function mergeContextTruncation(
     ...current,
     ...incoming,
     dropped_messages: current.dropped_messages + incoming.dropped_messages,
+    // Sticky: a later replay fit in the same tool loop must not clear it.
+    ...(current.checkpoint_started !== undefined ||
+    incoming.checkpoint_started !== undefined
+      ? {
+          checkpoint_started:
+            current.checkpoint_started === true ||
+            incoming.checkpoint_started === true,
+        }
+      : {}),
     prompt_tokens_before:
       current.prompt_tokens_before ?? incoming.prompt_tokens_before,
     prompt_tokens_after:
