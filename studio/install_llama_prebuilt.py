@@ -11656,7 +11656,9 @@ def select_backend_install(
         )
     # Up front: the fork's plans are lazy, so their Jetson rejection would surface outside the try below (#4856).
     if route.backend == "cuda" and _tegra_blocks_arm64_cuda(route.host):
-        raise BackendUnavailable("no CUDA prebuilt runs on a Jetson before CUDA 13; source-building instead")
+        raise BackendUnavailable(
+            "no CUDA prebuilt runs on a Jetson before CUDA 13; source-building instead"
+        )
     try:
         requested_tag, release_plans = resolve_simple_install_release_plans(
             llama_tag, route.host, route.published_repo, route.published_release_tag

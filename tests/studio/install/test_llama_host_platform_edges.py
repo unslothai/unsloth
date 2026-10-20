@@ -412,6 +412,7 @@ def test_jetson_stored_cuda_request_with_lazy_plans_falls_back(monkeypatch):
         def plans():
             raise ILP.PrebuiltFallback("no compatible Linux prebuilt asset was found")
             yield  # pragma: no cover
+
         return "latest", plans()
 
     monkeypatch.setattr(ILP, "resolve_simple_install_release_plans", lazy_plans)
