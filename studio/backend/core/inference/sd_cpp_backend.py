@@ -794,7 +794,9 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     source = os.environ if env is None else env
     # Windows HIP has no ROCr layer, so a leftover ROCR_VISIBLE_DEVICES masks nothing there.
     rocr = None if sys.platform == "win32" else source.get(_ROCR_MASK_VAR)
-    hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
+    # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; an empty one does not shadow it.
+    present = [source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None]
+    hip = next((raw for raw in present if raw.strip()), present[0] if present else None)
     opaque = source.get(_OPAQUE_MASK_VAR)
     if rocr is None and hip is None and opaque is None:
         return ordinal, False
@@ -807,6 +809,11 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
         entries = _mask_entries(raw)
         if entries is None:
             return None, True
+        # clr keeps the first of a repeated HIP entry; ROCr stops at one (utils/hardware/amd.py).
+        if raw is hip:
+            entries = list(dict.fromkeys(entries))
+        elif len(set(entries)) < len(entries):
+            entries = entries[: next(i for i, e in enumerate(entries) if e in entries[:i])]
         if visible is None:
             visible = entries
         else:
@@ -928,17 +935,19 @@ def sd_cpp_device_named(
     card_name: Optional[str],
     *,
     position: Optional[int] = None,
+    listing: Optional[str] = None,
 ) -> Optional[str]:
     """The ggml device that IS *card_name*, when exactly one of them is. The Vulkan build names its
     devices in its own namespace, so a physical ordinal names nothing in it. ``position`` breaks a
     tie on the ASSUMPTION that RADV and HIP walk one vendor's GPUs in the same order -- unreadable
-    here, so only among devices already agreed to be the right MODEL."""
+    here, so only among devices already agreed to be the right MODEL. ``listing``: tab-separated name and
+    description lines read elsewhere, instead of running ``binary --list-devices``."""
     if not binary or not card_name:
         return None
     wanted = _normalized_card_name(card_name)
     if not wanted:
         return None
-    text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = listing if listing is not None else _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
         return None
     # Both readings: containment cannot tell `RX 7600` from `RX 7600 XT`, equality cannot see through a driver tag.
