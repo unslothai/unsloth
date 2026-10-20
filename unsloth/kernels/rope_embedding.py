@@ -251,9 +251,7 @@ def _heads_per_program(n_heads, block_size):
     return max(1, min(next_power_of_2(n_heads), ROPE_TILE_ELEMENTS // block_size))
 
 
-def _rope_launch(
-    Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, cast_to_sin, wrap
-):
+def _rope_launch(Q, Q_out, K, K_out, cos, sin, rope_ptr, has_indices, backward, cast_to_sin, wrap):
     # Q, K, Q_out, K_out: [batch, n_heads, seq_len, head_dim] at any strides (K may be None).
     # Q_out may be Q itself (in place).
     batch, n_heads_Q, seq_len, head_dim = Q.shape
@@ -367,7 +365,9 @@ class Fast_RoPE_Embedding_QK_Positions(torch.autograd.Function):
     def backward(ctx, dQ, dK):
         dQ_out, dK_out = _bshd_buffer(dQ), _bshd_buffer(dK)
         with torch_gpu_device(dQ.device):
-            _rope_launch(dQ, dQ_out, dK, dK_out, ctx.cos, ctx.sin, None, False, True, True, _eager_kernel)
+            _rope_launch(
+                dQ, dQ_out, dK, dK_out, ctx.cos, ctx.sin, None, False, True, True, _eager_kernel
+            )
         return dQ_out, dK_out, None, None
 
 

@@ -42,7 +42,13 @@ def _packed_ids(batch, seq):
     return torch.stack([row + b for b in range(batch)]).cuda()
 
 
-def _oracle(x, cos, sin, ids, backward = False):
+def _oracle(
+    x,
+    cos,
+    sin,
+    ids,
+    backward = False,
+):
     # x [b, h, s, d]; fp64 rotation of the exact low-precision inputs.
     x, cos, sin = x.double(), cos.double(), sin.double()
     seq = x.shape[2]
@@ -184,7 +190,6 @@ def test_rope_contiguous_qk_input_rotates_in_place(with_ids):
 
 def test_rope_heads_per_program_bounds():
     from unsloth.kernels.rope_embedding import ROPE_TILE_ELEMENTS, _heads_per_program
-
     for n_heads in (1, 2, 3, 7, 8, 32, 40, 64, 128):
         for block in (16, 32, 64, 128, 256, 1024, 2048):
             heads = _heads_per_program(n_heads, block)
