@@ -21,7 +21,8 @@ class DataCollatorSpeechSeq2SeqWithPadding:
     """
 
     processor: Any
-    decoder_start_token_id: int
+    # Not bos_token_id: Whisper's bos is <|endoftext|>, labels open with <|startoftranscript|>.
+    decoder_start_token_id: Optional[int] = None
 
     def __call__(self, features: List[dict]) -> dict:
         input_features = [{"input_features": feature["input_features"]} for feature in features]
@@ -32,7 +33,10 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
 
-        if (labels[:, 0] == self.decoder_start_token_id).all().cpu().item():
+        start_id = self.decoder_start_token_id
+        if start_id is None:
+            start_id = self.processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+        if (labels[:, 0] == start_id).all().cpu().item():
             labels = labels[:, 1:]
 
         batch["labels"] = labels

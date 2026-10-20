@@ -4554,7 +4554,9 @@ class UnslothTrainer:
                     "train_dataset": dataset,
                     "data_collator": DataCollatorSpeechSeq2SeqWithPadding(
                         processor = self.tokenizer,
-                        decoder_start_token_id = self.model.config.decoder_start_token_id,
+                        decoder_start_token_id = getattr(
+                            self.model.config, "decoder_start_token_id", None
+                        ),
                     ),
                     "processing_class": self.tokenizer.feature_extractor,
                     "args": Seq2SeqTrainingArguments(**config),
