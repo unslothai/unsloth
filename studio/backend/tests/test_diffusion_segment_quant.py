@@ -394,6 +394,50 @@ def test_rocm_never_runs_the_quantized_files(monkeypatch):
     assert seg.download_plan(sam31, "cuda:0")["precision"] == "bf16"
 
 
+def test_an_override_folder_holds_the_reported_variants_file(tmp_path, monkeypatch):
+    """UNSLOTH_SAM3_VARIANT=sam3 with only a SAM 3.1 file in the override folder: nothing sam3 can load."""
+    _folder(tmp_path, "sam3.1-INT8-ConvRot.safetensors")
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
+    assert seg.model_dir() == str(tmp_path)
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3")
+    assert seg.model_dir() is None
+
+
+def test_no_prequant_reader_means_no_quantized_file_counts(tmp_path, monkeypatch):
+    """No torchao (or the Windows ROCm stub): a cached INT8 file cannot even be dequantized, so it is not a
+    download and bf16 is offered."""
+    from core.inference import prequant_safetensors as pst
+
+    _cuda(monkeypatch, (9, 0))
+    sam31 = seg.SEGMENTER_VARIANTS["sam3.1"]
+    only = _folder(tmp_path, "sam3.1-INT8-ConvRot.safetensors")
+    assert seg.plan_weights(only, "cpu", variant = sam31, use_cache = False).dequantize
+    monkeypatch.setattr(pst, "safetensors_prequant_supported", lambda: False)
+    plan = seg.plan_weights(only, "cpu", variant = sam31, use_cache = False)
+    assert (plan.weights, plan.dequantize) == (None, False)
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
+    assert seg.model_dir() is None
+
+
+def test_a_rotated_file_at_another_group_is_refused():
+    from core.inference.diffusion_convrot import rotation_metadata
+    from core.inference.diffusion_prequant import PREQUANT_FORMAT_ROTATED
+
+    def meta(group):
+        return {
+            "family": sq.SEGMENTER_QUANT_FAMILY,
+            "scheme": "int8",
+            "min_features": sq.SEGMENTER_MIN_FEATURES,
+            "exclude_name_tokens": list(sq.exclude_tokens("int8", True)),
+            **rotation_metadata(group, ["vision_encoder.backbone.layers.9.mlp.fc1"]),
+        }
+
+    check = lambda m, **k: sq.checkpoint_problem(PREQUANT_FORMAT_ROTATED, m, scheme = "int8", rotated = True, **k)  # noqa: E731
+    assert check(meta(sq.SEGMENTER_CONVROT_GROUP)) is None
+    assert "ConvRot group 16" in check(meta(16))
+    assert check(meta(16), convrot_group = 16) is None
+
+
 def test_an_override_folder_with_only_a_rejected_file_is_not_downloaded(tmp_path, monkeypatch):
     _folder(tmp_path, "sam3.1-FP8.safetensors")
     monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
@@ -711,6 +755,7 @@ def test_tiny_quantized_file_runs_quantized_on_cuda(tmp_path, monkeypatch, schem
         device = "cuda:0",
         dtype = torch.bfloat16,
         base_model_id = seg.SAM31_REPO,
+        convrot_group = convrot or sq.SEGMENTER_CONVROT_GROUP,
     )
     assert (
         info["kernels"] == "quantized" and info["quantized_linears"] == quant["quantized_linears"]

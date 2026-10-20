@@ -244,6 +244,8 @@ def _override_dir() -> Optional[str]:
     if not value:
         return None
     path = Path(value).expanduser()
+    # Only the variant the override is reported (and loaded) as: another variant's file would plan no weights.
+    variant = SEGMENTER_VARIANTS[requested_variant_id() or DEFAULT_VARIANT]
     has = lambda *names: any((path / name).is_file() for name in names)  # noqa: E731
     complete = (
         has("config.json")
@@ -252,11 +254,7 @@ def _override_dir() -> Optional[str]:
             or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json"))
             # or only a pre-quantized detector file the precision setting may load (dequantized where it cannot
             # run quantized); one the setting rejects (fp8 under auto, any under bf16) is not a loadable model
-            or any(
-                _loadable(v, a) and has(a.filename)
-                for v in SEGMENTER_VARIANTS.values()
-                for a in v.prequant
-            )
+            or any(_loadable(variant, a) and has(a.filename) for a in variant.prequant)
         )
         # AutoTokenizer (CLIPTokenizer for sam3) loads tokenizer.json, else needs vocab.json and merges.txt together.
         and (has("tokenizer.json") or (has("vocab.json") and has("merges.txt")))
@@ -578,7 +576,12 @@ def _loadable(variant: SegmenterVariant, artifact: SegmenterPrequant) -> bool:
         requested_precision,
     )
 
+    from core.inference.prequant_safetensors import safetensors_prequant_supported
+
     if artifact != variant_artifact(variant, artifact.precision):
+        return False
+    # An install that cannot read the files (no torchao, or the Windows ROCm stub) cannot even dequantize them.
+    if not safetensors_prequant_supported():
         return False
     requested = requested_precision()
     if requested == PRECISION_AUTO:

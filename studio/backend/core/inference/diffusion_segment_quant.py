@@ -255,9 +255,11 @@ def checkpoint_problem(
     scheme: str,
     rotated: bool,
     base_model_id: Optional[str] = None,
+    convrot_group: int = SEGMENTER_CONVROT_GROUP,
 ) -> Optional[str]:
-    """Why a segmenter prequant header must not be loaded, or None. Torch free, header only."""
-    from .diffusion_convrot import declares_rotation, rotation_metadata_error
+    """Why a segmenter prequant header must not be loaded, or None. Torch free, header only. A rotated file must use
+    ``convrot_group``: the accuracy gate and the exclusions were measured at that group, not at any power of four."""
+    from .diffusion_convrot import ROTATION_GROUP_KEY, declares_rotation, rotation_metadata_error
     from .diffusion_prequant import PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED
 
     if not isinstance(meta, dict):
@@ -277,6 +279,8 @@ def checkpoint_problem(
         return f"unknown format {fmt!r}"
     if declared != rotated:
         return "rotation expected" if rotated else "unexpected rotation"
+    if rotated and meta.get(ROTATION_GROUP_KEY) != convrot_group:
+        return f"ConvRot group {meta.get(ROTATION_GROUP_KEY)!r}, expected {convrot_group}"
     if sorted(meta.get("exclude_name_tokens") or ()) != sorted(exclude_tokens(scheme, rotated)):
         return (
             f"excludes {meta.get('exclude_name_tokens')!r} differ from this build's "
@@ -332,6 +336,7 @@ def load_prequantized_segmenter(
     dtype: Any,
     base_model_id: Optional[str] = None,
     dequantize: bool = False,
+    convrot_group: int = SEGMENTER_CONVROT_GROUP,
 ) -> tuple[Any, dict]:
     """``(Sam3Model, info)`` from a segmenter prequant artifact. On CUDA the weights stay quantized unless
     ``dequantize``; elsewhere they are dequantized to ``dtype``. Raises on anything wrong with the file (the caller
@@ -345,7 +350,12 @@ def load_prequantized_segmenter(
     ckpt = load_prequant_safetensors(weights_path, device = device if quantized else "cpu")
     fmt, meta, state_dict = ckpt["format"], ckpt["metadata"], ckpt["state_dict"]
     problem = checkpoint_problem(
-        fmt, meta, scheme = scheme, rotated = rotated, base_model_id = base_model_id
+        fmt,
+        meta,
+        scheme = scheme,
+        rotated = rotated,
+        base_model_id = base_model_id,
+        convrot_group = convrot_group,
     )
     if problem:
         raise ValueError(f"segmenter prequant refused: {problem}")
