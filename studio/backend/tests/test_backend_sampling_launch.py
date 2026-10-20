@@ -7,8 +7,11 @@ Without it every decode step copies each slot's full-vocabulary logits to the ho
 runs the sampler chain on the CPU. Measured on a Colab L4 with 4 slots (-c 8192
 --kv-unified, Studio's own sampler chains): Qwen3.5-0.8B 20.3 -> 7.0 ms per token at
 4 streams, Qwen3-0.6B 7.3 -> 6.1 ms, flood throughput up to 2.2x, for ~20-25 ms more TTFT
-per request. With identical logits and seed it draws the same tokens as the CPU chain. It is per request and steps aside on
-its own for grammar / tools, a reasoning budget and pre-sampling logprobs.
+per request. It is per request and steps aside on its own for grammar / tools, a reasoning
+budget and pre-sampling logprobs; Studio sends every request outside the envelope where it
+samples as the CPU chain does (min_p near 1, top_k past the vocabulary, min_keep, dynatemp,
+a custom sampler order, logit_bias, a fixed seed without top_p) back to the CPU with
+backend_sampling: false.
 
 The gate: the binary must advertise the flag (an unknown argument stops an older
 llama-server from starting), a GPU must be there and hold the output layer, the backend
@@ -35,8 +38,6 @@ import core.inference.llama_cpp as llama_cpp  # noqa: E402
 from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
     _backend_sampling_flags,
-    _cpu_sampling_for_min_p,
-    _launch_backend_sampling_min_p,
     _launch_speculates,
 )
 
@@ -167,16 +168,58 @@ class TestTheGate:
 
     @pytest.mark.parametrize(
         "tail, env",
-        [(["--min-p", "1"], {}), (["--min-p=1.0"], {}), ([], {"LLAMA_ARG_MIN_P": "1"})],
-        ids = ["flag", "inline", "env"],
+        [
+            (["--min-p", "1"], {}),
+            (["--min-p=1.0"], {}),
+            ([], {"LLAMA_ARG_MIN_P": "1"}),
+            (["--top-k", "1000000"], {}),
+            ([], {"LLAMA_ARG_TOP_K": "1000000"}),
+            (["--samplers", "temperature;top_k"], {}),
+            (["--sampler-seq", "tk"], {}),
+            (["-l", "15+5"], {}),
+            (["--seed", "42", "--top-p", "1"], {}),
+            (["--seed", "42"], {"LLAMA_ARG_TOP_P": "1.0"}),
+            (["--dynatemp-range", "0.5"], {}),
+        ],
+        ids = [
+            "min-p",
+            "min-p-inline",
+            "min-p-env",
+            "top-k",
+            "top-k-env",
+            "samplers",
+            "sampler-seq",
+            "logit-bias",
+            "seed-top-p-off",
+            "seed-top-p-env",
+            "dynatemp",
+        ],
     )
-    def test_a_default_min_p_of_one_gets_nothing(self, tail, env):
-        # Every request without its own min_p would sample on a GPU min_p that drops every token.
+    def test_a_launch_default_outside_the_envelope_gets_nothing(self, tail, env):
+        # Every request that leaves the field to the launch would sample on that default.
         assert _backend_sampling_flags(ON, self.BASE + tail, **{**GPU, "env": env}) == []
 
-    def test_a_default_min_p_below_one_still_gets_it(self):
-        argv = self.BASE + ["--min-p", "0.99"]
-        assert _backend_sampling_flags(ON, argv, **GPU) == ["--backend-sampling"]
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            ["--min-p", "0.99"],
+            ["--top-k", "40"],
+            ["--seed", "-1"],
+            ["--seed", "42"],
+            ["--sampler-seq", "edskypmxt"],
+            ["--samplers", "penalties;dry;top_n_sigma;top_k;typ_p;top_p;min_p;xtc;temperature"],
+            ["--repeat-penalty", "1.1"],
+            ["--mirostat", "0"],
+        ],
+    )
+    def test_a_launch_default_inside_it_still_gets_it(self, tail):
+        assert _backend_sampling_flags(ON, self.BASE + tail, **GPU) == ["--backend-sampling"]
+
+    def test_a_launch_top_k_is_held_to_the_vocabulary_when_known(self):
+        argv = self.BASE + ["--top-k", "1000"]
+        assert _backend_sampling_flags(ON, argv, **GPU) == []  # unknown vocabulary: 256
+        assert _backend_sampling_flags(ON, argv, **GPU, n_vocab = 151936) == ["--backend-sampling"]
+        assert _backend_sampling_flags(ON, argv, **GPU, n_vocab = 512) == []
 
     @pytest.mark.parametrize("value", ["0", "false", "off", "no"])
     def test_the_opt_out(self, monkeypatch, value):
@@ -272,11 +315,128 @@ def test_the_opt_out_launches_as_before(launch, monkeypatch):
     assert "--backend-sampling" not in launch()
 
 
-# ---- min_p at 1 on the GPU sampler ----
-# llama.cpp's GPU min_p keeps logit - (max + log p) > 0, so p = 1 drops even the top token and the
-# draw is NaN; those requests have to go back to the CPU chain, and only on a server with it on.
+# ---- requests outside the GPU sampler's envelope ----
+# llama.cpp's GPU sampler crashes or samples another distribution than the CPU chain on these
+# (src/llama-sampler.cpp at 18b4ec5f1); those requests go back to the CPU, and only on a server
+# with the GPU sampler on (or a client opting in itself).
 
 _ON = ["/fake/llama-server", "--backend-sampling"]
+_VOCAB = 151936  # Qwen3
+
+# One per rule: (payload, why) outside, each with its nearest value that stays inside.
+_OUTSIDE = [
+    ({"min_p": 1.0}, "min_p"),
+    ({"min_p": "1"}, "min_p"),
+    ({"min_p": 0.9999}, "min_p"),
+    ({"top_k": 1000000}, "top_k"),
+    ({"top_k": 140000}, "top_k"),  # inside Qwen3's vocabulary, past the 128K probe
+    ({"min_keep": 3}, "min_keep"),
+    ({"min_keep": 2}, "min_keep"),
+    ({"dynatemp_range": 0.5}, "dynatemp_range"),
+    ({"dynatemp_range": 0.5, "temperature": 0}, "dynatemp_range"),
+    ({"samplers": ["temperature", "top_k"]}, "samplers"),
+    ({"samplers": "kt"}, "samplers"),
+    ({"logit_bias": {"15": 5}}, "logit_bias"),
+    ({"logit_bias": [[15, 2], [15, 3]]}, "logit_bias"),
+    ({"seed": 42, "top_p": 1.0}, "seed"),
+    ({"seed": 0, "top_p": 1}, "seed"),
+    # Unparseable: fail closed, the raw /v1/completions body is the client's own.
+    ({"top_k": "lots"}, "top_k"),
+    ({"min_keep": [3]}, "min_keep"),
+    ({"seed": True, "top_p": 1.0}, "seed"),
+    ({"seed": 42, "top_p": "off"}, "seed"),
+]
+_INSIDE = [
+    {},
+    {"min_p": 0.999},
+    {"min_p": 0},
+    {"min_p": None},
+    {"top_k": 128 * 1024},  # the probe's own width
+    {"top_k": 0},
+    {"top_k": -1},
+    {"top_k": 40, "top_p": 0.95, "min_p": 0.05, "temperature": 0.6},
+    {"temperature": 0},
+    {"top_p": 0.0},
+    {"min_keep": 1},
+    {"min_keep": 0},
+    {"dynatemp_range": 0},
+    {
+        "samplers": [
+            "penalties",
+            "dry",
+            "top_n_sigma",
+            "top_k",
+            "typ_p",
+            "top_p",
+            "min_p",
+            "xtc",
+            "temperature",
+        ]
+    },
+    {"samplers": "edskypmxt"},
+    {"logit_bias": {}},
+    {"logit_bias": []},
+    {"repeat_penalty": 1.1, "presence_penalty": 1.5, "frequency_penalty": 0.5},
+    {"repeat_penalty": 0},  # llama-server refuses it on either sampler
+    {"mirostat": 2, "temperature": 0},
+    {"seed": -1, "top_p": 1.0},
+    {"seed": 0xFFFFFFFF, "top_p": 1.0},
+    {"seed": 42},  # llama.cpp's top_p 0.95 sorts the candidates before the draw
+    {"seed": 42, "top_p": 0.95, "top_k": 40},
+    {"n_probs": 10**9, "post_sampling_probs": True},
+    {"ignore_eos": True},
+]
+
+
+@pytest.mark.parametrize("payload, why", _OUTSIDE)
+def test_the_envelope_names_what_is_outside(payload, why):
+    from core.inference.llama_cpp import _gpu_sampler_envelope_breach
+    assert _gpu_sampler_envelope_breach(payload, {}, _VOCAB) == why
+
+
+@pytest.mark.parametrize("payload", _INSIDE)
+def test_the_envelope_leaves_the_rest_on_the_gpu(payload):
+    from core.inference.llama_cpp import _cpu_sampling_outside_gpu_envelope
+    assert _cpu_sampling_outside_gpu_envelope(payload, {}, _VOCAB) is payload
+
+
+@pytest.mark.parametrize("payload, why", _OUTSIDE)
+def test_outside_the_envelope_goes_back_to_the_cpu(payload, why):
+    from core.inference.llama_cpp import _cpu_sampling_outside_gpu_envelope
+    assert _cpu_sampling_outside_gpu_envelope(payload, {}, _VOCAB) == {
+        **payload,
+        "backend_sampling": False,
+    }
+    assert "backend_sampling" not in payload
+
+
+def test_top_k_is_held_to_the_vocabulary_and_the_probe():
+    from core.inference.llama_cpp import _gpu_sampler_envelope_breach
+
+    assert _gpu_sampler_envelope_breach({"top_k": 32000}, {}, 32000) is None
+    assert _gpu_sampler_envelope_breach({"top_k": 32001}, {}, 32000) == "top_k"
+    assert _gpu_sampler_envelope_breach({"top_k": 128 * 1024 + 1}, {}, 262144) == "top_k"
+    # A vocabulary Studio could not read is taken as 256.
+
+    assert _gpu_sampler_envelope_breach({"top_k": 256}, {}, None) is None
+    assert _gpu_sampler_envelope_breach({"top_k": 257}, {}, None) == "top_k"
+    assert _gpu_sampler_envelope_breach({"top_k": 257}, {}, 0) == "top_k"
+
+
+def test_an_omitted_field_takes_the_launch_default():
+    from core.inference.llama_cpp import _cpu_sampling_outside_gpu_envelope
+    for launch, inside, outside in [
+        ({"min_p": "1"}, {"min_p": 0.1}, {}),
+        ({"top_k": "1000000"}, {"top_k": 40}, {"top_k": None}),
+        ({"seed": "42", "top_p": "1"}, {"seed": -1}, {}),
+        ({"seed": "42"}, {"top_p": 0.9}, {"top_p": 1.0}),
+        ({"samplers": "tk"}, {"samplers": "edskypmxt"}, {}),
+    ]:
+        assert _cpu_sampling_outside_gpu_envelope(inside, launch, _VOCAB) is inside
+        assert _cpu_sampling_outside_gpu_envelope(outside, launch, _VOCAB) == {
+            **outside,
+            "backend_sampling": False,
+        }
 
 
 @pytest.mark.parametrize(
@@ -284,70 +444,86 @@ _ON = ["/fake/llama-server", "--backend-sampling"]
     [
         (["/fake/llama-server"], {}, None),
         (["/fake/llama-server", "--spec-draft-backend-sampling"], {}, None),
-        (_ON, {}, 0.0),
-        (["/fake/llama-server", "-bs"], {}, 0.0),
-        (["/fake/llama-server"], {"LLAMA_ARG_BACKEND_SAMPLING": "1"}, 0.0),
+        (_ON, {}, {}),
+        (["/fake/llama-server", "-bs"], {}, {}),
+        (["/fake/llama-server"], {"LLAMA_ARG_BACKEND_SAMPLING": "1"}, {}),
         (["/fake/llama-server"], {"LLAMA_ARG_BACKEND_SAMPLING": "0"}, None),
-        ([*_ON, "--min-p", "1"], {}, 1.0),
-        ([*_ON, "--min-p=0.5"], {"LLAMA_ARG_MIN_P": "1"}, 0.5),
-        (_ON, {"LLAMA_ARG_MIN_P": "1"}, 1.0),
+        ([*_ON, "--min-p", "1"], {}, {"min_p": "1"}),
+        ([*_ON, "--min-p=0.5"], {"LLAMA_ARG_MIN_P": "1"}, {"min_p": "0.5"}),
+        (_ON, {"LLAMA_ARG_MIN_P": "1", "LLAMA_ARG_TOP_K": "9"}, {"min_p": "1", "top_k": "9"}),
+        (
+            [*_ON, "--top-k", "9", "-s", "3", "-l", "1+1"],
+            {},
+            {"top_k": "9", "seed": "3", "logit_bias": "1+1"},
+        ),
+        ([*_ON, "--sampler-seq", "edskypmxt"], {}, {}),
+        ([*_ON, "--samplers", "top_k;temperature"], {}, {"samplers": "top_k;temperature"}),
     ],
 )
-def test_launch_backend_sampling_min_p(argv, env, expected):
-    assert _launch_backend_sampling_min_p(argv, env) == expected
-
-
-@pytest.mark.parametrize("min_p", [1, 1.0, "1", 1.5, 0.9999])
-def test_min_p_at_one_goes_back_to_the_cpu(min_p):
-    payload = {"messages": [], "min_p": min_p}
-    assert _cpu_sampling_for_min_p(payload, 0.0) == {**payload, "backend_sampling": False}
-    assert "backend_sampling" not in payload
-
-
-@pytest.mark.parametrize(
-    "payload", [{"min_p": 0.99}, {"min_p": 0.999}, {"min_p": 0}, {}, {"min_p": None}]
-)
-def test_other_min_p_values_leave_the_payload_alone(payload):
-    assert _cpu_sampling_for_min_p(payload, 0.0) is payload
-
-
-def test_an_omitted_min_p_takes_the_launch_default():
-    assert _cpu_sampling_for_min_p({}, 1.0) == {"backend_sampling": False}
-    assert _cpu_sampling_for_min_p({"min_p": 0.1}, 1.0) == {"min_p": 0.1}
+def test_launch_gpu_sampler(argv, env, expected):
+    from core.inference.llama_cpp import _launch_gpu_sampler
+    assert _launch_gpu_sampler(argv, env) == expected
 
 
 def test_a_server_without_the_flag_never_sees_the_field():
-    payload = {"min_p": 1.0}
-    assert _cpu_sampling_for_min_p(payload, None) is payload
+    from core.inference.llama_cpp import _cpu_sampling_outside_gpu_envelope
+    payload = {"min_p": 1.0, "top_k": 1000000}
+    assert _cpu_sampling_outside_gpu_envelope(payload, None, _VOCAB) is payload
 
 
 def test_a_clients_own_opt_in_is_pinned_off_too():
-    assert _cpu_sampling_for_min_p({"min_p": 1, "backend_sampling": True}, None) == {
-        "min_p": 1,
-        "backend_sampling": False,
-    }
+    from core.inference.llama_cpp import _cpu_sampling_outside_gpu_envelope
+
+    for payload in (
+        {"min_p": 1, "backend_sampling": True},
+        {"top_k": 10**6, "backend_sampling": True},
+    ):
+        assert _cpu_sampling_outside_gpu_envelope(payload, None, _VOCAB) == {
+            **payload,
+            "backend_sampling": False,
+        }
+    inside = {"top_k": 40, "backend_sampling": True}
+    assert _cpu_sampling_outside_gpu_envelope(inside, None, _VOCAB) is inside
 
 
-def test_a_load_with_the_flag_guards_its_requests(launch):
+# ---- every path, through the real load and the entry points the requests take ----
+# Version-neutral: a launched backend and the public builders, so the same cells run on the
+# commit before the envelope (where the new rules fail) and after it.
+
+# (payload fields, backend_sampling expected on a launch with the GPU sampler on)
+_PATH_CASES = [
+    ({"min_p": 1.0}, False),
+    ({"top_k": 1000000}, False),
+    ({"min_keep": 3}, False),
+    ({"top_k": 20, "min_p": 0.05}, None),
+]
+_PATH_IDS = ["min_p-1", "top_k-past-vocab", "min_keep-3", "inside"]
+
+
+@pytest.fixture
+def gpu_backend(launch):
     assert "--backend-sampling" in launch()
-    assert launch.backend.guard_gpu_min_p({"min_p": 1.0}) == {
-        "min_p": 1.0,
-        "backend_sampling": False,
-    }
+    launch.backend._vocab_size = _VOCAB
+    return launch.backend
 
 
-def test_a_load_without_the_flag_leaves_its_requests_alone(launch):
+@pytest.fixture
+def cpu_backend(launch):
     assert "--backend-sampling" not in launch(caps = {**_CAPS, "supports_backend_sampling": False})
-    assert launch.backend.guard_gpu_min_p({"min_p": 1.0}) == {"min_p": 1.0}
+    launch.backend._vocab_size = _VOCAB
+    return launch.backend
 
 
-def _guarded_backend(launch_min_p = 0.0):
-    backend = LlamaCppBackend.__new__(LlamaCppBackend)
-    backend._backend_sampling_min_p = launch_min_p
-    return backend
+def test_a_load_without_the_flag_leaves_its_requests_alone(cpu_backend):
+    from routes.inference import _build_passthrough_payload
+
+    args = ([{"role": "user", "content": "hi"}], None, 0.7, 0.9, 1000000, 16, False)
+    body = _build_passthrough_payload(*args, min_p = 1.0, llama_backend = cpu_backend)
+    assert "backend_sampling" not in body
 
 
-def test_every_stream_is_guarded(monkeypatch):
+@pytest.mark.parametrize("fields, expected", _PATH_CASES, ids = _PATH_IDS)
+def test_every_stream_is_guarded(monkeypatch, gpu_backend, fields, expected):
     # _open_stream is the one transport of generate_chat_completion and both tool loops.
     import contextlib
 
@@ -366,22 +542,23 @@ def test_every_stream_is_guarded(monkeypatch):
 
     monkeypatch.setattr(LlamaCppBackend, "_stream_with_retry", staticmethod(fake_stream))
     monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
-    for launch_min_p, min_p, expected in [
-        (0.0, 1.0, {"backend_sampling": False}),
-        (0.0, 0.99, {}),
-        (None, 1.0, {}),
-    ]:
-        backend = _guarded_backend(launch_min_p)
-        with backend._open_stream("http://llama.test/v1/chat/completions", {"min_p": min_p}, None):
-            pass
-        assert sent.pop() == {"min_p": min_p, **expected}
+    with gpu_backend._open_stream("http://llama.test/v1/chat/completions", dict(fields), None):
+        pass
+    assert sent.pop().get("backend_sampling") is expected
 
 
-def test_gguf_tts_is_guarded(monkeypatch):
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [({"min_p": 1.0}, False), ({"top_k": 1000000}, False), ({"top_k": 40}, None)],
+    ids = ["min_p-1", "top_k-past-vocab", "inside"],
+)
+def test_gguf_tts_is_guarded(monkeypatch, gpu_backend, kwargs, expected):
+    import httpx
+
     sent = []
 
     class Client:
-        def __init__(self, **kwargs):
+        def __init__(self, **kw):
             pass
 
         def __enter__(self):
@@ -394,59 +571,38 @@ def test_gguf_tts_is_guarded(monkeypatch):
             sent.append(json)
             raise httpx.ConnectError("stop here")
 
-    import httpx
-
     monkeypatch.setattr(llama_cpp.httpx, "Client", Client)
     monkeypatch.setattr(LlamaCppBackend, "_auth_headers", {}, raising = False)
     monkeypatch.setattr(LlamaCppBackend, "base_url", "http://llama.test", raising = False)
-    for launch_min_p, min_p, expected in [(0.0, 1.0, False), (0.0, 0.99, None), (None, 1.0, None)]:
-        with pytest.raises(httpx.ConnectError):
-            _guarded_backend(launch_min_p).generate_audio_response("hi", "snac", min_p = min_p)
-        assert sent.pop().get("backend_sampling", None) is expected
+    with pytest.raises(httpx.ConnectError):
+        gpu_backend.generate_audio_response("hi", "snac", **kwargs)
+    assert sent.pop().get("backend_sampling", None) is expected
 
 
-def _route_backend(launch_min_p = 0.0):
-    return type(
-        "RouteBackend",
-        (),
-        {
-            "is_loaded": True,
-            "is_vision": False,
-            "base_url": "http://llama.test",
-            "context_length": 4096,
-            "model_identifier": "gguf",
-            "markup_profile": None,
-            "guard_gpu_min_p": _guarded_backend(launch_min_p).guard_gpu_min_p,
-            "_request_reasoning_kwargs": lambda self, *a: None,
-        },
-    )()
-
-
-def test_every_chat_passthrough_body_is_guarded():
+@pytest.mark.parametrize(
+    "top_k, min_p, expected",
+    [(20, 1.0, False), (1000000, 0.05, False), (20, 0.05, None)],
+    ids = ["min_p-1", "top_k-past-vocab", "inside"],
+)
+def test_every_chat_passthrough_body_is_guarded(gpu_backend, top_k, min_p, expected):
+    # /v1/messages (both) build through _build_passthrough_payload; OpenAI /v1/chat/completions
+    # and the streaming /v1/responses passthrough through _build_openai_passthrough_body on it.
     from models.inference import ChatCompletionRequest, ChatMessage
     from routes.inference import _build_openai_passthrough_body, _build_passthrough_payload
 
-    args = ([{"role": "user", "content": "hi"}], None, 0.7, 0.9, 20, 16, False)
-    assert (
-        _build_passthrough_payload(*args, min_p = 1.0, llama_backend = _route_backend())[
-            "backend_sampling"
-        ]
-        is False
-    )
-    for backend, min_p in [
-        (_route_backend(), 0.99),
-        (_route_backend(), None),
-        (_route_backend(None), 1.0),
-    ]:
-        assert "backend_sampling" not in _build_passthrough_payload(
-            *args, min_p = min_p, llama_backend = backend
+    gpu_backend._request_reasoning_kwargs = lambda *a: None
+    args = ([{"role": "user", "content": "hi"}], None, 0.7, 0.9, top_k, 16, False)
+    body = _build_passthrough_payload(*args, min_p = min_p, llama_backend = gpu_backend)
+    assert body.get("backend_sampling") is expected
+    if top_k <= 100:  # the OpenAI schema caps top_k at 100
+        request = ChatCompletionRequest(
+            model = "default",
+            messages = [ChatMessage(role = "user", content = "hi")],
+            min_p = min_p,
+            top_k = top_k,
         )
-    # OpenAI /v1/chat/completions and the streaming /v1/responses passthrough build through it.
-    request = ChatCompletionRequest(
-        model = "default", messages = [ChatMessage(role = "user", content = "hi")], min_p = 1.0
-    )
-    body = _build_openai_passthrough_body(request, llama_backend = _route_backend())
-    assert body["backend_sampling"] is False
+        body = _build_openai_passthrough_body(request, llama_backend = gpu_backend)
+        assert body.get("backend_sampling") is expected
 
 
 def test_every_passthrough_build_hands_over_the_backend():
@@ -468,16 +624,24 @@ def test_every_passthrough_build_hands_over_the_backend():
 
 
 @pytest.mark.parametrize(
-    "launch_min_p, raw, expected",
+    "gpu, raw, expected",
     [
-        (0.0, {"min_p": 1}, False),
-        (0.0, {"min_p": 0.99}, None),
-        (0.0, {}, None),
-        (None, {"min_p": 1}, None),
-        (None, {"min_p": 1, "backend_sampling": True}, False),
+        (True, {"min_p": 1}, False),
+        (True, {"top_k": 1000000}, False),
+        (True, {"min_keep": 3, "top_k": 3, "top_p": 0.1, "min_p": 0}, False),
+        (True, {"samplers": ["temperature", "top_k"], "temperature": 0}, False),
+        (True, {"logit_bias": [[15, 2], [15, 3]]}, False),
+        (True, {"dynatemp_range": 0.5}, False),
+        (True, {"seed": 42, "top_p": 1.0}, False),
+        (True, {"seed": 42, "top_p": 0.9}, None),
+        (True, {"min_p": 0.99, "top_k": 40}, None),
+        (True, {}, None),
+        (False, {"min_p": 1, "top_k": 1000000}, None),
+        (False, {"top_k": 1000000, "backend_sampling": True}, False),
+        (False, {"top_k": 40, "backend_sampling": True}, True),
     ],
 )
-def test_the_raw_completions_proxy_is_guarded(monkeypatch, launch_min_p, raw, expected):
+def test_the_raw_completions_proxy_is_guarded(request, monkeypatch, gpu, raw, expected):
     import asyncio
     from types import SimpleNamespace
 
@@ -508,8 +672,11 @@ def test_the_raw_completions_proxy_is_guarded(monkeypatch, launch_min_p, raw, ex
             sent.append(dict(json))
             return httpx.Response(200, json = {"id": "cmpl-test", "choices": [{"text": "ok"}]})
 
+    backend = request.getfixturevalue("gpu_backend" if gpu else "cpu_backend")
+    monkeypatch.setattr(type(backend), "is_loaded", property(lambda self: True), raising = False)
+    monkeypatch.setattr(type(backend), "base_url", "http://llama.test", raising = False)
     monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
     monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: Client())
-    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: _route_backend(launch_min_p))
+    monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
     asyncio.run(inf_mod.openai_completions(Request(), current_subject = "test"))
     assert sent[0].get("backend_sampling", None) is expected

@@ -39752,7 +39752,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     # body so /v1/completions honors the same pins as /v1/chat/completions; it is otherwise a
     # verbatim proxy that would keep llama-server's defaults for every omitted sampling field.
     _fill_recommended_sampling_completions(body, getattr(llama_backend, "model_identifier", None))
-    body = _guard_gpu_min_p(body, llama_backend)
+    body = _guard_gpu_sampler(body, llama_backend)
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
     prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
@@ -47754,16 +47754,18 @@ def _build_passthrough_payload(
         body["chat_template_kwargs"] = chat_template_kwargs
     if thinking_budget_tokens is not None:
         body["thinking_budget_tokens"] = thinking_budget_tokens
-    return _guard_gpu_min_p(body, llama_backend)
+    return _guard_gpu_sampler(body, llama_backend)
 
 
-def _guard_gpu_min_p(body: dict, llama_backend) -> dict:
-    """The body with the GPU sampler turned off where its min_p would drop every token.
+def _guard_gpu_sampler(body: dict, llama_backend) -> dict:
+    """The body with the GPU sampler turned off where it would not sample it as the CPU does.
 
     Every chat passthrough body is built by _build_passthrough_payload, and /v1/completions
-    forwards the client's raw body; both end here. A test double without the guard passes through.
+    forwards the client's raw body, every llama-native field included; both end here and are
+    checked field by field (LlamaCppBackend.guard_gpu_sampler). A test double without the guard
+    passes through.
     """
-    guard = getattr(llama_backend, "guard_gpu_min_p", None)
+    guard = getattr(llama_backend, "guard_gpu_sampler", None)
     return guard(body) if callable(guard) else body
 
 
