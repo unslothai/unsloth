@@ -4767,6 +4767,35 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
 
 
+_SPEC_DRAFT_SAMPLING_ENV = "UNSLOTH_SPEC_DRAFT_SAMPLING"
+
+
+def _spec_draft_sampling_flags(
+    caps: Optional[dict], extra_args: Optional[Iterable[str]]
+) -> list[str]:
+    """``--spec-draft-sampling probabilistic`` for an MTP drafter (built-in head or a separate one).
+
+    llama-server's default drafts the argmax and accepts a drafted token only when the
+    target samples exactly that token, so at Studio's T > 0 chat defaults most drafts are
+    rejected. Probabilistic drafting samples the draft and verifies it by rejection sampling
+    (accept with min(1, p/q), else resample from max(0, p - q)): the output distribution is
+    the target's either way, and at temperature 0 llama-server keeps the greedy match.
+    Not emitted when the build lacks the flag, when the user's extras or the inherited
+    LLAMA_ARG_SPEC_DRAFT_SAMPLING already choose, or with UNSLOTH_SPEC_DRAFT_SAMPLING=greedy."""
+    if not caps or not caps.get("supports_spec_draft_sampling"):
+        return []
+    if _extra_args_set_any_flag(extra_args, {"--spec-draft-sampling"}):
+        return []
+    if os.environ.get("LLAMA_ARG_SPEC_DRAFT_SAMPLING"):
+        return []
+    mode = (os.environ.get(_SPEC_DRAFT_SAMPLING_ENV) or "probabilistic").strip().lower()
+    if mode not in ("probabilistic", "greedy"):
+        mode = "probabilistic"
+    if mode == "greedy":
+        return []
+    return ["--spec-draft-sampling", "probabilistic"]
+
+
 # Layer-offload override detection. Single-sourced from llama_server_args, which
 # also strips these (plus the MoE flags) from inherited extras; sharing the layer
 # set keeps detection and stripping from drifting.
@@ -10548,6 +10577,7 @@ class LlamaCppBackend:
                 "supports_ngram_mod": False,
                 "spec_draft_n_max_flag": None,
                 "spec_draft_n_max_default": None,
+                "supports_spec_draft_sampling": False,
                 "supports_kv_unified": False,
                 # Fail OPEN, unlike every key above. These three are emitted on
                 # every launch today, so a failed probe must keep emitting them;
@@ -10612,6 +10642,7 @@ class LlamaCppBackend:
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         spec_draft_n_max_default: Optional[int] = None
+        supports_spec_draft_sampling = False
         supports_kv_unified = False
         supports_trace_verbosity = False
         # See the fallback dict: these fail open.
@@ -10837,6 +10868,17 @@ class LlamaCppBackend:
                 if _n_max_default:
                     spec_draft_n_max_default = int(_n_max_default.group(1))
 
+            # --spec-draft-sampling {greedy,probabilistic} (ggml-org/llama.cpp#27694): the draft samples
+            # and the target verifies by rejection sampling. Fails closed: a build without it exits on it,
+            # and one whose help does not list "probabilistic" is not trusted with the value.
+            supports_spec_draft_sampling = bool(
+                probe_ok
+                and _is_real("--spec-draft-sampling")
+                and re.search(
+                    r"(?<![a-z0-9_-])probabilistic(?![a-z0-9_-])",
+                    (blocks.get("--spec-draft-sampling") or "").lower(),
+                )
+            )
             supports_kv_unified = _is_real("--kv-unified")
             # Fails closed: an older build's level 4 may be per-token debug on the decode path.
             supports_trace_verbosity = bool(
@@ -10979,6 +11021,7 @@ class LlamaCppBackend:
             "supports_ngram_mod": ngram_mod_flavor is not None,
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "spec_draft_n_max_default": spec_draft_n_max_default,
+            "supports_spec_draft_sampling": supports_spec_draft_sampling,
             "supports_kv_unified": supports_kv_unified,
             "supports_no_context_shift": supports_no_context_shift,
             "supports_jinja": supports_jinja,
@@ -35461,6 +35504,7 @@ class LlamaCppBackend:
                     )
             flags.extend(["--spec-type", spec_value, n_max_flag, str(draft_n_max)])
             flags.extend(ngram_knobs)
+            flags.extend(_spec_draft_sampling_flags(caps, extra_args))
             self._speculative_type = "draft-mtp"
             chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
             logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
