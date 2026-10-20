@@ -8419,9 +8419,10 @@ def _gc_keep_layers_env():
 
 class _AutoCheckpointSkip:
     """checkpoint_skip_layers = "auto": once, after step 1, un-checkpoint as many layers as fit.
-    Per-layer cost = allocation left by its reentrant recompute in the first backward; AdamW state is
-    reserved for every trainable param the optimizer has no state for yet. Single process only: under
-    torchrun each rank would pick its own K."""
+    Per-layer cost = the largest allocation any eligible layer's reentrant recompute leaves in the
+    first backward (hybrid stacks mix attention and Mamba blocks); AdamW state is reserved for every
+    trainable param the optimizer has no state for yet. Single process only: under torchrun each rank
+    would pick its own K."""
 
     MARGIN = 1 << 30
     FRACTION = 0.75
@@ -8435,6 +8436,7 @@ class _AutoCheckpointSkip:
         self.started = None
         self.no_grad_forward = False
         self.before = None
+        self.measured = set()
         self.layer_bytes = None
         self.layer_rows = 1
         self.kept = None
@@ -8489,16 +8491,32 @@ class _AutoCheckpointSkip:
                 'Unsloth: checkpoint_skip_layers = "auto" sizes one GPU; the layers span several, so every layer stays checkpointed.'
             )
             return None
+        import functools, weakref
+
         self = cls(model, layers, layers[eligible[-1]])
         self.handles.append(model.register_forward_pre_hook(self._model_pre_hook))
-        self.handles.append(self.probe.register_forward_pre_hook(self._probe_pre_hook))
-        self.handles.append(self.probe.register_forward_hook(self._probe_hook))
+        for i in eligible:
+            layer = layers[i]
+            self.handles.append(
+                layer.register_forward_pre_hook(functools.partial(self._probe_pre_hook, i))
+            )
+            self.handles.append(layer.register_forward_hook(functools.partial(self._probe_hook, i)))
         try:
             from torch.optim.optimizer import register_optimizer_step_pre_hook
         except ImportError:
             register_optimizer_step_pre_hook = None
         if register_optimizer_step_pre_hook is not None:
-            self.handles.append(register_optimizer_step_pre_hook(self._optimizer_pre_hook))
+            # The global registry must not keep the planner (and so the model) alive if plan() never runs.
+            planner_ref = weakref.ref(self)
+
+            def _optimizer_pre_hook(optimizer, args, kwargs):
+                planner = planner_ref()
+                if planner is not None:
+                    planner._optimizer_pre_hook(optimizer, args, kwargs)
+
+            handle = register_optimizer_step_pre_hook(_optimizer_pre_hook)
+            self.handles.append(handle)
+            weakref.finalize(self, handle.remove)
         model._unsloth_auto_skip = self
         return self
 
@@ -8534,8 +8552,8 @@ class _AutoCheckpointSkip:
         if self.layer_bytes is not None:
             self.plan(device)
 
-    def _probe_pre_hook(self, module, args):
-        if self.started is None or self.layer_bytes is not None or not module.training:
+    def _probe_pre_hook(self, index, module, args):
+        if self.started is None or index in self.measured or not module.training:
             return
         if not torch.is_grad_enabled():
             # The reentrant checkpoint's own forward: the next grad-mode call is its recompute.
@@ -8550,14 +8568,35 @@ class _AutoCheckpointSkip:
         hidden = args[0] if args and torch.is_tensor(args[0]) else None
         if hidden is not None and hidden.is_cuda:
             self.layer_rows = hidden.shape[-2] if hidden.dim() >= 3 else hidden.shape[0]
-            self.before = torch.cuda.memory_allocated(hidden.device)
+            self.before = (index, torch.cuda.memory_allocated(hidden.device))
 
-    def _probe_hook(self, module, args, output):
-        if self.before is None or self.layer_bytes is not None:
+    def _probe_hook(self, index, module, args, output):
+        if self.before is None or self.before[0] != index or index in self.measured:
             return
         device = self._device(self.probe)
-        self.layer_bytes = max(0, torch.cuda.memory_allocated(device) - self.before)
+        cost = max(0, torch.cuda.memory_allocated(device) - self.before[1])
+        self.measured.add(index)
+        # Conservative: the most expensive layer type sizes every kept layer.
+        self.layer_bytes = max(self.layer_bytes or 0, cost)
         self.before = None
+
+    def _seq_exponent(self):
+        """Activation growth with sequence length: 1 for SDPA / flash / flex, 2 for anything that
+        materialises the attention matrix (eager) or cannot be identified."""
+        config = getattr(self.model, "config", None)
+        text_config = config
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                text_config = get_text_config()
+            except Exception:
+                text_config = config
+        impl = getattr(text_config, "_attn_implementation", None) or getattr(
+            config, "_attn_implementation", None
+        )
+        if isinstance(impl, str) and any(k in impl for k in ("sdpa", "flash", "flex")):
+            return 1
+        return 2
 
     def _optimizer_pre_hook(self, optimizer, args, kwargs):
         if self.started is None or self.stepped:
@@ -8601,6 +8640,8 @@ class _AutoCheckpointSkip:
         # A short first batch (dynamic padding) under-measures: size for max_seq_length rows.
         max_seq = getattr(self.model, "max_seq_length", None) or 0
         scale = max(1.0, max_seq / max(1, self.layer_rows)) if max_seq else 1.0
+        # Eager attention keeps a seq x seq matrix per layer: size quadratically (over-estimates the rest).
+        scale = scale ** self._seq_exponent()
         # Persistent grads from the first backward are in the peak too; only the rest grows with length.
         step_bytes = max(0, peak - allocated_start)
         grad_bytes = self.grad_bytes if self.grad_bytes is not None else self._fresh_grad_bytes()

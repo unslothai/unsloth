@@ -299,3 +299,139 @@ def test_auto_does_not_scale_persistent_grads_by_sequence_length():
     assert planner.kept == [0, 1, 2, 3, 4, 5]
     del optimizer, model
     torch.cuda.empty_cache()
+
+
+class _FakeLayer(torch.nn.Module):
+    """A decoder layer whose recompute leaves `cost` fake CUDA bytes behind."""
+
+    def __init__(self, cost, memory):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.zeros(1), requires_grad = False)
+        self.gradient_checkpointing = True
+        self.cost, self.memory = cost, memory
+
+    def forward(self, hidden):
+        if torch.is_grad_enabled():
+            self.memory["allocated"] += self.cost
+        return hidden
+
+
+class _FakeModel(torch.nn.Module):
+    def __init__(self, costs, memory, attn = "sdpa"):
+        super().__init__()
+        self.model = torch.nn.Module()
+        self.model.layers = torch.nn.ModuleList(_FakeLayer(c, memory) for c in costs)
+        self.config = type("Config", (), {"_attn_implementation": attn})()
+        self.max_seq_length = 16
+
+    def forward(self, hidden):
+        return hidden
+
+
+def _fake_cuda(monkeypatch, ns, usable):
+    """CPU stand-ins for the CUDA calls the planner makes; memory_allocated is a counter."""
+    memory = {"allocated": 0}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda device = None: None)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: memory["allocated"])
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda device = None: memory["allocated"])
+    ns["usable_cuda_bytes"] = lambda device: usable
+    return memory
+
+
+def _fake_step(model, rows):
+    """One reentrant-checkpointed step: no_grad forward of every layer, recompute in reverse."""
+    hidden = torch.zeros(1, rows, 4)
+    model(hidden)
+    with torch.no_grad():
+        for layer in model.model.layers:
+            layer(hidden)
+    for layer in reversed(model.model.layers):
+        layer(hidden)
+
+
+def test_auto_sizes_by_the_most_expensive_layer_type(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    # Hybrid stack: expensive attention blocks, cheap Mamba-like blocks, the last one cheap.
+    costs = [gib, gib // 8] * 4
+    memory = _fake_cuda(monkeypatch, ns, usable = 10 * gib)
+    model = _FakeModel(costs, memory)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))  # plans here
+    assert planner.layer_bytes == gib
+    # (10 GiB - 4.5 GiB step) * 0.75 - 1 GiB = 3.125 GiB: 3 one-GiB layers, not 25 eighth-GiB ones.
+    assert len(planner.kept) == 3
+    monkeypatch.undo()
+
+
+@pytest.mark.parametrize("attn, exponent", [("sdpa", 1), ("flash_attention_2", 1), ("eager", 2)])
+def test_auto_scales_eager_attention_quadratically(monkeypatch, attn, exponent):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 12 * gib)
+    model = _FakeModel([gib // 16] * 8, memory, attn = attn)
+    model.max_seq_length = 64  # 4x the probed 16 rows
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    scale = 4**exponent
+    step = 8 * (gib // 16)
+    budget = (12 * gib - step * scale) * 0.75 - gib
+    assert len(planner.kept) == min(8, int(budget // (gib // 16 * scale)))
+    # Linear: 8 of 8 fit. Quadratic: a 4x longer batch costs 16x, so only 2 do.
+    assert len(planner.kept) == (8 if exponent == 1 else 2)
+    monkeypatch.undo()
+
+
+def test_auto_planner_does_not_keep_an_unplanned_model_alive(monkeypatch):
+    import gc, weakref
+    from torch.optim import optimizer as torch_optimizer
+
+    ns, found = _load()
+    global_hooks = dict(getattr(torch_optimizer, "_global_optimizer_pre_hooks", {}))
+    memory = _fake_cuda(monkeypatch, ns, usable = 1 << 30)
+    model = _FakeModel([1] * 4, memory)
+    ns["skip_checkpointing"](model, "auto")
+    assert model._unsloth_auto_skip is not None
+    alive = weakref.ref(model)
+    del model
+    gc.collect()
+    assert alive() is None, "the global optimizer hook kept the model alive"
+    assert dict(getattr(torch_optimizer, "_global_optimizer_pre_hooks", {})) == global_hooks
+    monkeypatch.undo()
+
+
+@pytest.mark.parametrize("path", ["llama.py", "vision.py"])
+def test_full_finetuning_early_return_applies_checkpoint_skip(path):
+    src = open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read()
+    mod = ast.parse(src)
+    fn = next(
+        f
+        for cls in mod.body
+        if isinstance(cls, ast.ClassDef)
+        for f in cls.body
+        if isinstance(f, ast.FunctionDef) and f.name == "get_peft_model"
+    )
+    branches = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.If)
+        and "UNSLOTH_ENABLE_FULL_FINETUNING" in ast.get_source_segment(src, node.test)
+        and isinstance(node.body[-1], ast.Return)
+    ]
+    assert branches, f"full finetuning early return not found in {path}"
+    for branch in branches:
+        calls = [
+            c
+            for stmt in branch.body
+            for c in ast.walk(stmt)
+            if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "skip_checkpointing"
+        ]
+        assert calls and any(
+            getattr(a, "id", None) == "checkpoint_skip_layers" for c in calls for a in c.args
+        ), f"{path}: full finetuning returns before checkpoint_skip_layers is applied"
