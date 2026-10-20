@@ -651,8 +651,6 @@ def evaluate(
             if effective_base:
                 model_args["pretrained"] = _vllm_base(effective_base)
                 model_args["lora_local_path"] = _local_adapter(model)
-                # lm-eval 0.4.4 never enables LoRA on the engine itself
-                model_args["enable_lora"] = True
                 rank = _adapter_rank(model_args["lora_local_path"])
                 if rank > 16:
                     model_args["max_lora_rank"] = next(
