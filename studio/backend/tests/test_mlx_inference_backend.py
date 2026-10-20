@@ -1176,6 +1176,7 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     from core.inference import mlx_memory as mm
 
     plans = []
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: object())
     monkeypatch.setattr(mm, "mlx_offload_plan", lambda d, **kw: plans.append(kw) or (1.0, 0.5))
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 << 40)
     monkeypatch.setattr(mi, "mlx_checkpoint_window", lambda d: 32768)
@@ -1192,6 +1193,10 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     assert auto("/snap", 0.5, None) == (0.5, None) and auto(None, "auto", "auto") == (None, None)
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: None)
     assert auto("/snap", "auto", "auto") == (None, None) and len(plans) == 1
+    # An unsloth_zoo that cannot offload (or no MLX at all) is never asked for an MLX budget.
+    monkeypatch.setattr(mm, "mlx_offload_planner", lambda: None)
+    monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 / 0)
+    assert auto("/snap", "auto", 0.5) == (None, 0.5) and len(plans) == 1
 
 
 def test_offload_knobs_validate_and_reload_on_change():

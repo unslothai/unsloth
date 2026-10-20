@@ -1043,8 +1043,11 @@ def mlx_resolve_offload(
     fixed = tuple(None if knob == "auto" else knob for knob in knobs)
     if "auto" not in knobs or not model_dir:
         return fixed
-    from core.inference.mlx_memory import mlx_offload_plan
+    from core.inference.mlx_memory import mlx_offload_plan, mlx_offload_planner
 
+    # Also keeps the estimate working where MLX is not importable: the budget needs it.
+    if mlx_offload_planner() is None:
+        return fixed
     budget = mlx_memory_budget(retains_history = retains_history)
     ceiling = pinned or mlx_checkpoint_window(model_dir)
     if budget is None or not ceiling:

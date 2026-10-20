@@ -1328,6 +1328,7 @@ class TestEstimateMemoryRoute:
         monkeypatch.setattr(
             mlx_memory, "mlx_offloadable_parts", lambda model_dir, vision = None: ("experts",)
         )
+        monkeypatch.setattr(mlx_memory, "mlx_offload_planner", lambda: object())
         monkeypatch.setattr(mlx_inference, "mlx_memory_budget", lambda retains_history: 1 << 40)
         monkeypatch.setattr(
             mlx_memory, "mlx_offload_plan", lambda d, **kw: planned.append(kw) or (kw["ple"], 0.6)
@@ -4274,7 +4275,9 @@ def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
         "experts": 0.5,
     }
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: SimpleNamespace(plan_offload = decide))
-    monkeypatch.setattr(mm, "_snapshot_config", lambda d: {"model_type": "qwen3_moe"})
+    monkeypatch.setattr(
+        mm, "_snapshot_config", lambda d: {"model_type": "qwen3_moe", "quantization": {"bits": 4}}
+    )
     monkeypatch.setattr(mm, "_checkpoint_fingerprint", lambda d: ())
     monkeypatch.setattr(
         mm,
