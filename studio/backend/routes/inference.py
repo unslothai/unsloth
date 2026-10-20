@@ -6771,6 +6771,9 @@ async def _select_request_tools(
             apply_terminal_profile_for_request, tools, getattr(payload, "sandbox_level", None)
         )
     if mcp_allowed:
+        from core.inference.media_chat_tools import remember_server_loop
+        # The Unsloth Studio tools row runs its calls on this loop, as the media tools do.
+        remember_server_loop(asyncio.get_running_loop())
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
     # which know this field.

@@ -89,7 +89,9 @@ from core.inference.mcp_client import (
     get_cached_resources,
     get_cached_tools,
     in_failure_cooloff,
+    invalidate_tool_cache,
     is_studio_decisions,
+    is_studio_tools,
     is_stdio,
     list_tools_async,
     oauth_client_kwargs,
@@ -14454,9 +14456,13 @@ async def get_enabled_mcp_tools(
     if not servers:
         return []
 
-    # cool-off avoids blocking every send for the full probe timeout when a server is down.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down. The Unsloth Studio
+    # tools row is listed in process, so it is re-listed every send and an owner's tool toggles apply at once.
     uncached = [
-        s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
+        s
+        for s in servers
+        if is_studio_tools(s["url"])
+        or (get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"]))
     ]
     if uncached:
         results = await asyncio.gather(
@@ -14491,6 +14497,9 @@ async def get_enabled_mcp_tools(
                 # Failures aren't cached, but record one so a down server isn't re-probed every send during the
                 # cool-off.
                 record_probe_failure(server["id"], bool(fresh.get("use_oauth")))
+                if is_studio_tools(server["url"]):
+                    # Never fall back to an older listing that may name a tool since turned off.
+                    invalidate_tool_cache(server["id"])
                 continue
             cache_tools(server["id"], payload)
 

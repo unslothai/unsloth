@@ -1,0 +1,158 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The chat's "Unsloth Studio" MCP row: the /mcp tools minus ``CHAT_DENYLIST``, answered in process.
+
+Nothing here passes the /mcp gate, so the owner's Agent access switch does not apply and nothing new listens on
+the network. Each call mints an internal API key for the chat's own account and binds it as the tools' caller, so
+every forwarded route is account-scoped and redacted exactly as for an agent's key. The key is revoked when the
+call ends, however it ends."""
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import contextvars
+import threading
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
+
+from loggers import get_logger
+
+logger = get_logger(__name__)
+
+STUDIO_TOOLS_MCP_PATH = "/mcp/studio-tools"
+# The row's URL. Never dialled: mcp_client answers it in process, whatever port Unsloth Studio runs on.
+STUDIO_TOOLS_MCP_URL = "http://127.0.0.1" + STUDIO_TOOLS_MCP_PATH
+
+_KEY_MAX_S = 6 * 3600
+_KEY_GRACE_S = 300.0
+_DEFAULT_WAIT_S = 3600.0
+_POLL_S = 0.25
+
+_studio_app: Any = None
+_mcp: Any = None
+_mcp_lock = threading.Lock()
+
+
+def remember_studio_app(app: Any) -> None:
+    global _studio_app
+    _studio_app = app
+
+
+def chat_tools_mcp() -> Any:
+    """The chat's own instance, separate from /mcp's, so the external server is untouched."""
+    global _mcp
+    with _mcp_lock:
+        if _mcp is None:
+            from mcp_server import CHAT_DENYLIST, create_studio_mcp
+
+            _mcp = create_studio_mcp(exclude = CHAT_DENYLIST)
+        return _mcp
+
+
+def _mint(account: Any, limit: float) -> tuple[str, dict]:
+    from auth import storage
+
+    # The stored username, not the context's: the owner's context may carry the default name.
+    record = storage.get_account_by_id(account.account_id)
+    if record is None:
+        raise RuntimeError("the account is missing or disabled")
+    expires = datetime.now(timezone.utc) + timedelta(seconds = min(limit + _KEY_GRACE_S, _KEY_MAX_S))
+    return storage.create_api_key(
+        username = record.username,
+        name = storage.STUDIO_CHAT_TOOLS_KEY_NAME,
+        expires_at = expires.isoformat(),
+        internal = True,
+        # Pinned to this account, as Deep Research does: the username could name a recreated namesake.
+        account_id = None if record.is_owner else record.account_id,
+    )
+
+
+def _revoke(key_id: int) -> None:
+    from auth import storage
+
+    try:
+        storage.revoke_internal_api_key(key_id)
+    except Exception:  # noqa: BLE001 - the key still expires on its own
+        logger.exception("Could not revoke the Unsloth Studio chat tools key %s", key_id)
+
+
+async def _call(caller: Any, name: str, args: dict) -> Any:
+    from fastmcp import Client
+
+    from studio_mcp.caller import bind_caller, reset_caller
+
+    # Bound before connecting: the in-memory server task is started from this task and copies its context.
+    token = bind_caller(caller)
+    try:
+        async with Client(chat_tools_mcp()) as client:
+            return await client.call_tool(name, args, raise_on_error = False)
+    finally:
+        reset_caller(token)
+
+
+def call(
+    name: str,
+    args: dict,
+    *,
+    timeout: Optional[float],
+    cancel_event: Any = None,
+    ui_resource_uri: Optional[str] = None,
+) -> str:
+    """Run one tool as the current account on the server loop. Never raises: failures are "Error: ..." text."""
+    from core.inference.mcp_client import _flatten_result
+    from core.inference.media_chat_tools import server_loop
+    from studio_mcp.caller import Caller
+    from utils.account_context import arun_as, current_account
+
+    account = current_account()
+    app = _studio_app
+    loop = server_loop()
+    if app is None or loop is None:
+        return f"Error: MCP tool '{name}' failed: Unsloth Studio tools are not ready yet. Try again."
+    limit = _DEFAULT_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
+    # The key must outlive the call.
+    limit = min(limit, _KEY_MAX_S - _KEY_GRACE_S)
+    try:
+        key, row = _mint(account, limit)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not mint an Unsloth Studio chat tools key: %s", exc)
+        return f"Error: MCP tool '{name}' failed: Unsloth Studio could not authorize this call."
+    try:
+        port = getattr(app.state, "server_port", None)
+        caller = Caller(
+            token = key,
+            account_id = account.account_id,
+            # A prompt-injected model must not reach host files, even the owner's.
+            direct_local = False,
+            public_base = f"http://127.0.0.1:{port}" if port else "http://127.0.0.1",
+            studio_app = app,
+            hf_token = None,
+        )
+        # An empty context: the tool-loop thread may carry another request's fastmcp HTTP request, which would
+        # outrank the bound caller.
+        future = contextvars.Context().run(
+            asyncio.run_coroutine_threadsafe, arun_as(account, _call(caller, name, args)), loop
+        )
+        deadline = time.monotonic() + limit
+        while not future.done():
+            if cancel_event is not None and cancel_event.is_set():
+                future.cancel()
+                return f"Error: MCP tool '{name}' cancelled"
+            if time.monotonic() >= deadline:
+                future.cancel()
+                return f"Error: MCP tool '{name}' timed out after {limit:g}s"
+            concurrent.futures.wait([future], timeout = _POLL_S)
+        try:
+            result = future.result()
+        except concurrent.futures.CancelledError:
+            return f"Error: MCP tool '{name}' cancelled"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unsloth Studio chat tool %s failed", name)
+            return f"Error: MCP tool '{name}' failed: {exc}"
+        return _flatten_result(result, ui_resource_uri)
+    finally:
+        # Here, not on the loop: a cancelled or timed-out call still loses its key at once.
+        _revoke(row["id"])
