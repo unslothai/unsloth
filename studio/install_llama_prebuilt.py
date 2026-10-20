@@ -821,6 +821,25 @@ def _upstream_arm64_cuda_allowed() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _upstream_windows_hip_asset_names(release_tag: str, assets: "Iterable[str]") -> list[str]:
+    """Upstream Windows HIP bundles in this release: the old win-hip-radeon name, then
+    win-rocm-<ver> (the only name since ggml-org moved to TheRock builds), newest first."""
+    names = list(assets)
+    legacy = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
+    pattern = re.compile(
+        rf"llama-{re.escape(release_tag)}-bin-win-rocm-([0-9]+(?:\.[0-9]+)*)-x64\.zip"
+    )
+    versioned = sorted(
+        (
+            (tuple(int(p) for p in m.group(1).split(".")), name)
+            for name in names
+            if (m := pattern.fullmatch(name)) is not None
+        ),
+        reverse = True,
+    )
+    return ([legacy] if legacy in names else []) + [name for _version, name in versioned]
+
+
 def windows_cuda_arch_for_host(host: HostInfo) -> str:
     """CUDA prebuilt arch token for a Windows host: arm64 on Windows on ARM, else x64.
 
@@ -1328,19 +1347,32 @@ def direct_upstream_release_plan(
             )
             attempts[:] = _drop_blackwell_incapable_windows_cuda(selection_host, attempts)
         elif host.has_rocm:
-            hip_asset = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
-            hip_url = assets.get(hip_asset)
-            if hip_url:
+            for hip_asset in _upstream_windows_hip_asset_names(release_tag, assets):
                 attempts.append(
                     AssetChoice(
                         repo = repo,
                         tag = release_tag,
                         name = hip_asset,
-                        url = hip_url,
+                        url = assets[hip_asset],
                         source_label = "upstream",
                         install_kind = "windows-hip",
                     )
                 )
+            # Vulkan before CPU should the HIP bundle be missing or fail validation.
+            if not host.has_physical_nvidia:
+                vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
+                vulkan_url = assets.get(vulkan_asset)
+                if vulkan_url:
+                    attempts.append(
+                        AssetChoice(
+                            repo = repo,
+                            tag = release_tag,
+                            name = vulkan_asset,
+                            url = vulkan_url,
+                            source_label = "upstream",
+                            install_kind = "windows-vulkan",
+                        )
+                    )
         # Intel or AMD-without-usable-ROCm: use the Vulkan prebuilt, matching the published
         # branch and the Linux x86_64 one here. Reached when the caller pins a non-default
         # --published-repo, so leaving it Intel-only sent a Windows AMD host to the CPU
@@ -2036,6 +2068,35 @@ def _mask_widened_sms(host: HostInfo) -> list[str] | None:
     return normalize_compute_caps(physical + visible)
 
 
+_TEGRA_FALLBACK_LOGGED: list[bool] = []
+
+
+@functools.lru_cache(maxsize = 1)
+def _is_tegra() -> bool:
+    """Jetson: JetPack's release file, or a Tegra SoC in the device tree. Mirrors
+    studio/backend/utils/tegra.py; never raises."""
+    try:
+        if os.path.exists("/etc/nv_tegra_release"):
+            return True
+        with open("/proc/device-tree/compatible", "rb") as fh:
+            return b"nvidia,tegra" in fh.read()
+    except OSError:
+        return False
+
+
+def _tegra_blocks_arm64_cuda(host: HostInfo) -> bool:
+    """A Jetson below CUDA 13: the linux-arm64-cuda bundle is built for server (SBSA) ARM64
+    and its CUDA libraries do not run on JetPack, so it source-builds. Thor (JetPack 7,
+    CUDA 13) is SBSA and keeps the bundle; an unknown driver version keeps it too."""
+    return (
+        host.is_linux
+        and host.is_arm64
+        and host.driver_cuda_version is not None
+        and host.driver_cuda_version[0] < 13
+        and _is_tegra()
+    )
+
+
 def linux_cuda_choice_from_release(
     host: HostInfo,
     release: PublishedReleaseBundle,
@@ -2043,6 +2104,15 @@ def linux_cuda_choice_from_release(
     selection_preamble: Iterable[str] = (),
     host_sms: list[str] | None = None,
 ) -> LinuxCudaSelection | None:
+    if _tegra_blocks_arm64_cuda(host):
+        if not _TEGRA_FALLBACK_LOGGED:
+            _TEGRA_FALLBACK_LOGGED.append(True)
+            log(
+                "NVIDIA Jetson (Tegra) with CUDA "
+                f"{host.driver_cuda_version[0]}.{host.driver_cuda_version[1]}: the arm64 CUDA "
+                "bundle targets server ARM64, building from source instead"
+            )
+        return None
     selection_preamble = list(selection_preamble)
     # An explicit host_sms is the widened try, whose miss falls back rather than warns.
     warn_uncovered = host_sms is None
@@ -3007,9 +3077,32 @@ def _windows_display_adapter_in_registry(needles: tuple[tuple[str, str], ...]) -
     return False
 
 
+def _host_machine(system: str) -> str:
+    """platform.machine(), except Apple Silicon under Rosetta reads as arm64.
+
+    x86_64 Python there would install macos-x64, which upstream builds with Metal off, so
+    llama-server ran emulated on CPU; the native arm64 binary runs fine as a child process.
+    hw.optional.arm64 is install.sh's Rosetta probe."""
+    machine = platform.machine().lower()
+    if system != "Darwin" or machine != "x86_64":
+        return machine
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.optional.arm64"],
+            capture_output = True,
+            text = True,
+            timeout = 5,
+        )
+        if result.returncode == 0 and result.stdout.strip() == "1":
+            return "arm64"
+    except Exception:
+        pass
+    return machine
+
+
 def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
     system = platform.system()
-    machine = platform.machine().lower()
+    machine = _host_machine(system)
     is_windows = system == "Windows"
     is_linux = system == "Linux"
     is_macos = system == "Darwin"
@@ -4241,10 +4334,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             if not _host_is_blackwell(host):
                 raise PrebuiltFallback("no compatible Windows CUDA asset was found")
 
-        # AMD ROCm on Windows: try upstream HIP prebuilt, then fall back to CPU
+        # AMD ROCm on Windows: try upstream HIP prebuilt, then Vulkan, then CPU
         if host.has_rocm:
-            hip_name = f"llama-{llama_tag}-bin-win-hip-radeon-x64.zip"
-            if hip_name in upstream_assets:
+            for hip_name in _upstream_windows_hip_asset_names(llama_tag, upstream_assets):
                 log(f"AMD ROCm detected on Windows -- trying upstream HIP prebuilt {hip_name}")
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
@@ -4254,16 +4346,21 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "windows-hip",
                 )
-            log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
+            log("AMD ROCm detected on Windows but no HIP prebuilt found -- trying Vulkan, then CPU")
 
         # Mirrors the Linux branch: without the AMD half a Strix Halo box with no ROCm
-        # tooling took windows-cpu, where the same silicon takes Vulkan on Linux.
+        # tooling took windows-cpu, where the same silicon takes Vulkan on Linux. ROCm
+        # hosts reach here only when the release has no HIP bundle.
         if (
-            (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
-            and not host.has_physical_nvidia
-            and not host.has_rocm
-        ):
-            vendor = "Intel GPU" if host.has_intel_gpu else "AMD GPU without usable ROCm"
+            host.has_intel_gpu or host.has_amd_gpu_without_rocm or host.has_rocm
+        ) and not host.has_physical_nvidia:
+            vendor = (
+                "AMD ROCm"
+                if host.has_rocm
+                else "Intel GPU"
+                if host.has_intel_gpu
+                else "AMD GPU without usable ROCm"
+            )
             vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-x64.zip"
             if vulkan_name in upstream_assets:
                 log(f"{vendor} detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}")
@@ -7506,6 +7603,9 @@ def _fork_manifest_release_plans(
                     and driver_below_cuda_prebuilt_floor(host)
                 ):
                     raise PrebuiltFallback(cuda_driver_floor_message(host)) from exc
+                # Same for a Jetson, which no release's arm64 CUDA bundle serves.
+                if host.has_physical_nvidia and _tegra_blocks_arm64_cuda(host):
+                    raise
                 log(
                     "published release skipped for install planning: "
                     f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"
@@ -9501,7 +9601,7 @@ def platform_only_host() -> HostInfo:
     platform.mac_ver() rather than probed.
     """
     system = platform.system()
-    machine = platform.machine().lower()
+    machine = _host_machine(system)
     is_macos = system == "Darwin"
     return HostInfo(
         system = system,
@@ -10459,9 +10559,9 @@ def _windows_hip_gfx_targets(published_repo: str | None) -> frozenset[str]:
     The combined floor above includes the FORK's windows-rocm bundles, and only the fork is
     planned from a manifest: resolve_simple_install_release_plans() sends every other
     --published-repo (ggml-org, but equally any mirror of upstream-standard assets) to
-    direct_upstream_release_plan(), whose AMD branch offers win-hip-radeon then CPU and never
-    Vulkan. Answering "supported" there for a fork-only arch would silently land it on
-    HIP/CPU instead of the Vulkan bundle that would actually run, so gate on the fork rather
+    direct_upstream_release_plan(), whose AMD branch offers the upstream HIP bundle first and
+    Vulkan only behind it. Answering "supported" there for a fork-only arch would silently land
+    it on HIP instead of the Vulkan bundle that would actually run, so gate on the fork rather
     than exempting one repo, mirroring that dispatch exactly, spelling included: an empty
     value defaults to the fork, and a differently cased repo really does take the upstream
     path and must be answered with upstream coverage."""
