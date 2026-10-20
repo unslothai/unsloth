@@ -403,6 +403,19 @@ _FRAME_HTML = r"""<!doctype html>
           if (!cfg.url || url.origin !== shellOrigin) return url.href;
           return new URL(url.pathname + url.search + url.hash, pageUrl).href;
         };
+        // Routers resolve paths against location.href or location.origin, which throw here ("about:srcdoc", "null").
+        if (cfg.url) {
+          const NativeURL = URL;
+          window.URL = new Proxy(NativeURL, {
+            construct(target, args, newTarget) {
+              const base = args.length > 1 ? String(args[1]) : "";
+              if (base === "null") args = [args[0], new NativeURL(pageUrl).origin];
+              else if (/^about:srcdoc(?=[?#]|$)/.test(base)) args = [args[0], pageUrl];
+              else if (args.length === 1 && args[0] === "null") args = [new NativeURL(pageUrl).origin];
+              return Reflect.construct(target, args, newTarget);
+            },
+          });
+        }
         const resolve = (href) => {
           try { return toPage(new URL(href, document.baseURI)); } catch { return null; }
         };
@@ -574,6 +587,7 @@ _FRAME_HTML = r"""<!doctype html>
           const raw = (link.getAttribute("href") || "").trim();
           if (/^javascript:/i.test(raw)) return;
           const modified = event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey;
+          if (!raw.startsWith("#")) post({ type: "linkClick", url: resolve(raw) });
           unlessCancelled(event, () => {
             // Keep "#" links on the page; against <base> they would navigate.
             if (raw.startsWith("#")) {
@@ -937,11 +951,16 @@ _FRAME_HTML = r"""<!doctype html>
         if (root) return html.slice(0, at(root)) + "<head>" + tags + "</head>" + html.slice(at(root));
         return "<head>" + tags + "</head>" + html;
       };
+      const FOLLOW_CLICK_MS = 3000;
+      const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return false; } };
       let page = null;
+      let clicked = null;
       window.addEventListener("message", (event) => {
         // Relay the page's messages; the panel only trusts this window.
         if (page && event.source === page.contentWindow) {
-          if (event.data && event.data.source === "unsloth-browser") parent.postMessage(event.data, "*");
+          if (!event.data || event.data.source !== "unsloth-browser") return;
+          if (event.data.type === "linkClick") clicked = { url: event.data.url, at: Date.now() };
+          else parent.postMessage(event.data, "*");
           return;
         }
         if (event.source !== parent) return;
@@ -964,7 +983,14 @@ _FRAME_HTML = r"""<!doctype html>
         // report only names the origin, so the panel can say what happened but not follow it.
         let blocked = false;
         document.addEventListener("securitypolicyviolation", (event) => {
-          if (blocked || event.effectiveDirective !== "frame-src") return;
+          if (event.effectiveDirective !== "frame-src") return;
+          // Next.js loads its own links in full here, as it sees them as another origin: follow the click.
+          if (clicked && Date.now() - clicked.at < FOLLOW_CLICK_MS && sameOrigin(clicked.url, event.blockedURI)) {
+            parent.postMessage({ source: "unsloth-browser", type: "navigate", url: clicked.url }, "*");
+            clicked = null;
+            return;
+          }
+          if (blocked) return;
           blocked = true;
           parent.postMessage({ source: "unsloth-browser", type: "scriptNavigation" }, "*");
         });
@@ -2101,6 +2127,8 @@ async def _run_in_pool(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+        # Drain late failures without cancelling queued work, which must release its slot.
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
 @router.post("/fetch")
