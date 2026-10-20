@@ -25721,6 +25721,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         if body.encrypted_api_key and body.provider_base_url != current.get("base_url"):
             # The browser encrypted a legacy key for the connection it rendered. A
             # same-id edit may have replaced both its destination and saved key while
@@ -25975,6 +25976,7 @@ async def _external_stt_transcription(
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         api_key = await asyncio.to_thread(
             resolve_provider_api_key_or_400,
             provider_id,
@@ -30683,6 +30685,9 @@ async def _proxy_to_external_provider(
                     status_code = 409,
                     detail = "Provider changed while the request was starting; retry.",
                 )
+            account_access.require_connection_model_allowed(
+                current, payload.external_model or payload.model
+            )
             api_key = await asyncio.to_thread(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
@@ -51660,6 +51665,7 @@ async def _external_image_generation(
                 status_code = 409,
                 detail = "Provider changed while the request was starting; retry.",
             )
+        account_access.require_connection_model_allowed(current, external_model)
         api_key = await asyncio.to_thread(
             resolve_provider_api_key_or_400,
             provider_id,
