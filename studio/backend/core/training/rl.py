@@ -420,6 +420,15 @@ def fold_system_into_user(dataset):
     return dataset.map(fold)
 
 
+def _trl_older_than(version: str) -> bool:
+    try:
+        import trl
+        from packaging.version import Version
+        return Version(trl.__version__) < Version(version)
+    except Exception:
+        return False
+
+
 def _fp16_only_gpu() -> bool:
     try:
         import torch
@@ -544,6 +553,12 @@ def build_rl_trainer(
         loss_type, sampling_level = GRPO_VARIANTS.get(
             settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"]
         )
+        if loss_type == "dapo" and _trl_older_than("0.22"):
+            # TRL before 0.22 passes no num_items_in_batch, which DAPO's normaliser needs;
+            # Unsloth picks BNPO there too.
+            loss_type = "bnpo"
+            if on_warning is not None:
+                on_warning("DAPO needs TRL 0.22 or newer; this run uses BNPO instead.")
         if sampling_level == "sequence" and "importance_sampling_level" not in {
             f.name for f in dataclasses.fields(trl.GRPOConfig)
         }:
