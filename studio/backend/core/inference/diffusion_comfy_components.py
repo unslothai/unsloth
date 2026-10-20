@@ -633,7 +633,9 @@ def build_text_encoder(
             elif layer.format in BLOCK_SIZES:
                 # nvfp4 / mxfp8: the DiT loader's decoder (nibble order, cuBLAS-tiled block scales), then dense.
                 if scale is None:
-                    raise ComponentFileError(f"'{name}': {stem} is {layer.format} with no weight_scale")
+                    raise ComponentFileError(
+                        f"'{name}': {stem} is {layer.format} with no weight_scale"
+                    )
                 tensor_scale = (
                     handle.get_tensor(stem + ".weight_scale_2")
                     if stem + ".weight_scale_2" in header
