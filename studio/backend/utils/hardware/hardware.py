@@ -1680,7 +1680,7 @@ def _detect_hardware_locked() -> DeviceType:
         if _build_reason is not None:
             CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
     elif platform.system() == "Darwin" and _running_under_rosetta():
-        # Apple Silicon behind an x86_64 Python: MLX needs a native arm64 install, and "Intel Mac" would be wrong.
+        # MLX needs a native arm64 Python; "Intel Mac" would be wrong.
         CHAT_ONLY_REASON = "rosetta"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.

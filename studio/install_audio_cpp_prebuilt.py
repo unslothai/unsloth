@@ -270,8 +270,7 @@ def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
 
 
 def _nvidia_has_prebuilt_arch() -> Optional[bool]:
-    """Whether any NVIDIA card is sm_75+, the oldest arch the audio.cpp CUDA bundles carry kernels for
-    (CUDA12_ARCHS / CUDA13_ARCHS in its unsloth-prebuilt-build.yml start at 75). None when unreadable."""
+    """Any NVIDIA card sm_75+ (audio.cpp CUDA*_ARCHS in unsloth-prebuilt-build.yml start at 75); None if unreadable."""
     exe = shutil.which("nvidia-smi")
     if not exe:
         return None
@@ -290,7 +289,7 @@ def _nvidia_has_prebuilt_arch() -> Optional[bool]:
             continue
         match = re.fullmatch(r"\s*(\d+)\.(\d+)\s*", line)
         if not match:
-            # An old driver prints "[N/A]" or rejects the field: unknown, keep the CUDA answer.
+            # Old driver ("[N/A]"): unknown, keep the CUDA answer.
             return None
         caps.append((int(match.group(1)), int(match.group(2))))
     return any(cap >= (7, 5) for cap in caps) if caps else None
@@ -332,7 +331,7 @@ def detect_accelerator() -> str:
     system = platform.system().lower()
     if system == "darwin":
         return "metal"
-    # A Pascal / Volta-only host would get a bundle with no kernels for its cards.
+    # Pascal / Volta-only hosts: the bundle has no kernels for them.
     if nvidia_driver_cuda_version() is not None and _nvidia_has_prebuilt_arch() is not False:
         return "cuda"
     # No HIP bundle is published (#13042); never beside NVIDIA, which Vulkan could enumerate first.

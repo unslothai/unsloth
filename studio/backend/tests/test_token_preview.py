@@ -251,8 +251,7 @@ def test_a_quit_that_races_the_spawn_reaps_the_new_worker(monkeypatch):
 
 
 def test_the_worker_env_hides_every_accelerator_only_in_the_child(monkeypatch):
-    """CUDA, HIP and SYCL / Level Zero (torch-xpu) are all hidden, and only in the env handed to
-    the worker, never in the parent's os.environ."""
+    """CUDA, HIP and SYCL are hidden only in the worker env, never in the parent's os.environ."""
     import multiprocessing as mp_module
 
     from core.training import account_jobs
@@ -288,7 +287,6 @@ def test_the_worker_env_hides_every_accelerator_only_in_the_child(monkeypatch):
     env = envs[0]
     assert env["CUDA_VISIBLE_DEVICES"] == "" and env["HIP_VISIBLE_DEVICES"] == ""
     assert env["ONEAPI_DEVICE_SELECTOR"] == "opencl:cpu"
-    # An empty ZE_AFFINITY_MASK means every device to Level Zero, so it must not be the lever.
     assert env.get("ZE_AFFINITY_MASK") != ""
     assert "ONEAPI_DEVICE_SELECTOR" not in os.environ
 

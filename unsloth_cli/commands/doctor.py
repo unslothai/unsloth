@@ -88,7 +88,7 @@ def collect_gpus(torch) -> dict:
         "accelerator": None,
     }
     if not torch.cuda.is_available():
-        # Only a non-CUDA/ROCm build: a CUDA build that sees no device stays a failure.
+        # A CUDA build that sees no device stays a failure.
         if not info["cuda"] and not hip:
             info["accelerator"] = _non_cuda_accelerator(torch)
         return info
@@ -122,7 +122,6 @@ def collect_gpus(torch) -> dict:
 
 
 def _non_cuda_accelerator(torch) -> Optional[str]:
-    """ "mps" or "xpu" when torch can use one, else None. Never raises."""
     for name, probe in (
         (
             "mps",

@@ -197,8 +197,8 @@ def _fake_sysctl(arm64: str, calls: list):
 @pytest.mark.parametrize(
     "machine, arm64, expected",
     [
-        ("x86_64", "1", "rosetta"),  # x86_64 Python on Apple Silicon
-        ("x86_64", "0", "intel_mac"),  # a real Intel Mac
+        ("x86_64", "1", "rosetta"),
+        ("x86_64", "0", "intel_mac"),
     ],
 )
 def test_rosetta_reason(monkeypatch, machine, arm64, expected):
