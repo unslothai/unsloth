@@ -2378,9 +2378,8 @@ def parse_tool_calls_from_text(
     the markerless Llama-3.2 bare-JSON form (the marker-based forms carry an explicit signal, so
     a disabled-tool name there is a real call attempt); ``None`` keeps the name-agnostic
     behaviour."""
-    # Loop, not recurse: one level per skipped JSONL line hit RecursionError. Every tail a skip
-    # exposes is stripped and masked again before any other dispatch, or reasoning after a quoted
-    # opener stays executable; a run of JSONL lines shares one pass.
+    # Loop, not recurse (one level per JSONL line hit RecursionError). A skipped run's tail is stripped
+    # and masked again before any dispatch, or reasoning after a quoted opener stays executable.
     while True:
         # Drop Magistral [THINK]...[/THINK] BEFORE dispatch: a rehearsed call inside it must never be promoted, and
         # the parse path must agree with the display strip.
