@@ -8443,7 +8443,6 @@ class _AutoCheckpointSkip:
         self.layer_bytes = None
         self.layer_rows = 1
         self.layer_batch = 1
-        # The trainer's per_device_train_batch_size (x2 for paired DPO / ORPO / CPO rows) and max length.
         self.target_batch = None
         self.target_seq = None
         self.kept = None

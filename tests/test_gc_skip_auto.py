@@ -121,7 +121,6 @@ def test_auto_plans_after_first_step_and_keeps_gradients():
     assert planner.layer_bytes and planner.layer_bytes > 0
     second = _step(model, ids)
     third = _step(model, ids)
-    # A tiny model on any card: every layer fits, and the planner is gone.
     assert planner.kept == [0, 1, 2, 3, 4, 5]
     assert _checkpointed(model) == [False] * 6
     assert not hasattr(model, "_unsloth_auto_skip")
@@ -140,7 +139,6 @@ def test_auto_keeps_everything_checkpointed_without_headroom(monkeypatch):
     model = _model(device = "cuda")
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
-    # A card other processes have filled: 1 MiB free, nothing cached.
     total = torch.cuda.get_device_properties(0).total_memory
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1 << 20, total))
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 0)
@@ -220,14 +218,13 @@ def test_auto_reserves_optimizer_state_only_when_not_allocated(optimizer_stepped
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-5)
-    # Usable memory after step 1 (state already excluded when it exists): grads + foreach AdamW
-    # workspace + 1.6 GiB.
+    # Usable after step 1: grads + foreach AdamW workspace + 1.6 GiB.
     ns["usable_cuda_bytes"] = lambda device: numel * 8 + int(1.6 * (1 << 30))
     model(input_ids = ids, labels = ids).loss.backward()
     if optimizer_stepped:
         optimizer.step()
         optimizer.zero_grad(set_to_none = True)
-    model(input_ids = ids, labels = ids).loss.backward()  # plans at this forward
+    model(input_ids = ids, labels = ids).loss.backward()
     if optimizer_stepped:
         # Full finetuning: the state is in memory_allocated already and must not be reserved again.
         assert planner.kept == [0, 1, 2, 3, 4, 5]
@@ -244,7 +241,7 @@ def test_auto_with_model_off_cuda_on_a_cuda_host_installs_nothing(monkeypatch, c
     ns, found = _load()
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     global_hooks = dict(getattr(torch_optimizer, "_global_optimizer_pre_hooks", {}))
-    model = _model()  # CPU (or XPU) weights: no CUDA decoder device
+    model = _model()
     hooks = dict(model._forward_pre_hooks)
     assert ns["skip_checkpointing"](model, "auto") == []
     assert ns["skip_checkpointing"](model, "auto") == []
@@ -274,7 +271,7 @@ def test_auto_reserves_state_for_params_the_optimizer_has_not_seen():
     optimizer.step()
     optimizer.zero_grad(set_to_none = True)
     assert model.unused not in optimizer.state
-    model(input_ids = ids, labels = ids).loss.backward()  # plans at this forward
+    model(input_ids = ids, labels = ids).loss.backward()
     # main: one step happened, so nothing is reserved for `unused` and every layer is kept.
     assert planner.kept == []
     del optimizer, model
@@ -297,7 +294,7 @@ def test_auto_does_not_scale_persistent_grads_by_sequence_length():
     model(input_ids = short, labels = short).loss.backward()
     optimizer.step()
     optimizer.zero_grad(set_to_none = True)
-    model(input_ids = short, labels = short).loss.backward()  # plans at this forward
+    model(input_ids = short, labels = short).loss.backward()
     assert planner.layer_rows == 64
     # main: (activations + grads) x 16 leaves no headroom, so nothing is kept.
     assert planner.kept == [0, 1, 2, 3, 4, 5]
@@ -363,14 +360,13 @@ def _fake_step(model, rows):
 def test_auto_sizes_by_the_most_expensive_layer_type(monkeypatch):
     ns, found = _load()
     gib = 1 << 30
-    # Hybrid stack: expensive attention blocks, cheap Mamba-like blocks, the last one cheap.
     costs = [gib, gib // 8] * 4
     memory = _fake_cuda(monkeypatch, ns, usable = 10 * gib)
     model = _FakeModel(costs, memory)
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     _fake_step(model, rows = 16)
-    model(torch.zeros(1, 16, 4))  # plans here
+    model(torch.zeros(1, 16, 4))
     assert planner.layer_bytes == gib
     # (10 GiB - 4.5 GiB step) * 0.75 - 1 GiB = 3.125 GiB: 3 one-GiB layers, not 25 eighth-GiB ones.
     assert len(planner.kept) == 3
@@ -605,5 +601,5 @@ def test_counts_apply_only_to_checkpointable_layers():
     ns, found = _load()
     model = _FakeModel([1] * 6, {"allocated": 0})
     for i in (1, 3, 5):
-        model.model.layers[i] = torch.nn.Linear(4, 4)  # e.g. blocks without the flag
+        model.model.layers[i] = torch.nn.Linear(4, 4)
     assert ns["skip_checkpointing"](model, 3) == [0, 2, 4]
