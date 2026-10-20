@@ -946,13 +946,19 @@ def _one_group_per_type(data: bytes, logger: Any) -> bytes:
 
         CacheArtifactManager._ensure_cache_artifacts_registered()
         groups = AppendingByteSerializer.to_list(data, deserialize_fn = _deserialize_single_cache)
-        # Last write wins on a repeated key (an autotune entry re-recorded by a later compile), as torch's own
-        # in-order load of the groups would apply it.
+        # Dedupe on (key, content) only: Inductor / AOT entries sharing a key are distinct guarded candidates
+        # (stored under a content hash), and a repeat moves to its latest position so a single-slot type
+        # (autotune) still applies its newest bytes last, as torch's in-order load would.
         merged: dict[str, dict] = {}
         for kind, artifacts in groups:
             bucket = merged.setdefault(kind, {})
             for artifact in artifacts:
-                bucket[artifact.key] = artifact
+                content = artifact.content
+                if not isinstance(content, (bytes, bytearray, memoryview)):
+                    content = json.dumps(content, sort_keys = True, default = repr).encode()  # autotune: JSON
+                ident = (artifact.key, hashlib.sha256(content).digest())
+                bucket.pop(ident, None)
+                bucket[ident] = artifact
         if len(merged) == len(groups):
             return data
         out = AppendingByteSerializer(serialize_fn = _serialize_single_cache)

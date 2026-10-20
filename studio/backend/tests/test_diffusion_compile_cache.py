@@ -1502,7 +1502,7 @@ def test_a_resave_after_a_recompile_restores_every_graph(tmp_path, monkeypatch):
         M.clear()
 
 
-def test_a_resave_keeps_the_newest_bytes_of_a_repeated_key(tmp_path, monkeypatch):
+def test_a_resave_keeps_both_contents_of_a_repeated_inductor_key(tmp_path, monkeypatch):
     pytest.importorskip("torch.compiler._cache")
     from torch.compiler._cache import CacheArtifactManager as M
 
@@ -1518,10 +1518,37 @@ def test_a_resave_keeps_the_newest_bytes_of_a_repeated_key(tmp_path, monkeypatch
         assert cc._write_bundle(ctx, None)
         manifest = json.loads(ctx.manifest_path.read_text())
         restored = M.deserialize((ctx.dir / manifest["bundle"]).read_bytes())
-        assert {a.key: bytes(a.content) for a in restored["inductor"]} == {
-            "kept": b"one",
-            "tuned": b"new",
-        }
+        assert [(a.key, bytes(a.content)) for a in restored["inductor"]] == [
+            ("kept", b"one"),
+            ("tuned", b"old"),
+            ("tuned", b"new"),
+        ]
+    finally:
+        M.clear()
+
+
+def test_a_resave_keeps_every_guarded_candidate_and_applies_a_repeated_autotune_key_last(
+    tmp_path, monkeypatch
+):
+    # Inductor candidates sharing a key are separate guarded entries; an autotune key is one slot, written in order.
+    pytest.importorskip("torch.compiler._cache")
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "graph", b"shape-a")
+        M.record_artifact("autotune", "kernel", {"best": "old"})
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "graph", b"shape-b")
+        M.record_artifact("autotune", "kernel", {"best": "new"})
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        restored = M.deserialize((ctx.dir / manifest["bundle"]).read_bytes())
+        assert sorted(bytes(a.content) for a in restored["inductor"]) == [b"shape-a", b"shape-b"]
+        assert json.loads(restored["autotune"][-1].content) == {"best": "new"}
     finally:
         M.clear()
 
