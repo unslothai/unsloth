@@ -4584,7 +4584,8 @@ class FastBaseModel:
         layers_to_transform = None,
         layers_pattern = None,
         use_gradient_checkpointing = "unsloth",
-        random_state = 3407,
+        # None keeps the caller's RNG so LoRA→merge→LoRA stages do not all re-init lora_A from 3407 (#14327).
+        random_state = None,
         max_seq_length = 2048,  # not used anymore
         use_rslora = False,
         modules_to_save = None,
@@ -4608,7 +4609,8 @@ class FastBaseModel:
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
             return model
-        transformers_set_seed(random_state)
+        if random_state is not None:
+            transformers_set_seed(random_state)
 
         if type(r) is not int:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be an integer.")
