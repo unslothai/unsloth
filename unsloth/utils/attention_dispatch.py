@@ -398,8 +398,7 @@ def _sdpa_takes_gqa(
     needs_grad = torch.is_grad_enabled() and any(
         t is not None and t.requires_grad for t in (Q, K, V)
     )
-    # Branch, not bool(): a dynamic length (compiled block) is a SymBool, which
-    # assume_constant_result cannot take; a branch guards it into a constant.
+    # Branch, not bool(): assume_constant_result cannot take a dynamic SymBool.
     single_query = True if Q.shape[-2] == 1 else False
     single_key = True if K.shape[-2] == 1 else False
     is_causal = True if is_causal else False
@@ -912,8 +911,7 @@ def _run_attention(
                 )
                 backend = SDPA
 
-    # Inside a compiled block (_block_compile.py) xformers' attention bias objects break the graph
-    # in every layer; a plain causal call takes SDPA's is_causal there, as FastModel's blocks do.
+    # Traced xformers bias objects break the graph per layer: plain causal calls take SDPA.
     if (
         backend == XFORMERS
         and torch.compiler.is_compiling()
@@ -1188,7 +1186,6 @@ def _run_attention(
                     q_len_local, k_len_local, sliding_window, Q.device
                 )
 
-            # A branch keeps it a bool when the lengths are dynamic (compiled block).
             is_causal_local = (
                 True
                 if context.is_causal and local_mask is None and q_len_local == k_len_local

@@ -638,8 +638,7 @@ def _layer_kind(layer):
 
 def _wrap(cls, compile_options):
     original = cls.forward
-    # FastLanguageModel's own layer forwards read packed lengths on the host (packing.py), which
-    # would break and recompile per batch: packed calls keep the stock forward there.
+    # Unsloth layer forwards read packed lengths on the host (packing.py): packed calls stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
     try:

@@ -3133,10 +3133,8 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
 
 
 def _legacy_block_compile(model):
-    """One compiled region per decoder layer for the FastLanguageModel LoRA / QLoRA path, as
-    FastModel does (_block_compile.py). UNSLOTH_BLOCK_COMPILE_LEGACY=0 turns only this off,
-    UNSLOTH_BLOCK_COMPILE=0 every block compile. Before torch 2.11 the fused LoRA kernels stay
-    out of a trace (fast_lora.TRACE_LORA_FUNCTIONS), which splits each block: off unless =1."""
+    """Per-block compile for FastLanguageModel LoRA. Off before torch 2.11 unless =1: untraced
+    fused LoRA (fast_lora.TRACE_LORA_FUNCTIONS) splits each block."""
     mode = os.environ.get("UNSLOTH_BLOCK_COMPILE_LEGACY", "auto")
     if mode == "0":
         return []

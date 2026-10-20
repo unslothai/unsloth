@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""The FastLanguageModel attention dispatch traced inside a compiled decoder block
-(_block_compile.py), sequence length dynamic: no graph break. CPU, fullgraph."""
+"""Attention dispatch traced fullgraph with a dynamic sequence length (CPU)."""
 
 import pytest
 import torch

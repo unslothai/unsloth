@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""FastLanguageModel's LoRA / QLoRA path installs the per-block compile (_block_compile.py) like
-FastModel, with its own kill switch and off before torch 2.11 (fused LoRA is not traceable there)."""
+"""FastLanguageModel LoRA installs the per-block compile, with its own kill switch."""
 
 import ast
 import pathlib
