@@ -183,16 +183,24 @@ def _bank_class():
         def extra_repr(self) -> str:
             return f"in_features={self.in_features}, out_features={self.out_features}, heads={self.heads}"
 
-        def set_state(self, pair: Any) -> None:
+        def _own_state(self, device: Any = None) -> Any:
+            """``pdd_state`` as a normal (non-inference) tensor on ``device``. The first render moves it to the
+            GPU inside the pipeline's inference_mode; a tensor made there is an inference tensor, and the next
+            render's set_shifts (outside inference_mode) could not write it."""
             state = self.pdd_state
-            if state.device != pair.device:
-                state = state.to(pair.device)
+            if state.is_inference() or (device is not None and state.device != device):
+                with torch.inference_mode(False):
+                    state = state.to(device or state.device, copy = True)
                 self.pdd_state = state
-            state[0:2].copy_(pair)
+            return state
+
+        def set_state(self, pair: Any) -> None:
+            self._own_state(pair.device)[0:2].copy_(pair)
 
         def set_shifts(self, select_shift: float, stream_shift: float) -> None:
-            self.pdd_state[2] = float(select_shift)
-            self.pdd_state[3] = float(stream_shift)
+            state = self._own_state()
+            state[2] = float(select_shift)
+            state[3] = float(stream_shift)
 
         def forward(self, hidden_states: Any) -> Any:
             state = self.pdd_state
