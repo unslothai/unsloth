@@ -16,6 +16,7 @@ import {
   publishStagedQueue,
   useStagedDownloadQueues,
 } from "./staged-download-queue";
+import { stagedEntryTransferredBytes } from "./staged-download-progress";
 import { useRepoDownload } from "./use-repo-download";
 
 /** Total progress for the plan ID returned by `stage()`. */
@@ -228,9 +229,7 @@ export function useStagedDownload({
   }, []);
 
   const remainingBytes = (queue ?? []).reduce((sum, entry) => sum + Math.max(0, entry.bytes), 0);
-  const currentBytes = current
-    ? Math.min(Math.max(0, current.bytes), job.progress?.downloadedBytes ?? 0)
-    : 0;
+  const currentBytes = current ? stagedEntryTransferredBytes(current.bytes, job.progress) : 0;
   const downloadedBytes = queue ? Math.max(0, staged.bytes - remainingBytes) + currentBytes : 0;
   const totalBytes = queue ? staged.bytes : 0;
   const plan = staged.plan;
