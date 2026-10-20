@@ -12,6 +12,7 @@ reinstall/update dropped MLX.
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -183,6 +184,62 @@ def test_intel_mac_reason(monkeypatch):
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "intel_mac"
+
+
+def _fake_sysctl(arm64: str, calls: list):
+    def run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return types.SimpleNamespace(returncode = 0, stdout = arm64 + "\n", stderr = "")
+
+    return run
+
+
+@pytest.mark.parametrize(
+    "machine, arm64, expected",
+    [
+        ("x86_64", "1", "rosetta"),  # x86_64 Python on Apple Silicon
+        ("x86_64", "0", "intel_mac"),  # a real Intel Mac
+    ],
+)
+def test_rosetta_reason(monkeypatch, machine, arm64, expected):
+    calls = []
+    monkeypatch.setattr(hw, "_ROSETTA", None, raising = False)
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw, "_has_mlx", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(hw.platform, "machine", lambda: machine)
+    monkeypatch.setattr(hw.subprocess, "run", _fake_sysctl(arm64, calls))
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == expected
+    assert calls == [["sysctl", "-n", "hw.optional.arm64"]]
+
+
+def test_rosetta_probe_fails_open_to_intel_mac(monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("no sysctl")
+
+    monkeypatch.setattr(hw, "_ROSETTA", None, raising = False)
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw, "_has_mlx", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(hw.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(hw.subprocess, "run", boom)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "intel_mac"
+
+
+def test_native_arm64_mac_never_probes_rosetta(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hw, "_ROSETTA", None, raising = False)
+    monkeypatch.setattr(hw, "_has_mlx", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(hw.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(hw.subprocess, "run", _fake_sysctl("1", calls))
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False, raising = False)
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
+    assert ["sysctl", "-n", "hw.optional.arm64"] not in calls
 
 
 def test_cpu_only_non_mac_reason(monkeypatch):

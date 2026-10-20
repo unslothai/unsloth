@@ -27,9 +27,12 @@ FIRST_REQUEST_TIMEOUT_S = 300.0
 REQUEST_TIMEOUT_S = 60.0
 # Applied in the child before anything imports torch: a CUDA context alone costs hundreds of MB of
 # VRAM, and the preview only tokenizes. UNSLOTH_ALLOW_CPU lets Unsloth's chat templates import there.
+# torch-xpu reads only the SYCL selector (an empty ZE_AFFINITY_MASK means every device), and opencl:cpu
+# leaves it no Level Zero GPU.
 _NO_ACCELERATOR_ENV = {
     "CUDA_VISIBLE_DEVICES": "",
     "HIP_VISIBLE_DEVICES": "",
+    "ONEAPI_DEVICE_SELECTOR": "opencl:cpu",
     "UNSLOTH_ALLOW_CPU": "1",
 }
 

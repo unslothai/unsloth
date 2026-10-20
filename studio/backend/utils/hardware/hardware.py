@@ -48,7 +48,7 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
@@ -150,6 +150,29 @@ def _backend_label(device: DeviceType) -> str:
 def is_apple_silicon() -> bool:
     """True on Apple Silicon (pure platform check, no ML imports)."""
     return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+_ROSETTA: Optional[bool] = None
+
+
+def _running_under_rosetta() -> bool:
+    """True for an x86_64 Python on an Apple Silicon Mac (``hw.optional.arm64``, as install.sh). Cached; never raises."""
+    global _ROSETTA
+    if _ROSETTA is None:
+        answer = False
+        if platform.system() == "Darwin" and platform.machine() == "x86_64":
+            try:
+                out = subprocess.run(
+                    ["sysctl", "-n", "hw.optional.arm64"],
+                    capture_output = True,
+                    text = True,
+                    timeout = 2,
+                )
+                answer = out.returncode == 0 and out.stdout.strip() == "1"
+            except Exception:
+                answer = False
+        _ROSETTA = answer
+    return _ROSETTA
 
 
 # Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA libs); the CPU fallback reports that as a detection failure, not as "no GPU".
@@ -1656,6 +1679,9 @@ def _detect_hardware_locked() -> DeviceType:
         _build_reason, _build_detail = _mismatch_verdict_for_this_host(_disk_reason)
         if _build_reason is not None:
             CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        # Apple Silicon behind an x86_64 Python: MLX needs a native arm64 install, and "Intel Mac" would be wrong.
+        CHAT_ONLY_REASON = "rosetta"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:

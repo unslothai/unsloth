@@ -127,6 +127,70 @@ def test_driver_cuda_version_reads_both_spellings(monkeypatch, smi, expected):
     assert M.nvidia_driver_cuda_version() == expected
 
 
+def _fake_nvidia_smi(
+    monkeypatch,
+    caps,
+    returncode = 0,
+    amd = False,
+):
+    """nvidia-smi reporting CUDA 12.6, with ``caps`` answering the compute_cap query."""
+
+    def run(cmd, *a, **k):
+        if any("compute_cap" in part for part in cmd):
+            if isinstance(caps, Exception):
+                raise caps
+            return type("R", (), {"stdout": caps, "returncode": returncode})()
+        return type("R", (), {"stdout": "CUDA Version: 12.6", "returncode": 0})()
+
+    monkeypatch.setattr(M.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(M.shutil, "which", lambda name: "nvidia-smi")
+    monkeypatch.setattr(M.subprocess, "run", run)
+    monkeypatch.setattr(M, "_amd_gpu_present", lambda: amd)
+
+
+@pytest.mark.parametrize(
+    "caps,expected",
+    [
+        ("6.1\n", "cpu"),  # GTX 10xx / P40: no kernels in the sm_75+ bundles
+        ("7.0\n7.0\n", "cpu"),  # V100 x2
+        ("6.0\n", "cpu"),  # P100
+    ],
+)
+def test_pre_turing_nvidia_does_not_get_the_cuda_bundle(monkeypatch, caps, expected):
+    _fake_nvidia_smi(monkeypatch, caps)
+    assert M.detect_accelerator() == expected
+
+
+def test_pre_turing_nvidia_beside_amd_still_skips_vulkan(monkeypatch):
+    _fake_nvidia_smi(monkeypatch, "6.1\n", amd = True)
+    assert M.detect_accelerator() == "cpu"
+
+
+@pytest.mark.parametrize(
+    "caps",
+    [
+        "7.5\n",  # T4
+        "8.6\n",
+        "12.0\n",
+        "6.1\n8.9\n",  # mixed: one card has kernels
+        "",  # no rows
+        "[N/A]\n",  # old driver
+        "6.1\n[N/A]\n",  # one unreadable card: unknown
+        'Field "compute_cap" is not a valid field to query.\n',
+    ],
+)
+def test_sm75_or_unreadable_compute_cap_keeps_cuda(monkeypatch, caps):
+    _fake_nvidia_smi(monkeypatch, caps)
+    assert M.detect_accelerator() == "cuda"
+
+
+def test_a_failing_compute_cap_query_keeps_cuda(monkeypatch):
+    _fake_nvidia_smi(monkeypatch, "6.1\n", returncode = 6)
+    assert M.detect_accelerator() == "cuda"
+    _fake_nvidia_smi(monkeypatch, M.subprocess.TimeoutExpired("nvidia-smi", 15))
+    assert M.detect_accelerator() == "cuda"
+
+
 # Install flow. Archives are real zips in tmp_path; the download copies them, the staged-server check
 # is stubbed (its own tests below), and every release carries its own sha256 index, as the fork's do.
 
