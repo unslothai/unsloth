@@ -32,7 +32,11 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from auth.authentication import get_current_subject, request_admitted_without_credential
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_subject,
+    request_admitted_without_credential,
+)
 from core.rag import config, folder_sync, ingestion, reembed, retrieval, store
 from storage import rag_db
 from utils.account_context import (
@@ -292,6 +296,19 @@ class UpdateFolderRequest(BaseModel):
     auto_sync: bool | None = Field(default = None, alias = "autoSync")
 
 
+class ServerLinkFolderRequest(BaseModel):
+    server_folder_id: str = Field(alias = "serverFolderId", min_length = 1)
+    name: str | None = Field(default = None, alias = "displayName", max_length = 200)
+    auto_sync: bool = Field(default = True, alias = "autoSync")
+
+
+def _require_server_folder_session(via_api_key: bool) -> None:
+    if via_api_key or not current_account().is_owner:
+        raise HTTPException(
+            status_code = 403, detail = "Server source folders require an owner UI session"
+        )
+
+
 def _resolve_linked_folder_path(
     native_path_lease: str, *, verifier = None
 ) -> tuple[str, tuple[int, int]]:
@@ -397,8 +414,18 @@ def _require_document_owner(conn: sqlite3.Connection, document: dict) -> None:
 
 
 def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderRequest) -> dict:
-    from utils.native_path_leases import redact_native_paths
     path, signed_identity = _resolve_linked_folder_path(payload.native_path_lease)
+    return _create_linked_folder_at_path(scope_type, scope_id, payload, path, signed_identity)
+
+
+def _create_linked_folder_at_path(
+    scope_type: str,
+    scope_id: str,
+    payload: LinkFolderRequest | ServerLinkFolderRequest,
+    path: str,
+    expected_identity: tuple[int, int],
+) -> dict:
+    from utils.native_path_leases import redact_native_paths
     try:
         with folder_sync.scope_lock(_scope_for_owner(scope_type, scope_id)):
             _require_scope_owner(scope_type, scope_id)
@@ -406,7 +433,7 @@ def _create_linked_folder(scope_type: str, scope_id: str, payload: LinkFolderReq
                 scope_type = scope_type,
                 scope_id = scope_id,
                 path = path,
-                expected_identity = signed_identity,
+                expected_identity = expected_identity,
                 name = payload.name,
                 auto_sync = payload.auto_sync,
             )
@@ -701,6 +728,58 @@ def link_project_folder(
     _require_rag()
     _require_scope_owner("project", project_id)
     return _create_linked_folder("project", project_id, payload)
+
+
+@router.get("/server-source-folders")
+def list_server_source_folders(
+    subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> dict:
+    from core.rag import server_folders
+
+    _require_server_folder_session(via_api_key)
+    _require_rag()
+    return {"folders": server_folders.available_folders()}
+
+
+def _link_server_source_folder(
+    scope_type: str, scope_id: str, payload: ServerLinkFolderRequest, via_api_key: bool
+) -> dict:
+    from core.rag import server_folders
+
+    _require_server_folder_session(via_api_key)
+    _require_rag()
+    _require_scope_owner(scope_type, scope_id)
+    try:
+        path, identity = server_folders.resolve_folder(payload.server_folder_id)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code = 400, detail = "Server source folder is unavailable") from exc
+    if payload.name is None:
+        # The picker's label, so same-named folders stay apart once linked.
+        payload = payload.model_copy(
+            update = {"name": server_folders.display_name(payload.server_folder_id)}
+        )
+    return _create_linked_folder_at_path(scope_type, scope_id, payload, path, identity)
+
+
+@router.post("/projects/{project_id}/server-linked-folders")
+def link_server_project_folder(
+    project_id: str,
+    payload: ServerLinkFolderRequest,
+    subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> dict:
+    return _link_server_source_folder("project", project_id, payload, via_api_key)
+
+
+@router.post("/knowledge-bases/{kb_id}/server-linked-folders")
+def link_server_kb_folder(
+    kb_id: str,
+    payload: ServerLinkFolderRequest,
+    subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> dict:
+    return _link_server_source_folder("knowledge_base", kb_id, payload, via_api_key)
 
 
 @router.get("/linked-folders")

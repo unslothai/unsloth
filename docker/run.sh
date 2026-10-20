@@ -41,6 +41,8 @@
 #   UNSLOTH_OLLAMA_DIR=<detected>           host Ollama models dir, "none" to skip
 #   UNSLOTH_HERMES_DIR=<detected>           host Hermes models dir, "none" to skip
 #   UNSLOTH_MODELS_DIR=                     host dir of GGUFs/model folders for Studio
+#   UNSLOTH_RAG_SOURCE_FOLDERS=             JSON array of container folders Studio may link,
+#                                           e.g. '["/workspace/host/docs"]'
 #   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
 #                                           chats, outputs) at /opt/unsloth-studio;
 #                                           set it empty to run without one
@@ -387,6 +389,7 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 # Studio exposure modes need explicit allowlisting or they remain inert in the documented helper
 [[ -n "${UNSLOTH_STUDIO_SECURE:-}" ]]     && ENV_FORWARD+=(-e UNSLOTH_STUDIO_SECURE)
 [[ -n "${UNSLOTH_STUDIO_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_CLOUDFLARE)
+[[ -n "${UNSLOTH_RAG_SOURCE_FOLDERS:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_RAG_SOURCE_FOLDERS)
 
 STOP_BUDGET="${UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S:-120}"
 if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then

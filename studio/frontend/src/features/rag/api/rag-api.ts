@@ -683,6 +683,26 @@ interface LinkedFolderMutationResult {
   job: FolderSyncJob;
 }
 
+export interface ServerSourceFolder {
+  id: string;
+  displayName: string;
+}
+
+export function listServerSourceFolders(): Promise<{ folders: ServerSourceFolder[] }> {
+  return ragRequest("/server-source-folders");
+}
+
+export function createServerLinkedFolder(
+  scope: LinkedFolderScope,
+  serverFolderId: string,
+): Promise<LinkedFolderMutationResult> {
+  const parent = scope.type === "knowledge_base" ? "knowledge-bases" : "projects";
+  return ragRequest(`/${parent}/${encodeURIComponent(scope.id)}/server-linked-folders`, {
+    method: "POST",
+    body: { serverFolderId },
+  });
+}
+
 export function createLinkedFolder(
   scope: LinkedFolderScope,
   nativePathLease: string,

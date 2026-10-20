@@ -301,8 +301,11 @@ export const BUDGET = {
   // Explicit browser download names retain the prior startup margin.
   // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
   // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_062_521,
-  rawBytes: 6_848_204,
+  // Server source folders (#14292) add 1,273 B raw / 180 B transfer on top (measured against e9127c97b8, one machine
+  // and build, 96 chunks): the server folder picker and its list request sit in the eager linked-folder manager.
+  // Raised by that.
+  transferBytes: 2_062_701,
+  rawBytes: 6_849_477,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

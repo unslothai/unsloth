@@ -585,7 +585,7 @@ test("a folder mutation takes the gate before its request", () => {
   // Linking, syncing, rebuilding and unlinking all go through it.
   assert.match(
     USE_LINKED_FOLDERS,
-    /withProjectWork\(async \(\) => \{\s*const created = await createLinkedFolder\(/,
+    /withProjectWork\(async \(\) => \{\s*const created = serverFolderId\s*\? await createServerLinkedFolder\([^)]*\)\s*: await createLinkedFolder\(/,
   );
   assert.match(
     USE_LINKED_FOLDERS,

@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -144,6 +145,43 @@ export function LinkedFoldersManager({
   onSourcesChanged?: () => void;
 }) {
   const manager = useLinkedFolders(scope, onSourcesChanged);
+  const [serverPickerOpen, setServerPickerOpen] = useState(false);
+  const canLink = manager.desktopSupported || manager.serverFolders.length > 0;
+
+  function addFolder() {
+    if (manager.desktopSupported) void manager.link();
+    else setServerPickerOpen(true);
+  }
+
+  const serverPicker = (
+    <Dialog open={serverPickerOpen} onOpenChange={setServerPickerOpen}>
+      <DialogContent className="flex flex-col gap-4">
+        <DialogHeader>
+          <DialogTitle>Link a server folder</DialogTitle>
+          <DialogDescription>Choose a source folder available on this server.</DialogDescription>
+        </DialogHeader>
+        <ul className="flex max-h-72 flex-col gap-1 overflow-y-auto">
+          {manager.serverFolders.map((folder) => (
+            <li key={folder.id}>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full justify-start"
+                disabled={manager.mutating}
+                onClick={() => {
+                  setServerPickerOpen(false);
+                  void manager.link(folder.id);
+                }}
+              >
+                <HugeiconsIcon icon={FolderSyncIcon} strokeWidth={1.75} className="size-4 shrink-0" />
+                <span className="truncate">{folder.displayName}</span>
+              </Button>
+            </li>
+          ))}
+        </ul>
+      </DialogContent>
+    </Dialog>
+  );
   const [removeIndexFolder, setRemoveIndexFolder] = useState<{
     id: string;
     name: string;
@@ -319,14 +357,14 @@ export function LinkedFoldersManager({
           {scope ? (
             <button
               type="button"
-              disabled={!manager.desktopSupported || manager.mutating}
-              onClick={() => void manager.link()}
+              disabled={!canLink || manager.mutating}
+              onClick={addFolder}
               // Named for what it does; the title is the tooltip saying why it cannot, which
               // would otherwise be read out as the row's name.
               aria-label="Add folder"
               title={
-                manager.desktopSupported
-                  ? "Choose a local folder"
+                canLink
+                  ? manager.desktopSupported ? "Choose a local folder" : "Choose a server folder"
                   : sourceFolderUnavailableMessage(isTauri)
               }
               className={cn(
@@ -349,13 +387,14 @@ export function LinkedFoldersManager({
         </div>
         {/* Only where it changes what the row above can do: in the browser build there is no
             native folder picker, and the rows already linked keep syncing regardless. */}
-        {!manager.desktopSupported ? (
+        {!canLink ? (
           <p className="px-1 text-ui-11 text-muted-foreground">
             {sourceFolderUnavailableMessage(isTauri)} Existing source folders
             continue to sync.
           </p>
         ) : null}
         {removeIndexConfirm}
+        {serverPicker}
       </section>
     );
   }
@@ -368,7 +407,7 @@ export function LinkedFoldersManager({
             Source folders
           </h3>
           <p className="text-xs leading-snug text-muted-foreground">
-            {manager.desktopSupported
+            {canLink
               ? SOURCE_FOLDER_DESCRIPTION
               : `${sourceFolderUnavailableMessage(isTauri)} Existing source folders continue to sync.`}
           </p>
@@ -379,11 +418,11 @@ export function LinkedFoldersManager({
             size="sm"
             variant="outline"
             className="shrink-0"
-            disabled={!manager.desktopSupported || manager.mutating}
-            onClick={() => void manager.link()}
+            disabled={!canLink || manager.mutating}
+            onClick={addFolder}
             title={
-              manager.desktopSupported
-                ? "Choose a local folder"
+              canLink
+                ? manager.desktopSupported ? "Choose a local folder" : "Choose a server folder"
                 : sourceFolderUnavailableMessage(isTauri)
             }
           >
@@ -470,6 +509,7 @@ export function LinkedFoldersManager({
         </ul>
       )}
       {removeIndexConfirm}
+      {serverPicker}
     </section>
   );
 }
