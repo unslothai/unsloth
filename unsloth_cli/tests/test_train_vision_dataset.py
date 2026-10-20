@@ -30,6 +30,11 @@ _AUDIO_VLM_TOKENIZER = {"added_tokens_decoder": {"262273": {"content": "<audio_s
 _IMAGE_ROWS = [{"image": "photos/cat.png", "text": "a cat"}]
 _TEXT_ROWS = [{"instruction": "Say hi", "output": "hi"}]
 _AUDIO_ROWS = [{"audio": "clips/hello.wav", "text": "hello"}]
+_FILE_NAME_ROWS = [{"instruction": "Summarise", "output": "A readme", "file_name": "README.md"}]
+_PROSE_IMAGE_ROWS = [{"instruction": "Describe", "output": "A cat", "image": "a cat"}]
+_PROSE_SPEECH_ROWS = [
+    {"instruction": "Rewrite", "output": "Hello!", "speech": "Welcome to our meeting."}
+]
 
 
 class _RecordingTrainer:
@@ -120,6 +125,9 @@ def _hub(monkeypatch, vision_repos, rows):
         (_VISION_CONFIG, _TEXT_TOKENIZER, _TEXT_ROWS, False, False),
         (_TEXT_CONFIG, _TEXT_TOKENIZER, _IMAGE_ROWS, False, False),
         (_TEXT_CONFIG, _AUDIO_VLM_TOKENIZER, _AUDIO_ROWS, False, True),
+        (_VISION_CONFIG, _TEXT_TOKENIZER, _FILE_NAME_ROWS, False, False),
+        (_VISION_CONFIG, _TEXT_TOKENIZER, _PROSE_IMAGE_ROWS, False, False),
+        (_TEXT_CONFIG, _AUDIO_VLM_TOKENIZER, _PROSE_SPEECH_ROWS, False, False),
     ],
 )
 def test_train_tells_the_trainer_whether_a_local_dataset_has_images_or_audio(
@@ -136,6 +144,27 @@ def test_train_tells_the_trainer_whether_a_local_dataset_has_images_or_audio(
 
     assert trainer.load_kwargs.get("is_dataset_image", False) is image
     assert trainer.load_kwargs.get("is_dataset_audio", False) is audio
+
+
+def test_a_saved_to_disk_image_dataset_trains_the_vision_model(tmp_path, monkeypatch):
+    from datasets import Dataset
+    from PIL import Image
+
+    saved = tmp_path / "saved"
+    Dataset.from_list([{"image": Image.new("RGB", (8, 8)), "text": "a square"}]).save_to_disk(
+        str(saved)
+    )
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        _local_model(tmp_path, _VISION_CONFIG, _TEXT_TOKENIZER),
+        "--local-dataset",
+        str(saved),
+    )
+
+    assert trainer.load_kwargs["is_dataset_image"] is True
 
 
 def test_shipped_vision_lora_config_trains_the_vision_lora(tmp_path, monkeypatch):

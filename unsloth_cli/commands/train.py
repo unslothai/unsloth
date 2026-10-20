@@ -108,16 +108,73 @@ def _dataset_modalities(
             path = cfg.data.local_dataset[0]
             if not os.path.isabs(path) and not os.path.exists(path):
                 path = resolve_dataset_path(path)
-            dataset, _ = _load_local_preview_slice(
-                dataset_path = Path(path), train_split = "train", preview_size = 1
-            )
+            if (Path(path) / "dataset_info.json").exists() or (Path(path) / "state.json").exists():
+                from datasets import DatasetDict, load_from_disk
+                dataset = load_from_disk(str(path))
+                if isinstance(dataset, DatasetDict):
+                    dataset = (
+                        dataset["train"] if "train" in dataset else next(iter(dataset.values()))
+                    )
+            else:
+                dataset, _ = _load_local_preview_slice(
+                    dataset_path = Path(path), train_split = "train", preview_size = 1
+                )
         else:
             dataset = load_dataset_cache_safe(cfg.data.dataset, split = "train", token = hf_token)
         detected = detect_multimodal_dataset(dataset)
+        image, audio = _media_columns_hold_media(dataset, detected)
     except Exception as exc:  # noqa: BLE001
         typer.echo(f"Warning: could not check the dataset for images or audio: {exc}", err = True)
         return False, False
-    return detected["is_image"], detected["is_audio"]
+    return detected["is_image"] and image, detected["is_audio"] and audio
+
+
+def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
+    # The detector also flags columns by name alone, so a text column called `filename` or `speech` must hold media.
+    from datasets import Audio, Image
+    from hub.utils.dataset_format import (
+        _AUDIO_EXTENSIONS,
+        _holds_images,
+        _is_audio_value,
+        _is_image_value,
+    )
+
+    features = getattr(dataset, "features", None) or {}
+    row = next(iter(dataset), None) or {}
+
+    def bare(value):
+        return value.strip().split("?")[0] if isinstance(value, str) else ""
+
+    def reference(value):
+        path = bare(value)
+        return (
+            bool(path)
+            and not Path(path).suffix
+            and (path.lower().startswith(("http://", "https://")) or os.path.isfile(path))
+        )
+
+    def image(column):
+        value = row.get(column)
+        return (
+            isinstance(features.get(column), Image)
+            or _is_image_value(value)
+            or _holds_images(value)
+            or reference(value)
+        )
+
+    def audio(column):
+        value = row.get(column)
+        return (
+            isinstance(features.get(column), Audio)
+            or _is_audio_value(value)
+            or bare(value).lower().endswith(_AUDIO_EXTENSIONS)
+            or reference(value)
+        )
+
+    return (
+        any(image(column) for column in detected.get("multimodal_columns", [])),
+        any(audio(column) for column in detected.get("audio_columns", [])),
+    )
 
 
 def _launch_rank() -> Optional[int]:
