@@ -6130,8 +6130,7 @@ get_torch_index_url() {
             _cuda_from_driver=1
         fi
     fi
-    # Jetson before CUDA 13: aarch64 CUDA wheels are SBSA builds that see no GPU on Tegra (#4856); Thor (CUDA 13)
-    # is SBSA and keeps the ladder. Inline because test harnesses extract this function alone.
+    # Jetson < CUDA 13: SBSA wheels see no GPU (#4856). Inline: test harnesses extract this function alone.
     if { [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; } && \
        { [ -z "$_cuda_ver" ] || [ "${_cuda_ver%%.*}" -lt 13 ]; }; then
         echo "[WARN] NVIDIA Jetson (Tegra) detected${_cuda_ver:+ with CUDA $_cuda_ver}: the generic aarch64 CUDA PyTorch wheels do not run on it -- installing CPU-only PyTorch." >&2
@@ -7652,7 +7651,7 @@ case "$TORCH_INDEX_URL" in
                 # An explicit CPU pin is a request, not a detection failure: skip the SDK guidance, since ROCm may be perfectly healthy here.
                 substep "CPU-only PyTorch (index pinned via UNSLOTH_TORCH_INDEX_URL / _FAMILY)."
             elif [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; then
-                # get_torch_index_url's Jetson route (#4856), re-detected: it runs in a subshell and its warning already gave the JetPack remedy.
+                # Re-detected: get_torch_index_url ran in a subshell.
                 _tegra_cpu_route=true
                 substep "NVIDIA Jetson detected -- CPU-only PyTorch (see the JetPack warning above)." "$C_WARN"
             elif _has_amd_rocm_gpu; then

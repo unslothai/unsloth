@@ -101,8 +101,7 @@ def _run_install_sh(
 ):
     src = INSTALL_SH.read_text(encoding = "utf-8")
     body = "\n".join(_extract(src, name) for name in _SH_FUNCS)
-    # Every absolute path the selection reads, pointed into the fake root so the real host
-    # (this one may have a GPU, a Jetson CI box has the Tegra files) cannot leak in.
+    # Point every absolute path into the fake root so the real host cannot leak in.
     for real, fake in (
         ("/usr/bin/nvidia-smi", root / "absent-nvidia-smi"),
         ("/opt/rocm", root / "rocm"),
@@ -114,7 +113,6 @@ def _run_install_sh(
         body = body.replace(real, str(fake))
     script = root / "probe.sh"
     script.write_text(body + f"\n_ARCH={arch}\nget_torch_index_url\n")
-    # Only the basic tools: the host's own nvidia-smi / rocminfo must not answer for the fake root.
     tools = root / "tools"
     tools.mkdir(exist_ok = True)
     for cmd in ("bash", "sh", "grep", "sed", "head", "cat", "awk", "printf", "tr", "ls", "timeout"):
@@ -138,7 +136,6 @@ def _run_install_sh(
     return out.stdout.strip().splitlines()[-1] if out.stdout.strip() else "", out.stderr
 
 
-# (id, host kwargs, env, expected index leaf or URL, Jetson warning expected)
 _SH_CELLS = [
     ("jp6_release_cuda126", dict(tegra = "release", cuda = "12.6"), {}, "cpu", True),
     ("jp6_release_cuda122", dict(tegra = "release", cuda = "12.2"), {}, "cpu", True),
@@ -225,7 +222,6 @@ def _run_cpu_note(
 @_POSIX
 @pytest.mark.parametrize("tegra", ["release", "dt"])
 def test_install_sh_cpu_note_keeps_the_jetson_diagnosis(tmp_path, tegra):
-    # The Jetson route's CPU index is not "No GPU detected", and AMD guidance does not apply.
     out = _run_cpu_note(tmp_path, tegra)
     assert "NVIDIA Jetson detected" in out
     assert "No GPU detected" not in out and "AMD ROCm users" not in out
@@ -279,7 +275,6 @@ def _detect_family(
 _INV_126 = SimpleNamespace(cuda_driver_version = (12, 6), devices = [{"compute_cap": "8.7"}])
 _INV_130 = SimpleNamespace(cuda_driver_version = (13, 0), devices = [{"compute_cap": "11.0"}])
 
-# (id, tegra, nvidia-smi CUDA, library inventory, known_only, expected family)
 _PY_CELLS = [
     ("jp6_smi_126", True, "12.6", None, False, "cpu"),
     ("jp5_smi_114", True, "11.4", None, False, "cpu"),

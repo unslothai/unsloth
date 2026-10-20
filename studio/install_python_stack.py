@@ -4297,7 +4297,7 @@ _TEGRA_WARNED = False
 
 @functools.lru_cache(maxsize = 1)
 def _is_tegra() -> bool:
-    """True on a Jetson, as studio/backend/utils/tegra.py decides it. Never raises."""
+    """Mirrors studio/backend/utils/tegra.py."""
     try:
         if os.path.exists(_TEGRA_RELEASE):
             return True
@@ -4308,9 +4308,7 @@ def _is_tegra() -> bool:
 
 
 def _tegra_cuda_family(family: str, cuda_major: "int | None") -> str:
-    """install.sh::get_torch_index_url's Jetson gate. Before CUDA 13 (JetPack 5/6) the generic
-    aarch64 CUDA wheels are SBSA builds that see no GPU on Tegra (#4856), so "cpu", the answer
-    an ancient driver gets; Thor (CUDA 13, JetPack 7) is SBSA and keeps its family."""
+    """Mirrors install.sh: Jetson before CUDA 13 gets "cpu" (SBSA wheels see no GPU, #4856)."""
     global _TEGRA_WARNED
     if not _is_cuda_family_leaf(family) or (cuda_major is not None and cuda_major >= 13):
         return family
