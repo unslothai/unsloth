@@ -140,6 +140,22 @@ def _public_http_client_factory(**kwargs):
     return client_type(**kwargs)
 
 
+def _tool_http_client_factory(**kwargs):
+    """httpx client for HTTP/SSE MCP sessions with no read cap. Each call's budget (the Max Tool Call Duration
+    slider, up to unlimited) is enforced by _race_tool_call, and one cached session serves calls with different
+    budgets, so the SDK's default 300s read timeout would cut long tool calls short regardless of the slider."""
+    if _managed_mcp_restricted():
+        client = _public_http_client_factory(**kwargs)
+    else:
+        from mcp.shared._httpx_utils import create_mcp_http_client
+
+        kwargs.pop("follow_redirects", None)  # create_mcp_http_client always follows redirects
+        client = create_mcp_http_client(**kwargs)
+    t = client.timeout
+    client.timeout = type(t)(connect = t.connect, read = None, write = t.write, pool = t.pool)
+    return client
+
+
 def is_stdio(address: str) -> bool:
     """A non-HTTP address is a local stdio command, e.g. 'npx -y
     @modelcontextprotocol/server-filesystem /path'."""
@@ -627,12 +643,16 @@ def _client(
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
     )
-    kwargs = {}
-    if _managed_mcp_restricted():
-        kwargs["httpx_client_factory"] = _public_http_client_factory
-        if auth is not None:
-            auth.httpx_client_factory = _public_http_client_factory
-    return Client(transport_cls(url = url, headers = headers or None, auth = auth, **kwargs))
+    if _managed_mcp_restricted() and auth is not None:
+        auth.httpx_client_factory = _public_http_client_factory
+    return Client(
+        transport_cls(
+            url = url,
+            headers = headers or None,
+            auth = auth,
+            httpx_client_factory = _tool_http_client_factory,
+        )
+    )
 
 
 def oauth_client_kwargs(row: dict) -> dict:
