@@ -1539,6 +1539,8 @@ def _bnb_gemm_4bit_ok(X, W, quant_state):
         and type(quant_state) is not list
         and quant_state.absmax.device == X.device
         and getattr(quant_state, "quant_type", None) in ("nf4", "fp4")
+        # bitsandbytes dequantizes (and warns) itself when K is not a multiple of the blocksize.
+        and quant_state.shape[-1] % quant_state.blocksize == 0
         # matmul_4bit raises for any other nested blocksize.
         and (not quant_state.nested or quant_state.state2.blocksize == 256)
         and not torch.is_grad_enabled()

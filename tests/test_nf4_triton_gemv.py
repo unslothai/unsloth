@@ -442,7 +442,16 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "case", ["switch_off", "other_arch", "too_many_rows", "grad", "bf16", "weight_elsewhere"]
+    "case",
+    [
+        "switch_off",
+        "other_arch",
+        "too_many_rows",
+        "grad",
+        "bf16",
+        "weight_elsewhere",
+        "unaligned_k",
+    ],
 )
 def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
     utils = _bnb_gemm_utils()
@@ -457,6 +466,10 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
         monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DEVICE", {})
     else:
         monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
+    if case == "unaligned_k":
+        # K = 4096 + 32 is not a multiple of the 64 blocksize: bitsandbytes would dequantize itself.
+        proj = _linear4bit(1024, 4128, dtype = dtype)
+        X = torch.randn(bsz, 1, 4128, dtype = dtype, device = "cuda")
     if case == "weight_elsewhere":
         # An offloaded weight: the route must decline before bitsandbytes reads its pointer.
         assert not utils._bnb_gemm_4bit_ok(
