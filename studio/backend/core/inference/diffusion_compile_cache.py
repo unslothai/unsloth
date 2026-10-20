@@ -955,7 +955,9 @@ def _one_group_per_type(data: bytes, logger: Any) -> bytes:
             for artifact in artifacts:
                 content = artifact.content
                 if not isinstance(content, (bytes, bytearray, memoryview)):
-                    content = json.dumps(content, sort_keys = True, default = repr).encode()  # autotune: JSON
+                    content = json.dumps(
+                        content, sort_keys = True, default = repr
+                    ).encode()  # autotune: JSON
                 ident = (artifact.key, hashlib.sha256(content).digest())
                 bucket.pop(ident, None)
                 bucket[ident] = artifact
