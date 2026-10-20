@@ -430,6 +430,19 @@ class ChatBackend:
         model_id = getattr(
             self._backend, "model_identifier" if self._kind == "gguf" else "active_model_name", None
         )
+        if self._kind == "gguf":
+            supports_reasoning = getattr(self._backend, "supports_reasoning", False)
+            always_on = getattr(self._backend, "reasoning_always_on", False)
+        else:
+            from core.inference.llama_cpp import detect_reasoning_flags
+
+            info = (getattr(self._backend, "models", {}).get(model_id) or {}).get(
+                "chat_template_info"
+            ) or {}
+            flags = detect_reasoning_flags(info.get("template"), model_id, log_level = "debug")
+            supports_reasoning = flags["supports_reasoning"]
+            always_on = flags["reasoning_always_on"]
+        thinking = (always_on or enable_thinking) if supports_reasoning else None
         sampling = resolve_effective_sampling(
             model_id,
             dict(
@@ -438,6 +451,7 @@ class ChatBackend:
                 top_k = top_k,
                 repetition_penalty = repetition_penalty,
             ),
+            thinking = thinking,
         )
         if self._kind == "gguf":
             # llama-server takes the system prompt as the first message.
