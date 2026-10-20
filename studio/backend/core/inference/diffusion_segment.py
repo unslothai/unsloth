@@ -253,7 +253,9 @@ def _override_dir() -> Optional[str]:
             # or only a pre-quantized detector file the precision setting may load (dequantized where it cannot
             # run quantized); one the setting rejects (fp8 under auto, any under bf16) is not a loadable model
             or any(
-                _loadable(v, a) and has(a.filename) for v in SEGMENTER_VARIANTS.values() for a in v.prequant
+                _loadable(v, a) and has(a.filename)
+                for v in SEGMENTER_VARIANTS.values()
+                for a in v.prequant
             )
         )
         # AutoTokenizer (CLIPTokenizer for sam3) loads tokenizer.json, else needs vocab.json and merges.txt together.
