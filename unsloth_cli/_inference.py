@@ -440,6 +440,7 @@ class ChatBackend:
                 getattr(self._backend, "extra_args", None),
                 {"--chat-template", "--chat-template-file", "--no-jinja"},
             )
+            style = getattr(self._backend, "reasoning_style", None)
             always_on = getattr(self._backend, "reasoning_always_on", False)
         else:
             from core.inference.chat_template_helpers import _selected_template_strings_from_value
@@ -453,7 +454,10 @@ class ChatBackend:
                 selected[0] if selected else None, model_id, log_level = "debug"
             )
             supports_reasoning = flags["supports_reasoning"]
+            style = flags["reasoning_style"]
             always_on = flags["reasoning_always_on"]
+        # An effort-only template has no off switch: thinking off still renders a low effort.
+        always_on = always_on or style == "reasoning_effort"
         thinking = (always_on or enable_thinking) if supports_reasoning else None
         # Instruct-2507 templates keep <think> handling for history but the models never reason.
         if re.search(r"qwen3[-_].*instruct[-_]2507", (model_id or "").lower()):

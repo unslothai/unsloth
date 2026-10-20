@@ -465,6 +465,28 @@ def test_chatbackend_always_on_reasoning_samples_as_thinking(monkeypatch, kind, 
     assert _qwen_sampling(monkeypatch, kind, fake, False) == _QWEN_THINKING_ON
 
 
+@pytest.mark.parametrize(
+    "kind, model_id, flags",
+    [
+        (
+            "gguf",
+            "unsloth/Qwen3.5-4B-GGUF",
+            {"supports_reasoning": True, "reasoning_style": "reasoning_effort"},
+        ),
+        (
+            "unsloth",
+            "unsloth/Qwen3.5-4B",
+            {
+                "template": "{%- if reasoning_effort == 'low' %}low{%- elif reasoning_effort == 'high' %}high{%- endif %}"
+            },
+        ),
+    ],
+)
+def test_chatbackend_effort_only_reasoning_samples_as_thinking(monkeypatch, kind, model_id, flags):
+    fake = _qwen_backend(kind, model_id, **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, False) == _QWEN_THINKING_ON
+
+
 @pytest.mark.parametrize("enable_thinking", [False, True])
 @pytest.mark.parametrize(
     "kind, flags",
