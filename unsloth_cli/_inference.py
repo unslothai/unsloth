@@ -431,10 +431,14 @@ class ChatBackend:
             self._backend, "model_identifier" if self._kind == "gguf" else "active_model_name", None
         )
         if self._kind == "gguf":
+            from core.inference.llama_cpp import _extra_args_set_any_flag
+
             # A --chat-template(-file) pass-through renders a template the flags were not read from.
-            supports_reasoning = getattr(self._backend, "supports_reasoning", False) and not any(
-                str(arg).split("=", 1)[0] in ("--chat-template", "--chat-template-file")
-                for arg in getattr(self._backend, "extra_args", None) or ()
+            supports_reasoning = getattr(
+                self._backend, "supports_reasoning", False
+            ) and not _extra_args_set_any_flag(
+                getattr(self._backend, "extra_args", None),
+                {"--chat-template", "--chat-template-file"},
             )
             always_on = getattr(self._backend, "reasoning_always_on", False)
         else:

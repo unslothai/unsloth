@@ -501,7 +501,13 @@ def test_chatbackend_reads_reasoning_from_the_selected_named_template(monkeypatc
 
 
 @pytest.mark.parametrize(
-    "extra_args", [["--chat-template", "chatml"], ["--chat-template-file=/tmp/custom.jinja"]]
+    "extra_args",
+    [
+        ["--chat-template", "chatml"],
+        ["--chat-template-file=/tmp/custom.jinja"],
+        ["--chat_template", "chatml"],
+        ["--chat_template_file", "/tmp/custom.jinja"],
+    ],
 )
 def test_chatbackend_gguf_template_override_keeps_the_model_recommendation(monkeypatch, extra_args):
     fake = _qwen_backend(
