@@ -25,7 +25,8 @@ def _stack(monkeypatch, *, policy: str):
     (torch 2.13+), "2.12" only under eager_numerics.use_pytorch_libdevice (torch 2.12)."""
     knobs = types.SimpleNamespace(nvidia = types.SimpleNamespace(libdevice_path = None))
     config = types.SimpleNamespace(
-        emulate_precision_casts = True, eager_numerics = types.SimpleNamespace(use_pytorch_libdevice = False)
+        emulate_precision_casts = True,
+        eager_numerics = types.SimpleNamespace(use_pytorch_libdevice = False),
     )
     calls = []
 
@@ -85,7 +86,9 @@ def test_torch_2_12_policy_is_kept(monkeypatch):
 
 def test_a_build_without_the_gated_resolver_is_left_alone(fake_stack, monkeypatch):
     knobs, calls = fake_stack
-    monkeypatch.delattr(sys.modules["torch._inductor.runtime.compile_tasks"], "_set_triton_libdevice_path")
+    monkeypatch.delattr(
+        sys.modules["torch._inductor.runtime.compile_tasks"], "_set_triton_libdevice_path"
+    )
     assert aot.pin_triton_libdevice() is None
     assert calls == [] and knobs.nvidia.libdevice_path is None
 
