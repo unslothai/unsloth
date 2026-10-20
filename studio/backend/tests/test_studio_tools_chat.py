@@ -152,8 +152,6 @@ def listed(account):
     return run_as(account, asyncio.run, tools_mod.get_enabled_mcp_tools())
 
 
-
-
 def test_the_reserved_url_is_port_agnostic_and_distinct_from_decisions():
     # The frontend's UNSLOTH_STUDIO_TOOLS_MCP_URL must match this literal.
     assert URL == "http://127.0.0.1/mcp/studio-tools"
@@ -255,8 +253,6 @@ def test_an_owner_disabled_tool_is_unlisted_and_refused(
         for name in (tool["function"]["name"] for tool in listed(accounts.alice))
     )
     assert "qwen-lora" in bridge(accounts.alice, "list_training_runs")
-
-
 
 
 @pytest.mark.parametrize("name", sorted(CHAT_DENYLIST))
@@ -382,8 +378,6 @@ def test_without_a_server_loop_or_app_nothing_is_minted(studio_home, accounts, m
     assert chat_keys() == []
 
 
-
-
 def test_host_paths_are_refused_even_for_the_owner(
     studio_home, accounts, server_loop, monkeypatch, tmp_path
 ):
@@ -400,8 +394,6 @@ def test_route_host_paths_do_not_reach_the_chat(studio_home, accounts, server_lo
     result = bridge(OWNER, "list_training_runs", {"run_id": "run-1", "include_checkpoints": True})
     assert "qwen-lora" in result
     assert not any(root in result for root in SENTINEL_ROOTS), result
-
-
 
 
 def test_after_a_call_no_caller_is_left_bound(studio_home, accounts, server_loop, monkeypatch):
@@ -493,8 +485,6 @@ def test_an_outer_http_request_on_the_tool_thread_does_not_outrank_the_bridge(
     assert app.state.seen and "outer-agent-key" not in {entry["token"] for entry in app.state.seen}
 
 
-
-
 def test_chat_works_with_agent_access_off_and_its_key_cannot_use_mcp(
     studio_home, accounts, server_loop, monkeypatch
 ):
@@ -520,8 +510,6 @@ def test_chat_works_with_agent_access_off_and_its_key_cannot_use_mcp(
     (key,) = chat_keys()
     assert revoked == [key["id"]]
     storage.revoke_internal_api_key(key["id"])
-
-
 
 
 def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(

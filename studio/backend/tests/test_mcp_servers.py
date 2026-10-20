@@ -2704,7 +2704,6 @@ def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monk
     assert controller.active_tools() == []
 
 
-
 STUDIO_TOOLS_URL = "http://127.0.0.1/mcp/studio-tools"
 
 

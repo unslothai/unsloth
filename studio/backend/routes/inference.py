@@ -6772,7 +6772,6 @@ async def _select_request_tools(
         )
     if mcp_allowed:
         from core.inference.media_chat_tools import remember_server_loop
-
         remember_server_loop(asyncio.get_running_loop())
         tools = tools + await get_enabled_mcp_tools()
     # getattr: callers hand in lighter payload objects than the request models, not all of
