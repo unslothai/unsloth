@@ -1,32 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A failing pytest job says how old its merge ref is, and saying so cannot fail the job.
-
-A `pull_request` run tests `refs/pull/N/merge`, a merge of the branch into the base as
-the base stood when the run was created. GitHub does not rebuild that ref because the
-base later moved, and a re-run replays the same merge commit, so a fix that lands on
-main after a run starts is invisible to that run for as long as the branch sits still.
-
-That cost real time: #11372 added `encoding = "utf-8"` to three test files and merged at
-14:35 UTC, and runs created at 13:39, 14:26 and 14:29 on #11375, #11357 and #11373 went
-on failing `tests/test_source_read_encoding.py` on exactly those three lines. All three
-branches had never touched the files.
-
-`.github/actions/merge-ref-age` prints a notice that says so. What this file keeps is
-the two properties that make it worth having, because both are easy to lose:
-
-  1. Every job here that runs pytest carries it, and carries it gated on `failure()`.
-     A job added later that does not is a job where the same confusion returns.
-
-  2. It cannot fail a job. It runs exactly when a job is already failing, so a bug in
-     it would land as a second, misleading error on top of the real one. The action's
-     script therefore never exits non-zero and never emits `::error::`.
-
-It deliberately does NOT check the wording of the notice. The message is prose, prose
-guards have to parse English to be right, and the value here is that the step exists and
-is harmless, not that any particular sentence survives.
-"""
+"""The merge-ref-age notice says a PR's merge ref may predate main's fix; it must never fail a job."""
 
 from __future__ import annotations
 
@@ -90,7 +65,6 @@ def test_reporting_the_age_cannot_fail_the_job():
     assert any(scripts), f"{ACTION} has no script left to check"
 
     for script in scripts:
-        # Comments explain the exits; the code is what runs.
         code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
         bad = re.findall(r"^\s*exit\s+(?!0\b)\S+", code, re.M)
         assert not bad, (

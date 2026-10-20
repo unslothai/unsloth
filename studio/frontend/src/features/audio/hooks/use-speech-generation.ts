@@ -8,11 +8,11 @@ import { generateAudio, runAudio } from "../api";
 import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import {
   audioOptionLabel,
+  audioOptionSpecsFor,
   audioOptionsForRequest,
   type AudioOptionValue,
   type AudioOptionValues,
   missingRequiredAudioOptions,
-  parseAudioOptions,
   readAudioOptionValues,
   saveAudioOptionValues,
 } from "../audio-options";
@@ -41,6 +41,11 @@ import { galleryCache } from "./use-audio-gallery";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
+import {
+  speakVoiceLogic,
+  speakVoiceStored,
+  voiceOptionName,
+} from "../tools/panel-logic";
 import { audioToolPanelsFor, isInstructionPanel } from "../tools/registry";
 import {
   audioModelContextFor,
@@ -48,8 +53,9 @@ import {
   collectToolRequest,
   toolValueKey,
 } from "../tools/select";
-import { showRunResult } from "./use-clone-generation";
+import { showRunResult, warnIgnoredOptions } from "./use-clone-generation";
 import type { AudioWorkflowId } from "../workflows";
+import { reportAudioFailure } from "../audio-failure-actions";
 import type { AudioGallery } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
 
@@ -188,8 +194,8 @@ export function useSpeechGeneration({
   );
   const samplingControls = audioSamplingControlsApply(status?.audio_type);
   const audioOptionSpecs = useMemo(
-    () => parseAudioOptions(status?.audio_options),
-    [status?.audio_options],
+    () => audioOptionSpecsFor(status, workflow),
+    [status, workflow],
   );
   const audioOptionsModel = status?.active_model ?? null;
   const [audioOptionValues, setAudioOptionValues] = useState<AudioOptionValues>(
@@ -236,8 +242,20 @@ export function useSpeechGeneration({
         musicNeedsDescription,
       }),
       savedVoiceIds: voicesLoaded ? voices.map((voice) => voice.id) : null,
+      voicesWithoutTranscript: voices
+        .filter((voice) => !voice.transcript?.trim())
+        .map((voice) => voice.id),
+      voiceOption: voiceOptionName(audioOptionSpecs),
     }),
-    [status, workflow, cudaMusicGeneration, musicNeedsDescription, voices, voicesLoaded],
+    [
+      status,
+      workflow,
+      cudaMusicGeneration,
+      musicNeedsDescription,
+      voices,
+      voicesLoaded,
+      audioOptionSpecs,
+    ],
   );
   const toolPanels = useMemo(
     () => audioToolPanelsFor(workflow, toolContext),
@@ -247,13 +265,19 @@ export function useSpeechGeneration({
   const toolValues = useMemo(() => {
     const values: Record<string, unknown> = {};
     for (const panel of toolPanels) {
+      const stored =
+        storedToolValues[toolValueKey(audioOptionsModel, workflow, panel.id)];
       values[panel.id] = isInstructionPanel(panel.id)
         ? { instructions: audioInstructions, language: audioLanguage }
-        : storedToolValues[toolValueKey(audioOptionsModel, workflow, panel.id)];
+        : panel.id === speakVoiceLogic.id
+          ? speakVoiceStored(stored, audioOptionValues, toolContext.voiceOption)
+          : stored;
     }
     return values;
   }, [
     toolPanels,
+    audioOptionValues,
+    toolContext.voiceOption,
     audioInstructions,
     audioLanguage,
     storedToolValues,
@@ -384,6 +408,7 @@ export function useSpeechGeneration({
       } catch (error) {
         if (!voiceController.signal.aborted) {
           updateGenerationPhase("finishing");
+          reportAudioFailure(error);
           const message =
             error instanceof Error ? error.message : "Audio generation failed.";
           setGenerationError(message);
@@ -424,6 +449,7 @@ export function useSpeechGeneration({
           : {}),
         signal: controller.signal,
       });
+      warnIgnoredOptions(generated.ignored_options, generated.model);
       if (generated.choices[0]?.finish_reason === "length")
         toast.warning(
           maxTokens < TTS_MAX_TOKENS
@@ -463,6 +489,7 @@ export function useSpeechGeneration({
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
+        reportAudioFailure(error);
         setGenerationError(
           error instanceof Error ? error.message : "Audio generation failed.",
         );

@@ -80,6 +80,7 @@ const phaseLabelKeys = {
   configuring: "studio.progress.phase.configuring",
   training: "studio.progress.phase.training",
   finalizing: "studio.progress.phase.finalizing",
+  training_drafter: "studio.progress.phase.trainingDrafter",
   completed: "studio.progress.phase.completed",
   error: "studio.progress.phase.error",
   stopped: "studio.progress.phase.stopped",

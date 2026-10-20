@@ -2,18 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser checks for NonModalDropdownMenu, driven against smoke-nonmodal-menus.html.
-
-The AST tests pin which menus use the wrapper; only a browser answers what it then does to a
-scroll behind an open menu, to the dismissing click and to focus. Each has regressed once
-already (#9243, #9772, and twice inside the change that added the wrapper).
-
-The page also mounts one UNCONVERTED modal menu, the shape every converted one had before, so
-a case behaving the same on both is Radix and not this wrapper, and the lock it still writes
-to <body> proves the probe can see a lock at all.
-
-    PW_ENGINE=webkit python3 tests/studio/playwright_nonmodal_menus.py
-"""
+"""Browser checks for NonModalDropdownMenu scroll, dismiss and focus, which AST tests cannot reach."""
 
 from __future__ import annotations
 
@@ -39,8 +28,7 @@ OUT = Path(os.environ.get("PW_OUT", "logs/nonmodal_menus_report.json"))
 ENTRY = "/smoke-nonmodal-menus-main.tsx"
 PAGE = "/smoke-nonmodal-menus.html"
 
-# Both sides of the `duration-100` exit window: a guard outliving the close swallows the
-# next click.
+# Both sides of the `duration-100` exit window: a guard outliving the close swallows the next click.
 EXIT_WINDOW_MS = (30, 75, 125)
 
 
@@ -118,11 +106,7 @@ def focused_label(page, label: str) -> None:
 
 
 def raw_click(page, selector: str) -> None:
-    """A real pointer press at the element's centre, with no actionability wait.
-
-    A modal menu puts `pointer-events: none` on <body>, so Playwright's own click refuses to act
-    there; the control arm has to bypass that to be measurable at all.
-    """
+    """Mouse press at the centre; Playwright's click refuses under a modal body's pointer-events: none."""
     box = page.locator(selector).bounding_box()
     if box is None:
         raise RuntimeError(f"{selector} has no box")
@@ -250,7 +234,7 @@ def check_scrolls_that_must_not_close(page, checks: Checks) -> None:
 
 
 def check_dismiss_guard(page, checks: Checks) -> None:
-    # Reset the counter AFTER opening: the click that opens a menu reaches document too.
+    # Reset AFTER opening: the opening click reaches document too.
     open_row(page, 7)
     page.evaluate("() => window.probe.resetClicks()")
     raw_click(page, "#outside-button")
@@ -286,8 +270,7 @@ def check_dismiss_guard(page, checks: Checks) -> None:
             )
             close_all(page)
 
-    # A non-modal menu lets the press reach the field before Radix restores the trigger, so
-    # Firefox and WebKit keep the caret and Chromium does not. Either is usable; <body> is not.
+    # Firefox and WebKit keep the caret, Chromium does not; either is fine, <body> is not.
     focus_after = {}
     for label, opener in (
         ("converted", lambda: open_row(page, 9)),
@@ -323,8 +306,7 @@ def check_focus_return(page, checks: Checks) -> None:
         page.evaluate(active),
     )
 
-    # A scroll-close takes a different focus path. The flag that selects it must not survive
-    # into the next close, or an ordinary Escape stops restoring focus.
+    # The scroll-close flag must not survive into the next close.
     reset_list(page)
     open_row(page, 11)
     page.evaluate("() => { document.getElementById('list').scrollTop = 300; }")
@@ -339,10 +321,7 @@ def check_focus_return(page, checks: Checks) -> None:
         page.evaluate(active),
     )
 
-    # The content stays mounted for the exit animation, so the user can click into something
-    # else before the close-autofocus runs. Radix's own restore checks for that; the
-    # scroll-close path prevents its default, so it has to make the same check itself or it
-    # takes the caret back out of whatever was clicked.
+    # The scroll-close path prevents Radix's restore, so it must itself skip stealing focus back.
     reset_list(page)
     open_row(page, 14)
     page.evaluate("() => { document.getElementById('list').scrollTop = 40; }")
@@ -375,8 +354,7 @@ def check_focus_return(page, checks: Checks) -> None:
 
 
 def check_keyboard(page, checks: Checks) -> None:
-    # An on-screen trigger, focus settled: focusing an off-screen one scrolls it into view a
-    # frame or two later, which races the open rather than testing it.
+    # Focusing an off-screen trigger scrolls it a frame later, racing the open.
     reset_list(page)
     page.get_by_label("Row options 2", exact = True).focus()
     frames(page)
@@ -431,15 +409,13 @@ def check_lifetime(page, checks: Checks) -> None:
         page.wait_for_timeout(500)
         reopened[label] = menus_open(page)
         close_all(page)
-    # Whether the reopening click lands is a race both arms lose about as often as they win.
-    # The invariant that is not a race: neither may end up with two menus open at once.
+    # The reopening click is a race either way; the invariant is never two menus open.
     checks.record(
         "reopening during the exit animation never leaves two menus open",
         all(count <= 1 for count in reopened.values()),
         reopened,
     )
 
-    # The scroll watcher is per-open. If a close ever failed to retire one, this climbs.
     before = page.evaluate("() => window.probe.scrollListeners()")
     for _ in range(30):
         page.get_by_label("Row options 18", exact = True).click()

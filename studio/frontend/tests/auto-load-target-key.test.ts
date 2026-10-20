@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 // The shipped helper is lifted out of chat-adapter.ts rather than copied, so
 // these assert against the real source. Importing the module would drag in the

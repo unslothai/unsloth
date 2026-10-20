@@ -105,6 +105,9 @@ SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
 # model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
 _VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
+# vLLM 0.31 has no attention backend for these below sm80: TRITON_ATTN needs 96 KB shared memory
+# for Gemma 4's 512-wide global heads (T4 has 64 KB), FlexAttention rejects its KV sharing.
+VLLM_NEEDS_SM80_MODEL_TYPES = ("gemma4", "gemma4_text", "gemma4_unified", "gemma4_unified_text")
 
 
 def _vllm_unsupported_model_types(model_types):
@@ -115,6 +118,23 @@ def _vllm_unsupported_model_types(model_types):
             if not hasattr(zoo_empty_model, symbol):
                 unsupported.append(model_type)
     return unsupported
+
+
+def _vllm_needs_newer_gpu(model_types):
+    """First model type vLLM cannot run on this CUDA GPU (compute capability < 8), else None."""
+    if DEVICE_TYPE != "cuda":
+        return None
+    model_type = next((t for t in model_types if t in VLLM_NEEDS_SM80_MODEL_TYPES), None)
+    if model_type is None:
+        return None
+    import torch
+
+    try:
+        if torch.cuda.get_device_capability()[0] >= 8:
+            return None
+    except Exception:
+        return None
+    return model_type
 
 
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
@@ -923,6 +943,14 @@ def _fix_rope_inv_freq(model):
                     ).float()
                     freqs = torch.outer(t, module.short_inv_freq)
                     emb = torch.cat((freqs, freqs), dim = -1)
+                    if hasattr(module, "_unsloth_short_cos_cpu"):
+                        # Devices not built yet copy the short cache from these on first use.
+                        module._unsloth_short_cos_cpu = (emb.cos() * module.scaling_factor).to(
+                            dtype = dtype
+                        )
+                        module._unsloth_short_sin_cpu = (emb.sin() * module.scaling_factor).to(
+                            dtype = dtype
+                        )
                     for device_idx in range(len(module.multi_gpu_short_cos_cached)):
                         if module.multi_gpu_short_cos_cached[device_idx] is not None:
                             device_obj = torch.device(device_idx)
@@ -973,6 +1001,44 @@ def _vllm_unavailable_error():
     )
 
 
+def _reattach_saved_mtp_head(
+    model,
+    adapter_dir,
+    token = None,
+    revision = None,
+    cache_dir = None,
+    local_files_only = False,
+):
+    """A LoRA folder (local or on the Hub) saved with a trained MTP head gets it back, so a later
+    merge keeps it."""
+    if not isinstance(adapter_dir, str):
+        return
+    if not os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors")):
+        if os.path.isdir(adapter_dir):
+            return
+        try:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                adapter_dir,
+                "mtp_head.safetensors",
+                token = token,
+                revision = revision,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+            )
+        except Exception:
+            return  # no head uploaded beside this adapter
+        adapter_dir = os.path.dirname(path)
+    try:
+        from .speculative import attach_saved_mtp_head
+        attach_saved_mtp_head(model, adapter_dir)
+        print(f"Unsloth: Re-attached the trained MTP head saved in '{adapter_dir}'.")
+    except Exception as error:
+        print(
+            f"Unsloth: Could not re-attach the MTP head in '{adapter_dir}' ({error}); merges will keep the stock head."
+        )
+
+
 def _diffusion_peft_kwargs(
     model,
     args,
@@ -1004,6 +1070,7 @@ _VLLM_ENGINE_KWARGS = (
     "conservativeness",
     "max_logprobs",
     "max_num_seqs",
+    "max_num_batched_tokens",
     "return_args",
     "training",
 )
@@ -1041,6 +1108,11 @@ class FastLanguageModel(FastLlamaModel):
                 use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
             return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
         return FastLlamaModel.for_training(model, use_gradient_checkpointing)
+
+    @staticmethod
+    def get_mtp_head(model, *args, **kwargs):
+        from .speculative import get_mtp_head
+        return get_mtp_head(model, *args, **kwargs)
 
     @staticmethod
     @tokenizers_v1_on_return
@@ -1856,6 +1928,14 @@ class FastLanguageModel(FastLlamaModel):
                 )
             if fast_pissa:
                 record_fast_pissa(model)
+            _reattach_saved_mtp_head(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -1910,6 +1990,11 @@ except:
 
 
 class FastModel(FastBaseModel):
+    @staticmethod
+    def get_mtp_head(model, *args, **kwargs):
+        from .speculative import get_mtp_head
+        return get_mtp_head(model, *args, **kwargs)
+
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
         model = _prepare_model_for_qat(model, qat_scheme)
@@ -2384,6 +2469,14 @@ class FastModel(FastBaseModel):
             )
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
+        _vllm_old_gpu = _vllm_needs_newer_gpu(model_types) if fast_inference else None
+        if _vllm_old_gpu is not None:
+            print(
+                f"Unsloth: fast_inference (vLLM) cannot run {_vllm_old_gpu} on GPUs older than compute capability 8.0 "
+                "(such as T4) - will switch to Unsloth inference!"
+            )
+            fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
 
         # Text-diffusion models (DiffusionGemma) take a transformers-only slow path: a custom block-diffusion generate over a novel backbone, so Unsloth's autoregressive kernel/compile patching is skipped and the unmodified HF model is loaded, keeping 4bit/8bit and PEFT LoRA.
         # Remote-code checkpoints can report their backbone's type (Nemotron-Labs-Diffusion says "nemotron"), so also match the raw config.
@@ -2502,7 +2595,24 @@ class FastModel(FastBaseModel):
         elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             # Use the EFFECTIVE bnb state, not the raw flag: a native MXFP4 checkpoint loaded with the default load_in_4bit=True has bnb disabled later, so the raw flag picks the wrong dtype path.
-            if not (load_in_4bit and _bnb_compatible_quant):
+            if not (load_in_4bit and _bnb_compatible_quant) and transformers_version < Version(
+                "5.0.0"
+            ):
+                # Only upcast MoE biases for MXFP4, not BnB, nor experts transformers 4.x dequantized (dense forward).
+                register_custom_dtype(
+                    "all;None;None;"
+                    "x = 'gate_up_proj_bias'\n"
+                    "dense = type(getattr(module, 'gate_up_proj', None)) is torch.nn.Parameter and module.gate_up_proj.is_floating_point()\n"
+                    "if hasattr(module, x) and not dense: "
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    ""
+                    "x = 'down_proj_bias'\n"
+                    "if hasattr(module, x) and not dense: "
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    ""
+                    ";"
+                )
+            elif not (load_in_4bit and _bnb_compatible_quant):
                 # Only upcast MoE biases for MXFP4, not BnB.
                 register_custom_dtype(
                     "all;None;None;"
@@ -3182,6 +3292,14 @@ class FastModel(FastBaseModel):
             )
             if fast_pissa:
                 record_fast_pissa(model)
+            _reattach_saved_mtp_head(
+                model,
+                old_model_name,
+                token = token,
+                revision = revision,
+                cache_dir = kwargs.get("cache_dir"),
+                local_files_only = local_files_only,
+            )
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)

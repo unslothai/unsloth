@@ -51,8 +51,7 @@ class _FakeExportBackend:
 
 def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inject a fake studio.backend.core.export into sys.modules so the CLI's lazy import binds to it; parent packages stubbed to skip the structlog-dependent tree."""
-    # Load the real CLI first: unsloth_cli/__init__.py reaches studio.backend.utils through
-    # commands/start.py, and the stubs below shadow it, so whichever test ran first errored.
+    # Load the real CLI first: the stubs below shadow studio.backend.utils, which it imports.
     importlib.import_module("unsloth_cli.commands.export")
 
     for name in ("studio", "studio.backend", "studio.backend.core"):
@@ -62,7 +61,6 @@ def _install_fake_studio_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_mod.ExportBackend = _FakeExportBackend
     monkeypatch.setitem(sys.modules, "studio.backend.core.export", fake_mod)
 
-    # Drop the cached CLI module so its deferred import re-resolves the fake.
     monkeypatch.delitem(sys.modules, "unsloth_cli.commands.export", raising = False)
 
 
@@ -77,8 +75,7 @@ def cli_app(monkeypatch: pytest.MonkeyPatch) -> typer.Typer:
     app = typer.Typer()
     app.command("export")(export_cmd.export)
 
-    # Typer flattens a single-command app, making "export" look like a stray positional; a harmless second command keeps
-    # "export" a real subcommand.
+    # Typer flattens a single-command app; a second command keeps "export" a real subcommand.
     @app.command("noop")
     def _noop() -> None:  # pragma: no cover - only exists to pin routing
         pass

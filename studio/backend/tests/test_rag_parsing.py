@@ -442,6 +442,7 @@ def test_docx_table_vertical_merge_emitted_once(tmp_path):
     assert "SECTION | r0" in text and " | r1" in text and " | r2" in text
 
 
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _DOCX_XMLNS = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
     'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
@@ -869,6 +870,196 @@ def test_docx_numbers_visible_note_references_and_marks_the_body(tmp_path):
     )
 
 
+def test_docx_keeps_list_numbers(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    document.add_paragraph("Lease terms")
+    for clause in ("Rent is due on the first.", "Tenant pays utilities.", "No pets."):
+        document.add_paragraph(clause, style = "List Number")
+    path = tmp_path / "lease.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == (
+        "Lease terms\n1. Rent is due on the first.\n2. Tenant pays utilities.\n3. No pets."
+    )
+
+
+def test_docx_keeps_multilevel_list_numbers(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    levels = (("decimal", "%1."), ("decimal", "%1.%2"), ("lowerLetter", "(%3)"))
+    document.part.numbering_part.element.append(
+        parse_xml(
+            f'<w:abstractNum {_DOCX_XMLNS} w:abstractNumId="90">'
+            + "".join(
+                f'<w:lvl w:ilvl="{i}"><w:start w:val="1"/><w:numFmt w:val="{fmt}"/>'
+                f'<w:lvlText w:val="{text}"/></w:lvl>'
+                for i, (fmt, text) in enumerate(levels)
+            )
+            + "</w:abstractNum>"
+        )
+    )
+    document.part.numbering_part.element.append(
+        parse_xml(f'<w:num {_DOCX_XMLNS} w:numId="90"><w:abstractNumId w:val="90"/></w:num>')
+    )
+
+    def item(level, text):
+        return (
+            f'<w:p {_DOCX_XMLNS}><w:pPr><w:numPr><w:ilvl w:val="{level}"/>'
+            f'<w:numId w:val="90"/></w:numPr></w:pPr>{_r(text)}</w:p>'
+        )
+
+    section = document.element.body[-1]
+    for level, clause in (
+        (0, "Rent"),
+        (1, "Amount"),
+        (1, "Due date"),
+        (2, "Weekdays"),
+        (2, "Holidays"),
+        (0, "Pets"),
+        (1, "Dogs"),
+    ):
+        section.addprevious(parse_xml(item(level, clause)))
+    path = tmp_path / "clauses.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == (
+        "1. Rent\n1.1 Amount\n1.2 Due date\n(a) Weekdays\n(b) Holidays\n2. Pets\n2.1 Dogs"
+    )
+
+
+def test_docx_list_numbers_count_placeholders_and_survive_huge_starts(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    numbering = document.part.numbering_part.element
+    for num_id, start in ((91, "1"), (92, "9" * 4300)):
+        numbering.append(
+            parse_xml(
+                f'<w:abstractNum {_DOCX_XMLNS} w:abstractNumId="{num_id}"><w:lvl w:ilvl="0">'
+                f'<w:start w:val="{start}"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/>'
+                "</w:lvl></w:abstractNum>"
+            )
+        )
+        numbering.append(
+            parse_xml(
+                f'<w:num {_DOCX_XMLNS} w:numId="{num_id}"><w:abstractNumId w:val="{num_id}"/></w:num>'
+            )
+        )
+
+    def item(num_id, text):
+        return f'<w:p><w:pPr><w:numPr><w:numId w:val="{num_id}"/></w:numPr></w:pPr>{_r(text)}</w:p>'
+
+    placeholder = (
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr>"
+        f"<w:sdtContent>{item(91, 'Click here')}</w:sdtContent></w:sdt>"
+    )
+    body = (
+        item(91, "First") + placeholder + item(91, "Third") + item(92, "Big") + item(92, "Bigger")
+    )
+    section = document.element.body[-1]
+    for element in list(parse_xml(f"<w:body {_DOCX_XMLNS}>{body}</w:body>")):
+        section.addprevious(element)
+    path = tmp_path / "placeholder.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text.splitlines()[:2] == ["1. First", "3. Third"]
+    assert text.splitlines()[-1].endswith(" Bigger")
+
+
+def test_docx_numbers_paragraphs_through_the_default_style(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    number_style = document.styles["List Number"].element.find(f"{{{_W_NS}}}pPr/{{{_W_NS}}}numPr")
+    normal = document.styles["Normal"].element
+    p_pr = normal.find(f"{{{_W_NS}}}pPr")
+    if p_pr is None:
+        p_pr = parse_xml(f"<w:pPr {_DOCX_XMLNS}/>")
+        normal.append(p_pr)
+    p_pr.append(parse_xml(number_style.xml))
+    document.add_paragraph("Rent")
+    document.add_paragraph("Pets", style = "List Number")
+    path = tmp_path / "default.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "1. Rent\n2. Pets"
+
+
+def test_docx_style_inherits_its_list_from_the_base_style(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    numbering = document.part.numbering_part.element
+    numbering.append(
+        parse_xml(
+            f'<w:abstractNum {_DOCX_XMLNS} w:abstractNumId="93">'
+            '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+            '<w:lvlText w:val="%1."/></w:lvl>'
+            '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="decimal"/>'
+            '<w:lvlText w:val="%1.%2"/></w:lvl>'
+            "</w:abstractNum>"
+        )
+    )
+    numbering.append(
+        parse_xml(f'<w:num {_DOCX_XMLNS} w:numId="93"><w:abstractNumId w:val="93"/></w:num>')
+    )
+    styles = document.styles.element
+    for style_id, based_on, num_pr in (
+        ("Clause1", "Normal", '<w:numId w:val="93"/>'),
+        ("Clause2", "Clause1", '<w:ilvl w:val="1"/>'),
+    ):
+        styles.append(
+            parse_xml(
+                f'<w:style {_DOCX_XMLNS} w:type="paragraph" w:styleId="{style_id}">'
+                f'<w:name w:val="{style_id}"/><w:basedOn w:val="{based_on}"/>'
+                f"<w:pPr><w:numPr>{num_pr}</w:numPr></w:pPr></w:style>"
+            )
+        )
+    for style, text in (
+        ("Clause1", "Rent"),
+        ("Clause2", "Amount"),
+        ("Clause2", "Due date"),
+        ("Clause1", "Pets"),
+    ):
+        document.add_paragraph(text, style = document.styles[style])
+    path = tmp_path / "inherited.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "1. Rent\n1.1 Amount\n1.2 Due date\n2. Pets"
+
+
+def test_docx_with_unreadable_numbering_still_parses(tmp_path):
+    import zipfile
+
+    document, docx, parsers = _shared_setup_1()
+    document.add_paragraph("Hello body")
+    for clause in ("Rent", "Pets"):
+        document.add_paragraph(clause, style = "List Number")
+    source = tmp_path / "source.docx"
+    document.save(str(source))
+    path = tmp_path / "broken.docx"
+    with zipfile.ZipFile(source) as src, zipfile.ZipFile(path, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info)
+            if info.filename == "word/numbering.xml":
+                data = b"<w:numbering broken"
+            elif info.filename == "[Content_Types].xml":
+                data = data.replace(
+                    b"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml",
+                    b"application/octet-stream",
+                )
+            dst.writestr(info, data)
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "Hello body\nRent\nPets"
+
+
 def _parse_html(tmp_path, body):
     from core.rag import parsers
 
@@ -900,6 +1091,31 @@ def test_html_block_elements_start_new_lines(tmp_path):
         "<p>line one<br>line two</p><table><tr><td>cell a</td><td>cell b</td></tr></table>",
     )
     assert text == "Install guide\nOne\nTwo items\nline one\nline two\ncell a | cell b"
+
+
+def test_html_ordered_lists_keep_their_numbers(tmp_path):
+    text = _parse_html(
+        tmp_path,
+        "<ol><li>Unplug</li><li>Wait<ul><li>Note</li></ul></li></ol><ol start=4><li>Plug in</ol>"
+        '<ol type="a"><li>Left<li value=5>Right</ol><ol reversed><li>Three<li>Two<li>One</ol>',
+    )
+    assert text == (
+        "1. Unplug\n2. Wait\nNote\n4. Plug in\na. Left\ne. Right\n3. Three\n2. Two\n1. One"
+    )
+
+
+def test_html_list_numbers_stay_in_their_cell(tmp_path):
+    text = _parse_html(tmp_path, '<table><tr><td><ol><li><img src="x"></td><td>B</td></tr></table>')
+    assert text == "1. | B"
+
+
+def test_html_unclosed_lists_parse_in_linear_time(tmp_path):
+    import time
+
+    started = time.perf_counter()
+    text = _parse_html(tmp_path, "<ol>" * 20000 + "x" + "</p>" * 20000)
+    assert text == "x"
+    assert time.perf_counter() - started < 3
 
 
 def test_html_table_rows_keep_their_columns(tmp_path):

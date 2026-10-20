@@ -12,20 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""torchao 0.18 must not be able to kill `import unsloth`.
-
-torchao 0.17 guarded `from torch.nn.functional import ScalingType, SwizzleType`
-behind `torch_version_at_least("2.10.0")`; 0.18.0 left it unguarded at module
-level, so torch below 2.10 raises ImportError. It surfaces while importing
-transformers, where unsloth_zoo's import guard re-raises a bare Exception
-naming neither torchao nor torch. Seen on Colab in Gemma3_(4B)-Vision-GRPO,
-Qwen3_5_(4B)_Vision and Qwen3_8B_FP8_GRPO.
-
-The placeholder refuses to be used: 0.17 left these names undefined on old
-torch anyway, and a stub impersonating a real enum could hand a float8 path a
-meaningless value, which is worse than the crash. Checked against the 0.18.0
-source: neither symbol is evaluated at import time, so being strict is safe.
-"""
+"""Placeholders for torchao's unguarded torch imports must refuse use, not impersonate real symbols."""
 
 import importlib.util
 import sys
@@ -43,9 +30,6 @@ from unsloth.import_fixes import (  # noqa: E402
 )
 
 GPU_INIT = ROOT / "unsloth" / "_gpu_init.py"
-
-
-# ---- the placeholder ------------------------------------------------------
 
 
 def test_it_can_be_imported():
@@ -87,9 +71,6 @@ def test_repr_is_honest():
 def test_it_is_marked_as_ours():
     ph = _make_torch_symbol_placeholder("ScalingType", "d")
     assert getattr(ph, "__unsloth_placeholder__", False) is True
-
-
-# ---- the gating -----------------------------------------------------------
 
 
 def test_it_is_a_no_op_when_torch_already_has_the_symbols():
@@ -137,9 +118,6 @@ def test_calling_it_twice_is_stable():
     assert second is False or first == second
 
 
-# ---- the wiring -----------------------------------------------------------
-
-
 def test_it_runs_before_unsloth_zoo_is_imported():
     """unsloth_zoo pulls in transformers and therefore torchao, so calling the
     fix after that import would be pointless."""
@@ -158,12 +136,7 @@ def test_it_is_imported_and_cleaned_up():
 
 
 def test_the_symbol_list_matches_what_torchao_imports():
-    """Taken from the whole installed package, not one file.
-
-    Reading only mx_formats/mx_tensor.py misses scaled_grouped_mm, which
-    float8_tensor.py imports on the path of a plain `import torchao`, so a list
-    without it leaves the import exactly as dead.
-    """
+    """Symbols come from all of torchao: float8_tensor imports scaled_grouped_mm on a plain import."""
     assert set(_TORCHAO_TORCH_SYMBOLS) == {
         "ScalingType",
         "SwizzleType",
@@ -183,27 +156,21 @@ def test_symbols_torch_already_provides_are_never_replaced():
     assert F.scaled_dot_product_attention is real
 
 
-# ---- the fix actually unblocks the import --------------------------------
-
-
 def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     """The decisive test: run torchao 0.18's own import line on this torch and
     show it goes from raising to succeeding. Everything above is gating."""
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
-    # conftest.py imports unsloth, so on an affected environment the placeholders are already on F. Drop them, or
-    # the "before" half cannot raise, this test skips itself, and the guard test after it fails.
+    # conftest may have installed placeholders already; drop them so the before half can raise.
     for n in _TORCHAO_TORCH_SYMBOLS:
         if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
             delattr(F, n)
 
-    # Gate on the two symbols the line below imports: `any` over the whole tuple is always true
-    # (scaled_dot_product_attention always exists), which made this test skip on every machine.
+    # Gate on these two: `any` over the tuple is always true via scaled_dot_product_attention.
     if all(hasattr(F, n) for n in ("ScalingType", "SwizzleType")):
         pytest.skip("this torch already provides ScalingType/SwizzleType")
 
-    # the line as torchao 0.18 ships it
     line = "from torch.nn.functional import ScalingType, SwizzleType"
 
     with pytest.raises(ImportError):
@@ -214,11 +181,11 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     )
     try:
         assert IF.fix_torchao_torch_symbol_skew() is True
-        exec(line, {})  # must not raise now
+        exec(line, {})
         from torch.nn.functional import ScalingType
 
         with pytest.raises(RuntimeError):
-            ScalingType.DYNAMIC  # still refuses to be used
+            ScalingType.DYNAMIC
     finally:
         for n in _TORCHAO_TORCH_SYMBOLS:
             if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
@@ -236,8 +203,6 @@ def test_the_cleanup_in_the_test_above_is_real():
         ), f"a placeholder for {n} leaked out of a test"
 
 
-# ---- the Mac / MLX path ---------------------------------------------------
-
 INIT = ROOT / "unsloth" / "__init__.py"
 
 
@@ -252,10 +217,7 @@ def test_the_mlx_path_applies_the_fix_too():
 
 
 def test_the_mlx_call_is_inside_the_mlx_branch():
-    """_gpu_init already owns the GPU path, and calling it outside the branch
-    would touch torch before the Apple Silicon detection wants it. Checked
-    structurally: string offsets cannot tell "inside the if" from "after it".
-    """
+    """The MLX call must sit inside the MLX branch, because torch must not be touched before detection."""
     import ast as _ast
 
     tree = _ast.parse(INIT.read_text(encoding = "utf-8"))
@@ -293,9 +255,6 @@ def test_the_mlx_call_cannot_break_the_import():
     assert "except Exception" in window and "pass" in window
 
 
-# ---- version gating across the strings that actually ship ----------------
-
-
 @pytest.mark.parametrize(
     "version,affected",
     [
@@ -331,6 +290,75 @@ def test_a_missing_version_is_not_patched(monkeypatch):
 
     monkeypatch.setattr(IF, "importlib_version", _boom)
     assert IF.fix_torchao_torch_symbol_skew() is False
+
+
+def _fake_torchao(monkeypatch, version):
+    import unsloth.import_fixes as IF
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        IF.importlib.util,
+        "find_spec",
+        lambda name, *a, **k: object() if name == "torchao" else real_find_spec(name, *a, **k),
+    )
+    monkeypatch.setattr(IF, "importlib_version", lambda name: version)
+    return IF
+
+
+def test_register_constant_pass_through_on_a_torch_without_it(monkeypatch):
+    """torch 2.6 has no torch.utils._pytree.register_constant; torchao >= 0.16 calls it at import."""
+    import torch.utils._pytree as pytree
+
+    IF = _fake_torchao(monkeypatch, "0.18.0")
+    had = hasattr(pytree, "register_constant")
+    monkeypatch.delattr(pytree, "register_constant", raising = False)
+    try:
+        assert IF.fix_torchao_pytree_register_constant() is True
+        assert pytree.register_constant.__unsloth_placeholder__ is True
+
+        class Enumish:
+            pass
+
+        assert pytree.register_constant(Enumish) is None
+        assert IF.fix_torchao_pytree_register_constant() is False, "a second call must not stack"
+    finally:
+        # monkeypatch restores only what existed; on torch 2.6 the placeholder must not outlive the test.
+        if not had and hasattr(pytree, "register_constant"):
+            delattr(pytree, "register_constant")
+
+
+def test_register_constant_left_alone_where_torch_has_it_or_torchao_is_older(monkeypatch):
+    import torch.utils._pytree as pytree
+
+    IF = _fake_torchao(monkeypatch, "0.18.0")
+    sentinel = lambda cls: cls
+    monkeypatch.setattr(pytree, "register_constant", sentinel, raising = False)
+    assert IF.fix_torchao_pytree_register_constant() is False
+    assert pytree.register_constant is sentinel
+
+    IF = _fake_torchao(monkeypatch, "0.16.0")
+    monkeypatch.delattr(pytree, "register_constant", raising = False)
+    assert IF.fix_torchao_pytree_register_constant() is False
+    assert not hasattr(pytree, "register_constant")
+
+
+def test_register_constant_fix_runs_before_unsloth_zoo_and_is_cleaned_up():
+    src = GPU_INIT.read_text(encoding = "utf-8")
+    lines = src.splitlines()
+    call = next(
+        i for i, l in enumerate(lines) if l.strip() == "fix_torchao_pytree_register_constant()"
+    )
+    zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
+    assert call < zoo
+    assert "fix_torchao_pytree_register_constant," in src
+    assert "del fix_torchao_pytree_register_constant" in src
+
+
+def test_the_mlx_path_applies_the_register_constant_fix_too():
+    lines = INIT.read_text(encoding = "utf-8").splitlines()
+    fix = next(i for i, l in enumerate(lines) if "_fix_pytree()" in l)
+    zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
+    assert fix < zoo, "the fix must precede the MLX unsloth_zoo import"
 
 
 if __name__ == "__main__":

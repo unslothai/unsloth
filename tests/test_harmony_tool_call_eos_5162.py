@@ -401,7 +401,6 @@ def test_the_widened_dict_really_reaches_vllms_stop_token_ids(ns, harmony_tokeni
 
 
 def test_an_explicit_sampling_params_still_gets_the_tool_call_token(ns, harmony_tokenizer):
-    # GRPO always passes its own SamplingParams.
     fields = {"eos_token_id": [RETURN_ID, ENDOFTEXT_ID]}
     model = _VLLMModel([RETURN_ID], fields)
     ns["patch_harmony_tool_call_eos_vllm"](model, harmony_tokenizer)

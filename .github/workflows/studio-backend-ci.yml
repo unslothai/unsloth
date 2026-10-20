@@ -464,8 +464,15 @@ jobs:
               --ignore=tests/sh
               --ignore=tests/vllm_compat
               --ignore=tests/version_compat
+              --ignore-glob=tests/test_fsdp2*.py
               --deselect tests/test_model_registry.py::test_model_registration
               --deselect tests/test_model_registry.py::test_all_model_registration
+          # Native FSDP2's gloo tests spawn 2 to 4 ranks each: about ten minutes of this
+          # runner on their own, which pushed the catch-all to the 2100 s step cap. They run
+          # beside it instead.
+          - shard: fsdp2
+            selection: >-
+              tests/test_fsdp2*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

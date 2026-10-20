@@ -438,6 +438,7 @@ def test_qwen3_bf16_strip_model_prefix_and_dead_lm_head(tmp_path):
     "conf",
     [
         {"format": "asym_w4a8_int8", "group_size": 16, "convrot": True, "convrot_groupsize": 256},
+        # Block formats load (below), but a layer not stored as one is refused naming the format.
         {"format": "nvfp4"},
         {"format": "mxfp8"},
     ],
@@ -454,6 +455,82 @@ def test_unsupported_comfy_quant_formats_refused_by_name(tmp_path, conf):
         C.quant_layers(path)
     with pytest.raises(C.ComponentFileError, match = conf["format"]):
         C.validate_component_specs([path], None, model_path = None)
+
+
+def _comfy_fp8mixed_qwen3(ref: "torch.nn.Module") -> tuple[dict, dict]:
+    """``ref`` in ComfyUI's fp8mixed text-encoder layout (qwen_3_8b_fp8mixed: float8_e4m3fn and nvfp4 Linears,
+    here with an mxfp8 one too), written by the independent encoder of test_diffusion_comfy_block. Returns the
+    file tensors and the dense weight each quantized key must load as."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_comfy_block_encoders", Path(__file__).with_name("test_diffusion_comfy_block.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    ENCODERS = module.ENCODERS
+
+    out, want = {}, {}
+    for key, value in ref.state_dict().items():
+        comfy_key = "model." + key
+        stem = comfy_key[: -len(".weight")]
+        fmt = None
+        if key.endswith(".weight") and value.dim() == 2 and "embed" not in key:
+            fmt = (
+                "nvfp4"
+                if ".mlp.gate_proj" in key or ".mlp.up_proj" in key or ".self_attn.k_proj" in key
+                else "mxfp8"
+                if ".mlp.down_proj" in key
+                else "float8_e4m3fn"
+            )
+        if fmt is None:
+            out[comfy_key] = value.to(torch.bfloat16)
+        elif fmt == "float8_e4m3fn":
+            scale = value.abs().amax().float() / 448.0
+            out[comfy_key] = (value.float() / scale).to(torch.float8_e4m3fn)
+            out[stem + ".weight_scale"] = scale.reshape(())
+            want[key] = out[comfy_key].float() * scale
+        else:
+            encode, reference = ENCODERS[fmt]
+            enc = encode(value)
+            for suffix, tensor in enc.items():
+                out[comfy_key if suffix == "weight" else f"{stem}.{suffix}"] = tensor
+            want[key] = reference(enc)
+        if fmt is not None:
+            out[stem + ".comfy_quant"] = _quant_blob({"format": fmt})
+    return out, want
+
+
+def test_qwen3_comfy_fp8mixed_with_nvfp4_and_mxfp8_dequantizes(tmp_path):
+    """ComfyUI's qwen_3_8b_fp8mixed (FLUX.2 klein 9B) mixes fp8 with nvfp4 Linears, whose packed weight is half
+    the logical width. It used to fail as "85 shape mismatches"; every layer now loads dense, bit for bit."""
+    cfg, ref = _tiny_qwen3()
+    out, want = _comfy_fp8mixed_qwen3(ref)
+    path = _save(tmp_path / "qwen_3_8b_fp8mixed.safetensors", out)
+    formats = {layer.format for layer in C.quant_layers(path).values()}
+    assert formats == {"nvfp4", "mxfp8", "float8_e4m3fn"}
+    assert C.validate_component_specs([path], None, model_path = None)
+    enc = C.build_text_encoder(
+        path, encoder_cls = transformers.Qwen3Model, config = cfg, dtype = torch.float32
+    )
+    state = enc.state_dict()
+    for key, dense in want.items():
+        assert state[key].shape == dense.shape, key
+        assert torch.equal(state[key], dense.to(torch.float32)), key
+    # The same model with the reference weights gives the same hidden states.
+    expected = transformers.Qwen3Model(cfg).eval()
+    # Unquantized tensors are stored bf16.
+    expected.load_state_dict(
+        {**{k: v.to(torch.bfloat16).float() for k, v in ref.state_dict().items()}, **want}
+    )
+    ids = torch.tensor([[1, 2, 3, 4, 5]])
+    with torch.no_grad():
+        assert torch.equal(
+            enc(input_ids = ids).last_hidden_state, expected(input_ids = ids).last_hidden_state
+        )
+    # Priced at the logical (dense) size, not the packed one.
+    dense_bytes = sum(v.numel() for k, v in ref.state_dict().items()) * 2
+    assert C.resident_bytes(path, dtype_itemsize = 2) == dense_bytes
 
 
 def test_wrong_class_refused_with_diagnostics(tmp_path):

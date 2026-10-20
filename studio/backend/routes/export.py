@@ -102,6 +102,9 @@ def _resolve_export_hf_token(
             status_code = 400,
             detail = "Hugging Face token is required to push to Hub when authenticated via API key.",
         )
+    # An empty token pushes with the operator's own login (hf auth login), never a managed account's.
+    if push_to_hub and token is None and account_access.managed_account():
+        return False
     return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
@@ -373,6 +376,20 @@ def _export_details(
         return {"output_path": output_path}
 
 
+def _with_drafter(
+    details: Optional[Dict[str, Any]], output_path: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    """Adds the trained drafter an export carries (drafter.json), when there is one."""
+    try:
+        from core.export.drafter_export import export_drafter_details
+        drafter = export_drafter_details(output_path)
+    except Exception:
+        drafter = None
+    if drafter is None or details is None:
+        return details
+    return {**details, "drafter": drafter}
+
+
 def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
     """A decision GGUF lands in the run folder's gguf/; not registered as a chat model folder."""
     if not output_path:
@@ -457,7 +474,10 @@ async def export_merged_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -518,7 +538,10 @@ async def export_base_model(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise
@@ -574,7 +597,10 @@ async def export_gguf(
         if getattr(backend, "decision", None):
             details = await asyncio.to_thread(_decision_export_details, output_path)
         else:
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True)
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            )
         return ExportOperationResponse(success = True, message = message, details = details)
     except HTTPException:
         raise
@@ -732,7 +758,10 @@ async def export_lora_adapter(
         return ExportOperationResponse(
             success = True,
             message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+            details = _with_drafter(
+                await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+                output_path,
+            ),
         )
     except HTTPException:
         raise

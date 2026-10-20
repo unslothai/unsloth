@@ -164,6 +164,12 @@ jobs:
     timeout-minutes: 30
     env:
       STUDIO_PORT: '18902'
+      # The llama.cpp prebuilt this job installs can be one release behind by the time the session runs
+      # (a release published mid-job), and Studio then puts an "update available" card in the bottom-right
+      # overlay rail, over the controls the scene clicks. Seen on #13986 and #14000: both installed b11669 a
+      # minute before b11681 was published and timed out on a click the card intercepted. The session
+      # measures chat, not update UI, so update checks stay off.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
