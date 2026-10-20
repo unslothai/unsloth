@@ -65,6 +65,5 @@ test("a caller's handler that leaves the default still gets the dialog focused",
 test("every recipe dialog routes its open focus through the helper", () => {
   const source = readSrc("features/recipe-studio/dialogs/shared/recipe-dialog-content.tsx");
   assert.match(source, ROUTES_THROUGH_HELPER);
-  // The prop is taken out of the rest spread, so a caller's handler cannot replace the helper.
   assert.match(source, PROP_TAKEN_OUT_OF_SPREAD);
 });
