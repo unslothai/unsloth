@@ -1,5 +1,5 @@
 #!/bin/sh
-# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > $HOME/.unsloth/studio
+# Unsloth Studio Installer. Usage, supported options and the web one-liner live in the README under "Unsloth Studio (web UI)" and are deliberately not repeated here: this file ships inside the Linux desktop bundle, where a header rehearsing download-and-run command lines is the first thing a generic script classifier reads. A piped install takes options as environment variables after the pipe (UNSLOTH_NO_TORCH, UNSLOTH_SKIP_AUTOSTART, UNSLOTH_INSTALL_SYSTEMD, UNSLOTH_SYSTEMD_HOST, UNSLOTH_SYSTEMD_PORT, UNSLOTH_ISOLATE_UV_CACHE, UNSLOTH_INSTALL_NO_ROLLBACK, UNSLOTH_PYTHON, UNSLOTH_STUDIO_HOME), because a bare `--no-torch` after the pipe would be read as an option to sh itself; a local run takes the equivalent flags (--no-torch, --isolated-uv-cache, --no-rollback, --python, --local). Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME > UNSLOTH_HOME/studio > $HOME/.unsloth/studio
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 set -e
@@ -95,42 +95,52 @@ fi
 
 # Custom Unsloth roots are unsupported with --tauri unless override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
+    _tauri_canonical_root() (
+        _tcr_path=$1
+        case "$_tcr_path" in /*) ;; *) _tcr_path="$PWD/$_tcr_path" ;; esac
+        _tcr_tail=""
+        # Resolve the existing ancestor without creating a fresh install root.
+        while [ ! -d "$_tcr_path" ]; do
+            _tcr_tail="/${_tcr_path##*/}$_tcr_tail"
+            _tcr_path=${_tcr_path%/*}
+            [ -n "$_tcr_path" ] || _tcr_path=/
+        done
+        _tcr_path=$(CDPATH= cd -P -- "$_tcr_path" 2>/dev/null && pwd -P) || return 1
+        printf '%s\n' "$_tcr_path$_tcr_tail" | awk -F/ '{
+            for (i = 1; i <= NF; i++) {
+                if ($i == "" || $i == ".") continue
+                if ($i == "..") { if (n > 0) n-- }
+                else parts[++n] = $i
+            }
+            for (i = 1; i <= n; i++) printf "/%s", parts[i]
+            if (n == 0) printf "/"
+            printf "\n"
+        }'
+    )
     _tauri_override_var=""
-    _tauri_override="${UNSLOTH_STUDIO_HOME:-}"
+    _tauri_override=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     if [ -n "$_tauri_override" ]; then
         _tauri_override_var="UNSLOTH_STUDIO_HOME"
     else
-        _tauri_override="${STUDIO_HOME:-}"
+        _tauri_override=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         [ -n "$_tauri_override" ] && _tauri_override_var="STUDIO_HOME"
     fi
-    # Strip whitespace so " " is treated as unset (matches Python .strip()).
-    _tauri_override=$(printf '%s' "$_tauri_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -z "$_tauri_override" ]; then
+        _tauri_override=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        if [ -n "$_tauri_override" ]; then
+            _tauri_override_var="UNSLOTH_HOME (studio child)"
+            _tauri_override="${_tauri_override%/}/studio"
+        fi
+    fi
     if [ -n "$_tauri_override" ]; then
         case "$_tauri_override" in
             "~") _tauri_override="$HOME" ;;
             "~/"*) _tauri_override="$HOME/${_tauri_override#'~/'}" ;;
         esac
-        # Canonicalize both sides so CDPATH / a symlinked $HOME cannot break equality.
-        if [ -d "$_tauri_override" ]; then
-            _tauri_override_abs=$(CDPATH= cd -P -- "$_tauri_override" 2>/dev/null && pwd -P) \
-                || _tauri_override_abs="$_tauri_override"
-        else
-            _tauri_override_abs="$_tauri_override"
-        fi
-        # Strip trailing separators so ".../studio/" matches ".../studio".
-        while [ "$_tauri_override_abs" != "/" ] \
-            && [ "${_tauri_override_abs%/}" != "$_tauri_override_abs" ]; do
-            _tauri_override_abs=${_tauri_override_abs%/}
-        done
-        _tauri_legacy_root="$HOME/.unsloth/studio"
-        if [ -d "$_tauri_legacy_root" ]; then
-            _tauri_legacy_root=$(CDPATH= cd -P -- "$_tauri_legacy_root" 2>/dev/null && pwd -P) \
-                || _tauri_legacy_root="$HOME/.unsloth/studio"
-        fi
-        while [ "$_tauri_legacy_root" != "/" ] \
-            && [ "${_tauri_legacy_root%/}" != "$_tauri_legacy_root" ]; do
-            _tauri_legacy_root=${_tauri_legacy_root%/}
-        done
+        _tauri_override_abs=$(_tauri_canonical_root "$_tauri_override") \
+            || _tauri_override_abs="$_tauri_override"
+        _tauri_legacy_root=$(_tauri_canonical_root "$HOME/.unsloth/studio") \
+            || _tauri_legacy_root="$HOME/.unsloth/studio"
         if [ "$_tauri_override_abs" != "$_tauri_legacy_root" ]; then
             echo "ERROR: $_tauri_override_var is not supported with --tauri." >&2
             echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
@@ -416,7 +426,7 @@ _bnb_rocm_arch_has_binary() {
 }
 _warn_bnb_no_rocm_binary() {
     _bnb_rocm_arch_has_binary && return 0
-    substep "[WARN] aarch64: bitsandbytes ships no ROCm kernels on this arch; 4-bit QLoRA needs a source build -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+    substep "[WARN] aarch64: bitsandbytes ships no ROCm kernels on this arch; 4-bit QLoRA needs a source build -- https://unsloth.ai/docs/get-started/install/amd" "$C_WARN"
 }
 _install_bnb_rocm() {
     _label="$1"
@@ -596,15 +606,20 @@ PYTHON_VERSION=""  # resolved after platform detection
 
 _resolve_studio_destinations() {
     _override_var=""
-    _override="${UNSLOTH_STUDIO_HOME:-}"
+    _override=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     if [ -n "$_override" ]; then
         _override_var="UNSLOTH_STUDIO_HOME"
     else
-        _override="${STUDIO_HOME:-}"
+        _override=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         [ -n "$_override" ] && _override_var="STUDIO_HOME"
     fi
-    # Strip surrounding whitespace so " " is treated as unset (matches Python .strip()).
-    _override=$(printf '%s' "$_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -z "$_override" ]; then
+        _override=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        if [ -n "$_override" ]; then
+            _override_var="UNSLOTH_HOME (studio child)"
+            _override="${_override%/}/studio"
+        fi
+    fi
     # Tilde expansion: quoted env vars aren't subject to it on assignment.
     case "$_override" in
         "~") _override="$HOME" ;;
@@ -2146,7 +2161,17 @@ LAUNCHER_EOF
                 _css_legacy_studio=$(CDPATH= cd -P -- "$_css_legacy_studio" 2>/dev/null && pwd -P) \
                     || _css_legacy_studio="$HOME/.unsloth/studio"
             fi
-            if [ "$STUDIO_HOME" = "$_css_legacy_studio" ]; then
+            _css_master_root=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            if [ -n "$_css_master_root" ]; then
+                case "$_css_master_root" in
+                    "~") _css_master_root="$HOME" ;;
+                    "~/"*) _css_master_root="$HOME/${_css_master_root#'~/'}" ;;
+                esac
+                case "$_css_master_root" in /*) ;; *) _css_master_root="$PWD/$_css_master_root" ;; esac
+                _css_master_canon=$(CDPATH= cd -P -- "$_css_master_root" 2>/dev/null && pwd -P) || _css_master_canon=""
+                [ -z "$_css_master_canon" ] || _css_master_root="$_css_master_canon"
+                _css_llama_path="${_css_master_root%/}/llama.cpp"
+            elif [ "$STUDIO_HOME" = "$_css_legacy_studio" ]; then
                 _css_llama_path="$HOME/.unsloth/llama.cpp"
             else
                 _css_llama_path="$STUDIO_HOME/llama.cpp"
@@ -6960,7 +6985,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     fi
                     echo "  [WARN] Routing to AMD arch-specific wheels ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))." >&2
                     echo "  [WARN] These wheels bundle their own ROCm runtime; install the kernel stack for native compute:" >&2
-                    echo "  [WARN]   https://docs.unsloth.ai/get-started/install-and-update/amd" >&2
+                    echo "  [WARN]   https://unsloth.ai/docs/get-started/install/amd" >&2
                     if [ -n "$_linux_inferred_gfx" ]; then
                         echo "  [WARN] Tip: set UNSLOTH_ROCM_GFX_ARCH=$_linux_inferred_gfx to skip inference next time." >&2
                     else
@@ -7375,7 +7400,7 @@ case "$_torch_index_leaf" in
             echo "  [WARN] rocm wheels ship without gfx906 BLAS kernels and fail at first use)." >&2
             echo "  [WARN] gfx906 is a community-maintained legacy path: 16-bit LoRA and full" >&2
             echo "  [WARN] finetuning work out of the box; bitsandbytes 4-bit QLoRA requires a" >&2
-            echo "  [WARN] source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd)." >&2
+            echo "  [WARN] source build of bitsandbytes for gfx906 (see unsloth.ai/docs/get-started/install/amd)." >&2
             echo "" >&2
             _amd_gfx906_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
             while [ "${_amd_gfx906_base%/}" != "$_amd_gfx906_base" ]; do
@@ -7691,7 +7716,7 @@ case "$TORCH_INDEX_URL" in
                 substep "Strix Halo (gfx1151): this installer auto-offers ROCm-on-WSL setup once the"
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
-                substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+                substep "AMD ROCm users: see https://unsloth.ai/docs/get-started/install/amd"
             fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
             substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
@@ -8284,7 +8309,7 @@ if [ "$_MIGRATED" = true ]; then
     fi
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
         if _is_gfx906_bnb_skip; then
-            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://unsloth.ai/docs/get-started/install/amd" "$C_WARN"
         else
             _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
         fi
@@ -8485,7 +8510,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
         if _is_gfx906_bnb_skip; then
-            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://unsloth.ai/docs/get-started/install/amd" "$C_WARN"
         else
             _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
         fi

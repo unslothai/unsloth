@@ -106,6 +106,19 @@ from .diffusion_device import (
     auto_cuda_ordinal_for_load,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
+    resolve_selected_cuda_ordinals,
+)
+from .diffusion_multigpu import (
+    AUTOMATIC_ORDINALS,
+    end_cfg_render,
+    drop_displaced_cfg_router,
+    install_cfg_parallel,
+    multigpu_mode,
+    invalidate_cfg_replica,
+    placement_status as multigpu_placement_status,
+    refine_plan_for_multigpu,
+    uninstall_cfg_parallel,
+    with_load_selection,
 )
 from .diffusion_conditioning import (
     LocalizedEdit,
@@ -2102,6 +2115,129 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
             _PLANNED_SPEED_MODE.reset(token)
 
     return wrapper
+
+
+def _vae_on_other_card(pipe: Any, guard_target: Any) -> Any:
+    """The CUDA device of ``pipe.vae`` when a multi-GPU split put it on another card than ``guard_target``, else None."""
+    from .diffusion_multigpu import _module_device, _split_home, is_split
+
+    if not is_split(pipe) and _split_home(pipe) is None:
+        return None
+    vae = getattr(pipe, "vae", None)
+    try:
+        device = _module_device(vae) if vae is not None else None
+    except Exception:  # noqa: BLE001 - an unreadable VAE keeps the primary's verdict
+        return None
+    if device is None or getattr(device, "type", None) != "cuda":
+        return None
+    if device.index in (None, placed_cuda_ordinal(guard_target)):
+        return None
+    return device
+
+
+def _guard_vae_card(
+    pipe: Any, guard_target: Any, guard_kwargs: dict, restore_vae: Any, logger: Any
+) -> tuple[Any, bool]:
+    """Re-run the generate-time activation guard on the VAE's card when a multi-GPU split put it on another card than
+    the denoiser: the decode allocates there, and the primary's free memory says nothing about it. Engages VAE tiling
+    when only a tiled decode fits that card (unless already tiled) and raises the guard's refusal when nothing fits.
+    Returns ``(restore_vae, tiled)`` for a tiling it engaged, else ``(None, False)``. Conservative: the whole request's
+    estimate is checked against the VAE's card."""
+    device = _vae_on_other_card(pipe, guard_target)
+    if device is None:
+        return None, False
+    with diffusion_device_scope(device.index):
+        vae_kwargs = {
+            **guard_kwargs,
+            "device_memory": reclaimable_snapshot_device_memory(guard_target),
+        }
+    verdict = raise_on_image_activation_shortfall(**vae_kwargs)
+    if verdict.action != ACTIVATION_TILE or restore_vae is not None:
+        return None, False
+    restore, tiled = engage_vae_tiling(pipe, logger = logger)
+    try:
+        if not tiled and not verdict.overridden:
+            raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_tile_side": None})
+        elif (
+            int(vae_kwargs.get("batch_size") or 1) > 1
+            and vae_kwargs.get("vae_sliced")
+            and not verdict.overridden
+            and not vae_is_sliced(getattr(pipe, "vae", None))
+        ):
+            raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_sliced": False})
+    except ValueError:
+        # The refusal: the caller never receives the handle, so undo the tiling here.
+        if restore is not None:
+            restore()
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe and keep the tiling, as the caller does
+        (logger or get_logger(__name__)).warning(
+            "diffusion.generate: VAE card headroom re-check skipped (%s)", exc
+        )
+    except BaseException:
+        if restore is not None:
+            restore()
+        raise
+    return restore, tiled
+
+
+def _tile_for_verdict(
+    pipe: Any,
+    verdict: Any,
+    guard_target: Any,
+    guard_kwargs: dict,
+    guard_batch: int,
+    restore_vae: Any,
+    logger: Any,
+) -> Any:
+    """Engage VAE tiling when the guard says only a tiled decode fits; returns the VAE restore handle. A multi-GPU split
+    that decodes on another card is decided by that card's verdict alone: the primary never runs the decode, so its
+    tile verdict must not switch the secondary's VAE to the (not bit-identical) tiled path."""
+    vae_restore, vae_card_tiled = _guard_vae_card(
+        pipe, guard_target, guard_kwargs, restore_vae, logger
+    )
+    if vae_card_tiled:
+        return vae_restore
+    if verdict.action != ACTIVATION_TILE or _vae_on_other_card(pipe, guard_target):
+        return restore_vae
+    restore_vae, vae_tiled = engage_vae_tiling(pipe, logger = logger)
+    try:
+        if not vae_tiled and not verdict.overridden:
+            # Passed only because it would be tiled; tiling failed, so refuse on the untiled figure.
+            raise_on_image_activation_shortfall(**{**guard_kwargs, "vae_tile_side": None})
+        elif (
+            guard_batch > 1
+            and guard_kwargs["vae_sliced"]
+            and not verdict.overridden
+            and not vae_is_sliced(getattr(pipe, "vae", None))
+        ):
+            raise_on_image_activation_shortfall(**{**guard_kwargs, "vae_sliced": False})
+    except ValueError:
+        # the caller never receives the handle on a refusal: undo the tiling here
+        if restore_vae is not None:
+            restore_vae()
+        raise
+    except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe and keep the tiling, as generate() does
+        (logger or get_logger(__name__)).warning(
+            "diffusion.generate: activation headroom re-check skipped (%s)", exc
+        )
+    except BaseException:
+        if restore_vae is not None:
+            restore_vae()
+        raise
+    return restore_vae
+
+
+def _controlnet_streams(state: Any) -> bool:
+    """Whether a ControlNet added at generate time streams from host memory instead of loading whole beside the base
+    model: under any offload policy, a calibrated placement (budgets only the base model), and a multi-GPU split
+    (reports "none", but its fit priced only the base pipeline, which one card would have offloaded)."""
+    from .diffusion_multigpu import is_split
+    return (
+        getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE
+        or bool(getattr(state, "calibrated_placement", False))
+        or is_split(getattr(state, "pipe", None))
+    )
 
 
 def _calibrated_activation(fam: Any, target: Any) -> Any:
@@ -4137,6 +4273,16 @@ class DiffusionBackend:
                 if resolve_diffusion_device_target().device == "cuda"
                 else None
             )
+        gpu_ordinals = (
+            resolve_selected_cuda_ordinals(gpu_ids)
+            if gpu_ids
+            and len(set(gpu_ids)) > 1
+            and multigpu_mode() != "off"
+            and resolve_diffusion_device_target().device == "cuda"
+            else AUTOMATIC_ORDINALS
+            if not gpu_ids
+            else []
+        )
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -4222,11 +4368,14 @@ class DiffusionBackend:
                 vae_file = vae_file,
                 _load_token = token,
                 _cancel_event = cancel_event,
+                _gpu_ordinals = gpu_ordinals,
             ),
             daemon = True,
         ).start()
         return self.status()
 
+    # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
+    @with_load_selection
     @scoped_local_files_only
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
@@ -9236,6 +9385,7 @@ class DiffusionBackend:
                     self._raise_if_load_cancelled(_load_token)
                     # a refinement may have re-tiered the plan; routed encoders need group offload
                     plan = self._small_host_plan(pipe, plan, fam, logger)
+                    plan = refine_plan_for_multigpu(pipe, plan, logger)
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe,
                         plan,
@@ -9453,6 +9603,8 @@ class DiffusionBackend:
                     load_bg_compile = (
                         bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
                     )
+                    # After every forward wrapper of the speed / graph layers, so the replica sees the final module.
+                    install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
@@ -10997,11 +11149,14 @@ class DiffusionBackend:
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
             # Calibrated tiers budget only the base model: ControlNet must stream, no resident fallback.
             calibrated = bool(getattr(state, "calibrated_placement", False))
-            if (getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE or calibrated) and (
-                _offload_controlnet_module(cn_model, state.device, logger)
+            from .diffusion_multigpu import is_split
+
+            # A split's resident fit also priced the base pipeline alone (one card would have offloaded it).
+            if _controlnet_streams(state) and _offload_controlnet_module(
+                cn_model, state.device, logger
             ):
                 pass
-            elif calibrated:
+            elif calibrated or is_split(state.pipe):
                 del cn_model
                 clear_gpu_cache()
                 raise ValueError(
@@ -11357,6 +11512,7 @@ class DiffusionBackend:
         try:
             self._engage_deferred_profile(state)
         except BaseException:
+            invalidate_cfg_replica(state.pipe, "the deferred speed profile failed part way", logger)
             if installed:
                 uninstall_static_step_skip(state.pipe)
                 object.__setattr__(state, "transformer_cache", None)
@@ -11364,6 +11520,13 @@ class DiffusionBackend:
                     tc.clear()
                     tc.update(tc_before)
             raise
+        # the profile patched / compiled the source denoiser: a replica built during the eager images is stale
+        invalidate_cfg_replica(
+            state.pipe, "the deferred speed profile changed the denoiser", logger
+        )
+        drop_displaced_cfg_router(
+            state.pipe, "the deferred speed profile replaced the denoiser's forward", logger
+        )
 
     # Outside load_pipeline (3rd generation): its own probe scope, so one OOM is not re-probed by plan and apply.
     @rocm_probe_load_scoped
@@ -12088,22 +12251,9 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
-                    if verdict.action == ACTIVATION_TILE:
-                        restore_vae, vae_tiled = engage_vae_tiling(pipe, logger = logger)
-                        if not vae_tiled and not verdict.overridden:
-                            # Passed only because it would be tiled; tiling failed, so refuse on the untiled figure.
-                            raise_on_image_activation_shortfall(
-                                **{**guard_kwargs, "vae_tile_side": None}
-                            )
-                        elif (
-                            guard_batch > 1
-                            and guard_kwargs["vae_sliced"]
-                            and not verdict.overridden
-                            and not vae_is_sliced(getattr(pipe, "vae", None))
-                        ):
-                            raise_on_image_activation_shortfall(
-                                **{**guard_kwargs, "vae_sliced": False}
-                            )
+                    restore_vae = _tile_for_verdict(
+                        pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
+                    )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
                 except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe
@@ -12547,6 +12697,7 @@ class DiffusionBackend:
                         logger.debug("diffusion.step_skip: reset failed: %s", exc)
                 if restore_vae is not None:
                     restore_vae()
+                end_cfg_render(getattr(state, "pipe", None))
                 if restore_resident is not None:
                     try:
                         restore_resident()
@@ -12722,6 +12873,7 @@ class DiffusionBackend:
         if prebuild is not None:
             prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
+        uninstall_cfg_parallel(state.pipe)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
@@ -12830,6 +12982,7 @@ class DiffusionBackend:
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
+            "multi_gpu": multigpu_placement_status(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
                 state.repo_id,

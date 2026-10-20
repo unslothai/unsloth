@@ -7012,7 +7012,7 @@ def _ensure_rocm_torch() -> "bool | None":
             f"   family that runs on gfx906 (newer rocm wheels ship without gfx906 BLAS\n"
             f"   kernels and fail at first use). gfx906 is a community-maintained legacy\n"
             f"   path: 16-bit LoRA and full finetuning work; bitsandbytes 4-bit QLoRA\n"
-            f"   requires a source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd).\n"
+            f"   requires a source build of bitsandbytes for gfx906 (see unsloth.ai/docs/get-started/install/amd).\n"
         )
 
     # Either reroute must fire even when has_hip_torch is True: an existing
@@ -7133,7 +7133,7 @@ def _ensure_rocm_torch() -> "bool | None":
             _dim(
                 "   gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels). "
                 "Build bitsandbytes from source for 4-bit QLoRA -- "
-                "see docs.unsloth.ai/get-started/install-and-update/amd."
+                "see unsloth.ai/docs/get-started/install/amd."
             )
         )
         # The base install resolves unsloth's unconditional bitsandbytes dep to a
@@ -7193,7 +7193,7 @@ def _ensure_rocm_torch() -> "bool | None":
                 _red(
                     "   aarch64: bitsandbytes ships no ROCm kernels on this arch; "
                     "4-bit QLoRA needs a source build -- "
-                    "https://docs.unsloth.ai/get-started/install-and-update/amd"
+                    "https://unsloth.ai/docs/get-started/install/amd"
                 )
             )
 
@@ -9657,7 +9657,7 @@ def _build_pip_cmd(args: tuple[str, ...]) -> list[str]:
         # By canonical project name: `--upgrade-package mlx` beside `mlx==0.32.3` is one project,
         # and pip refuses a double requirement where uv does not.
         def _project(requirement: str) -> str:
-            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.8) needs the
+            # _requirement_name stops at "==" and "@"; a range (mlx-vlm>=0.4.4,<=0.7.9) needs the
             # rest.
             return _canonical_package_name(
                 re.split(r"[<>=!~;\[ ]", _requirement_name(requirement), maxsplit = 1)[0]
@@ -10813,7 +10813,7 @@ def _has_working_git() -> bool:
 _MLX_PINS: tuple[str, ...] = ("mlx==0.32.4", "mlx-metal==0.32.4")
 # A range, like mlx-vlm: 0.32 requires Python 3.11, so Python 3.10 resolves 0.31.3.
 _MLX_LM_SPEC = "mlx-lm>=0.31.3,<=0.32.2"
-_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.8"
+_MLX_VLM_SPEC = "mlx-vlm>=0.4.4,<=0.7.9"
 # Exact: llguidance.mlx / llguidance.hf are the API grammar_constraint.py binds to.
 _LLGUIDANCE_PIN = "llguidance==1.8.0"
 _MLX_NAMES: tuple[str, ...] = tuple(spec.partition("==")[0] for spec in _MLX_PINS) + (
@@ -12977,7 +12977,7 @@ def install_python_stack() -> int:
             _note(
                 "AMD GPU detected but ROCm PyTorch could not be auto-installed. "
                 "Manual install may be required. See: "
-                "https://docs.unsloth.ai/get-started/install-and-update/amd"
+                "https://unsloth.ai/docs/get-started/install/amd"
             )
 
     # 3. Extra dependencies
