@@ -168,9 +168,8 @@ from utils.keyless_api_access import (
 )
 from utils.mcp_access import (
     UnknownMcpToolError,
-    disabled_tools as mcp_disabled_tools,
     forced_by_env,
-    is_mcp_enabled,
+    owner_record as mcp_owner_record,
     set_mcp_settings,
 )
 from utils.preview_sharing_settings import (
@@ -4106,8 +4105,9 @@ class McpAccessResponse(BaseModel):
     forced_by_env: bool
     # Display only: where an agent should point. Agents connect to whatever address reaches this server.
     url: str
-    # Registration order.
-    tools: list[McpToolSetting]
+    # Registration order; null when the owner's settings could not be read, so a client
+    # never saves a full list built from a view that only looks like "every tool off".
+    tools: Optional[list[McpToolSetting]]
 
 
 class PreviewSharingPayload(BaseModel):
@@ -4536,11 +4536,11 @@ def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_ap
 
 def _mcp_access_response(request: Request) -> McpAccessResponse:
     from mcp_server import CHAT_DENYLIST, tool_catalog
-    disabled = mcp_disabled_tools()
-    return McpAccessResponse(
-        enabled = is_mcp_enabled(),
-        forced_by_env = forced_by_env(),
-        url = str(request.base_url).rstrip("/") + "/mcp/",
+
+    record = mcp_owner_record()
+    tools = None
+    if record is not None:
+        disabled = record[1]
         tools = [
             McpToolSetting(
                 **entry,
@@ -4548,7 +4548,12 @@ def _mcp_access_response(request: Request) -> McpAccessResponse:
                 chat = entry["name"] not in CHAT_DENYLIST,
             )
             for entry in tool_catalog()
-        ],
+        ]
+    return McpAccessResponse(
+        enabled = forced_by_env() or (record is not None and record[0]),
+        forced_by_env = forced_by_env(),
+        url = str(request.base_url).rstrip("/") + "/mcp/",
+        tools = tools,
     )
 
 
@@ -4581,7 +4586,7 @@ def update_mcp_access(
         "settings.mcp_access_updated subject=%s enabled=%s disabled=%s",
         current_subject,
         response.enabled,
-        sum(not tool.enabled for tool in response.tools),
+        None if response.tools is None else sum(not tool.enabled for tool in response.tools),
     )
     return response
 

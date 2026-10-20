@@ -35,6 +35,7 @@ import {
   UsageExamples,
   useApiTunnelPref,
 } from "../components/usage-examples";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export function ApiKeysTab() {
   const t = useT();
@@ -45,6 +46,7 @@ export function ApiKeysTab() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const setNewApiKey = useSettingsDialogStore((s) => s.setNewApiKey);
   const [useTunnel, setUseTunnel] = useApiTunnelPref();
   const [keyless, setKeyless] = useState<{
     scope: KeylessApiAccessScope;
@@ -136,7 +138,13 @@ export function ApiKeysTab() {
             exit={{ opacity: 0, y: -4 }}
             transition={transition}
           >
-            <KeyRevealCard rawKey={revealed} onDone={() => setRevealed(null)} />
+            <KeyRevealCard
+              rawKey={revealed}
+              onDone={() => {
+                setRevealed(null);
+                setNewApiKey(null);
+              }}
+            />
           </motion.div>
         ) : (
           <motion.div
@@ -149,6 +157,7 @@ export function ApiKeysTab() {
             <CreateKeyForm
               onCreated={(raw) => {
                 setRevealed(raw);
+                setNewApiKey(raw);
                 void load();
               }}
               onError={setError}

@@ -197,3 +197,39 @@ def test_a_managed_account_reads_the_owners_tool_list():
     assert run_as(ALICE, studio_db.get_app_settings, [MCP_DISABLED_TOOLS_SETTING_KEY]) == {}
     assert run_as(ALICE, disabled_tools) == {"cancel"}
     assert run_as(ALICE, tool_enabled, "cancel") is False
+
+
+def test_a_read_that_overlaps_a_write_is_retried_not_reported_off(monkeypatch):
+    set_mcp_settings(enabled = True, disabled_tools = ["cancel"])
+    mcp_access._reset_cache()
+    real = mcp_access._read_from_db
+    calls = []
+
+    def racing_read():
+        calls.append(1)
+        if len(calls) == 1:
+            # Another thread's write lands while this read is in flight.
+            with mcp_access._cache_lock:
+                mcp_access._generation += 1
+        return real()
+
+    monkeypatch.setattr(mcp_access, "_read_from_db", racing_read)
+    assert disabled_tools() == frozenset({"cancel"})
+    assert get_mcp_enabled() is True
+    assert len(calls) == 2
+
+
+def test_a_read_that_keeps_racing_writes_still_fails_closed(monkeypatch):
+    set_mcp_settings(enabled = True)
+    mcp_access._reset_cache()
+    real = mcp_access._read_from_db
+
+    def always_racing():
+        with mcp_access._cache_lock:
+            mcp_access._generation += 1
+        return real()
+
+    monkeypatch.setattr(mcp_access, "_read_from_db", always_racing)
+    assert mcp_access.owner_record() is None
+    assert disabled_tools() is None
+    assert get_mcp_enabled() is False

@@ -1145,8 +1145,6 @@ export function AgentsTab() {
         {t("settings.agents.intro")}
       </p>
 
-      <UnslothStudioMcpRow />
-
       {/* Shared track + pill selector. The legend is sr-only: the two shell
           names already say what the control picks. */}
       <fieldset className="flex min-w-0">
@@ -1574,6 +1572,8 @@ export function AgentsTab() {
           <CommandBlock command={shellCommands.dryRun} />
         </div>
       </SettingsSection>
+
+      <UnslothStudioMcpRow />
     </div>
   );
 }

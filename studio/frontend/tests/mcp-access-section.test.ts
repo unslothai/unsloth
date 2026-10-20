@@ -29,10 +29,12 @@ const TUNNEL_PREF = readSrc(
   "features/settings/components/tunnel-preference.ts",
 );
 
+const DIALOG_STORE = readSrc("features/settings/stores/settings-dialog-store.ts");
+
 const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 
 test("it lives on the MCP tab, the API tab links there for the owner, and settings search finds it", () => {
-  assert.match(MCP_TAB, /<McpAccessSection \/>/);
+  assert.match(MCP_TAB, /<McpAccessSection apiKey=\{newApiKey\} \/>/);
   assert.doesNotMatch(API_TAB, /McpAccessSection/);
   assert.match(
     API_TAB,
@@ -137,8 +139,13 @@ test("the setup snippet shows only while on, targets the usage examples' address
   );
 });
 
-test("a key passed in fills the snippet and is kept out of reload snapshots, and the MCP tab passes none", () => {
-  assert.doesNotMatch(MCP_TAB, /apiKey=/);
+test("a key just created on the API tab fills the MCP snippet and is kept out of reload snapshots", () => {
+  // Memory only: set on create, cleared when the key card is dismissed or the dialog closes.
+  assert.match(API_TAB, /setRevealed\(raw\);\s*setNewApiKey\(raw\);/);
+  assert.match(API_TAB, /setRevealed\(null\);\s*setNewApiKey\(null\);/);
+  assert.match(MCP_TAB, /useSettingsDialogStore\(\(s\) => s\.newApiKey\)/);
+  assert.match(DIALOG_STORE, /closeDialog: \(\) =>\s*set\(\{[\s\S]*?newApiKey: null,[\s\S]*?\}\)/);
+  assert.doesNotMatch(DIALOG_STORE, /persist\(/);
   assert.match(SECTION, /apiKey = null,/);
   assert.match(SECTION, /buildMcpSnippet\(agent, base, os, apiKey\)/);
   assert.match(
