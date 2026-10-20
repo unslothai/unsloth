@@ -25,7 +25,12 @@ class FakeBlock(nn.Module):
         super().__init__()
         self.lin = nn.Linear(dim, dim)
 
-    def forward(self, hidden_states, temb, rotary = None):
+    def forward(
+        self,
+        hidden_states,
+        temb,
+        rotary = None,
+    ):
         out = self.lin(hidden_states) * temb
         if rotary is not None:
             out = out + rotary[0]
@@ -45,14 +50,23 @@ class FakeSingle(nn.Module):
 class FakeDiT(nn.Module):
     _repeated_blocks = ["FakeBlock", "FakeSingle"]
 
-    def __init__(self, dim: int = 8, double: int = 3, single: int = 3):
+    def __init__(
+        self,
+        dim: int = 8,
+        double: int = 3,
+        single: int = 3,
+    ):
         super().__init__()
         self.x_embedder = nn.Linear(dim, dim)
         self.transformer_blocks = nn.ModuleList(FakeBlock(dim) for _ in range(double))
         self.single_transformer_blocks = nn.ModuleList(FakeSingle(dim) for _ in range(single))
         self.proj_out = nn.Linear(dim, dim)
 
-    def forward(self, hidden_states, controlnet_block_samples = None):
+    def forward(
+        self,
+        hidden_states,
+        controlnet_block_samples = None,
+    ):
         h = self.x_embedder(hidden_states)
         temb = torch.ones_like(h[:1])
         rotary = (torch.zeros_like(h), torch.zeros_like(h))
@@ -122,7 +136,9 @@ def test_find_blocks_follows_the_forward_order_of_a_listed_class(monkeypatch):
 
         def __init__(self):
             super().__init__()
-            self.mode_blocks = nn.ModuleDict({"image": nn.ModuleList(FakeBlock() for _ in range(2))})
+            self.mode_blocks = nn.ModuleDict(
+                {"image": nn.ModuleList(FakeBlock() for _ in range(2))}
+            )
             self.txt_mode_blocks = nn.ModuleList(FakeBlock() for _ in range(2))
 
     monkeypatch.setitem(ls.FORWARD_ORDER, "ModeDiT", ("txt_mode_blocks", "mode_blocks.image"))
@@ -169,7 +185,9 @@ def test_plan_fill_packs_the_primary_first():
     assert len(plan.ranges[1].blocks) == 5
     assert set(plan.assignment.values()) == {"cuda:0", "cuda:1"}
     # string keys work too, and a card that is not needed gets no range
-    plan = ls.plan_layer_split(dit, primary = "cuda:0", cards = ["cuda:1"], budgets_mib = {"cuda:0": 100, "cuda:1": 100})
+    plan = ls.plan_layer_split(
+        dit, primary = "cuda:0", cards = ["cuda:1"], budgets_mib = {"cuda:0": 100, "cuda:1": 100}
+    )
     assert [r.device for r in plan.ranges] == ["cuda:0"]
 
 
@@ -217,13 +235,26 @@ def test_off_switch_refuses(monkeypatch):
 class _Recorder:
     """Stands in for the cross-card copies: records (what, device) and leaves the CPU tensors where they are."""
 
-    def __init__(self, monkeypatch, simulate_cards = True):
+    def __init__(
+        self,
+        monkeypatch,
+        simulate_cards = True,
+    ):
         self.out_moves: list = []
         self.in_moves: list = []
         real = mg.move_to_device
 
-        def fake_move(obj, device, _depth = 0, *, tensor_fn = None, objects = True):
-            assert objects is False  # a split never copies attribute holders (KV caches keep their identity)
+        def fake_move(
+            obj,
+            device,
+            _depth = 0,
+            *,
+            tensor_fn = None,
+            objects = True,
+        ):
+            assert (
+                objects is False
+            )  # a split never copies attribute holders (KV caches keep their identity)
             if tensor_fn is None:
                 self.out_moves.append(str(device))
             else:
@@ -313,7 +344,9 @@ def test_class_swap_keeps_names_and_undo_restores(monkeypatch):
     assert isinstance(block, FakeBlock)
     from core.inference.diffusion_block_graph import repeated_blocks
 
-    assert len(repeated_blocks(dit)) == len(list(m for m in dit.modules() if isinstance(m, (FakeBlock, FakeSingle))))
+    assert len(repeated_blocks(dit)) == len(
+        list(m for m in dit.modules() if isinstance(m, (FakeBlock, FakeSingle)))
+    )
     assert ls.is_layer_split(dit) and mg.is_split(pipe)
     assert dit._unsloth_split_home == torch.device("cuda", 0)
     status = mg.placement_status(pipe)
@@ -336,7 +369,10 @@ def test_undo_keeps_a_component_split_record(monkeypatch):
     dit = FakeDiT(dim = 1024, double = 4, single = 3)
     pipe = Pipe(dit)
     monkeypatch.setattr(ls, "_move_weights", lambda *a, **k: None)
-    mg._PLACEMENTS[pipe] = {"placement": {"vae": "cuda:1", "transformer": "cuda:0"}, "moved": ["vae"]}
+    mg._PLACEMENTS[pipe] = {
+        "placement": {"vae": "cuda:1", "transformer": "cuda:0"},
+        "moved": ["vae"],
+    }
     dit._unsloth_split_home = torch.device("cuda", 0)
     ls.place_layer_split(pipe, primary = 0, cards = [1], budgets_mib = _two_card_budget(dit))
     assert mg.placement_status(pipe)["placement"]["vae"] == "cuda:1"
@@ -357,7 +393,9 @@ def test_a_split_denoiser_is_freed_without_the_cycle_collector(monkeypatch):
     gc.disable()
     try:
         del dit, pipe
-        assert all(r() is None for r in refs)  # the blocks' weights go with the pipeline, as on one card
+        assert all(
+            r() is None for r in refs
+        )  # the blocks' weights go with the pipeline, as on one card
     finally:
         gc.enable()
 
@@ -398,7 +436,9 @@ def test_move_to_device_keeps_attribute_holders_when_asked():
             self.k = torch.ones(1)
 
     cache = LayerCache()
-    moved = mg.move_to_device({"c": cache}, torch.device("meta"), tensor_fn = lambda t: t, objects = False)
+    moved = mg.move_to_device(
+        {"c": cache}, torch.device("meta"), tensor_fn = lambda t: t, objects = False
+    )
     assert moved["c"] is cache
     # the default still copies a holder whose tensors are elsewhere (component split outputs)
     assert mg.move_to_device(cache, torch.device("meta"), tensor_fn = lambda t: t) is not cache
@@ -478,7 +518,14 @@ def test_routes_follow_a_relocated_denoiser(monkeypatch):
     real = mg.move_to_device
     moves: list = []
 
-    def spy(obj, device, _depth = 0, *, tensor_fn = None, objects = True):
+    def spy(
+        obj,
+        device,
+        _depth = 0,
+        *,
+        tensor_fn = None,
+        objects = True,
+    ):
         moves.append(str(device))
         return real(obj, device, _depth, tensor_fn = tensor_fn, objects = objects)
 
@@ -505,7 +552,11 @@ def test_routes_follow_one_relocated_block(monkeypatch):
         owner = probe[0]() if probe is not None else None
         for module in (owner,):
             for block in dit.modules():
-                if block is moved and owner is not None and any(m is owner for m in block.modules()):
+                if (
+                    block is moved
+                    and owner is not None
+                    and any(m is owner for m in block.modules())
+                ):
                     return where[id(moved)]
         return default
 
@@ -535,7 +586,11 @@ def test_eager_calls_keep_no_copy_across_blocks(monkeypatch):
     # call (the denoiser may do tensor ops between blocks) must not reuse a copy from an earlier block, while a lazy
     # call (no op between blocks) shares one copy per card.
     class InPlaceDiT(FakeDiT):
-        def forward(self, hidden_states, controlnet_block_samples = None):
+        def forward(
+            self,
+            hidden_states,
+            controlnet_block_samples = None,
+        ):
             temb = torch.ones_like(hidden_states[:1])
             h = hidden_states
             for block in self.transformer_blocks:
@@ -547,9 +602,17 @@ def test_eager_calls_keep_no_copy_across_blocks(monkeypatch):
 
     hits: list = []
 
-    def fake_move(obj, device, _depth = 0, *, tensor_fn = None, objects = True):
+    def fake_move(
+        obj,
+        device,
+        _depth = 0,
+        *,
+        tensor_fn = None,
+        objects = True,
+    ):
         if tensor_fn is None:
             return obj
+
         def walk(o):
             if isinstance(o, torch.Tensor):
                 return tensor_fn(o)
@@ -558,6 +621,7 @@ def test_eager_calls_keep_no_copy_across_blocks(monkeypatch):
             if isinstance(o, dict):
                 return {k: walk(v) for k, v in o.items()}
             return o
+
         return walk(obj)
 
     def fake_get(self, t, device):
@@ -565,7 +629,10 @@ def test_eager_calls_keep_no_copy_across_blocks(monkeypatch):
         self.entries[id(t)] = (None, 0, None, {device: t})
         return t
 
-    for cls, lazy in ((InPlaceDiT, False), (type("Flux2Transformer2DModel", (InPlaceDiT,), {}), True)):
+    for cls, lazy in (
+        (InPlaceDiT, False),
+        (type("Flux2Transformer2DModel", (InPlaceDiT,), {}), True),
+    ):
         torch.manual_seed(0)
         dit = cls(dim = 64, double = 4, single = 3)
         x = torch.randn(2, 64)
@@ -614,7 +681,9 @@ def test_flex_processor_refuses_and_block_mask_moves():
         pass
 
     cache = KVCache()
-    assert mg.move_to_device({"cache": cache}, torch.device("meta"), objects = False)["cache"] is cache
+    assert (
+        mg.move_to_device({"cache": cache}, torch.device("meta"), objects = False)["cache"] is cache
+    )
 
 
 def test_graph_eligibility_refuses_a_split_unet(monkeypatch):
@@ -632,7 +701,12 @@ def test_graph_eligibility_refuses_a_split_unet(monkeypatch):
     target = type("T", (), {"device": "cuda", "backend": "cuda"})()
     monkeypatch.setattr(cg, "cuda_graph_disabled", lambda: False)
     ok, reason = cg.graph_eligible(
-        target, family = None, pipe = pipe, offload_active = False, cache_active = False, speed_mode = "default"
+        target,
+        family = None,
+        pipe = pipe,
+        offload_active = False,
+        cache_active = False,
+        speed_mode = "default",
     )
     assert not ok and "split" in reason
     ls.undo_layer_split(pipe)

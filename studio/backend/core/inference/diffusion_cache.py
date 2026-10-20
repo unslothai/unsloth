@@ -580,7 +580,9 @@ def install_fbcache_split_guard() -> bool:
         head = state.head_block_output
         home = _first_device(head)
         try:
-            here = self._metadata._get_parameter_from_args_kwargs("hidden_states", args, kwargs).device
+            here = self._metadata._get_parameter_from_args_kwargs(
+                "hidden_states", args, kwargs
+            ).device
         except Exception:  # noqa: BLE001 - the original raises the same way
             here = None
         if not state.should_compute or home is None or here is None or here == home:

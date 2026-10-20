@@ -2253,7 +2253,11 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
     return checked
 
 
-def _layer_split_expected(pipe: Any, plan: Any, refine: Optional[Callable[..., Any]] = None) -> bool:
+def _layer_split_expected(
+    pipe: Any,
+    plan: Any,
+    refine: Optional[Callable[..., Any]] = None,
+) -> bool:
     """Whether placement will cut the denoiser across cards: the multi-GPU refinement asked early, with the sizes
     loaded so far. The speed layer runs before placement, and on a split every block is resident on some card, so it
     is set up for that (regional compile with fullgraph, int8 kernels, graphs) and not for the one-card offload plan
@@ -2281,7 +2285,9 @@ def _native_quant_needs_compile(target: Any, native_scheme: Optional[str], resid
     )
 
 
-def _restore_step_cache_after_layer_split(pipe: Any, views: Any, **cache_kwargs: Any) -> Optional[str]:
+def _restore_step_cache_after_layer_split(
+    pipe: Any, views: Any, **cache_kwargs: Any
+) -> Optional[str]:
     """The split takes the load-time First-Block-Cache off before it moves the blocks; once they sit on their cards the
     cache goes back on (``diffusion_cache`` copies its residuals between the head and tail cards). Returns the mode
     that engaged on ``pipe`` (None: it declined, the denoiser runs uncached)."""
@@ -2304,7 +2310,9 @@ def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
     """A layer split replaced the one-card plan whose partial residency the measured reserve priced. Left in place, a
     conditioned request past it would give the split denoiser on-demand offload hooks onto the primary
     (``hook_resident_denoiser``), pulling every block off its card. True when dropped."""
-    if getattr(plan, "layer_split", None) is None or not getattr(pipe, "_unsloth_measured_reserve", None):
+    if getattr(plan, "layer_split", None) is None or not getattr(
+        pipe, "_unsloth_measured_reserve", None
+    ):
         return False
     try:
         pipe._unsloth_measured_reserve = None
@@ -9072,7 +9080,9 @@ class DiffusionBackend:
                     split_expected = _layer_split_expected(pipe, plan)
                     # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF); so
                     # must the torchao-free int8 one once it stays resident.
-                    quant_forces_compile = (transformer_quant_engaged is not None or comfy_compile) and (
+                    quant_forces_compile = (
+                        transformer_quant_engaged is not None or comfy_compile
+                    ) and (
                         native_scheme is None
                         or _native_quant_needs_compile(
                             target,
@@ -9303,9 +9313,7 @@ class DiffusionBackend:
                                 )
                             )
                         )
-                        and not fp16_unet_offloaded(
-                            target, pipe, offload_active = speed_offload
-                        )
+                        and not fp16_unet_offloaded(target, pipe, offload_active = speed_offload)
                     ):
                         compile_ctx = compile_cache.begin(
                             family = fam.name,
@@ -9325,8 +9333,7 @@ class DiffusionBackend:
                                 fullgraph = not cache_graph_break
                                 and not cache_may_toggle
                                 and not speed_offload,
-                                offload_below_hooks = speed_offload
-                                and compile_below_hooks_enabled(),
+                                offload_below_hooks = speed_offload and compile_below_hooks_enabled(),
                             ),
                             logger = logger,
                             reduction_filter = family_filters_reductions(fam),
@@ -9382,7 +9389,8 @@ class DiffusionBackend:
                             cache_active = cache_graph_break or cache_may_toggle,
                             cache_engaged = cache_graph_break,
                             offload_active = speed_offload,
-                            denoiser_offloaded = not split_expected and not plan_keeps_transformer_resident(plan),
+                            denoiser_offloaded = not split_expected
+                            and not plan_keeps_transformer_resident(plan),
                             stream_int8_gemm = True,
                             logger = log,
                         ),
@@ -9609,11 +9617,16 @@ class DiffusionBackend:
                         if cache_engaged is None and getattr(plan, "layer_split", None) is not None:
                             # declined on the split: status must say so (the compile still runs graph-broken)
                             cache_may_toggle = False
-                            cache_reason = "off: the step cache declined the denoiser split across cards"
+                            cache_reason = (
+                                "off: the step cache declined the denoiser split across cards"
+                            )
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
-                    if denoisers_pinned_resident(pipe) or getattr(plan, "layer_split", None) is not None:
+                    if (
+                        denoisers_pinned_resident(pipe)
+                        or getattr(plan, "layer_split", None) is not None
+                    ):
                         engage_pinned_denoisers(pipe, speed_applied, logger)
                     # Placement decides the graph layer: a whole-forward recording holds only while no hook moves the
                     # denoiser; otherwise (and for a forward that is not capture-safe) its blocks are recorded instead.

@@ -1335,7 +1335,10 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     if ok:
         fused_in, parts, down_name, n, gate_col, value_col, in_group, down_group = rec
         # parts moved since the fusion (a layer split before its re-home): the stale fused copy sits on another card
-        ok = all(_get(self, nm) is mod for nm, mod in parts) and fused_in.weight.device == hidden_states.device
+        ok = (
+            all(_get(self, nm) is mod for nm, mod in parts)
+            and fused_in.weight.device == hidden_states.device
+        )
     if not ok:
         return type(self).forward(self, hidden_states, *args, **kwargs)
     down = _get(self, down_name)
@@ -1507,7 +1510,6 @@ def resident_cuda_cards(module: Any) -> tuple:
     dev = resident_cuda_device(module)
     if dev is not None:
         import torch
-
         return (dev.index if dev.index is not None else torch.cuda.current_device(),)
     from .diffusion_int8_gemm import _split_cards
 
@@ -1617,7 +1619,6 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
     if dev is None:
         # a layer split: every block resident on one of several cards, each region swapped against its own card
         from .diffusion_int8_gemm import _split_cards
-
         cards = _split_cards(transformer)
         if not cards:
             return 0

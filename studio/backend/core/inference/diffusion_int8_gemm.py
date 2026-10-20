@@ -828,11 +828,7 @@ def _swap_on(transformer: Any, logger: Any, index: int) -> int:
 
     multi = len(_split_cards(transformer)) > 1
     recs = [(m, _eligible(m)) for m in transformer.modules()]
-    recs = [
-        (m, r)
-        for m, r in recs
-        if r is not None and (not multi or _weight_card(m) == index)
-    ]
+    recs = [(m, r) for m, r in recs if r is not None and (not multi or _weight_card(m) == index)]
     if not recs:
         return 0
     from .diffusion_convrot_quant import rotquant_device_config
@@ -899,14 +895,14 @@ def after_layer_split(transformer: Any, logger: Any = None) -> dict:
     out["cards"] = cards
     try:
         from .diffusion_int8_fused import relocate_after_layer_split
-
         out.update(relocate_after_layer_split(transformer, logger))
     except Exception as exc:  # noqa: BLE001 - the stock paths stay correct
         if logger is not None:
-            logger.warning("diffusion.int8_gemm: fused record re-home after the layer split failed (%s)", exc)
+            logger.warning(
+                "diffusion.int8_gemm: fused record re-home after the layer split failed (%s)", exc
+            )
     try:
         from .diffusion_qwenimage21_rope import probe_split_cards
-
         out["rope_cards"] = probe_split_cards(cards)
     except Exception:  # noqa: BLE001 - an unprobed card keeps the complex RoPE
         pass
@@ -915,7 +911,9 @@ def after_layer_split(transformer: Any, logger: Any = None) -> dict:
             out["gemm"] = sum(_swap_on(transformer, logger, index) for index in cards)
         except Exception as exc:  # noqa: BLE001
             if logger is not None:
-                logger.warning("diffusion.int8_gemm: per-card swap after the layer split failed (%s)", exc)
+                logger.warning(
+                    "diffusion.int8_gemm: per-card swap after the layer split failed (%s)", exc
+                )
     return out
 
 

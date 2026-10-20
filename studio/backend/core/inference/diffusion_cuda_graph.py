@@ -649,7 +649,6 @@ class _Entry:
 
 def _layer_split(module: Any) -> bool:
     from .diffusion_layer_split import is_layer_split
-
     return is_layer_split(module)
 
 
@@ -658,7 +657,6 @@ def _rehome_after_layer_split(pipe: Any, logger: Any) -> None:
     split's blocks to their cards (``diffusion_int8_gemm.after_layer_split``)."""
     try:
         from .diffusion_int8_gemm import after_layer_split
-
         for module in _denoiser_modules(pipe):
             if _layer_split(module):
                 after_layer_split(module, logger)

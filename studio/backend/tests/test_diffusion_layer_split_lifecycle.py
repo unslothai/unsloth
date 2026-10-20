@@ -33,7 +33,10 @@ def _split(required = 12000, weights = 9000) -> lsp.LayerSplit:
     return lsp.LayerSplit(
         primary = 0,
         cards = (0, 1),
-        ranges = (lsp.BlockRange("transformer", 0, 10, 0, 9000), lsp.BlockRange("transformer", 10, 20, 1, weights)),
+        ranges = (
+            lsp.BlockRange("transformer", 0, 10, 0, 9000),
+            lsp.BlockRange("transformer", 10, 20, 1, weights),
+        ),
         text_encoders_card = None,
         card_required_mib = ((0, 30000), (1, required)),
         card_limit_mib = ((0, 40000), (1, 20000)),
@@ -52,13 +55,23 @@ def _free(monkeypatch, free_mib):
         D,
         "reclaimable_snapshot_device_memory",
         lambda target: dm.DeviceMemory(
-            backend = "cuda", device = "cuda", memory_kind = "discrete_vram", free_mib = free_mib, total_mib = 24576
+            backend = "cuda",
+            device = "cuda",
+            memory_kind = "discrete_vram",
+            free_mib = free_mib,
+            total_mib = 24576,
         ),
     )
 
 
 def _kw(side):
-    return {"width": side, "height": side, "batch_size": 1, "family": "flux2", "condition_pixels": 0}
+    return {
+        "width": side,
+        "height": side,
+        "batch_size": 1,
+        "family": "flux2",
+        "condition_pixels": 0,
+    }
 
 
 def test_block_card_guard_prices_the_planned_headroom_not_the_whole_request(monkeypatch):
@@ -82,16 +95,24 @@ def test_block_card_guard_is_a_no_op_without_a_layer_split(monkeypatch):
     assert D._guard_layer_cards(None, object(), _kw(2048)) == 0
 
 
-def test_image_generate_guards_the_loaded_pipe_for_a_workflow_pipeline(fake_runtime, tmp_path, monkeypatch):
+def test_image_generate_guards_the_loaded_pipe_for_a_workflow_pipeline(
+    fake_runtime, tmp_path, monkeypatch
+):
     # img2img renders through a from_pipe pipeline that shares the split modules but carries no layer split record
     seen = []
     monkeypatch.setattr(
-        D, "raise_on_image_activation_shortfall", lambda **kw: types.SimpleNamespace(action = dm.ACTIVATION_RUN, overridden = False)
+        D,
+        "raise_on_image_activation_shortfall",
+        lambda **kw: types.SimpleNamespace(action = dm.ACTIVATION_RUN, overridden = False),
     )
-    monkeypatch.setattr(D, "_guard_layer_cards", lambda pipe, target, kwargs: seen.append(pipe) or 0)
+    monkeypatch.setattr(
+        D, "_guard_layer_cards", lambda pipe, target, kwargs: seen.append(pipe) or 0
+    )
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = _loaded_backend(tmp_path)
-    backend.generate(prompt = "a car", steps = 4, guidance = 0.0, seed = 3, init_image = _tiny_png_b64(), strength = 0.5)
+    backend.generate(
+        prompt = "a car", steps = 4, guidance = 0.0, seed = 3, init_image = _tiny_png_b64(), strength = 0.5
+    )
     assert seen and seen[-1] is backend._state.pipe
 
 
@@ -105,6 +126,10 @@ def test_a_layer_split_drops_the_one_card_measured_reserve():
     plain = types.SimpleNamespace(layer_split = None)
     assert not D._drop_measured_reserve_for_layer_split(pipe, plain)
     assert pipe._unsloth_measured_reserve
-    assert D._drop_measured_reserve_for_layer_split(pipe, types.SimpleNamespace(layer_split = _split()))
+    assert D._drop_measured_reserve_for_layer_split(
+        pipe, types.SimpleNamespace(layer_split = _split())
+    )
     assert not pipe._unsloth_measured_reserve
-    assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048, condition_pixels = 1 << 20) == 0
+    assert (
+        dm.measured_request_extra_mib(pipe, width = 2048, height = 2048, condition_pixels = 1 << 20) == 0
+    )

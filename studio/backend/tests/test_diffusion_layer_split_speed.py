@@ -78,7 +78,9 @@ def test_block_graphs_record_each_block_on_its_own_card(monkeypatch):
 def test_one_card_block_graphs_keep_one_shared_state(monkeypatch):
     dit = FakeDiT(dim = 64, double = 2, single = 2)
     # never consulted without a split: the one-card path reads no block card
-    monkeypatch.setattr(bg, "_block_card", lambda block: pytest.fail("read a block card on one card"))
+    monkeypatch.setattr(
+        bg, "_block_card", lambda block: pytest.fail("read a block card on one card")
+    )
     handle, reason = bg.install_block_graphs(dit, device = "cuda:0")
     assert handle is not None, reason
     assert not handle.card_shared and handle.cards() == {0}
@@ -92,9 +94,13 @@ def test_a_split_block_off_its_card_runs_its_compute(monkeypatch):
     shared = bg._Shared(1, None)
     shared.strict_device = True
     calls = []
-    graph = bg.BlockGraph(dit.transformer_blocks[0], lambda *a, **k: calls.append(1) or "eager", shared)
+    graph = bg.BlockGraph(
+        dit.transformer_blocks[0], lambda *a, **k: calls.append(1) or "eager", shared
+    )
     monkeypatch.setattr(bg._WeightView, "placement", lambda self, index: (1,))
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)  # the block's card (1) is not current
+    monkeypatch.setattr(
+        torch.cuda, "current_device", lambda: 0
+    )  # the block's card (1) is not current
     monkeypatch.setattr(bg, "_walk", lambda obj, live: live.append(_FakeCuda(1)) or ("k",))
     monkeypatch.setattr(bg, "_refusal", lambda key, kwargs: None)
     with torch.no_grad():
@@ -113,7 +119,9 @@ def test_arm_block_graphs_records_a_split_denoiser_per_block(monkeypatch):
     armed = []
     monkeypatch.setattr(cg, "_block_basics", lambda *a, **k: None)
     monkeypatch.setattr(
-        bg, "install_block_graphs", lambda t, **k: armed.append(t) or (types.SimpleNamespace(slots_mib = 0), "armed")
+        bg,
+        "install_block_graphs",
+        lambda t, **k: armed.append(t) or (types.SimpleNamespace(slots_mib = 0), "armed"),
     )
     monkeypatch.setattr("core.inference.diffusion_speed._denoiser_dits", lambda p: [p.transformer])
     applied = {"cuda_graph": False}
@@ -131,10 +139,15 @@ def test_split_block_graphs_honour_the_kill_switch(monkeypatch):
     pipe, _, _ = _split(monkeypatch, dit)
     monkeypatch.setattr(g8, "after_layer_split", lambda t, logger = None: {})
     monkeypatch.setattr(cg, "_block_basics", lambda *a, **k: None)
-    monkeypatch.setattr(bg, "install_block_graphs", lambda t, **k: pytest.fail("armed with the kill switch set"))
+    monkeypatch.setattr(
+        bg, "install_block_graphs", lambda t, **k: pytest.fail("armed with the kill switch set")
+    )
     monkeypatch.setattr("core.inference.diffusion_speed._denoiser_dits", lambda p: [p.transformer])
     target = types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda:0")
-    assert cg.arm_block_graphs(pipe, {"cuda_graph": True}, target = target, family = None, hooked = False) == ()
+    assert (
+        cg.arm_block_graphs(pipe, {"cuda_graph": True}, target = target, family = None, hooked = False)
+        == ()
+    )
     assert "UNSLOTH_DIFFUSION_BLOCK_GRAPHS=0" in pipe._unsloth_cuda_graph_reason
     ls.undo_layer_split(pipe)
 
@@ -143,7 +156,9 @@ def test_arm_block_graphs_leaves_a_resident_one_card_denoiser_alone(monkeypatch)
     dit = FakeDiT(dim = 64, double = 2, single = 2)
     pipe = Pipe(dit)
     monkeypatch.setattr(cg, "_block_basics", lambda *a, **k: None)
-    monkeypatch.setattr(bg, "install_block_graphs", lambda t, **k: pytest.fail("armed per block on one card"))
+    monkeypatch.setattr(
+        bg, "install_block_graphs", lambda t, **k: pytest.fail("armed per block on one card")
+    )
     monkeypatch.setattr("core.inference.diffusion_speed._denoiser_dits", lambda p: [p.transformer])
     applied = {"cuda_graph": False}
     target = types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda:0")
@@ -159,7 +174,10 @@ def test_split_block_classes_register_with_a_copy_of_their_base_metadata(monkeyp
     dit = FakeDiT(dim = 1024, double = 4, single = 3)
     pipe, _, _ = _split(monkeypatch, dit)
     base_meta = {}
-    for base in (type(dit.transformer_blocks[0])._unsloth_layer_split_base, type(dit.single_transformer_blocks[0])._unsloth_layer_split_base):
+    for base in (
+        type(dit.transformer_blocks[0])._unsloth_layer_split_base,
+        type(dit.single_transformer_blocks[0])._unsloth_layer_split_base,
+    ):
         meta = TransformerBlockMetadata(return_hidden_states_index = 0)
         TransformerBlockRegistry.register(model_class = base, metadata = meta)
         base_meta[base] = meta
@@ -169,7 +187,9 @@ def test_split_block_classes_register_with_a_copy_of_their_base_metadata(monkeyp
             sub = type(block)
             base = sub._unsloth_layer_split_base
             got = TransformerBlockRegistry.get(sub)
-            assert got is not base_meta[base]  # never the base's own object: register writes _cls into it
+            assert (
+                got is not base_meta[base]
+            )  # never the base's own object: register writes _cls into it
             assert got.return_hidden_states_index == 0
             assert base_meta[base]._cls is base
     finally:
@@ -187,7 +207,6 @@ def _tail_hook(head_output):
     manager = StateManager(FBCSharedBlockState, (), {})
     try:
         from diffusers.hooks.hooks import CacheContext
-
         manager.set_context(CacheContext(name = "cond"))
     except ImportError:  # an older diffusers keys the state by a plain name
         manager.set_context("cond")
@@ -233,10 +252,14 @@ def test_split_guard_computes_the_tail_residual_on_the_tail_card_and_returns_it_
     home, here = torch.device("cuda", 0), torch.device("cuda", 1)
     monkeypatch.setattr(dc, "_first_device", lambda obj: home if obj is head else None)
     monkeypatch.setattr(
-        hook._metadata, "_get_parameter_from_args_kwargs", lambda name, args, kwargs: types.SimpleNamespace(device = here)
+        hook._metadata,
+        "_get_parameter_from_args_kwargs",
+        lambda name, args, kwargs: types.SimpleNamespace(device = here),
     )
     copied = torch.randn(2, 8)
-    monkeypatch.setattr(dc, "_tensors_to", lambda obj, device: moves.append(("head", device)) or copied)
+    monkeypatch.setattr(
+        dc, "_tensors_to", lambda obj, device: moves.append(("head", device)) or copied
+    )
     real_to = torch.Tensor.to
 
     def fake_to(self, *args, **kwargs):
@@ -289,7 +312,9 @@ def _int8_dit(monkeypatch, cards):
     monkeypatch.setattr(g8, "_eligible", lambda m: recs.get(id(m)))
     monkeypatch.setattr(g8, "_weight_card", lambda m: cards.get(id(m), 0))
     monkeypatch.setattr(g8, "_op", lambda: "op")
-    monkeypatch.setattr("core.inference.diffusion_convrot_quant.rotquant_device_config", lambda index: None)
+    monkeypatch.setattr(
+        "core.inference.diffusion_convrot_quant.rotquant_device_config", lambda index: None
+    )
     monkeypatch.setattr(g8, "_v1_act_quant_matches", lambda index: True)
     return dit, recs
 
@@ -306,7 +331,9 @@ def test_split_int8_swap_probes_and_swaps_each_card(monkeypatch):
     monkeypatch.setattr("core.inference.diffusion_int8_fused.resident_cuda_device", lambda t: None)
     probed = []
     # card 1 has no fused tile (its probe failed): its Linears keep the stock path, card 0's run the fused GEMM
-    monkeypatch.setattr(g8, "device_config", lambda index: probed.append(index) or ((1,) if index == 0 else None))
+    monkeypatch.setattr(
+        g8, "device_config", lambda index: probed.append(index) or ((1,) if index == 0 else None)
+    )
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (10, 0))
     try:
         count = g8._swap(dit)
@@ -341,7 +368,9 @@ def test_split_int8_swap_refreshes_a_pre_split_onload_install(monkeypatch):
         assert g8._swap_on(dit, None, 1) == len(moved)
         assert all(m.__dict__[g8._REC][4] is True for m in moved)
         monkeypatch.setattr(g8, "device_config", lambda index: None)
-        assert g8._swap_on(dit, None, 1) == 0  # nothing to swap there and no rotation: count 0, records untouched
+        assert (
+            g8._swap_on(dit, None, 1) == 0
+        )  # nothing to swap there and no rotation: count 0, records untouched
     finally:
         g8.uninstall(dit)
 
@@ -365,7 +394,11 @@ def _swiglu_module(stale_device = "meta"):
     from core.inference import diffusion_int8_fused as f8
 
     m = nn.Module()
-    m.w1, m.w3, m.w2 = (nn.Linear(16, 32, bias = False), nn.Linear(16, 32, bias = False), nn.Linear(32, 16, bias = False))
+    m.w1, m.w3, m.w2 = (
+        nn.Linear(16, 32, bias = False),
+        nn.Linear(16, 32, bias = False),
+        nn.Linear(32, 16, bias = False),
+    )
     stale = nn.Linear(16, 64, bias = False, device = stale_device)
     parts = (("w1", m.w1), ("w3", m.w3), ("w2", m.w2))
     m.__dict__[f8._SWIGLU_ATTR] = (stale, parts, "w2", 32, 0, 32, 0, 0)
@@ -384,7 +417,11 @@ def test_a_stale_fused_swiglu_is_rebuilt_on_its_parts_card_and_shares_their_stor
     # the parts are views of the rebuilt fused weight again (no second copy on the card)
     assert rec[0].weight.data_ptr() == m.w1.weight.data_ptr()
     assert torch.equal(m.w1.weight, gate) and rec[1:] == m.__dict__[f8._SWIGLU_ATTR][1:]
-    assert f8.relocate_after_layer_split(m) == {"rebuilt": 0, "dropped": 0, "restored": 0}  # idempotent
+    assert f8.relocate_after_layer_split(m) == {
+        "rebuilt": 0,
+        "dropped": 0,
+        "restored": 0,
+    }  # idempotent
 
 
 def test_a_fused_qkv_that_cannot_be_rebuilt_is_dropped():
@@ -393,7 +430,12 @@ def test_a_fused_qkv_that_cannot_be_rebuilt_is_dropped():
     attn = nn.Module()
     attn.to_q, attn.to_k = nn.Linear(16, 16), nn.Linear(16, 16)
     attn.to_v = nn.Linear(16, 16).to(torch.float16)  # mixed dtypes: no fused Linear over the three
-    attn.__dict__["_unsloth_fused_qkv"] = (nn.Linear(16, 48, device = "meta"), attn.to_q, attn.to_k, attn.to_v)
+    attn.__dict__["_unsloth_fused_qkv"] = (
+        nn.Linear(16, 48, device = "meta"),
+        attn.to_q,
+        attn.to_k,
+        attn.to_v,
+    )
     out = f8.relocate_after_layer_split(attn)
     assert out["dropped"] == 1 and "_unsloth_fused_qkv" not in attn.__dict__
 
@@ -401,11 +443,15 @@ def test_a_fused_qkv_that_cannot_be_rebuilt_is_dropped():
 def test_fused_qkv_readers_ignore_a_fused_linear_on_another_card():
     from core.inference import diffusion_qwenimage21_fused as q21
     from core.inference import diffusion_zimage_fused as zf
-
     for mod in (zf, q21):
         attn = nn.Module()
         attn.to_q, attn.to_k, attn.to_v = nn.Linear(8, 8), nn.Linear(8, 8), nn.Linear(8, 8)
-        attn.__dict__[mod._QKV_ATTR] = (nn.Linear(8, 24, device = "meta"), attn.to_q, attn.to_k, attn.to_v)
+        attn.__dict__[mod._QKV_ATTR] = (
+            nn.Linear(8, 24, device = "meta"),
+            attn.to_q,
+            attn.to_k,
+            attn.to_v,
+        )
         assert mod._qkv_intact(attn) is None
         attn.__dict__[mod._QKV_ATTR] = (nn.Linear(8, 24), attn.to_q, attn.to_k, attn.to_v)
         assert mod._qkv_intact(attn) is not None
@@ -414,7 +460,10 @@ def test_fused_qkv_readers_ignore_a_fused_linear_on_another_card():
 def test_after_layer_split_is_a_no_op_on_one_card(monkeypatch):
     called = []
     monkeypatch.setattr(g8, "_split_cards", lambda t: ())
-    monkeypatch.setattr("core.inference.diffusion_int8_fused.relocate_after_layer_split", lambda t, l = None: called.append(t))
+    monkeypatch.setattr(
+        "core.inference.diffusion_int8_fused.relocate_after_layer_split",
+        lambda t, l = None: called.append(t),
+    )
     assert g8.after_layer_split(nn.Linear(4, 4)) == {"cards": (), "gemm": 0}
     assert not called
 
@@ -423,10 +472,14 @@ def test_arm_block_graphs_re_homes_the_split_records_before_arming(monkeypatch):
     dit = FakeDiT(dim = 1024, double = 4, single = 3)
     pipe, _, _ = _split(monkeypatch, dit)
     order = []
-    monkeypatch.setattr(g8, "after_layer_split", lambda t, logger = None: order.append(("rehome", t)) or {})
+    monkeypatch.setattr(
+        g8, "after_layer_split", lambda t, logger = None: order.append(("rehome", t)) or {}
+    )
     monkeypatch.setattr(cg, "_block_basics", lambda *a, **k: None)
     monkeypatch.setattr(
-        bg, "install_block_graphs", lambda t, **k: order.append(("arm", t)) or (types.SimpleNamespace(slots_mib = 0), "armed")
+        bg,
+        "install_block_graphs",
+        lambda t, **k: order.append(("arm", t)) or (types.SimpleNamespace(slots_mib = 0), "armed"),
     )
     monkeypatch.setattr("core.inference.diffusion_speed._denoiser_dits", lambda p: [p.transformer])
     target = types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda:0")
@@ -528,9 +581,14 @@ def test_split_guard_wraps_the_mixed_stream_tail_once():
     assert dc.install_fbcache_split_guard()
     outer = FBCBlockHook.new_forward
     assert outer._unsloth_split_guard and outer._unsloth_mixed_stream_tail
-    inner = outer.__closure__ and [c.cell_contents for c in outer.__closure__ if callable(c.cell_contents)]
-    assert any(getattr(fn, "_unsloth_mixed_stream_tail", False) and not getattr(fn, "_unsloth_split_guard", False)
-               for fn in inner)
+    inner = outer.__closure__ and [
+        c.cell_contents for c in outer.__closure__ if callable(c.cell_contents)
+    ]
+    assert any(
+        getattr(fn, "_unsloth_mixed_stream_tail", False)
+        and not getattr(fn, "_unsloth_split_guard", False)
+        for fn in inner
+    )
     assert dc.install_fbcache_mixed_stream_tail() and dc.install_fbcache_split_guard()
     assert FBCBlockHook.new_forward is outer  # neither re-wraps the other
 
@@ -556,7 +614,9 @@ def test_qwen_real_rope_installs_on_a_split_after_probing_each_card(monkeypatch)
     monkeypatch.setattr(f8, "resident_cuda_cards", lambda m: (0, 1))
     probed, patched = [], []
     monkeypatch.setattr(qr, "_probe", lambda index: probed.append(index) or True)
-    monkeypatch.setattr(qr, "_patch_table", lambda index, logger = None: patched.append(index) or True)
+    monkeypatch.setattr(
+        qr, "_patch_table", lambda index, logger = None: patched.append(index) or True
+    )
     assert qr.install(QwenImageTransformer2DModel()) is True
     assert probed == [0, 1] and patched == [0]
     monkeypatch.setattr(qr, "_probe", lambda index: False)
@@ -570,7 +630,9 @@ def test_zimage_fused_probes_each_card_of_a_split(monkeypatch):
 
     monkeypatch.setattr(zf, "zimage_fused_disabled", lambda: False)
     monkeypatch.setattr(zf, "_patch_class", lambda logger = None: True)
-    monkeypatch.setitem(sys.modules, zf._MODULE, types.SimpleNamespace(ZSingleStreamAttnProcessor = object))
+    monkeypatch.setitem(
+        sys.modules, zf._MODULE, types.SimpleNamespace(ZSingleStreamAttnProcessor = object)
+    )
     monkeypatch.setattr(f8, "resident_cuda_cards", lambda m: (5, 6))
     monkeypatch.setattr(q21r, "inductor_addcmul_is_fma", lambda: True)
     monkeypatch.setattr(q21r, "probe_fusion", lambda dev: ("fma", dev.index))
@@ -605,7 +667,11 @@ def test_real_rope_probes_every_card_of_a_split(monkeypatch):
     monkeypatch.setattr(q21r, "_FUSION", {})
     assert q21r.probe_split_cards((0, 1)) == ()  # no install probed a card: the patch is not in use
     probed = []
-    monkeypatch.setattr(q21r, "probe_fusion", lambda dev: probed.append(dev.index) or (None if dev.index == 2 else "fma"))
+    monkeypatch.setattr(
+        q21r,
+        "probe_fusion",
+        lambda dev: probed.append(dev.index) or (None if dev.index == 2 else "fma"),
+    )
     monkeypatch.setattr(q21r, "_FUSION", {0: "fma"})
     assert q21r.probe_split_cards((0, 1, 2)) == (0, 1)
     assert probed == [1, 2]

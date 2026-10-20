@@ -681,6 +681,7 @@ class BlockGraph:
             )
         exc.__traceback__ = None
 
+
 SEGMENT_GRAPHS_ENV = "UNSLOTH_DIFFUSION_SEGMENT_GRAPHS"
 _NOT_HANDLED = object()
 
@@ -715,7 +716,12 @@ class SegmentGraph:
     Lifecycle per (layout of the first block's inputs, weight placement): the first forward records the run eagerly,
     the second warms it up once and captures it, every later one replays. All on the card's own stream and pool."""
 
-    def __init__(self, graphs: list, shared: _Shared, max_graphs: int = MAX_GRAPHS_PER_BLOCK) -> None:
+    def __init__(
+        self,
+        graphs: list,
+        shared: _Shared,
+        max_graphs: int = MAX_GRAPHS_PER_BLOCK,
+    ) -> None:
         self.graphs = list(graphs)
         self.shared = shared
         self.max_graphs = int(max_graphs)
@@ -953,7 +959,13 @@ class SegmentGraph:
         return results
 
     def _capture(self, full: tuple, live: list) -> Optional[_SegEntry]:
-        from .diffusion_cuda_graph import _capturing, capture_device, note_capture, refuse_if_exhausted, retire_failed_capture
+        from .diffusion_cuda_graph import (
+            _capturing,
+            capture_device,
+            note_capture,
+            refuse_if_exhausted,
+            retire_failed_capture,
+        )
 
         torch = _torch()
         rec = self.seen.pop(full)
@@ -1462,7 +1474,10 @@ def install_block_graphs(
         return None, reason
     if split and not segment_graphs_disabled():
         # each card's run of blocks replays as one graph; a call the run cannot vouch for falls to its block's graph
-        handle.segments = [SegmentGraph(run, run_shared) for run, run_shared in _segments(transformer, handle.graphs)]
+        handle.segments = [
+            SegmentGraph(run, run_shared)
+            for run, run_shared in _segments(transformer, handle.graphs)
+        ]
         handle.mode = "segments" if handle.segments else handle.mode
     if split and _prompt_length_varies(transformer):
         handle.track_scopes()
@@ -1506,7 +1521,6 @@ def install_block_graphs(
 def _prompt_length_varies(transformer: Any) -> bool:
     try:
         from .diffusion_cuda_graph import _length_varies
-
         return _length_varies(transformer)
     except Exception:  # noqa: BLE001
         return False

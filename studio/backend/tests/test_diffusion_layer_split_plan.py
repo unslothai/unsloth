@@ -109,13 +109,20 @@ def test_streamed_encoders_are_paged_not_moved_and_undo_removes_their_hooks(monk
             self.transformer = Comp()
             self.text_encoder = Comp()
             self.vae = Comp()
-            self.components = {"transformer": self.transformer, "text_encoder": self.text_encoder, "vae": self.vae}
+            self.components = {
+                "transformer": self.transformer,
+                "text_encoder": self.text_encoder,
+                "vae": self.vae,
+            }
 
     pipe = Pipe()
     split = lsp.LayerSplit(
         primary = 0,
         cards = (0, 1),
-        ranges = (lsp.BlockRange("transformer", 0, 1, 0, 1), lsp.BlockRange("transformer", 1, 2, 1, 1)),
+        ranges = (
+            lsp.BlockRange("transformer", 0, 1, 0, 1),
+            lsp.BlockRange("transformer", 1, 2, 1, 1),
+        ),
         text_encoders_card = None,
         card_required_mib = ((0, 1), (1, 1)),
         card_limit_mib = ((0, 9), (1, 9)),
@@ -123,16 +130,24 @@ def test_streamed_encoders_are_paged_not_moved_and_undo_removes_their_hooks(monk
     )
     from core.inference import diffusion_layer_split as engine
 
-    monkeypatch.setattr(dm, "stream_text_encoders_onto", lambda p, d, logger = None: calls["stream"].append(str(d)) or ["text_encoder"])
+    monkeypatch.setattr(
+        dm,
+        "stream_text_encoders_onto",
+        lambda p, d, logger = None: calls["stream"].append(str(d)) or ["text_encoder"],
+    )
     monkeypatch.setattr(dm, "_remove_group_offload_hooks", lambda m: calls["removed"].append(m))
     monkeypatch.setattr(lsp, "split_blocks", lambda m: [("b.0", None), ("b.1", None)])
-    monkeypatch.setattr(engine, "place_layer_split", lambda p, **kw: calls["engine"].append(kw["assignment"]) or {})
+    monkeypatch.setattr(
+        engine, "place_layer_split", lambda p, **kw: calls["engine"].append(kw["assignment"]) or {}
+    )
     monkeypatch.setattr(engine, "undo_layer_split", lambda p, attr = "transformer": False)
     import contextlib
 
     from core.inference import diffusion_fast_load
 
-    monkeypatch.setattr(diffusion_fast_load, "fast_upload", lambda mods, dev, logger = None: contextlib.nullcontext())
+    monkeypatch.setattr(
+        diffusion_fast_load, "fast_upload", lambda mods, dev, logger = None: contextlib.nullcontext()
+    )
     lsp.place_layer_split(pipe, primary = "cuda:0", split = split)
     assert pipe.text_encoder.moved == []  # never moved onto a card: paged by its hooks
     assert pipe.vae.moved == [torch.device("cuda", 0)]
@@ -167,7 +182,10 @@ def test_every_denoiser_keeps_a_block_off_the_primary():
         assert split is not None, reason
         _check(split, limits)
         for name in denoisers:
-            assert any(r.card != 0 for r in split.ranges if r.denoiser == name), (name, split.ranges)
+            assert any(r.card != 0 for r in split.ranges if r.denoiser == name), (
+                name,
+                split.ranges,
+            )
 
 
 def test_too_small_for_the_combined_cards_declines():
@@ -184,22 +202,28 @@ def test_too_small_for_the_combined_cards_declines():
 
 
 def test_no_secondary_or_unknown_blocks_declines():
-    assert lsp.plan_layer_split(
-        denoisers = {"transformer": L(0, (1000,))},
-        companions = {},
-        primary = 0,
-        card_limits = {0: 18000},
-        headroom_mib = 0,
-        overhead_mib = 0,
-    )[0] is None
-    assert lsp.plan_layer_split(
-        denoisers = {"transformer": L(1000, ())},
-        companions = {},
-        primary = 0,
-        card_limits = {0: 18000, 1: 18000},
-        headroom_mib = 0,
-        overhead_mib = 0,
-    )[0] is None
+    assert (
+        lsp.plan_layer_split(
+            denoisers = {"transformer": L(0, (1000,))},
+            companions = {},
+            primary = 0,
+            card_limits = {0: 18000},
+            headroom_mib = 0,
+            overhead_mib = 0,
+        )[0]
+        is None
+    )
+    assert (
+        lsp.plan_layer_split(
+            denoisers = {"transformer": L(1000, ())},
+            companions = {},
+            primary = 0,
+            card_limits = {0: 18000, 1: 18000},
+            headroom_mib = 0,
+            overhead_mib = 0,
+        )[0]
+        is None
+    )
 
 
 def test_mixed_card_sizes_cut_in_proportion_to_free_capacity():
@@ -334,9 +358,7 @@ def test_layouts_count_storage_bytes_so_quantized_blocks_are_smaller():
     class Block(torch.nn.Module):
         def __init__(self, dtype):
             super().__init__()
-            self.w = torch.nn.Parameter(
-                torch.empty(4096, 4096, dtype = dtype), requires_grad = False
-            )
+            self.w = torch.nn.Parameter(torch.empty(4096, 4096, dtype = dtype), requires_grad = False)
 
     class Den(torch.nn.Module):
         _no_split_modules = ["Block"]
@@ -412,7 +434,14 @@ class _Engine:
         self.placed = []
         self.undone = 0
 
-    def place(self, pipe, *, primary, split, logger = None):
+    def place(
+        self,
+        pipe,
+        *,
+        primary,
+        split,
+        logger = None,
+    ):
         self.placed.append((primary, split))
         if self.fail:
             raise RuntimeError("boom")
@@ -431,10 +460,17 @@ def engine(monkeypatch):
     return eng
 
 
-def _cards(monkeypatch, sizes = _BIG, sec_limit = 20000, layouts = None):
+def _cards(
+    monkeypatch,
+    sizes = _BIG,
+    sec_limit = 20000,
+    layouts = None,
+):
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: sec_limit)
-    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: selection.secondaries[0])
+    monkeypatch.setattr(
+        mg, "best_secondary", lambda selection, probes = None: selection.secondaries[0]
+    )
     monkeypatch.setattr(
         lsp,
         "_denoiser_layouts",
@@ -451,7 +487,11 @@ class _Pipe:
         return self
 
 
-def _refine(plan, pipe = None, ordinals = (0, 1)):
+def _refine(
+    plan,
+    pipe = None,
+    ordinals = (0, 1),
+):
     pipe = pipe if pipe is not None else _Pipe()
     with mg.selection_scope(mg.make_selection(0, list(ordinals))):
         return mg.refine_plan_for_multigpu(pipe, plan), pipe
@@ -511,23 +551,36 @@ def test_keep_multiple_models_loaded_gets_no_selection(monkeypatch, engine):
 
 
 def test_a_dit_that_fits_one_card_keeps_todays_plan(monkeypatch, engine):
-    small = {"transformer": (8000, "dit"), "text_encoder": (4000, "text_encoder"), "vae": (300, "other")}
+    small = {
+        "transformer": (8000, "dit"),
+        "text_encoder": (4000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     _cards(monkeypatch, sizes = small)
     plan = _plan(model_dense_mib = 8000)
     assert plan.offload_policy == dm.OFFLOAD_NONE
     assert _refine(plan)[0] is plan
     # a resident denoiser with only the encoders streamed is not cut either
     streamed_te = dataclasses.replace(
-        _plan(), offload_policy = dm.OFFLOAD_GROUP, stream_transformer = False, stream_text_encoders = True
+        _plan(),
+        offload_policy = dm.OFFLOAD_GROUP,
+        stream_transformer = False,
+        stream_text_encoders = True,
     )
     _cards(monkeypatch, sec_limit = 1000)  # no companion assignment either
     assert _refine(streamed_te)[0] is streamed_te
     assert engine.placed == []
 
 
-def test_quantized_storage_that_fits_one_card_is_a_companion_split_not_a_layer_split(monkeypatch, engine):
+def test_quantized_storage_that_fits_one_card_is_a_companion_split_not_a_layer_split(
+    monkeypatch, engine
+):
     # dense 24 GB, but the loaded int8 storage is half: the denoiser fits the primary whole
-    quant = {"transformer": (12000, "dit"), "text_encoder": (4000, "text_encoder"), "vae": (300, "other")}
+    quant = {
+        "transformer": (12000, "dit"),
+        "text_encoder": (4000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     _cards(monkeypatch, sizes = quant)
     refined, _ = _refine(_plan())
     assert refined.layer_split is None
@@ -535,7 +588,11 @@ def test_quantized_storage_that_fits_one_card_is_a_companion_split_not_a_layer_s
 
 
 def test_companion_split_is_preferred_over_a_layer_split(monkeypatch, engine):
-    fits = {"transformer": (14000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    fits = {
+        "transformer": (14000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     _cards(monkeypatch, sizes = fits)
     refined, _ = _refine(_plan())
     assert refined.secondary_ordinal == 1 and refined.layer_split is None
@@ -723,7 +780,11 @@ def test_an_expert_wholly_on_the_primary_is_placed_plainly(monkeypatch):
             self.transformer = Comp()
             self.transformer_2 = Comp()
             self.vae = Comp()
-            self.components = {"transformer": self.transformer, "transformer_2": self.transformer_2, "vae": self.vae}
+            self.components = {
+                "transformer": self.transformer,
+                "transformer_2": self.transformer_2,
+                "vae": self.vae,
+            }
 
     pipe = Pipe()
     split = lsp.LayerSplit(
@@ -740,10 +801,18 @@ def test_an_expert_wholly_on_the_primary_is_placed_plainly(monkeypatch):
     )
     placed = []
     monkeypatch.setattr(lsp, "split_blocks", lambda m: [("b.0", None), ("b.1", None)])
-    monkeypatch.setattr(engine_mod, "place_layer_split", lambda p, **kw: placed.append((kw["attr"], kw["assignment"])) or {})
-    monkeypatch.setattr(diffusion_fast_load, "fast_upload", lambda mods, dev, logger = None: contextlib.nullcontext())
+    monkeypatch.setattr(
+        engine_mod,
+        "place_layer_split",
+        lambda p, **kw: placed.append((kw["attr"], kw["assignment"])) or {},
+    )
+    monkeypatch.setattr(
+        diffusion_fast_load, "fast_upload", lambda mods, dev, logger = None: contextlib.nullcontext()
+    )
     out = lsp.place_layer_split(pipe, primary = "cuda:0", split = split)
-    assert placed == [("transformer", {"b.0": 0, "b.1": 1})]  # only the expert that is cut reaches the engine
+    assert placed == [
+        ("transformer", {"b.0": 0, "b.1": 1})
+    ]  # only the expert that is cut reaches the engine
     assert out["transformer_2"]["whole_on_primary"] is True
     assert pipe.transformer_2.moved == [torch.device("cuda", 0)]
 
@@ -774,7 +843,11 @@ def test_image_guard_checks_every_other_card_running_blocks(monkeypatch, engine)
         D,
         "reclaimable_snapshot_device_memory",
         lambda target: dm.DeviceMemory(
-            backend = "cuda", device = "cuda", memory_kind = "discrete_vram", free_mib = free["mib"], total_mib = 102400
+            backend = "cuda",
+            device = "cuda",
+            memory_kind = "discrete_vram",
+            free_mib = free["mib"],
+            total_mib = 102400,
         ),
     )
     kw = {"width": 1024, "height": 1024, "family": "flux2"}

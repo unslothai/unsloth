@@ -647,7 +647,11 @@ class MemoryPlan:
                 list(self.secondary_components) if self.secondary_components is not None else None
             ),
             # only on a layer split plan, so every other plan's public dict is unchanged
-            **({"layer_split": self.layer_split.as_public_dict()} if self.layer_split is not None else {}),
+            **(
+                {"layer_split": self.layer_split.as_public_dict()}
+                if self.layer_split is not None
+                else {}
+            ),
         }
 
 
@@ -3511,7 +3515,6 @@ def resident_group_mib(pipe: Any) -> int:
 def _any_layer_split(pipe: Any) -> bool:
     from .diffusion_layer_split import is_layer_split
     from .diffusion_multigpu import DENOISER_ATTRS
-
     return any(is_layer_split(getattr(pipe, name, None)) for name in DENOISER_ATTRS)
 
 
@@ -5051,7 +5054,6 @@ def _apply_group_offload(
     if _any_layer_split(pipe):
         # an offload plan replaces the split: its block boundary comes off before streaming hooks go on
         from .diffusion_layer_split_plan import undo_layer_split
-
         undo_layer_split(pipe)
         if logger is not None:
             logger.info("diffusion.memory: removed the layer split before applying group offload")
@@ -5279,7 +5281,11 @@ def _apply_group_offload(
         return False
 
 
-def stream_text_encoders_onto(pipe: Any, device: Any, logger: Any = None) -> list[str]:
+def stream_text_encoders_onto(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+) -> list[str]:
     """Leaf-level group offload of every ``text_encoder*`` onto ``device`` and nothing else: the denoisers and the other
     components are not touched (a layer split places them; ``_apply_group_offload`` would move every unstreamed
     component onto one card). A text encoder runs once, before step 0, so it pages in for that encode. Returns the
@@ -5325,7 +5331,9 @@ def stream_text_encoders_onto(pipe: Any, device: Any, logger: Any = None) -> lis
             _remove_group_offload_hooks(encoders[name])
         raise
     if logger is not None and done:
-        logger.info("diffusion.memory: streaming %s onto %s for the encode", ", ".join(done), onload)
+        logger.info(
+            "diffusion.memory: streaming %s onto %s for the encode", ", ".join(done), onload
+        )
     return done
 
 

@@ -72,7 +72,13 @@ FORWARD_ORDER: dict[str, tuple[str, ...]] = {
     ),
 }
 # A non-None keyword whose name contains one of these feeds a root-level add between blocks: eager for that call.
-_RESIDUAL_KWARG_PARTS: tuple[str, ...] = ("controlnet", "control_hidden", "residual", "hint", "vace")
+_RESIDUAL_KWARG_PARTS: tuple[str, ...] = (
+    "controlnet",
+    "control_hidden",
+    "residual",
+    "hint",
+    "vace",
+)
 
 # Studio's First-Block-Cache hook names (diffusers.hooks.first_block_cache); see :func:`step_cache_hooked`.
 _STEP_CACHE_HOOKS: frozenset[str] = frozenset({"fbc_leader_block_hook", "fbc_block_hook"})
@@ -158,7 +164,9 @@ def find_blocks(transformer: Any) -> list[tuple[str, str, Any]]:
     order = FORWARD_ORDER.get(type(transformer).__name__)
     if order:
         rank = {g: i for i, g in enumerate(order)}
-        out.sort(key = lambda item: rank.get(item[1], len(rank)))  # stable: keeps each list's own order
+        out.sort(
+            key = lambda item: rank.get(item[1], len(rank))
+        )  # stable: keeps each list's own order
     return out
 
 
@@ -340,7 +348,9 @@ def plan_layer_split(
             current, current_bytes, used = [], 0, 0
             card += 1
         if used + size > budgets[card]:
-            raise LayerSplitError(f"block {qual} ({size // mib} MiB) does not fit any remaining card")
+            raise LayerSplitError(
+                f"block {qual} ({size // mib} MiB) does not fit any remaining card"
+            )
         assignment[qual] = str(order[card])
         current.append(qual)
         current_bytes += size
@@ -349,7 +359,9 @@ def plan_layer_split(
     return LayerSplitPlan(str(primary_dev), rest // mib, ranges, assignment)
 
 
-def assigned_plan(transformer: Any, *, primary: Any, assignment: Mapping[str, Any]) -> LayerSplitPlan:
+def assigned_plan(
+    transformer: Any, *, primary: Any, assignment: Mapping[str, Any]
+) -> LayerSplitPlan:
     """A plan from an explicit block -> card map (qualified names from :func:`find_blocks`; card = ordinal or device).
     Every block must be assigned. Raises :class:`LayerSplitError` on an unknown or missing block."""
     primary_dev = _cuda(primary)
@@ -389,7 +401,6 @@ def cross_copy(t: Any, device: Any) -> Any:
 def cross_outputs(out: Any, device: Any) -> Any:
     """Every block output sent to another card (the next block's, or home) goes through here."""
     from .diffusion_multigpu import move_to_device
-
     return move_to_device(out, device, objects = False)
 
 
@@ -476,7 +487,9 @@ def _probe_device(probe: Optional[tuple], default: Any) -> Any:
 @dataclasses.dataclass
 class _BlockState:
     device: Any  # the card placement put the block on (used only when the block holds no tensor)
-    next_block: Any  # weak reference to the next block of the same list, or None at the end of the list
+    next_block: (
+        Any  # weak reference to the next block of the same list, or None at the end of the list
+    )
     split: "_Split"
     probe: Optional[tuple] = None
 
@@ -505,7 +518,12 @@ class _Split:
         """Where the denoiser's own (non-block) weights are now: the placement's primary until something moves them."""
         return _probe_device(self.home_probe, self.home)
 
-    def move_in(self, obj: Any, device: Any, home: Any = None) -> Any:
+    def move_in(
+        self,
+        obj: Any,
+        device: Any,
+        home: Any = None,
+    ) -> Any:
         from .diffusion_multigpu import move_to_device
 
         home = self.home if home is None else home
@@ -598,7 +616,11 @@ def _is_residual_name(name: Any) -> bool:
     return any(part in lowered for part in _RESIDUAL_KWARG_PARTS)
 
 
-def _residual_call(kwargs: Mapping[str, Any], args: Sequence[Any] = (), module: Any = None) -> bool:
+def _residual_call(
+    kwargs: Mapping[str, Any],
+    args: Sequence[Any] = (),
+    module: Any = None,
+) -> bool:
     """The call feeds a residual the denoiser adds between blocks (ControlNet / VACE hints), by keyword or by position."""
     for key, value in kwargs.items():
         if value is not None and _is_residual_name(key):
@@ -630,7 +652,9 @@ def _move_rest(transformer: Any, block_ids: set, device: Any, logger: Any) -> No
             module._apply(lambda t: t.to(device), recurse = False)
 
 
-def _move_weights(transformer: Any, plan: LayerSplitPlan, blocks: list, home: Any, logger: Any) -> None:
+def _move_weights(
+    transformer: Any, plan: LayerSplitPlan, blocks: list, home: Any, logger: Any
+) -> None:
     """Each block once to its card (blocks first, so the primary only ever holds its own share), then the rest."""
     torch = _torch()
     from .diffusion_fast_load import fast_upload
@@ -655,7 +679,9 @@ def _install_boundary(transformer: Any, plan: LayerSplitPlan, blocks: list, spli
         original = type(block)
         block.__dict__[_SPLIT_ATTR] = _BlockState(dev, nxt_ref, split, _probe(block))
         block.__class__ = _split_class(original)
-        split.blocks.append((weakref.ref(block), getattr(original, "_unsloth_layer_split_base", original)))
+        split.blocks.append(
+            (weakref.ref(block), getattr(original, "_unsloth_layer_split_base", original))
+        )
     split.home_probe = _probe_outside(transformer, frozenset(id(b) for _, _, b in blocks))
 
     def _pre(module: Any, args: Any, kwargs: Any) -> None:
@@ -672,7 +698,9 @@ def _install_boundary(transformer: Any, plan: LayerSplitPlan, blocks: list, spli
         split.lazy_now = False
 
     split.handles.append(transformer.register_forward_pre_hook(_pre, with_kwargs = True))
-    split.handles.append(transformer.register_forward_hook(_post, with_kwargs = True, always_call = True))
+    split.handles.append(
+        transformer.register_forward_hook(_post, with_kwargs = True, always_call = True)
+    )
     transformer.__dict__[_SPLIT_ATTR + "_root"] = split
     # a component split under this one already marked the denoiser; undo must leave that marker
     split.owns_home = "_unsloth_split_home" not in transformer.__dict__
@@ -702,7 +730,10 @@ def _drop_step_cache(pipe: Any, attr: str, transformer: Any, logger: Any) -> boo
     if step_cache_hooked(transformer) or getattr(transformer, "_unsloth_step_cache", None):
         raise LayerSplitError("the step cache on the denoiser could not be removed")
     if logger is not None:
-        logger.info("diffusion.layer_split: step cache removed from %s (it keeps residuals on one card)", attr)
+        logger.info(
+            "diffusion.layer_split: step cache removed from %s (it keeps residuals on one card)",
+            attr,
+        )
     return True
 
 
@@ -733,9 +764,13 @@ def place_layer_split(
     if is_layer_split(transformer):
         undo_layer_split(pipe, attr = attr)
     if assignment is not None:
-        assigned_plan(transformer, primary = primary, assignment = assignment)  # validate before touching the cache
+        assigned_plan(
+            transformer, primary = primary, assignment = assignment
+        )  # validate before touching the cache
     else:
-        plan_layer_split(transformer, primary = primary, cards = cards, budgets_mib = budgets_mib, strategy = strategy)
+        plan_layer_split(
+            transformer, primary = primary, cards = cards, budgets_mib = budgets_mib, strategy = strategy
+        )
     _drop_step_cache(pipe, attr, transformer, logger)
     if assignment is not None:
         plan = assigned_plan(transformer, primary = primary, assignment = assignment)
@@ -813,7 +848,12 @@ def _remove_boundary(transformer: Any, split: _Split) -> None:
             transformer.__dict__.pop("_unsloth_split_home", None)
 
 
-def undo_layer_split(pipe: Any, *, attr: str = "transformer", device: Any = None) -> bool:
+def undo_layer_split(
+    pipe: Any,
+    *,
+    attr: str = "transformer",
+    device: Any = None,
+) -> bool:
     """Remove the boundary (weights stay where they are unless ``device`` is given, then the denoiser moves there).
     True when a split was removed."""
     from . import diffusion_multigpu as mg

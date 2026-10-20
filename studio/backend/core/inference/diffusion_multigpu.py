@@ -435,7 +435,10 @@ def refine_plan_for_multigpu(
     selection = current_selection()
     if selection is None or plan is None:
         return plan
-    if getattr(plan, "secondary_ordinal", None) is not None or getattr(plan, "layer_split", None) is not None:
+    if (
+        getattr(plan, "secondary_ordinal", None) is not None
+        or getattr(plan, "layer_split", None) is not None
+    ):
         return plan
     from .diffusion_layer_split_plan import layer_split_mode, refine_plan_for_layer_split
 
@@ -587,21 +590,30 @@ def move_to_device(
         try:
             out = copy.copy(obj)
             for key, value in obj.items():
-                moved = move_to_device(value, device, _depth + 1, tensor_fn = tensor_fn, objects = objects)
+                moved = move_to_device(
+                    value, device, _depth + 1, tensor_fn = tensor_fn, objects = objects
+                )
                 if moved is not value:
                     out[key] = moved
             return out
         except Exception:  # noqa: BLE001
-            return type(obj)((k, move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects)) for k, v in obj.items())
+            return type(obj)(
+                (k, move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects))
+                for k, v in obj.items()
+            )
     if isinstance(obj, tuple):
-        moved = [move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj]
+        moved = [
+            move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj
+        ]
         if all(a is b for a, b in zip(moved, obj)):
             return obj
         if hasattr(obj, "_fields"):
             return type(obj)(*moved)
         return type(obj)(moved) if type(obj) is not tuple else tuple(moved)
     if isinstance(obj, list):
-        return [move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj]
+        return [
+            move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj
+        ]
     if type(obj).__name__ == "BlockMask" and callable(getattr(obj, "to", None)):
         # flex attention's mask: immutable per call, its own .to() moves its block tensors
         return obj.to(device)
@@ -914,6 +926,7 @@ def is_split(pipe: Any) -> bool:
     except TypeError:
         return False
     from .diffusion_layer_split_plan import is_layer_split
+
     return is_layer_split(pipe)
 
 
@@ -944,7 +957,9 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         out["layer_split"] = dict(layer)
         if live:
             out["layer_split"]["live"] = live
-    elif "layer_split" in out:  # placed by the engine directly (no planner record): its own summary, live
+    elif (
+        "layer_split" in out
+    ):  # placed by the engine directly (no planner record): its own summary, live
         engine = out["layer_split"]
         out["layer_split"] = dict(live.get(engine.get("denoiser", "transformer")) or engine)
     if cfg is not None:

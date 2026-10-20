@@ -67,6 +67,7 @@ def test_image_family_opts_in_on_the_measured_archs(monkeypatch, name, cap):
 
 def test_the_race_families_share_one_arch_list():
     from core.inference import diffusion_families
+
     for name in _IMAGE_FAMILIES:
         expected = (
             diffusion_families._QWEN_REDUCTION_RACE_ARCHS

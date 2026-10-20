@@ -325,7 +325,9 @@ def install_modules(
     from .diffusion_int8_fused import resident_cuda_cards
 
     cls = importlib.import_module(_MODULE).ZSingleStreamAttnProcessor
-    cards = resident_cuda_cards(root)  # one card, or each card of a layer split (the processor reads its query's card)
+    cards = resident_cuda_cards(
+        root
+    )  # one card, or each card of a layer split (the processor reads its query's card)
     if not cards:
         return result
     with _LOCK:

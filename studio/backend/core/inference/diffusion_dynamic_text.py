@@ -296,7 +296,9 @@ def install(
             if logger is not None:
                 logger.warning("diffusion.dynamic_text: slice identity fix failed: %s", exc)
     unbacked = unbacked_sources_for(transformer)
-    sources = sources_for(transformer) if dynamic is None or _armed_when_dynamic(transformer) else ()
+    sources = (
+        sources_for(transformer) if dynamic is None or _armed_when_dynamic(transformer) else ()
+    )
     cfg = _compiler_config()
     if not (sources or unbacked) or cfg is None:
         return False

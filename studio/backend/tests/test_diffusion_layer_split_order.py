@@ -143,25 +143,34 @@ def test_a_decline_names_the_engines_reason(monkeypatch, engine):  # noqa: F811
     assert "group_offloading" in declined
 
 
-
 def test_the_speed_layer_is_set_up_for_a_split_the_placement_will_make():
     plan = types.SimpleNamespace(offload_policy = "group")
     split = types.SimpleNamespace(offload_policy = "none", layer_split = object())
     assert D._layer_split_expected(None, plan, lambda p, pl, lg: split)
-    assert not D._layer_split_expected(None, plan, lambda p, pl, lg: plan)  # the one-card plan stands
+    assert not D._layer_split_expected(
+        None, plan, lambda p, pl, lg: plan
+    )  # the one-card plan stands
     resident = types.SimpleNamespace(offload_policy = "none")
-    assert not D._layer_split_expected(None, resident, lambda p, pl, lg: split)  # already resident: nothing to change
-    assert not D._layer_split_expected(None, plan, lambda p, pl, lg: 1 / 0)  # a failing preview keeps the plan
+    assert not D._layer_split_expected(
+        None, resident, lambda p, pl, lg: split
+    )  # already resident: nothing to change
+    assert not D._layer_split_expected(
+        None, plan, lambda p, pl, lg: 1 / 0
+    )  # a failing preview keeps the plan
 
 
 def test_the_step_cache_goes_back_on_after_the_split_placed_the_blocks(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        D, "apply_step_cache", lambda view, mode = None, **kw: seen.append((view, mode, kw)) or f"m{len(seen)}"
+        D,
+        "apply_step_cache",
+        lambda view, mode = None, **kw: seen.append((view, mode, kw)) or f"m{len(seen)}",
     )
     pipe, second = object(), object()
     assert D._restore_step_cache_after_layer_split(pipe, (second, pipe), threshold = 0.1) == "m2"
-    assert [v for v, _m, _k in seen] == [second, pipe] and {m for _v, m, _k in seen} == {dc.TC_FBCACHE}
+    assert [v for v, _m, _k in seen] == [second, pipe] and {m for _v, m, _k in seen} == {
+        dc.TC_FBCACHE
+    }
     assert seen[0][2] == {"threshold": 0.1}
 
 
@@ -187,9 +196,15 @@ def test_a_resident_torchao_free_int8_dit_is_compiled_like_a_torchao_one(monkeyp
     monkeypatch.setattr(D, "native_offload_host", lambda target: True)
     monkeypatch.setattr(D, "native_quant_host", lambda target: False)
     assert D._native_quant_needs_compile(object(), "int8", resident = True)
-    assert not D._native_quant_needs_compile(object(), "int8", resident = False)  # streamed: the offload path decides
-    assert not D._native_quant_needs_compile(object(), None, resident = True)  # torchao: the existing rule
-    monkeypatch.setattr(D, "native_quant_host", lambda target: True)  # ROCm / Apple keep their native policy
+    assert not D._native_quant_needs_compile(
+        object(), "int8", resident = False
+    )  # streamed: the offload path decides
+    assert not D._native_quant_needs_compile(
+        object(), None, resident = True
+    )  # torchao: the existing rule
+    monkeypatch.setattr(
+        D, "native_quant_host", lambda target: True
+    )  # ROCm / Apple keep their native policy
     assert not D._native_quant_needs_compile(object(), "int8", resident = True)
     monkeypatch.setattr(D, "native_quant_host", lambda target: False)
     monkeypatch.setattr(D, "native_offload_host", lambda target: False)
@@ -200,9 +215,10 @@ def test_both_backends_force_compile_through_the_one_quant_rule():
     import inspect
 
     from core.inference import video as V
-
     for src in (inspect.getsource(D.DiffusionBackend), inspect.getsource(V.VideoBackend)):
         assert "quant_forces_compile = " in src and "_native_quant_needs_compile(" in src
         assert "if quant_forces_compile and effective_speed == SPEED_OFF:" in src
         # the preview the rule reads is computed before it
-        assert src.index("split_expected = _layer_split_expected(") < src.index("quant_forces_compile = ")
+        assert src.index("split_expected = _layer_split_expected(") < src.index(
+            "quant_forces_compile = "
+        )

@@ -51,7 +51,11 @@ def _run(model):
     )
     kw = {k: v.to("cuda:0", torch.bfloat16) for k, v in inputs.items()}
     with torch.inference_mode():
-        return model(**kw, timesteps = torch.tensor([500], device = "cuda:0"), return_dict = False)[0].float().cpu()
+        return (
+            model(**kw, timesteps = torch.tensor([500], device = "cuda:0"), return_dict = False)[0]
+            .float()
+            .cpu()
+        )
 
 
 class _Pipe:
@@ -67,7 +71,9 @@ def test_a_lazy_hidream_split_matches_one_card_bitwise():
     pipe.transformer = _hidream().to("cuda:0")
     blocks = [qual for qual, _, _ in ls.find_blocks(pipe.transformer)]
     ls.place_layer_split(
-        pipe, primary = 0, assignment = {q: "cuda:0" if i == 0 else "cuda:1" for i, q in enumerate(blocks)}
+        pipe,
+        primary = 0,
+        assignment = {q: "cuda:0" if i == 0 else "cuda:1" for i, q in enumerate(blocks)},
     )
     try:
         out = _run(pipe.transformer)

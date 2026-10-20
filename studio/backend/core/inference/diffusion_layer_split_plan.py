@@ -36,7 +36,9 @@ _DENOISER_OFFLOAD_POLICIES = ("model", "sequential", "streaming")
 # the largest block, at least 1 GiB, never above the plan's denoise headroom.
 _WORKING_SET_BLOCKS = 2
 _WORKING_SET_MIN_MIB = 1024
-_TE_ONLY_HEADROOM_MIB = 1024  # diffusion_multigpu.TEXT_ENCODER_HEADROOM_MIB: an encoder-only phase on a card
+_TE_ONLY_HEADROOM_MIB = (
+    1024  # diffusion_multigpu.TEXT_ENCODER_HEADROOM_MIB: an encoder-only phase on a card
+)
 
 
 def secondary_reserve_mib() -> int:
@@ -46,7 +48,9 @@ def secondary_reserve_mib() -> int:
     return 800 + (700 if sys.platform == "win32" else 400)
 
 
-def block_working_set_mib(denoisers: Mapping[str, "DenoiserLayout"], denoise_headroom_mib: int) -> int:
+def block_working_set_mib(
+    denoisers: Mapping[str, "DenoiserLayout"], denoise_headroom_mib: int
+) -> int:
     largest = max((max(d.block_mib) for d in denoisers.values() if d.block_mib), default = 0)
     estimate = max(_WORKING_SET_MIN_MIB, _WORKING_SET_BLOCKS * int(largest))
     return min(estimate, int(denoise_headroom_mib)) if denoise_headroom_mib > 0 else estimate
@@ -55,7 +59,6 @@ def block_working_set_mib(denoisers: Mapping[str, "DenoiserLayout"], denoise_hea
 def layer_split_mode() -> str:
     """``off`` / ``auto`` (default) / ``force``; off whenever the whole multi-GPU lever is off."""
     from .diffusion_layer_split import layer_split_mode as engine_mode
-
     return engine_mode()
 
 
@@ -87,7 +90,11 @@ class LayerSplit:
         """Device crossings per pass of every denoiser, the return of the output to the primary included."""
         out = 0
         for name in dict.fromkeys(r.denoiser for r in self.ranges):
-            path = [self.primary, *(r.card for r in self.ranges if r.denoiser == name), self.primary]
+            path = [
+                self.primary,
+                *(r.card for r in self.ranges if r.denoiser == name),
+                self.primary,
+            ]
             out += sum(1 for a, b in zip(path, path[1:]) if a != b)
         return out
 
@@ -132,7 +139,9 @@ def _partition(blocks: Sequence[int], capacities: Sequence[int]) -> Optional[lis
         return None
 
     def check(cuts: list[int]) -> bool:
-        return all(sum(blocks[cuts[i] : cuts[i + 1]]) <= capacities[i] for i in range(len(capacities)))
+        return all(
+            sum(blocks[cuts[i] : cuts[i + 1]]) <= capacities[i] for i in range(len(capacities))
+        )
 
     # proportional: the same fraction of each card's capacity, so each keeps the same slack
     cuts = [0]
@@ -187,7 +196,9 @@ def plan_layer_split(
         return None, "primary card limit unknown"
     if not denoisers or any(not d.block_mib for d in denoisers.values()):
         return None, "denoiser blocks unknown"
-    secondaries = sorted((o for o in card_limits if o != primary), key = lambda o: (-card_limits[o], o))
+    secondaries = sorted(
+        (o for o in card_limits if o != primary), key = lambda o: (-card_limits[o], o)
+    )
     if not secondaries:
         return None, "no secondary card"
     stems = sum(d.stem_mib for d in denoisers.values())
@@ -198,9 +209,15 @@ def plan_layer_split(
     else:
         denoise = decode = int(headroom_mib)
         encode = _TE_ONLY_HEADROOM_MIB
-    sec_reserve = secondary_reserve_mib() if secondary_overhead_mib is None else int(secondary_overhead_mib)
+    sec_reserve = (
+        secondary_reserve_mib() if secondary_overhead_mib is None else int(secondary_overhead_mib)
+    )
     pri_reserve = max(int(overhead_mib), sec_reserve)
-    working = block_working_set_mib(denoisers, denoise) if working_set_mib is None else int(working_set_mib)
+    working = (
+        block_working_set_mib(denoisers, denoise)
+        if working_set_mib is None
+        else int(working_set_mib)
+    )
     reserve = {primary: pri_reserve, **{o: sec_reserve for o in secondaries}}
     blocks_total = sum(sum(d.block_mib) for d in denoisers.values())
     need_total = blocks_total + stems + te_mib + other_mib
@@ -210,7 +227,9 @@ def plan_layer_split(
         # TE home: the last card first (proportional cuts leave it the most room), then earlier ones, the primary last
         # streaming the text encoders from host memory is the last resort: they run once, before step 0, so it
         # costs one paged encode per prompt, while a DiT that stays offloaded pays every step
-        te_homes = [(o, False) for o in reversed(cards)] + [(None, True)] if te_mib else [(None, False)]
+        te_homes = (
+            [(o, False) for o in reversed(cards)] + [(None, True)] if te_mib else [(None, False)]
+        )
         for te_home, te_streamed in te_homes:
             fixed = {o: 0 for o in cards}
             head = {o: working for o in cards}
@@ -234,13 +253,21 @@ def plan_layer_split(
                 left = sum(sum(denoisers[n].block_mib) for n in names[idx:])
                 share = sum(layout.block_mib) / left if left else 1.0
                 caps_d = [int(r * share) if idx < len(names) - 1 else r for r in remaining]
-                cuts = _partition(layout.block_mib, caps_d) or _partition(layout.block_mib, remaining)
+                cuts = _partition(layout.block_mib, caps_d) or _partition(
+                    layout.block_mib, remaining
+                )
                 n = len(layout.block_mib)
                 if cuts is not None and n > 1 and cuts[1] == n:
                     # the cut rounded every block onto the primary (a nearly full secondary), which the engine
                     # refuses: its last block goes to the furthest card with room for it
-                    room = [c for c in range(len(cards) - 1, 0, -1) if layout.block_mib[-1] <= remaining[c]]
-                    cuts = [0, *([n - 1] * room[0]), *([n] * (len(cards) - room[0]))] if room else None
+                    room = [
+                        c
+                        for c in range(len(cards) - 1, 0, -1)
+                        if layout.block_mib[-1] <= remaining[c]
+                    ]
+                    cuts = (
+                        [0, *([n - 1] * room[0]), *([n] * (len(cards) - room[0]))] if room else None
+                    )
                 if cuts is None:
                     ok = False
                     break
@@ -271,18 +298,22 @@ def plan_layer_split(
                 card_required_mib = tuple(sorted(required.items())),
                 card_limit_mib = tuple(sorted((o, int(card_limits[o])) for o in used)),
                 card_weights_mib = tuple(
-                    sorted((o, fixed[o] + caps[i] - remaining[i]) for i, o in enumerate(cards) if o in used)
+                    sorted(
+                        (o, fixed[o] + caps[i] - remaining[i])
+                        for i, o in enumerate(cards)
+                        if o in used
+                    )
                 ),
             )
             per_card = ", ".join(
                 f"cuda:{o} {required[o]}/{card_limits[o]} MiB" for o in split.cards
             )
-            reason = (
-                f"multi-GPU layer split: {', '.join(names)} cut over {len(split.cards)} cards ({per_card})"
-            )
+            reason = f"multi-GPU layer split: {', '.join(names)} cut over {len(split.cards)} cards ({per_card})"
             return dataclasses.replace(split, reason = reason), reason
         available = (
-            sum(card_limits[o] - reserve[o] for o in cards) - max(denoise, decode) - (k - 1) * working
+            sum(card_limits[o] - reserve[o] for o in cards)
+            - max(denoise, decode)
+            - (k - 1) * working
         )
         shortfall = need_total - available
         best_shortfall = shortfall if best_shortfall is None else min(best_shortfall, shortfall)
@@ -306,7 +337,6 @@ def split_blocks(module: Any) -> Optional[list[tuple[str, Any]]]:
     """The denoiser's repeated blocks in forward order as ``(qualified name, module)`` (the engine's own list, so a
     plan's indices name the blocks it places); None when the engine cannot cut this denoiser."""
     from .diffusion_layer_split import find_blocks, layer_split_refusal
-
     try:
         if layer_split_refusal(module, step_cache_ok = True) is not None:
             return None
@@ -328,7 +358,13 @@ def _denoisers(split: LayerSplit) -> list[str]:
     return list(dict.fromkeys(r.denoiser for r in split.ranges))
 
 
-def place_layer_split(pipe: Any, *, primary: str, split: LayerSplit, logger: Any = None) -> dict:
+def place_layer_split(
+    pipe: Any,
+    *,
+    primary: str,
+    split: LayerSplit,
+    logger: Any = None,
+) -> dict:
     """Place every block range on its card, the stems and non-TE companions on ``primary``, the text encoders on
     ``split.text_encoders_card``, and install the device-crossing hooks. Raises on failure."""
     import torch
@@ -350,10 +386,14 @@ def place_layer_split(pipe: Any, *, primary: str, split: LayerSplit, logger: Any
         if isinstance(m, torch.nn.Module) and str(n) not in names
     }
     streamed = (
-        [n for n in components if n.startswith("text_encoder")] if split.text_encoders_streamed else []
+        [n for n in components if n.startswith("text_encoder")]
+        if split.text_encoders_streamed
+        else []
     )
     moved = [
-        n for n in components if n.startswith("text_encoder") and te_dev != primary_dev and n not in streamed
+        n
+        for n in components
+        if n.startswith("text_encoder") and te_dev != primary_dev and n not in streamed
     ]
     placement: dict[str, str] = {}
     for name, module in components.items():
@@ -366,7 +406,6 @@ def place_layer_split(pipe: Any, *, primary: str, split: LayerSplit, logger: Any
     if streamed:
         # too big for any card beside the blocks: paged onto the primary for the one encode before step 0
         from .diffusion_memory import stream_text_encoders_onto
-
         for name in stream_text_encoders_onto(pipe, primary_dev, logger):
             placement[name] = f"cpu (streamed to {primary_dev})"
     for name in moved:
@@ -412,7 +451,9 @@ def undo_layer_split(pipe: Any) -> None:
     from .diffusion_layer_split import undo_layer_split as engine_undo
 
     try:
-        record = dict(mg._PLACEMENTS.get(pipe) or {})  # read first: the engine's undo drops a record it owns
+        record = dict(
+            mg._PLACEMENTS.get(pipe) or {}
+        )  # read first: the engine's undo drops a record it owns
     except TypeError:
         record = {}
     for name in mg.DENOISER_ATTRS:
@@ -421,7 +462,6 @@ def undo_layer_split(pipe: Any) -> None:
     with contextlib.suppress(Exception):
         if record.get("streamed"):
             from .diffusion_memory import _remove_group_offload_hooks
-
             for name in record["streamed"]:
                 module = getattr(pipe, name, None)
                 if module is not None:
@@ -573,7 +613,13 @@ def refine_plan_for_layer_split(
     )
 
 
-def apply_layer_split_plan(pipe: Any, plan: Any, *, placement: str, logger: Any = None) -> bool:
+def apply_layer_split_plan(
+    pipe: Any,
+    plan: Any,
+    *,
+    placement: str,
+    logger: Any = None,
+) -> bool:
     """Place a layer split plan. True when placed; on any failure the split is undone, the pipe returns to the host and
     False is returned (the caller then applies ``fallback_plan``)."""
     split = getattr(plan, "layer_split", None)
@@ -583,7 +629,10 @@ def apply_layer_split_plan(pipe: Any, plan: Any, *, placement: str, logger: Any 
         place_layer_split(pipe, primary = placement, split = split, logger = logger)
     except Exception as exc:  # noqa: BLE001 - fall back to one card
         if logger is not None:
-            logger.warning("diffusion.multigpu: layer split placement failed (%s); falling back to one card", exc)
+            logger.warning(
+                "diffusion.multigpu: layer split placement failed (%s); falling back to one card",
+                exc,
+            )
         with contextlib.suppress(Exception):
             undo_layer_split(pipe)
         # a split this pipeline carried before must not keep reporting as placed (status, is_split, the guards)
@@ -681,7 +730,9 @@ def layer_split_card_floors(pipe: Any) -> Optional[tuple]:
             o == split.primary,
             o == split.primary,
             True,
-            None if o == split.primary else max(0, int(required.get(o, 0)) - int(weights.get(o, 0))),
+            None
+            if o == split.primary
+            else max(0, int(required.get(o, 0)) - int(weights.get(o, 0))),
         )
         for o in split.cards
     )
