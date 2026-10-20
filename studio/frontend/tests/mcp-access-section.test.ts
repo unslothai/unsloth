@@ -24,16 +24,19 @@ import { readSrc } from "./helpers/kit.ts";
 
 const SECTION = readSrc("features/settings/components/mcp-access-section.tsx");
 const API_TAB = readSrc("features/settings/tabs/api-keys-tab.tsx");
+const MCP_TAB = readSrc("features/settings/tabs/mcp-tab.tsx");
 const TUNNEL_PREF = readSrc(
   "features/settings/components/tunnel-preference.ts",
 );
 
 const LOCALES = { ar, de, en, es, fr, he, hi, it, ja, ko, ptBR, ru, sv, zhCN };
 
-test("only the owner sees it, after the Decision API section, and settings search finds it", () => {
+test("it lives on the MCP tab, the API tab links there for the owner, and settings search finds it", () => {
+  assert.match(MCP_TAB, /<McpAccessSection \/>/);
+  assert.doesNotMatch(API_TAB, /McpAccessSection/);
   assert.match(
     API_TAB,
-    /\{isOwner \? <DecisionApiSection \/> : null\}\s*\{isOwner \? <McpAccessSection apiKey=\{revealed\} \/> : null\}/,
+    /\{isOwner \? <DecisionApiSection \/> : null\}\s*\{isOwner \? <UnslothStudioMcpRow \/> : null\}/,
   );
   assert.doesNotMatch(SECTION, /useIsAccountOwner/);
   assert.match(
@@ -122,11 +125,21 @@ test("the setup snippet shows only while on, targets the usage examples' address
   );
   assert.equal(
     en.settings.apiKeys.mcp.exportKeyHint,
-    "Set {name} to an Unsloth API key from this page before you start the agent.",
+    "Set {name} to an Unsloth Studio API key before you start the agent.",
+  );
+  assert.equal(
+    en.settings.apiKeys.mcp.description,
+    "Let coding agents such as Claude Code and Codex use Unsloth Studio over MCP.",
+  );
+  assert.equal(
+    en.settings.apiKeys.mcp.enableDescription,
+    "Serves /mcp/ to requests that carry an Unsloth Studio API key.",
   );
 });
 
-test("a key created on this page fills the snippet and is kept out of reload snapshots", () => {
+test("a key passed in fills the snippet and is kept out of reload snapshots, and the MCP tab passes none", () => {
+  assert.doesNotMatch(MCP_TAB, /apiKey=/);
+  assert.match(SECTION, /apiKey = null,/);
   assert.match(SECTION, /buildMcpSnippet\(agent, base, os, apiKey\)/);
   assert.match(
     SECTION,

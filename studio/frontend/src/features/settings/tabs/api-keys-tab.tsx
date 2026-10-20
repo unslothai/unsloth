@@ -26,11 +26,11 @@ import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { LanAccessSection } from "../components/lan-access-section";
-import { McpAccessSection } from "../components/mcp-access-section";
 import { ModelAliasesSection } from "../components/model-aliases-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { MonitorLink } from "../components/monitor-link";
 import { RemoteAccessSection } from "../components/remote-access-section";
+import { UnslothStudioMcpRow } from "../components/unsloth-studio-mcp-row";
 import {
   UsageExamples,
   useApiTunnelPref,
@@ -225,7 +225,7 @@ export function ApiKeysTab() {
 
       {isOwner ? <DecisionApiSection /> : null}
 
-      {isOwner ? <McpAccessSection apiKey={revealed} /> : null}
+      {isOwner ? <UnslothStudioMcpRow /> : null}
 
       <Dialog
         open={revokeTarget !== null}

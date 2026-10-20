@@ -79,6 +79,7 @@ import {
   detailsFor,
 } from "../components/coding-agent-list";
 import { SettingsSection } from "../components/settings-section";
+import { UnslothStudioMcpRow } from "../components/unsloth-studio-mcp-row";
 import {
   isChatGenerativeHubModel,
   isClassifierOrRerankerHubModel,
@@ -1143,6 +1144,8 @@ export function AgentsTab() {
         </a>{" "}
         {t("settings.agents.intro")}
       </p>
+
+      <UnslothStudioMcpRow />
 
       {/* Shared track + pill selector. The legend is sr-only: the two shell
           names already say what the control picks. */}

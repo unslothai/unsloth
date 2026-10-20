@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from studio_mcp import prompts
+from studio_mcp.tool_access import StudioToolAccess
 from studio_mcp.tools import (
     audio,
     cancel,
@@ -42,24 +43,41 @@ INSTRUCTIONS = " ".join(
 )
 
 
+TOOL_MODULES = (
+    status,
+    models,
+    text,
+    images,
+    audio,
+    video,
+    jobs,
+    data,
+    training,
+    export,
+    library,
+    cancel,
+)
+
+
+def tool_catalog() -> list[dict[str, str]]:
+    """Every tool as ``{name, area}`` in registration order; the area is its module's short name."""
+    return [
+        {"name": tool.__name__, "area": module.__name__.rsplit(".", 1)[-1]}
+        for module in TOOL_MODULES
+        for tool, *_ in module.TOOLS
+    ]
+
+
+def tool_names() -> tuple[str, ...]:
+    return tuple(entry["name"] for entry in tool_catalog())
+
+
 def create_studio_mcp() -> FastMCP:
     """Create the Unsloth MCP server and register the high-value tools."""
     mcp = FastMCP("Unsloth Studio", instructions = INSTRUCTIONS)
+    mcp.add_middleware(StudioToolAccess())
 
-    for module in (
-        status,
-        models,
-        text,
-        images,
-        audio,
-        video,
-        jobs,
-        data,
-        training,
-        export,
-        library,
-        cancel,
-    ):
+    for module in TOOL_MODULES:
         for tool, annotations, *schema in module.TOOLS:
             mcp.tool(
                 tool, annotations = annotations, **({"output_schema": schema[0]} if schema else {})

@@ -166,7 +166,13 @@ from utils.keyless_api_access import (
     get_keyless_api_access_settings,
     set_keyless_api_access,
 )
-from utils.mcp_access import forced_by_env, is_mcp_enabled, set_mcp_enabled
+from utils.mcp_access import (
+    UnknownMcpToolError,
+    disabled_tools as mcp_disabled_tools,
+    forced_by_env,
+    is_mcp_enabled,
+    set_mcp_settings,
+)
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
@@ -4073,7 +4079,24 @@ class KeylessApiAccessResponse(BaseModel):
 
 
 class McpAccessPayload(BaseModel):
-    enabled: StrictBool
+    # Either or both; a bare ``enabled`` comes from an older client.
+    enabled: Optional[StrictBool] = None
+    disabled_tools: Optional[list[StrictStr]] = None
+
+    @model_validator(mode = "after")
+    def at_least_one(self):
+        if not self.model_fields_set:
+            raise ValueError("Send enabled, disabled_tools, or both.")
+        for name in self.model_fields_set:
+            if getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null.")
+        return self
+
+
+class McpToolSetting(BaseModel):
+    name: str
+    area: str
+    enabled: bool
 
 
 class McpAccessResponse(BaseModel):
@@ -4081,6 +4104,8 @@ class McpAccessResponse(BaseModel):
     forced_by_env: bool
     # Display only: where an agent should point. Agents connect to whatever address reaches this server.
     url: str
+    # Registration order.
+    tools: list[McpToolSetting]
 
 
 class PreviewSharingPayload(BaseModel):
@@ -4508,10 +4533,16 @@ def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_ap
 
 
 def _mcp_access_response(request: Request) -> McpAccessResponse:
+    from mcp_server import tool_catalog
+    disabled = mcp_disabled_tools()
     return McpAccessResponse(
         enabled = is_mcp_enabled(),
         forced_by_env = forced_by_env(),
         url = str(request.base_url).rstrip("/") + "/mcp/",
+        tools = [
+            McpToolSetting(**entry, enabled = disabled is not None and entry["name"] not in disabled)
+            for entry in tool_catalog()
+        ],
     )
 
 
@@ -4531,12 +4562,22 @@ def update_mcp_access(
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session_for_mcp),
 ) -> McpAccessResponse:
-    """Turn agent access over MCP on or off for the whole installation."""
-    if forced_by_env():
+    """Turn agent access over MCP on or off for the whole installation, and choose which tools agents get."""
+    # The env var forces only the switch; the owner still picks tools.
+    if payload.enabled is not None and forced_by_env():
         raise HTTPException(status_code = 409, detail = "Set by UNSLOTH_STUDIO_ENABLE_MCP.")
-    enabled = set_mcp_enabled(payload.enabled)
-    logger.info("settings.mcp_access_updated subject=%s enabled=%s", current_subject, enabled)
-    return _mcp_access_response(request)
+    try:
+        set_mcp_settings(enabled = payload.enabled, disabled_tools = payload.disabled_tools)
+    except UnknownMcpToolError as exc:
+        raise HTTPException(status_code = 422, detail = str(exc))
+    response = _mcp_access_response(request)
+    logger.info(
+        "settings.mcp_access_updated subject=%s enabled=%s disabled=%s",
+        current_subject,
+        response.enabled,
+        sum(not tool.enabled for tool in response.tools),
+    )
+    return response
 
 
 def _is_bundled_avatar_url(value: str) -> bool:
