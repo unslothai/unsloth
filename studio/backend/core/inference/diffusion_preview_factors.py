@@ -6,24 +6,10 @@
 Each map was fitted by least squares from the final denoised latent of real renders to the same renders' VAE
 decode, box-averaged onto the latent grid. Families without an entry get no preview."""
 
-# family name or alias (lower case) -> map key
-FAMILY_FACTORS = {
-    "flux.1": "flux1",
-    "flux.1-kontext": "flux1",
-    "flux.2-klein": "flux2",
-    "flux.2-dev": "flux2",
-    "qwen-image": "qwen_image",
-    "qwen-image-edit": "qwen_image",
-    "qwen-image-2.1": "qwen_image_21",
-    "z-image": "zimage",
-    "sdxl": "sdxl",
-    "wan2.2-ti2v-5b": "wan22_5b",
-    "hunyuanvideo-1.5": "hv15",
-    "hunyuanvideo-1.5-720p": "hv15",
-    "ltx-2": "ltx2",
-    # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
-    "ltx-2.5": "ltx2",
-}
+# family name (lower case) -> map key: ``FamilyProfile.preview_factors`` on the registry rows (not generated).
+from .family_profile import profile_table as _profile_table  # noqa: E402
+
+FAMILY_FACTORS = _profile_table("preview_factors")
 
 FACTORS: dict = {
     "flux1": {

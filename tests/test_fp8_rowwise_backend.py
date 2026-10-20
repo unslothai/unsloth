@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Rowwise FP8 (FbgemmFp8Linear) must run where FBGEMM has no kernel (sm120 raises "cutlass cannot initialize").
+# Rowwise FP8 must run where FBGEMM has no kernel (sm120 raises "cutlass cannot initialize").
 import os
 
 import pytest
@@ -73,7 +73,6 @@ def test_every_backend_matches_reference(F, backend):
     y.float().sum().backward()
     ref_dx = torch.ones(2, 48, 768, device = dev) @ W
     assert ((X.grad.float() - ref_dx).norm() / ref_dx.norm()) < 0.01
-    # Decode-sized calls take the dequant branch on the scaled_mm backend.
     assert (
         F.FbgemmFp8Linear_matmul.apply(X[:1, :1].detach(), w, s, bias, backend).dtype
         == torch.bfloat16

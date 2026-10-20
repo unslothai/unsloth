@@ -62,6 +62,15 @@ def decoder(request):
         "scaled_dot_product_attention": F.scaled_dot_product_attention,
         "SDPA_HAS_GQA": True,
     }
+    # The decode paths share llama.py's grouped KV helpers (qwen3 imports them from there).
+    llama_source = source.with_name("llama.py")
+    helpers = [
+        node
+        for node in ast.parse(llama_source.read_text(encoding = "utf-8")).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("_gqa_decode_scores", "_gqa_decode_values")
+    ]
+    exec(compile(ast.Module(body = helpers, type_ignores = []), str(llama_source), "exec"), namespace)
     exec(compile(ast.Module(body = [function], type_ignores = []), str(source), "exec"), namespace)
     return namespace[name]
 

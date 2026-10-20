@@ -1531,6 +1531,11 @@ class ResearchSupervisor:
         return host
 
     def _endpoint(self) -> str:
+        from utils.studio_tls import loopback_http_port
+
+        loopback_port = loopback_http_port(self.app.state)
+        if loopback_port is not None:
+            return f"http://127.0.0.1:{loopback_port}/v1/chat/completions"
         port = self._server_port()
         if port is None:
             raise RuntimeError("Research is waiting for the Unsloth server port")
@@ -1761,7 +1766,13 @@ class ResearchSupervisor:
             )
         if not omit_sampling and inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
-        if inference.get("providerType") in ("deepseek", "huggingface", "qwen", "mistral"):
+        if inference.get("providerType") in (
+            "deepseek",
+            "huggingface",
+            "qwen",
+            "qwencloud",
+            "mistral",
+        ):
             # These providers forward reasoning fields verbatim, and a strict upstream rejects one the model lacks.
             # Mistral documents reasoning_effort for mistral-small-latest and mistral-medium-3-5 only, so the
             # planner opt-out must not reach mistral-large and the other non-reasoning models.

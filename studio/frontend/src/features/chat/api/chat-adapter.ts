@@ -52,6 +52,9 @@ import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
+const skillsForTools = () =>
+  useSkillsSwitchStore.getState().on === false ? [] : getSkillsSnapshot().skills;
+
 function messageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -73,10 +76,12 @@ function userTexts(
 }
 import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
 import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
+import { shownBrowserChat } from "@/features/browser/panel-availability";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
+  SANDBOX_RUN_TOOLS,
   extractCreatedFiles,
   isSandboxFileList,
   isSandboxToolResult,
@@ -91,6 +96,7 @@ import {
   mcpUiReplayImages,
 } from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
+import { userMessageIdRequestField } from "../utils/rewind";
 import {
   type McpImage,
   planMcpImageBound,
@@ -130,6 +136,7 @@ import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
 } from "../utils/auto-compaction";
+import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
@@ -146,7 +153,7 @@ import {
 } from "../utils/deep-research-handoff";
 import {
   consumeQueuedChatRunSettings,
-  shouldPersistResolvedQueuedModel,
+  shouldPersistRunModel,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import {
@@ -180,6 +187,11 @@ import {
   startsNewCodexToolRound,
   type CodexReasoningLedger,
 } from "../codex-reasoning";
+import {
+  toolModelNoteTarget,
+  toolModelSuffixExtraContent,
+  withToolModelSuffix,
+} from "../tool-model-suffix";
 import {
   type GeminiContinuationReplay,
   type GeminiContinuationReplayTurn,
@@ -255,6 +267,7 @@ import {
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
 import { skillToolNames } from "./skill-tools";
+import { useSkillsSwitchStore } from "../stores/skills-switch-store";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -272,6 +285,7 @@ import {
   awaitPendingQwenDefaultsMigration,
   flushPendingChatSettings,
   codeToolsOn,
+  localMediaToolsForTurn,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import {
@@ -285,6 +299,7 @@ import {
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { takeThreadCompactionRequest } from "../stores/compact-request-store";
 import {
   shouldPreserveFullOutput,
   toolOutputKey,
@@ -328,6 +343,9 @@ import {
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
 import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  compactionAnchorToolCallId,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -431,10 +449,22 @@ import {
 } from "./chat-generation-api";
 import { isDurableRunCandidate, turnRequiresLegacyStream } from "./durable-gate";
 import {
+  evictedSlotsFrom,
+  resyncEvicted,
+  toastEvicted,
+} from "@/lib/evicted-toast";
+import {
   type OffloadCounts,
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
+
+/** Say what an automatic chat load unloaded to make room, e.g. the speech model read aloud uses. */
+function reportEvicted(loadResp: unknown): void {
+  const slots = evictedSlotsFrom(loadResp);
+  toastEvicted(slots);
+  resyncEvicted(slots, "chat");
+}
 
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
@@ -994,6 +1024,7 @@ type SerializedToolResult = {
   content: string;
   tool_call_id: string;
   name?: string;
+  extra_content?: { studio_model_suffix: string };
 };
 
 type ToolPartReplayMetadata = {
@@ -1226,6 +1257,8 @@ function serializeToolResultPart(
     content,
     tool_call_id: tc.toolCallId,
     ...(tc.toolName ? { name: tc.toolName } : {}),
+    // Model-only feedback the backend re-appends on replay.
+    ...toolModelSuffixExtraContent(getToolReplayProvenance(tc)),
   };
 }
 
@@ -2289,11 +2322,12 @@ export async function buildLocalTokenCountExtras(
   // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
   const skillTools = skillToolNames(
-    getSkillsSnapshot().skills,
+    skillsForTools(),
     codeToolsEnabled,
     userTexts(messages),
   );
   const browserTools = browserAgentToolsForTurn();
+  const localMediaTools = localMediaToolsForTurn(state);
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
@@ -2301,6 +2335,7 @@ export async function buildLocalTokenCountExtras(
     !ragOn &&
     !deepResearchEnabled &&
     browserTools.length === 0 &&
+    localMediaTools.length === 0 &&
     skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
@@ -2333,6 +2368,7 @@ export async function buildLocalTokenCountExtras(
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
       ...browserTools,
+      ...localMediaTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -2347,12 +2383,12 @@ export async function buildLocalTokenCountExtras(
           rag_scope: {
             ...(ragEnabled && ragSource.type === "kb"
               ? { kb_id: ragSource.kbId }
-              : {
-                  ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
-                  ...(projectRagEnabled && ragProjectId
-                    ? { project_id: ragProjectId }
-                    : {}),
-                }),
+              : ragEnabled && threadId
+                ? { thread_id: threadId }
+                : {}),
+            ...(projectRagEnabled && ragProjectId
+              ? { project_id: ragProjectId }
+              : {}),
             // An unpersisted New Chat has neither id, and {} is falsy in Python, so the count alone would
             // drop the tool and its nudge.
             default_top_k: ragTopK,
@@ -3063,8 +3099,15 @@ async function resolveAutoLoadCandidate(
       : `Loaded ${source.id}`,
   });
   if (!source.listVariants) {
-    const candidate = build(null);
-    return isSkipped(candidate) ? null : candidate;
+    const variants =
+      source.kind === "model" && rememberedVariant
+        ? [rememberedVariant, null]
+        : [null];
+    for (const variant of variants) {
+      const candidate = build(variant);
+      if (!isSkipped(candidate)) return candidate;
+    }
+    return null;
   }
   const downloaded = (await source.listVariants())
     .filter(
@@ -3494,13 +3537,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
     n_parallel?: number | null;
+    load_in_4bit?: boolean;
   }): Promise<boolean> {
     // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
-      load_in_4bit: true,
+      load_in_4bit: payload.load_in_4bit ?? true,
       trust_remote_code: trustRemoteCode,
     }).catch((error: unknown) => {
       // A rejection is a spent /validate that never reaches loadAttempts, so nothing else bounds it.
@@ -3726,6 +3770,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         max_seq_length: fitMaxSeqLength,
         is_lora: false,
         gguf_variant: candidate.ggufVariant,
+        load_in_4bit: config.loadIn4bit !== false,
         cache_type_kv: config.kvCacheDtype,
         tensor_parallel: effectiveTensorParallel,
         disable_vision: effectiveDisableVision,
@@ -3779,9 +3824,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     options?.abortSignal?.throwIfAborted();
     const loadResp = await loadModel({
       model_path: modelPath,
+      // Keep a speech model loaded for read aloud when Keep multiple models loaded allows it.
+      alongside: true,
       hf_token: hfToken,
       max_seq_length: fitMaxSeqLength,
-      load_in_4bit: true,
+      load_in_4bit: config.loadIn4bit !== false,
       is_lora: false,
       gguf_variant: candidate.ggufVariant,
       trust_remote_code: trustRemoteCode,
@@ -3825,6 +3872,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       noteLoadFailure(failureLabel, error);
       throw error;
     });
+    reportEvicted(loadResp);
     // Do not apply this load to the visible runtime once its queue was cancelled; still await
     // /load so the lifecycle stays serialized.
     options?.abortSignal?.throwIfAborted();
@@ -4251,6 +4299,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       options?.abortSignal?.throwIfAborted();
       const loadResp = await loadModel({
         model_path: DEFAULT_CHAT_MODEL_REPO,
+        alongside: true,
         hf_token: hfToken,
         // Model default under both modes: Auto layers + no pin means resolveFitMaxSeqLength returns 0.
         max_seq_length: 0,
@@ -4271,6 +4320,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         n_cpu_moe: 0,
         gpu_ids: defaultGpuIds ?? undefined,
       });
+      reportEvicted(loadResp);
       options?.abortSignal?.throwIfAborted();
       applyAutoLoadRuntimeState(options, () => {
         saveSpeculativeType(specSettings.speculativeType);
@@ -4584,26 +4634,25 @@ export function createOpenAIStreamAdapter(
         releasePreStreamRunForThreadIds([unstable_threadId, resolvedThreadId]);
       const queuedRunSettings = consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
-      const persistResolvedQueuedModel = async (
+      const persistRunModel = async (
         modelId: string,
         modelGgufVariant: string | null,
       ) => {
-        if (
-          !queuedRunSettings ||
-          queuedRunSettings.params.checkpoint ||
-          !resolvedThreadId ||
-          !modelId
-        ) {
+        if (!resolvedThreadId || !modelId) {
           return;
         }
-        const storedThread = await readThreadRecord?.();
-        if (!shouldPersistResolvedQueuedModel(storedThread)) {
-          return;
+        try {
+          const storedThread = await readThreadRecord?.();
+          if (!shouldPersistRunModel(storedThread, modelId, modelGgufVariant)) {
+            return;
+          }
+          await updateStoredChatThread(resolvedThreadId, {
+            modelId,
+            modelGgufVariant,
+          });
+        } catch {
+          // Only what the chat offers back on reopen.
         }
-        await updateStoredChatThread(resolvedThreadId, {
-          modelId,
-          modelGgufVariant,
-        });
       };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
@@ -4719,10 +4768,6 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        await persistResolvedQueuedModel(
-          params.checkpoint,
-          runtime.activeGgufVariant,
-        );
         const selectedCheckpoint = params.checkpoint.trim();
         const researchExternalSelection =
           parseExternalModelId(selectedCheckpoint);
@@ -4798,26 +4843,20 @@ export function createOpenAIStreamAdapter(
         if (transitionSignal.aborted) return;
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
-            ? runtime.ragEnabled && runtime.ragSource.type === "kb"
-              ? {
-                  kb_id: runtime.ragSource.kbId,
-                  default_top_k: runtime.ragTopK,
-                  mode: runtime.ragMode,
-                  autoinject: runtime.ragAutoInject,
-                  autoinject_min_score: runtime.ragAutoInjectMinScore,
-                }
-              : {
-                  ...(runtime.ragEnabled
+            ? {
+                ...(runtime.ragEnabled && runtime.ragSource.type === "kb"
+                  ? { kb_id: runtime.ragSource.kbId }
+                  : runtime.ragEnabled
                     ? { thread_id: resolvedThreadId }
                     : {}),
-                  ...(projectRagEnabled && researchProjectId
-                    ? { project_id: researchProjectId }
-                    : {}),
-                  default_top_k: runtime.ragTopK,
-                  mode: runtime.ragMode,
-                  autoinject: runtime.ragAutoInject,
-                  autoinject_min_score: runtime.ragAutoInjectMinScore,
-                }
+                ...(projectRagEnabled && researchProjectId
+                  ? { project_id: researchProjectId }
+                  : {}),
+                default_top_k: runtime.ragTopK,
+                mode: runtime.ragMode,
+                autoinject: runtime.ragAutoInject,
+                autoinject_min_score: runtime.ragAutoInjectMinScore,
+              }
             : undefined;
 
         const threadKey = resolvedThreadId;
@@ -4833,6 +4872,7 @@ export function createOpenAIStreamAdapter(
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
+        void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, {
           owner: researchServerCancel,
         });
@@ -4888,6 +4928,7 @@ export function createOpenAIStreamAdapter(
               allowedDomains: [...runtime.researchWebsitePolicy.allowedDomains],
               blockedDomains: [...runtime.researchWebsitePolicy.blockedDomains],
             },
+            ...tabCloseRunFields(runtime.keepRunningWhenTabClosed),
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
@@ -5104,10 +5145,6 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      await persistResolvedQueuedModel(
-        params.checkpoint,
-        runtime.activeGgufVariant,
-      );
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
         readThreadRecord,
@@ -5190,10 +5227,9 @@ export function createOpenAIStreamAdapter(
         externalRouting.kind === "external" ? externalRouting.modelId : "";
 
       // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
-      const imageGenerationEnabledForThisTurn = Boolean(
+      const hostedImageGenerationForThisTurn = Boolean(
         externalProvider &&
           externalSelection &&
-          imageToolsEnabled &&
           providerSupportsBuiltinImageGeneration(
             externalProvider.providerType,
             externalSelection.modelId,
@@ -5201,6 +5237,16 @@ export function createOpenAIStreamAdapter(
             externalProvider.apiType,
           ),
       );
+      const imageGenerationEnabledForThisTurn =
+        imageToolsEnabled && hostedImageGenerationForThisTurn;
+      // Otherwise the Images pill renders on the image or video model loaded in Unsloth.
+      const localMediaTools = localMediaToolsForTurn({
+        imageToolsEnabled,
+        supportsBuiltinImageGeneration: hostedImageGenerationForThisTurn,
+        supportsTools: supportsStudioToolsForThisTurn,
+        localImageModelReady: runtime.localImageModelReady,
+        localVideoModelReady: runtime.localVideoModelReady,
+      });
       // Per-model Search/Code allowances live in providerSupportsBuiltin*; this flag only signals image-mode.
       const geminiImageModeForThisTurn =
         externalProvider?.providerType === "gemini" &&
@@ -5613,6 +5659,12 @@ export function createOpenAIStreamAdapter(
       );
 
       const threadKey = resolvedThreadId || "__default";
+      // A new chat's browser is the one on screen as it sends; a switch mid-run must not move it.
+      const browserChat = options.pairId
+        ? `compare:${options.pairId}`
+        : threadKey === "__default"
+          ? shownBrowserChat()
+          : undefined;
       // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
       const liveThreadKey = (owner: () => void) =>
         threadKey === "__default"
@@ -5654,9 +5706,22 @@ export function createOpenAIStreamAdapter(
       // the local model still resident.
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
+      const isManagedEngineForCompaction =
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+      // Taken once, so a retried request still carries it and the next turn does not.
+      const compactNow =
+        takeThreadCompactionRequest(resolvedThreadId) &&
+        (isGgufForCompaction || isMlxForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
+      // Names the turn whose file changes /rewind can undo; a continuation reuses its turn's prompt.
+      // A temporary chat keeps no file history.
+      const userMessageIdField = userMessageIdRequestField(
+        resolvedThreadId && isThreadIncognito(resolvedThreadId)
+          ? undefined
+          : generationUserMessage?.id,
+      );
 
       // Durability gate keys on THIS turn's attachments only. The scans above walk post-prune history so an old
       // refused turn cannot mis-attribute media onto the next one - correct for building the request payload, but it
@@ -5727,6 +5792,7 @@ export function createOpenAIStreamAdapter(
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
         releaseCurrentPreStreamRun();
+        void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
@@ -5814,6 +5880,8 @@ export function createOpenAIStreamAdapter(
       // Flagged local/external so the model-swap gate counts only the chats a reload ends; the
       // backend excludes external runs from active_generations for the same reason.
       releaseCurrentPreStreamRun();
+      // Past every gate that refuses the send, and not awaited: only what reopening the chat offers.
+      void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
       runtime.setThreadRunning(threadKey, true, {
         local: !isExternalRequest,
         owner: serverCancel,
@@ -5906,6 +5974,7 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let compactionMarkers: CompactionMarker[] | undefined;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -5937,6 +6006,7 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        compactionMarkers,
         providerCompaction,
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
@@ -6618,7 +6688,8 @@ export function createOpenAIStreamAdapter(
               hostedCodeToolsForThisTurn.length > 0 ||
               (supportsStudioToolsForThisTurn &&
                 studioLocalCodeTools.length > 0),
-            images: imageGenerationEnabledForThisTurn,
+            images:
+              imageGenerationEnabledForThisTurn || localMediaTools.length > 0,
             mcp: supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
               supportsStudioToolsForThisTurn &&
@@ -6643,7 +6714,7 @@ export function createOpenAIStreamAdapter(
             await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
           const skillTools = skillToolNames(
-            getSkillsSnapshot().skills,
+            skillsForTools(),
             codeToolsEnabled,
             userTexts(outboundMessages),
           );
@@ -6797,7 +6868,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that resolved to the provider's
+              // studioLocalCodeTools, not codeToolsEnabled: a Tools pill that resolved to the provider's
               // sandbox is a hosted request and belongs below, where this body would 400 on permission_mode.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
@@ -6807,6 +6878,7 @@ export function createOpenAIStreamAdapter(
                 projectRagEnabled ||
                 skillTools.length > 0 ||
                 browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6820,6 +6892,7 @@ export function createOpenAIStreamAdapter(
                       ...skillTools,
                       ...studioLocalCodeTools,
                       ...browserTools,
+                      ...localMediaTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -6855,6 +6928,7 @@ export function createOpenAIStreamAdapter(
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
+                    ...userMessageIdField,
                     ...(sandboxAttachments.length > 0
                       ? { sandbox_attachments: sandboxAttachments }
                       : {}),
@@ -6863,14 +6937,12 @@ export function createOpenAIStreamAdapter(
                           rag_scope: {
                             ...(ragEnabled && ragSource.type === "kb"
                               ? { kb_id: ragSource.kbId }
-                              : {
-                                  ...(ragEnabled && resolvedThreadId
-                                    ? { thread_id: resolvedThreadId }
-                                    : {}),
-                                  ...(projectRagEnabled && ragProjectId
-                                    ? { project_id: ragProjectId }
-                                    : {}),
-                                }),
+                              : ragEnabled && resolvedThreadId
+                                ? { thread_id: resolvedThreadId }
+                                : {}),
+                            ...(projectRagEnabled && ragProjectId
+                              ? { project_id: ragProjectId }
+                              : {}),
                             default_top_k: ragTopK,
                             mode: ragMode,
                             autoinject: resolveAutoInject(
@@ -6981,7 +7053,9 @@ export function createOpenAIStreamAdapter(
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
+              isManagedEngine: isManagedEngineForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
+              compactNow,
             }),
             temperature: params.temperature,
             top_p: params.topP,
@@ -7013,6 +7087,7 @@ export function createOpenAIStreamAdapter(
               ? { sandbox_attachments: sandboxAttachments }
               : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+            ...userMessageIdField,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
             ...(supportsPreserveThinking
@@ -7038,6 +7113,7 @@ export function createOpenAIStreamAdapter(
                 projectRagEnabled ||
                 skillTools.length > 0 ||
                 browserTools.length > 0 ||
+                localMediaTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -7052,6 +7128,7 @@ export function createOpenAIStreamAdapter(
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                     ...browserTools,
+                    ...localMediaTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB, project_id = the thread's project
@@ -7061,14 +7138,12 @@ export function createOpenAIStreamAdapter(
                         rag_scope: {
                           ...(ragEnabled && ragSource.type === "kb"
                             ? { kb_id: ragSource.kbId }
-                            : {
-                                ...(ragEnabled && resolvedThreadId
-                                  ? { thread_id: resolvedThreadId }
-                                  : {}),
-                                ...(projectRagEnabled && ragProjectId
-                                  ? { project_id: ragProjectId }
-                                  : {}),
-                              }),
+                            : ragEnabled && resolvedThreadId
+                              ? { thread_id: resolvedThreadId }
+                              : {}),
+                          ...(projectRagEnabled && ragProjectId
+                            ? { project_id: ragProjectId }
+                            : {}),
                           default_top_k: ragTopK,
                           mode: ragMode,
                           autoinject: resolveAutoInject(
@@ -7163,6 +7238,9 @@ export function createOpenAIStreamAdapter(
                         userMessageId: generationUserMessage!.id,
                         assistantMessageId: unstable_assistantMessageId!,
                         requestPayload,
+                        ...tabCloseRunFields(
+                          runtime.keepRunningWhenTabClosed,
+                        ),
                       },
                       runSignal,
                     );
@@ -7299,6 +7377,14 @@ export function createOpenAIStreamAdapter(
                 contextTruncation = mergeContextTruncation(
                   contextTruncation,
                   chunk.context_truncated,
+                );
+                compactionMarkers = appendCompactionMarker(
+                  compactionMarkers,
+                  chunk.context_truncated,
+                  compactionAnchorToolCallId(
+                    toolCallParts,
+                    chunk.context_truncated,
+                  ),
                 );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
@@ -7515,9 +7601,11 @@ export function createOpenAIStreamAdapter(
                       if (action) {
                         void runBrowserAction(action, {
                           runKey: cancelId,
+                          chat: browserChat,
                           // Resolved per action: a first turn is re-keyed from "__default" to its id.
                           scope: liveThreadKey(serverCancel),
                           userText,
+                          fullAccess: bypassPermissions,
                           signal: runSignal,
                         });
                       }
@@ -7537,6 +7625,37 @@ export function createOpenAIStreamAdapter(
                       }).catch(() => undefined);
                     },
                   );
+                  continue;
+                }
+                if (toolEvent.type === "tool_model_note") {
+                  const at = toolModelNoteTarget(
+                    toolCallParts as Parameters<typeof toolModelNoteTarget>[0],
+                    (toolEvent.tool_call_id as string) || "",
+                  );
+                  const suffix =
+                    typeof toolEvent.suffix === "string" ? toolEvent.suffix : "";
+                  if (at !== -1 && suffix) {
+                    const existing = toolCallParts[at] as PositionedToolCallPart;
+                    toolCallParts[at] = {
+                      ...existing,
+                      provenance: withToolModelSuffix(
+                        existing.provenance as Record<string, unknown> | undefined,
+                        suffix,
+                      ),
+                    } as PositionedToolCallPart;
+                    // A stop before the next chunk saves only what was yielded.
+                    yield {
+                      content: liveAssistantContent(),
+                      metadata: {
+                        timing: buildTiming(
+                          streamStartTime,
+                          totalChunks,
+                          firstTokenTime,
+                        ),
+                        custom: liveCustom(),
+                      },
+                    };
+                  }
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -7812,7 +7931,7 @@ export function createOpenAIStreamAdapter(
                       }
                     } else if (
                       createdFiles.length > 0 ||
-                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                      SANDBOX_RUN_TOOLS.has(toolCallParts[idx].toolName ?? "")
                     ) {
                       // Structured even with neither files nor images, because the session is the only record of
                       // WHERE this call ran: _created_file_sentinels emits nothing when a concurrent call shared
@@ -8825,6 +8944,19 @@ export function createOpenAIStreamAdapter(
           }
         }
 
+        if (
+          compactNow &&
+          !compactionMarkers?.some(
+            (marker) =>
+              marker.truncation.manual === true &&
+              marker.truncation.checkpoint_started === true,
+          )
+        ) {
+          toast.info("This chat was not compacted", {
+            description:
+              "Compaction needs the conversation archive and the default checkpoint policy.",
+          });
+        }
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
@@ -8863,6 +8995,7 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
+              compactionMarkers,
               providerCompaction,
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,
@@ -9042,6 +9175,7 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                compactionMarkers,
                 providerCompaction,
                 providerCompactionAfterToolCalls,
                 providerCompactionProviderType,

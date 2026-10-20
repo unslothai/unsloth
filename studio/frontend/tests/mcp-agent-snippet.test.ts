@@ -11,6 +11,7 @@ import { SUPPORTED_AGENTS } from "../src/features/settings/components/coding-age
 import {
   MCP_SHELL_AGENT_IDS,
   buildMcpSnippet,
+  hasMcpSnippet,
   mcpEndpointUrl,
 } from "../src/features/settings/components/mcp-agent-snippet.ts";
 
@@ -38,12 +39,19 @@ function snippet(
   return result;
 }
 
-test("every listed agent has a snippet and only the CLIs get an OS choice", () => {
-  for (const agent of SUPPORTED_AGENTS) {
+const MCP_AGENTS = SUPPORTED_AGENTS.filter((agent) => hasMcpSnippet(agent.id));
+
+test("every MCP-listed agent has a snippet and only the CLIs get an OS choice", () => {
+  assert.deepEqual(
+    MCP_AGENTS.map((agent) => agent.id),
+    ["claude", "codex", "dsh", "opencode", "hermes", "openclaw", "vibe"],
+  );
+  for (const agent of MCP_AGENTS) {
     assert.ok(buildMcpSnippet(agent.id, LOCAL, "unix"), agent.id);
   }
   assert.deepEqual([...MCP_SHELL_AGENT_IDS], ["claude", "codex"]);
   assert.equal(buildMcpSnippet("pi", LOCAL, "unix"), null);
+  assert.equal(buildMcpSnippet("vscode", LOCAL, "unix"), null);
 });
 
 test("the endpoint is always the origin plus /mcp/", () => {
@@ -237,7 +245,7 @@ test("DeepSeek Harness evaluates the key with !!js, or takes a plain string", ()
 });
 
 test("no snippet carries a key unless one is passed", () => {
-  for (const agent of SUPPORTED_AGENTS) {
+  for (const agent of MCP_AGENTS) {
     for (const os of ["unix", "windows"] as const) {
       for (const base of [LOCAL, TUNNEL, LAN]) {
         for (const key of [null, ""]) {

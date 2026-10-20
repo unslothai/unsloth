@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""The CodeQL workflow's language picker, run for real with a fake ``gh`` on PATH.
-
-A pull request analyses only the languages its files touch, so a picker that misses a
-language silently drops CodeQL coverage for that change. Every push, schedule and dispatch
-must analyse all four.
-"""
+"""Push, schedule and dispatch must analyse all four CodeQL languages, not just those a PR touches."""
 
 from __future__ import annotations
 

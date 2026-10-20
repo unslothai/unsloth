@@ -46,7 +46,7 @@ _GUARDED = {
     "core/inference/llama_cpp.py": {"_fetch_swa_entry_from_hf": "hf_file_definitely_absent"},
     "picker/service.py": {"read_default_chat_template": "get_paths_info"},
     "utils/models/model_config.py": {
-        "_raw_config_has_vision_config": "hf_file_definitely_absent",
+        "_read_raw_config_json": "hf_file_definitely_absent",
         "get_base_model_from_lora_identifier": "hf_file_definitely_absent",
     },
     "utils/security/consent.py": {"_load_remote_code_configs": "hf_file_definitely_absent"},

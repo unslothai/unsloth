@@ -71,7 +71,8 @@ type TextPreviewState =
   | { status: "error" }
   | ({ status: "ready" } & AttachmentText);
 
-const WEB_PAGE_NAME = /\.(html?|xhtml)$/i;
+// Not .xhtml: the composer sends the backend parser's text for it, which must not render as markup.
+const WEB_PAGE_NAME = /\.html?$/i;
 
 const fetchBlob = (src: string): Promise<Blob> => fetch(src).then((response) => response.blob());
 

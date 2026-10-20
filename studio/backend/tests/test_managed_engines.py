@@ -2547,3 +2547,45 @@ def test_vllm_mamba_retry_respects_an_external_stop(isolated, monkeypatch):
         engine.start("model", 4096, [0], dict(os.environ))
     engine.stop()
     assert len(launches) == 1
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_retries_once_without_a_drafter_that_breaks_startup(isolated, monkeypatch):
+    import os
+    from core.inference import engine_adapters
+
+    monkeypatch.setattr(
+        engine_adapters, "vllm_speculative_args", lambda _: ["--speculative-config", "{}"]
+    )
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["crash", "serve"])
+    try:
+        engine.start("model", 4096, [0], dict(os.environ))
+        assert engine.phase == "ready"
+    finally:
+        engine.stop()
+    assert [launch.get("no_speculative_config") for launch in launches] == [None, True]
+
+
+@_LOCAL_ENGINE_HOST
+def test_vllm_drafter_retry_respects_an_external_stop(isolated, monkeypatch):
+    import os
+    from core.inference import engine_adapters, managed_engine
+
+    monkeypatch.setattr(
+        engine_adapters, "vllm_speculative_args", lambda _: ["--speculative-config", "{}"]
+    )
+    engine, launches = _scripted_engine(isolated, monkeypatch, ["crash", "serve"])
+    original = engine._start_once
+
+    def first_then_stop(*args):
+        try:
+            return original(*args)
+        except managed_engine._EngineExited:
+            assert engine.stop() is True
+            raise
+
+    monkeypatch.setattr(engine, "_start_once", first_then_stop)
+    with pytest.raises(RuntimeError, match = "cancelled"):
+        engine.start("model", 4096, [0], dict(os.environ))
+    engine.stop()
+    assert len(launches) == 1

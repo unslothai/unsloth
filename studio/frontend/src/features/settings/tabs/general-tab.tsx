@@ -59,6 +59,7 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { loadCloseToTray, updateCloseToTray } from "../api/close-to-tray";
+import { loadTrayIconVisible, updateTrayIconVisible } from "../api/tray-icon";
 import { loadLaunchAtLogin, updateLaunchAtLogin } from "../api/launch-at-login";
 import { useIsAccountOwner } from "@/features/auth";
 import {
@@ -68,13 +69,17 @@ import {
 } from "@/features/library";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { DesktopRepairControl } from "../components/desktop-repair-control";
+import { DeveloperModeSection } from "../components/developer-mode-section";
 import {
   DesktopUpdateControl,
   DesktopUpdateNote,
 } from "../components/desktop-update-control";
 import { DocumentsRagSection } from "../components/documents-rag-section";
 import { LanguageSelect } from "../components/language-select";
-import { TRANSPORT_MODE_STORAGE_KEY } from "@/features/hub";
+import {
+  DOWNLOAD_DIR_STORAGE_KEY,
+  TRANSPORT_MODE_STORAGE_KEY,
+} from "@/features/hub";
 import { DownloadTransportRow } from "../components/download-transport-row";
 import { HubSettingsSection } from "../components/hub-settings-section";
 import { NotificationFrequencySelect } from "../components/notification-frequency-select";
@@ -116,6 +121,7 @@ const PREFS_KEYS: string[] = [
   // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
   // transport changes made elsewhere.
   TRANSPORT_MODE_STORAGE_KEY,
+  DOWNLOAD_DIR_STORAGE_KEY,
   // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
@@ -160,6 +166,7 @@ const PREFS_KEYS: string[] = [
   ...TRAINING_UI_PREFERENCE_KEYS,
   // Profile personalization
   "unsloth_user_profile",
+  "unsloth_profile_activity_chart",
   // Guided tour flags
   "tour:studio:v1",
   // Update notifications
@@ -243,6 +250,13 @@ export function GeneralTab() {
     save: updateCloseToTray,
     loadError: t("settings.general.startup.loadError"),
     saveError: t("settings.general.startup.closeToTraySaveError"),
+  });
+  const trayIconSetting = useDesktopBooleanSetting({
+    enabled: isTauri,
+    load: loadTrayIconVisible,
+    save: updateTrayIconVisible,
+    loadError: t("settings.general.startup.loadError"),
+    saveError: t("settings.general.startup.menuBarIconSaveError"),
   });
 
   const draftRef = useRef(draftToken);
@@ -649,6 +663,28 @@ export function GeneralTab() {
               />
             </SettingsRow>
           ) : null}
+
+          {trayIconSetting.supported ? (
+            <SettingsRow
+              label={t("settings.general.startup.menuBarIcon")}
+              description={t("settings.general.startup.menuBarIconDescription")}
+            >
+              <div className="flex flex-col items-end gap-1">
+                <Switch
+                  checked={trayIconSetting.value ?? false}
+                  disabled={
+                    trayIconSetting.value === null || trayIconSetting.saving
+                  }
+                  onCheckedChange={(enabled) => void trayIconSetting.update(enabled)}
+                />
+                {trayIconSetting.error ? (
+                  <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                    {trayIconSetting.error}
+                  </span>
+                ) : null}
+              </div>
+            </SettingsRow>
+          ) : null}
         </SettingsSection>
       ) : null}
 
@@ -831,6 +867,8 @@ export function GeneralTab() {
           />
         </SettingsRow>
       </SettingsSection>
+
+      <DeveloperModeSection />
         </>
       ) : null}
 

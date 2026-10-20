@@ -41,6 +41,14 @@ const MAX_SANDBOX_ATTACHMENTS = 64;
 
 type Attachment = { name?: string; content?: readonly unknown[] };
 
+// attachmentContentText's wrapper, which the server-document adapter sends.
+function hasInlineText(content: readonly unknown[]): boolean {
+  return content.some((part) => {
+    const text = (part as { text?: unknown } | null)?.text;
+    return typeof text === "string" && text.startsWith("<attachment name=");
+  });
+}
+
 function sandboxCopy(attachment: unknown): { sha256: string; path: string } | null {
   const original = attachmentOriginal(attachment);
   if (!original || !/^[0-9a-f]{64}$/.test(original.sha256)) return null;
@@ -75,7 +83,8 @@ export function withSandboxAttachmentPaths<
       const { name = "", content = [] } = attachment as Attachment;
       const reader = sandboxReader(copy.path);
       const path = JSON.stringify(copy.path);
-      const note = isToolOnlyAttachmentName(name)
+      // By content, not name: an .epub sent before its text was inlined still holds only a placeholder.
+      const note = isToolOnlyAttachmentName(name) && !hasInlineText(content)
         ? `[${name} is saved at ${copy.path} in the python tool's working directory${reader ? `; open it with ${reader}, where path = ${path}` : ""}]`
         : `[${name}: its text is below, so answer from it. For calculations, the python tool has the file at path = ${path}${reader ? `; ${reader}` : ""}]`;
       return {

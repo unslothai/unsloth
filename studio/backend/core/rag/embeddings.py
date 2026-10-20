@@ -1504,6 +1504,11 @@ def max_tokens(model_name: str | None = None) -> int | None:
     return _get_backend(model_name).max_tokens(model_name = model_name)
 
 
+def chunk_tokens(model_name: str | None = None) -> int:
+    limit = max_tokens(model_name)
+    return min(config.CHUNK_TOKENS, limit) if limit else config.CHUNK_TOKENS
+
+
 def token_counter(model_name: str | None = None) -> Callable[[str], int]:
     """Callable counting tokens with the embedder's own tokenizer.
 

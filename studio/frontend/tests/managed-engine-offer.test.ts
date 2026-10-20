@@ -95,3 +95,15 @@ test("an install started in the dialog stays mounted until it hands the load ove
   assert.match(dialog, /open && ready\.length === 0 && unshown\.length > 0/);
   assert.match(dialog, /onUse=\{\(\) => resolve\(engine\.engine\)\}/);
 });
+
+test("the dialog opens on the install prompt, and the load toast waits with it", () => {
+  const install = readText("../src/features/model-picker/components/inference-engines.tsx");
+  // Settings keeps the two-step install; only the centred dialog skips "Install engine".
+  assert.match(install, /\(centered && autoConfirm && canInstall && !engine\.installed && !running\)/);
+  assert.match(install, /useAfterInstall\.current = !!onUse;\s*setAutoConfirm\(false\);/);
+  const dialog = readText("../src/features/model-picker/components/managed-engine-offer-dialog.tsx");
+  assert.match(dialog, /centered=\{true\}/);
+  const runtime = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const waiting = runtime.indexOf('"Waiting for an engine…"');
+  assert.ok(waiting > 0 && waiting < runtime.indexOf("await confirmManagedEngineIfNeeded("));
+});

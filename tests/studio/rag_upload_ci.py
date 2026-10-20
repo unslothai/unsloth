@@ -65,11 +65,8 @@ def python_in(directory):
 assert run("bootstrap", [sys.executable, "-m", "venv", root / "bootstrap"])
 bootstrap = python_in(root / "bootstrap")
 assert run("install-uv", [bootstrap, "-m", "pip", "install", "uv==0.11.0"])
-# actions/setup-python ships macOS builds without --enable-loadable-sqlite-extensions, so
-# sqlite-vec cannot load and every RAG test errors. Download an interpreter that has one.
-# Read the path off the managed list rather than asking uv to resolve "3.12": both
-# `uv venv --managed-python` and `uv python find --managed-python` answered with the
-# runner's own framework build, while every path this list reports is one uv installed.
+# setup-python's macOS builds lack loadable sqlite extensions, so sqlite-vec cannot load. Read the path
+# off the managed list: uv's resolvers answered with the runner's own framework build.
 if hasattr(sqlite3.connect(":memory:"), "enable_load_extension"):
     interpreter = sys.executable
 else:
@@ -101,7 +98,6 @@ assert run(
     "venv", [bootstrap, "-m", "uv", "venv", "--clear", "--python", interpreter, root / "venv"]
 )
 python = python_in(root / "venv")
-# Fail here rather than through a hundred RagExtensionUnavailable errors.
 assert run(
     "sqlite-extensions",
     [python, "-c", "import sqlite3; sqlite3.connect(':memory:').enable_load_extension(True)"],

@@ -11,6 +11,7 @@ import {
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
   preferredGgufVariantByGroup,
+  quantDisplayCase,
 } from "../src/features/model-picker/components/model-selector/variant-presentation.ts";
 
 const GGUF_SUFFIX = /\.gguf$/i;
@@ -224,4 +225,23 @@ test("the picker label is unchanged by the key-shaped parse", () => {
     "UD-Q3_K_XL",
   );
   assert.equal(groupGgufVariantsForPicker([pruned])[0]?.key, "text-frames");
+});
+
+test("a lowercase quant key displays in quant case, but the key stays raw", () => {
+  assert.equal(ggufQuantChipLabel("bf16"), "BF16");
+  assert.equal(ggufQuantChipLabel("q8_0"), "Q8_0");
+  assert.equal(ggufQuantChipLabel("ud-q4_k_xl"), "UD-Q4_K_XL");
+  assert.equal(ggufQuantChipLabel("sub/f16"), "sub/F16");
+  assert.equal(quantDisplayCase("iq2_xxs"), "IQ2_XXS");
+  // Not a quant token: left as it is.
+  assert.equal(quantDisplayCase("distilled"), "distilled");
+  assert.equal(quantDisplayCase("model-bf16"), "model-bf16");
+  const raw = { filename: "model-bf16.gguf", quant: "bf16", size_bytes: 1 };
+  assert.equal(ggufVariantPickerLabel(raw), "BF16");
+  assert.equal(raw.quant, "bf16");
+  assert.equal(ggufQuantDetailLabel("bf16"), "bf16");
+  assert.equal(
+    ggufVariantPickerLabel({ ...raw, display_label: "bf16 · full" }),
+    "bf16 · full",
+  );
 });

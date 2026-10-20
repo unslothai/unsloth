@@ -511,6 +511,13 @@ async function dexieIsEmpty(): Promise<boolean> {
   }
 }
 
+/** Runs this session's legacy import; true once the server alone holds every chat. */
+export async function settleLegacyChatImport(): Promise<boolean> {
+  await importLegacyChatsIfNeeded().catch(() => undefined);
+  await Promise.allSettled([...pendingLegacyThreadImports]);
+  return isLegacyChatImportDone();
+}
+
 async function importLegacyChatsIfNeeded(): Promise<void> {
   // Session-level cache: repeated sidebar mounts share one import. localStorage is NOT
   // consulted, so a studio.db wipe re-triggers the import even with a stale hint.
@@ -1014,6 +1021,8 @@ export async function getStoredChatProject(
 
 export async function createStoredChatProject(
   name: string,
+  nativePathLease?: string,
+  id: string = crypto.randomUUID(),
 ): Promise<ProjectRecord> {
   const trimmed = name.trim();
   if (!trimmed) {
@@ -1021,13 +1030,13 @@ export async function createStoredChatProject(
   }
   const now = Date.now();
   return saveChatProject({
-    id: crypto.randomUUID(),
+    id,
     name: trimmed,
     instructions: "",
     archived: false,
     createdAt: now,
     updatedAt: now,
-  });
+  }, nativePathLease);
 }
 
 export async function updateStoredChatProject(
