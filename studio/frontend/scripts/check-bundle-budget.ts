@@ -298,6 +298,7 @@ export const BUDGET = {
   // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Explicit browser download names retain the prior startup margin.
   // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
@@ -305,8 +306,8 @@ export const BUDGET = {
   // The chat's Unsloth Studio tools preset and the "Not in chat" note add 233 B raw / 15 B transfer (measured
   // against the MCP tab build, one machine and build, Node 24, 97 chunks), in the eager chat chunk and English
   // catalog. Raised by that.
-  transferBytes: 2_062_239,
-  rawBytes: 6_847_946,
+  transferBytes: 2_063_045,
+  rawBytes: 6_850_054,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

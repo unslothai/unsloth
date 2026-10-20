@@ -53355,6 +53355,21 @@ def _parse_openai_image_size(size: str) -> tuple[int, int]:
     return width, height
 
 
+def _openai_image_dims(body: ImageGenerationRequest) -> tuple[int, int]:
+    """(width, height) from ``size``, or from the width/height extension when sent. Raises
+    ValueError with a client-facing message."""
+    if body.width is None and body.height is None:
+        return _parse_openai_image_size(body.size)
+    if body.width is None or body.height is None:
+        raise ValueError("Send width and height together, or size.")
+    dims = _parse_openai_image_size(f"{body.width}x{body.height}")
+    if (body.size or "").strip().lower() not in ("", "auto") and (
+        _parse_openai_image_size(body.size) != dims
+    ):
+        raise ValueError("size and width/height disagree; send one of them.")
+    return dims
+
+
 # response_format=url links must be fetchable by whoever received them: a client downloads data[].url with a plain GET
 # and no Authorization header, so mint a short-lived HMAC link (1h, like OpenAI) and leave the gallery route bearer-only.
 _IMAGE_LINK_TTL = 3600
@@ -53491,7 +53506,8 @@ async def openai_image_generations(
 
     Generates ``n`` images from ``prompt`` on the loaded diffusion model and
     returns them as URLs (default) or base64 PNGs per ``response_format``. Steps
-    and guidance have no OpenAI knob, so they default per loaded model.
+    and guidance have no OpenAI knob: the x-unsloth fields set them (and width, height,
+    seed, negative_prompt), else they default per loaded model.
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
@@ -53516,7 +53532,7 @@ async def openai_image_generations(
                 ),
             )
     try:
-        width, height = _parse_openai_image_size(body.size)
+        width, height = _openai_image_dims(body)
     except ValueError as exc:
         raise HTTPException(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
@@ -53609,16 +53625,20 @@ async def _generate_openai_images(
             )
 
         steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
+        steps = steps if body.steps is None else body.steps
+        guidance = guidance if body.guidance is None else body.guidance
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
                 result = await asyncio.to_thread(
                     backend.generate,
                     prompt = body.prompt,
+                    negative_prompt = body.negative_prompt,
                     width = width,
                     height = height,
                     steps = steps,
                     guidance = guidance,
+                    seed = body.seed,
                     batch_size = body.n,
                     expected_load = load_identity(
                         status.get("repo_id"), status.get("base_repo"), status.get("family")
@@ -53661,7 +53681,7 @@ async def _generate_openai_images(
     # Persist each image with its full recipe, like /images/generate, so url links resolve and images show in the gallery.
     recipe = {
         "prompt": body.prompt,
-        "negative_prompt": None,
+        "negative_prompt": result.get("negative_prompt"),
         "width": width,
         "height": height,
         "steps": steps,
