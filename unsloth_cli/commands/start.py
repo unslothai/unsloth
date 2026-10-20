@@ -5136,18 +5136,11 @@ def write_openclaw_config(
     gateway.setdefault("mode", "local")
     _subdict(gateway, "auth").setdefault("mode", "none")
     if yolo:
-        # OpenClaw has no --yolo flag, and it gates tool execution on BOTH the tools.exec config AND a host-local approvals file (the stricter wins), so setting only the config still lets the agent prompt or deny. Set both, mirroring `openclaw exec-policy preset yolo`.
+        # OpenClaw has no --yolo flag; it gates tool execution on BOTH tools.exec AND the host approvals document (the stricter wins). Since 2026.8.1 that document is a row in $OPENCLAW_STATE_DIR/state/openclaw.sqlite whose omitted fields fall back to tools.exec, so a fresh managed dir only needs the config side.
         exec_policy = _subdict(_subdict(config, "tools"), "exec")
         exec_policy["host"] = "gateway"
         exec_policy["security"] = "full"
         exec_policy["ask"] = "off"
-        # Approvals file in OPENCLAW_STATE_DIR (the same as this config's dir). ask=off means nothing is ever prompted, so the runtime socket block is unnecessary here.
-        approvals = path.parent / "exec-approvals.json"
-        _write_private_json(
-            approvals,
-            {"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}},
-        )
-        typer.echo(f"Updated {approvals}")
     else:
         # The no-launch config dir is reused across runs, so a previous --yolo run may have left auto-approval state behind. OpenClaw treats an omitted exec policy as security=full, ask=off on the gateway host, so deleting the keys would keep auto-approval on: a non-yolo run must WRITE a prompting policy. Only a permissive/yolo policy is replaced; a stricter one set by hand survives.
         tools = config.get("tools")
@@ -5165,30 +5158,41 @@ def write_openclaw_config(
             exec_policy.pop("host", None)  # routing only; defaults to the gateway host
             exec_policy["security"] = "allowlist"  # only allowlisted commands skip approval
             exec_policy["ask"] = "on-miss"  # prompt on every non-allowlisted command
-        # Drop the yolo defaults from the host approvals file (a stricter default set by the user or OpenClaw is kept). With a prompting tools.exec the stricter of the two layers wins, so an omitted approvals default still prompts.
-        approvals = path.parent / "exec-approvals.json"
-        if approvals.exists():
-            state = _read_json_object(approvals)
-            if state is not None:
-                defaults = state.get("defaults")
-                # Strip the defaults only when they are exactly the yolo fingerprint; a user-managed mixed policy that merely shares a field (askFallback=full, whose omitted default is deny) must be kept intact.
-                yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
-                is_yolo = isinstance(defaults, dict) and all(
-                    defaults.get(k) == v for k, v in yolo_defaults
-                )
-                if is_yolo:
-                    for k, _ in yolo_defaults:
-                        del defaults[k]
-                    if not defaults:
-                        del state["defaults"]
-                    if set(state) <= {"version"}:
-                        # Nothing left but our own yolo payload: remove it.
-                        approvals.unlink()
-                        typer.echo(f"Removed {approvals}")
-                    else:
-                        # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
-                        _write_private_json(approvals, state)
-                        typer.echo(f"Updated {approvals}")
+    # Older Unsloth wrote --yolo defaults to exec-approvals.json here. OpenClaw 2026.8.1+ reads that file only as a legacy source for `openclaw doctor --fix` to import, and refuses every run while it exists, so drop the yolo defaults in both modes (a stricter default set by the user or OpenClaw is kept). With a prompting tools.exec the stricter of the two layers wins, so an omitted approvals default still prompts.
+    approvals = path.parent / "exec-approvals.json"
+    if approvals.exists():
+        state = _read_json_object(approvals)
+        if state is not None:
+            defaults = state.get("defaults")
+            # Strip the defaults only when they are exactly the yolo fingerprint; a user-managed mixed policy that merely shares a field (askFallback=full, whose omitted default is deny) must be kept intact.
+            yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
+            is_yolo = isinstance(defaults, dict) and all(
+                defaults.get(k) == v for k, v in yolo_defaults
+            )
+            if is_yolo:
+                for k, _ in yolo_defaults:
+                    del defaults[k]
+                if not defaults:
+                    del state["defaults"]
+                # Socket metadata and an empty agents map carry no policy (doctor retires such a stub too).
+                if all(
+                    k in ("version", "socket") or (k == "agents" and not v)
+                    for k, v in state.items()
+                ):
+                    # Nothing left but our own yolo payload: remove it.
+                    approvals.unlink()
+                    typer.echo(f"Removed {approvals}")
+                else:
+                    # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
+                    _write_private_json(approvals, state)
+                    typer.echo(f"Updated {approvals}")
+    if approvals.exists():
+        # Whatever remains is the user's own policy, so importing it is OpenClaw's migration, not ours.
+        typer.echo(
+            f"Note: {approvals} is a legacy exec approvals file, which OpenClaw 2026.8.1+ refuses to run with. "
+            f"Import it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
+            err = True,
+        )
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
