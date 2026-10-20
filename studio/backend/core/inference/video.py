@@ -261,6 +261,7 @@ from .video_minimax_h3_te import (
 )
 from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
+from .video_stream_encode import open_stream_encode
 from utils.hardware import clear_gpu_cache
 
 # Shared with the image backend so both pin every loader call to the same live cache root
@@ -11004,6 +11005,8 @@ class VideoBackend:
             bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
             # Closed in the finally so the pipeline is text-to-video again on return, cancel or failure.
             i2v_swap = contextlib.ExitStack()
+            # Encodes Wan chunks while the VAE decodes; closed in the finally on cancel or failure.
+            stream_session = None
             try:
                 # FIRST, before any device object exists. begin_generate runs this on a fresh daemon thread, so until it
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
@@ -11620,6 +11623,8 @@ class VideoBackend:
                         stack.enter_context(_decode_phase(pipe, _on_decode))
                         # The decoded clip becomes uint8 on the GPU, bit-identical to the np / pil export (video_frames).
                         stack.enter_context(uint8_video_frames(pipe))
+                        if stream_session is not None:
+                            stack.enter_context(stream_session.hooks())
                         stack.enter_context(_completed_step_poller(_pump))
                         yield
 
@@ -11677,6 +11682,14 @@ class VideoBackend:
                     else torch.inference_mode()
                     if not _render_under_no_grad(state)
                     else torch.no_grad()
+                )
+                stream_session = open_stream_encode(
+                    pipe,
+                    out_fps,
+                    engage = not fam.modular_workflow
+                    and not fam.has_audio
+                    and ltx25_render_call is None,
+                    logger = logger,
                 )
                 previewer = LatentPreviewer.create(
                     family = fam.name,
@@ -11737,11 +11750,17 @@ class VideoBackend:
                     audio = getattr(output, "audio", None)
                     audio_track = audio[0] if fam.has_audio and audio is not None else None
                     audio_sample_rate = None
-                if audio_sample_rate is None:
+                # The mp4 encoded during the decode, used only when its frames are exactly these.
+                mp4_bytes = (
+                    stream_session.take(video_frames, out_fps)
+                    if stream_session is not None and audio_track is None
+                    else None
+                )
+                if mp4_bytes is None and audio_sample_rate is None:
                     mp4_bytes = self._encode_mp4(
                         video_frames, out_fps, audio_track, pipe if fam.has_audio else None
                     )
-                else:
+                elif mp4_bytes is None:
                     mp4_bytes = self._encode_mp4(
                         video_frames,
                         out_fps,
@@ -11816,6 +11835,8 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
+                if stream_session is not None:
+                    stream_session.close()
                 try:
                     from . import video_stream_residency
                     video_stream_residency.discard_request(getattr(state, "pipe", None))
