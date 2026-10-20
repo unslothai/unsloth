@@ -94,9 +94,9 @@ _HIDDEN_RESPONSE_HEADERS = frozenset(
 
 # Quoted values are bounded and a bare "<" ends a tag, so stripping stays linear on hostile pages.
 _TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
-_BASE_TAG_RE = re.compile(r"<base\b" + _TAG_BODY, re.IGNORECASE)
+_BASE_TAG_RE = re.compile(r"<base(?=[\s/>])" + _TAG_BODY, re.IGNORECASE)
 _ATTR_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""", re.IGNORECASE)
-_BASE_OR_META_RE = re.compile(r"<(base|meta)\b" + _TAG_BODY, re.IGNORECASE)
+_BASE_OR_META_RE = re.compile(r"<(base|meta)(?=[\s/>])" + _TAG_BODY, re.IGNORECASE)
 _HTTP_EQUIV_RE = re.compile(r"""\bhttp-equiv\s*=\s*["']?([\w-]+)""", re.IGNORECASE)
 _CONTENT_ATTR_RE = re.compile(
     r"""\bcontent\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]{1,4096}))""", re.IGNORECASE
@@ -115,7 +115,8 @@ _MAX_AGE_RE = re.compile(r"(?:^|[\s,])(s-maxage|max-age)\s*=\s*\"?(\d+)", re.IGN
 _SCRIPT_OPEN_RE = re.compile(r"<script", re.IGNORECASE)
 # Text, not markup: comments, raw-text/RCDATA/noscript/template content, and other tags' attribute values.
 _INERT_START_RE = re.compile(
-    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)\b"
+    r"<!--|<(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext|template)"
+    + r"(?=[\s/>])"
     + _TAG_BODY
     + r"|<[a-z]"
     + _TAG_BODY,

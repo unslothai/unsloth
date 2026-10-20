@@ -254,6 +254,45 @@ def test_live_tags_after_ones_written_as_text_still_count():
     assert refresh == {"delay": 1.0, "url": "https://example.com/docs/next"}
 
 
+@pytest.mark.parametrize(
+    "page, kept, base, refresh",
+    [
+        (
+            '<body><title-bar>t</title-bar><meta http-equiv="refresh" content="0;url=/js">',
+            "<body><title-bar>t</title-bar>",
+            None,
+            {"delay": 0.0, "url": "https://example.com/js"},
+        ),
+        (
+            '<template-x></template-x><base href="/docs/">',
+            "<template-x></template-x>",
+            "https://example.com/docs/",
+            None,
+        ),
+        (
+            '<style-guide></style-guide><meta http-equiv="Content-Security-Policy" content="a">',
+            "<style-guide></style-guide>",
+            None,
+            None,
+        ),
+        (
+            '<base-x href="/x/"><meta-x http-equiv="refresh" content="0;url=/js">',
+            '<base-x href="/x/"><meta-x http-equiv="refresh" content="0;url=/js">',
+            None,
+            None,
+        ),
+    ],
+)
+def test_custom_elements_are_not_the_elements_they_start_like(page, kept, base, refresh):
+    assert browser_mod._prepare_page(page, "https://example.com/a") == (kept, base, refresh)
+
+
+@pytest.mark.parametrize("name", ["title", "style"])
+def test_a_real_title_or_style_still_hides_the_tags_inside_it(name):
+    page = f'<{name}><base href="/docs/"><meta http-equiv="refresh" content="0;url=/js"></{name}>'
+    assert browser_mod._prepare_page(page, "https://example.com/a") == (page, None, None)
+
+
 def _fetch(
     monkeypatch,
     result,
