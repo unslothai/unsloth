@@ -10177,6 +10177,8 @@ class LlamaCppBackend:
             or spill_inputs.get("host_mmproj_bytes")
             or not _kv_offload_from_args(extra_args, env)
             or _extra_args_have_tensor_split(extra_args, env)
+            # Row and tensor modes split within a tensor; per-layer shares don't describe them.
+            or _extra_args_split_mode(extra_args, env) not in (None, "layer")
             # A surviving device list owns the share order; a gpu_ids pin strips it.
             or (
                 not pin_owns_devices

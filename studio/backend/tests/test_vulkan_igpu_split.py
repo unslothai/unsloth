@@ -231,3 +231,25 @@ def test_trailing_mtp_rows_keep_their_place_in_the_split():
     src = inspect.getsource(LlamaCppBackend._mixed_pin_split)
     assert "self._nextn_predict_layers" in src
     assert "layer_bytes.extend([mtp_row] * n_mtp)" in src
+
+
+def test_a_row_or_tensor_split_mode_leaves_the_split_to_llama_cpp():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+
+    def _priced(*_a, **_k):
+        raise AssertionError("a non-layer split mode reached the per-layer pricing")
+
+    backend._tensor_spill_layout = _priced
+    inputs = {"separate_draft_on_gpu": False, "model_path": "m.gguf"}
+    for args, env in (
+        (["-sm", "row"], {}),
+        (["--split-mode=tensor"], {}),
+        ([], {"LLAMA_ARG_SPLIT_MODE": "row"}),
+    ):
+        assert (
+            backend._mixed_pin_split(
+                [DGPU, IGPU], inputs, SHARED, args, env,
+                layer_min_gpus = 1, tensor_parallel = False, pin_owns_devices = True,
+            )
+            is None
+        ), (args, env)
