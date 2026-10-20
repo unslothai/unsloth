@@ -291,8 +291,9 @@ export const BUDGET = {
   // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
   // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
   // to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_061_229,
-  rawBytes: 6_844_782,
+  // Explicit browser download names add 1,077 B raw / 431 B transfer; the prior margin is retained.
+  transferBytes: 2_061_660,
+  rawBytes: 6_845_859,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

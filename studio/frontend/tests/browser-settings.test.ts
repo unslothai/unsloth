@@ -708,8 +708,8 @@ test("a program sent with no extension asks under the name it saves as, whatever
     assert.deepEqual(await save("Installer", "application/x-apple-diskimage"), ["Installer.dmg", true]);
     assert.deepEqual(await save("install", "text/x-sh"), ["install.sh", true]);
     assert.deepEqual(await save("loader", "text/javascript; charset=utf-8"), ["loader.js", true]);
-    assert.deepEqual(await save(".install", "text/x-sh"), [".install.sh", true]);
-    assert.deepEqual(await save("update. ", "application/x-msdownload"), ["update. .exe", true]);
+    assert.deepEqual(await save(".install", "text/x-sh"), ["install.sh", true]);
+    assert.deepEqual(await save("update. ", "application/x-msdownload"), ["update.exe", true]);
     assert.deepEqual(await save("...", "text/x-sh"), ["download.sh", true]);
 
     prefs.setAskWhereToSave(true);
@@ -731,6 +731,88 @@ test("a program sent with no extension asks under the name it saves as, whatever
     prefs.setAskWhereToSave(false);
     useApprovalStore.setState({ queue: [] });
     useDownloadSitesStore.getState().setSite("https://a.example", null);
+  }
+});
+
+test("browser saves keep the approved name without MIME inference, including agent downloads", async () => {
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const prefs = useBrowserPrefsStore.getState();
+  const previous = { ...prefs };
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const oldTimer = window.setTimeout;
+  const create = URL.createObjectURL;
+  const revoke = URL.revokeObjectURL;
+  let transport: Blob | undefined;
+  const saved: { name: string; blob: Blob }[] = [];
+  Object.assign(globalThis, {
+    document: {
+      body: { appendChild() {} },
+      createElement: () => {
+        const anchor = { href: "", download: "", click: () => saved.push({ name: anchor.download, blob: transport! }), remove() {} };
+        return anchor;
+      },
+    },
+  });
+  Object.assign(window, { setTimeout: () => 0 });
+  URL.createObjectURL = (blob) => { transport = blob as Blob; return "blob:test"; };
+  URL.revokeObjectURL = () => {};
+  const cases: [string, string, string, boolean][] = [
+    ["update", "application/x-msdownload", "update.exe", true],
+    ["Installer", "application/x-apple-diskimage", "Installer.dmg", true],
+    ["install", "text/x-sh", "install.sh", true],
+    ["loader", "Application/X-MSDownload; charset=binary", "loader.exe", true],
+    [".install.sh", "text/x-sh", "install.sh", true],
+    ["update. ", "application/x-msdownload", "update.exe", true],
+    ["update.exe. ", "application/octet-stream", "update.exe", true],
+    ["report.pdf", "application/x-msdownload", "report.pdf", false],
+    ["setup.exe.txt", "application/x-msdownload", "setup.exe.txt", false],
+    ["x\u202efdp.exe", "application/octet-stream", "x_fdp.exe", true],
+    ["update", "application/octet-stream", "update", false],
+    ["update", "", "update", false],
+    ["profile", "application/x-apple-aspen-config", "profile", false],
+    ["report", "application/pdf", "report", false],
+    ["notes.txt", "text/x-sh", "notes.txt", false],
+  ];
+  try {
+    prefs.setAskWhereToSave(false);
+    prefs.setSaveDownloadHistory(true);
+    for (const mode of ["site", "setting", "agent"]) {
+      useDownloadSitesStore.getState().setSite("https://a.example", mode === "site" ? "allow" : null);
+      prefs.setAskBeforeDownloading(mode !== "setting");
+      for (const [name, contentType, expected, dangerous] of cases) {
+        const blob = new Blob(["MZ harmless bytes"], { type: contentType || "application/x-msdownload" });
+        const count = saved.length;
+        const saving = saveBrowserDownload({ blob, name, contentType, url: "https://a.example/download", temporary: false, agentRule: mode === "agent" ? "allow" : null });
+        const asked = useApprovalStore.getState().queue[0];
+        assert.equal(Boolean(asked), dangerous, `${mode}: ${name} (${contentType})`);
+        if (asked) {
+          assert.deepEqual([asked.name, asked.dangerous], [expected, true]);
+          assert.equal(saved.length, count);
+          answerDownload(asked, true, false);
+        }
+        await saving;
+        assert.equal(saved.length, count + 1);
+        assert.equal(saved.at(-1)?.name, expected);
+        assert.equal(saved.at(-1)?.blob.type, "application/octet-stream");
+        assert.equal(await saved.at(-1)!.blob.text(), await blob.text());
+        assert.equal(blob.type, (contentType || "application/x-msdownload").toLowerCase());
+        const recorded = useBrowserHistoryStore.getState().downloads[0];
+        assert.deepEqual([recorded.name, recorded.contentType], [expected, contentType]);
+      }
+    }
+  } finally {
+    if (oldDocument) Object.defineProperty(globalThis, "document", oldDocument);
+    else Reflect.deleteProperty(globalThis, "document");
+    window.setTimeout = oldTimer;
+    URL.createObjectURL = create;
+    URL.revokeObjectURL = revoke;
+    prefs.setAskWhereToSave(previous.askWhereToSave);
+    prefs.setAskBeforeDownloading(previous.askBeforeDownloading);
+    prefs.setSaveDownloadHistory(previous.saveDownloadHistory);
+    useDownloadSitesStore.getState().setSite("https://a.example", null);
+    for (const request of useApprovalStore.getState().queue) answerDownload(request, false, false);
   }
 });
 

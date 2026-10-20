@@ -69,9 +69,14 @@ function approved(url: string | null, name: string, site?: string, agentRule?: D
   return url && isWebUrl(url) ? approveDownload(url, name, site ?? url, agentRule) : Promise.resolve(true);
 }
 
+function downloadName(name: string, contentType: string): string {
+  const typed = withTypeExtension(safeDownloadName(name), contentType);
+  return isTauri ? typed : typed.replace(/^\.+/, "").replace(/[. ]+$/, "") || "download";
+}
+
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
 export async function saveBrowserDownload(given: BrowserDownload, target?: SaveHandle | null): Promise<void> {
-  const download = { ...given, name: withTypeExtension(given.name, given.contentType) };
+  const download = { ...given, name: downloadName(given.name, given.contentType) };
   // Taken now: the fetch, approval and the save dialog can outlast the temporary chat.
   const temporary = download.temporary ?? useChatRuntimeStore.getState().incognito;
   if (target === undefined) {
@@ -117,7 +122,8 @@ async function writeDownload(
         await writable.write(blob);
         await writable.close();
       } else {
-        await downloadFile(blob, name, contentType || undefined);
+        // The browser must not infer an unapproved extension from its MIME registry.
+        await downloadFile(blob.slice(0, blob.size, "application/octet-stream"), name);
       }
     }
   } catch (error) {
@@ -147,7 +153,7 @@ const RESOLVE_BEFORE_ASK_MS = 1000;
 /** A fetched link as a file: the server's name, or the page as .html. */
 function linkDownload(page: BrowserPage, url: string): BrowserDownload {
   if (page.kind === "raw") {
-    const name = withTypeExtension(page.fileName ?? fileNameFromUrl(page.url), page.contentType);
+    const name = downloadName(page.fileName ?? fileNameFromUrl(page.url), page.contentType);
     return { blob: page.blob, name, contentType: page.contentType, url };
   }
   const name = fileNameFromUrl(page.url);
