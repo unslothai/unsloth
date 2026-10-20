@@ -390,6 +390,23 @@ _LTX_VIDEO_09_REFUSAL = (
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
 # Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+# MiniMax-H3 PDD files Studio cannot run. A "without_heads" bake keeps the single original output heads and needs the
+# external PDD head bank applied per step by a custom node; loaded as a plain denoiser it renders wrong output with no
+# error. The custom-node LoRA files hold a trunk LoRA plus that bank, not a denoiser. A "with_heads" bake carries its
+# 32-head bank in the file and runs natively (video_minimax_h3_pdd). An unnamed without-heads file is caught at load
+# from its header (pdd_acc_baked metadata with single heads).
+_H3_PDD_WITHOUT_HEADS_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*without[-_ ]?heads"
+H3_PDD_WITHOUT_HEADS_REFUSAL = (
+    "This MiniMax-H3 PDD checkpoint has no head bank: it keeps the single original output heads and needs the "
+    "external PDD head bank applied per step by a custom node, which Studio does not have, so it would render "
+    "wrong output. Load the matching '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead, which carries "
+    "the 32 video and audio heads in the file."
+)
+_H3_PDD_BANK_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*(?:lora|_comfyui\.safetensors$)"
+_H3_PDD_BANK_REFUSAL = (
+    "This is a MiniMax-H3 PDD acceleration LoRA with an external head bank for a companion custom node, not a "
+    "denoiser Studio can load. Load a '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead."
+)
 _HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 _HV15_I2V_REFUSAL = (
     "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
@@ -558,6 +575,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_audio_flow_shift = 3.0,
         supports_keyframes = True,
         supports_references = True,
+        unsupported_checkpoints = (
+            (_H3_PDD_WITHOUT_HEADS_RE, H3_PDD_WITHOUT_HEADS_REFUSAL),
+            (_H3_PDD_BANK_RE, _H3_PDD_BANK_REFUSAL),
+        ),
         supports_cfg = False,
     ),
     # LTX-2.5 (diffusers >= 0.40): the 22B LTX-2.3 DiT without the video FFN bias plus a keyframe position embedding,
@@ -1609,6 +1630,9 @@ def validate_video_reference_conditioning(
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific
 # first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
+    # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
+    # are the family defaults). Its head bank was distilled for that partition.
+    ("pdd", 8, 1.0),
     ("distilled", 8, 1.0),
     # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
     ("fusionx", 8, 1.0),
