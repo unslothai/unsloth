@@ -145,8 +145,7 @@ def _worker(rank, port, separate_head, setup_source, loop_source, errors):
         from torch.distributed.device_mesh import init_device_mesh
         from torch.distributed.fsdp import fully_shard
 
-        # Pin the mesh to CPU: the default mesh follows CUDA when it is visible, moving the
-        # model off the CPU inputs ("index is on cpu, different from other tensors on cuda").
+        # Default mesh follows CUDA when visible, moving the model off the CPU inputs.
         mesh = init_device_mesh("cpu", (2,))
         torch.manual_seed(0)
         model = TinyCausalLM()

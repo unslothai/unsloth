@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The module-level guard the gloo tests use to keep spawned ranks on the CPU must fire in the child.
-
-A spawned child imports the test module while unpickling its target, before multiprocessing's
-bootstrap sets `parent_process()`: that alone is None at import time, so the guard never hid CUDA and
-the "CPU" ranks of ~25 gloo tests ran on the GPU wherever one was visible (device mismatch errors and
-gloo segfaults on GPU hosts). `current_process()._inheriting` is already True there."""
+"""A spawned child imports the test module before `parent_process()` is set, so the gloo-test CPU
+guard must also check `current_process()._inheriting` or the "CPU" ranks run on the GPU."""
 
 import multiprocessing
 import os
@@ -38,7 +34,7 @@ def test_guard_fires_in_a_spawned_child():
     fired, mask = out.get(timeout = 120)
     p.join(timeout = 60)
     assert fired == "1" and mask == "", (fired, mask)
-    assert os.environ.get("_UNSLOTH_TEST_GUARD_FIRED") is None  # never in the parent
+    assert os.environ.get("_UNSLOTH_TEST_GUARD_FIRED") is None
 
 
 def test_every_gloo_guard_also_checks_inheriting():
