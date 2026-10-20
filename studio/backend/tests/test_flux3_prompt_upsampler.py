@@ -1077,7 +1077,9 @@ def test_non_vulkan_and_single_card_launches_keep_their_argv(spawn_argv, monkeyp
     assert "--device" not in run()[0]
     monkeypatch.delenv("LLAMA_ARG_DEVICE")
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
-    state["rows"] = [_VULKAN_ROWS[2]]  # one Vulkan device, the image model's card: nothing to choose
+    state["rows"] = [
+        _VULKAN_ROWS[2]
+    ]  # one Vulkan device, the image model's card: nothing to choose
     argv, env = run()
     assert "--device" not in argv and env == {}
 
