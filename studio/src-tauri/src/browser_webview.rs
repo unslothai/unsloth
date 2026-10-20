@@ -92,6 +92,40 @@ const MUTE_SCRIPT: &str = r#"((muted) => {
   window[key](muted);
 })"#;
 
+/// Tauri injects every plugin's init script into pages too, where their commands are refused:
+/// opener cancels `target=_blank` clicks, dialog replaces `alert`/`confirm`, notification
+/// `Notification`. Run before those plugins' scripts; `PAGE_RESTORE_SCRIPT` (the page view's own
+/// init script, after every plugin's) puts the page's own back and drops their window listeners.
+const PAGE_GUARD_SCRIPT: &str = r#"(() => {
+  const label = window.__TAURI_INTERNALS__?.metadata?.currentWebview?.label;
+  if (typeof label !== "string" || !label.startsWith("unsloth-browser-")) return;
+  const kept = ["alert", "confirm", "Notification", "addEventListener"]
+    .map((name) => [name, Object.getOwnPropertyDescriptor(window, name)]);
+  const added = [];
+  const add = window.addEventListener;
+  window.addEventListener = function (...args) {
+    added.push(args);
+    return add.apply(this, args);
+  };
+  Object.defineProperty(window, "__unslothPageGuard", {
+    configurable: true,
+    value: () => {
+      delete window.__unslothPageGuard;
+      for (const [name, own] of kept) own ? Object.defineProperty(window, name, own) : delete window[name];
+      for (const [type, listener, options] of added) window.removeEventListener(type, listener, options);
+    },
+  });
+})();"#;
+
+const PAGE_RESTORE_SCRIPT: &str = "window.__unslothPageGuard?.();";
+
+/// Registered before the opener, dialog and notification plugins (`PAGE_GUARD_SCRIPT`).
+pub fn page_guard_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("unsloth-page-guard")
+        .js_init_script(PAGE_GUARD_SCRIPT.to_string())
+        .build()
+}
+
 /// Read after a load or title change. Pages can spoof it; it only feeds the panel's buttons.
 const STATE_SCRIPT: &str = r#"(() => {
   try {
@@ -1222,6 +1256,7 @@ async fn create_view<R: Runtime>(
             }
             _ => false,
         })
+        .initialization_script(PAGE_RESTORE_SCRIPT)
         .zoom_hotkeys_enabled(false)
         .devtools(cfg!(debug_assertions))
         .focused(false);
