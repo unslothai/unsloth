@@ -30,7 +30,16 @@ from studio_mcp.inputs import PATH_REMOTE
 from utils.account_context import OWNER, AccountContext, current_account, run_as
 from utils.mcp_access import set_mcp_enabled
 
-from .mcp_harness import MCP_HEADERS, SENTINEL_ROOTS, WAV, b64, isolated_auth, make_caller, poison, seed_owner  # noqa: F401
+from .mcp_harness import (
+    MCP_HEADERS,
+    SENTINEL_ROOTS,
+    WAV,
+    b64,
+    isolated_auth,
+    make_caller,
+    poison,
+    seed_owner,
+)  # noqa: F401
 from .test_mcp_tools_training import RUN_PAYLOADS
 
 URL = studio_tools_mcp.STUDIO_TOOLS_MCP_URL
@@ -68,7 +77,12 @@ def accounts():
     )
 
 
-def studio(monkeypatch, routes, *, owner_only = ()):
+def studio(
+    monkeypatch,
+    routes,
+    *,
+    owner_only = (),
+):
     """A fake Unsloth Studio behind the real auth dependency; ``app.state.seen`` records who each route ran as."""
     app = FastAPI()
     app.state.server_port = 8888
@@ -93,7 +107,12 @@ def studio(monkeypatch, routes, *, owner_only = ()):
     return app
 
 
-def bridge(account, name, args = None, **kw):
+def bridge(
+    account,
+    name,
+    args = None,
+    **kw,
+):
     kw.setdefault("timeout", 30.0)
     return run_as(account, studio_tools_mcp.call, name, args or {}, **kw)
 
@@ -108,7 +127,9 @@ def add_row(account, **fields):
     from routes.mcp_servers import create_mcp_server
 
     payload = McpServerCreate(display_name = "Unsloth Studio", url = URL, **fields)
-    return run_as(account, asyncio.run, create_mcp_server(payload, current_subject = account.username))
+    return run_as(
+        account, asyncio.run, create_mcp_server(payload, current_subject = account.username)
+    )
 
 
 def listed(account):
@@ -121,7 +142,12 @@ def listed(account):
 def test_the_reserved_url_is_port_agnostic_and_distinct_from_decisions():
     # The frontend's UNSLOTH_STUDIO_TOOLS_MCP_URL must match this literal.
     assert URL == "http://127.0.0.1/mcp/studio-tools"
-    for url in (URL, URL + "/", "http://localhost:8888/mcp/studio-tools", "http://[::1]:1/mcp/studio-tools"):
+    for url in (
+        URL,
+        URL + "/",
+        "http://localhost:8888/mcp/studio-tools",
+        "http://[::1]:1/mcp/studio-tools",
+    ):
         assert mcp_client.is_studio_tools(url), url
         assert not mcp_client.is_studio_decisions(url)
     for url in (
@@ -137,7 +163,6 @@ def test_the_reserved_url_is_port_agnostic_and_distinct_from_decisions():
 
 def test_the_frontend_preset_uses_the_same_url():
     from pathlib import Path
-
     source = Path(__file__).resolve().parents[2] / "frontend/src/features/chat/mcp-server-url.ts"
     assert f'export const UNSLOTH_STUDIO_TOOLS_MCP_URL = "{URL}";' in source.read_text("utf-8")
 
@@ -190,7 +215,9 @@ def test_the_row_is_relisted_every_send_so_a_tool_turned_off_drops_out_without_e
     assert len(second) == len(first) - 1
 
 
-def test_an_owner_disabled_tool_is_unlisted_and_refused(studio_home, accounts, server_loop, monkeypatch):
+def test_an_owner_disabled_tool_is_unlisted_and_refused(
+    studio_home, accounts, server_loop, monkeypatch
+):
     from utils import mcp_access
 
     app = studio(monkeypatch, RUN_PAYLOADS)
@@ -203,9 +230,10 @@ def test_an_owner_disabled_tool_is_unlisted_and_refused(studio_home, accounts, s
     assert app.state.seen == []
     # Back on: the very next send lists it and the call runs, with no cache eviction.
     mcp_access.set_mcp_settings(disabled_tools = [])
-    assert any(name.endswith("__list_training_runs") for name in (
-        tool["function"]["name"] for tool in listed(accounts.alice)
-    ))
+    assert any(
+        name.endswith("__list_training_runs")
+        for name in (tool["function"]["name"] for tool in listed(accounts.alice))
+    )
     assert "qwen-lora" in bridge(accounts.alice, "list_training_runs")
 
 
@@ -274,14 +302,19 @@ def _blocking_route(app_state):
     return answer
 
 
-def test_cancel_stops_the_route_and_revokes_the_key(studio_home, accounts, server_loop, monkeypatch):
+def test_cancel_stops_the_route_and_revokes_the_key(
+    studio_home, accounts, server_loop, monkeypatch
+):
     holder = SimpleNamespace(cancelled = False)
     app = studio(monkeypatch, {**RUN_PAYLOADS, RUNS: _blocking_route(holder)})
     stop = threading.Event()
 
     def press_stop():
         deadline = time.monotonic() + 10
-        while not any(e["path"] == "/api/train/runs" for e in app.state.seen) and time.monotonic() < deadline:
+        while (
+            not any(e["path"] == "/api/train/runs" for e in app.state.seen)
+            and time.monotonic() < deadline
+        ):
             time.sleep(0.02)
         stop.set()
 
@@ -331,7 +364,9 @@ def test_without_a_server_loop_or_app_nothing_is_minted(studio_home, accounts, m
 # -- host paths ---------------------------------------------------------------------------------------------------
 
 
-def test_host_paths_are_refused_even_for_the_owner(studio_home, accounts, server_loop, monkeypatch, tmp_path):
+def test_host_paths_are_refused_even_for_the_owner(
+    studio_home, accounts, server_loop, monkeypatch, tmp_path
+):
     clip = tmp_path / "clip.wav"
     clip.write_bytes(WAV)
     app = studio(monkeypatch, {})
@@ -362,7 +397,9 @@ def test_after_a_call_no_caller_is_left_bound(studio_home, accounts, server_loop
     assert asyncio.run_coroutine_threadsafe(on_the_loop(), server_loop).result(5) is None
 
 
-def test_two_accounts_at_once_each_run_as_themselves(studio_home, accounts, server_loop, monkeypatch):
+def test_two_accounts_at_once_each_run_as_themselves(
+    studio_home, accounts, server_loop, monkeypatch
+):
     both_in = asyncio.Event()
     arrived = []
 
@@ -388,7 +425,9 @@ def test_two_accounts_at_once_each_run_as_themselves(studio_home, accounts, serv
     by_token = {}
     for entry in app.state.seen:
         by_token.setdefault(entry["token"], set()).add(entry["account"].account_id)
-    assert sorted(map(sorted, by_token.values())) == sorted([["owner"], [accounts.alice.account_id]])
+    assert sorted(map(sorted, by_token.values())) == sorted(
+        [["owner"], [accounts.alice.account_id]]
+    )
 
 
 def _fake_http_request(caller = None):
@@ -402,7 +441,6 @@ def _fake_http_request(caller = None):
 
 def test_an_http_request_never_sees_a_bound_caller():
     from fastmcp.server.dependencies import _current_http_request
-
     bound = caller_mod.bind_caller(make_caller(token = "bound"))
     try:
         assert caller_mod.current_caller().token == "bound"
@@ -456,7 +494,9 @@ def test_chat_works_with_agent_access_off_and_its_key_cannot_use_mcp(
     assert http.post("/mcp/", json = listing, headers = MCP_HEADERS).status_code == 404
 
     set_mcp_enabled(True)
-    refused = http.post("/mcp/", json = listing, headers = {**MCP_HEADERS, "Authorization": f"Bearer {token}"})
+    refused = http.post(
+        "/mcp/", json = listing, headers = {**MCP_HEADERS, "Authorization": f"Bearer {token}"}
+    )
     assert refused.status_code == 401
     assert refused.json() == {"detail": "Workflow keys cannot use Unsloth Studio MCP"}
     (key,) = chat_keys()
@@ -467,7 +507,9 @@ def test_chat_works_with_agent_access_off_and_its_key_cannot_use_mcp(
 # -- mcp_client and the chat request ----------------------------------------------------------------------------
 
 
-def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(studio_home, accounts, server_loop, monkeypatch):
+def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(
+    studio_home, accounts, server_loop, monkeypatch
+):
     studio(monkeypatch, RUN_PAYLOADS)
 
     def no_session(*a, **k):
@@ -486,7 +528,13 @@ def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(studio_home, accou
     )
     assert "qwen-lora" in result, result
     stale = run_as(
-        OWNER, mcp_client.call_tool_sync, URL, None, "list_training_runs", {}, config_check = lambda: False
+        OWNER,
+        mcp_client.call_tool_sync,
+        URL,
+        None,
+        "list_training_runs",
+        {},
+        config_check = lambda: False,
     )
     assert stale.startswith("Error: ") and len(chat_keys()) == 1
 

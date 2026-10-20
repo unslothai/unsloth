@@ -2719,7 +2719,9 @@ def test_only_a_ui_session_can_add_the_studio_tools_row(tmp_path, monkeypatch, c
     _reset_db(tmp_path, monkeypatch)
     payload = McpServerCreate(display_name = "Unsloth Studio", url = STUDIO_TOOLS_URL)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(routes_mcp.create_mcp_server(payload, current_subject = "u", **{credential: True}))
+        asyncio.run(
+            routes_mcp.create_mcp_server(payload, current_subject = "u", **{credential: True})
+        )
     assert exc.value.status_code == 403
     config = {"mcpServers": {"studio": {"url": "http://localhost:8888/mcp/studio-tools"}}}
     result = asyncio.run(
@@ -2753,7 +2755,10 @@ def test_an_api_key_cannot_repoint_to_or_from_the_studio_tools_row_but_can_toggl
                 )
             )
         assert exc.value.status_code == 403
-    assert [row["url"] for row in mcp_servers_db.list_servers()] == ["https://a/mcp", STUDIO_TOOLS_URL]
+    assert [row["url"] for row in mcp_servers_db.list_servers()] == [
+        "https://a/mcp",
+        STUDIO_TOOLS_URL,
+    ]
     off = asyncio.run(
         routes_mcp.update_mcp_server(
             "studio", McpServerUpdate(is_enabled = False), current_subject = "u", via_api_key = True
@@ -2777,7 +2782,12 @@ def test_the_studio_tools_row_is_reprobed_every_send_and_others_stay_cached(tmp_
     calls = []
     answers = {STUDIO_TOOLS_URL: [_one_tool("list_models"), _one_tool("studio_status")]}
 
-    async def fake(url, headers = None, timeout = None, use_oauth = False):
+    async def fake(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         calls.append(url)
         return answers[url].pop(0) if url in answers else _one_tool()
 
@@ -2802,7 +2812,12 @@ def test_a_failed_studio_tools_listing_never_falls_back_to_the_old_one(tmp_path,
     )
     mcp_client.cache_tools("studio", _one_tool("list_models"))
 
-    async def down(url, headers = None, timeout = None, use_oauth = False):
+    async def down(
+        url,
+        headers = None,
+        timeout = None,
+        use_oauth = False,
+    ):
         raise RuntimeError("listing failed")
 
     monkeypatch.setattr(tools_mod, "list_tools_async", down)

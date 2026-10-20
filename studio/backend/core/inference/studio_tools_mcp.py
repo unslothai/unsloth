@@ -47,7 +47,6 @@ def chat_tools_mcp() -> Any:
     with _mcp_lock:
         if _mcp is None:
             from mcp_server import CHAT_DENYLIST, create_studio_mcp
-
             _mcp = create_studio_mcp(exclude = CHAT_DENYLIST)
         return _mcp
 
@@ -72,7 +71,6 @@ def _mint(account: Any, limit: float) -> tuple[str, dict]:
 
 def _revoke(key_id: int) -> None:
     from auth import storage
-
     try:
         storage.revoke_internal_api_key(key_id)
     except Exception:  # noqa: BLE001 - the key still expires on its own
@@ -111,7 +109,9 @@ def call(
     app = _studio_app
     loop = server_loop()
     if app is None or loop is None:
-        return f"Error: MCP tool '{name}' failed: Unsloth Studio tools are not ready yet. Try again."
+        return (
+            f"Error: MCP tool '{name}' failed: Unsloth Studio tools are not ready yet. Try again."
+        )
     limit = _DEFAULT_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
     # The key must outlive the call.
     limit = min(limit, _KEY_MAX_S - _KEY_GRACE_S)
