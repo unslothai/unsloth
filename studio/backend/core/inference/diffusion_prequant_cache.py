@@ -517,6 +517,13 @@ def lookup(
                 # whose plan allows no dense fallback does not pick the same bad artifact on every retry.
                 return None
             _touch(artifact.parent)
+        # The planner's header probe (usable_prequant_source) drops an entry whose header no longer reads as this
+        # scheme before the loader ever sees it, so the loader's rejection bookkeeping never runs: record it here, or
+        # the dense build that follows would find the entry "already cached" and never replace it.
+        from .diffusion_prequant import local_prequant_scheme
+        if local_prequant_scheme(str(artifact)) != scheme:
+            note_rejected(artifact, logger)
+            return None
         return str(artifact)
     except Exception as exc:  # noqa: BLE001
         _log(logger, "warning", f"skipped (lookup failed: {type(exc).__name__}: {exc})")

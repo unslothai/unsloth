@@ -760,7 +760,7 @@ def test_an_entry_the_loader_rejects_is_replaced_by_the_dense_build(env, tmp_pat
     path = C.save_runtime_quant(model, fam, base_repo = str(base))
     good = Path(path).read_bytes()
     _corrupt_in_place(path)
-    assert C.lookup(fam, scheme, base_repo = str(base)) == path  # still looks cached
+    assert C._entry(Path(path).parent.name) is not None  # size-valid: still looks cached
 
     source = PrequantSource(kind = "path", location = path, filename = None)
     out = load_prequantized_transformer(
@@ -1225,6 +1225,25 @@ def test_a_commit_pinned_hub_snapshot_without_refs_main_is_found_by_repo_id(
         assert C.lookup(fam, scheme, base_repo = "org/tiny") == path
     finally:
         P._LOCAL_FILES_ONLY.reset(token)
+
+
+def test_an_entry_the_planner_header_probe_drops_is_replaced_by_the_dense_build(
+    env, tmp_path, scheme
+):
+    """Same-size header corruption: usable_prequant_source drops the entry before the loader runs, so the loader's
+    rejection bookkeeping never fires; the dense build that follows must still replace it."""
+    from core.inference.diffusion_prequant import usable_prequant_source
+
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    fam = _fam(base)
+    path = C.save_runtime_quant(model, fam, base_repo = str(base))
+    good = Path(path).read_bytes()
+    _corrupt_in_place(path)
+    assert usable_prequant_source(fam, scheme, base_repo = str(base)) is None
+    assert C.save_runtime_quant(model, fam, base_repo = str(base)) == path
+    assert Path(path).read_bytes() == good
+    assert usable_prequant_source(fam, scheme, base_repo = str(base)).location == path
 
 
 def test_the_video_save_fingerprints_the_repo_that_supplied_the_dense_weights():
