@@ -1655,6 +1655,8 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
     k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx"))
 )
+# A PDD recipe on another family's checkpoint (a Wan file under /models/pdd/) would silently run 8 steps at CFG 1.
+_FAMILY_SCOPED_DEFAULT_KEYS = {"pdd": "minimax-h3"}
 
 
 def default_video_generation_params(
@@ -1670,7 +1672,7 @@ def default_video_generation_params(
     if family == LTX25_FAMILY:
         # The generic table's "ltx" key is the LTX-2 dev recipe, and 2.5's Diffusers pack names no variant at all.
         return LTX25_DEV_DEFAULTS if ltx25_is_dev(*identifiers) else LTX25_DISTILLED_DEFAULTS
-    variant = video_generation_variant(*identifiers)
+    variant = video_generation_variant(*identifiers, family = family)
     for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
         if key == variant:
             return steps, guidance
@@ -1697,13 +1699,19 @@ def ltx25_is_dev(*identifiers: Optional[str]) -> bool:
     return False
 
 
-def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
+def video_generation_variant(
+    *identifiers: Optional[str], family: Optional[str] = None
+) -> Optional[str]:
     """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
-    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
+    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults. Family-scoped
+    keys (``_FAMILY_SCOPED_DEFAULT_KEYS``) match only for their own family."""
     for identifier in identifiers:
         whole = (identifier or "").lower()
         name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
+            scope = _FAMILY_SCOPED_DEFAULT_KEYS.get(key)
+            if scope is not None and family != scope:
+                continue
             needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".

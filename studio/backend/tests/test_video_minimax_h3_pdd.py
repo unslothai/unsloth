@@ -778,3 +778,40 @@ def test_a_bound_render_reads_the_schedule_the_pipeline_sets_afterwards():
         spans.append(comfy_span(scheduler.sigmas[i], scheduler.sigmas, HEADS, SHIFT_V))
         latents = scheduler.step(out[0][0].float(), t, latents, return_dict = False)[0]
     assert spans == [(4 * i, 4 * i + 4) for i in range(8)]
+
+
+def test_a_second_render_can_rebind_a_bank_its_first_render_moved_in_inference_mode():
+    """The pipeline runs under inference_mode, so the first render's device move made pdd_state an inference tensor
+    and the second render's set_shifts (outside it) raised. A pdd_state left as an inference tensor is replaced too."""
+    bank = _bank()
+    with torch.inference_mode():
+        bank.pdd_state = bank.pdd_state.clone()
+    assert bank.pdd_state.is_inference()
+    bank.set_shifts(SHIFT_V, SHIFT_A)
+    assert not bank.pdd_state.is_inference()
+    assert bank.pdd_state.tolist()[2:] == [SHIFT_V, SHIFT_A]
+    with torch.inference_mode():
+        bank.set_state(_state(0.7, 0.6)[:2])
+    assert not bank.pdd_state.is_inference()
+    assert bank.pdd_state.tolist()[:2] == pytest.approx([0.7, 0.6])
+    if torch.cuda.is_available():
+        bank = _bank()
+        with torch.inference_mode():
+            bank.set_state(_state(0.9, 0.8, device = "cuda")[:2])
+        assert not bank.pdd_state.is_inference() and bank.pdd_state.is_cuda
+        bank.set_shifts(SHIFT_V, SHIFT_A)
+
+
+def test_pdd_defaults_apply_only_to_minimax_h3():
+    """A Wan or Hunyuan checkpoint under a path naming "pdd" keeps its family defaults."""
+    from core.inference.video_families import default_video_generation_params
+
+    h3 = "/models/minimax_h3_ref2va_pruned_pdd_acc_8step_baked_with_heads_int8_convrot.safetensors"
+    assert default_video_generation_params(h3, fallback = (30, 5.0), family = "minimax-h3") == (8, 1.0)
+    wan = "/models/pdd/wan2.2-ti2v-5b.safetensors"
+    assert default_video_generation_params(wan, fallback = (50, 5.0), family = "wan2.2") == (20, 5.0)
+    other = "/models/pdd/hunyuan.safetensors"
+    assert default_video_generation_params(
+        other, fallback = (50, 6.0), family = "hunyuanvideo-1.5"
+    ) == (50, 6.0)
+    assert default_video_generation_params(other, fallback = (50, 6.0)) == (50, 6.0)
