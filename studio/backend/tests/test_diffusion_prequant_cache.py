@@ -59,10 +59,8 @@ class Tiny(torch.nn.Module):
 
 
 def _usable_scheme() -> tuple[str, bool]:
-    """``(scheme, really_quantized)``: a scheme this torch/torchao can quantize on the CPU AND flatten, else fp8 over
-    a plain bf16 state dict (CPU-only CI: torchao refuses fp8 without a capable GPU and int8 below 0.18 does not
-    flatten). The cache layer never looks inside the tensors, so the plain case still covers key, container, trust
-    and lifecycle; the quantized case adds subclass round-trip bit-identity."""
+    """``(scheme, really_quantized)``: a CPU-quantizable + flattenable scheme, else fp8 over plain bf16 (CPU-only CI);
+    the cache never looks inside tensors, so the plain case still covers everything but subclass bit-identity."""
     for scheme in ("fp8", "int8"):
         try:
             m = torch.nn.Sequential(torch.nn.Linear(512, 512)).to(torch.bfloat16)
@@ -509,9 +507,7 @@ def test_quantize_transformer_stamps_what_the_cache_needs(env, tmp_path, scheme,
 
 # ------------------------------------------------------------------------------------------------ host RAM
 def test_streaming_save_does_not_hold_the_state_dict_on_the_host(tmp_path):
-    """ru_maxrss of a child that writes 384 MB of tensors: the streaming writer adds far less than the payload,
-    safetensors' save_file (which builds the whole file in memory) adds about the payload. CPU tensors are
-    already on the host, so the comparison is against the writer's own extra buffers."""
+    """ru_maxrss of a child writing 384 MB: the streaming writer adds far less than the payload, save_file about it."""
     script = textwrap.dedent(
         f"""
         import resource, sys
@@ -592,8 +588,7 @@ def test_full_pipeline_image_quantize_is_saved_to_the_cache(monkeypatch):
 
 
 def test_source_shards_are_found_in_the_pre_change_hub_root(tmp_path, monkeypatch):
-    """After a cache-folder change the dense shards may still sit in huggingface_hub's import-time root (the loaders
-    fetch with reuse_other_cache_root): the key must still be computable from them."""
+    """After a cache-folder change the key must still come from shards in the import-time Hub root."""
     from huggingface_hub import constants
     from safetensors.torch import save_file
 
@@ -1136,8 +1131,7 @@ def test_a_hub_cache_without_symlinks_is_judged_by_its_commit_not_its_filename(
 
 
 def test_a_builder_rechecks_after_taking_the_key_lease(env, tmp_path, scheme, monkeypatch):
-    """Two processes building the same key: the second waits on the lease, then finds the first's entry published and
-    skips, instead of replacing the artifact under the first's digest marker and manifest."""
+    """Two processes building one key: the second waits on the lease, then skips the first's published entry."""
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)
     fam = _fam(base)
@@ -1200,8 +1194,7 @@ def test_is_local_cache_entry(env, tmp_path):
 def test_a_commit_pinned_hub_snapshot_without_refs_main_is_found_by_repo_id(
     env, tmp_path, scheme, monkeypatch
 ):
-    """The video loader stages its base at the planned commit, which writes no refs/main: the save keys the entry from
-    that snapshot dir, and the next load's lookup by repo id must still find the same shards."""
+    """A commit-pinned base (no refs/main) must still be found by the next lookup by repo id."""
     import huggingface_hub
 
     from core.inference import diffusion_prequant as P
@@ -1230,8 +1223,7 @@ def test_a_commit_pinned_hub_snapshot_without_refs_main_is_found_by_repo_id(
 def test_an_entry_the_planner_header_probe_drops_is_replaced_by_the_dense_build(
     env, tmp_path, scheme
 ):
-    """Same-size header corruption: usable_prequant_source drops the entry before the loader runs, so the loader's
-    rejection bookkeeping never fires; the dense build that follows must still replace it."""
+    """Header corruption dropped by the planner probe (loader hook never fires) must still be replaced."""
     from core.inference.diffusion_prequant import usable_prequant_source
 
     base, model = _write_base(tmp_path)
@@ -1247,8 +1239,7 @@ def test_an_entry_the_planner_header_probe_drops_is_replaced_by_the_dense_build(
 
 
 def test_the_video_save_fingerprints_the_repo_that_supplied_the_dense_weights():
-    """Without a staged local dir the video pipeline reads its dense weights from fetch_base (maybe the mirror), so the
-    cache key must come from that repo's shards, as the image path does."""
+    """Without a staged local dir the video key must come from fetch_base's shards (maybe the mirror)."""
     import inspect
 
     from core.inference import video as V

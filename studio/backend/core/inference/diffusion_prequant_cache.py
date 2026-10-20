@@ -1,33 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local pre-quantized checkpoint cache for denoisers that have no hosted pre-quant.
+"""Local cache of runtime-quantized denoisers for families with no hosted pre-quant, written in the hosted
+artifacts' exact container + metadata so the next load takes the hosted path from a local file.
 
-A family with a hosted ``unsloth/<model>-FP8`` repo loads its quantized denoiser straight from an mmap'd
-checkpoint: the dense bf16 transformer is never read. A family without one (FLUX.1-Kontext, Qwen-Image-Edit,
-Wan 2.1, HunyuanVideo-1.5, ...) reads the dense weights and quantizes them on every load. This module keeps the
-result of that runtime quantization on disk, in exactly the container and metadata the hosted artifacts use, so
-the next load takes the hosted path (``resolve_prequant_source`` -> ``load_prequantized_transformer``) from a
-local file instead.
+KEY: sha256 of every source shard's safetensors header plus content identity (Hub blob name, else stat; two uploads
+of one architecture share a header), component, scheme, POLICY_VERSION, class, Linear filter, ConvRot, fp8
+fast-accum and torch / torchao minors. The multi-GB payload is never read for the key.
 
-KEY. sha256 over everything that changes the quantized bytes: every source shard's safetensors HEADER (name,
-8-byte length and JSON: dtype, shape and byte range of every tensor) plus its content identity (the Hub cache blob
-name, which IS the file's sha256, or size + mtime for a local dir; two uploads of one architecture share a header),
-so the multi-GB payload is never read; the denoiser component, the scheme, ``POLICY_VERSION``,
-the transformer class, the Linear filter (min_features, exclude tokens, require_bf16, divisibility), the ConvRot
-spec, fp8 fast-accum, and the torch / torchao minor versions. A miss is normal and falls back to quantizing.
+TRUST: only Studio writes the root (safetensors, no pickle), so files under its exact realpath count as allowlisted.
 
-TRUST. The cache root is written only by Studio and holds safetensors (no pickle), so a file under the exact root
-counts as allowlisted without ``UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH``; ``realpath`` first, so a link inside the root
-that points out of it is refused.
-
-ON DISK, per key dir: ``model.safetensors`` then ``manifest.json``. Both go through a temp file in the same dir
-plus ``os.replace``; the manifest is written last and is the commit point, so an interrupted save leaves either no
-entry or a complete one. A lookup needs the manifest, a matching file size and the recorded key.
-
-HOST RAM. The writer streams: the header is built from the flattened tensors' dtype / shape / byte size, then each
-tensor is copied device -> host and written on its own, so the save holds one tensor at a time on the host rather
-than the whole state dict.
+COMMIT: artifact then manifest, each via temp + os.replace; the manifest is the commit point.
 
 ENV:
   UNSLOTH_DIFFUSION_PREQUANT_CACHE         0 disables lookups and saves (default on)
@@ -68,9 +51,8 @@ VERIFIED_NAME = "verified"
 _HASH_CHUNK = 16 << 20
 _TEMP_SUFFIX = ".tmp"
 _TOMBSTONE_SUFFIX = ".evicting"
-# A key used this recently is spared while older keys can bring the cache under budget: another process may be
-# loading from it. Still over budget, only the last _EVICT_ACTIVE_SECONDS (lookup to open) are spared, so a run of
-# fresh multi-GB saves cannot grow the cache past its budget.
+# Keys used within the grace window are spared (another process may be loading them) unless still over budget,
+# then only the last _EVICT_ACTIVE_SECONDS (lookup to open), so fresh saves cannot grow past the budget.
 _EVICT_GRACE_SECONDS = 600.0
 _EVICT_ACTIVE_SECONDS = 60.0
 # Free space kept after a save: max(this, 5% of the artifact).
@@ -189,12 +171,8 @@ def read_header_bytes(path: Any) -> Optional[bytes]:
 
 
 def _content_identity(real: str, st: Any) -> str:
-    """What says the PAYLOAD is unchanged, beside the header (two uploads of one architecture share a header).
-
-    A Hub cache snapshot links to ``blobs/<sha256 of the file>``, a free content hash. Anything else (a local model
-    dir) falls back to the file's stat: size + mtime, plus inode and ctime, which a replacement changes even when it
-    preserves size and mtime (a metadata-preserving copy or reproducible archive), so a swapped file re-quantizes
-    rather than serving the old build."""
+    """Payload identity: the Hub blob name (its sha256), else stat incl. inode + ctime, which a size/mtime-preserving
+    replacement still changes."""
     name = os.path.basename(real)
     if len(name) == 64 and all(c in "0123456789abcdef" for c in name):
         return "blob:" + name
@@ -202,10 +180,8 @@ def _content_identity(real: str, st: Any) -> str:
 
 
 def source_fingerprint(shards: Iterable[Any]) -> Optional[str]:
-    """sha256 over (basename, header, content identity) of every shard, order-independent. None when any shard is
-    unreadable.
-
-    Memoised on (realpath, size, mtime_ns, inode, ctime_ns): planners resolve sources several times per load."""
+    """Order-independent sha256 over (basename, header, content identity) of every shard; None if any is unreadable.
+    Memoised: planners resolve sources several times per load."""
     digest = hashlib.sha256()
     entries = []
     for shard in shards:
@@ -274,10 +250,8 @@ def _local_file(
 
 
 def _unreferenced_revisions(repo: str, cache_dir: Optional[str]) -> list:
-    """The cached snapshot commits of ``repo``, newest first, when it has no ``refs/main``: a commit-pinned download
-    (the video loader stages its base at the planned commit) writes no ref, so ``try_to_load_from_cache`` without a
-    revision cannot see it. Empty when ``refs/main`` exists (that ref is what an unpinned load resolves, as
-    ``diffusion_families._cached_revisions`` reads it). Never raises."""
+    """Cached snapshot commits of ``repo``, newest first, only when there is no ``refs/main`` (a commit-pinned
+    download writes no ref, so ``try_to_load_from_cache`` cannot see it). Never raises."""
     if os.path.isdir(os.path.expanduser(repo)):
         return []
     try:
@@ -305,9 +279,7 @@ def _shard_sets(
     if cache_dir is not None:
         yield from _shard_sets_in(base, component, cache_dir)
         return
-    # The live root first, then huggingface_hub's import-time root when a cache-folder change moved the live one: the
-    # loaders fetch with reuse_other_cache_root, so the dense shards may sit in either. A key needs only the shard
-    # headers and blob names, which are the same bytes wherever they are stored.
+    # Loaders fetch with reuse_other_cache_root, so the shards may sit in the live or the import-time root.
     roots = [r for r in _hub_cache_roots() if r] or [None]
     for root in roots:
         yield from _shard_sets_in(base, component, root)
@@ -362,9 +334,7 @@ def _shard_sets_in(base: str, component: str, cache_dir: Optional[str]):
 
 
 def base_identity(base: Optional[str]) -> str:
-    """The base model as ``_validate_checkpoint`` compares it (``_same_base_model``: canonical id, final segment,
-    case-folded). Keyed, so two bases that share their weights byte for byte but would fail that check for each
-    other's artifact never share an entry."""
+    """The base as ``_same_base_model`` compares it; keyed so byte-identical bases that fail that check never share."""
     raw = str(base or "").strip()
     if not raw:
         return ""
@@ -424,8 +394,7 @@ def cache_key(parts: dict) -> str:
     ).hexdigest()[:32]
 
 
-# Only the torchao schemes whose runtime and hosted builds are the same artifact. nvfp4 runs a per-family policy and
-# a backend conversion at load; mxfp8 has no hosted twin to mirror.
+# Only schemes whose runtime and hosted builds are identical (nvfp4 converts per family at load; mxfp8 has no twin).
 CACHEABLE_SCHEMES = ("int8", "fp8")
 
 
@@ -490,8 +459,7 @@ def lookup(
     try:
         source = base_repo or getattr(fam, "base_repo", None)
         key = shards = None
-        # Every local shard set, not only the first: a repo with no refs/main may hold more than one commit-pinned
-        # snapshot, and the entry was keyed from the one its load staged.
+        # Every shard set: a repo without refs/main may hold several commit-pinned snapshots.
         seen: set = set()
         for candidate in (source_shards(source, component), *_shard_sets(source, component)):
             if not candidate or tuple(candidate) in seen:
@@ -506,8 +474,7 @@ def lookup(
             return None
         if _hub_source_stale(shards, logger):
             return None
-        # Check + touch under the lock eviction holds while it re-checks an entry: once this returns, the entry was
-        # used within the eviction grace window, so no process removes it before the loader opens it.
+        # Check + touch under eviction's lock, so no process removes the entry before the loader opens it.
         with _cache_lock():
             artifact = _entry(key)
             if artifact is None:
@@ -515,13 +482,11 @@ def lookup(
             with _lock:
                 rejected = os.path.realpath(str(artifact)) in _REJECTED
             if rejected:
-                # The loader already refused it in this process: a miss until a fresh build replaces it, so a load
-                # whose plan allows no dense fallback does not pick the same bad artifact on every retry.
+                # Refused earlier in this process: a miss until replaced, so retries don't pick it again.
                 return None
             _touch(artifact.parent)
-        # The planner's header probe (usable_prequant_source) drops an entry whose header no longer reads as this
-        # scheme before the loader ever sees it, so the loader's rejection bookkeeping never runs: record it here, or
-        # the dense build that follows would find the entry "already cached" and never replace it.
+        # The planner's header probe drops such an entry before the loader's rejection hook runs: record it
+        # here, or the dense build would see it as already cached and never replace it.
         from .diffusion_prequant import local_prequant_scheme
 
         if local_prequant_scheme(str(artifact)) != scheme:
@@ -558,9 +523,8 @@ def verify_entry(
     logger: Any = None,
     cancel_check: Optional[Any] = None,
 ) -> bool:
-    """Whether the cached artifact at ``path`` still hashes to the sha256 its manifest recorded. The manifest's size
-    check alone passes same-size corruption, which can still deserialize. A file unchanged (size, mtime, inode, ctime)
-    since its last check is not hashed again. A manifest without a digest fails. Never raises."""
+    """Whether the artifact still hashes to its manifest sha256 (skipped when the stat matches the last check); no
+    digest fails. Never raises."""
     try:
         artifact = Path(os.path.realpath(str(path)))
         kdir = artifact.parent
@@ -600,8 +564,7 @@ def verify_entry(
 
 
 def note_rejected(path: Any, logger: Any = None) -> None:
-    """Called when the loader could not use the cached artifact at ``path``; the save after its dense fallback then
-    replaces the entry rather than skipping it as already cached. Never raises."""
+    """Mark an unusable entry so the dense fallback's save replaces it. Never raises."""
     try:
         if not path_in_cache(path):
             return
@@ -625,10 +588,8 @@ _GONE = "gone"
 
 
 def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
-    """``(repo_id, filename, blob, commit)`` of a Hub cache snapshot path
-    (``.../models--org--name/snapshots/<commit>/<file>``), or None for anything else (a local model dir). ``blob`` is the
-    resolved file's basename: the content hash in the symlinked layout, the plain filename in a cache without symlinks
-    (Windows without Developer Mode copies the file into the snapshot)."""
+    """``(repo_id, filename, blob, commit)`` of a Hub snapshot path, else None. ``blob`` is the plain filename in a
+    symlink-less cache (Windows without Developer Mode)."""
     parts = Path(str(path)).parts
     try:
         i = len(parts) - 1 - parts[::-1].index("snapshots")
@@ -654,8 +615,7 @@ def _remote_etag(
     filename: str,
     revision: str = "main",
 ) -> Optional[str]:
-    """The Hub's etag (the blob name) of ``filename`` on ``repo`` at ``revision`` (default main), ``_GONE`` when the
-    file is not there, or None when it cannot be answered (network, auth): then the local snapshot stands, as offline."""
+    """The Hub etag of ``filename`` at ``revision``, ``_GONE`` if absent, None if unanswerable (treated as offline)."""
     memo = (repo, filename, revision)
     with _lock:
         hit = _REMOTE_MEMO.get(memo)
@@ -688,9 +648,8 @@ def _remote_etag(
 
 
 def _hub_source_stale(shards: Optional[list], logger: Any = None) -> bool:
-    """Whether an online load would read different dense weights than the cached Hub snapshot these shards come from:
-    the cache hit skips the ``from_pretrained`` request that advances an unpinned ref, so a moved ``main`` must be
-    seen here. Offline / local-files-only loads keep the local snapshot, like ``from_pretrained`` would."""
+    """Whether Hub ``main`` moved past these shards' snapshot: a cache hit skips the ``from_pretrained`` request that
+    would advance the ref. Offline loads keep the local snapshot."""
     if not shards:
         return False
     try:
@@ -706,7 +665,7 @@ def _hub_source_stale(shards: Optional[list], logger: Any = None) -> bool:
         repo, filename, blob, commit = coords
         etag = _remote_etag(repo, filename)
         if etag is not None and not _is_content_hash(blob):
-            # No symlink to read the content hash from: ask what the snapshot's own commit serves for this file.
+            # No symlink content hash: ask what the snapshot's own commit serves.
             blob = _remote_etag(repo, filename, revision = commit)
             if blob is None or blob == _GONE:
                 continue  # unanswerable: the local snapshot stands, as offline
@@ -724,7 +683,7 @@ def note_hit(path: Any, logger: Any = None) -> None:
 _LOCK_NAME = ".lock"
 
 
-# Nesting depth of _cache_lock in this thread's process (introspection for tests only).
+# Nesting depth of _cache_lock (tests only).
 _LOCK_DEPTH = [0]
 
 
@@ -733,8 +692,7 @@ _WINDOWS_LOCK_ATTEMPTS = 6
 
 
 def _lock_file(fh: Any) -> Optional[str]:
-    """Exclusive lock on ``fh``: POSIX flock, else Windows msvcrt.locking on its first byte. Returns the kind taken
-    (``"flock"`` / ``"msvcrt"``), or None when neither is available."""
+    """Exclusive flock, else msvcrt lock; returns the kind taken or None."""
     try:
         import fcntl
     except ImportError:
@@ -767,9 +725,7 @@ def _unlock_file(fh: Any, kind: Optional[str]) -> None:
 
 @contextmanager
 def _cache_lock(root: Optional[Path] = None):
-    """Cross-process lock over the cache root, held for short check-and-act sections (lookup's check + touch,
-    eviction's re-check + rename). POSIX flock, or msvcrt.locking on Windows; where neither can be taken the
-    sections still run, unlocked."""
+    """Cross-process lock over the root for short check-and-act sections; runs unlocked if no lock exists."""
     fh = None
     kind = None
     try:
@@ -804,8 +760,7 @@ def _writer_lock_path(root: Path, key: str) -> Path:
 
 
 def _try_lock_file(fh: Any) -> Optional[bool]:
-    """Non-blocking exclusive lock on ``fh``: True when taken, False when another holder has it, None when no lock
-    primitive exists here."""
+    """Non-blocking lock: True taken, False held elsewhere, None unsupported."""
     try:
         import fcntl
     except ImportError:
@@ -830,9 +785,8 @@ def _try_lock_file(fh: Any) -> Optional[bool]:
 
 @contextmanager
 def _writer_lock(root: Path, key: str):
-    """Exclusive per-key build lease across processes, held from the "already cached?" check through publication, so
-    two writers never interleave their artifact, digest marker and manifest. Yields False (and the caller skips) when
-    the lock cannot be taken at all, rather than running the publication unlocked."""
+    """Per-key cross-process build lease from the "already cached?" check through publication; yields False when no
+    lock can be taken (caller skips rather than publishing unlocked)."""
     fh = None
     kind = None
     try:
@@ -902,11 +856,8 @@ def write_streaming_safetensors(
     cancel_check: Optional[Any] = None,
     hasher: Optional[Any] = None,
 ) -> int:
-    """Write ``tensors`` (any device) to ``path`` as safetensors, holding one tensor at a time on the host.
-
-    Same byte layout ``safetensors.torch.save_file`` produces: entries ordered by dtype size (largest first) then
-    name, so every tensor starts on its own alignment and the mmap reader never has to copy one. Returns the file
-    size. ``path`` is written in place; the caller renames it."""
+    """Write ``tensors`` as safetensors one tensor at a time on the host; returns the file size.
+    Ordered like ``save_file`` (dtype size desc, then name) so every tensor stays aligned for mmap."""
     import torch
 
     order = sorted(tensors.items(), key = lambda kv: (-kv[1].element_size(), kv[0]))
@@ -931,16 +882,14 @@ def write_streaming_safetensors(
     def put(data: Any) -> None:
         fh.write(data)
         if hasher is not None:
-            hasher.update(
-                data
-            )  # every byte written, header included, so the digest covers each tensor
+            hasher.update(data)
 
     with open(path, "wb") as fh:
         put(struct.pack("<Q", len(blob)))
         put(blob)
         for _name, tensor in order:
             if cancel_check is not None:
-                cancel_check()  # raises for a cancelled / superseded load; the caller removes the temp file
+                cancel_check()
             if tensor.numel() == 0:
                 continue
             if isinstance(tensor, _FlatRef):
@@ -972,10 +921,8 @@ def _atomic_bytes(path: Path, data: bytes) -> None:
 
 
 class _FlatRef:
-    """One flat safetensors entry that reads its bytes from the live module when written (no copy kept). torchao's
-    ``flatten_tensor_state_dict`` clones every quantized tensor on its device, which for a whole denoiser is a second
-    full copy in VRAM at the moment the card is fullest; the header is built one parameter at a time instead and each
-    entry points back at the subclass field it came from."""
+    """A flat entry read from the live module at write time: torchao's flatten clones every quantized tensor on
+    device, a second full VRAM copy when the card is fullest."""
 
     __slots__ = ("_get", "dtype", "shape", "_numel", "_esize")
 
@@ -997,9 +944,7 @@ class _FlatRef:
 
 
 def _flatten(state_dict: dict) -> tuple[dict, dict]:
-    """``(flat tensors, header)`` in the exact layout ``save_prequant_safetensors`` writes. Quantized entries are
-    ``_FlatRef`` handles onto the module's own storage; peak extra device memory is one parameter's torchao clone, taken
-    while that parameter's header entry is built and dropped right after."""
+    """``(flat tensors, header)`` in ``save_prequant_safetensors``'s layout; peak extra VRAM is one param's clone."""
     from .prequant_safetensors import (
         UNSLOTH_ROOT_KEYS_KEY,
         UNSLOTH_ROOT_PREFIX,
@@ -1042,9 +987,7 @@ def _flatten(state_dict: dict) -> tuple[dict, dict]:
             ):
                 flat[name] = _FlatRef(lambda v = value, f = field: getattr(v, f), clone)
             else:
-                flat[name] = (
-                    clone  # an unrecognised naming keeps torchao's own copy (correct, just not bounded)
-                )
+                flat[name] = clone  # unrecognised naming: keep torchao's copy (correct, not bounded)
         del part
     header["tensor_names"] = json.dumps(names)
     if roots:
@@ -1074,11 +1017,8 @@ def save_runtime_quant(
     logger: Any = None,
     cancel_check: Optional[Any] = None,
 ) -> Optional[str]:
-    """Persist a transformer ``quantize_transformer`` just quantized, so the next load skips the dense read.
-
-    ``base_repo`` is the upstream id recorded as ``base_model_id`` (what the loader checks); ``source_base`` is the
-    repo / dir the dense weights were really read from (a mirror), default ``base_repo``. Returns the artifact path,
-    or None (with a ``skipped`` log line naming why). Never raises."""
+    """Persist a just-quantized transformer; returns the artifact path or None (logged). Never raises.
+    ``base_repo`` is recorded as ``base_model_id``; ``source_base`` is where the dense weights were read (a mirror)."""
     if not enabled():
         return None
     t0 = time.perf_counter()
@@ -1131,10 +1071,7 @@ def save_runtime_quant(
             _log(logger, "info", "skipped (runtime exclusion list differs)")
             return None
         if parts["fast_accum"] is not None:
-            # The cache bakes the auto accumulate mode, exactly like the hosted fp8 builds, and lookup cannot see a
-            # forced one (planners treat a forced non-default value as ruling out every pre-quant: see
-            # diffusion_prequant.hosted_fast_accum_conflict). A build quantized under a forced different mode would be
-            # labelled as the auto one, so it is not cached.
+            # Entries bake the auto accumulate like hosted fp8; a forced-mode build would be mislabelled as auto.
             from .diffusion_transformer_quant import _resolve_fast_accum
             if _resolve_fast_accum(info.get("fast_accum")) != parts["fast_accum"]:
                 _log(
@@ -1146,7 +1083,6 @@ def save_runtime_quant(
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
             return None
-        # One builder per key across processes, from the "already cached?" check through publication.
         if not stack.enter_context(_writer_lock(cache_root(), key)):
             _log(logger, "info", "skipped (no cross-process lock available for the build)")
             return None
@@ -1173,7 +1109,7 @@ def save_runtime_quant(
             )
             return None
         nbytes = sum(_tensor_bytes(t) for t in flat.values())
-        # Before any space-making eviction: an artifact the budget refuses must not cost the entries already cached.
+        # Before eviction: an over-budget artifact must not cost existing entries.
         budget = max_cache_bytes()
         if budget is not None and nbytes > budget:
             _log(logger, "info", "skipped (artifact larger than the cache budget)")
@@ -1181,15 +1117,13 @@ def save_runtime_quant(
         root = cache_root()
         root.mkdir(parents = True, exist_ok = True)
         if replacing is not None:
-            # The rejected artifact is unusable: reclaim its space before measuring room for the replacement (the
-            # eviction below keeps ``key``, so it would otherwise hold a second copy's worth of disk).
+            # Reclaim the rejected artifact first: eviction keeps ``key``, so it would hold a second copy's disk.
             _reclaim(root / key)
             with _lock:
                 _REJECTED.discard(replacing)
         free = shutil.disk_usage(str(root)).free
         need = nbytes + max(_DISK_MARGIN_BYTES, nbytes // 20)
         if free < need:
-            # Stale entries may be what fills the volume: rotate them out before deciding there is no room.
             evict(root = root, extra_free_bytes = need - free, keep = key, logger = logger)
             free = shutil.disk_usage(str(root)).free
         if free < need:
@@ -1232,8 +1166,7 @@ def save_runtime_quant(
         fd, tmp = tempfile.mkstemp(dir = str(kdir), prefix = f".{FILE_NAME}.", suffix = _TEMP_SUFFIX)
         os.close(fd)
         try:
-            # sha256 of every byte, taken from the host copies the writer already makes (no second pass, and
-            # cancellable with it); load_prequantized_transformer checks it before reading the artifact.
+            # Hashed during the write (no second pass); the loader verifies it.
             hasher = hashlib.sha256()
             size = write_streaming_safetensors(
                 tmp, flat, header, cancel_check = cancel_check, hasher = hasher
@@ -1272,8 +1205,6 @@ def save_runtime_quant(
         return str(kdir / FILE_NAME)
     except Exception as exc:  # noqa: BLE001 - a cache write must never fail a load
         if cancelled[0]:
-            # The load was cancelled or superseded mid-write: the temp file is already gone; the caller's own
-            # cancellation check reports it.
             _log(logger, "info", "skipped (load cancelled during the save)")
             return None
         _log(logger, "warning", f"skipped (save failed: {type(exc).__name__}: {str(exc)[:200]})")
@@ -1329,8 +1260,7 @@ def evict(
     extra_free_bytes: int = 0,
     logger: Any = None,
 ) -> list[str]:
-    """Delete least recently used keys until the root fits its budget, and ``extra_free_bytes`` below what it holds
-    now (room a save needs on a full volume). A disabled budget (0) never evicts. Never raises."""
+    """LRU-evict until under budget and ``extra_free_bytes`` freed; a disabled budget never evicts. Never raises."""
     removed: list[str] = []
     try:
         root = root if root is not None else cache_root()
@@ -1362,8 +1292,7 @@ def evict(
             tomb = path.with_name(
                 f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}"
             )
-            # The scan's timestamp may be stale: another process can have resolved this entry since. Re-check under
-            # the lock lookup takes for its check + touch, so a resolved entry is never renamed away under a loader.
+            # Re-check under lookup's lock: another process may have resolved this entry since the scan.
             with _cache_lock(root):
                 if _last_used(path) > cutoff:
                     continue

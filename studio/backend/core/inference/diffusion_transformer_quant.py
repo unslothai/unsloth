@@ -1950,7 +1950,7 @@ def quantize_transformer(
         apply_zero_row_guard(transformer, scheme, family, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
-            # What diffusion_prequant_cache needs to persist this exact build for the next load.
+            # What diffusion_prequant_cache needs to persist this exact build.
             transformer._unsloth_runtime_quant_info = {
                 "scheme": scheme,
                 "family": family,

@@ -1919,8 +1919,7 @@ def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatc
 
 
 def test_an_explicit_cached_scheme_seeds_even_when_another_scheme_is_hosted(monkeypatch):
-    """HunyuanVideo-1.5 hosts nvfp4; an explicit int8 that this machine cached on an earlier load must still seed
-    instead of re-reading and re-quantizing the dense denoiser on every load."""
+    """HunyuanVideo-1.5 hosts nvfp4; an explicit locally cached int8 must still seed."""
     from core.inference import video as vid
     from core.inference import video_denoiser_prequant as vdp
 
@@ -1930,6 +1929,5 @@ def test_an_explicit_cached_scheme_seeds_even_when_another_scheme_is_hosted(monk
         vdp, "denoiser_prequant_sources", lambda fam, s, base, hf_token = None: sources.get(s)
     )
     assert _video_auto(monkeypatch, scheme = "int8", requested = "int8") == "int8"
-    # Nothing cached for the requested scheme: still no seed.
     sources.pop("int8")
     assert _video_auto(monkeypatch, scheme = "int8", requested = "int8") is None

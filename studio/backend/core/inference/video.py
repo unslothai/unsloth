@@ -2562,10 +2562,8 @@ def _video_auto_denoiser_scheme(
             if denoiser_prequant_sources(fam, s, base_repo, hf_token = hf_token) is not None
         )
         if not auto and normalize_transformer_quant(requested) not in hosted:
-            # No hosted row for the REQUESTED scheme (another scheme may be hosted, e.g. HunyuanVideo-1.5's nvfp4): an
-            # EXPLICIT scheme may still seed from a build this machine quantized on an earlier load of the same
-            # weights (diffusion_prequant_cache). Never under auto, so a cache entry cannot change what an auto load
-            # picks.
+            # An EXPLICIT unhosted scheme may seed from the local cache; never under auto, so the cache can't change
+            # auto's pick.
             from .diffusion_prequant_cache import CACHEABLE_SCHEMES
             wanted = normalize_transformer_quant(requested)
             if (
@@ -2607,8 +2605,7 @@ def _save_runtime_quant_to_cache(
     source: Optional[str],
     cancel_check: Any = None,
 ) -> None:
-    """Persist a runtime-quantized single denoiser (diffusion_prequant_cache), so the next explicit load of the same
-    weights seeds it like a hosted checkpoint. An MoE's second expert has no lookup slot here, so MoE is skipped."""
+    """Cache a runtime-quantized single denoiser; MoE is skipped (no lookup slot for the second expert)."""
     try:
         from .video_denoiser_prequant import denoiser_components
 
@@ -8654,9 +8651,7 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
-                # Only an explicit scheme reads the cache back (_video_auto_denoiser_scheme never consults it under
-                # auto, so a cache entry cannot change an auto pick): an auto save would pay the write and the disk
-                # for an artifact no later load opens.
+                # Only explicit schemes read the cache back, so an auto save would be a write nothing opens.
                 if transformer_quant_pinned is not None:
                     _save_runtime_quant_to_cache(
                         fam,

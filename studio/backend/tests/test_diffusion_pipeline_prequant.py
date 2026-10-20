@@ -576,8 +576,7 @@ def test_a_forced_fp8_accumulate_the_artifact_cannot_bake_keeps_the_released_wei
 
 
 def test_a_forced_fp8_accumulate_also_rules_out_a_local_prequant_cache_entry(monkeypatch, tmp_path):
-    """A local cache entry bakes the auto accumulate like a hosted artifact, so a forced different value must not
-    seed it (dropping the released shards for a checkpoint the load then rejects). An operator's own file is still
+    """A cache entry bakes the auto accumulate, so a forced different value must not seed it; an operator file is
     left to the loader's validation."""
     from core.inference import diffusion_prequant_cache as cache
 

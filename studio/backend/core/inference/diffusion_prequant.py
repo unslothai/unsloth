@@ -413,7 +413,7 @@ def _local_prequant_path_allowed(path: str) -> bool:
     symlink cannot point an allowlisted name at a file outside the allowed roots."""
     import os
 
-    # Studio's own local pre-quant cache (safetensors it wrote itself), and only that exact root.
+    # Studio's own pre-quant cache root only.
     try:
         from .diffusion_prequant_cache import path_in_cache
         if path_in_cache(path):
@@ -772,8 +772,7 @@ def prefer_cached_pickle_twins(
 
 
 _LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
-# The load's own Hub token, for the probes it reaches without one in their signature (the local pre-quant cache's
-# freshness check of a gated base). Nested calls keep an outer token.
+# The load's Hub token for probes lacking one in their signature (cache freshness of a gated base); outer token wins.
 _LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar(
     "unsloth_prequant_hf_token", default = None
 )
@@ -974,8 +973,8 @@ def resolve_prequant_source(
 
     Priority: an explicit local ``path_override``; then the family's hosted repo for ``scheme``
     (variant-specific when ``base_repo`` names a base with its own baked checkpoint); then None,
-    meaning no pre-quant and the caller quantises dense. No torch; the only IO is the local pre-quant cache lookup
-    (``diffusion_prequant_cache``: a few KB of safetensors headers, memoised), reached only when nothing is hosted.
+    meaning no pre-quant and the caller quantises dense. No torch; the only IO is the memoised local cache lookup
+    (safetensors headers), reached only when nothing is hosted.
 
     ``task`` names the workflow / denoiser PARTITION the load is bringing up, for the families that
     host more than one under a single repo and scheme (MiniMax-H3's keyframe and reference
@@ -1069,8 +1068,7 @@ def resolve_prequant_source(
             fallback_filenames = tuple(names[1:]),
             declared_filenames = declared,
         )
-    # No hosted checkpoint: a build this machine quantized on an earlier load of the same source weights
-    # (diffusion_prequant_cache). Local reads only; the task names the denoiser component (an MoE's transformer_2).
+    # Nothing hosted: try this machine's cache of an earlier build; task names the component (MoE transformer_2).
     try:
         from .diffusion_prequant_cache import lookup
         cached = lookup(
@@ -2245,10 +2243,8 @@ def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
 
 
 def _reports_rejected_cache_entry(fn: Any) -> Any:
-    """A local pre-quant cache entry this load could not use (corrupt bytes, a torch / torchao patch that no longer
-    reads it) is reported to the cache, so the dense build the load falls back to replaces it instead of the stale
-    entry staying "already cached" for good. A forced fp8 accumulate the entry does not bake is the request's
-    choice, not a fault in the entry, and leaves it alone."""
+    """Report an unusable cache entry so the dense fallback build replaces it; a forced fp8 accumulate mismatch is
+    the request's choice, not a fault, and leaves the entry alone."""
 
     @functools.wraps(fn)
     def wrapper(transformer_cls: Any, base: str, source: Any, *args: Any, **kwargs: Any) -> Any:
@@ -2351,8 +2347,7 @@ def load_prequantized_transformer(
         if path is None:
             return None
         if source.kind == "path":
-            # A Studio cache entry is checked against the payload digest recorded when it was written: its manifest
-            # size check passes same-size corruption, which can still deserialize into altered weights.
+            # Verify the payload digest: the manifest size check misses same-size corruption.
             from .diffusion_prequant_cache import path_in_cache, verify_entry
             if path_in_cache(path) and not verify_entry(path, logger):
                 _LAST_FAILURE.text = (

@@ -1922,8 +1922,7 @@ def _planned_quant_scheme(
 
 
 def _is_local_cache_entry(source: Any) -> bool:
-    """A source resolved from Studio's local pre-quant cache (diffusion_prequant_cache), not a hosted repo or an
-    operator's own file."""
+    """A source resolved from Studio's local pre-quant cache, not a hosted repo or an operator's file."""
     if getattr(source, "kind", None) != "path":
         return False
     try:
@@ -2743,8 +2742,7 @@ def _bg_compile_module(
 
 
 def _prequant_bakes_auto_accumulate(source: Any) -> bool:
-    """Whether ``source`` is an artifact built with the auto fp8 accumulate: a hosted repo, or an entry of the local
-    pre-quant cache (``save_runtime_quant`` never caches a build quantized under a forced mode)."""
+    """Hosted repos and local cache entries bake the auto fp8 accumulate (forced-mode builds are never cached)."""
     kind = getattr(source, "kind", None)
     if kind == "repo":
         return True
@@ -3548,8 +3546,7 @@ class DiffusionBackend:
                 fam, candidate, path_override = path_override, base_repo = base_repo
             )
             if source is None or _is_local_cache_entry(source):
-                # A rung below the winner is reached only through a hosted / operator checkpoint, never through this
-                # machine's cache (it would let one earlier explicit load change what auto picks).
+                # Lower rungs never come from the local cache: one earlier explicit load must not change auto's pick.
                 continue
             # Same cached-only rule _uncached_prequant_repo applies to the winner. That guard runs
             # select_transformer_quant_scheme, which only ever sees the winner, so a retry that returned an UNCACHED
@@ -4995,8 +4992,7 @@ class DiffusionBackend:
                     if source is None:
                         continue
                     if rung != scheme and _is_local_cache_entry(source):
-                        # This machine's own cache seeds the scheme auto picked, never a lower one: a single explicit
-                        # int8 load must not turn every later auto load from fp8 into int8.
+                        # Cache seeds only auto's pick: one explicit int8 load must not turn later auto loads into int8.
                         continue
                     # The loader's checkpoint validation refuses a FORCED fp8 accumulate the artifact does not bake,
                     # but only after the plan dropped the released shards. Hosted artifacts and Studio's own local
@@ -9973,8 +9969,7 @@ class DiffusionBackend:
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         if fam is not None and not _has_active_lora(lora_specs):
-            # Keep this build for the next load of the same weights (diffusion_prequant_cache): it then resolves as a
-            # local pre-quant source above and the dense bf16 transformer is never read again. Best-effort.
+            # Best-effort: cache this build so the next load of the same weights skips the dense transformer.
             from .diffusion_prequant_cache import save_runtime_quant
             save_runtime_quant(
                 getattr(pipe, "transformer", None),
@@ -9998,10 +9993,8 @@ class DiffusionBackend:
         source_base: Optional[str],
         cancel_check: Optional[Callable[[], None]] = None,
     ) -> Optional[str]:
-        """A full-pipeline load that quantized its one denoiser at load keeps that build for the next load of the same
-        weights (diffusion_prequant_cache), which then seeds it like a hosted checkpoint instead of reading the dense
-        transformer. A single ``transformer`` denoiser only (the cache keys that component) and no active LoRA.
-        Best-effort, never raises."""
+        """Cache a load-time quantized ``transformer`` (single denoiser only, the cache keys that component; no LoRA).
+        Never raises."""
         try:
             names = [attr for attr, _module in (denoisers or ())]
             if fam is None or names != ["transformer"] or _has_active_lora(loras):
