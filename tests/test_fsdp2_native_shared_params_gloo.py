@@ -166,7 +166,12 @@ def _worker(
                     p.requires_grad_(False)
             if frozen == "explicit":
                 config.units = list(layers)
-            config.shard_frozen = False
+            if frozen == "fit":
+                # The fit layout replicates frozen weights on its own; keep per-block trainable units.
+                config.fit_layout = True
+                os.environ["UNSLOTH_FSDP2_TRAINABLE_UNITS"] = "blocks"
+            else:
+                config.shard_frozen = False
         native.shard_model(model, config)
         first = dict(layers[hybrid[0]].shared_transformer.named_parameters())
         tied = all(
@@ -205,7 +210,7 @@ def _worker(
         dist.destroy_process_group()
 
 
-@pytest.mark.parametrize("frozen", [None, "explicit", "auto"])
+@pytest.mark.parametrize("frozen", [None, "explicit", "auto", "fit"])
 def test_zamba2_shards_with_shared_transformer_tied(frozen):
     import torch.multiprocessing as mp
 

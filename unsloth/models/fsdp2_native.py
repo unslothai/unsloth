@@ -1299,20 +1299,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "wrap it again."
         )
     config = config or FSDP2Config.from_env()
-    ignored_params = set(config.ignored_params or ())
-    if config.shard_frozen is False and _supports_ignored_params(fully_shard):
-        # Frozen weights will be replicated, so blocks sharing only frozen weights keep their own unit.
-        ignored_params.update(p for p in model.parameters() if not p.requires_grad)
-    units = (
-        list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
-    )
-    extra_units = (
-        _large_root_embeddings(model, units, config.split_large_root_embeddings)
-        if config.units is None
-        else []
-    )
-    # Sharing is checked once the replicated set is known (ignored and, if replicated, frozen params).
-    check_shard_units(model, units + extra_units, ignored_params = None)
+    if config.units is not None:
+        # Sharing is checked once the replicated set is known (ignored and, if replicated, frozen params).
+        check_shard_units(model, list(config.units), ignored_params = None)
     _refuse_tensor_parallel_model(model)
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)
@@ -1365,6 +1354,20 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     # the agreed value, or a rank that fit alone keeps its blocks gathered while the others reshard, and
     # their backward collectives no longer match.
     resolve_reshard_after_forward(layout, config.reshard_after_forward, note = False)
+    # Units after the layout: frozen weights it replicates may be shared by blocks that keep their own unit.
+    ignored_params = set(config.ignored_params or ())
+    if layout.replicate_frozen and _supports_ignored_params(fully_shard):
+        ignored_params.update(p for p in model.parameters() if not p.requires_grad)
+    units = (
+        list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
+    )
+    extra_units = (
+        _large_root_embeddings(model, units, config.split_large_root_embeddings)
+        if config.units is None
+        else []
+    )
+    if extra_units:
+        check_shard_units(model, units + extra_units, ignored_params = None)
     gather_dtype = param_dtype
     if (
         config.param_dtype is None
