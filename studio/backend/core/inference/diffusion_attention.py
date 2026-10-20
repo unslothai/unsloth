@@ -2025,6 +2025,30 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
             pass
 
 
+def _untrack_rocm_flash_calls(pipe: Any) -> None:
+    """Undo ``_track_rocm_flash_calls`` for this pipe's DiTs once they no longer run ROCm flash (a re-apply picked
+    another backend), so the badge and the memory guard stop treating them as flash. Only the DiTs this pipe (or view)
+    owns: an MoE view leaves the other expert's hooks alone."""
+    dits = _attention_dits(pipe) if pipe is not None else []
+    for dit in dits:
+        handles = getattr(dit, _ROCM_FLASH_HOOKS_ATTR, None)
+        if not handles:
+            continue
+        for handle in handles:
+            try:
+                handle.remove()
+            except Exception:  # noqa: BLE001
+                pass
+        for attr in (_ROCM_FLASH_HOOKS_ATTR, ROCM_FLASH_TALLY_ATTR, ROCM_FLASH_DEFERRED_ATTR):
+            try:
+                setattr(dit, attr, None)
+            except Exception:  # noqa: BLE001
+                pass
+    registry = getattr(pipe, _ROCM_FLASH_DITS_ATTR, None) if pipe is not None else None
+    if isinstance(registry, list) and dits:
+        registry[:] = [d for d in registry if not any(d is x for x in dits)]
+
+
 def attention_may_run_native(pipe: Any) -> bool:
     """Whether some attention call of this pipe can run native SDPA although flash is engaged: ROCm flash routes masked
     calls (explicit or auto), and in auto lengths flash does not win (or could not time beside a live forward), to native. For
@@ -3204,6 +3228,8 @@ def apply_attention_backend(
             _tag_dits(pipe, backend)
             if backend == "flash" and target is not None and _is_cuda_rocm(target):
                 _track_rocm_flash_calls(pipe)
+            else:
+                _untrack_rocm_flash_calls(pipe)
             # set_attention_backend also pins the backend process-wide. Each DiT's processors keep it locally, so reset
             # the global to native ONCE, else a later component inherits this kernel.
             _reset_global_backend_to_native(logger)
@@ -3213,6 +3239,7 @@ def apply_attention_backend(
     # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in. One reset
     # covers every fresh DiT.
     _tag_dits(pipe, None)
+    _untrack_rocm_flash_calls(pipe)
     _restore_native_backend(setters[0], logger)
     # Native means torch's SDPA dispatch decides per call, and on a device with no fused kernel that decision is MATH.
     # Say so now; the flags this would otherwise be read off lie (#8225).

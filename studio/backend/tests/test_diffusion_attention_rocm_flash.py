@@ -2271,3 +2271,26 @@ def test_admission_key_does_not_alias_geometry_and_lengths(monkeypatch):
     assert att._rocm_flash_geometry_admitted("cuda:0", "bf16", (32, 2, 16), tokens = 256, kv_tokens = 4096) is False
     assert timed == [(32, 2, 16, 4096, None, 256), (32, 2, 16, 256, 4096, None)]
     assert len(att.ROCM_FLASH_ADMISSIONS) == 2
+
+
+# A re-apply on the same pipe that no longer picks ROCm flash takes the tracking off with it: the badge and the memory
+# guard must not keep reading the pipe as flash.
+
+
+def test_reapply_to_native_removes_rocm_flash_tracking(monkeypatch):
+    torch, dit, timed = _compiled_env(monkeypatch, True, {4096: 70.0})
+    pipe = types.SimpleNamespace(transformer = dit)
+    att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target())
+    assert att.attention_may_run_native(pipe) and att.rocm_flash_ran(pipe) is not None
+    hooks = len(dit._forward_pre_hooks) + len(dit._forward_hooks)
+    assert att.apply_attention_backend(pipe, None, target = _target()) is None
+    assert not att.attention_may_run_native(pipe) and att.rocm_flash_ran(pipe) is None
+    assert len(dit._forward_pre_hooks) + len(dit._forward_hooks) == hooks - 2
+    entry = {"value": "native", "reason": "diffusers default"}
+    state = types.SimpleNamespace(pipe = pipe, resolved = {"attention_backend": entry})
+    att.begin_attention_run(state)
+    att.report_attention_run(state)
+    assert state.resolved["attention_backend"] == entry
+    # and back to flash: tracked again
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
+    assert att.attention_may_run_native(pipe)
