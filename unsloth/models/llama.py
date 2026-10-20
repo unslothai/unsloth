@@ -3131,6 +3131,26 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
     return n
 
 
+
+def _legacy_block_compile(model):
+    """One compiled region per decoder layer for the FastLanguageModel LoRA / QLoRA path, as
+    FastModel does (_block_compile.py). UNSLOTH_BLOCK_COMPILE_LEGACY=0 turns only this off,
+    UNSLOTH_BLOCK_COMPILE=0 every block compile. Before torch 2.11 the fused LoRA kernels stay
+    out of a trace (fast_lora.TRACE_LORA_FUNCTIONS), which splits each block: off unless =1."""
+    mode = os.environ.get("UNSLOTH_BLOCK_COMPILE_LEGACY", "auto")
+    if mode == "0":
+        return []
+    if mode != "1":
+        from ..kernels.fast_lora import TRACE_LORA_FUNCTIONS
+        if not TRACE_LORA_FUNCTIONS:
+            return []
+    try:
+        from ._block_compile import patch_block_compile
+        return patch_block_compile(model)
+    except Exception as e:
+        logger.warning(f"Unsloth: per-block compile not installed: {e}")
+        return []
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -5161,6 +5181,7 @@ class FastLlamaModel:
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
         _unsloth_install_pretrain_detector(model)
+        _legacy_block_compile(model)
         return model
 
     @staticmethod
