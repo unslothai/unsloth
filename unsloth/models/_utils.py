@@ -8442,7 +8442,11 @@ def _apply_every_n_layers(model, every_n_layers):
     layers = [m for m in model.modules() if isinstance(m, GradientCheckpointingLayer)]
     skipped = []
     for i, layer in enumerate(layers):
-        if every_n_layers > 1 and i % every_n_layers != 0 and hasattr(layer, "gradient_checkpointing"):
+        if (
+            every_n_layers > 1
+            and i % every_n_layers != 0
+            and hasattr(layer, "gradient_checkpointing")
+        ):
             current = layer.__dict__.pop("gradient_checkpointing", None)
             _skip_aware_flag(type(layer))
             if current is not None:
@@ -8454,7 +8458,9 @@ def _apply_every_n_layers(model, every_n_layers):
     return skipped
 
 
-_OFFLOADING_CHECKPOINT_SHIMS = frozenset({"unsloth_checkpoint", "unsloth_offloaded_gradient_checkpoint"})
+_OFFLOADING_CHECKPOINT_SHIMS = frozenset(
+    {"unsloth_checkpoint", "unsloth_offloaded_gradient_checkpoint"}
+)
 _GC_KWARGS_WARNED = set()
 
 
@@ -8484,7 +8490,12 @@ def patch_gradient_checkpointing_enable_kwargs():
     native_offload = "offload" in params
 
     @functools.wraps(original)
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs = None, *args, **kwargs):
+    def gradient_checkpointing_enable(
+        self,
+        gradient_checkpointing_kwargs = None,
+        *args,
+        **kwargs,
+    ):
         kwargs.update(zip(positional, args))
         every = kwargs.pop("every_n_layers", None)
         offload = kwargs.pop("offload", None)

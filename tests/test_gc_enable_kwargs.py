@@ -54,8 +54,12 @@ def smart_gc(monkeypatch):
     """patch_unsloth_smart_gradient_checkpointing without buffers; MINIMUM_SIZE keeps offload off."""
     gc = pytest.importorskip("unsloth_zoo.gradient_checkpointing")
     for name, value in (
-        ("FIRST_PASS", False), ("LAST_GC_INDEX", 0), ("CURRENT_GC_INDEX", 0),
-        ("MINIMUM_SIZE", 1 << 40), ("CPU_INDEX", 0), ("BACKWARD_PASS", False),
+        ("FIRST_PASS", False),
+        ("LAST_GC_INDEX", 0),
+        ("CURRENT_GC_INDEX", 0),
+        ("MINIMUM_SIZE", 1 << 40),
+        ("CPU_INDEX", 0),
+        ("BACKWARD_PASS", False),
     ):
         monkeypatch.setattr(gc, name, value, raising = False)
     monkeypatch.setattr(hf_modeling_utils, "checkpoint", gc.unsloth_checkpoint)
@@ -65,8 +69,13 @@ def smart_gc(monkeypatch):
 def _model(layers = 4):
     torch.manual_seed(0)
     config = Qwen3Config(
-        vocab_size = 96, hidden_size = 32, intermediate_size = 64, num_hidden_layers = layers,
-        num_attention_heads = 4, num_key_value_heads = 2, head_dim = 8,
+        vocab_size = 96,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = layers,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 8,
     )
     return Qwen3ForCausalLM(config).float().train()
 
@@ -76,7 +85,11 @@ def _spy_layer_kwargs(model):
     for layer in model.model.layers:
         forward = layer.forward
 
-        def wrapped(*args, _forward = forward, **kwargs):
+        def wrapped(
+            *args,
+            _forward = forward,
+            **kwargs,
+        ):
             seen.extend(k for k in kwargs if k in ("offload", "every_n_layers"))
             return _forward(*args, **kwargs)
 
@@ -93,7 +106,9 @@ def _grads(model):
     model.zero_grad(set_to_none = True)
     loss = model(input_ids = ids, labels = ids).loss
     loss.backward()
-    return loss.detach(), {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    return loss.detach(), {
+        n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None
+    }
 
 
 def test_dict_every_n_layers_and_offload_are_routed_not_bound_into_layers(patched, smart_gc):
@@ -134,7 +149,9 @@ def test_every_n_layers_survives_for_training_flag_rewrite(patched):
     assert _flags(model) == [True, True, True, True]
 
 
-@pytest.mark.skipif(not NATIVE, reason = "offload is a gradient_checkpointing_enable argument from transformers 5.17")
+@pytest.mark.skipif(
+    not NATIVE, reason = "offload is a gradient_checkpointing_enable argument from transformers 5.17"
+)
 def test_native_offload_dropped_only_under_offloading_shim(patched, smart_gc, monkeypatch):
     entered = []
     real = hf_modeling_utils.save_on_cpu
@@ -159,7 +176,9 @@ def test_native_offload_dropped_only_under_offloading_shim(patched, smart_gc, mo
         torch.testing.assert_close(grads[name], ref_grads[name], rtol = 0, atol = 1e-6, msg = name)
 
 
-@pytest.mark.skipif(not NATIVE, reason = "offload is a gradient_checkpointing_enable argument from transformers 5.17")
+@pytest.mark.skipif(
+    not NATIVE, reason = "offload is a gradient_checkpointing_enable argument from transformers 5.17"
+)
 def test_native_offload_kept_with_stock_checkpoint(patched, monkeypatch):
     entered = []
     real = hf_modeling_utils.save_on_cpu
