@@ -3404,11 +3404,13 @@ def release_resident_groups(
     logger: Any = None,
     denoisers_only: bool = False,
     reason: str = "an oversized request",
+    device: Any = None,
 ) -> Optional[Callable[[], None]]:
     """Stream resident offload groups again until ``need_mib`` is freed (text encoders first, then the denoiser's
     blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
     A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
-    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them)."""
+    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them).
+    ``device``: only modules whose groups are resident on that card (a VAE decode on a secondary card)."""
     released: list = []
     streamed: set = set()
 
@@ -3443,6 +3445,13 @@ def release_resident_groups(
             if getattr(m, "_unsloth_resident_room", None)
             and not (denoisers_only and _is_text_encoder_module(pipe, m))
         ]
+        if device is not None:
+            from .diffusion_vae_oom import _same_card
+            modules = [
+                m
+                for m in modules
+                if _same_card(getattr(m, "_unsloth_resident_device", None) or device, device)
+            ]
         if not modules or int(need_mib) <= 0:
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)

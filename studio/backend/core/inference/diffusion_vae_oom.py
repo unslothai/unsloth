@@ -177,6 +177,56 @@ def _whole_on(module: Any, device: Any) -> bool:
     return bool(tensors) and all(t.device == device for t in tensors)
 
 
+def _same_card(a: Any, b: Any) -> bool:
+    """``a`` and ``b`` name the same card. Unreadable (a fake device, None): True, so a single-card pipeline frees
+    what it always freed; an index-less ``cuda`` is the current card."""
+    try:
+        import torch
+        da, db = torch.device(a), torch.device(b)
+    except Exception:  # noqa: BLE001
+        return True
+    if da.type != db.type:
+        return False
+    if da.index == db.index:
+        return True
+    if da.index is not None and db.index is not None:
+        return False
+    try:
+        current = int(torch.cuda.current_device()) if da.type == "cuda" else 0
+    except Exception:  # noqa: BLE001
+        return True
+    return (current if da.index is None else da.index) == (
+        current if db.index is None else db.index
+    )
+
+
+def _graph_on(handle: Any, device: Any) -> bool:
+    """A captured-graph handle sits on ``device``: by the card its graphs recorded on, else its module's card. Unknown:
+    True. Under a component split the VAE decodes on a secondary card while the denoiser's graphs live on the
+    primary: dropping those frees nothing where the decode ran out of memory."""
+    cards = {
+        c
+        for h in (
+            handle,
+            getattr(handle, "fallback_handle", None),
+            *(getattr(handle, "graphs", None) or ()),
+        )
+        if h is not None
+        for c in (getattr(h, "_unsloth_capture_device", None),)
+        if isinstance(c, int)
+    }
+    if cards:
+        return any(_same_card(f"cuda:{c}", device) for c in cards)
+    module = getattr(handle, "module", None)
+    try:
+        cuda = {t.device for t in _module_tensors(module) if t.device.type == "cuda"}
+    except Exception:  # noqa: BLE001
+        cuda = set()
+    if cuda:
+        return any(_same_card(d, device) for d in cuda)
+    return True
+
+
 def _nbytes(module: Any) -> int:
     seen: set = set()
     total = 0
@@ -453,7 +503,11 @@ class DecodeSession:
         # Captured graphs pin their pool and the weights' addresses: drop them before any weight moves (the image and
         # video backends drop them on any OOM too). Nothing to undo: the next step re-captures. If dropping them
         # fails, no weight may move under a graph that could still replay: step (a) stops here.
-        graphs = getattr(pipe, "_unsloth_cuda_graphs", ()) or ()
+        graphs = tuple(
+            h
+            for h in (getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+            if _graph_on(h, self.device)
+        )
         if graphs:
 
             def reset() -> None:
@@ -520,16 +574,23 @@ class DecodeSession:
         from . import diffusion_memory
 
         got: list = []
-        anchor = next(
-            (m for m in (getattr(pipe, "components", {}) or {}).values() if getattr(m, "_unsloth_resident_room", None)),
-            None,
-        )  # fmt: skip
+        resident = [
+            m for m in (getattr(pipe, "components", {}) or {}).values() if getattr(m, "_unsloth_resident_room", None)
+        ]  # fmt: skip
+        # Only groups on the VAE's card free anything for its decode (a component split keeps the denoiser's
+        # resident groups on another card); the deferred return below is then registered for the right card too.
+        local = [
+            m for m in resident if _same_card(getattr(m, "_unsloth_resident_device", None) or self.device, self.device)
+        ]  # fmt: skip
+        anchor = local[0] if local else None
         if anchor is None:
             return 0
+        # every resident module on this card: the call (and its fakes) stays as before
+        on_card = {} if len(local) == len(resident) else {"device": self.device}
 
         def do() -> None:
             restore = diffusion_memory.release_resident_groups(
-                pipe, 1 << 30, self.logger, reason = "a VAE decode that ran out of memory"
+                pipe, 1 << 30, self.logger, reason = "a VAE decode that ran out of memory", **on_card
             )
             if restore is not None:
                 got.append(restore)
@@ -543,7 +604,7 @@ class DecodeSession:
 
         def settle() -> None:
             restore = diffusion_memory.release_resident_groups(
-                pipe, 1 << 30, self.logger, reason = "a failed re-pin"
+                pipe, 1 << 30, self.logger, reason = "a failed re-pin", **on_card
             )
             if restore is not None:
                 got.append(restore)

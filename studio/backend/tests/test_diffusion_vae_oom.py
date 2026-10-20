@@ -2641,3 +2641,101 @@ def test_split_vae_never_decodes_before_its_required_repair(monkeypatch):
     deferred.pending[:] = [("vae_offload", lambda: vae.conv.to(_CARD))]
     vae._decode(_z())
     assert O._DEFERRED_ATTR not in vae.__dict__ and len(vae.seen) == seen_before + 1
+
+
+class _GraphHandle:
+    def __init__(self, card):
+        self._unsloth_capture_device = card
+        self.cache = {"k": "graph"}
+
+
+def _split_vae(monkeypatch, events):
+    """A component split: the VAE decodes on cuda:1, the denoiser (and its graphs) sit on cuda:0."""
+    from core.inference import diffusion_cuda_graph as G
+
+    monkeypatch.setattr(O, "_device_of", lambda z: torch.device("cuda", 1))
+    monkeypatch.setattr(
+        G, "reset_all", lambda handles, strict = False: events.append(("graphs", tuple(handles)))
+    )
+    return _setup(cap = 4096 + 600, untiled_need = 10**9, tiled_need = 500, can_free = False)
+
+
+def test_split_vae_oom_leaves_the_other_cards_graphs_alone(monkeypatch):
+    """A VAE out of memory on cuda:1 dropped the denoiser's cuda:0 graphs and counted that as freed, so the same
+    untiled decode ran again on cuda:1 (and failed) before the tiled one. Only graphs on the VAE's card count."""
+    events = []
+    vae, pipe = _split_vae(monkeypatch, events)
+    pipe._unsloth_cuda_graphs = (_GraphHandle(0),)
+    vae._decode(_z())
+    assert events == []
+    assert [s[0] for s in vae.seen] == [False, True]
+    assert vae._unsloth_vae_oom_stats["recovered_by"] == "tiled"
+
+
+def test_split_vae_oom_still_drops_graphs_on_its_own_card(monkeypatch):
+    events = []
+    vae, pipe = _split_vae(monkeypatch, events)
+    local, other = _GraphHandle(1), _GraphHandle(0)
+    pipe._unsloth_cuda_graphs = (other, local)
+    vae._decode(_z())
+    assert events == [("graphs", (local,))]
+
+
+def test_split_vae_oom_releases_only_groups_on_its_own_card(monkeypatch):
+    """Resident groups on cuda:0 free nothing for a decode on cuda:1: not released, nothing deferred against them;
+    with groups on both cards only the VAE card's are released."""
+    from core.inference import diffusion_memory as M
+
+    calls = []
+
+    def release(
+        pipe,
+        need,
+        logger = None,
+        reason = "",
+        **kw,
+    ):
+        calls.append(kw)
+        return lambda strict = False: None
+
+    monkeypatch.setattr(M, "release_resident_groups", release)
+    vae, pipe = _split_vae(monkeypatch, [])
+    te = pipe.components["text_encoder"]
+    te._unsloth_resident_room, te._unsloth_resident_device = 1, torch.device("cuda", 0)
+    vae._decode(_z())
+    assert calls == [] and [s[0] for s in vae.seen] == [False, True]
+    assert O._DEFERRED_ATTR not in te.__dict__
+
+    vae, pipe = _split_vae(monkeypatch, [])
+    te, tr = pipe.components["text_encoder"], pipe.components["transformer"]
+    te._unsloth_resident_room, te._unsloth_resident_device = 1, torch.device("cuda", 0)
+    tr._unsloth_resident_room, tr._unsloth_resident_device = 1, torch.device("cuda", 1)
+    vae._decode(_z())
+    assert calls == [{"device": torch.device("cuda", 1)}]
+
+
+def test_release_resident_groups_device_filter(monkeypatch):
+    from core.inference import diffusion_memory as M
+
+    class G:
+        _unsloth_resident = True
+        _unsloth_resident_bytes = 1 << 20
+
+    groups = {}
+    released = []
+    monkeypatch.setattr(M, "_offload_groups", lambda m: groups.get(id(m), []))
+    monkeypatch.setattr(M, "_release_group", lambda g: released.append(g))
+    monkeypatch.setattr(M, "_is_text_encoder_module", lambda pipe, m: False)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: None)
+    a, b = torch.nn.Linear(1, 1), torch.nn.Linear(1, 1)
+    for m, card in ((a, 0), (b, 1)):
+        m._unsloth_resident_room, m._unsloth_resident_device = 1, torch.device("cuda", card)
+        groups[id(m)] = [G()]
+    pipe = _Pipe(a = a, b = b)
+    assert M.release_resident_groups(pipe, 1 << 30, device = torch.device("cuda", 1)) is not None
+    assert released == groups[id(b)]
+    released.clear()
+    for g in (*groups[id(a)], *groups[id(b)]):
+        g._unsloth_resident = True
+    M.release_resident_groups(pipe, 1 << 30)
+    assert len(released) == 2
