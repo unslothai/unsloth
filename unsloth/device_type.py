@@ -237,9 +237,8 @@ def cuda_order_mismatch_names():
 
 
 def xpu_supports_native_bf16():
-    """False only when an XPU lacks native bf16; unknown answers True.
-    Without libocloc (absent in torch-xpu wheels) every aspect reads False, so trust the probe only
-    once some aspect reads True. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
+    """Without libocloc (absent in torch-xpu wheels) every aspect reads False, so trust the probe
+    only once some aspect reads True. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
     aspects = (
         "has_bfloat16_conversions",
         "has_subgroup_matrix_multiply_accumulate",

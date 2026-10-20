@@ -137,7 +137,6 @@ def test_unreadable_count_is_silent(monkeypatch):
 
 
 def test_warning_changes_nothing_else(monkeypatch):
-    """Same bf16 decision and is_bf16_supported answer with or without the mismatch."""
     import unsloth._gpu_init as gpu_init
 
     results = []

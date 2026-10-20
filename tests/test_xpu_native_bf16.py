@@ -72,7 +72,6 @@ def _fake_torch(devices):
 
 
 def _xpu_arm(path):
-    # The xpu arm of the SUPPORTS_BFLOAT16 chain (models/_utils.py has other xpu arms above it).
     source = path.read_text(encoding = "utf-8")
     match = re.search(
         r'\nelif DEVICE_TYPE == "xpu":\n((?:    #.*\n)*    SUPPORTS_BFLOAT16 = .*?)\nelif DEVICE_TYPE == "npu":',
