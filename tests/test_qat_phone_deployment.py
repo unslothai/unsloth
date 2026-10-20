@@ -79,7 +79,6 @@ def test_gemma3_int8_int4_keeps_phone_scheme():
 def _int8_embedding_config():
     from torchao.quantization import IntxWeightOnlyConfig
     from torchao.quantization.granularity import PerAxis
-
     return TorchAOConfig(
         qat_scheme = None,
         base_config_and_filter_fns = [
