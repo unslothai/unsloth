@@ -3,6 +3,13 @@
 
 import { useMonitorFrameStore } from "@/features/settings";
 import {
+  type PanelIntent,
+  isDegenerateBox,
+  placeAxis,
+  readPanelIntent,
+  storePanelIntent,
+} from "@/hooks/floating-panel-position";
+import {
   type PointerEvent,
   useLayoutEffect,
   useMemo,
@@ -36,11 +43,6 @@ interface DragSession {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-// Anchored to the far edge until the user drags, then clamped where they left it.
-function place(dragged: boolean, current: number, max: number): number {
-  return dragged ? clamp(current, 0, max) : max;
 }
 
 function sameLayout(a: MonitorLayout, b: MonitorLayout): boolean {
@@ -84,6 +86,7 @@ export function useFloatingPanelLayout(
     size: { width: number; height: number },
     bounds: DOMRect,
   ) => { left: number; top: number },
+  storageKey?: string,
 ) {
   // Per-instance frame owner: a panel unmounting mid-exit clears only its own frame.
   const publisher = useMemo(() => ({}), []);
@@ -92,16 +95,15 @@ export function useFloatingPanelLayout(
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
   const dragFrameRef = useRef(0);
-  const hasDraggedLeftRef = useRef(false);
-  const hasDraggedTopRef = useRef(false);
+  // Where the user left the panel, never rewritten by a clamp: a shrunken (or minimized) window
+  // only changes where it is painted, so growing back puts it where they left it.
+  const [storedIntent] = useState(() => readPanelIntent(storageKey));
+  const intentRef = useRef<PanelIntent>(storedIntent ?? { left: null, top: null });
   const preferredWidthRef = useRef<number | null>(null);
   const preferredHeightRef = useRef<number | null>(null);
   const surfaceWidthRef = useRef(0);
   const narrowedRef = useRef(narrowed);
   const hiddenRef = useRef(hidden);
-  // User's full-width placement; cleared by a drag while narrowed.
-  const chosenLeftRef = useRef<number | null>(null);
-  const restoreLeftRef = useRef<number | null>(null);
   const remeasureRef = useRef(0);
   const [layout, setLayout] = useState<MonitorLayout | null>(null);
   // For transitions that fire no observer (suppressed to undocked).
@@ -133,6 +135,9 @@ export function useFloatingPanelLayout(
 
     const reconcileGeometry = () => {
       const constraintsBox = constraints.getBoundingClientRect();
+      if (isDegenerateBox(constraintsBox)) {
+        return;
+      }
       const monitorBox = monitor.getBoundingClientRect();
       const desiredHeight = desiredPanelHeight(
         monitorBox.height,
@@ -158,32 +163,30 @@ export function useFloatingPanelLayout(
       );
       const maxLeft = Math.max(0, constraintsBox.width - width);
       const maxTop = Math.max(0, constraintsBox.height - height);
-      const currentLeft = monitorBox.left - constraintsBox.left;
-      const currentTop = monitorBox.top - constraintsBox.top;
-      const restoreTo = restoreLeftRef.current;
-      let left =
-        restoreTo === null
-          ? place(hasDraggedLeftRef.current, currentLeft, maxLeft)
-          : clamp(restoreTo, 0, maxLeft);
-      restoreLeftRef.current = null;
-      if (!narrowedRef.current && hasDraggedLeftRef.current) {
-        chosenLeftRef.current = left;
-      }
-      let top = place(hasDraggedTopRef.current, currentTop, maxTop);
-      // Obstacle avoidance applies to the first placement only.
-      if (!initializedRef.current && initialPlacementRef.current) {
+      const session = dragSessionRef.current;
+      // Mid-drag the measured box (transform included) is where the pointer has it.
+      let left = session
+        ? clamp(monitorBox.left - constraintsBox.left, 0, maxLeft)
+        : placeAxis(intentRef.current.left, maxLeft);
+      let top = session
+        ? clamp(monitorBox.top - constraintsBox.top, 0, maxTop)
+        : placeAxis(intentRef.current.top, maxTop);
+      // Obstacle avoidance applies to the first placement only, and a remembered spot wins.
+      if (
+        !initializedRef.current &&
+        initialPlacementRef.current &&
+        storedIntent === null
+      ) {
         const initial = initialPlacementRef.current(
           { width, height },
           constraintsBox,
         );
         left = clamp(initial.left, 0, maxLeft);
         top = clamp(initial.top, 0, maxTop);
-        hasDraggedLeftRef.current = true;
-        hasDraggedTopRef.current = true;
+        intentRef.current = { left, top };
       }
       initializedRef.current = true;
 
-      const session = dragSessionRef.current;
       if (session) {
         session.left = left;
         session.top = top;
@@ -240,7 +243,7 @@ export function useFloatingPanelLayout(
         dragFrameRef.current = 0;
       }
     };
-  }, [constraintsElement, publisher]);
+  }, [constraintsElement, publisher, storedIntent]);
 
   // A hidden panel must not publish a frame others dodge.
   useLayoutEffect(() => {
@@ -256,7 +259,6 @@ export function useFloatingPanelLayout(
     }
     narrowedRef.current = narrowed;
     if (!narrowed) {
-      restoreLeftRef.current = chosenLeftRef.current;
       reconcileRef.current?.();
     }
   }, [narrowed]);
@@ -340,7 +342,6 @@ export function useFloatingPanelLayout(
       return;
     }
 
-    const previousTop = session.top;
     const left = clamp(
       session.left + event.clientX - session.startX,
       0,
@@ -351,9 +352,6 @@ export function useFloatingPanelLayout(
       0,
       session.maxTop,
     );
-    if (top !== previousTop) {
-      hasDraggedTopRef.current = true;
-    }
     session.startX = event.clientX;
     session.startY = event.clientY;
     session.left = left;
@@ -372,12 +370,23 @@ export function useFloatingPanelLayout(
       cancelAnimationFrame(dragFrameRef.current);
       dragFrameRef.current = 0;
     }
-    const { left, top, baseLeft, constraintsWidth, constraintsHeight } =
-      session;
+    const {
+      left,
+      top,
+      baseLeft,
+      baseTop,
+      constraintsWidth,
+      constraintsHeight,
+    } = session;
     dragSessionRef.current = null;
-    if (left !== baseLeft) {
-      hasDraggedLeftRef.current = true;
-      chosenLeftRef.current = narrowedRef.current ? null : left;
+    if (left !== baseLeft || top !== baseTop) {
+      // An axis the drag did not move keeps its anchor or its earlier spot.
+      const intent = intentRef.current;
+      intentRef.current = {
+        left: left !== baseLeft ? left : intent.left,
+        top: top !== baseTop ? top : intent.top,
+      };
+      storePanelIntent(storageKey, intentRef.current);
     }
     // Write the node before state so the handoff never flashes the start position.
     const monitor = monitorRef.current;

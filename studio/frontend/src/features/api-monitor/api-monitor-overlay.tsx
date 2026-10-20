@@ -8,6 +8,7 @@ import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorEntry } from "@/features/chat/types/api";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 import { useMonitorFrameStore, useShortcut } from "@/features/settings";
+import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
 import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
 import {
   useFloatingPanelOrderStore,
@@ -293,6 +294,7 @@ function ApiMonitorPanel({
         top: initial.top - bounds.top,
       };
     },
+    FLOATING_PANEL_POSITION_KEYS.apiMonitor,
   );
   const frames = useMonitorFrameStore((state) => state.frames);
   const ownFrame = frames.get(publisher);
