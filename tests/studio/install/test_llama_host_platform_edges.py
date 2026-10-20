@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """llama.cpp prebuilt choice on three host edges, all I/O faked:
 Windows AMD against upstream's win-rocm-<ver> rename, Apple Silicon under Rosetta, and Jetson."""
 
