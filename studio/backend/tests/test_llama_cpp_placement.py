@@ -6212,24 +6212,43 @@ def test_slot_refit_on_narrowed_dgpus_drops_host_only_terms():
     kw = dict(include_requested = True, exact = True)
     args = (2, 8192, dgpu, total, 10_000 * mib, None, 1.0, 0, 1)
     integ = frozenset({0})
+    assert backend._slots_that_fit_on_gpu(*args, ctx_checkpoints = 16, integrated = integ, **kw) == (
+        [1],
+        False,
+        2,
+    )
     assert backend._slots_that_fit_on_gpu(
-        *args, ctx_checkpoints = 16, integrated = integ, **kw
-    ) == ([1], False, 2)
-    assert backend._slots_that_fit_on_gpu(
-        2, 8192, dgpu, total, 14_500 * mib, None, 1.0, 0, 1,
-        integrated = integ, discrete_host_only_bytes = 2_000 * mib, **kw,
+        2,
+        8192,
+        dgpu,
+        total,
+        14_500 * mib,
+        None,
+        1.0,
+        0,
+        1,
+        integrated = integ,
+        discrete_host_only_bytes = 2_000 * mib,
+        **kw,
     ) == ([1], False, 2)
     # Controls: no integrated GPU prices every term, as before.
     assert backend._slots_that_fit_on_gpu(*args, ctx_checkpoints = 16, **kw) == (None, True, 2)
     assert backend._slots_that_fit_on_gpu(
-        2, 8192, dgpu, total, 14_500 * mib, None, 1.0, 0, 1,
-        discrete_host_only_bytes = 2_000 * mib, **kw,
+        2,
+        8192,
+        dgpu,
+        total,
+        14_500 * mib,
+        None,
+        1.0,
+        0,
+        1,
+        discrete_host_only_bytes = 2_000 * mib,
+        **kw,
     ) == (None, True, 2)
 
 
-def test_drafter_slot_search_keeps_the_discrete_placement_checkpoint_free(
-    tmp_path, monkeypatch
-):
+def test_drafter_slot_search_keeps_the_discrete_placement_checkpoint_free(tmp_path, monkeypatch):
     # The recorded dGPU placement is re-priced at fewer slots without host checkpoints.
     gb, mib = 1024**3, 1024 * 1024
     monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
@@ -6247,10 +6266,8 @@ def test_drafter_slot_search_keeps_the_discrete_placement_checkpoint_free(
     )
     backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
     backend._estimate_compute_buffer_bytes = lambda **k: 1
-    backend._estimate_mtp_overhead_bytes = (
-        lambda n_ctx, *a, _np = None, n_parallel = None, **k: int(
-            3 * gb * int(_np or n_parallel or 1)
-        )
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *a, _np = None, n_parallel = None, **k: int(
+        3 * gb * int(_np or n_parallel or 1)
     )
     backend._rollback_state_bytes = lambda *a, **k: 0
     backend._amd_apu_wants_unified_memory = lambda ids = None, *a, **k: 0 in (ids or [0])
@@ -6270,7 +6287,14 @@ def test_drafter_slot_search_keeps_the_discrete_placement_checkpoint_free(
     seen = []
     real_fit = LlamaCppBackend._fit_context_to_vram
 
-    def spy(self, *a, n_parallel = 1, mtp_engaged = False, ctx_checkpoints = 0, **k):
+    def spy(
+        self,
+        *a,
+        n_parallel = 1,
+        mtp_engaged = False,
+        ctx_checkpoints = 0,
+        **k,
+    ):
         seen.append((n_parallel, mtp_engaged, ctx_checkpoints))
         return real_fit(
             self,
@@ -6369,9 +6393,7 @@ def test_projector_preflight_skips_a_shared_dgpu_like_placement(
     gb = 1024**3
     mmproj = tmp_path / "mmproj.gguf"
     mmproj.write_bytes(b"GGUF")
-    monkeypatch.setattr(
-        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 60_000, 65_536), _DGPU])
     backend._get_gguf_size_bytes = lambda _path: 13 * gb
     backend._can_estimate_kv = lambda: True

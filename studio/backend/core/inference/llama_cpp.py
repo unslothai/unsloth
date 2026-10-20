@@ -17690,7 +17690,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _discrete_tier(
-        gpus: list, integrated: frozenset, shared: frozenset = frozenset()
+        gpus: list,
+        integrated: frozenset,
+        shared: frozenset = frozenset(),
     ) -> Optional[list]:
         """The discrete-first tier (#7624): unshared discrete cards in ``gpus`` order, or
         None when ``gpus`` holds no integrated GPU (no tier; the base pick applies). Shared
@@ -27007,8 +27009,12 @@ class LlamaCppBackend:
 
                     def _tiered_subsets(ranked: list, floor: int) -> list:
                         # (count, prefix) in _select_gpus order: unshared discrete first.
-                        tier = LlamaCppBackend._discrete_tier(ranked, _integrated_gpus, _shared_gpus)
-                        tiers = (tier, ranked) if tier is not None and floor <= len(tier) else (ranked,)
+                        tier = LlamaCppBackend._discrete_tier(
+                            ranked, _integrated_gpus, _shared_gpus
+                        )
+                        tiers = (
+                            (tier, ranked) if tier is not None and floor <= len(tier) else (ranked,)
+                        )
                         return [(n, t[:n]) for t in tiers for n in range(floor, len(t) + 1)]
 
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
