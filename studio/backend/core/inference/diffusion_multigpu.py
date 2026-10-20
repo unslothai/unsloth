@@ -47,10 +47,7 @@ DENOISER_ATTRS: tuple[str, ...] = (
     "unconditional_transformer",
     "unet",
 )
-# Run inside every step beside the denoiser, so moving them to another card buys nothing and costs a copy per step.
 _KEEP_WITH_DENOISER_PREFIXES: tuple[str, ...] = ("controlnet",)
-# Public entry points a pipeline calls on a companion. Internal helpers are not wrapped: they run on the module's own
-# card once the entry point moved the inputs there.
 _ENTRY_METHODS: tuple[str, ...] = (
     "forward",
     "encode",
@@ -122,7 +119,7 @@ def make_selection(
     except Exception:  # noqa: BLE001 - unknown count: the capability filter below still applies
         pass
     if not others:
-        return None  # one card: no capability probe either
+        return None
     # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
     # from Ada): a card of a lower compute capability may not run them, so it takes no component.
     need = _capability(int(primary))
@@ -199,7 +196,6 @@ def with_load_selection(run_load: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         ordinals = kwargs.pop("_gpu_ordinals", None)
         if ordinals and models_kept_loaded():
-            # Keep multiple models loaded prices and claims one card per media load: no other card to place on.
             selection = None
         elif ordinals == AUTOMATIC_ORDINALS:
             selection = automatic_selection(kwargs.get("gpu_ordinal"))
@@ -240,7 +236,6 @@ def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
 
         from utils.hardware import trusted_mem_get_info
 
-        # not torch.cuda.mem_get_info: on Windows ROCm its free figure ignores what this process already holds
         free, total = trusted_mem_get_info(int(ordinal), module = torch.cuda)
         return int(free) // (1 << 20), int(total) // (1 << 20)
     except Exception:  # noqa: BLE001
@@ -568,7 +563,7 @@ def move_to_device(
         moved = [move_to_device(v, device, _depth + 1) for v in obj]
         if all(a is b for a, b in zip(moved, obj)):
             return obj
-        if hasattr(obj, "_fields"):  # namedtuple
+        if hasattr(obj, "_fields"):
             return type(obj)(*moved)
         return type(obj)(moved) if type(obj) is not tuple else tuple(moved)
     if isinstance(obj, list):
@@ -634,8 +629,7 @@ def _crosses(device: Any, home: Any) -> bool:
 
 
 def install_boundary(module: Any, home: Any) -> list[str]:
-    """Wrap ``module``'s entry points: arguments go to the module's CURRENT card, results come back to ``home``. The
-    card is read per call, so a later ``.to()`` of the whole pipeline keeps working. Returns the wrapped names."""
+    """Wrap ``module``'s entry points: arguments go to the module's CURRENT card, results come back to ``home``."""
     torch = _torch()
     home = torch.device(home)
     wrapped_names: list[str] = []
@@ -656,7 +650,6 @@ def install_boundary(module: Any, home: Any) -> list[str]:
 
             boundary._unsloth_boundary = orig  # type: ignore[attr-defined]
             boundary.__wrapped__ = orig  # type: ignore[attr-defined]
-            # an instance override the boundary wraps goes back into the slot on removal, not the class method
             boundary._unsloth_had_override = name in module.__dict__  # type: ignore[attr-defined]
             return boundary
 
@@ -829,8 +822,7 @@ def apply_split_plan(
     placement: str,
     logger: Any = None,
 ) -> bool:
-    """Place a split plan. True when placed; on any failure the split is undone and False is returned (the caller
-    then applies its single-card fallback)."""
+    """Place a split plan."""
     secondary = getattr(plan, "secondary_ordinal", None)
     if secondary is None:
         return False
@@ -873,7 +865,7 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         info = _PLACEMENTS.get(pipe)
         cfg = _CFG_ROUTERS.get(pipe)
         declined = _CFG_DECLINES.get(pipe)
-    except TypeError:  # not weak-referenceable: nothing can have been recorded for it
+    except TypeError:
         return None
     if info is None and cfg is None and declined is None:
         return None
@@ -939,7 +931,6 @@ def _origin_modules(fn: Any) -> list[str]:
         seen += 1
         out.append(str(getattr(fn, "__module__", "") or ""))
         out.append(str(getattr(type(fn), "__module__", "") or ""))
-        # a functools.partial carries the wrapped forward's __module__; its .func names the real origin
         out.append(str(getattr(getattr(fn, "func", None), "__module__", "") or ""))
         fn = (
             getattr(fn, "__wrapped__", None)
@@ -1008,7 +999,7 @@ def _portable(fn: Any, depth: int = 0) -> bool:
         for cell in getattr(func, "__closure__", None) or ():
             try:
                 value = cell.cell_contents
-            except ValueError:  # empty cell
+            except ValueError:
                 continue
             if not _immutable_capture(value, depth + 1):
                 return False
@@ -1019,7 +1010,6 @@ def _portable(fn: Any, depth: int = 0) -> bool:
             _portable(a, depth + 1)
             for a in (*fn.args, *(getattr(fn, "keywords", None) or {}).values())
         )
-    # any other object (a hook object, a captured state holder): portable when its attributes are
     state = getattr(fn, "__dict__", None)
     if isinstance(state, dict):
         return all(_portable(v, depth + 1) for v in state.values())
@@ -1070,7 +1060,7 @@ def _hooks_present(module: Any) -> Optional[str]:
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
             continue
         if kind == "offload" or _is_offload_object(override):
-            continue  # the registry's forward wrapper, dropped with it
+            continue
         if callable(override) and not _trusted_hook(override):
             return f"{name or '<root>'}.forward (instance override)"
     return None
@@ -1105,7 +1095,7 @@ def _rebind_root_forward(original: Any, source: Any, replica: Any) -> None:
         original = getattr(original, "__wrapped__", None)
     if isinstance(original, types.MethodType) and original.__self__ is source:
         if original.__func__ is getattr(type(source), "forward", None):
-            return  # the class forward: the copy already has it
+            return
         replica.__dict__["forward"] = types.MethodType(original.__func__, replica)
         return
     raise RuntimeError(
@@ -1152,11 +1142,10 @@ def build_replica(module: Any, device: Any) -> Any:
         for value in sub.__dict__.values():
             if type(value).__name__ in _SHARED_STATE_TYPES:
                 memo[id(value)] = value
-    # the source's compile guard closes over the source's blocks; the copy gets its own below
     guard = module.__dict__.get("_unsloth_compile_guard")
     if guard is not None:
         memo[id(guard)] = _DROP
-    memo[id(memo)] = keep  # deepcopy's own keep-alive convention
+    memo[id(memo)] = keep
     replica = copy.deepcopy(module, memo)
     router = module.__dict__.get("forward")
     for sub in replica.modules():
@@ -1202,7 +1191,6 @@ def build_replica(module: Any, device: Any) -> Any:
     return replica
 
 
-# Plain objects shared with the source rather than copied (see build_replica).
 _SHARED_STATE_TYPES = frozenset({"NVFP4StepController"})
 
 
@@ -1429,7 +1417,6 @@ def _rebuild(
     return values[path]
 
 
-# A per-call scalar the pipeline recomputes inline (``timestep / 1000``) is a new object with the primary call's value.
 _SMALL_TENSOR_NUMEL = 4096
 
 
@@ -1841,7 +1828,6 @@ class CfgParallelRouter:
             ) // (1 << 20)
             free, _total = _free_total_mib(self.secondary.index)
             if free is not None:
-                # a dropped replica's blocks sit in this process's allocator cache, reusable by the rebuild
                 with contextlib.suppress(Exception):
                     torch = _torch()
                     free += (
@@ -2087,8 +2073,6 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
         return
     if router is None:
         return
-    # A later layer may wrap the router (a static step skip keeps it as ``inner``): it stays reachable there, so it
-    # becomes a passthrough instead of rebuilding a replica nothing tracks or ends per render.
     if router.disabled_reason is None:
         router.disabled_reason = "uninstalled"
     router.drop_replica()

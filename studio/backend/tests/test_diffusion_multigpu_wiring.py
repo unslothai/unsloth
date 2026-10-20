@@ -59,10 +59,8 @@ def test_image_load_generate_and_status_reach_the_multi_gpu_layer(
     assert backend.status()["multi_gpu"] == report
     calls.clear()
     backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 2)
-    # the guard's verdict goes through the VAE-card decision, and the render ends the CFG prefetch either way
     assert ("tile", verdict) in calls
     assert calls[-1:] == [("end", backend._state.pipe)]
-    # unload takes the CFG-parallel replica and its worker thread down with the pipe, not at the next GC
     pipe = backend._state.pipe
     monkeypatch.setattr(D, "uninstall_cfg_parallel", lambda p: calls.append(("uninstall", p)))
     backend.unload()

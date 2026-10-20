@@ -1440,7 +1440,6 @@ class _VideoLoadState:
     vram_floor_mib: Optional[int] = None
     # MiB still on the device during the VAE decode (the streamed DiT has offloaded by then).
     vram_decode_floor_mib: Optional[int] = None
-    # Several-card split (no offload): ((ordinal, resident MiB, runs the VAE decode), ...) per card the load placed on.
     vram_split_cards: Optional[tuple] = None
     # MiniMax-H3: the streamed denoiser also holds a full pinned host copy, which the host floor counts twice.
     denoiser_host_copy: bool = False
@@ -3235,10 +3234,8 @@ def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
             card[1] = card[1] or str(name) == "vae"
         if len(cards) < 2:
             return None
-        # the denoiser's card: a decode on another card copies the decoded clip back there (install_boundary)
         home = placement.get("transformer")
         home = torch.device(home).index if home else None
-        # every card running an expert (a two-expert split puts transformer_2 on the secondary) runs a denoise phase
         denoisers = {
             torch.device(where).index
             for name, where in placement.items()
@@ -3274,7 +3271,6 @@ def video_split_shortfall_message(
             -(-int(width) * int(height) * int(frames) * 3 * 4 // (1 << 20)) if shaped else 0
         )
         if shaped and denoises:
-            # the denoise phase, apart from any decode this card also runs (separate phases)
             phase_mib = max(
                 frames_mib if home and not decodes else 0, _VIDEO_DENOISE_ACTIVATION_MIB
             )
@@ -4090,7 +4086,6 @@ class VideoBackend:
             and len(set(gpu_ids)) > 1
             and multigpu_mode() != "off"
             and resolve_diffusion_device_target().device == "cuda"
-            # no pick: the load resolves every visible card itself (diffusion_multigpu.automatic_selection)
             else AUTOMATIC_ORDINALS
             if not gpu_ids
             else []
@@ -9106,7 +9101,6 @@ class VideoBackend:
             planned = plan
             plan = applied_plan(pipe, plan)
             if getattr(planned, "secondary_ordinal", None) is not None and plan is not planned:
-                # the split failed and its single-card fallback landed: that plan's floor gates generation
                 vram_floor_mib = _video_offload_vram_floor_mib(pipe, plan)
             ltx25_upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None)
             if ltx25_upsampler is not None and offload_policy == OFFLOAD_NONE:
@@ -11381,7 +11375,6 @@ class VideoBackend:
                     and hasattr(torch, "cuda")
                     and hasattr(torch.cuda, "mem_get_info")
                 ):
-                    # A split reports no offload floor; each card it uses is checked for this request instead.
                     from utils.hardware import trusted_mem_get_info
 
                     def _available_mib(ordinal: int) -> int:
@@ -12793,7 +12786,6 @@ class VideoBackend:
                 close_encoder(getattr(state, "pipe", None))
             # A pinner still copying would hold its chunks past release_pinned_host_memory().
             stop_background_pins(getattr(state, "pipe", None))
-            # The CFG-parallel replica (a whole denoiser on another card) and its worker thread go now, not at GC.
             uninstall_cfg_parallel(getattr(state, "pipe", None))
             # Before clear_gpu_cache(), or the graph pool stays reserved.
             diffusion_cuda_graph.uninstall_all(

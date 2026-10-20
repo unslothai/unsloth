@@ -33,6 +33,7 @@ on:
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_project_folders.py'
+      - 'tests/studio/playwright_browser_agent_select.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -76,6 +77,7 @@ on:
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_project_folders.py'
+      - 'tests/studio/playwright_browser_agent_select.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -556,6 +558,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 10
         run: python3 tests/studio/playwright_project_folders.py --out "$RUNNER_TEMP/project-folders"
+      - name: Browser agent checks radios and checkboxes by their labels
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_browser_agent_select.py
 
       - name: Icon tooltips follow the pointer between neighbours
         working-directory: ${{ github.workspace }}

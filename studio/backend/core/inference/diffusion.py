@@ -2122,8 +2122,6 @@ def _vae_on_other_card(pipe: Any, guard_target: Any) -> Any:
     """The CUDA device of ``pipe.vae`` when a multi-GPU split put it on another card than ``guard_target``, else None."""
     from .diffusion_multigpu import _module_device, _split_home, is_split
 
-    # One card: an automatic load's target has no ordinal while its VAE reports cuda:0, which is not another card.
-    # A from_pipe workflow pipeline shares the split modules (and their home markers) but not the placement record.
     if not is_split(pipe) and _split_home(pipe) is None:
         return None
     vae = getattr(pipe, "vae", None)
@@ -4282,7 +4280,6 @@ class DiffusionBackend:
             and len(set(gpu_ids)) > 1
             and multigpu_mode() != "off"
             and resolve_diffusion_device_target().device == "cuda"
-            # no pick: the load resolves every visible card itself (diffusion_multigpu.automatic_selection)
             else AUTOMATIC_ORDINALS
             if not gpu_ids
             else []
@@ -12880,7 +12877,6 @@ class DiffusionBackend:
         if prebuild is not None:
             prebuild.cancel_all()
         compile_cache.restore(state.compile_cache_ctx, logger = logger)
-        # The CFG-parallel replica (a whole denoiser on another card) and its worker thread go now, not at the next GC.
         uninstall_cfg_parallel(state.pipe)
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
