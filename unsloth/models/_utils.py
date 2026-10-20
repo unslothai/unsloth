@@ -8388,7 +8388,9 @@ def _skip_aware_flag(cls):
         return
 
     def _get(self):
-        if self.__dict__.get("_unsloth_skip_checkpoint", False):
+        if self.__dict__.get("_unsloth_skip_checkpoint", False) or self.__dict__.get(
+            "_unsloth_every_n_skip", False
+        ):
             return False
         # Unmarked layers of the class still hold the flag in their own dict.
         return self.__dict__.get(
@@ -8429,6 +8431,119 @@ def skip_checkpointing(model, layers = 0):
             layer.__dict__["_unsloth_gc_flag"] = current
         layer.__dict__["_unsloth_skip_checkpoint"] = True
     return chosen
+
+
+def _apply_every_n_layers(model, every_n_layers):
+    """transformers' `every_n_layers` rule (checkpoint GradientCheckpointingLayer 0, N, 2N...), held by
+    the skip-aware flag so for_training / for_inference, which rewrite every layer's flag, keep it."""
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        return []
+    layers = [m for m in model.modules() if isinstance(m, GradientCheckpointingLayer)]
+    skipped = []
+    for i, layer in enumerate(layers):
+        if every_n_layers > 1 and i % every_n_layers != 0 and hasattr(layer, "gradient_checkpointing"):
+            current = layer.__dict__.pop("gradient_checkpointing", None)
+            _skip_aware_flag(type(layer))
+            if current is not None:
+                layer.__dict__["_unsloth_gc_flag"] = current
+            layer.__dict__["_unsloth_every_n_skip"] = True
+            skipped.append(i)
+        else:
+            layer.__dict__.pop("_unsloth_every_n_skip", None)
+    return skipped
+
+
+# Shims that already move checkpoint inputs to host memory (zoo smart / offloaded gradient checkpointing).
+_OFFLOADING_CHECKPOINT_SHIMS = frozenset({"unsloth_checkpoint", "unsloth_offloaded_gradient_checkpoint"})
+_GC_KWARGS_WARNED = set()
+
+
+def _gc_kwargs_note(key, message):
+    if key not in _GC_KWARGS_WARNED:
+        _GC_KWARGS_WARNED.add(key)
+        print(message)
+
+
+def patch_gradient_checkpointing_enable_kwargs():
+    """Route transformers' `every_n_layers` / `offload` gradient checkpointing options under Unsloth.
+
+    `every_n_layers` and `offload` are gradient_checkpointing_enable() arguments (transformers >= 5.17),
+    not torch.utils.checkpoint ones. Inside gradient_checkpointing_kwargs (TrainingArguments on older
+    transformers, direct calls) the Unsloth checkpoint shims bound them into every decoder layer call, so
+    both were silently dropped. every_n_layers is applied here on any transformers version and survives
+    for_training. offload=True is dropped while Unsloth's own offloading checkpoint is active: it would
+    copy the inputs Unsloth keeps on the GPU (the last layer's) to host memory a second time."""
+    try:
+        from transformers import PreTrainedModel
+        import transformers.modeling_utils as hf_modeling_utils
+    except Exception:
+        return
+    original = PreTrainedModel.gradient_checkpointing_enable
+    if getattr(original, "_unsloth_gc_kwargs", False):
+        return
+    try:
+        params = list(inspect.signature(original).parameters)
+    except Exception:
+        return
+    positional = [p for p in params if p not in ("self", "gradient_checkpointing_kwargs")]
+    native_every = "every_n_layers" in params
+    native_offload = "offload" in params
+
+    @functools.wraps(original)
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs = None, *args, **kwargs):
+        kwargs.update(zip(positional, args))
+        every = kwargs.pop("every_n_layers", None)
+        offload = kwargs.pop("offload", None)
+        if gradient_checkpointing_kwargs is not None:
+            gc_kwargs = dict(gradient_checkpointing_kwargs)
+            dict_every = gc_kwargs.pop("every_n_layers", None)
+            dict_offload = gc_kwargs.pop("offload", None)
+            every = dict_every if every is None else every
+            offload = dict_offload if offload is None else offload
+            if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
+                # As the transformers Trainer passes them: an emptied dict means the default kwargs.
+                gradient_checkpointing_kwargs = gc_kwargs or None
+        every = int(every or 1)
+        if every < 1:
+            raise ValueError(f"Unsloth: every_n_layers must be >= 1, got {every}.")
+        if offload:
+            shim = getattr(hf_modeling_utils, "checkpoint", None)
+            if getattr(shim, "__name__", "") in _OFFLOADING_CHECKPOINT_SHIMS:
+                _gc_kwargs_note(
+                    "offload",
+                    "Unsloth: gradient checkpointing already offloads activations to host memory, "
+                    "so transformers' offload=True is ignored.",
+                )
+                offload = False
+            elif not native_offload:
+                _gc_kwargs_note(
+                    "offload_native",
+                    "Unsloth: gradient checkpointing offload=True needs transformers >= 5.17; ignored. "
+                    'use_gradient_checkpointing = "unsloth" offloads activations on any version.',
+                )
+                offload = False
+        if native_offload and offload:
+            kwargs["offload"] = True
+        if native_every:
+            kwargs["every_n_layers"] = 1
+        out = original(self, gradient_checkpointing_kwargs, **kwargs)
+        if every > 1 or any("_unsloth_every_n_skip" in m.__dict__ for m in self.modules()):
+            skipped = _apply_every_n_layers(self, every)
+            if every > 1 and not skipped:
+                _gc_kwargs_note(
+                    "every_n_layers",
+                    f"Unsloth: every_n_layers = {every} found no GradientCheckpointingLayer to skip; "
+                    "every layer stays checkpointed.",
+                )
+        return out
+
+    gradient_checkpointing_enable._unsloth_gc_kwargs = True
+    PreTrainedModel.gradient_checkpointing_enable = gradient_checkpointing_enable
+
+
+patch_gradient_checkpointing_enable_kwargs()
 
 
 def usable_cuda_bytes(device):
