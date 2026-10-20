@@ -12335,17 +12335,13 @@ async def _maybe_auto_switch_model(
                                         **load_internal_kw,
                                     )
                                     return
-                                # The load tracks its own cancellation, like POST /load.
                                 await load_model_gated(
                                     load_request,
                                     fastapi_request,
                                     current_subject,
                                     current_request_counted = True,
-                                    impl_kwargs = {
-                                        k: v
-                                        for k, v in load_internal_kw.items()
-                                        if k != "load_cancel_event"
-                                    },
+                                    impl_kwargs = load_internal_kw,
+                                    background = True,
                                 )
                                 # Routed to the new slot (None when it took the primary after all):
                                 # hold it so this request is served there.
@@ -18675,6 +18671,7 @@ async def _run_tracked_load_model_impl(
     current_request_counted: bool = False,
     on_reload_confirmed = None,
     impl_kwargs: Optional[dict] = None,
+    background: bool = False,
 ):
     global _running_load_attempt
 
@@ -18685,7 +18682,7 @@ async def _run_tracked_load_model_impl(
     try:
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        warnings_token = _load_warnings_reach_user.set(True)
+        warnings_token = _load_warnings_reach_user.set(not background)
         try:
             with collecting_hub_token_rejections() as token_rejections:
                 response = await _load_model_impl(
@@ -18694,8 +18691,7 @@ async def _run_tracked_load_model_impl(
                     current_subject,
                     current_request_counted = current_request_counted,
                     on_reload_confirmed = on_reload_confirmed,
-                    load_cancel_event = attempt.cancel_event,
-                    **(impl_kwargs or {}),
+                    **{"load_cancel_event": attempt.cancel_event, **(impl_kwargs or {})},
                 )
         finally:
             _load_warnings_reach_user.reset(warnings_token)
@@ -18840,6 +18836,7 @@ async def load_model_gated(
     user_initiated: bool = False,
     current_request_counted: bool = False,
     impl_kwargs: Optional[dict] = None,
+    background: bool = False,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
@@ -18915,6 +18912,9 @@ async def load_model_gated(
                         force = request.force_cancel_active,
                         action = "Reloading this model",
                     )
+                elif background:
+                    # Under the lifecycle gate the load waits for running chats instead.
+                    reload_gate = None
                 else:
                     reload_gate = functools.partial(
                         _raise_or_cancel_active_generations,
@@ -18933,6 +18933,7 @@ async def load_model_gated(
                             current_request_counted = current_request_counted,
                             on_reload_confirmed = reload_gate,
                             impl_kwargs = impl_kwargs,
+                            background = background,
                         )
                         break
                     except (GpuMemoryShortError, HTTPException) as exc:
@@ -19000,11 +19001,12 @@ async def load_model_gated(
                             # Fits nowhere beside the others: replace the active model, as before,
                             # unless its chats refuse that, checked before anything else changes.
                             routed_slot.set(None)
-                            _raise_or_cancel_active_generations(
-                                force = request.force_cancel_active,
-                                action = "Loading a model",
-                                cancel = False,
-                            )
+                            if not background:
+                                _raise_or_cancel_active_generations(
+                                    force = request.force_cancel_active,
+                                    action = "Loading a model",
+                                    cancel = False,
+                                )
                             await asyncio.to_thread(model_slots.drop, extra)
                             model_slots.loading, extra = None, None
                             replaced = _primary_model_label()
@@ -19015,9 +19017,16 @@ async def load_model_gated(
                                 update = {"alongside": False, "force_alongside": False}
                             )
                             async with inference_lifecycle_gate() if new_slot else nullcontext():
-                                _raise_or_cancel_active_generations(
-                                    force = request.force_cancel_active, action = "Loading a model"
-                                )
+                                if background:
+                                    # An automatic switch waits for running chats, as it does without a slot.
+                                    await _wait_for_model_switch_idle(
+                                        current_request_counted = current_request_counted
+                                    )
+                                else:
+                                    _raise_or_cancel_active_generations(
+                                        force = request.force_cancel_active,
+                                        action = "Loading a model",
+                                    )
                                 # As a pick does before a switch: the active model goes first, so
                                 # the new one is placed on a GPU it no longer shares.
                                 await asyncio.to_thread(_unload_primary)
@@ -19032,6 +19041,7 @@ async def load_model_gated(
                                     current_request_counted = current_request_counted,
                                     on_reload_confirmed = None,
                                     impl_kwargs = impl_kwargs,
+                                    background = background,
                                 )
                             evicted += [replaced] if replaced else []
                             break

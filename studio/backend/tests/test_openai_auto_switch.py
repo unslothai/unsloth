@@ -12936,8 +12936,7 @@ def test_a_speech_switch_keeps_the_chat_model_loaded(monkeypatch, mode):
     assert recorder.calls == [] and len(gated) == 1
     request, kwargs = gated[0]
     assert request.alongside and request.model_path == "/local/B.gguf"
-    assert kwargs["current_request_counted"] is True
-    assert "load_cancel_event" not in kwargs["impl_kwargs"]
+    assert kwargs["current_request_counted"] is True and kwargs["background"] is True
     # The kept slot answers to the requested id; the chat model is untouched.
     assert slot.llama._openai_advertised_id == "org/B-GGUF"
     assert backend.model_identifier == "org/A-GGUF"
@@ -12964,3 +12963,24 @@ def test_a_chat_switch_keeps_a_loaded_speech_model(monkeypatch):
     _backend, recorder, _slot, gated = _beside_case(monkeypatch, "fit", primary_speaks = True)
     asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "tester"))
     assert recorder.calls == [] and len(gated) == 1 and gated[0][0].alongside
+
+
+def test_a_background_tracked_load_keeps_the_request_cancel_and_no_user_warnings(monkeypatch):
+    seen = {}
+
+    async def impl(request, fastapi_request, current_subject, **kwargs):
+        seen.update(kwargs, warnings = inference_route._load_warnings_reach_user.get())
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", impl)
+    cancel = threading.Event()
+    request = LoadRequest(model_path = "org/B-GGUF")
+    for background, impl_kwargs in ((True, {"load_cancel_event": cancel}), (False, None)):
+        asyncio.run(
+            inference_route._run_tracked_load_model_impl(
+                request, object(), "tester", impl_kwargs = impl_kwargs, background = background
+            )
+        )
+        if background:
+            assert seen["load_cancel_event"] is cancel and seen["warnings"] is False
+        else:
+            assert seen["load_cancel_event"] is not cancel and seen["warnings"] is True
