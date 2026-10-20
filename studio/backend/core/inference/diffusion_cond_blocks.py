@@ -128,9 +128,14 @@ def flux3_conditioning(
         for block in module.mode_blocks["image_cond"]:
             cond_states = block(cond_states, cond_early_mod, (cond_cos, cond_sin))
         out.update(
-            cond_states = cond_states, cond_single_mod = cond_single_mod, cond_cos = cond_cos, cond_sin = cond_sin
+            cond_states = cond_states,
+            cond_single_mod = cond_single_mod,
+            cond_cos = cond_cos,
+            cond_sin = cond_sin,
         )
-    out.update(txt_states = txt_states, txt_single_mod = txt_single_mod, txt_cos = txt_cos, txt_sin = txt_sin)
+    out.update(
+        txt_states = txt_states, txt_single_mod = txt_single_mod, txt_cos = txt_cos, txt_sin = txt_sin
+    )
     return out
 
 
@@ -348,7 +353,10 @@ def begin_render(transformer: Any, logger: Any = None) -> bool:
     transformer.__dict__["_unsloth_cond_live"] = False
     if not enabled() or _applies(transformer) is not None:
         return False
-    if _stock_forward_or_none(transformer) is None or type(transformer).forward is not _flux3_cached_forward:
+    if (
+        _stock_forward_or_none(transformer) is None
+        or type(transformer).forward is not _flux3_cached_forward
+    ):
         _stats(transformer)["reason"] = "the class forward was not patched at load"
         return False
     why = _offloaded(transformer)
@@ -361,7 +369,9 @@ def begin_render(transformer: Any, logger: Any = None) -> bool:
         handle = transformer.register_forward_pre_hook(_pre_hook, with_kwargs = True)
         transformer.__dict__["_unsloth_cond_hook"] = handle
         if logger is not None:
-            logger.info("diffusion.cond_blocks: FLUX.3 text and reference streams run once per render")
+            logger.info(
+                "diffusion.cond_blocks: FLUX.3 text and reference streams run once per render"
+            )
     elif next(reversed(hooks)) != handle.id:
         hooks.move_to_end(handle.id)
     transformer.__dict__["_unsloth_cond_live"] = True

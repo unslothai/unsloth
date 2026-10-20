@@ -40,7 +40,11 @@ def _tiny(cls, flow_map = False):
     return model.eval()
 
 
-def _inputs(refs: bool, txt_len: int = 5, seed: int = 1):
+def _inputs(
+    refs: bool,
+    txt_len: int = 5,
+    seed: int = 1,
+):
     g = torch.Generator().manual_seed(seed)
     img = 16
     kw = {
@@ -57,7 +61,11 @@ def _inputs(refs: bool, txt_len: int = 5, seed: int = 1):
     return kw
 
 
-def _steps(model, branches, steps = 3):
+def _steps(
+    model,
+    branches,
+    steps = 3,
+):
     outs = []
     for i in range(steps):
         for kw in branches:
