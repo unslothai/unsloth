@@ -7092,14 +7092,15 @@ def _drop_loaded_legacy_torchtune_stub():
         return
     if hasattr(convert_weights, "hf_to_tune"):
         return
+    names = ("torchtune.models.convert_weights", "torchtune.models", "torchtune")
+    saved = {name: sys.modules.pop(name) for name in names if name in sys.modules}
     try:
-        from importlib.machinery import PathFinder
-        if PathFinder.find_spec("torchtune") is None:
-            return
+        # Full import machinery, so editable (meta path finder) installs are seen too.
+        found = importlib.util.find_spec("torchtune") is not None
     except (ImportError, ValueError):
-        return
-    for name in ("torchtune.models.convert_weights", "torchtune.models", "torchtune"):
-        sys.modules.pop(name, None)
+        found = False
+    if not found:
+        sys.modules.update(saved)
 
 
 def fix_executorch():

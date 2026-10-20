@@ -192,10 +192,27 @@ def test_repairs_legacy_unguarded_block(tmp_path, legacy_import):
     assert res["real"] is True and res["tune_to_meta"] == "ok"
 
 
-def test_legacy_stub_already_imported_is_dropped(tmp_path):
+@pytest.mark.parametrize("editable", [False, True])
+def test_legacy_stub_already_imported_is_dropped(tmp_path, editable):
     # An old patched executorch imported before Unsloth in the same process: the stub is already in sys.modules.
     init = _make_executorch(tmp_path)
-    _make_real_torchtune(tmp_path)
+    site = tmp_path / "editable" if editable else tmp_path
+    site.mkdir(exist_ok = True)
+    _make_real_torchtune(site)
+    # PEP 660 editable installs resolve through a meta path finder, not a sys.path entry.
+    finder = (
+        f"""
+        import importlib.machinery
+        class _Editable:
+            @classmethod
+            def find_spec(cls, name, path = None, target = None):
+                if name == "torchtune":
+                    return importlib.machinery.PathFinder.find_spec(name, [{str(site)!r}])
+        sys.meta_path.append(_Editable)
+        """
+        if editable
+        else ""
+    )
     s = __import__("importlib.util").util.spec_from_file_location("_uif_t2", IMPORT_FIXES)
     m = __import__("importlib.util").util.module_from_spec(s)
     s.loader.exec_module(m)
@@ -211,6 +228,7 @@ def test_legacy_stub_already_imported_is_dropped(tmp_path):
         import importlib.util, json, sys
         import executorch.examples.models
         assert getattr(sys.modules["torchtune"], "REAL", False) is False
+        {textwrap.indent(textwrap.dedent(finder), " " * 8).strip()}
         s = importlib.util.spec_from_file_location("_uif", {str(IMPORT_FIXES)!r})
         m = importlib.util.module_from_spec(s)
         s.loader.exec_module(m)
