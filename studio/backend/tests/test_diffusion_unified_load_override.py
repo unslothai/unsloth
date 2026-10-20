@@ -182,6 +182,21 @@ def test_companion_split_matches_the_resident_total():
     assert companion_bytes_from_declared("Qwen/Qwen-Image", QWEN_IMAGE[:1]) is None
 
 
+def test_a_unet_is_not_counted_as_a_companion():
+    from core.inference.diffusion_auto_policy import companion_bytes_from_declared
+
+    companions = (
+        ("text_encoder/model.safetensors", 246_144_152),
+        ("text_encoder_2/model.safetensors", 1_389_382_176),
+        ("vae/diffusion_pytorch_model.safetensors", 334_643_268),
+    )
+    sdxl = (("unet/diffusion_pytorch_model.safetensors", 5_135_149_760),) + companions
+    base = "stabilityai/stable-diffusion-xl-base-1.0"
+    assert companion_bytes_from_declared(base, sdxl) == companion_bytes_from_declared(
+        base, companions
+    )
+
+
 # --- the override ----------------------------------------------------------------------------------------------
 
 

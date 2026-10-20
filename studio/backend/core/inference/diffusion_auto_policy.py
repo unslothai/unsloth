@@ -183,10 +183,11 @@ def companion_bytes_from_declared(
     _denoiser_factor, companion_factor = _BASE_RESIDENT_FACTORS.get(
         _base_key(base_repo) if base_repo else "", (1.0, 1.0)
     )
+    # An SDXL-style UNet is the denoiser here too, though the resident factors above only key transformers.
     companions = sum(
         max(0, int(size or 0))
         for path, size in (declared_files or ())
-        if not str(path).startswith(DENOISER_SUBFOLDERS)
+        if not str(path).startswith(DENOISER_SUBFOLDERS + ("unet/",))
     )
     if companions <= 0:
         return None
