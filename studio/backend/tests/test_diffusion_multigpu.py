@@ -1212,6 +1212,17 @@ def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
     assert router.replica is None and router.disabled_reason is None
     _cfg_loop(dit, torch.randn(2, 4), steps = 2)
     assert len(replicas) == 2
+    # a profile that fails part way may already have patched the source: its replica goes too
+    assert router.replica is not None
+
+    def broken_profile(state):
+        raise RuntimeError("compile failed")
+
+    with pytest.raises(RuntimeError, match = "compile failed"):
+        DiffusionBackend._engage_deferred_speed(
+            _types.SimpleNamespace(_engage_deferred_profile = broken_profile), state
+        )
+    assert router.replica is None
 
 
 class _FlagLinear(torch.nn.Linear):
@@ -2103,3 +2114,77 @@ def test_untiled_decode_probes_the_card_the_vae_lives_on(monkeypatch):
         lambda self, recurse = True: iter([_types.SimpleNamespace(device = torch.device("cpu"))]),
     )
     assert vu._decode_device(vae, latent) == torch.device("cuda", 0)
+
+
+def test_untiled_decode_sizes_the_card_the_vae_decodes_on(monkeypatch):
+    import types as _types
+
+    from core.inference import video_vae_untiled as vu
+
+    family = next(iter({**vu._BYTES_PER_LATENT_PIXEL, **vu._BYTES_PER_FRAME_LATENT_PIXEL}))
+    probed = []
+    monkeypatch.setattr(vu, "_free_bytes", lambda device: probed.append(device))
+
+    class Vae:
+        use_tiling = True
+
+        def decode(self, z, *args, **kwargs):
+            return "tiled"
+
+        def parameters(self):
+            return iter([_types.SimpleNamespace(device = torch.device("cuda", 1))])
+
+    pipe = _types.SimpleNamespace(vae = Vae())
+    assert vu.install_untiled_decode(pipe, family)
+    latent = _types.SimpleNamespace(device = torch.device("cuda", 0), shape = (1, 16, 3, 8, 8))
+    # the wrapped decode, as the pipeline calls it: free memory is read on the VAE's card, not the latent's
+    assert pipe.vae.decode(latent) == "tiled"
+    assert probed == [torch.device("cuda", 1)]
+
+
+@pytest.mark.parametrize("module_name", ["diffusion", "video"])
+def test_begin_load_hands_the_picked_cards_to_the_load_thread(monkeypatch, module_name):
+    # Through the real begin_load and the decorated _run_load: the load's first step sees the selection.
+    import importlib
+    import types as _types
+
+    backend_mod = importlib.import_module(f"core.inference.{module_name}")
+    backend_cls = backend_mod.DiffusionBackend if module_name == "diffusion" else backend_mod.VideoBackend
+    seen = {}
+
+    def first_load_step(*args, **kwargs):
+        seen["selection"] = mg.current_selection()
+        raise RuntimeError("stop after the selection is read")
+
+    class InlineThread:
+        def __init__(self, target, kwargs, daemon = None):
+            self.target, self.kwargs = target, kwargs
+
+        def start(self):
+            self.target(**self.kwargs)
+
+    monkeypatch.setattr(backend_mod, "account_thread", InlineThread)
+    monkeypatch.setattr(
+        backend_mod, "resolve_diffusion_device_target", lambda *a, **k: _types.SimpleNamespace(device = "cuda")
+    )
+    monkeypatch.setattr(backend_mod, "resolve_selected_cuda_ordinal", lambda ids: 0)
+    monkeypatch.setattr(backend_mod, "resolve_selected_cuda_ordinals", lambda ids: [0, 1])
+    monkeypatch.setattr(mg, "_capability", lambda ordinal: None)
+    monkeypatch.setattr(mg, "models_kept_loaded", lambda: False)
+    fam = _types.SimpleNamespace(name = "ltx-2", base_repo = "base/repo", single_file_is_pipeline = False)
+    monkeypatch.setattr(backend_cls, "validate_load_request", lambda self, *a, **k: fam)
+    if module_name == "diffusion":
+        monkeypatch.setattr(backend_cls, "assert_precision_available", lambda self, *a, **k: None)
+        monkeypatch.setattr(backend_mod, "detect_family_for_pick", first_load_step)
+    else:
+        from core.inference import video_minimax_h3
+
+        monkeypatch.setattr(backend_mod, "assert_video_precision_available", lambda *a, **k: None)
+        monkeypatch.setattr(backend_mod, "_ltx23_prequant_serves_on_card", lambda *a, **k: False)
+        monkeypatch.setattr(video_minimax_h3, "is_h3_native", lambda *a, **k: False)
+        monkeypatch.setattr(backend_mod, "_detect_load_family", first_load_step)
+
+    backend_cls().begin_load("org/model", gpu_ids = [0, 1])
+    assert seen["selection"] == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    # and only for that load
+    assert mg.current_selection() is None
