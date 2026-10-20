@@ -162,11 +162,13 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
         with open(path, "rb") as file:
             head = file.read(12)
         if kind == "image":
-            return _has_image_header(head)
+            return _has_image_header(head) or head[:4] in (b"II*\x00", b"MM\x00*")
         return (
-            head[:4] in (b"fLaC", b"OggS")
+            head[:4] in (b"fLaC", b"OggS", b"\x1aE\xdf\xa3", b"0&\xb2u")
             or head[:3] == b"ID3"
+            or head[4:8] == b"ftyp"
             or (head[:4] == b"RIFF" and head[8:12] == b"WAVE")
+            or (len(head) > 1 and head[0] == 0xFF and head[1] & 0xE0 == 0xE0)
         )
 
     def image(column):

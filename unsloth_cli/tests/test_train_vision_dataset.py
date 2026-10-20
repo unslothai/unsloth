@@ -166,6 +166,36 @@ def test_an_extensionless_file_counts_as_an_image_only_when_it_is_one(
     assert trainer.load_kwargs.get("is_dataset_image", False) is image
 
 
+@pytest.mark.parametrize(
+    "header, audio",
+    [
+        (b"\x00\x00\x00\x20ftypM4A ", True),
+        (b"\x1a\x45\xdf\xa3\x01\x00", True),
+        (b"\xff\xfb\x90\x00", True),
+        (b"\xff\xf1\x50\x80", True),
+        (b"0&\xb2u\x8ef\xcf\x11", True),
+        (b"Hello there\n", False),
+    ],
+)
+def test_an_extensionless_audio_file_is_recognised_by_its_container(
+    tmp_path, monkeypatch, header, audio
+):
+    clip = tmp_path / "clip"
+    clip.write_bytes(header)
+    rows = [{"audio": str(clip), "text": "hello"}]
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        _local_model(tmp_path, _TEXT_CONFIG, _AUDIO_VLM_TOKENIZER),
+        "--local-dataset",
+        _local_parquet(tmp_path, rows),
+    )
+
+    assert trainer.load_kwargs.get("is_dataset_audio", False) is audio
+
+
 def test_a_saved_to_disk_image_dataset_trains_the_vision_model(tmp_path, monkeypatch):
     from datasets import Dataset
     from PIL import Image
