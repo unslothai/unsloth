@@ -70,16 +70,18 @@ test("a native tab keeps the page it leaves for a local origin, whose view start
     const store = useBrowserStore.getState();
     const tab = store.openTabIn(store.chat, "https://example.com/")!;
     store.navigate(tab, { url: "https://example.org/" });
+    // the page's router moves on before the user types a local address
+    store.updateTab(tab, { displayUrl: "https://example.org/docs/intro" });
     store.navigate(tab, { url: "http://localhost:7860/" });
     store.navigate(tab, { url: "http://localhost:7860/app" });
     const { history } = useBrowserStore.getState().tabs.find((item) => item.id === tab)!;
     assert.deepEqual(history.map((entry) => (entry.kind === "web" ? entry.url : entry.kind)), [
-      "https://example.org/",
+      "https://example.org/docs/intro",
       "http://localhost:7860/app",
     ]);
     store.goBack(tab);
     const entry = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tab)!);
-    assert.equal(entry.kind === "web" && entry.url, "https://example.org/");
+    assert.equal(entry.kind === "web" && entry.url, "https://example.org/docs/intro");
     store.closeTab(tab);
   } finally {
     setNativeWebHistory(false);
