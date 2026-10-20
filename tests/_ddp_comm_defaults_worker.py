@@ -36,7 +36,6 @@ def build(kind):
         torch.nn.Linear(16, 5),
     ]
     model = torch.nn.Sequential(*layers)
-    # A constant buffer, like a rotary cache or an embedding scale.
     model.register_buffer("scale", torch.tensor(1.5), persistent = False)
     if kind == "peft":
         model.peft_config = {"default": object()}
