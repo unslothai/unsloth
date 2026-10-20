@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Connections the installation owner shares with every account (#14196)."""
 
 import http.server
 import json
@@ -52,7 +51,6 @@ def isolated(monkeypatch, tmp_path):
 
 @pytest.fixture
 def upstream():
-    """A loopback OpenAI-compatible server that records the bearer it was sent."""
     seen = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -258,7 +256,6 @@ def test_model_access_limits_the_models_of_a_shared_connection(monkeypatch):
     with pytest.raises(HTTPException) as refused:
         run_as(ALICE, access.require_connection_model_allowed, config, "unsloth/gemma-3-4b-it-GGUF")
     assert refused.value.status_code == 403
-    # The owner and the account's own connections are not limited by it.
     owner_config = run_as(OWNER, providers_db.get_provider, provider_id)
     run_as(OWNER, access.require_connection_model_allowed, owner_config, "other/private-model")
     run_as(ALICE, access.require_connection_model_allowed, {"id": "own"}, "other/private-model")
@@ -278,7 +275,6 @@ def test_only_the_models_the_owner_enabled_are_shared():
 
 def test_a_shared_row_whose_url_gained_a_credential_elsewhere_is_withdrawn():
     provider_id = owner_connection()
-    # What an older build, which cannot see the column, is free to write.
     run_as(
         OWNER, providers_db.update_provider, provider_id, base_url = "https://gw.example.com/v1?key=s"
     )
@@ -370,7 +366,6 @@ def test_checking_a_shared_connection_probes_no_model_and_quotes_no_upstream_err
         )
     assert response.status_code == 200
     assert response.json()["success"] is True
-    # One GET /models and nothing else: no chat, speech or Responses probe on any model.
     assert len(seen) == 1 and not seen[0].startswith("POST")
 
     run_as(

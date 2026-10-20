@@ -826,7 +826,6 @@ def model_allowed(repo_id: str) -> bool:
 
 
 def connection_model_allowed(model_id: str) -> bool:
-    """The allowlist read against a connection's model id, with or without its ``:tag``."""
     allowlist = model_allowlist()
     if allowlist is None:
         return True
@@ -838,11 +837,9 @@ def connection_model_allowed(model_id: str) -> bool:
 
 
 def shared_connection_view(row: dict) -> dict | None:
-    """An owner-shared connection as this managed account sees it; None when no model is allowed."""
     view = {**row, "shared": True, "shared_by_owner": True}
     models = row.get("models") or []
     if not models:
-        # An untouched selection means the registry defaults, which are then what was shared.
         from core.inference.providers import get_provider_info
         models = list(
             (get_provider_info(row.get("provider_type") or "") or {}).get("default_models") or []
@@ -855,10 +852,8 @@ def shared_connection_view(row: dict) -> dict | None:
 
 
 def require_connection_model_allowed(config: dict | None, model) -> None:
-    """Refuse a model the owner did not enable on a connection they shared, or did not allow this account."""
     if not config or not config.get("shared_by_owner"):
         return
-    # Only the models the owner enabled on it are shared, whatever the account's allowlist says.
     if not isinstance(model, str) or model not in (config.get("models") or []):
         raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
 

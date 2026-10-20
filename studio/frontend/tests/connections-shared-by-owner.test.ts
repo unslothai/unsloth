@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The owner can share a connection with every account (#14196). These pin that the
-// toggle is the owner's alone and that a shared row is usable but never editable elsewhere.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -22,7 +20,6 @@ test("only the owner sees the share toggle, and only with another account or a s
 });
 
 test("a single-account save sends no shared field", () => {
-  // Byte-identical requests for everyone who never shares.
   assert.match(dialog, /\.\.\.\(showShareToggle && sharedDraft \? \{ shared: true \} : \{\}\),/);
   assert.match(
     dialog,

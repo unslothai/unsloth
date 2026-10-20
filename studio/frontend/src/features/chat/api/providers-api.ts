@@ -55,9 +55,7 @@ export interface ProviderConfig {
   available_models?: string[];
   max_output_tokens?: number | null;
   reasoning_config?: CustomReasoningConfig | null;
-  /** Every account on this installation can use it (#14196). */
   shared?: boolean;
-  /** The owner shared it with this account: usable, not editable. */
   shared_by_owner?: boolean;
   created_at: string;
   updated_at: string;

@@ -351,7 +351,6 @@ def _own_rows(where: str = "", params: tuple = ()) -> list[dict]:
 
 
 def base_url_carries_credential(base_url: Optional[str]) -> bool:
-    """Userinfo or a query string, either of which can hold a secret; unparsable counts as one."""
     try:
         parts = urlparse(base_url or "")
         return bool(parts.username or parts.password or parts.query)
@@ -360,10 +359,7 @@ def base_url_carries_credential(base_url: Optional[str]) -> bool:
 
 
 def _owner_shared_rows(provider_id: Optional[str] = None) -> list[dict]:
-    """The owner's shared connections as a managed account sees them; [] for the owner.
-
-    A ChatGPT subscription is never shared: it is one person's sign-in, not an API key.
-    """
+    # A ChatGPT subscription is never shared: it is one person's sign-in, not an API key.
     from utils.account_context import OWNER, is_owner_context, run_as
 
     if is_owner_context():
@@ -393,18 +389,15 @@ def _owner_shared_rows(provider_id: Optional[str] = None) -> list[dict]:
 
 
 def is_owner_shared_provider(id: str) -> bool:
-    """True when ``id`` names a connection the owner shared and this managed account has none of."""
     return not _own_rows("WHERE id = ?", (id,)) and bool(_owner_shared_rows(id))
 
 
 def get_own_provider(id: str) -> Optional[dict]:
-    """This account's own provider row, never one the owner shared."""
     rows = _own_rows("WHERE id = ?", (id,))
     return rows[0] if rows else None
 
 
 def get_provider(id: str) -> Optional[dict]:
-    """Fetch a single provider by ID: the account's own, else one the owner shared."""
     own = get_own_provider(id)
     if own is not None:
         return own
@@ -413,7 +406,6 @@ def get_provider(id: str) -> Optional[dict]:
 
 
 def list_providers() -> list[dict]:
-    """The account's provider configurations by creation time, then any the owner shared."""
     own = _own_rows()
     own_ids = {row["id"] for row in own}
     return own + [row for row in _owner_shared_rows() if row["id"] not in own_ids]

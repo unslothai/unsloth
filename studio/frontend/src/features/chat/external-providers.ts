@@ -37,9 +37,7 @@ export interface ExternalProviderConfig {
 
   /** Whether the backend has an installation-saved key. */
   hasApiKey?: boolean;
-  /** Every account on this installation can use it. */
   shared?: boolean;
-  /** The installation owner shared it with this account: usable, not editable. */
   sharedByOwner?: boolean;
 
   /** Sanitized backend-owned authorization state; never contains OAuth material. */

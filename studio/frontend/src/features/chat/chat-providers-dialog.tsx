@@ -424,7 +424,6 @@ export function ChatProvidersSettings({
     ? providers.find((provider) => provider.id === editingProviderId)
     : undefined;
   const editingProviderHasSavedKey = Boolean(editingProvider?.hasApiKey);
-  // Only the owner shares, and only once there is another account to share with (or to unshare).
   const showShareToggle =
     isAccountOwner &&
     !usesOAuth &&

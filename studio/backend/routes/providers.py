@@ -133,7 +133,6 @@ def _validate_share_request(
 
 
 def _own_provider_or_error(provider_id: str) -> dict:
-    """The caller's own row for a mutation; an owner-shared row is read-only to everyone else."""
     existing = providers_db.get_own_provider(provider_id)
     if existing is not None:
         return existing
@@ -925,8 +924,7 @@ async def test_provider(
     )
 
     if shared:
-        # Another account learns only whether the owner's connection answers: no model probe, and
-        # no upstream error text, which can quote the saved URL.
+        # Others learn only reachability: no model probe, no upstream error text (it can quote the URL).
         try:
             if answers_decisions_only(payload.provider_type, payload.api_type):
                 await client.list_decision_models()
@@ -1149,7 +1147,6 @@ async def list_provider_models(
     An explicit encrypted key takes precedence over the saved provider key.
     """
 
-    # A shared connection lists only what the owner allowed this account.
     shared = _is_shared_saved_target(payload)
     payload = _bind_saved_provider_target(payload)
     info = get_connectable_provider_info(payload.provider_type)
