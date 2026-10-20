@@ -38,7 +38,6 @@ test("the card ends in an Add folder row that says when it cannot", () => {
   );
   assert.ok(card.length > 0, "the card layout moved");
   assert.match(card, /<span>Add folder<\/span>/);
-  // Linkable through the desktop picker or a folder the server operator configured.
   assert.match(FOLDERS, /const canLink = manager\.desktopSupported \|\| manager\.serverFolders\.length > 0;/);
   assert.match(card, /disabled=\{!canLink \|\| manager\.mutating\}/);
   assert.match(card, /onClick=\{addFolder\}/);
