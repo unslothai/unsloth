@@ -465,6 +465,21 @@ def test_chatbackend_always_on_reasoning_samples_as_thinking(monkeypatch, kind, 
     assert _qwen_sampling(monkeypatch, kind, fake, False) == _QWEN_THINKING_ON
 
 
+@pytest.mark.parametrize("enable_thinking", [False, True])
+@pytest.mark.parametrize(
+    "kind, flags",
+    [
+        ("gguf", {"supports_reasoning": True, "reasoning_always_on": True}),
+        ("unsloth", {"template": _ALWAYS_THINKING_TEMPLATE}),
+    ],
+)
+def test_chatbackend_instruct_2507_keeps_the_model_recommendation(
+    monkeypatch, kind, flags, enable_thinking
+):
+    fake = _qwen_backend(kind, "unsloth/Qwen3-4B-Instruct-2507", **flags)
+    assert _qwen_sampling(monkeypatch, kind, fake, enable_thinking) == _QWEN_THINKING_OFF
+
+
 @pytest.mark.parametrize(
     "kind, model_id", [("gguf", "unsloth/Qwen3.5-4B-GGUF"), ("unsloth", "unsloth/Qwen3.5-4B")]
 )

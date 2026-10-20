@@ -443,6 +443,9 @@ class ChatBackend:
             supports_reasoning = flags["supports_reasoning"]
             always_on = flags["reasoning_always_on"]
         thinking = (always_on or enable_thinking) if supports_reasoning else None
+        # Instruct-2507 templates keep <think> handling for history but the models never reason.
+        if re.search(r"qwen3[-_].*instruct[-_]2507", (model_id or "").lower()):
+            thinking = None
         sampling = resolve_effective_sampling(
             model_id,
             dict(
