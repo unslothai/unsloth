@@ -35,7 +35,7 @@ function iframeAttributes(): Map<string, string | null> {
     const value = attribute.initializer;
     attributes.set(
       attribute.name.getText(),
-      value && ts.isStringLiteral(value) ? value.text : null,
+      value ? (ts.isStringLiteral(value) ? value.text : value.getText()) : null,
     );
   }
   return attributes;

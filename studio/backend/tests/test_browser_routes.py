@@ -35,7 +35,7 @@ def test_the_shell_is_isolated():
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 
-def test_the_shells_page_may_go_fullscreen_and_nothing_more():
+def test_the_shells_page_may_go_fullscreen_without_leaving_its_sandbox():
     shell = browser_mod._FRAME_HTML
     assert 'page.setAttribute("sandbox", "allow-scripts allow-forms");' in shell
     assert 'page.setAttribute("allowfullscreen", "");' in shell
