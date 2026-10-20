@@ -429,6 +429,14 @@ def unsupported_reason(
     """Why ``precision`` cannot run quantized on ``device``, or None."""
     if not device.startswith("cuda"):
         return "quantized kernels run on CUDA only"
+    from core._torchao_stub import is_stubbed, torch_is_rocm
+
+    # ROCm reports gfx versions through the CUDA capability API and these dynamic INT8 / FP8 paths are NVIDIA-only
+    # (diffusion_transformer_quant.dense_transformer_supported refuses ROCm for the same reason).
+    if torch_is_rocm():
+        return "quantized kernels run on NVIDIA CUDA only (ROCm build)"
+    if is_stubbed("torchao"):
+        return "torchao is a stub on this install"
     if dtype is not None:
         import torch
         if dtype != torch.bfloat16:

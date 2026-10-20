@@ -389,6 +389,8 @@ def _variant_snapshot(variant_id: str) -> Optional[str]:
         return path
     variant = SEGMENTER_VARIANTS[variant_id]
     for artifact in variant.prequant:
+        if not _loadable(variant, artifact):
+            continue
         path = _cached_snapshot(prequant_spec_id(variant, artifact))
         if path is not None:
             return path
@@ -561,16 +563,22 @@ class WeightsPlan:
 
 
 def _loadable(variant: SegmenterVariant, artifact: SegmenterPrequant) -> bool:
-    """``artifact`` is the file its precision loads here, and (under auto) it passed the accuracy gate."""
+    """``artifact`` is a file the current UNSLOTH_SAM3_PRECISION may load: the file its precision loads here, and
+    under auto one that passed the accuracy gate, under fp8 / int8 that precision's, under bf16 none. Anything else
+    on disk is ignored (not used, not even dequantized), so the selection's own file is offered for download."""
     from core.inference.diffusion_segment_quant import (
         PRECISION_AUTO,
+        PRECISION_BF16,
         auto_may_load,
         requested_precision,
     )
 
     if artifact != variant_artifact(variant, artifact.precision):
         return False
-    return requested_precision() != PRECISION_AUTO or auto_may_load(artifact.tag)
+    requested = requested_precision()
+    if requested == PRECISION_AUTO:
+        return auto_may_load(artifact.tag)
+    return requested != PRECISION_BF16 and artifact.precision == requested
 
 
 def _has_dense_weights(path: Optional[str]) -> bool:
@@ -608,7 +616,7 @@ def plan_weights(
 ) -> WeightsPlan:
     """The weights a load on ``device`` uses: the precision UNSLOTH_SAM3_PRECISION asks for (auto: the gated order
     in diffusion_segment_quant) when its file is on disk and the device runs it, else bf16. bf16 with no bf16 file
-    on disk dequantizes the pre-quantized one that is."""
+    on disk dequantizes a pre-quantized one the selection may load (never one it rejected)."""
     from core.inference.diffusion_segment_quant import PRECISION_BF16, resolve_precision
 
     variant = variant or active_variant()
@@ -621,9 +629,9 @@ def plan_weights(
     if precision != PRECISION_BF16:
         artifact, folder = usable[precision]
         return WeightsPlan(precision, folder, str(Path(folder) / artifact.filename), artifact, why)
-    if _has_dense_weights(path) or not local:
+    if _has_dense_weights(path) or not usable:
         return WeightsPlan(PRECISION_BF16, path, reason = why)
-    artifact, folder = local[0]
+    artifact, folder = next(iter(usable.values()))
     return WeightsPlan(
         PRECISION_BF16,
         folder,

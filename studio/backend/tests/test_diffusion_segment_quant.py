@@ -286,9 +286,20 @@ def test_cached_snapshot_finds_a_prequant_spec(tmp_path, monkeypatch):
     assert seg._cached_snapshot(spec_id, hub_cache = tmp_path) == str(snapshot)
     # The bf16 spec still needs model.safetensors.
     assert seg._cached_snapshot("sam3.1", hub_cache = tmp_path) is None
-    # A variant with only a pre-quantized file cached is downloaded.
+    # A variant with only a pre-quantized file cached is downloaded, when the precision setting may load that file:
+    # fp8 failed the gate, so under auto it is ignored and the auto file is offered for download instead.
     monkeypatch.setattr(
         seg, "_cached_snapshot", lambda model_id, **k: "/snap" if model_id == spec_id else None
+    )
+    assert seg._variant_snapshot("sam3.1") is None
+    monkeypatch.setenv(sq.ENV_PRECISION, "fp8")
+    assert seg._variant_snapshot("sam3.1") == "/snap"
+    monkeypatch.setenv(sq.ENV_PRECISION, "bf16")
+    assert seg._variant_snapshot("sam3.1") is None
+    monkeypatch.delenv(sq.ENV_PRECISION)
+    convrot_id = "sam3.1@int8-convrot"
+    monkeypatch.setattr(
+        seg, "_cached_snapshot", lambda model_id, **k: "/snap" if model_id == convrot_id else None
     )
     assert seg._variant_snapshot("sam3.1") == "/snap"
     assert variant.id == "sam3.1"
@@ -351,6 +362,36 @@ def test_only_a_quantized_file_on_a_cpu_is_dequantized(monkeypatch, tmp_path):
     )
     plan = seg.plan_weights(only, "cuda:0", variant = sam31, use_cache = False)
     assert plan.precision == "int8" and not plan.dequantize
+
+
+def test_a_file_the_selection_rejected_is_never_dequantized(monkeypatch, tmp_path):
+    """FP8 downloaded earlier, then back on auto (FP8 failed the gate): not run, not dequantized, not downloaded."""
+    _cuda(monkeypatch, (9, 0))
+    sam31 = seg.SEGMENTER_VARIANTS["sam3.1"]
+    only = _folder(tmp_path, "sam3.1-FP8.safetensors")
+    for device in ("cuda:0", "cpu"):
+        plan = seg.plan_weights(only, device, variant = sam31, use_cache = False)
+        assert (plan.precision, plan.weights, plan.dequantize) == ("bf16", None, False)
+    # bf16 asked for: an int8 file on disk is not a bf16 model either.
+    monkeypatch.setenv(sq.ENV_PRECISION, "bf16")
+    convrot = _folder(tmp_path / "convrot", "sam3.1-INT8-ConvRot.safetensors")
+    assert seg.plan_weights(convrot, "cpu", variant = sam31, use_cache = False).weights is None
+    # Asked for explicitly, the fp8 file is what runs (and on the CPU it is dequantized).
+    monkeypatch.setenv(sq.ENV_PRECISION, "fp8")
+    plan = seg.plan_weights(only, "cpu", variant = sam31, use_cache = False)
+    assert plan.dequantize and plan.weights.endswith("FP8.safetensors")
+
+
+def test_rocm_never_runs_the_quantized_files(monkeypatch):
+    from core import _torchao_stub
+
+    _cuda(monkeypatch, (9, 4))
+    assert sq.unsupported_reason("int8", "cuda:0") is None
+    monkeypatch.setattr(_torchao_stub, "torch_is_rocm", lambda: True)
+    assert "ROCm" in sq.unsupported_reason("int8", "cuda:0")
+    assert sq.resolve_precision("cuda:0", available = ("int8", "fp8"))[0] == "bf16"
+    sam31 = seg.SEGMENTER_VARIANTS["sam3.1"]
+    assert seg.download_plan(sam31, "cuda:0")["precision"] == "bf16"
 
 
 def test_an_override_folder_with_only_a_quantized_file_is_downloaded(tmp_path, monkeypatch):
