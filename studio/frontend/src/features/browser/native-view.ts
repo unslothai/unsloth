@@ -224,6 +224,8 @@ function onNativeEvent(event: NativeEvent): void {
   }
   if (!tab) return;
   if (event.kind === "failed") {
+    // It never reached a page: what `pages` holds is the view it replaced.
+    pages.delete(tab.id);
     closeView(tab.id);
     store.updateTab(tab.id, { loading: false, nativeError: event.error });
     return;

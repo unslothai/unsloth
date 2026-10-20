@@ -387,8 +387,14 @@ test("a page whose protections fail shows an error, and Try again opens a new vi
     assert.ok(calls.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId));
     const before = calls.length;
     const listener = (globalThis as { nativeViewListener?: (event: { payload: unknown }) => void }).nativeViewListener;
+    // the old view had moved on; its replacement for the typed address is the one that fails
+    listener?.({ payload: { kind: "url", tabId, url: "https://unprotected.example/moved" } });
+    useBrowserStore.getState().navigate(tabId, { url: "http://localhost:7860/" }, { replace: false });
+    await frame();
     listener?.({ payload: { kind: "failed", tabId, error: "the page's protections couldn't be set up, so it wasn't opened" } });
     const failed = useBrowserStore.getState().tabs.find((tab) => tab.id === tabId);
+    const shown = failed && currentEntry(failed);
+    assert.equal(shown?.kind === "web" && shown.url, "http://localhost:7860/");
     assert.equal(failed?.nativeError, "the page's protections couldn't be set up, so it wasn't opened");
     assert.equal(failed?.loading, false);
     assert.ok(calls.slice(before).some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
