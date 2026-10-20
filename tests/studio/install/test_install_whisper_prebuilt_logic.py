@@ -3011,7 +3011,7 @@ def test_macos_does_not_walk_back_when_llama_is_ahead_of_every_whisper_release(m
     pair with a newer llama.cpp, so listing and fetching all of them (two requests each, on every
     update) found nothing. Seen in CI as ~50 GitHub requests in a no-op macOS update."""
     listed = _macos_pairing_gap(monkeypatch, "b10080-mix-0000000")
-    with pytest.raises(ReleaseCompatibilityError, match = SLIM_LLAMA_TAG):
+    with pytest.raises(M.LlamaPairingGapError, match = SLIM_LLAMA_TAG):
         _plan_on_macos()
     assert listed == []
 
@@ -3042,4 +3042,15 @@ def test_an_unparsable_llama_tag_keeps_the_walk(monkeypatch):
     listed = _macos_pairing_gap(monkeypatch, "custom-build")
     with pytest.raises(ReleaseCompatibilityError):
         _plan_on_macos()
+    assert listed == ["unslothai/whisper.cpp"]
+
+
+def test_macos_still_walks_back_when_the_tags_pair_but_selection_failed_otherwise(monkeypatch):
+    # b10079 shares b10069's ggml, so the pairing holds and the miss is about the runtime's files
+    # (none at /nowhere); an older release may need fewer of them, so the build numbers alone
+    # must not stop the walk.
+    listed = _macos_pairing_gap(monkeypatch, NEWER_LLAMA_TAG)
+    with pytest.raises(PrebuiltFallback) as raised:
+        _plan_on_macos()
+    assert not isinstance(raised.value, M.LlamaPairingGapError)
     assert listed == ["unslothai/whisper.cpp"]

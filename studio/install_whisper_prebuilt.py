@@ -120,6 +120,13 @@ class ReleaseCompatibilityError(PrebuiltFallback):
     """A valid slim release cannot pair with this host's installed runtime."""
 
 
+class LlamaPairingGapError(ReleaseCompatibilityError):
+    """The release's slim bundles pair with no llama.cpp build tree the host has installed."""
+
+
+_PAIRING_GAP_PREFIX = "slim bundle requires llama.cpp "
+
+
 def log(message: str) -> None:
     print(f"[whisper-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
@@ -630,7 +637,8 @@ def select_artifact_with_cpu_fallback(
     except PrebuiltFallback as exc:
         reason = _slim_release_incompatibility(manifest, host)
         if reason is not None:
-            raise ReleaseCompatibilityError(reason) from exc
+            gap = reason.startswith(_PAIRING_GAP_PREFIX)
+            raise (LlamaPairingGapError if gap else ReleaseCompatibilityError)(reason) from exc
         raise
 
 
@@ -719,9 +727,7 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
         for tag, tree in required_pairs
     ):
         required_tag = sorted(required_tags)[0]
-        return (
-            f"slim bundle requires llama.cpp {required_tag}; installed llama.cpp is {installed_tag}"
-        )
+        return f"{_PAIRING_GAP_PREFIX}{required_tag}; installed llama.cpp is {installed_tag}"
     return None
 
 
@@ -1742,6 +1748,7 @@ def _release_plan_for_host(
 
     if (
         not requested_specific_tag
+        and isinstance(first_error, LlamaPairingGapError)
         and first_bundle is not None
         and _installed_llama_is_ahead(first_bundle.manifest, host)
     ):
