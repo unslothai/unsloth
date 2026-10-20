@@ -209,7 +209,6 @@ def test_an_automatic_cpu_record_counts_as_chosen_only_on_a_jetson(monkeypatch, 
     assert hw._expected_cpu_flavor_was_chosen() is True
 
 
-
 @pytest.mark.parametrize(
     "release, compatible, expected",
     [
@@ -221,7 +220,9 @@ def test_an_automatic_cpu_record_counts_as_chosen_only_on_a_jetson(monkeypatch, 
         (None, b"nvidia,grace-hopper\0", False),  # not a Jetson
     ],
 )
-def test_tegra_before_cuda13_reads_the_l4t_release(tmp_path, monkeypatch, release, compatible, expected):
+def test_tegra_before_cuda13_reads_the_l4t_release(
+    tmp_path, monkeypatch, release, compatible, expected
+):
     from utils import tegra as tegra_mod
 
     rel = tmp_path / "nv_tegra_release"

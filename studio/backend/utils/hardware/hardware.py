@@ -858,7 +858,6 @@ def _expected_cpu_flavor_was_chosen() -> bool:
         # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
         # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
         from utils.tegra import tegra_before_cuda13
-
         return tegra_before_cuda13()
     return recorded == "cpu" and pinned
 
