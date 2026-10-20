@@ -50,6 +50,11 @@ export const es = {
     removeFromMessage: "Quitar del mensaje",
   },
   browser: {
+    drafts: {
+      title: "¿Descargar una página con texto introducido?",
+      description: "Para mantener la capacidad de respuesta del chat, solo siguen ejecutándose tres páginas ocultas con texto introducido. Continuar descargará {pages} y podría perder texto sin guardar. Cancelar vuelve a la pestaña anterior.",
+      confirm: "Descargar y continuar",
+    },
     agentSettings: {
       title: "Uso del navegador",
       enable: "Permitir que los modelos usen el navegador",

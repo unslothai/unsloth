@@ -1583,7 +1583,7 @@ def _attempt_package_install(
             logger.warning(
                 "%s wheel installed but is not importable; %s",
                 display_name,
-                "removing it" if wheel_only else "falling back to PyPI",
+                "removing it" if wheel_only or not allow_source_build else "falling back to PyPI",
             )
             wheel_rejected = True
     else:
@@ -2290,8 +2290,8 @@ def _ensure_flash_attn_for_long_context(event_queue: Any, max_seq_length: int) -
         display_name = "flash-attn",
         pypi_name = "flash-attn",
         wheel_url_builder = flash_attn_wheel_url,
-        pypi_spec = "flash-attn",
-        pypi_status_message = "Installing flash-attn from PyPI for long-context training...",
+        # Optional acceleration: skip an unavailable wheel instead of building during training.
+        allow_source_build = False,
     )
     if not installed:
         _send_status(event_queue, "Continuing without flash-attn")

@@ -50,6 +50,11 @@ export const ptBR = {
     removeFromMessage: "Remover da mensagem",
   },
   browser: {
+    drafts: {
+      title: "Descarregar uma página com texto inserido?",
+      description: "Para manter o chat responsivo, apenas três páginas ocultas com texto inserido continuam em execução. Continuar descarregará {pages}, podendo perder texto não salvo. Cancelar volta à aba anterior.",
+      confirm: "Descarregar e continuar",
+    },
     agentSettings: {
       title: "Uso do navegador",
       enable: "Permitir que os modelos usem o navegador",
