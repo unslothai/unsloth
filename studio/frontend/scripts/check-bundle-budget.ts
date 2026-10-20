@@ -278,8 +278,25 @@ export const BUDGET = {
   // 160 B raw / 189 B transfer margin.
   // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
   // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
-  transferBytes: 2_060_729,
-  rawBytes: 6_843_034,
+  // Naming a chat export after its model, title and day (#12586) adds 615 B raw / 65 B transfer (6,842,183 ->
+  // 6,842,798 B raw, 2,060,321 -> 2,060,386 B transfer against 46e4f50bea, one machine and build, Node 24,
+  // 96 chunks): the name builder sits beside the chat exporters in the eager chat chunk. Raised by that growth.
+  // Opening Parallel Slots from the API page's Slots readout (#14225) adds 546 B raw / 212 B transfer (6,842,518 ->
+  // 6,843,064 B raw, 2,060,427 -> 2,060,639 B transfer against bff0a25b4, one machine and build, Node 24, 96 chunks):
+  // the field focus and per-visit Advanced reveal live in the Run settings page and the picker, both in the eager chat
+  // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
+  // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
+  // FLUX.3 workflows, controls and LoRAs (#14312) add 426 B raw / 138 B transfer (6,844,101 -> 6,844,527 B raw,
+  // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
+  // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
+  // to that build plus the same 160 B raw / 189 B transfer margin.
+  // The modern toggles (#14322) add 449 B raw / 86 B transfer (6,844,459 -> 6,844,908 B raw, 2,061,006 ->
+  // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
+  // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
+  // same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_061_281,
+  rawBytes: 6_845_068,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

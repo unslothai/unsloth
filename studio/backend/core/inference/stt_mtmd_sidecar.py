@@ -313,6 +313,12 @@ def is_model_downloaded(model_id: str) -> bool:
     return downloaded
 
 
+def _hub_entry_missing(exc: BaseException) -> bool:
+    """The Hub answered that this file (or revision) does not exist, as opposed to a network, auth or gate error."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return bool(names & {"EntryNotFoundError", "RemoteEntryNotFoundError", "RevisionNotFoundError"})
+
+
 class _MtmdDownloadState:
     """Tracks the two-file download of one mtmd dictation model.
 
@@ -507,12 +513,38 @@ class _MtmdDownloadState:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
             selected: list[_SelectedHubFile] = []
-            revision: Optional[str] = None
+            # A spec may pin a commit (the segmenter's variants); none, or a branch such as "main", resolves the newest.
+            pinned = getattr(spec, "revision", None)
+            revision: Optional[str] = (
+                pinned if isinstance(pinned, str) and _HF_COMMIT_SHA.fullmatch(pinned) else None
+            )
             for filename in getattr(spec, "files", None) or (spec.model_file, spec.mmproj_file):
-                meta = get_hf_file_metadata(
-                    hf_hub_url(spec.repo, filename, revision = revision),
-                    token = normalize_token(hf_token),
-                )
+                try:
+                    meta = get_hf_file_metadata(
+                        hf_hub_url(spec.repo, filename, revision = revision),
+                        token = normalize_token(hf_token),
+                    )
+                except Exception as exc:
+                    fallback = getattr(spec, "fallback", None)
+                    if not fallback or not _hub_entry_missing(exc):
+                        raise
+                    # A spec whose file is not published (yet) at its revision downloads its fallback instead:
+                    # the segmenter's pre-quantized file falls back to the bf16 one.
+                    logger.info(
+                        "%s: %s is not on %s at %s (%s); downloading %s instead",
+                        self._label,
+                        filename,
+                        spec.repo,
+                        revision or "main",
+                        type(exc).__name__,
+                        fallback,
+                    )
+                    with self._lock:
+                        if self._cancelled:
+                            return
+                        self._model_id = fallback
+                    self._run(fallback, hf_token, hub_cache)
+                    return
                 if revision is None:
                     revision = meta.commit_hash
                     if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):

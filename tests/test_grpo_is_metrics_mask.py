@@ -83,3 +83,46 @@ def test_shape_mismatch_keeps_the_old_reduction():
     delta, flat = _unsloth_inputs(mask, old, sampling, ratio)
     got_delta, got_ratio = _helper()(delta, flat, mask[:, :3], False)
     assert got_delta.numel() == delta.numel() and got_ratio.numel() == flat.numel()
+
+
+def _sequence_level_helper():
+    tree = ast.parse(RL_REPLACEMENTS.read_text(encoding = "utf-8"))
+    nodes = [
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_grpo_is_sequence_level"
+    ]
+    assert len(nodes) == 1, "no _unsloth_grpo_is_sequence_level in rl_replacements.py"
+    ns = {}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), str(RL_REPLACEMENTS), "exec"), ns)
+    return ns["_unsloth_grpo_is_sequence_level"]
+
+
+@pytest.mark.parametrize(
+    "args_mode, env_mode, expected",
+    [
+        (None, "", False),
+        ("token_truncate", "", False),
+        ("token_mask", "", False),
+        ("sequence_mask", "", True),
+        ("sequence_truncate", "", True),
+        # unsloth_zoo geometric_*: one ratio per sequence, like sequence_*.
+        ("geometric_mask", "", True),
+        ("geometric_truncate", "", True),
+        # UNSLOTH_GRPO_VLLM_IS_MODE overrides the config mode in unsloth_zoo's grpo_accumulated_loss.
+        ("token_truncate", "geometric_mask", True),
+        ("sequence_mask", "token_mask", False),
+    ],
+)
+def test_sequence_level_follows_the_applied_mode(monkeypatch, args_mode, env_mode, expected):
+    monkeypatch.setenv("UNSLOTH_GRPO_VLLM_IS_MODE", env_mode)
+    assert _sequence_level_helper()(args_mode) is expected
+
+
+def test_geometric_ratio_metric_is_per_sequence():
+    # Geometric ratio broadcast over a 9-token and a 1-token row: token weighting gives 1.85, TRL-style
+    # per-sequence reduction 1.25.
+    mask = torch.tensor([[1] * 9, [1] + [0] * 8], dtype = torch.float32)
+    ratio = torch.tensor([[2.0], [0.5]]) * mask
+    _, flat = _helper()(torch.zeros(2, 9), ratio, mask, _sequence_level_helper()("geometric_mask"))
+    assert torch.allclose(flat.mean(), torch.tensor(1.25))

@@ -39056,13 +39056,14 @@ _LLAMA_DEFAULT_SAMPLERS = (
 # (tools/server/server-schema.cpp) plus OpenAI's. A field llama-server reads only while another
 # is on is off with it.
 _MLX_COMPLETION_FIELDS_OFF = {
-    "logprobs": lambda v, b: v == 0,
-    "n_probs": lambda v, b: v == 0,
     # best_of equal to the choice count asks for no hidden candidates; llama-server ignores it.
     "best_of": lambda v, b: v in (1, _llama_value(b, "n_cmpl")),
     "suffix": lambda v, b: v == "",
     # A lazy grammar waits for a trigger; this one constrains from the first token.
     "grammar_lazy": lambda v, b: v is False or _llama_grammar_off(b),
+    # Ours are pre-sampler; llama-server's post_sampling_probs flips that and renames fields,
+    # but only with n_probs, so refuse only together.
+    "post_sampling_probs": lambda v, b: v is False or not _llama_value(b, "n_probs"),
     "timings_per_token": lambda v, b: v is False,
     "return_tokens": lambda v, b: v is False,
     "return_progress": lambda v, b: v is False,
@@ -39215,6 +39216,17 @@ def _mlx_completions_refusal(body: dict) -> Optional[str]:
             )
     if body.get("stream") is True and len(prompts) * (_llama_value(body, "n_cmpl") or 1) > 1:
         return "Streaming more than one completion is not supported for MLX models."
+    n_probs = _llama_value(body, "n_probs")
+    if n_probs not in (None, False) and not (_is_token_id(n_probs) and n_probs >= 0):
+        return f"Field 'n_probs': Value must be a non-negative integer, but got {n_probs}"
+    if n_probs:
+        # Only the reported tokens: a prompt's own logprobs (echo) are not computed.
+        if body.get("stream") is True:
+            return "'logprobs' is not supported with stream for MLX models."
+        if body.get("echo") is True:
+            return "'logprobs' is not supported with echo for MLX models."
+        if len(prompts) * (_llama_value(body, "n_cmpl") or 1) > 1:
+            return "'logprobs' is supported for one completion per request on MLX models."
     try:
         _llama_logit_bias(body.get("logit_bias"))
         _mlx_completion_grammar(body)
@@ -39229,6 +39241,22 @@ def _active_mlx_backend():
     name = getattr(backend, "active_model_name", None)
     models = getattr(backend, "models", None)
     if name and isinstance(models, dict) and models.get(name, {}).get("is_mlx"):
+        return backend
+    return None
+
+
+def _active_managed_engine_backend():
+    backend = _peek_inference_backend()
+    name = getattr(backend, "active_model_name", None)
+    models = getattr(backend, "models", None)
+    engine = getattr(backend, "_managed_engine", None)
+    if (
+        engine is not None
+        and name
+        and isinstance(models, dict)
+        and models.get(name, {}).get("engine") in ("vllm", "sglang")
+        and engine.alive()
+    ):
         return backend
     return None
 
@@ -39357,6 +39385,8 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         subject = current_subject,
     )
 
+    n_probs = _llama_value(body, "n_probs") or 0
+
     def generate(prompt_ids, choice = 0):
         return backend.generate_completion(
             prompt_ids,
@@ -39364,6 +39394,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             stats_holder = stats_holder,
             max_new_tokens = budget,
             **{**sampling, "seed": _choice_seed(sampling["seed"], choice)},
+            **({"n_probs": n_probs} if n_probs else {}),
         )
 
     def choice_end(prompt_ids, stats):
@@ -39547,8 +39578,15 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                     cached_tokens = (cached_tokens or 0) + cached
             completion_tokens += usage["completion_tokens"]
             prefix = resolved[prompt_index]["text"] if echo else ""
+            token_logprobs = (stats or {}).get("token_logprobs") if n_probs else None
             choices.append(
-                {"text": prefix + text, "index": index, "logprobs": None, "finish_reason": reason}
+                {
+                    "text": prefix + text,
+                    "index": index,
+                    # llama-server's shape, null when nothing was generated.
+                    "logprobs": {"content": token_logprobs} if token_logprobs else None,
+                    "finish_reason": reason,
+                }
             )
             replies.append(text)
     except asyncio.CancelledError:
@@ -39606,7 +39644,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     OpenAI-compatible text completions endpoint (non-chat).
 
     Proxies to the running llama-server's ``/v1/completions`` when a GGUF model is
-    loaded, and serves an MLX model in process.
+    loaded or to a managed vLLM/SGLang engine's, and serves an MLX model in process.
     """
     from utils.hardware import DeviceType, get_device
 
@@ -39643,7 +39681,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
             if not _completions_prompt_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
-            _raise_ignored_completions_params(_pre, echo = not _mlx_device)
+            # A resident managed engine serves echo; a switch to a GGUF still refuses it below.
+            _raise_ignored_completions_params(
+                _pre, echo = not (_mlx_device or _active_managed_engine_backend() is not None)
+            )
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the
@@ -39666,7 +39707,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     )
     llama_backend = get_llama_cpp_backend()
     mlx_backend = None if llama_backend.is_loaded else _active_mlx_backend()
-    if not llama_backend.is_loaded and mlx_backend is None:
+    engine_backend = (
+        None
+        if llama_backend.is_loaded or mlx_backend is not None
+        else _active_managed_engine_backend()
+    )
+    if not llama_backend.is_loaded and mlx_backend is None and engine_backend is None:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
             _raw_body_model(body),
@@ -39685,6 +39731,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _SCHEMA_VALIDATION_EXECUTOR, _mlx_completions_refusal, body
         )
         return await _mlx_completions(request, current_subject, mlx_backend, body, refusal)
+    if engine_backend is not None:
+        _raise_ignored_completions_params(body, echo = False)
+        from routes.managed_engine_chat import managed_engine_completions
+        return await managed_engine_completions(request, current_subject, engine_backend, body)
     _raise_ignored_completions_params(body)
 
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
@@ -53147,13 +53197,13 @@ async def prompt_upsampler_preview(
     return PromptUpsamplerPreviewResponse(enhanced_prompt = caption)
 
 
-# ── Text-to-mask segmenter (SAM 3) ───────────────────────────────────────────────────────────────────────────────────
+# ── Text-to-mask segmenter (SAM 3.1 / SAM 3) ─────────────────────────────────────────────────────────────────────
 
 
 @studio_router.get("/images/segment/status")
 async def mask_segmenter_status(current_subject: str = Depends(get_current_subject)):
-    """Whether SAM 3 can run here, is downloaded (gated facebook/sam3), is loaded and where, and the download
-    progress (the dictation download's shape)."""
+    """Whether SAM 3 can run here, which variant is active (repo, size, gated or not), whether it is downloaded and
+    loaded (and where), and the download progress (the dictation download's shape)."""
     from core.inference import diffusion_segment
     return JSONResponse(content = await asyncio.to_thread(diffusion_segment.status))
 
@@ -53164,26 +53214,42 @@ async def mask_segmenter_download(
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
-    """Start the background download of facebook/sam3's transformers weights; progress on /status."""
+    """Start the background download of the active segmenter variant's transformers weights; progress on /status."""
     from core.inference import diffusion_segment
     from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
 
     account_access.require_installation_owner()
     if not diffusion_segment.transformers_supports_sam3():
         raise HTTPException(status_code = 501, detail = diffusion_segment.status()["reason"])
-    if diffusion_segment.status().get("override"):
+    variant = await asyncio.to_thread(diffusion_segment.active_variant)
+    if (os.environ.get(diffusion_segment.ENV_PATH_OVERRIDE) or "").strip():
         raise HTTPException(
             status_code = 409,
-            detail = "The segmenter weights come from UNSLOTH_SAM3_PATH; unset it to download facebook/sam3.",
+            detail = (
+                f"The segmenter weights come from {diffusion_segment.ENV_PATH_OVERRIDE}; "
+                f"unset it to download {variant.repo}."
+            ),
         )
+    # An ungated variant needs no token; one the user set is still sent.
     token = account_access.account_hf_token(
         (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
     )
     try:
-        download_id = await asyncio.to_thread(diffusion_segment.start_download, token)
+        download_id = await asyncio.to_thread(diffusion_segment.start_download, token, variant.id)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    return JSONResponse(content = {**diffusion_segment.download_status(), "download_id": download_id})
+    plan = diffusion_segment.download_plan(variant)
+    return JSONResponse(
+        content = {
+            **diffusion_segment.download_status(),
+            **diffusion_segment.variant_summary(variant),
+            # The one weights file this host fetches (a pre-quantized one, or bf16) and its download size.
+            "precision": plan["precision"],
+            "weights_file": plan["file"],
+            "size_bytes": plan["size_bytes"],
+            "download_id": download_id,
+        }
+    )
 
 
 @studio_router.post("/images/segment/cancel")
