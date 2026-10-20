@@ -3314,8 +3314,6 @@ def _pid_file_entries(
 
 
 def _pid_is_studio_server(pid: int, created_times: "Sequence[RecordedStart]" = ()) -> bool:
-    """Match stable identities or legacy epoch times. Untimed records are trusted only when
-    there is no known identity to compare."""
     return pid_start_matches(pid, created_times)
 
 

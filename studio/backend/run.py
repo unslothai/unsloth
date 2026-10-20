@@ -986,9 +986,7 @@ def _pid_alive(pid: int) -> bool:
                 timeout = 10,
             )
         except Exception:
-            # Unconfirmed means keep, matching the CLI's _pid_alive. Pruning a live server's record is what lets the
-            # next launch fall back past it and strand it; a stale record instead costs one clear "already running"
-            # message.
+            # An uncertain probe must not erase a live backend's record.
             return True
         if out.returncode != 0:
             return True
@@ -1031,9 +1029,6 @@ def _read_pid_record(path: Path) -> "tuple[int, RecordedStart, str | None] | Non
 
 
 def _pid_is_studio_backend(pid: int, created_times: "Sequence[RecordedStart]" = ()) -> bool:
-    """Match stable identities, or epoch times from older records. Any known match is enough:
-    an older stale record must not veto a live server that reused the PID. Untimed legacy records
-    are trusted because command-line guessing rejected real servers."""
     return pid_start_matches(pid, created_times, _process_create_time)
 
 
@@ -1094,11 +1089,8 @@ def _pid_record_version(path: Path) -> tuple[int, int, int, int, int]:
 
 
 def _prune_dead_pid_records() -> None:
-    """Called with the cache lock held, before publishing our startup marker.
-
-    A start-time mismatch is not proof of death, particularly for old records
-    whose epoch clock moved. Recheck the file and PID because per-port records
-    can be replaced without taking this lock.
+    """Requires the cache lock. Epoch drift is not proof of death; per-port records
+    can be replaced without this lock, so recheck the file and PID before unlinking.
     """
     me = os.getpid()
     for pattern in (STARTUP_MARKER_GLOB, PID_FILE_GLOB):
@@ -1121,7 +1113,6 @@ def _prune_dead_pid_records() -> None:
                 if not _pid_alive(record[0]):
                     path.unlink(missing_ok = True)
             except OSError:
-                # Cleanup is best effort; one inaccessible record must not abort startup.
                 continue
 
 
@@ -1139,9 +1130,6 @@ def write_startup_marker() -> None:
         from utils.cache_cleanup import compiled_cache_lock, LOCK_BUSY, LOCK_HELD
     except Exception:
         import contextlib
-
-        # No lock available means an unserialized publish, which is what this
-        # did before the lock existed. Startup still has to happen.
         compiled_cache_lock = lambda **kwargs: contextlib.nullcontext()
         LOCK_BUSY, LOCK_HELD = "busy", "held"
     # A longer budget than a clear takes: publishing behind a holder that is mid-rmtree is the case worth

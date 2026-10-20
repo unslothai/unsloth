@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Process identities shared by the backend and CLI, without importing the server.
-
-Records keep PID, epoch start time and bind addresses on their original lines.
-Linux adds a fourth line, linux:<boot_id>:<start_ticks>. Unlike psutil's epoch
-time (boot time plus start ticks), it survives system clock adjustments. The
-boot ID distinguishes a reused PID and start tick after a reboot. Older readers
-still see the original three lines. Keep the Rust reader in process_identity.rs
-aligned with this format.
+"""Line four adds clock-stable linux:<boot_id>:<start_ticks>; keep the first three
+lines backward compatible and the Rust reader in process_identity.rs aligned.
 """
 
 from __future__ import annotations
@@ -78,7 +72,6 @@ def pid_start_matches(
                     return True
         elif epoch is not None:
             compared = True
-            # Legacy records retain the desktop's inclusive one-second tolerance.
             if abs(epoch - start) <= 1.0:
                 return True
     return not compared
