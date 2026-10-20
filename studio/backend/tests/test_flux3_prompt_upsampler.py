@@ -1098,6 +1098,25 @@ def test_vulkan_sole_device_must_be_the_image_models_card(spawn_argv, warmable, 
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == "placement"
 
 
+@pytest.mark.parametrize(
+    "count, row, pinned",
+    [
+        (2, "AMD Radeon RX 7600 XT (RADV NAVI33)", False),  # containment only: another model
+        (2, "AMD Radeon RX 7600 (RADV NAVI33)", True),
+        (1, "AMD Radeon RX 7600 XT (RADV NAVI33)", True),  # one torch card: as before
+    ],
+)
+def test_sole_vulkan_device_needs_the_exact_model_beside_other_cards(spawn_argv, monkeypatch, count, row, pinned):
+    import torch
+
+    state, _run = spawn_argv
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: count)
+    state["names"] = ["AMD Radeon RX 7600", "AMD Radeon RX 7900 XTX"][:count]
+    state["ordinal"] = 0
+    state["rows"] = [{"index": 0, "name": row}]
+    assert pup._vulkan_device_args("b", 0) == ([] if pinned else None)
+
+
 def test_users_vulkan_mask_wins(spawn_argv, monkeypatch):
     state, run = spawn_argv
     # GGML_VK_VISIBLE_DEVICES renumbers the probe's devices, so a position-based pick could name another card.

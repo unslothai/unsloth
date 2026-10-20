@@ -939,15 +939,26 @@ def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
     except Exception:  # noqa: BLE001
         return []
     try:
-        from core.inference.sd_cpp_backend import physical_card_name, sd_cpp_device_named
+        from core.inference.sd_cpp_backend import (
+            _normalized_card_name,
+            _without_driver_tag,
+            physical_card_name,
+            sd_cpp_device_named,
+        )
 
         # By name, as the image engine pins its Vulkan build: no torch ordinal maps onto Vulkan's index.
         listing = "".join(f"Vulkan{row['index']}\t{row['name']}\n" for row in rows)
         name, position = physical_card_name(ordinal)
         device = sd_cpp_device_named(binary, name, position = position, listing = listing)
         if len(rows) == 1:
-            # Nothing to choose, but the sole Vulkan device must be the card the memory probe read.
-            return [] if device else None
+            # Nothing to choose, but the sole Vulkan device must be the card the memory probe read: by exact name, as
+            # containment takes an `RX 7600 XT` for an `RX 7600`. One torch card has no other to confuse it with.
+            import torch
+
+            exact = bool(name) and _normalized_card_name(_without_driver_tag(rows[0]["name"])) == _normalized_card_name(
+                name
+            )
+            return [] if device and (exact or torch.cuda.device_count() <= 1) else None
         return ["--device", device] if device else None
     except Exception:  # noqa: BLE001
         return None

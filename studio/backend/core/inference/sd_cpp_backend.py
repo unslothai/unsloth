@@ -664,7 +664,9 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     source = os.environ if env is None else env
     # Windows HIP has no ROCr layer, so a leftover ROCR_VISIBLE_DEVICES masks nothing there.
     rocr = None if sys.platform == "win32" else source.get(_ROCR_MASK_VAR)
-    hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
+    # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; an empty one does not shadow it.
+    present = [source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None]
+    hip = next((raw for raw in present if raw.strip()), present[0] if present else None)
     opaque = source.get(_OPAQUE_MASK_VAR)
     if rocr is None and hip is None and opaque is None:
         return ordinal, False
