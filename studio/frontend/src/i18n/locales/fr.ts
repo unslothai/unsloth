@@ -50,6 +50,11 @@ export const fr = {
     removeFromMessage: "Retirer du message",
   },
   browser: {
+    drafts: {
+      title: "Décharger une page contenant du texte saisi ?",
+      description: "Pour préserver la réactivité du chat, seules trois pages masquées contenant du texte saisi restent actives. Continuer déchargera {pages} et risque de perdre le texte non enregistré. Annuler revient à l’onglet précédent.",
+      confirm: "Décharger et continuer",
+    },
     agentSettings: {
       title: "Utilisation du navigateur",
       enable: "Autoriser les modèles à utiliser le navigateur",
@@ -61,6 +66,8 @@ export const fr = {
       never: "Jamais",
       scripts: "Exécuter des scripts",
       scriptsDescription: "Choisissez si les modèles peuvent exécuter des scripts sur les pages. Chaque script vous est montré avant de s’exécuter",
+      cursor: "Afficher le curseur",
+      cursorDescription: "Affiche un pointeur là où les modèles cliquent, saisissent et font glisser sur la page",
       askEveryTime: "Demander à chaque fois",
       permissionsTitle: "Autorisations de l'agent",
       permissionsDescription: "Choisissez les valeurs par défaut et ajoutez des exceptions pour certains sites. Les champs de mot de passe et de paiement ne sont jamais remplis, quels que soient ces réglages.",
@@ -83,6 +90,9 @@ export const fr = {
     },
     agent: {
       working: "Unsloth navigue dans cet onglet",
+      waiting: "Unsloth attend votre réponse dans le navigateur pour {chat}",
+      otherChat: "une autre discussion",
+      show: "Afficher",
       stop: "Arrêter",
       allow: "Autoriser",
       deny: "Refuser",
@@ -256,7 +266,7 @@ export const fr = {
     annotationScreenshotsAlways: "Toujours inclure",
     annotationScreenshotsNever: "Ne jamais inclure",
     clearDataSetting: "Effacer les données de navigation",
-    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent aucun cookie ni aucune donnée de site.",
+    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Studio.",
     manage: "Gérer",
     fullView: {
       enter: "Plein écran",
@@ -432,7 +442,7 @@ export const fr = {
     },
     clearData: {
       title: "Effacer les données de navigation ?",
-      description: "Cette action efface votre historique de navigation, l’historique des téléchargements et les pages en cache. Les fichiers téléchargés restent sur votre ordinateur.",
+      description: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
       cancel: "Annuler",
       confirm: "Effacer les données",
       done: "Données de navigation effacées",
@@ -448,6 +458,7 @@ export const fr = {
       resubmit: "Cette page provient d'un formulaire. La recharger renvoie le formulaire, ce qui pourrait répéter son action.",
       upload: "L'envoi de fichiers ne fonctionne pas dans cette vue. Ouvrez la page dans le navigateur du système pour l'envoyer.",
       scriptNavigation: "Cette page a tenté d'aller à une autre adresse par script, ce que cette vue ne peut pas suivre. Ouvrez-la plutôt dans le navigateur du système.",
+      needsBrowser: "Cette page a tenté d'utiliser une fonction du navigateur que cette vue bloque, certaines parties peuvent donc ne pas fonctionner. Ouvrez-la plutôt dans le navigateur du système.",
     },
     native: {
       externalPrompt: "{host} veut ouvrir {url}",
@@ -1001,6 +1012,9 @@ export const fr = {
       resetButton: "Réinitialiser",
       resetDone: "Réglages de la Bibliothèque réinitialisés",
       storageSection: "Stockage",
+      downloadsSection: "Téléchargements d'images",
+      imageInfoStamp: "Tampon d'informations",
+      imageInfoStampDescription: "Affiche le modèle, la date et la graine en bas des images téléchargées depuis la page Images. Les paramètres de génération sont enregistrés dans le fichier dans tous les cas.",
       storageDescription: "Ouvrez une catégorie pour voir ses fichiers du plus lourd au plus léger et supprimez ce dont vous n'avez plus besoin.",
       storageUsed: "{size} utilisés par la Bibliothèque",
       storageDisk: "{free} libres sur {total} sur ce disque",
@@ -1367,6 +1381,7 @@ export const fr = {
       installRuntimeFailed: "L'installation du runtime a échoué.",
       installRuntimeError: "Impossible de lancer l'installation du runtime.",
       unsupportedArch: "Le bac à sable Windows (MXC) ne fonctionne que sous Windows x64, il n'est donc pas disponible sur ce PC.",
+      builtinNeedsUpdate: "Le conteneur intégré de Windows nécessite la build {required} ou plus récente, et ce PC exécute {current}. Installez la dernière mise à jour de Windows pour l'utiliser sans étape administrateur, ou activez le sandbox de secours ci-dessous.",
       unsupportedBuild: "Le bac à sable Windows (MXC) nécessite Windows 11 24H2 (build 26100) ou plus récent, il n'est donc pas disponible sur ce PC.",
       permissionsIntro: "Choisissez quand les outils demandent d'abord, et si Python et le Terminal s'exécutent aussi dans le bac à sable du système.",
       permissionLabel: "Autorisations des outils",
@@ -1610,9 +1625,9 @@ export const fr = {
         autoDescription: "Lit chaque réponse à voix haute dès qu’elle est terminée",
         engineLabel: "Moteur TTS",
         engineSystemDescription: "Voix intégrées à l'appareil",
-        engineStudioDescription: "Utilise le modèle vocal chargé dans Audio",
+        engineStudioDescription: "Parle avec un modèle chargé dans Audio › Synthèse vocale",
         engineSystem: "Voix du système",
-        engineStudio: "Charger un modèle TTS",
+        engineStudio: "Modèle Unsloth",
         engineCustom: "Endpoint personnalisé",
         engineCustomDescription:
           "Un serveur TTS compatible OpenAI parmi vos connexions (p. ex. Kokoro)",
@@ -1624,8 +1639,11 @@ export const fr = {
         customVoiceDescription:
           "Nom de la voix attendu par l'endpoint ; alloy par défaut",
         modelLabel: "Modèle TTS",
-        modelDescription:
-          "Chargez un modèle vocal dans Audio. Il remplace le modèle de chat.",
+        modelDescription: "Aucun modèle chargé. Chargez-en un dans Audio › Synthèse vocale.",
+        modelLoaded: "{model} est chargé",
+        keepBothLabel: "Garder le modèle de chat chargé",
+        keepBothDescription: "« Garder plusieurs modèles chargés » est sur « Désactivé » : charger un modèle vocal décharge donc le modèle de chat.",
+        keepBothAction: "Garder les deux chargés",
         openAudioAction: "Ouvrir Audio",
         voiceLabel: "Voix",
         voiceDescription: "Meilleures voix sur cet appareil",
@@ -1703,6 +1721,23 @@ export const fr = {
         loadError: "Échec du chargement des paramètres du LLM assistant.",
         saveError: "Échec de l'enregistrement des paramètres du LLM assistant.",
       },
+      developerMode: {
+        sectionTitle: "Mode développeur",
+        videoCpu: "Autoriser la génération vidéo sur CPU (expérimental)",
+        videoCpuDescription: "Permet d'utiliser la page Vidéo sur une machine sans GPU compatible. Désactivé par défaut ; non pris en charge et très lent.",
+        notApplicable: "Sans effet sur cette machine : la vidéo s'exécute déjà sur son GPU, ou elle est bloquée par un problème que le CPU ne peut pas contourner.",
+        forcedOnByEnv: "Activé par UNSLOTH_VIDEO_ALLOW_CPU dans l'environnement du backend.",
+        forcedOffByEnv: "Désactivé par UNSLOTH_VIDEO_ALLOW_CPU dans l'environnement du backend.",
+        confirmTitle: "Activer la génération vidéo sur CPU ?",
+        confirmWarning: "La génération vidéo sur CPU peut prendre des heures, consommer de grandes quantités de RAM et figer votre système. Continuez à vos risques et périls.",
+        ramBelowMinimum: "Cette machine dispose de {host} GB de RAM, moins que les {min} GB nécessaires au plus petit modèle vidéo sur CPU. Le chargement risque d'échouer ou de figer le système.",
+        ramOk: "Cette machine dispose de {host} GB de RAM. Le plus petit modèle vidéo nécessite environ {min} GB sur CPU ; les modèles plus grands en demandent bien davantage.",
+        ramUnknown: "Le plus petit modèle vidéo nécessite environ {min} GB de RAM sur CPU ; les modèles plus grands en demandent bien davantage.",
+        performanceEstimate: "Comptez plusieurs minutes par étape de débruitage : un clip de 5 images en 832x480 avec Wan2.1 1.3B en 3 étapes a pris environ 4 minutes sur 16 threads CPU, et un clip complet avec les paramètres par défaut peut prendre des heures.",
+        confirmAction: "Activer quand même",
+        loadError: "Impossible de charger les paramètres du mode développeur.",
+        saveError: "Impossible d'enregistrer les paramètres du mode développeur.",
+      },
       modelAutoSwitch: {
         sectionTitle: "Changement automatique de modèle (API OpenAI)",
         enable: "Changer de modèle par requête",
@@ -1736,12 +1771,26 @@ export const fr = {
         autoDownloadDescription:
           "Récupérer un GGUF indiqué dans une requête API qui n'est pas encore téléchargé. Toute personne disposant d'une clé API peut alors consommer de l'espace disque et de la bande passante.",
         keepKv:
-          "Conserver le contexte de la discussion après un déchargement en cas d'inactivité",
+          "Conserver le contexte de la discussion entre les déchargements",
         keepKvDescription:
-          "Enregistrer le cache KV avant un déchargement en cas d'inactivité, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+          "Enregistrer le cache KV avant un déchargement en cas d'inactivité, ou avant qu'un modèle d'image ou de vidéo prenne le GPU, afin qu'une discussion reprise n'ait pas à relire l'historique. Jusqu'à 10 Go sur le disque.",
+        keepKvKeywords: "kv cache contexte changement reprendre image video",
         apiOnly: "Décharger uniquement les modèles chargés par l'API",
         apiOnlyDescription:
           "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
+      },
+      modelAliases: {
+        sectionTitle: "Alias de modèles (OpenAI API)",
+        description:
+          "Des noms stables pour les clients de l’API, comme fast-chat ou code. Une requête qui nomme un alias est servie par le modèle vers lequel il pointe, donc les apps connectées continuent de fonctionner quand vous changez de modèle. Activez Changer de modèle par requête pour qu’un alias puisse charger son modèle.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nom de l’alias",
+        modelAriaLabel: "Modèle vers lequel pointe l’alias",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Supprimer l’alias",
+        add: "Ajouter un alias",
+        loadError: "Impossible de charger les alias de modèles.",
+        saveError: "Impossible d’enregistrer les alias de modèles.",
       },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
@@ -1812,6 +1861,12 @@ export const fr = {
           "Laisser Unsloth et son serveur fonctionner en arrière-plan lorsque vous fermez la fenêtre principale.",
         closeToTraySaveError:
           "Impossible de mettre à jour le réglage de fermeture dans la zone de notification.",
+
+        menuBarIcon: "Afficher dans la barre de menus",
+        menuBarIconDescription:
+          "Afficher l'icône Unsloth dans la barre de menus de macOS. Une fois masquée, Unsloth reste dans le Dock, y compris lors d'un démarrage à la connexion.",
+        menuBarIconSaveError:
+          "Impossible de mettre à jour le réglage de l'icône dans la barre de menus.",
         loadError:
           "Impossible de charger le réglage de lancement à la connexion.",
         saveError:
@@ -1916,8 +1971,8 @@ export const fr = {
         downloadFailed: "Impossible de démarrer le téléchargement",
         downloadConflict: "Reprenez ce téléchargement depuis le Hub",
         downloadBusy: "Téléchargement déjà en cours",
-        pin: "Épingler au menu RAG",
-        unpin: "Désépingler du menu RAG",
+        pin: "Épingler au menu Files",
+        unpin: "Désépingler du menu Files",
         menuChip: "Modèle",
         moreModels: "Plus de modèles",
         pinMoreModels: "Épingler d'autres modèles",
@@ -2027,6 +2082,8 @@ export const fr = {
         subtitle:
           "Tout ce qui suit est calculé à partir de votre propre historique. Rien n'est collecté ni envoyé à Unsloth.",
         retry: "Réessayer",
+        exportCsv: "Exporter en CSV",
+        exportError: "Impossible d'exporter l'utilisation des tokens",
         privacyNote:
           "Les statistiques sont calculées à partir de l'historique local des discussions, de l'utilisation de l'API et des entraînements de votre installation Unsloth. Les requêtes, réponses et clés API ne sont jamais stockées pour les statistiques. Rien n'est envoyé à Unsloth ni à un tiers.",
         emptyChats:
@@ -2360,8 +2417,20 @@ export const fr = {
         noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
         noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         multiModel: "Garder plusieurs modèles chargés",
-        multiModelDescription: "Charger un modèle garde les autres en mémoire.",
-        multiModelHint: "Chaque modèle chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, un nouveau modèle va sur un GPU qu'aucun autre modèle n'utilise lorsqu'il y a de la place. S'il ne tient pas à côté des autres, les modèles inutilisés sont d'abord déchargés, puis il remplace le modèle actif. L'entraînement décharge les modèles supplémentaires avant le modèle actif.",
+        multiModelOff: "Désactivé",
+        multiModelFit: "S'ils tiennent",
+        multiModelAlways: "Toujours",
+        multiModelDescription: "Charger un modèle de discussion, vocal, d'image ou de vidéo décharge les autres.",
+        multiModelDescriptionFit:
+          "Charger un modèle garde les autres s'ils tiennent. Sinon, il décharge d'abord ceux qui ne sont pas utilisés, puis le modèle actif.",
+        multiModelDescriptionAlways:
+          "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
+        multiModelHint: "Concerne les modèles de discussion, vocaux, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        allowOversizedLoad: "Autoriser le chargement de modèles trop grands",
+        allowOversizedLoadDescription: "Charger les modèles d'image et de vidéo même si la vérification de mémoire indique qu'ils ne tiennent pas.",
+        allowOversizedLoadHint: "S'applique lorsque le CPU et le GPU partagent une seule mémoire (Apple Silicon, GPU intégrés). Studio refuse un chargement quand son estimation des poids du modèle dépasse la mémoire restante après la réserve pour le système d'exploitation. Si cette option est activée, le chargement est tenté quand même. L'estimation peut se tromper dans les deux sens : un chargement trop grand peut échouer, épuiser la mémoire, faire beaucoup swapper l'ordinateur ou le bloquer, ou arrêter Studio. Désactivé par défaut.",
+        mediaIdleUnloadDescription:
+          "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
         mlockNotApplicable: "Entièrement sur le GPU : rien à verrouiller en RAM système. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
@@ -2371,6 +2440,10 @@ export const fr = {
         // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoire ram resident epingler verrouiller garder charge decharger inactif mmap no-mmap load-mode pagination echange",
+        multiModelKeywords:
+          "plusieurs modeles ensemble simultanes changer tenir decharger evincer vram gpu image video discussion toujours inactif voix parole vocal tts lecture a voix haute",
+        mediaIdleUnloadKeywords:
+          "image video diffusion inactif decharger ttl delai secondes liberer vram gpu memoire",
       },
       storage: {
         title: "Stockage",
@@ -2624,6 +2697,9 @@ export const fr = {
         showMemoryBar: "Afficher la barre d’utilisation de la VRAM",
         showMemoryBarDescription:
           "Affiche sous la ligne de chaque modèle téléchargé son utilisation estimée de la VRAM : poids, cache KV à la longueur de contexte avec laquelle il sera chargé, et toute réserve de brouillon spéculatif.",
+        fitOnDeviceOnly: "Afficher uniquement les modèles compatibles",
+        fitOnDeviceOnlyDescription:
+          "Masque dans le sélecteur de modèles et le Hub les modèles trop volumineux pour la mémoire GPU et la RAM de cet appareil. Les modèles téléchargés restent visibles.",
       },
       menu: {
         title: "Menu du chat",
@@ -2684,6 +2760,13 @@ export const fr = {
         "Les anciens échanges vont dans une archive consultable quand un chat sature son contexte.",
       autoCompactKeywords:
         "compaction automatique contexte fenêtre tronquer glissante point de contrôle marge archive récupération recherche rolling checkpoint headroom retrieval rag",
+      keepRunningWhenTabClosed: "Continuer après la fermeture de l’onglet",
+      keepRunningWhenTabClosedDescription:
+        "Les réponses, la recherche web et Deep Research continuent sur le serveur après la fermeture de l’onglet. Désactivez pour les arrêter à la place.",
+      keepRunningWhenTabClosedHint:
+        "Rouvrez la conversation sur n’importe quel appareil pour retrouver une exécution qui a continué. Désactivé, une exécution s’arrête environ une minute après la fermeture de son dernier onglet, donc un rechargement ne l’arrête pas. S’applique aux exécutions lancées après la modification. Les conversations temporaires, les réponses des modèles API ou à des pièces jointes et les tours qui utilisent le panneau du navigateur s’arrêtent toujours avec leur onglet.",
+      keepRunningWhenTabClosedKeywords:
+        "arrière-plan onglet fermer fermé quitter continuer arrêter annuler recherche web appareil téléphone background tab close keep running continue stop cancel deep research web search resume",
       firstTokenLabel: "Limite d’attente du premier jeton",
       firstTokenDescription: "Durée pendant laquelle les modèles GGUF locaux peuvent attendre le premier jeton sans progression du traitement du prompt. S’applique aux nouvelles attentes de tous les comptes. Avec « Illimité », l’attente continue jusqu’à ce que vous arrêtiez.",
       firstTokenDefault: "20 min (par défaut)",
@@ -3147,14 +3230,14 @@ export const fr = {
       },
       mcp: {
         title: "Accès des agents (MCP)",
-        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth via MCP. Les agents se connectent avec un jeton d’accès de cette page.",
+        description: "Permettez aux agents de code comme Claude Code et Codex d’utiliser Unsloth via MCP. Les agents se connectent avec une clé API Unsloth de cette page.",
         enable: "Autoriser les connexions des agents",
-        enableDescription: "Sert /mcp/ aux requêtes qui portent un jeton d’accès Unsloth.",
+        enableDescription: "Sert /mcp/ aux requêtes qui portent une clé API Unsloth.",
         lockedByEnv: "Défini par {name}.",
         loadError: "Impossible de charger les paramètres d’accès des agents.",
         saveError: "Impossible d’enregistrer le paramètre d’accès des agents.",
         agent: "Agent",
-        exportKeyHint: "Définissez {name} sur un jeton d’accès de cette page avant de lancer l’agent.",
+        exportKeyHint: "Définissez {name} sur une clé API Unsloth de cette page avant de lancer l’agent.",
         configFileHint: "Ajoutez ceci à {path}.",
         keywords: "mcp model context protocol agents claude codex tools agents agent outils protocole de contexte de modèle",
       },
@@ -3173,6 +3256,7 @@ export const fr = {
       audioCppVersion: "Version d'audio.cpp",
       hardware: "Matériel",
       gpu: "GPU",
+      gpuIntegrated: "intégrée",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -3588,6 +3672,36 @@ export const fr = {
       uploadDetailsTooltip:
         "Jusqu’à {limit} par fichier. Les fichiers PDF, DOCX et TXT ne sont pas des jeux de données prêts pour l’entraînement ; convertissez-les d’abord dans les Recettes.",
       viewDataset: "Voir le jeu de données",
+      previewTokens: "Voir les tokens",
+      tokenPreview: {
+        title: "Aperçu des tokens",
+        description: "Comment {model} tokenise ces données pour l'entraînement. Seul le tokenizer est téléchargé.",
+        datasetTab: "Exemples du jeu de données",
+        textTab: "Votre texte",
+        trained: "Entraîné",
+        masked: "Masqué",
+        completionsOnly: "Réponses de l'assistant uniquement",
+        allTokens: "Tous les tokens sont entraînés",
+        responseMarker: "Marqueur de réponse",
+        maskingNotApplied: "Les marqueurs de chat sont introuvables, donc chaque token est entraîné.",
+        loading: "Chargement du tokenizer. Le premier aperçu prend un peu plus de temps...",
+        shuffle: "Mélanger les exemples",
+        showIds: "Afficher les ID de tokens",
+        copyIds: "Copier les ID",
+        copied: "ID de tokens copiés",
+        sample: "Exemple {index}",
+        stats: "{tokens} tokens, {trained} entraînés ({percent} %)",
+        truncated: "Réduit à {max} sur {full} tokens par la longueur de contexte.",
+        noTrained: "Aucun token de cette ligne n'est entraîné, l'entraînement l'ignore donc.",
+        hiddenTokens: "{count} tokens supplémentaires non affichés",
+        multimodal: "Les lignes d'image et d'audio ne sont pas affichées ici. Vous pouvez quand même tester le tokenizer sur votre propre texte.",
+        textPlaceholder: "Saisissez ou collez du texte pour voir ses tokens...",
+        textHint: "Avec les réponses de l'assistant uniquement, seul le texte après un marqueur de l'assistant est entraîné.",
+        insertExample: "Insérer un exemple de chat",
+        vocab: "Vocabulaire : {count} tokens",
+        retry: "Réessayer",
+        packing: "Le packing est activé : l'entraînement regroupe les lignes en séquences de la longueur de contexte, la coupure peut donc différer de cette vue par ligne.",
+      },
       uploadFailed: "Échec du téléversement",
       unknownError: "Erreur inconnue",
       unsupportedFileType: "Type de fichier non pris en charge",
@@ -3647,6 +3761,21 @@ export const fr = {
         "Utilisé dans les noms des dossiers de sortie d'entraînement, les valeurs d'export par défaut et l'historique.",
       loraSettings: "Paramètres LoRA",
       trainingHyperparameters: "Hyperparamètres d'entraînement",
+      drafterSettings: "Drafter de décodage spéculatif",
+      drafterTrain: "Entraîner un drafter de décodage spéculatif",
+      drafterTrainTooltip: "Entraîne une petite tête de brouillon après le fine-tuning pour accélérer l'inférence dans llama.cpp et vLLM ; les sorties sont inchangées.",
+      drafterChecking: "Vérification du modèle...",
+      drafterUnavailable: "Indisponible pour ce modèle : {reason}",
+      drafterRetrainMtp: "Réentraîne la tête MTP de ce modèle",
+      drafterEagle3: "Entraîne un drafter EAGLE-3 (ce modèle n'a pas de tête MTP)",
+      drafterDataSource: "Données d'entraînement",
+      drafterDataSourceDataset: "Réponses du dataset",
+      drafterDataSourceRegenerate: "Réponses du modèle lui-même (plus lent, meilleur)",
+      drafterMaxExamples: "Exemples",
+      drafterEpochs: "Époques",
+      drafterLearningRate: "Taux d'apprentissage",
+      drafterLearningRateDefault: "Par défaut",
+      drafterDraftSteps: "Tokens de brouillon",
       maxSteps: "Nombre max d'étapes",
       epochs: "Époques",
       useMaxSteps: "Utiliser le nombre max d'étapes",
@@ -4012,6 +4141,7 @@ export const fr = {
         configuring: "Configuration",
         training: "Entraînement",
         finalizing: "Enregistrement du modèle",
+        trainingDrafter: "Entraînement du drafter",
         completed: "Terminé",
         error: "Erreur",
         stopped: "Arrêté",
@@ -4297,6 +4427,7 @@ export const fr = {
       moreActions: "Plus d'actions",
       chatAboutThis: "Discuter de ce fichier",
       chatWithModel: "Discuter avec ce modèle",
+      editImage: "Modifier l'image",
       addToFavorites: "Ajouter aux favoris",
       regenerateTitle: "Régénérer le titre",
       removeFromFavorites: "Retirer des favoris",
@@ -4492,6 +4623,7 @@ export const fr = {
       skippedOverLimit: "{count} de plus au-delà de la limite de {limit} fichiers.",
       chatFilesWaiting: "{count} seront joints dès qu'un modèle capable de les lire sera chargé.",
       openFilesFailed: "Impossible d'ouvrir les fichiers",
+      editImageFailed: "Impossible d'ouvrir l'image pour la modifier",
       speechModel: "{name} est un modèle vocal",
       speechModelDescription: "Sélectionnez-le dans le menu des modèles de la page Audio.",
       noMediaLink: "Le serveur n'a renvoyé aucun lien pour lire ce fichier.",

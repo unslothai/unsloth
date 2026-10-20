@@ -421,7 +421,6 @@ def test_a_sharded_trainer_refuses_an_auto_swap(monkeypatch, backend):
     # Zero-swap ranks refuse too, else peers hang.
     with pytest.raises(ValueError, match = "swapped 0 decoder layers"):
         check(_swapped_model(swapped = (), **{backend: True}))
-    assert check(_swapped_model(mark = False, **{backend: True})) == []
     # get_peft_model(offload_layers = "auto") alone: every rank refuses, also a zero-swap one.
     peft_auto = _swapped_model(mark = False, **{backend: True})
     peft_auto.model._unsloth_offload_layers_auto = 1
@@ -430,6 +429,20 @@ def test_a_sharded_trainer_refuses_an_auto_swap(monkeypatch, backend):
     peft_auto.model._unsloth_block_swap.indices = []
     with pytest.raises(ValueError, match = "swapped 0 decoder layers"):
         check(peft_auto)
+
+
+@pytest.mark.parametrize("backend", ["fsdp", "deepspeed"])
+def test_a_sharded_trainer_refuses_an_explicit_swap(monkeypatch, backend):
+    """offload_layers = N must not reach FSDP / DeepSpeed either: FSDP1 writeback fails on the
+    rebound placeholders ("Cannot writeback when the parameter shape changes")."""
+    ns = _ignore_helpers(monkeypatch)
+    check = ns["_block_swap_for_trainer_backend"]
+    with pytest.raises(ValueError, match = r"offload_layers = 2 .*offload_layers = 0"):
+        check(_swapped_model(mark = False, swapped = (2, 3), **{backend: True}))
+    assert check(_swapped_model(mark = False, swapped = (), **{backend: True})) == []
+    no_swap = _swapped_model(mark = False, **{backend: True})
+    no_swap.model._unsloth_block_swap = None
+    assert check(no_swap) == []
 
 
 def test_auto_declines_up_front_on_a_launch_that_shows_a_sharded_backend():

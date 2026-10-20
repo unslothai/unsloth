@@ -91,6 +91,13 @@ _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
 _QWENIMAGE_INT8_EXCLUDES = _INT8_FAMILY_EXCLUDE_NAME_TOKENS["qwen-image"]
 
 
+# ALL-scheme PER-FAMILY exclusions (``FamilyProfile.quant_exclude_tokens``): unlike the int8 table above, these also
+# apply to fp8 / mxfp8 / nvfp4, whose scaled_mm paths otherwise quantise every eligible Linear.
+_FAMILY_QUANT_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = _profile_table(
+    "quant_exclude_tokens", quant = True
+)
+
+
 # Int8 PER-FAMILY row PADDING (``FamilyProfile.int8_pad_tokens``), the alternative to excluding a small-M Linear.
 # ``_int_mm``'s floor is a GEMM shape constraint, not a numerical one: padding the activation up to 32 rows, running
 # the matmul and slicing the result back returns the caller's rows BITWISE unchanged (torchao's int8 dynamic path
@@ -290,6 +297,46 @@ def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tup
     return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
 
 
+# Weight subclasses whose activation quantiser asserts a contiguous input (torchao ``to_mx`` "unsupported",
+# ``nvfp4_quantize`` "Only support contiguous data for now"), and whose dispatch has no op for a stride-0 view.
+_CONTIGUOUS_INPUT_WEIGHTS = frozenset({"MXTensor", "NVFP4Tensor"})
+
+
+def _contiguous_input_pre_hook(module: Any, args: tuple) -> Optional[tuple]:
+    if args and hasattr(args[0], "is_contiguous") and not args[0].is_contiguous():
+        return (args[0].contiguous(), *args[1:])
+    return None
+
+
+def guard_contiguous_activations(module: Any, *, logger: Any = None) -> int:
+    """Hand MX / NVFP4 Linears a contiguous activation. A broadcast input such as ``temb.expand(B, S, D)`` (FLUX.3's
+    per-token modulation, any adaLN fed an expanded embedding) is a stride-0 view; torchao's MX and NVFP4 activation
+    quantisers assert contiguity and crash at the first denoise step. ``contiguous()`` is a no-op for the contiguous
+    inputs every other call passes, and dynamo traces the pre-hook into the compiled graph. Idempotent; returns how
+    many Linears it hooked."""
+    named = getattr(module, "named_modules", None)
+    if not callable(named):
+        return 0
+    hooked = 0
+    for _name, sub in named():
+        weight = getattr(sub, "weight", None)
+        if type(weight).__name__ not in _CONTIGUOUS_INPUT_WEIGHTS or getattr(
+            sub, "_unsloth_contig_hook", False
+        ):
+            continue
+        try:
+            sub.register_forward_pre_hook(_contiguous_input_pre_hook)
+            sub._unsloth_contig_hook = True
+            hooked += 1
+        except Exception:  # noqa: BLE001 - a module refusing hooks keeps its old behaviour
+            continue
+    if hooked and logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: contiguous-input guard on %d MX/NVFP4 linears", hooked
+        )
+    return hooked
+
+
 def apply_zero_row_guard(
     transformer: Any,
     scheme: str,
@@ -297,7 +344,9 @@ def apply_zero_row_guard(
     *,
     logger: Any = None,
 ) -> tuple[str, ...]:
-    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes)."""
+    """Guard zero-row-reachable quantized Linears; call AFTER quantization (else the first t2v render crashes). Every
+    post-quantisation site calls this, so it also installs the contiguous-input guard for MX / NVFP4 weights."""
+    guard_contiguous_activations(transformer, logger = logger)
     tokens = zero_row_tokens_for_scheme(scheme, family)
     if not tokens:
         return ()
@@ -321,12 +370,15 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     (_INT8_FAMILY_EXCLUDE_NAME_TOKENS); other schemes (scaled_mm) exclude nothing.
     ``family=None`` preserves the historical behaviour. Shared by the runtime path and the
     offline prequant builder so they never drift (else an int8 checkpoint bakes the small-M
-    projections and crashes at the first denoise on Flux / Qwen)."""
+    projections and crashes at the first denoise on Flux / Qwen). ``FamilyProfile.quant_exclude_tokens`` applies
+    to every scheme."""
+    key = str(family or "").strip().lower()
+    every_scheme = _FAMILY_QUANT_EXCLUDE_NAME_TOKENS.get(key, ())
     if scheme == TQ_INT8:
-        return _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(
-            str(family or "").strip().lower(), ()
+        return (
+            _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(key, ()) + every_scheme
         )
-    return ()
+    return every_scheme
 
 
 _SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}
@@ -897,10 +949,23 @@ def dense_transformer_unsupported_reason(target: Any) -> str:
 NATIVE_QUANT_SCHEMES = (TQ_INT8, TQ_FP8)
 
 
+def _mps_bf16(target: Any) -> bool:
+    if getattr(target, "device", None) != "mps":
+        return False
+    try:
+        import torch
+        return getattr(target, "dtype", None) is torch.bfloat16
+    except Exception:
+        return False
+
+
 def native_quant_host(target: Any) -> bool:
     """Whether ``target`` is a bf16 GPU whose torchao path is closed for a platform reason: a ROCm torch
-    (the NVIDIA-shaped capability ladder misclassifies it, and gfx1151 refuses fp8 ``_scaled_mm``) or the
-    Windows-ROCm torchao stub. False on every NVIDIA, MPS, XPU and CPU host, which keep the torchao path."""
+    (the NVIDIA-shaped capability ladder misclassifies it, and gfx1151 refuses fp8 ``_scaled_mm``), the
+    Windows-ROCm torchao stub, or Apple Silicon MPS (no ``_int_mm`` and no fp8; int8 weight-only runs on the
+    Metal ``_weight_int8pack_mm`` kernel). False on every NVIDIA, XPU and CPU host, which keep the torchao path."""
+    if _mps_bf16(target):
+        return True
     if getattr(target, "device", None) != "cuda":
         return False
     if not (torch_is_rocm() or is_stubbed("torchao")):
@@ -942,12 +1007,18 @@ def native_quant_scheme(
         offload and scheme in NATIVE_OFFLOAD_SCHEMES and native_offload_host(target)
     ):
         return None
+    # MPS has no float8 storage.
+    if _mps_bf16(target) and scheme != TQ_INT8:
+        return None
     if _family_denied(family, scheme):
         return None
     return scheme
 
 
 def native_int8_act(target: Any) -> bool:
+    # MPS has no ``_int_mm``: W8A8 would only add the activation quant.
+    if _mps_bf16(target):
+        return False
     if native_quant_host(target):
         return int8_act_requested()
     return not int8_act_disabled()
@@ -1029,7 +1100,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     # halves of that decision belong to the load, not to a row.
     from .diffusion_speed import compile_eligible
 
-    if not compile_eligible(target, is_gguf = False, family = None):
+    if not compile_eligible(target, is_gguf = False, family = None, probe = False):
         return False
     # Not redundant with the arch floor: `_scheme_supported` rejects every scheme when the torchao
     # import fails, so an ABI skew would advertise a fast path every load then falls back from.
@@ -1665,6 +1736,16 @@ def _quiet_config(cls: Any, **kwargs: Any) -> Any:
     return cls(**kwargs)
 
 
+def _install_fp8_unit_scale() -> None:
+    try:
+        import logging
+
+        from .diffusion_fp8_unit_scale import install
+        install(logger = logging.getLogger(__name__))
+    except Exception:  # noqa: BLE001 - never block a load on a speed path
+        pass
+
+
 def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     """The torchao dynamic-activation config for ``scheme`` (lazy imports per branch).
     ``fast_accum`` applies to fp8 only: None auto-detects by GPU class, True/False force it."""
@@ -1684,6 +1765,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # scale 0, NaN qdata, black frames.
         from torchao.quantization import PerRow
 
+        _install_fp8_unit_scale()
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
@@ -1711,6 +1793,11 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
             return _quiet_config(Float8DynamicActivationFloat8WeightConfig, **fp8_kwargs)
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+
+        from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
+
+        # Before quantize_: the load-time weight pass stays on torchao (eager); compiled activations use the kernel.
+        install_nvfp4_act_quant_patch()
 
         # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with
         # CUTLASS FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.
@@ -1803,7 +1890,8 @@ def quantize_transformer(
     """Quantise ``pipe.transformer`` in place, returning the scheme or None (GGUF); ``base_repo`` picks the NVFP4 policy."""
     native = native_quant_scheme(target, mode, family = family, offload = offload)
     if native is not None:
-        if act_int8 is None:
+        mps = _mps_bf16(target)
+        if act_int8 is None or mps:
             act_int8 = native_int8_act(target)
         return _quantize_native(
             pipe,
@@ -1812,6 +1900,7 @@ def quantize_transformer(
             min_features = min_features,
             act_int8 = bool(act_int8) and native == TQ_INT8,
             logger = logger,
+            scale_dtype = getattr(target, "dtype", None) if mps else None,
         )
     scheme = select_transformer_quant_scheme(target, mode, family = family, base_repo = base_repo)
     if scheme is None:
@@ -1857,7 +1946,9 @@ def quantize_transformer(
             require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
             require_divisible = divisible,
         )
-        apply_runtime_convrot(transformer, scheme, family, filter_fn, target = target, logger = logger)
+        rotated = apply_runtime_convrot(
+            transformer, scheme, family, filter_fn, target = target, logger = logger
+        )
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
@@ -1870,6 +1961,19 @@ def quantize_transformer(
         apply_zero_row_guard(transformer, scheme, family, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
+            # What diffusion_prequant_cache needs to persist this exact build.
+            transformer._unsloth_runtime_quant_info = {
+                "scheme": scheme,
+                "family": family,
+                "min_features": int(min_features),
+                "exclude_name_tokens": list(exclude),
+                "require_bf16": scheme in _REQUIRE_BF16_SCHEMES,
+                "require_divisible": divisible,
+                "fast_accum": fast_accum,
+                "convrot_group": convrot_spec_for_scheme(scheme, family)[0] if rotated else None,
+                "convrot_fqns": list(rotated or ()),
+                "dtype": str(getattr(target, "dtype", None) or _first_weight_dtype(transformer)),
+            }
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme
@@ -1879,7 +1983,14 @@ def quantize_transformer(
 
 
 def _quantize_native(
-    pipe: Any, scheme: str, *, family: Optional[str], min_features: int, act_int8: bool, logger: Any
+    pipe: Any,
+    scheme: str,
+    *,
+    family: Optional[str],
+    min_features: int,
+    act_int8: bool,
+    logger: Any,
+    scale_dtype: Any = None,
 ) -> Optional[str]:
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
@@ -1894,17 +2005,43 @@ def _quantize_native(
             require_bf16 = True,
         )
         if not apply_native_weight_quant(
-            transformer, scheme, filter_fn = filter_fn, act_int8 = act_int8, logger = logger
+            transformer,
+            scheme,
+            filter_fn = filter_fn,
+            act_int8 = act_int8,
+            logger = logger,
+            scale_dtype = scale_dtype,
         ):
             return None
+        if scale_dtype is not None:
+            from .diffusion_native_quant import probe_mps_int8pack
+
+            # Timed on this chip, not assumed from the device type.
+            probe_mps_int8pack(transformer, scale_dtype, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
+            transformer._unsloth_runtime_quant_info = {"scheme": scheme, "native": True}
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme
     except Exception as exc:  # noqa: BLE001 - a partial swap is reported by transformer_is_quantised
         _warn(logger, f"{scheme} (weight-only)", exc)
         return None
+
+
+def _first_weight_dtype(module: Any) -> Any:
+    """The dtype the dense model was loaded in: a parameter left high precision by the quant filter (norms, embeds)."""
+    try:
+        import torch
+        for param in module.parameters():
+            if (
+                type(param.data) in (torch.Tensor, torch.nn.Parameter)
+                and param.dtype.is_floating_point
+            ):
+                return param.dtype
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

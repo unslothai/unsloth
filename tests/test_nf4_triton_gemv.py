@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Batch-1 NF4 GEMV kernel (unsloth/kernels/nf4_gemv.py). It reduces each quantization block
-before scaling it, so it is held to an fp32 reference with a tolerance and must never be worse
-than bitsandbytes' own GEMV. Streams, CUDA graphs and torch.compile through fast_gemv are covered
-in test_bnb_integration_compile.py."""
+"""NF4 GEMV reduces before scaling, so it is checked against fp32 and must not lose to bitsandbytes."""
 
 import pytest
 import torch
@@ -66,8 +63,7 @@ TOL = {torch.float16: 2e-3, torch.bfloat16: 1.2e-2}
 
 @pytest.fixture(params = [None, "narrow", "bytes", "words"], ids = ["auto", "narrow", "bytes", "words"])
 def kernel(request, monkeypatch):
-    # Both kernel forms, whichever this Triton version and GPU would pick on its own, and the
-    # T4 / L4 large-weight config on this GPU.
+    # Auto pick, each forced kernel form, and "narrow": the T4 / L4 large-weight config on this GPU.
     if request.param == "narrow":
         capability = torch.cuda.get_device_capability()
         monkeypatch.setattr(nf4_gemv, "_NARROW_CAPS", (capability,))
@@ -94,7 +90,7 @@ def test_matches_fp32_reference_and_bitsandbytes(shape, dtype, nested, kernel):
 
 
 def test_unaligned_weight_view_uses_the_byte_kernel(monkeypatch):
-    # The words kernel reads int32; a weight view starting off a 4 byte boundary must not reach it.
+    # The words kernel reads int32; a view off a 4 byte boundary must not reach it.
     monkeypatch.setattr(nf4_gemv, "_FORCE_KERNEL", "words")
     q, s = _quant(1024, 4096, torch.float16)
     buf = torch.empty(q.numel() + 2, dtype = torch.uint8, device = "cuda")
@@ -173,11 +169,12 @@ def _linear4bit(
     n,
     k,
     seed = 0,
+    dtype = torch.bfloat16,
 ):
     bnb = pytest.importorskip("bitsandbytes")
     torch.manual_seed(seed)
-    proj = bnb.nn.Linear4bit(k, n, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
-    W = torch.randn(n, k, dtype = torch.bfloat16)
+    proj = bnb.nn.Linear4bit(k, n, bias = False, compute_dtype = dtype, quant_type = "nf4")
+    W = torch.randn(n, k, dtype = dtype)
     proj.weight = bnb.nn.Params4bit(W, requires_grad = False, quant_type = "nf4")
     return proj.to("cuda")
 
@@ -209,6 +206,8 @@ def test_small_decode_batches_skip_the_dequantize(bsz, monkeypatch):
         @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
     )
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", True)
+    monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
     monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: pytest.fail("dequantized"))
     first = utils.fast_linear_forward(proj, X)
     assert _rel_err(first.view(bsz, -1), ref) < TOL[torch.bfloat16]
@@ -381,3 +380,128 @@ def test_rocm_never_takes_the_rows_gemv_by_default(monkeypatch):
     W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
     X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
     assert utils._gemv_rows(X, W, W_quant, None) is None
+
+
+def test_small_tiles_keep_the_table_load():
+    gather = 2 if nf4_gemv._HAS_TL_GATHER else 0
+    assert nf4_gemv._lut_mode(64) == 0
+    assert nf4_gemv._lut_mode(256) == 0
+    assert nf4_gemv._lut_mode(512) == gather
+    assert nf4_gemv._lut_mode(2048) == gather
+
+
+@pytest.mark.parametrize("rows", [1, 2, 4])
+@pytest.mark.parametrize("dtype", DTYPES, ids = str)
+@pytest.mark.parametrize("shape", [(1000, 192), (2048, 256), (2048, 512), (1536, 8960)], ids = str)
+def test_small_and_odd_k_tiles_match_fp32(shape, dtype, rows, kernel):
+    """K <= 256 (table load), K = 512 (gather) and an odd K = 8960 (masked tail)."""
+    from unsloth.kernels.nf4_gemv import gemv_nf4_rows
+
+    if dtype == torch.bfloat16 and not torch.cuda.is_bf16_supported():
+        pytest.skip("no bf16")
+    n, k = shape
+    q, s = _quant(n, k, dtype)
+    a = _args(q, s)
+    X = torch.randn(rows, 1, k, dtype = dtype, device = "cuda")
+    ref = X.float().view(rows, k) @ F.dequantize_4bit(q, s).float().t()
+    if rows == 1:
+        out = gemv_nf4(X, *a).view(1, n)
+    else:
+        out = torch.empty(rows, 1, n, dtype = dtype, device = "cuda")
+        gemv_nf4_rows(X, *a[:-1], out)
+    assert _rel_err(out.view(rows, n), ref) < TOL[dtype]
+
+
+def _bnb_gemm_utils():
+    from unsloth.kernels import utils
+    if not hasattr(torch.ops.bitsandbytes, "gemm_4bit") or torch.version.hip:
+        pytest.skip("bitsandbytes has no fused gemm_4bit here")
+    return utils
+
+
+@pytest.mark.parametrize("bsz", [5, 8, 16])
+def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
+    utils = _bnb_gemm_utils()
+    proj = _linear4bit(1024, 4096, dtype = torch.float16)
+    X = torch.randn(bsz, 1, 4096, dtype = torch.float16, device = "cuda")
+    ref = (
+        X.float().view(bsz, -1)
+        @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
+    )
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", True)
+    monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
+    monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: pytest.fail("dequantized"))
+    with torch.no_grad():
+        first = utils.fast_linear_forward(proj, X)
+        assert first.shape == (bsz, 1, 1024)
+        assert _rel_err(first.view(bsz, -1), ref) < TOL[torch.float16]
+        out = torch.empty(bsz, 1, 1024, dtype = torch.float16, device = "cuda")
+        assert utils.fast_linear_forward(proj, X, out = out) is out
+        assert torch.equal(out, first)
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "switch_off",
+        "other_arch",
+        "too_many_rows",
+        "grad",
+        "bf16",
+        "weight_elsewhere",
+        "unaligned_k",
+    ],
+)
+def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
+    utils = _bnb_gemm_utils()
+    bsz = utils._BNB_GEMM_4BIT_MAX_ROWS + 1 if case == "too_many_rows" else 8
+    dtype = torch.bfloat16 if case == "bf16" else torch.float16
+    proj = _linear4bit(1024, 4096, dtype = dtype)
+    X = torch.randn(bsz, 1, 4096, dtype = dtype, device = "cuda")
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", case != "switch_off")
+    if case == "other_arch":
+        monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_ARCHS", set())
+        monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DEVICE", {})
+    else:
+        monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
+    if case == "unaligned_k":
+        # K not a multiple of the 64 blocksize.
+        proj = _linear4bit(1024, 4128, dtype = dtype)
+        X = torch.randn(bsz, 1, 4128, dtype = dtype, device = "cuda")
+    if case == "weight_elsewhere":
+        assert not utils._bnb_gemm_4bit_ok(
+            X.view(bsz, -1), proj.weight.data.cpu(), proj.weight.quant_state
+        )
+        return
+    calls = []
+    real = utils.fast_dequantize
+    monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: calls.append(1) or real(*a, **k))
+    with torch.set_grad_enabled(case == "grad"):
+        utils.fast_linear_forward(proj, X)
+    assert calls, case
+
+
+@pytest.mark.parametrize("env", [None, "0", "1"])
+def test_the_bnb_gemm_runs_only_on_listed_archs_unless_forced(env, monkeypatch):
+    utils = _bnb_gemm_utils()
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", None)
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DEVICE", {})
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DTYPES", utils._BNB_GEMM_4BIT_DTYPES)
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_BNB_GEMM_4BIT", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_BNB_GEMM_4BIT", env)
+    proj = _linear4bit(1024, 4096, dtype = torch.float16)
+    X = torch.randn(8, 4096, dtype = torch.float16, device = "cuda")
+    listed = [
+        torch.cuda.get_device_capability(i) in utils._BNB_GEMM_4BIT_ARCHS
+        for i in range(torch.cuda.device_count())
+    ]
+    with torch.no_grad():
+        ok = utils._bnb_gemm_4bit_ok(X, proj.weight.data, proj.weight.quant_state)
+    # Decided once for the process: off when no visible GPU is listed, so the decode loop skips the check.
+    assert utils._BNB_GEMM_4BIT == (env != "0" and (env == "1" or any(listed)))
+    assert ok == (env != "0" and (env == "1" or listed[X.device.index]))
+    assert (torch.bfloat16 in utils._BNB_GEMM_4BIT_DTYPES) == (env == "1")

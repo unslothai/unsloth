@@ -876,3 +876,17 @@ def test_torchao_int8_weights_stream_through_the_slot_ring_with_graphs():
     assert handle.stats["replays"] > 0 and handle.stats["fallbacks"] == 0
     assert pf.stats["slot_fills"] > 0
     handle.free()
+
+
+def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
+    """Per-block graphs key on the block inputs, which carry the text stream: a denoiser whose text length follows
+    the prompt would record every block again for each new prompt length, so it runs compiled ungraphed."""
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    net = type("QwenImageTransformer2DModel", (Net,), {})(blocks = 3)
+    pipe = _pipe_with(net)
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True, opt_in = False)
+    assert handles == () and not applied["cuda_graph"]
+    assert cg.status_reason(pipe, False).startswith(cg.PROMPT_LENGTH_REASON)
+    assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)

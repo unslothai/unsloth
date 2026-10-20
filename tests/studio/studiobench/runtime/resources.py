@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read packaged data whether the package is a directory or inside a zipapp.
-
-`Path(__file__).parent / "thing.js"` works in a checkout and returns a path that does not exist
-inside `studiobench.pyz`, because a zipapp's contents are not on the filesystem. Caught by running
-the built artifact's own `--doctor`, which reported the frozen corpus missing at a path ending
-`studiobench.pyz/tests/studio/studiobench/fixture/corpus/frozen/manifest.json` -- a path that can
-never exist. Every packaged file this tool reads at run time goes through here.
-
-The filesystem is tried FIRST, so a checkout run picks up an edit to a .js file without a
-reinstall, which is most of what makes the JS pleasant to work on.
-"""
+"""Reads packaged data from a directory or a zipapp; Path(__file__) paths do not exist in a zipapp."""
 
 from __future__ import annotations
 
@@ -53,11 +43,7 @@ def iter_lines(relative: str):
 
 
 def writable_dir(preferred: Optional[Path] = None) -> Path:
-    """A directory the tool may WRITE to, which is never inside the package.
-
-    A zipapp is read-only, and a checkout may be. Anything the tool produces belongs in the run's
-    output directory, not next to its own source.
-    """
+    """A directory for output, never inside the package: a zipapp is read-only and a checkout may be."""
     target = Path(preferred) if preferred else Path.cwd() / "studiobench-out"
     target.mkdir(parents = True, exist_ok = True)
     return target

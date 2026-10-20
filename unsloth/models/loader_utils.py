@@ -10,12 +10,15 @@
 # limitations under the License.
 
 from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
+from ..fsdp2_launch import fsdp_version_from_env
 import hashlib
 import importlib
 import os
 import torch
 import re
 import tempfile
+import types
+import shutil
 import contextlib
 import threading as _threading
 import functools
@@ -58,6 +61,12 @@ BAD_MAPPINGS = {
     "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
     "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
     "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
+    "unsloth/solar-10.7b-bnb-4bit".lower(): "upstage/SOLAR-10.7B-v1.0",
+    "unsloth/Hermes-3-Llama-3.1-405B-bnb-4bit".lower(): "NousResearch/Hermes-3-Llama-3.1-405B",
+    "unsloth/Pixtral-12B-2409-Base-bnb-4bit".lower(): "unsloth/Pixtral-12B-Base-2409-bnb-4bit",
+    "unsloth/Llama-3.1-Tulu-3-8B-bnb-4bit".lower(): "unsloth/Llama-3.1-Tulu-3-8B",
+    "unsloth/Llama-3.1-Tulu-3-70B-bnb-4bit".lower(): "allenai/Llama-3.1-Tulu-3-70B",
+    "unsloth/OpenThinker-7B-unsloth-bnb-4bit".lower(): "open-thoughts/OpenThinker-7B",
 }
 
 
@@ -130,6 +139,31 @@ def _infer_local_rank(rank):
 _TRUTHY = ("1", "true", "yes", "on")
 
 
+def fsdp_version_requested():
+    """The FSDP version this process trains with: 0 for none, else 1 or 2.
+
+    A built Accelerator is authoritative; before one exists (model load, patch_peft_model) the
+    launcher env is the only signal (`fsdp_version_from_env`: `accelerate launch` with an FSDP
+    config, FSDP_VERSION by hand, or UNSLOTH_FSDP2=1 under torchrun). Every rank of a job sees the
+    same env and the same Accelerator config, so every rank gets the same answer.
+    `TrainingArguments(fsdp = ...)` alone is invisible until the Trainer builds its Accelerator;
+    the Trainer re-checks then (`_unsloth_trainer_init`).
+    """
+    try:
+        from accelerate.state import AcceleratorState
+
+        shared = AcceleratorState._shared_state
+        plugin = shared.get("fsdp_plugin", None)
+        if plugin is not None:
+            return int(getattr(plugin, "fsdp_version", 1) or 1)
+        distributed_type = shared.get("distributed_type", None)
+        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
+            return fsdp_version_from_env() or 1
+    except Exception:
+        pass
+    return fsdp_version_from_env()
+
+
 def fsdp_will_wrap():
     """True when this process will hand the model to FSDP (unsloth#409).
 
@@ -139,32 +173,32 @@ def fsdp_will_wrap():
     """
     if os.environ.get("UNSLOTH_FORCE_FUSED_LORA", "0") == "1":
         return False
-    try:
-        from accelerate.state import AcceleratorState
-        distributed_type = AcceleratorState._shared_state.get("distributed_type", None)
-        if distributed_type is not None and "FSDP" in str(distributed_type).upper():
-            return True
-    except Exception:
-        pass
-    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY:
-        return True
-    # "0" is how an accelerate config says "not FSDP".
-    if str(os.environ.get("FSDP_VERSION", "")).strip() not in ("", "0"):
-        return True
-    return False
+    return fsdp_version_requested() > 0
 
 
 def fsdp2_requested():
-    """True when this process runs under FSDP2: `accelerate launch` exports FSDP_VERSION=2, an
-    Accelerator built already records its fsdp_plugin."""
-    if os.environ.get("FSDP_VERSION", "").strip() == "2":
-        return True
-    try:
-        from accelerate.state import AcceleratorState
-        plugin = AcceleratorState._shared_state.get("fsdp_plugin", None)
-        return getattr(plugin, "fsdp_version", None) == 2
-    except Exception:
+    """True when this process runs under FSDP2: `accelerate launch` exports FSDP_VERSION=2,
+    UNSLOTH_FSDP2=1 under torchrun, or an Accelerator built already records its fsdp_plugin."""
+    return fsdp_version_requested() == 2
+
+
+def fsdp2_keeps_fused_lora():
+    """Load-time half of the fused LoRA gate under FSDP.
+
+    FSDP1 hands the fused kernels flat shard views (unsloth#409), so they are declined. FSDP2
+    unshards a block's parameters in its pre-forward hook and the kernels run inside the block's
+    forward, so with one FSDP unit per decoder block they read whole weights; the wrap accelerate
+    actually builds is checked once it exists (`unsloth.models.fsdp2`), which declines them for a
+    root-only or finer wrap. `UNSLOTH_FSDP2_FUSED_LORA=0` declines them under FSDP2 as well.
+    """
+    if str(os.environ.get("UNSLOTH_FSDP2_FUSED_LORA", "1")).strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
         return False
+    return fsdp2_requested()
 
 
 def raise_if_fast_inference_under_fsdp2(fast_inference):
@@ -1679,6 +1713,7 @@ def _offline_quantize_to_fp8(
     text_only: bool = False,
     revision: str = None,
     token = None,
+    trust_remote_code: bool = False,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1690,7 +1725,9 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
+    config = AutoConfig.from_pretrained(
+        model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+    )
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1717,6 +1754,9 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    # The basename alone would let org-a/model and org-b/model share one artifact.
+    source = os.path.abspath(model_name) if os.path.isdir(model_name) else model_name
+    cache_name += "-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
     if revision is not None:
         # Sanitizing is lossy (release/v1 and release.v1 collapse), so a digest of the raw ref rides along and two refs never share an artifact.
         digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
@@ -1732,7 +1772,19 @@ def _offline_quantize_to_fp8(
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        # Under torchrun every rank converts: keep each on its own GPU, not all of them on "auto".
+        local_rank = os.environ.get("LOCAL_RANK")
+        device_map = (
+            {"": int(local_rank)}
+            if local_rank is not None and int(os.environ.get("WORLD_SIZE", "1")) > 1
+            else "auto"
+        )
+        load_kwargs = dict(
+            torch_dtype = "auto",
+            device_map = device_map,
+            quantization_config = qconfig,
+            trust_remote_code = trust_remote_code,
+        )
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
@@ -1750,18 +1802,108 @@ def _offline_quantize_to_fp8(
             model_name,
             revision = revision,
             token = token,
+            trust_remote_code = trust_remote_code,
         )
-        model.save_pretrained(new_model_name, safe_serialization = False)
-        del model
-        for _ in range(2):
-            clean_gpu_cache()
-            gc.collect()
-        tokenizer.save_pretrained(new_model_name)
+        # Atomic publish: the isdir check above must never see another rank's half-written artifact.
+        partial = tempfile.mkdtemp(prefix = cache_name + ".partial-", dir = temp_dir)
+        try:
+            model.save_pretrained(partial, safe_serialization = False)
+            del model
+            for _ in range(2):
+                clean_gpu_cache()
+                gc.collect()
+            tokenizer.save_pretrained(partial)
+            try:
+                os.rename(partial, new_model_name)
+            except OSError:
+                if not os.path.isdir(new_model_name):
+                    raise
+        finally:
+            shutil.rmtree(partial, ignore_errors = True)
     return new_model_name
+
+
+def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
+    """True when no pre-quantized FP8 repo was mapped and vLLM won't quantize it on the fly."""
+    if resolved_name is not None and str(resolved_name).lower() != str(requested_name).lower():
+        return False
+    if not fast_inference or importlib.util.find_spec("vllm") is None:
+        return True
+    import vllm
+
+    return Version(vllm.__version__) < Version("0.12.0")
+
+
+def _fp8_load_as_is(
+    model_name,
+    revision = None,
+    token = None,
+    trust_remote_code = False,
+):
+    """Only a readable, unquantized model config takes the offline fp8 path and its H100 gate: an already quantized checkpoint, an adapter (resolved to its base later) or an unreadable config loads as before."""
+    from transformers import AutoConfig
+
+    try:
+        from peft import PeftConfig
+
+        # The loader treats a repo holding both config.json and adapter_config.json as an adapter too.
+        PeftConfig.from_pretrained(model_name, revision = revision, token = token)
+        return True
+    except Exception:
+        pass
+    try:
+        config = AutoConfig.from_pretrained(
+            model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+        )
+    except Exception:
+        # Unreadable here (a Mistral-format checkpoint, say): leave it to the loader's own fallbacks.
+        return True
+    text_config = getattr(config, "text_config", None)
+    return bool(
+        getattr(config, "quantization_config", None)
+        or getattr(text_config, "quantization_config", None)
+    )
+
+
+class _Float8TensorLinear(torch.autograd.Function):
+    """torchao's Float8Tensor linear has no backward, so a LoRA layer Unsloth's kernels do not take (a biased Qwen2 q_proj, FastModel's PEFT path) failed in backward."""
+
+    @staticmethod
+    def forward(ctx, X, weight, bias):
+        ctx.weight = weight
+        ctx.bias_needs_grad = bias is not None and bias.requires_grad
+        return torch.nn.functional.linear(X, weight, bias)
+
+    @staticmethod
+    def backward(ctx, dY):
+        dX = dY @ ctx.weight.dequantize().to(dY.dtype)
+        dB = dY.reshape(-1, dY.shape[-1]).sum(0) if ctx.bias_needs_grad else None
+        return dX, None, dB
+
+
+def _float8_tensor_linear_forward(self, input):
+    # A trainable fp8 weight keeps torchao's own (backward-less) path, so it errors instead of silently getting no gradient.
+    if torch.is_grad_enabled() and input.requires_grad and not self.weight.requires_grad:
+        return _Float8TensorLinear.apply(input, self.weight, self.bias)
+    return torch.nn.functional.linear(input, self.weight, self.bias)
+
+
+def _enable_float8_tensor_backward(model: torch.nn.Module):
+    from ..kernels.utils import Float8Tensor
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        if type(module) is torch.nn.Linear and isinstance(
+            getattr(weight, "data", weight), Float8Tensor
+        ):
+            module.forward = types.MethodType(_float8_tensor_linear_forward, module)
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     """Tag a model with a `TorchAOConfig` so downstream callers know how to handle it."""
+    try:
+        _enable_float8_tensor_backward(model)
+    except Exception:
+        pass
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
@@ -3413,6 +3555,28 @@ def gptq_trainable_quantization_config(model_config, user_quantization_config):
             return None
         return AwqConfig(bits = qc.get("bits", 4), backend = "auto_trainable")
     return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
+
+
+def refuse_fast_inference_load_in_8bit(
+    load_in_8bit,
+    model_config = None,
+    quantization_config = None,
+):
+    """Refuse bnb 8-bit (flag, caller config or checkpoint config) under fast_inference: no 8-bit vLLM path."""
+    checkpoint_config = getattr(model_config, "quantization_config", None)
+    if not (
+        load_in_8bit
+        or _bnb_bits_requested(quantization_config) == 8
+        or _bnb_bits_requested(checkpoint_config) == 8
+    ):
+        return
+    raise NotImplementedError(
+        "Unsloth: fast_inference = True does not support bitsandbytes 8-bit "
+        "(load_in_8bit = True or an 8-bit bitsandbytes checkpoint): vLLM would "
+        "not run in 8-bit. Use load_in_4bit = True or 16-bit "
+        "(load_in_4bit = False, load_in_8bit = False) with fast_inference, or set "
+        "fast_inference = False to keep load_in_8bit."
+    )
 
 
 def warn_if_bitsandbytes_quantized_nothing(

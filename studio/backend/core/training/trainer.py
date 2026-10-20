@@ -85,6 +85,11 @@ from utils.datasets.cells import csv_as_text_kwargs
 from utils.datasets.chat_templates import get_training_chat_template
 from utils.datasets.completion_masking import apply_completion_masking
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
+from utils.datasets.pretokenized import (
+    PRETOKENIZED_FORMAT,
+    has_custom_labels,
+    prepare_pretokenized_dataset,
+)
 from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
     dataset_files_in_dir,
@@ -665,6 +670,9 @@ class UnslothTrainer:
                 from transformers import AutoProcessor
                 self.tokenizer = AutoProcessor.from_pretrained(
                     lookup_name,
+                    # Labels are encoded before load_model: match FastModel's English/transcribe prefix.
+                    language = "English",
+                    task = "transcribe",
                     trust_remote_code = trust_remote_code,
                     token = hf_token,
                     local_files_only = local_files_only,
@@ -4543,7 +4551,12 @@ class UnslothTrainer:
                 trainer_kwargs = {
                     "model": self.model,
                     "train_dataset": dataset,
-                    "data_collator": DataCollatorSpeechSeq2SeqWithPadding(processor = self.tokenizer),
+                    "data_collator": DataCollatorSpeechSeq2SeqWithPadding(
+                        processor = self.tokenizer,
+                        decoder_start_token_id = getattr(
+                            self.model.config, "decoder_start_token_id", None
+                        ),
+                    ),
                     "processing_class": self.tokenizer.feature_extractor,
                     "args": Seq2SeqTrainingArguments(**config),
                 }
@@ -4591,6 +4604,9 @@ class UnslothTrainer:
                 str(dataset.get("final_format", "")).lower() if isinstance(dataset, dict) else ""
             )
             raw_text_mode = dataset_final_format == "raw_text"
+            pretokenized_mode = dataset_final_format == PRETOKENIZED_FORMAT
+            # Without a labels column, "Train on responses only" can still mask prompts from input_ids.
+            user_labels = pretokenized_mode and has_custom_labels(dataset["dataset"])
             self.tokenizer = get_training_chat_template(
                 self.tokenizer, self.model_name, dataset_final_format
             )
@@ -4877,6 +4893,23 @@ class UnslothTrainer:
                 # Packed rows share one bidirectional attention window, so documents would see each other.
                 config_args["packing"] = False
                 logger.info("Text-diffusion model: sequence packing turned off\n")
+            if pretokenized_mode:
+                # Packing on TRL < 1.7 keeps only input_ids, silently replacing the user's labels.
+                if config_args.get("packing"):
+                    logger.info("Pre-tokenized dataset: sequence packing turned off\n")
+                config_args["packing"] = False
+                try:
+                    vocab_size = int(self.model.get_input_embeddings().num_embeddings)
+                except Exception:
+                    vocab_size = None
+                max_seq = training_args.get("max_seq_length", 2048)
+                dataset["dataset"] = prepare_pretokenized_dataset(
+                    dataset["dataset"], max_seq_length = max_seq, vocab_size = vocab_size
+                )
+                if eval_dataset is not None:
+                    eval_dataset = prepare_pretokenized_dataset(
+                        eval_dataset, max_seq_length = max_seq, vocab_size = vocab_size
+                    )
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything
             # else stays eager.
@@ -5035,7 +5068,7 @@ class UnslothTrainer:
             is_cpt = training_args.get("is_cpt", False)
             train_on_responses_enabled = (
                 False
-                if (is_cpt or raw_text_mode)
+                if (is_cpt or raw_text_mode or user_labels)
                 else training_args.get("train_on_completions", False)
             )
 
@@ -5044,6 +5077,10 @@ class UnslothTrainer:
             elif raw_text_mode:
                 logger.info(
                     "Raw-text mode: skipping train_on_responses_only — training on all tokens\n"
+                )
+            elif user_labels:
+                logger.info(
+                    "Pre-tokenized dataset: its labels define the loss, no response masking\n"
                 )
 
             # Markers auto-detected from the chat template first, with the manual table as fallback; gpt-oss stays on

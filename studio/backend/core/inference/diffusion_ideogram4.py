@@ -458,8 +458,12 @@ def load_ideogram4_pipeline(
     dtype,
     hf_token: Optional[str] = None,
     check_cancelled: Optional[Callable[[], None]] = None,
+    text_encoder: Any = None,
 ):
-    """Assemble Ideogram4Pipeline from ``repo_id`` per-component (see module doc)."""
+    """Assemble Ideogram4Pipeline from ``repo_id`` per-component (see module doc).
+
+    ``text_encoder`` is a ready encoder (the hosted pre-cast fp8 one); the dense vendor-fp8 encoder is read and
+    dequantized only when it is None, so a pre-cast load never touches the ~9 GB of text_encoder shards."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     import diffusers
@@ -473,9 +477,10 @@ def load_ideogram4_pipeline(
     if token:
         model_kwargs["token"] = token
 
-    text_encoder = load_ideogram4_text_encoder(
-        repo_id, dtype, hf_token = token, check_cancelled = check_cancelled
-    )
+    if text_encoder is None:
+        text_encoder = load_ideogram4_text_encoder(
+            repo_id, dtype, hf_token = token, check_cancelled = check_cancelled
+        )
     check_cancelled()
     tokenizer = load_krea2_tokenizer(repo_id, hf_token = token, check_cancelled = check_cancelled)
     check_cancelled()

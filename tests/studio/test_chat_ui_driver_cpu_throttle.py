@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`STUDIO_UI_CPU_THROTTLE` is delivered over CDP, so it is Chromium only.
-
-firefox and webkit are documented as supported, so the pairing is reachable
-from the environment alone and `new_cdp_session` raises a CDP error that never
-names the option. The driver refuses it before launch, as it already does for
-`STUDIO_PLAYWRIGHT_CHANNEL`.
-
-Comments are stripped before every match: this file's own prose says
-"chromium", and a guard its neighbouring comment satisfies passes while the
-code is gone.
-"""
+"""STUDIO_UI_CPU_THROTTLE needs CDP, so the driver refuses it on firefox and webkit before launch."""
 
 import ast
 import re
@@ -57,11 +47,7 @@ def test_a_non_chromium_browser_refuses_the_throttle():
 
 
 def test_the_refusal_precedes_the_first_page():
-    """Order is the point: after a page exists it is not a refusal.
-
-    Read against the launch function, not the file: the CDP call lives in a
-    helper near the top, so file order says nothing about what runs first.
-    """
+    """The refusal must come before the first page; file order says nothing about run order."""
     launch = CODE[CODE.index("browser_type = getattr(p, PLAYWRIGHT_BROWSER)") :]
     guard = launch.index("CPU_THROTTLE > 1 and PLAYWRIGHT_BROWSER")
     first_page = launch.index("new_throttled_page(ctx)")
@@ -72,12 +58,7 @@ def test_the_refusal_precedes_the_first_page():
 
 
 def test_every_page_the_driver_opens_goes_through_one_factory():
-    """A page opened directly is a page that is never throttled.
-
-    The relogin path's own fresh page ran at full speed, so the steps after it
-    passed under a driver reporting itself throttled -- a false pass in
-    precisely the slow case the option exists to create.
-    """
+    """Every page must go through the throttled factory, since one opened directly runs unthrottled."""
     factory = re.search(
         r"def new_throttled_page\([^)]*\):(?P<body>(?:\n(?:[ \t].*)?)+?)(?=\ndef |\nclass |\Z)",
         CODE,
