@@ -464,24 +464,35 @@ _OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
 
 
 # Older builds staged a hard link to the chat's file, which the OS sandbox refuses to run beside. It is swapped
-# for a copy under the same name, not deleted: an app may still have it open and save to it.
+# for a copy under the same name, not deleted: an app may still have it open and save to it. Never over a save:
+# the name is moved aside and re-linked without clobbering, to the app's file if it saved during the copy.
 def _break_hard_links(entry: Path) -> None:
     import shutil
     import stat as stat_module
     import tempfile
 
-    for child in entry.iterdir():
+    def spare() -> Path:
+        handle, name = tempfile.mkstemp(dir = entry)
+        os.close(handle)
+        return Path(name)
+
+    for child in list(entry.iterdir()):
         info = child.lstat()
-        if stat_module.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            handle, name = tempfile.mkstemp(dir = entry)
-            os.close(handle)
-            spare = Path(name)
+        if not (stat_module.S_ISREG(info.st_mode) and info.st_nlink > 1):
+            continue
+        copy, held = spare(), spare()
+        try:
+            shutil.copyfile(child, copy, follow_symlinks = False)
+            os.replace(child, held)
+            moved = held.lstat()
             try:
-                shutil.copyfile(child, spare, follow_symlinks = False)
-                os.replace(spare, child)
-            except OSError:
-                spare.unlink(missing_ok = True)
-                raise
+                os.link(copy if (moved.st_dev, moved.st_ino) == (info.st_dev, info.st_ino) else held, child)
+            except FileExistsError:
+                pass
+        finally:
+            copy.unlink(missing_ok = True)
+            if os.path.lexists(child):
+                held.unlink(missing_ok = True)
 
 
 def _prune_open_staging(root: Path) -> None:

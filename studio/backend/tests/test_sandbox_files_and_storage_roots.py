@@ -6616,6 +6616,30 @@ def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch,
     assert "prune_open_staging()" in inspect.getsource(main.lifespan)
 
 
+def test_an_app_saving_while_a_legacy_link_is_replaced_keeps_its_save(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    real_copyfile = shutil.copyfile
+
+    def copy_then_app_saves(source, target, **kwargs):
+        result = real_copyfile(source, target, **kwargs)
+        saved = linked / "chart.png.saving"
+        saved.write_bytes(b"edited in the app")
+        os.replace(saved, linked / "chart.png")
+        return result
+
+    monkeypatch.setattr(shutil, "copyfile", copy_then_app_saves)
+    path_utils.prune_open_staging()
+    assert (linked / "chart.png").read_bytes() == b"edited in the app"
+    assert os.listdir(linked) == ["chart.png"]
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+
+
 def test_a_failed_copy_leaves_nothing_staged(tmp_path, monkeypatch):
     from utils.paths import path_utils
 
