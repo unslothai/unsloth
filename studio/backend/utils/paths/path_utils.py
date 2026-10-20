@@ -463,13 +463,22 @@ DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
 _OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
 
 
-def _holds_hard_link(entry: Path) -> bool:
+# Older builds staged a hard link to the chat's file, which the OS sandbox refuses to run beside. It is swapped
+# for a copy under the same name, not deleted: an app may still have it open and save to it.
+def _break_hard_links(entry: Path) -> None:
+    import shutil
     import stat as stat_module
+
     for child in entry.iterdir():
         info = child.lstat()
         if stat_module.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            return True
-    return False
+            spare = entry / f".{child.name}.copy"
+            try:
+                shutil.copyfile(child, spare, follow_symlinks = False)
+                os.replace(spare, child)
+            except OSError:
+                spare.unlink(missing_ok = True)
+                raise
 
 
 def _prune_open_staging(root: Path) -> None:
@@ -483,9 +492,10 @@ def _prune_open_staging(root: Path) -> None:
         return
     for entry in entries:
         try:
-            # Older builds staged a hard link to the chat's file, which the OS sandbox refuses to run beside.
-            if entry.lstat().st_mtime < cutoff or _holds_hard_link(entry):
+            if entry.lstat().st_mtime < cutoff:
                 shutil.rmtree(entry, ignore_errors = True)
+            else:
+                _break_hard_links(entry)
         except OSError:
             continue
 
@@ -578,6 +588,8 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
                 remaining = info.st_size
                 while remaining and (chunk := source.read(min(remaining, 1 << 20))):
                     remaining -= copy.write(chunk)
+            if remaining:
+                raise OSError(f"{path.name} got shorter while it was being copied")
         except OSError:
             shutil.rmtree(target.parent, ignore_errors = True)
             raise

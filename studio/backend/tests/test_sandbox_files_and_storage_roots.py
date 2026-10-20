@@ -6585,7 +6585,7 @@ def test_opening_a_file_clears_old_and_hard_linked_staged_files(tmp_path, monkey
     os.utime(old, (day_ago, day_ago))
     (sandbox / "report.pdf").write_bytes(b"%PDF-1.4")
     assert _open(inference, "report.pdf") == {"status": "ok"}
-    assert not linked.exists()
+    assert os.stat(linked / "chart.png").st_nlink == 1
     assert not old.exists()
     assert recent.exists()
     assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
@@ -6602,7 +6602,10 @@ def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch)
     sandbox.mkdir(parents = True)
     linked = _stage_like_an_older_build(tmp_path, sandbox)
     path_utils.prune_open_staging()
-    assert not linked.exists()
+    # The name an app may still have open stays, as its own copy.
+    assert (linked / "chart.png").read_bytes() == b"\x89PNG"
+    assert os.stat(linked / "chart.png").st_ino != os.stat(sandbox / "chart.png").st_ino
+    assert os.listdir(linked) == ["chart.png"]
     assert (sandbox / "chart.png").read_bytes() == b"\x89PNG"
     assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
 
@@ -6722,6 +6725,25 @@ def test_a_file_still_being_written_is_staged_as_it_was_opened(tmp_path, monkeyp
     monkeypatch.setattr(os, "fdopen", append_then_open)
     staged = path_utils._stage_for_open(log, log.parent)
     assert staged.read_bytes() == b"line 1\n"
+
+
+def test_a_file_cut_short_while_staging_is_not_handed_over_half_copied(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    table = tmp_path / "sandbox" / "rows.csv"
+    table.parent.mkdir()
+    table.write_bytes(b"a,b\n1,2\n")
+    real_fdopen = os.fdopen
+
+    def truncate_then_open(fd, *args, **kwargs):
+        os.truncate(table, 4)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", truncate_then_open)
+    with pytest.raises(OSError):
+        path_utils._stage_for_open(table, table.parent)
+    assert list((tmp_path / "cache" / "open-staging").iterdir()) == []
 
 
 def test_opening_a_file_again_reuses_its_copy_until_either_changes(tmp_path, monkeypatch):
