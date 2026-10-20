@@ -69,7 +69,7 @@ import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext
+from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
@@ -11559,6 +11559,26 @@ async def _auto_switch_npu_model(
             _note_switch_waiter(key, -1)
 
 
+def _switch_loads_beside(require_speech: bool) -> bool:
+    """Whether an automatic load keeps the primary: a speech model beside a text one, or the reverse.
+
+    Only under Keep multiple models loaded, as the Audio page and the chat auto-load ask with
+    ``alongside``. Another model of the same kind still replaces the primary.
+    """
+    from utils.multi_model_settings import get_multi_model_enabled
+
+    if not get_multi_model_enabled():
+        return False
+    if _llama_cpp_backend.is_active:
+        return require_speech != bool(getattr(_llama_cpp_backend, "_is_audio", False))
+    orchestrator = _peek_inference_backend()
+    active = getattr(orchestrator, "active_model_name", None)
+    if not active or getattr(orchestrator, "_managed_engine", None) is not None:
+        return False
+    info = orchestrator.models.get(active, {})
+    return require_speech != bool(info.get("is_audio") and info.get("audio_type") != "whisper")
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -12191,7 +12211,13 @@ async def _maybe_auto_switch_model(
                 try:
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
-                    async with model_load_gate(), inference_lifecycle_gate():
+                    # A load kept beside the primary goes through load_model_gated, which takes the
+                    # load gate itself and leaves the primary serving while it loads.
+                    beside = await asyncio.to_thread(_switch_loads_beside, require_speech)
+                    async with AsyncExitStack() as swap_gates:
+                        if not beside:
+                            await swap_gates.enter_async_context(model_load_gate())
+                            await swap_gates.enter_async_context(inference_lifecycle_gate())
                         # Re-read under the gate: the snapshot above predates the wait.
                         if ollama_target:
                             ollama_source_identity = await asyncio.to_thread(
@@ -12255,6 +12281,8 @@ async def _maybe_auto_switch_model(
                         )
                         if caller_hf_token:
                             load_kwargs["hf_token"] = caller_hf_token
+                        if beside:
+                            load_kwargs["alongside"] = True
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
                             saved_gpu_ids, stored_gpu_index_kind(override)
@@ -12295,18 +12323,46 @@ async def _maybe_auto_switch_model(
                                 load_internal_kw["speech_codec_path"] = speech_codec_path
                             if speech_type is not None and caller_hf_token is None:
                                 load_internal_kw["anonymous_hf_access"] = True
+
+                            async def _switch_load(load_request: LoadRequest) -> None:
+                                nonlocal target_backend
+                                if not beside:
+                                    await _load_model_impl(
+                                        load_request,
+                                        fastapi_request,
+                                        current_subject,
+                                        current_request_counted = True,
+                                        **load_internal_kw,
+                                    )
+                                    return
+                                # The load tracks its own cancellation, like POST /load.
+                                await load_model_gated(
+                                    load_request,
+                                    fastapi_request,
+                                    current_subject,
+                                    current_request_counted = True,
+                                    impl_kwargs = {
+                                        k: v
+                                        for k, v in load_internal_kw.items()
+                                        if k != "load_cancel_event"
+                                    },
+                                )
+                                # Routed to the new slot (None when it took the primary after all):
+                                # hold it so this request is served there.
+                                slot = routed_slot.get()
+                                if slot is None:
+                                    return
+                                if not model_slots.reserve(slot):
+                                    routed_slot.set(None)
+                                    return
+                                target_backend = slot.llama if target_is_gguf else slot.orchestrator
+
                             try:
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
                                 load_request._override_alias_id = override_id
-                                await _load_model_impl(
-                                    load_request,
-                                    fastapi_request,
-                                    current_subject,
-                                    current_request_counted = True,
-                                    **load_internal_kw,
-                                )
+                                await _switch_load(load_request)
                             except HTTPException as exc:
                                 # The pre-flight check cannot mirror every loader gpu_ids rule,
                                 # and a stale pin must never block a request, so retry without it.
@@ -12328,13 +12384,7 @@ async def _maybe_auto_switch_model(
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
                                 load_request._override_alias_id = override_id
-                                await _load_model_impl(
-                                    load_request,
-                                    fastapi_request,
-                                    current_subject,
-                                    current_request_counted = True,
-                                    **load_internal_kw,
-                                )
+                                await _switch_load(load_request)
                             _switch_loaded_ok = True
                             # publish the completed load before a late cancellation is observed.
                             target_backend._openai_advertised_id = override_id
@@ -18624,6 +18674,7 @@ async def _run_tracked_load_model_impl(
     attempt: Optional[_ScopedLoadAttempt] = None,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    impl_kwargs: Optional[dict] = None,
 ):
     global _running_load_attempt
 
@@ -18644,6 +18695,7 @@ async def _run_tracked_load_model_impl(
                     current_request_counted = current_request_counted,
                     on_reload_confirmed = on_reload_confirmed,
                     load_cancel_event = attempt.cancel_event,
+                    **(impl_kwargs or {}),
                 )
         finally:
             _load_warnings_reach_user.reset(warnings_token)
@@ -18787,6 +18839,7 @@ async def load_model_gated(
     *,
     user_initiated: bool = False,
     current_request_counted: bool = False,
+    impl_kwargs: Optional[dict] = None,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
@@ -18879,6 +18932,7 @@ async def load_model_gated(
                             attempt = attempt,
                             current_request_counted = current_request_counted,
                             on_reload_confirmed = reload_gate,
+                            impl_kwargs = impl_kwargs,
                         )
                         break
                     except (GpuMemoryShortError, HTTPException) as exc:
@@ -18977,6 +19031,7 @@ async def load_model_gated(
                                     attempt = attempt,
                                     current_request_counted = current_request_counted,
                                     on_reload_confirmed = None,
+                                    impl_kwargs = impl_kwargs,
                                 )
                             evicted += [replaced] if replaced else []
                             break
