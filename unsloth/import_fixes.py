@@ -7081,7 +7081,11 @@ def _drop_loaded_legacy_torchtune_stub():
     # An old patched executorch imported before Unsloth already put the legacy stub in sys.modules; it has no
     # file and no hf_to_tune. Drop it when a real torchtune is installed so the next import finds the package.
     stub = sys.modules.get("torchtune")
-    if stub is None or getattr(stub, "__file__", None) is not None or getattr(stub, "__spec__", None) is not None:
+    if (
+        stub is None
+        or getattr(stub, "__file__", None) is not None
+        or getattr(stub, "__spec__", None) is not None
+    ):
         return
     convert_weights = sys.modules.get("torchtune.models.convert_weights")
     if convert_weights is None or not hasattr(convert_weights, "get_mapped_key"):
@@ -7090,7 +7094,6 @@ def _drop_loaded_legacy_torchtune_stub():
         return
     try:
         from importlib.machinery import PathFinder
-
         if PathFinder.find_spec("torchtune") is None:
             return
     except (ImportError, ValueError):
