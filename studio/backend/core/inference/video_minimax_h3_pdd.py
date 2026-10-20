@@ -76,8 +76,7 @@ def h3_pdd_heads_from_header(
     filename: Optional[str] = None,
 ) -> int:
     """Heads per stream of a ComfyUI-layout H3 file (1 for a plain denoiser). Raises ``ValueError`` for a PDD file
-    Studio cannot run correctly: a trunk without its bank, or a bank whose shapes disagree. A head is as wide as the
-    stream's input patch (``video_patch_proj`` / ``audio_patch_proj``), so the header alone sizes it."""
+    Studio cannot run correctly: a trunk without its bank, or a bank whose shapes disagree."""
     name = os.path.basename(str(filename or "")) or "this checkpoint"
     metadata = header.get("__metadata__") or {}
     video = header.get(VIDEO_HEAD_KEY) or {}
@@ -233,7 +232,7 @@ def head_bank_class():
 # ── the per-step sigma pair ──
 
 _SIGMA_ARGS = ("timestep", "timestep_indices", "video_indices")
-# MiniMaxH3Transformer3DModel.forward positions of the three, for a positional caller.
+# Their MiniMaxH3Transformer3DModel.forward positions.
 _SIGMA_POSITIONS = (3, 4, 7)
 
 
@@ -309,7 +308,7 @@ def install_h3_pdd_heads(model: Any, heads: int) -> bool:
 
 
 def h3_pdd_heads(module: Any) -> int:
-    """Heads per stream of an installed bank, 0 for a plain denoiser (or anything else)."""
+    """Heads per stream of an installed bank, 0 otherwise."""
     try:
         return int((getattr(module, "__dict__", None) or {}).get(HEADS_ATTR) or 0)
     except (TypeError, ValueError):
