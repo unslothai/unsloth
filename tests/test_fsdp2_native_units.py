@@ -912,10 +912,8 @@ def test_fit_layout_gathers_float32_masters_as_stored(tmp_path):
     assert r == {"fit": "None", "sharded": "torch.bfloat16"}, r
 
 
-def _recompute_cast_worker(rank, world, port, out, patched):
+def _recompute_cast_worker(rank, world, init_file, out, patched):
     os.environ.update(
-        MASTER_ADDR = "127.0.0.1",
-        MASTER_PORT = str(port),
         RANK = str(rank),
         WORLD_SIZE = str(world),
         LOCAL_RANK = str(rank),
@@ -927,7 +925,10 @@ def _recompute_cast_worker(rank, world, port, out, patched):
     from torch.distributed.fsdp._fully_shard._fsdp_common import TrainingState
     from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
 
-    dist.init_process_group("gloo", rank = rank, world_size = world)
+    # A file store, not a TCP port: parallel test workers cannot race for the same port.
+    dist.init_process_group(
+        "gloo", init_method = f"file://{init_file}", rank = rank, world_size = world
+    )
     try:
         native = _load_native()
         current = FSDPState._pre_forward
@@ -996,7 +997,8 @@ def test_recompute_sees_the_cast_inputs(patched, tmp_path):
     import torch.multiprocessing as mp
 
     out = str(tmp_path / f"recompute_{patched}.json")
-    mp.spawn(_recompute_cast_worker, args = (2, _free_port(), out, patched), nprocs = 2, join = True)
+    init_file = str(tmp_path / f"recompute_{patched}.store")
+    mp.spawn(_recompute_cast_worker, args = (2, init_file, out, patched), nprocs = 2, join = True)
     r = json.load(open(out, encoding = "utf-8"))
     if patched:
         assert r["error"] is None, r
