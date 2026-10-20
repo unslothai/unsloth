@@ -3645,9 +3645,9 @@ def _fallback_checkpoint_extra_bytes(model, state_dict = None):
 
 
 _GGUF_LINKED_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".npz")
-# Larger than any tokenizer file, so a folder's other big artifacts (tf_model.h5, an old .gguf) are linked, not copied onto a tight disk.
+# Larger than any tokenizer file: other big artifacts (tf_model.h5, an old .gguf) are linked, not copied.
 _GGUF_LINK_MIN_BYTES = 256 * 1024**2
-# Tokenizer assets are rewritten by save_pretrained (slow tokenizers shutil.copyfile their vocab, which raises SameFileError on a hard link), so they are always copied, whatever their suffix.
+# Always copied: save_pretrained rewrites them, and a slow tokenizer's shutil.copyfile raises SameFileError on a hard link.
 _GGUF_COPIED_PREFIXES = ("tokenizer", "vocab", "spiece", "sentencepiece", "merges")
 
 
@@ -4484,7 +4484,7 @@ def unsloth_save_pretrained_gguf(
             print(
                 f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
             )
-            # A staged copy: the BOS-stripped tokenizer and sentencepiece fix written into the user's checkpoint change how it prompts.
+            # A staged copy, so the BOS-stripped tokenizer never lands in the user's checkpoint.
             try:
                 staged_directory = _stage_reused_checkpoint(original_path, gguf_directory)
                 save_directory = staged_directory
