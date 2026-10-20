@@ -347,7 +347,7 @@ def int4_dequantize(
     if qs.layout is not None:
         return _dequant_repacked(packed, qs, dtype, out)
     compiling = torch.compiler.is_compiling()
-    # Traced (a compiled decoder block): no data_ptr caches or cached launchers, which break the graph.
+    # Traced: data_ptr caches and cached launchers would break the graph.
     (P, S, Z, G), (N, K, KP), (sp, ss, sz), meta = (
         _make_launch_args(packed, qs, store = False) if compiling else _launch_args(packed, qs)
     )

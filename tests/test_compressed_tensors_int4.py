@@ -872,8 +872,6 @@ def _plain_linear(group = 128, symmetric = False):
 @needs_ct
 @pytest.mark.parametrize("layout", ["checkpoint", "repacked"])
 def test_training_linear_traces_inside_torch_compile(layout):
-    # A compiled decoder block (models/_block_compile.py) runs the training linear traced: no graph
-    # break, and the same bytes as eager for the output and dX.
     import torch._dynamo.utils as dynamo_utils
 
     if layout == "repacked":
