@@ -101,6 +101,15 @@ def test_the_shell_guards():
     assert "requestSubmit = " not in shell
 
 
+def test_trusted_input_uses_a_private_channel():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "if (event.isTrusted && (!scriptedEdit || editingKey)) edited(true);" in boot
+    assert "inputChannel.port1.postMessage.bind(inputChannel.port1)" in boot
+    assert "if (!samePage(next)) edited(false);" in boot
+    assert 'removeEventListener("input"' not in boot
+
+
 def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
     # Checked in Chromium, Firefox and WebKit, as this suite has no browser to run the shell in.
     shell = browser_mod._FRAME_HTML
