@@ -1309,9 +1309,7 @@ class FastLanguageModel(FastLlamaModel):
                 cache_dir = kwargs.get("cache_dir", None),
                 revision = revision,
             )
-            # get_model_name hands back the caller's name when no FP8 repo is mapped, so a None check
-            # never fired and the model loaded in bf16. Only vLLM quantizes on the fly, and only
-            # when it is the one loading. Conflicting flags are left to the precision check below.
+            # Unmapped names come back unchanged, not None; conflicting flags are left to the precision check below.
             if (
                 load_in_fp8 != False
                 and not _precision_flags_conflict(
@@ -2232,9 +2230,7 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir", None),
                 revision = revision,
             )
-            # get_model_name hands back the caller's name when no FP8 repo is mapped, so a None check
-            # never fired and the model loaded in bf16. Only vLLM quantizes on the fly, and only
-            # when it is the one loading. Conflicting flags are left to the precision check below.
+            # Unmapped names come back unchanged, not None; conflicting flags are left to the precision check below.
             if (
                 load_in_fp8 != False
                 and not _precision_flags_conflict(
