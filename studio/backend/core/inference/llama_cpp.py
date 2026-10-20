@@ -7729,35 +7729,42 @@ def _backend_sampling_flags(
     *,
     gpus_detected: bool,
     vulkan: bool,
+    cuda_build: bool = True,
     platform: Optional[str] = None,
     env: Optional[Mapping[str, str]] = None,
     spec_env: Optional[Mapping[str, str]] = None,
 ) -> list[str]:
     """``--backend-sampling`` where llama.cpp's GPU sampler is measured to pay off.
 
-    With it, the per-slot sampler chain runs inside the decode graph, so a step no longer
-    copies every slot's full-vocabulary logits to the host and walks them on the CPU
-    (Colab L4, 4 slots, Studio's chains: Qwen3.5-0.8B 20.3 -> 7.0 ms per token, Qwen3-0.6B
-    7.3 -> 6.1 ms, Qwen3.5 flood throughput 2.2x; each new request pays ~20-25 ms more TTFT
-    for llama.cpp's per-request scheduler re-reserve). It is per request and falls back to the CPU by itself for what it
-    cannot run (grammar / tools, a reasoning budget, pre-sampling logprobs, DRY / XTC /
-    mirostat and anything after them in the chain), with the same tokens for the same
-    logits and seed. Off where it is not measured to help: no GPU, Vulkan, macOS, and any
-    speculative decoding (penalties cannot run on the GPU when a step verifies several
-    tokens per slot, and the drafts dominate there). A user's own flag or
+    With it, the per-slot sampler chain runs inside the decode graph, so a step no longer copies
+    every slot's full-vocabulary logits to the host and walks them on the CPU (Colab L4, 4
+    slots, Studio's chains: Qwen3.5-0.8B 20.3 -> 7.0 ms per token, Qwen3-0.6B 7.3 -> 6.1 ms,
+    Qwen3.5 flood throughput 2.2x; each new request pays ~20-25 ms more TTFT for llama.cpp's
+    per-request scheduler re-reserve). It is per request and falls back to the CPU by itself for
+    what it cannot run (grammar / tools, a reasoning budget, pre-sampling logprobs, DRY / XTC /
+    mirostat and anything after them in the chain), with the same tokens for the same logits and
+    seed. Off where it is not measured to help: no GPU, a build without the CUDA backend (ROCm,
+    SYCL), Vulkan, macOS, and any speculative decoding (penalties cannot run on the GPU when a
+    step verifies several tokens per slot, and the drafts dominate there). A user's own flag or
     ``UNSLOTH_LLAMA_BACKEND_SAMPLING=0`` wins; an older build without the flag gets none.
-    ``env`` is the child's environment; ``spec_env`` the spec variables it keeps (the
-    launch scrubs LLAMA_ARG_SPEC_* unless the extras own the spec block).
+    ``env`` is the child's environment; ``spec_env`` the spec variables it keeps (the launch
+    scrubs LLAMA_ARG_SPEC_* unless the extras own the spec block).
     """
     source_env = os.environ if env is None else env
-    opt_out = os.environ.get(_BACKEND_SAMPLING_OPT_OUT, source_env.get(_BACKEND_SAMPLING_OPT_OUT, ""))
+    opt_out = os.environ.get(
+        _BACKEND_SAMPLING_OPT_OUT, source_env.get(_BACKEND_SAMPLING_OPT_OUT, "")
+    )
     if str(opt_out).strip().lower() in ("0", "false", "off", "no"):
         return []
     if not caps.get("supports_backend_sampling"):
         return []
-    if _extra_args_set_any_flag(argv, _BACKEND_SAMPLING_FLAGS) or "LLAMA_ARG_BACKEND_SAMPLING" in source_env:
+    if (
+        _extra_args_set_any_flag(argv, _BACKEND_SAMPLING_FLAGS)
+        or "LLAMA_ARG_BACKEND_SAMPLING" in source_env
+    ):
         return []
-    if not gpus_detected or vulkan or (platform or sys.platform) == "darwin":
+    # Measured on CUDA only; ROCm, SYCL and the rest keep CPU sampling until measured.
+    if not gpus_detected or vulkan or not cuda_build or (platform or sys.platform) == "darwin":
         return []
     if _device_selection_is_cpu(argv, source_env) or _argv_keeps_layers_on_cpu(argv):
         return []
@@ -31006,6 +31013,7 @@ class LlamaCppBackend:
                         [*cmd, *(extra_args or [])],
                         gpus_detected = bool(_detected_gpus),
                         vulkan = bool(is_vulkan_backend),
+                        cuda_build = "cuda" in self._installed_ggml_backends(binary),
                         env = env,
                         spec_env = _child_spec_env(extra_args, env),
                     )

@@ -65,7 +65,12 @@ ON = {"supports_backend_sampling": True}
 GPU = {"gpus_detected": True, "vulkan": False, "platform": "linux", "env": {}, "spec_env": {}}
 
 
-def _probe(tmp_path, monkeypatch, help_text, returncode = 0):
+def _probe(
+    tmp_path,
+    monkeypatch,
+    help_text,
+    returncode = 0,
+):
     binary = tmp_path / "llama-server"
     binary.write_text("")
     completed = subprocess.CompletedProcess(
@@ -103,14 +108,16 @@ class TestTheGate:
     def test_a_plain_gpu_launch_gets_it(self):
         assert _backend_sampling_flags(ON, self.BASE, **GPU) == ["--backend-sampling"]
 
-    @pytest.mark.parametrize("caps", [{}, {"supports_backend_sampling": False}], ids = ["unknown", "old"])
+    @pytest.mark.parametrize(
+        "caps", [{}, {"supports_backend_sampling": False}], ids = ["unknown", "old"]
+    )
     def test_an_older_build_gets_nothing(self, caps):
         assert _backend_sampling_flags(caps, self.BASE, **GPU) == []
 
     @pytest.mark.parametrize(
         "kw",
-        [{"gpus_detected": False}, {"vulkan": True}, {"platform": "darwin"}],
-        ids = ["no-gpu", "vulkan", "macos"],
+        [{"gpus_detected": False}, {"vulkan": True}, {"cuda_build": False}, {"platform": "darwin"}],
+        ids = ["no-gpu", "vulkan", "rocm-or-other", "macos"],
     )
     def test_unmeasured_or_cpu_backends_get_nothing(self, kw):
         assert _backend_sampling_flags(ON, self.BASE, **{**GPU, **kw}) == []
@@ -129,7 +136,12 @@ class TestTheGate:
 
     @pytest.mark.parametrize(
         "tail",
-        [["--spec-default"], ["--spec-type", "ngram-mod"], ["--spec-type=draft-mtp"], ["-md", "d.gguf"]],
+        [
+            ["--spec-default"],
+            ["--spec-type", "ngram-mod"],
+            ["--spec-type=draft-mtp"],
+            ["-md", "d.gguf"],
+        ],
         ids = ["spec-default", "ngram-mod", "mtp-inline", "draft-model"],
     )
     def test_speculative_launches_get_nothing(self, tail):
@@ -187,9 +199,18 @@ def launch(tmp_path, monkeypatch):
     backend, _ = _backend(tmp_path, vulkan = False, memory = _MEMORY)
     gguf = _write_gguf(tmp_path / "Qwen3-0.6B-Q8_0.gguf")
 
-    def go(caps = _CAPS, **kw):
+    def go(
+        caps = _CAPS,
+        ggml_backends = frozenset({"cpu", "cuda"}),
+        **kw,
+    ):
         monkeypatch.setattr(
             type(backend), "probe_server_capabilities", classmethod(lambda cls, binary = None: caps)
+        )
+        monkeypatch.setattr(
+            type(backend),
+            "_installed_ggml_backends",
+            staticmethod(lambda binary = None: ggml_backends),
         )
         kw.setdefault("n_parallel", 4)
         kw.setdefault("speculative_type", "off")
@@ -205,6 +226,10 @@ def test_a_multi_slot_gpu_load_launches_with_it(launch):
 
 def test_a_single_slot_load_launches_with_it_too(launch):
     assert "--backend-sampling" in launch(n_parallel = 1)
+
+
+def test_a_rocm_build_keeps_the_cpu_sampler(launch):
+    assert "--backend-sampling" not in launch(ggml_backends = frozenset({"cpu", "hip"}))
 
 
 def test_an_older_binary_launches_as_before(launch):
