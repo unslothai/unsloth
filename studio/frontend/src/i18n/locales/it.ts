@@ -49,6 +49,11 @@ export const it = {
     removeFromMessage: "Rimuovi dal messaggio",
   },
   browser: {
+    drafts: {
+      title: "Scaricare una pagina con testo inserito?",
+      description: "Per mantenere la chat reattiva, solo tre pagine nascoste con testo inserito restano in esecuzione. Continuando verrà scaricata {pages} e il testo non salvato potrebbe andare perso. Annulla torna alla scheda precedente.",
+      confirm: "Scarica e continua",
+    },
     agentSettings: {
       title: "Uso del browser",
       enable: "Consenti ai modelli di usare il browser",
@@ -3151,6 +3156,7 @@ export const it = {
       audioCppVersion: "Versione di audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrata",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

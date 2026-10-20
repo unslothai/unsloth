@@ -287,12 +287,25 @@ export const BUDGET = {
   // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
   // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
   // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
-  // The browser panel's page history and scroll restore (#14283) add 318 B raw / 180 B transfer (6,844,087 ->
-  // 6,844,405 B raw, 2,060,928 -> 2,061,108 B transfer against b6f21fd28, one machine and build, Node 22, chunk
-  // count unchanged at 96), inside the already-eager chat chunk; raised by that growth so main's margin stays where
-  // it was.
-  transferBytes: 2_061_303,
-  rawBytes: 6_844_579,
+  // FLUX.3 workflows, controls and LoRAs (#14312) add 426 B raw / 138 B transfer (6,844,101 -> 6,844,527 B raw,
+  // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
+  // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
+  // to that build plus the same 160 B raw / 189 B transfer margin.
+  // The modern toggles (#14322) add 449 B raw / 86 B transfer (6,844,459 -> 6,844,908 B raw, 2,061,006 ->
+  // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
+  // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
+  // same 160 B raw / 189 B transfer margin.
+  // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
+  // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
+  // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Explicit browser download names retain the prior startup margin.
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The browser panel's page history and scroll restore (#14283) add 348 B raw / 65 B transfer (6,848,044 ->
+  // 6,848,392 B raw, 2,062,313 -> 2,062,378 B transfer against f7b147dd10, one machine and build, Node 22, 96
+  // chunks), inside the already-eager chat chunk. Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_062_567,
+  rawBytes: 6_848_552,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

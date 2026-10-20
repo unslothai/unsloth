@@ -63,6 +63,12 @@ test("a page the sandbox refused a feature reaches the panel as a bare notice", 
   assert.deepEqual(from({ type: "needsBrowser", url: "https://evil.example/" }), { type: "needsBrowser" });
 });
 
+test("typing in a page reaches the panel without the text", () => {
+  assert.deepEqual(from({ type: "typed", value: "secret" }), { type: "typed" });
+  assert.deepEqual(from({ type: "typed", reset: true, value: "secret" }), { type: "typed", reset: true });
+  assert.deepEqual(from({ type: "typed", reset: "true" }), { type: "typed" });
+});
+
 test("the sandbox notice stays until the page goes, the others time out", () => {
   assert.deepEqual(frameNotice("needsBrowser", "t1"), { id: "browser-needsBrowser-t1", duration: Number.POSITIVE_INFINITY });
   assert.deepEqual(frameNotice("upload", "t1"), { id: "browser-upload-t1" });

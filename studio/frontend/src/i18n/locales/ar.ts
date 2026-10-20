@@ -50,6 +50,11 @@ export const ar = {
     removeFromMessage: "إزالة من الرسالة",
   },
   browser: {
+    drafts: {
+      title: "إلغاء تحميل صفحة تحتوي على نص مُدخل؟",
+      description: "للحفاظ على سرعة استجابة الدردشة، يستمر تشغيل ثلاث صفحات مخفية فقط تحتوي على نص مُدخل. ستؤدي المتابعة إلى إلغاء تحميل {pages}، وقد يُفقد النص غير المحفوظ. يعيدك الإلغاء إلى علامة التبويب السابقة.",
+      confirm: "إلغاء التحميل والمتابعة",
+    },
     agentSettings: {
       title: "استخدام المتصفح",
       enable: "السماح للنماذج باستخدام المتصفح",
@@ -3199,6 +3204,7 @@ export const ar = {
       audioCppVersion: "إصدار audio.cpp",
       hardware: "الأجهزة",
       gpu: "GPU",
+      gpuIntegrated: "مدمجة",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

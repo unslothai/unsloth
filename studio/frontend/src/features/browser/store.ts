@@ -90,6 +90,7 @@ export type BrowserTab = {
   /** The proxied page failed to load, so an error shows instead of its frame. */
   pageError?: boolean;
   pageHistory?: { back: boolean; forward: boolean } | null;
+  typedAt?: number;
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
@@ -384,6 +385,7 @@ type BrowserState = {
         | "nativeError"
         | "pageError"
         | "pageHistory"
+        | "typedAt"
       >
     >,
   ) => void;
@@ -449,6 +451,7 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     nativeError: null,
     pageError: false,
     pageHistory: null,
+    typedAt: undefined,
     zoom,
   };
 }
@@ -468,6 +471,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     nativeError: null,
     pageError: false,
     pageHistory: null,
+    typedAt: undefined,
   };
 }
 
@@ -755,7 +759,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
           const moved = routerEntry(tab);
-          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1, pageHistory: null };
+          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1, pageHistory: null, typedAt: undefined };
           // Swapped in place, as a browser's reload: Forward keeps its pages.
           const scroll = scrollPositions.get(currentEntry(tab));
           if (scroll) scrollPositions.set(moved, scroll);

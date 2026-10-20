@@ -155,6 +155,9 @@ function useFrameMessages(tabId: string, origin: string | null, entry: BrowserEn
         case "history":
           store.updateTab(tabId, { pageHistory: { back: message.back, forward: message.forward } });
           break;
+        case "typed":
+          store.updateTab(tabId, { typedAt: message.reset ? undefined : Date.now() });
+          break;
         case "upload":
         case "scriptNavigation":
         case "needsBrowser": {

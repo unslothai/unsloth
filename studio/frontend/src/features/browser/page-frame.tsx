@@ -218,6 +218,7 @@ export function PageFrame({
           );
         return;
       }
+      if (message.type === "typed" && left) return;
       if (isUserAction(message)) {
         if (!userActive(frame, message)) return;
         // Shortcuts too: a script can queue many before the first one moves focus off the page.
@@ -266,6 +267,7 @@ export function PageFrame({
       stopClearing();
       stopSyncing();
       requests.stop();
+      onMessageRef.current({ type: "typed", reset: true });
     };
   }, [origin]);
 
@@ -300,6 +302,7 @@ export function PageFrame({
       title={title}
       src={browserFrameUrl(loadId)}
       sandbox="allow-scripts allow-forms"
+      allow="clipboard-write"
       allowFullScreen
       referrerPolicy="no-referrer"
       className="size-full border-0 bg-white"
