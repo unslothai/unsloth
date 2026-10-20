@@ -6724,6 +6724,26 @@ def test_a_file_still_being_written_is_staged_as_it_was_opened(tmp_path, monkeyp
     assert staged.read_bytes() == b"line 1\n"
 
 
+def test_opening_a_file_again_reuses_its_copy_until_either_changes(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    video = tmp_path / "sandbox" / "clip.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"frames v1")
+    first = path_utils._stage_for_open(video, video.parent)
+    assert path_utils._stage_for_open(video, video.parent) == first
+    assert len(list((tmp_path / "cache" / "open-staging").iterdir())) == 1
+
+    first.write_bytes(b"edited in the app")
+    edited = path_utils._stage_for_open(video, video.parent)
+    assert edited != first and edited.read_bytes() == b"frames v1"
+
+    video.write_bytes(b"frames v2, longer")
+    changed = path_utils._stage_for_open(video, video.parent)
+    assert changed not in (first, edited) and changed.read_bytes() == b"frames v2, longer"
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
 def test_a_parent_swapped_for_a_link_is_refused(tmp_path, monkeypatch):
     from utils.paths import path_utils

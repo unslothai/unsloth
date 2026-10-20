@@ -544,12 +544,26 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         staging = cache_root() / "open-staging"
         staging.mkdir(parents = True, exist_ok = True)
         _prune_open_staging(staging)
-        target = Path(tempfile.mkdtemp(dir = staging)) / path.name
+        # Opening the same file again reuses its copy, so repeated opens of a large file do not fill the disk.
+        key = f"{info.st_dev}-{info.st_ino}-{info.st_size}-{info.st_mtime_ns}-"
+        for entry in staging.glob(key + "*"):
+            try:
+                staged = os.lstat(entry / path.name)
+                if stat_module.S_ISREG(staged.st_mode) and staged.st_nlink == 1 and (
+                    staged.st_size,
+                    staged.st_mtime_ns,
+                ) == (info.st_size, info.st_mtime_ns):
+                    os.utime(entry)
+                    return entry / path.name
+            except OSError:
+                continue
+        target = Path(tempfile.mkdtemp(prefix = key, dir = staging)) / path.name
         try:
             with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
                 remaining = info.st_size
                 while remaining and (chunk := source.read(min(remaining, 1 << 20))):
                     remaining -= copy.write(chunk)
+            os.utime(target, ns = (info.st_atime_ns, info.st_mtime_ns))
         except OSError:
             shutil.rmtree(target.parent, ignore_errors = True)
             raise
