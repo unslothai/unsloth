@@ -155,7 +155,7 @@ import {
 } from "../utils/deep-research-handoff";
 import {
   consumeQueuedChatRunSettings,
-  shouldPersistResolvedQueuedModel,
+  shouldPersistRunModel,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
 import {
@@ -2401,12 +2401,12 @@ export async function buildLocalTokenCountExtras(
           rag_scope: {
             ...(ragEnabled && ragSource.type === "kb"
               ? { kb_id: ragSource.kbId }
-              : {
-                  ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
-                  ...(projectRagEnabled && ragProjectId
-                    ? { project_id: ragProjectId }
-                    : {}),
-                }),
+              : ragEnabled && threadId
+                ? { thread_id: threadId }
+                : {}),
+            ...(projectRagEnabled && ragProjectId
+              ? { project_id: ragProjectId }
+              : {}),
             // An unpersisted New Chat has neither id, and {} is falsy in Python, so the count alone would
             // drop the tool and its nudge.
             default_top_k: ragTopK,
@@ -4652,26 +4652,25 @@ export function createOpenAIStreamAdapter(
         releasePreStreamRunForThreadIds([unstable_threadId, resolvedThreadId]);
       const queuedRunSettings = consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
-      const persistResolvedQueuedModel = async (
+      const persistRunModel = async (
         modelId: string,
         modelGgufVariant: string | null,
       ) => {
-        if (
-          !queuedRunSettings ||
-          queuedRunSettings.params.checkpoint ||
-          !resolvedThreadId ||
-          !modelId
-        ) {
+        if (!resolvedThreadId || !modelId) {
           return;
         }
-        const storedThread = await readThreadRecord?.();
-        if (!shouldPersistResolvedQueuedModel(storedThread)) {
-          return;
+        try {
+          const storedThread = await readThreadRecord?.();
+          if (!shouldPersistRunModel(storedThread, modelId, modelGgufVariant)) {
+            return;
+          }
+          await updateStoredChatThread(resolvedThreadId, {
+            modelId,
+            modelGgufVariant,
+          });
+        } catch {
+          // Only what the chat offers back on reopen.
         }
-        await updateStoredChatThread(resolvedThreadId, {
-          modelId,
-          modelGgufVariant,
-        });
       };
       if (queuedRunSettings) {
         runtime = { ...runtime, ...queuedRunSettings };
@@ -4787,10 +4786,6 @@ export function createOpenAIStreamAdapter(
         const userMessageParentId =
           userMessageIndex > 0 ? rawMessages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
-        await persistResolvedQueuedModel(
-          params.checkpoint,
-          runtime.activeGgufVariant,
-        );
         const selectedCheckpoint = params.checkpoint.trim();
         const researchExternalSelection =
           parseExternalModelId(selectedCheckpoint);
@@ -4866,26 +4861,20 @@ export function createOpenAIStreamAdapter(
         if (transitionSignal.aborted) return;
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
-            ? runtime.ragEnabled && runtime.ragSource.type === "kb"
-              ? {
-                  kb_id: runtime.ragSource.kbId,
-                  default_top_k: runtime.ragTopK,
-                  mode: runtime.ragMode,
-                  autoinject: runtime.ragAutoInject,
-                  autoinject_min_score: runtime.ragAutoInjectMinScore,
-                }
-              : {
-                  ...(runtime.ragEnabled
+            ? {
+                ...(runtime.ragEnabled && runtime.ragSource.type === "kb"
+                  ? { kb_id: runtime.ragSource.kbId }
+                  : runtime.ragEnabled
                     ? { thread_id: resolvedThreadId }
                     : {}),
-                  ...(projectRagEnabled && researchProjectId
-                    ? { project_id: researchProjectId }
-                    : {}),
-                  default_top_k: runtime.ragTopK,
-                  mode: runtime.ragMode,
-                  autoinject: runtime.ragAutoInject,
-                  autoinject_min_score: runtime.ragAutoInjectMinScore,
-                }
+                ...(projectRagEnabled && researchProjectId
+                  ? { project_id: researchProjectId }
+                  : {}),
+                default_top_k: runtime.ragTopK,
+                mode: runtime.ragMode,
+                autoinject: runtime.ragAutoInject,
+                autoinject_min_score: runtime.ragAutoInjectMinScore,
+              }
             : undefined;
 
         const threadKey = resolvedThreadId;
@@ -4901,6 +4890,7 @@ export function createOpenAIStreamAdapter(
         };
         runtime.registerThreadServerCancel(threadKey, researchServerCancel);
         releaseCurrentPreStreamRun();
+        void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, {
           owner: researchServerCancel,
         });
@@ -5173,10 +5163,6 @@ export function createOpenAIStreamAdapter(
             }
         : liveRuntime;
       const { params } = runtime;
-      await persistResolvedQueuedModel(
-        params.checkpoint,
-        runtime.activeGgufVariant,
-      );
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
         readThreadRecord,
@@ -5824,6 +5810,7 @@ export function createOpenAIStreamAdapter(
         const audioCancel = () => runAbort.abort();
         runtime.registerThreadServerCancel(threadKey, audioCancel);
         releaseCurrentPreStreamRun();
+        void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
         runtime.setThreadRunning(threadKey, true, { owner: audioCancel });
         try {
           yield {
@@ -5911,6 +5898,8 @@ export function createOpenAIStreamAdapter(
       // Flagged local/external so the model-swap gate counts only the chats a reload ends; the
       // backend excludes external runs from active_generations for the same reason.
       releaseCurrentPreStreamRun();
+      // Past every gate that refuses the send, and not awaited: only what reopening the chat offers.
+      void persistRunModel(params.checkpoint, runtime.activeGgufVariant);
       runtime.setThreadRunning(threadKey, true, {
         local: !isExternalRequest,
         owner: serverCancel,
@@ -6979,14 +6968,12 @@ export function createOpenAIStreamAdapter(
                           rag_scope: {
                             ...(ragEnabled && ragSource.type === "kb"
                               ? { kb_id: ragSource.kbId }
-                              : {
-                                  ...(ragEnabled && resolvedThreadId
-                                    ? { thread_id: resolvedThreadId }
-                                    : {}),
-                                  ...(projectRagEnabled && ragProjectId
-                                    ? { project_id: ragProjectId }
-                                    : {}),
-                                }),
+                              : ragEnabled && resolvedThreadId
+                                ? { thread_id: resolvedThreadId }
+                                : {}),
+                            ...(projectRagEnabled && ragProjectId
+                              ? { project_id: ragProjectId }
+                              : {}),
                             default_top_k: ragTopK,
                             mode: ragMode,
                             autoinject: resolveAutoInject(
@@ -7182,14 +7169,12 @@ export function createOpenAIStreamAdapter(
                         rag_scope: {
                           ...(ragEnabled && ragSource.type === "kb"
                             ? { kb_id: ragSource.kbId }
-                            : {
-                                ...(ragEnabled && resolvedThreadId
-                                  ? { thread_id: resolvedThreadId }
-                                  : {}),
-                                ...(projectRagEnabled && ragProjectId
-                                  ? { project_id: ragProjectId }
-                                  : {}),
-                              }),
+                            : ragEnabled && resolvedThreadId
+                              ? { thread_id: resolvedThreadId }
+                              : {}),
+                          ...(projectRagEnabled && ragProjectId
+                            ? { project_id: ragProjectId }
+                            : {}),
                           default_top_k: ragTopK,
                           mode: ragMode,
                           autoinject: resolveAutoInject(

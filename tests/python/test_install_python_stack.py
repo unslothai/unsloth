@@ -1237,7 +1237,7 @@ class TestProgressLineNotes:
         test makes it wrap: every message fits one line at COLUMNS=100."""
         msg = (
             "AMD GPU detected but ROCm PyTorch could not be auto-installed. Manual install "
-            "may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd"
+            "may be required. See: https://unsloth.ai/docs/get-started/install/amd"
         )
         out = self._render(lambda: ips._note(msg), columns = "60")
         lines = [ln for ln in out.split("\n") if ln.strip()]
@@ -1245,7 +1245,7 @@ class TestProgressLineNotes:
         for line in lines:
             assert len(line) - len(line.lstrip()) == ips._INDENT + ips._COL, repr(line)
         assert " ".join(ln.strip() for ln in lines) == msg
-        assert any("https://docs.unsloth.ai" in ln for ln in lines), out
+        assert any("https://unsloth.ai/docs" in ln for ln in lines), out
 
     def test_note_falls_back_to_the_flat_indent_in_verbose_mode(self):
         """Verbose prints no bar and no step line, so the value column would indent

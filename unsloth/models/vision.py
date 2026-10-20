@@ -170,7 +170,7 @@ from .loader_utils import (
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
-from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
+from .fsdp2_qlora import packed_4bit_as_uint8, prepare_fsdp2_qlora, set_fsdp2_quant_storage
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
 # scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
 # `_gpu_init` hid that by importing `.models` first; the MLX branch never reaches it. So the
@@ -4362,14 +4362,16 @@ class FastBaseModel:
                 patch_medias_processor = None
             if patch_medias_processor is not None:
                 patch_medias_processor(tokenizer)
-        model, tokenizer = patch_model_and_tokenizer(
-            model,
-            tokenizer,
-            downcast_rope = False,
-            fix_embeddings = False,
-            do_forced_float32 = do_forced_float32,
-            correct_dtype = correct_dtype,
-        )
+        # FSDP2 packs 4-bit weights in a float dtype, which the dtype passes in here would cast.
+        with packed_4bit_as_uint8(model, enabled = fsdp2_requested()):
+            model, tokenizer = patch_model_and_tokenizer(
+                model,
+                tokenizer,
+                downcast_rope = False,
+                fix_embeddings = False,
+                do_forced_float32 = do_forced_float32,
+                correct_dtype = correct_dtype,
+            )
 
         try:
             model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -5077,7 +5079,9 @@ class FastBaseModel:
                 float32_mixed_precision = False
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
-        use_reentrant = not is_distributed()
+        # FSDP2 has no DDP reducer to mark twice: each unit reduce-scatters in its own post-backward hook,
+        # recompute included, so it keeps Unsloth's offloaded checkpointing (and unsloth_stream) as 1 GPU does.
+        use_reentrant = not is_distributed() or fsdp2_requested()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
         _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)

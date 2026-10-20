@@ -416,7 +416,7 @@ _bnb_rocm_arch_has_binary() {
 }
 _warn_bnb_no_rocm_binary() {
     _bnb_rocm_arch_has_binary && return 0
-    substep "[WARN] aarch64: bitsandbytes ships no ROCm kernels on this arch; 4-bit QLoRA needs a source build -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+    substep "[WARN] aarch64: bitsandbytes ships no ROCm kernels on this arch; 4-bit QLoRA needs a source build -- https://unsloth.ai/docs/get-started/install/amd" "$C_WARN"
 }
 _install_bnb_rocm() {
     _label="$1"
@@ -6960,7 +6960,7 @@ if [ "$_torch_index_pinned" = false ] && [ "$SKIP_TORCH" = false ] && \
                     fi
                     echo "  [WARN] Routing to AMD arch-specific wheels ($(_strip_index_url_credentials "$TORCH_INDEX_URL"))." >&2
                     echo "  [WARN] These wheels bundle their own ROCm runtime; install the kernel stack for native compute:" >&2
-                    echo "  [WARN]   https://docs.unsloth.ai/get-started/install-and-update/amd" >&2
+                    echo "  [WARN]   https://unsloth.ai/docs/get-started/install/amd" >&2
                     if [ -n "$_linux_inferred_gfx" ]; then
                         echo "  [WARN] Tip: set UNSLOTH_ROCM_GFX_ARCH=$_linux_inferred_gfx to skip inference next time." >&2
                     else
@@ -7375,7 +7375,7 @@ case "$_torch_index_leaf" in
             echo "  [WARN] rocm wheels ship without gfx906 BLAS kernels and fail at first use)." >&2
             echo "  [WARN] gfx906 is a community-maintained legacy path: 16-bit LoRA and full" >&2
             echo "  [WARN] finetuning work out of the box; bitsandbytes 4-bit QLoRA requires a" >&2
-            echo "  [WARN] source build of bitsandbytes for gfx906 (see docs.unsloth.ai/amd)." >&2
+            echo "  [WARN] source build of bitsandbytes for gfx906 (see unsloth.ai/docs/get-started/install/amd)." >&2
             echo "" >&2
             _amd_gfx906_base="${UNSLOTH_PYTORCH_MIRROR:-https://download.pytorch.org/whl}"
             while [ "${_amd_gfx906_base%/}" != "$_amd_gfx906_base" ]; do
@@ -7691,7 +7691,7 @@ case "$TORCH_INDEX_URL" in
                 substep "Strix Halo (gfx1151): this installer auto-offers ROCm-on-WSL setup once the"
                 substep "  driver is current; or run unsloth/scripts/install_rocm_wsl_strixhalo.sh yourself."
             else
-                substep "AMD ROCm users: see https://docs.unsloth.ai/get-started/install-and-update/amd"
+                substep "AMD ROCm users: see https://unsloth.ai/docs/get-started/install/amd"
             fi
             substep "Re-run with --no-torch for GGUF-only (faster, no PyTorch):"
             substep "  curl -fsSL https://unsloth.ai/install.sh | sh -s -- --no-torch"
@@ -8209,8 +8209,8 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.6}"
-_unsloth_zoo_install_spec="unsloth-zoo>=2026.10.6"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.7}"
+_unsloth_zoo_install_spec="unsloth-zoo>=2026.10.7"
 
 # An index lagging PyPI (mirror, delayed feed, cutoff) may lack these floors (#14031): lower them to its newest release.
 # The marker tells Desktop preflight this older backend is the newest available, so it is not repaired forever.
@@ -8284,7 +8284,7 @@ if [ "$_MIGRATED" = true ]; then
     fi
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
         if _is_gfx906_bnb_skip; then
-            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://unsloth.ai/docs/get-started/install/amd" "$C_WARN"
         else
             _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
         fi
@@ -8485,7 +8485,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     fi
     if [ "$SKIP_TORCH" = false ] && [ "$_torch_index_is_rocm_family" = true ]; then
         if _is_gfx906_bnb_skip; then
-            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://docs.unsloth.ai/get-started/install-and-update/amd" "$C_WARN"
+            substep "gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels); build from source for 4-bit QLoRA -- https://unsloth.ai/docs/get-started/install/amd" "$C_WARN"
         else
             _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
         fi
