@@ -7626,6 +7626,7 @@ def unsloth_save_pretrained_torchao(
 
     has_qat_config = hasattr(self, "_torchao_config") and self._torchao_config is not None
     qat_scheme = getattr(self._torchao_config, "qat_scheme", None) if has_qat_config else None
+    is_peft = isinstance(self, (PeftModelForCausalLM, PeftModel))
 
     if torchao_config is not None:
         if has_qat_config:
@@ -7654,11 +7655,11 @@ def unsloth_save_pretrained_torchao(
         )
 
     if torchao_config is None and not push_to_hub:
+        # The PEFT path merges and writes the quantized copy to the "-torchao" sibling; the rest write in place.
         save_directory = str(save_directory)
-        torchao_directory = save_directory + "-torchao"
         _write_executorch_export_config(
             qat_scheme,
-            torchao_directory if os.path.isdir(torchao_directory) else save_directory,
+            save_directory + "-torchao" if is_peft else save_directory,
         )
 
     for _ in range(3):

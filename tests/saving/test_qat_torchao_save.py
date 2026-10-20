@@ -270,19 +270,29 @@ def test_untie_merged_checkpoint(tmp_path, layout):
         assert torch.equal(h.get_tensor("thinker.lm_head.weight"), lm_head)
 
 
+@pytest.mark.parametrize("peft", [True, False], ids = ["peft", "full"])
 @pytest.mark.parametrize("qat_scheme", ["int8-int4", "int8"])
-def test_phone_deployment_save_writes_executorch_config(monkeypatch, tmp_path, qat_scheme):
+def test_phone_deployment_save_writes_executorch_config(monkeypatch, tmp_path, qat_scheme, peft):
     target = tmp_path / "out"
+    # A "-torchao" sibling left by an earlier LoRA export must not attract a full model's config.
+    os.makedirs(str(target) + "-torchao")
+
+    class _PeftStub(_Model):
+        pass
 
     def fake_save(model, save_directory, **kw):
-        os.makedirs(save_directory + "-torchao")
+        os.makedirs(save_directory + "-torchao" if peft else save_directory, exist_ok = True)
 
     monkeypatch.setattr(save_mod, "_unsloth_save_torchao_with_attached_config", fake_save)
-    model = _Model()
+    monkeypatch.setattr(save_mod, "PeftModel", _PeftStub)
+    monkeypatch.setattr(save_mod, "PeftModelForCausalLM", _PeftStub)
+    model = _PeftStub() if peft else _Model()
     model._torchao_config = _int8_qat_config()
     model._torchao_config.qat_scheme = qat_scheme
     save_mod.unsloth_save_pretrained_torchao(model, str(target), tokenizer = object())
-    path = tmp_path / "out-torchao" / "executorch_export_config.yaml"
+    path = tmp_path / ("out-torchao" if peft else "out") / "executorch_export_config.yaml"
+    stale = tmp_path / ("out" if peft else "out-torchao") / "executorch_export_config.yaml"
+    assert not stale.exists()
     if qat_scheme != "int8-int4":
         assert not path.exists()
         return
