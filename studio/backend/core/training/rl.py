@@ -305,18 +305,22 @@ def render_prompts_without_thinking(
 
 
 def _row_tools(row: dict):
+    # Only structured (Arrow) schemas carry other rows' keys as None; JSON text keeps its own nulls.
     def decode(value):
+        if not isinstance(value, str):
+            return _drop_nulls(value)
         try:
-            return json.loads(value) if isinstance(value, str) else value
+            return json.loads(value)
         except ValueError:
             return None
 
-    tools = decode(row.get("tools"))
+    tools = row.get("tools")
     if isinstance(tools, list):
         # A list of serialized schemas, one JSON string per tool, is as common as one string.
         tools = [tool for tool in map(decode, tools) if tool]
-    # Structured tool columns get every other schema's keys from Arrow, as None.
-    return _drop_nulls(tools) or None
+    else:
+        tools = decode(tools)
+    return tools or None
 
 
 def _drop_nulls(value: Any) -> Any:

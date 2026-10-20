@@ -943,6 +943,8 @@ def test_tool_lists_of_serialized_schemas_are_decoded():
     schema = {"type": "function", "function": {"name": "w", "parameters": {}}}
     assert _row_tools({"tools": [json.dumps(schema)]}) == [schema]
     assert _row_tools({"tools": json.dumps([schema])}) == [schema]
+    const = {"type": "function", "function": {"name": "w", "parameters": {"const": None}}}
+    assert _row_tools({"tools": json.dumps([const])}) == [const]
 
 
 def test_tool_call_preferences_keep_their_calls():
