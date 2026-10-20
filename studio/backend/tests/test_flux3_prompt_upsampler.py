@@ -1127,6 +1127,30 @@ def test_empty_hip_mask_falls_back_to_the_cuda_mask(monkeypatch):
     assert pup._child_device_mask(1) == {"CUDA_VISIBLE_DEVICES": "5"}
 
 
+@pytest.mark.parametrize("hip", [None, "6.2"])
+def test_users_llama_arg_device_keeps_every_card_visible(monkeypatch, hip):
+    # ROCm1 / CUDA1 would name a device a one-card mask no longer has.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2,3")
+    monkeypatch.setenv("LLAMA_ARG_DEVICE", "ROCm1" if hip else "CUDA1")
+    assert pup._child_device_mask(1) == {}
+    monkeypatch.setenv("LLAMA_ARG_DEVICE", " ")
+    assert pup._child_device_mask(1) == {("HIP" if hip else "CUDA") + "_VISIBLE_DEVICES": "3"}
+
+
+def test_negative_ordinal_never_pins_the_last_mask_entry(monkeypatch):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+    assert pup._child_device_mask(-1) == {}
+
+
 def test_rocm_wheel_without_version_hip_still_reads_the_hip_mask(monkeypatch):
     import torch
 

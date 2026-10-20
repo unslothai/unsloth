@@ -866,7 +866,8 @@ def _resident_cuda_ordinal() -> Optional[int]:
 def _child_device_mask(ordinal: Optional[int]) -> dict:
     """Pin llama-server to the image model's card: left alone it splits layers over every visible GPU, onto a card the
     memory probe never read."""
-    if ordinal is None:
+    # LLAMA_ARG_DEVICE is the user's own pick, and names devices a narrowed mask would renumber.
+    if ordinal is None or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip():
         return {}
     try:
         import torch
@@ -887,7 +888,7 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
             return {var: str(ordinal)}
         # Torch indexes inside the parent's mask, so the child keeps that entry (an index or a UUID).
         entries = [entry.strip() for entry in parent.split(",") if entry.strip()]
-        return {var: entries[ordinal]} if ordinal < len(entries) else {}
+        return {var: entries[ordinal]} if 0 <= ordinal < len(entries) else {}
     except Exception:  # noqa: BLE001 -- no mask: llama.cpp's own device choice
         return {}
 
