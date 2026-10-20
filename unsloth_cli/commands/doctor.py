@@ -424,7 +424,7 @@ def verdict(
     hints = []
     gpus = info["gpus"]
     if not gpus and info.get("accelerator"):
-        name = "Apple Silicon (MPS)" if info["accelerator"] == "mps" else "Intel XPU"
+        name = "Metal (MPS)" if info["accelerator"] == "mps" else "Intel XPU"
         return True, [f"{name} detected: multi-GPU CUDA checks skipped."]
     if not gpus:
         return False, [

@@ -500,7 +500,7 @@ def _non_cuda_torch(
 
 @pytest.mark.parametrize(
     "mps, xpu, name",
-    [(True, False, "Apple Silicon (MPS)"), (False, True, "Intel XPU")],
+    [(True, False, "Metal (MPS)"), (False, True, "Intel XPU")],
 )
 def test_doctor_on_mps_or_xpu_is_healthy(monkeypatch, mps, xpu, name):
     result, calls = _run_doctor(monkeypatch, _non_cuda_torch(mps = mps, xpu = xpu), [])

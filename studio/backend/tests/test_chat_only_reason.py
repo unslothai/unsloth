@@ -179,6 +179,8 @@ def test_apple_silicon_no_torch_install_with_usable_mlx_enables_training(monkeyp
 
 def test_intel_mac_reason(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    # Pinned: a translated (Rosetta) test Python would otherwise answer "rosetta".
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: False)
     monkeypatch.setattr(hw, "_has_mlx", lambda: False)
     monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
     hw.detect_hardware()
