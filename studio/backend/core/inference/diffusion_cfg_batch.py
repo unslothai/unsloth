@@ -143,7 +143,9 @@ def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
         return f"per-call activation scaling ({scaled})"
     if mode == "force":
         return None
-    if type(denoiser).__name__ not in STATELESS_CLASSES or not type(denoiser).__module__.startswith("diffusers."):
+    if type(denoiser).__name__ not in STATELESS_CLASSES or not type(denoiser).__module__.startswith(
+        "diffusers."
+    ):
         return f"{type(denoiser).__name__} is not on the stateless-forward list ({CFG_BATCH_ENV}=force opts it in)"
     if offload_policy not in ("group", "streaming", "sequential") or not _streamed(denoiser):
         return "denoiser is resident (two calls upload nothing)"
@@ -177,7 +179,13 @@ class _Shape:
 class CfgBatchRouter:
     """Offloaded denoiser ``forward`` running both guidance branches of a step through one forward."""
 
-    def __init__(self, module: Any, *, reason: str, logger: Any = None) -> None:
+    def __init__(
+        self,
+        module: Any,
+        *,
+        reason: str,
+        logger: Any = None,
+    ) -> None:
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
         self.had_override = "forward" in module.__dict__
@@ -207,8 +215,12 @@ class CfgBatchRouter:
             "armed_for": self.reason,
             "disabled_reason": self.disabled,
             "shape_off": None if shape is None else shape.off,
-            "plain_pair_s": None if shape is None or shape.plain_pair_s is None else round(shape.plain_pair_s, 4),
-            "batched_pair_s": None if shape is None or not shape.batched_s else round(min(shape.batched_s), 4),
+            "plain_pair_s": None
+            if shape is None or shape.plain_pair_s is None
+            else round(shape.plain_pair_s, 4),
+            "batched_pair_s": None
+            if shape is None or not shape.batched_s
+            else round(min(shape.batched_s), 4),
             "displaced": self._displaced(),
             **self.stats,
         }
@@ -229,7 +241,12 @@ class CfgBatchRouter:
         self.kept = None
         self.template = None
 
-    def _shape_off(self, shape: _Shape, reason: str, kind: Optional[str] = None) -> None:
+    def _shape_off(
+        self,
+        shape: _Shape,
+        reason: str,
+        kind: Optional[str] = None,
+    ) -> None:
         if shape.off is None:
             shape.off, shape.off_kind = reason, kind
             if self.logger is not None:
@@ -276,7 +293,9 @@ class CfgBatchRouter:
         if self.kept is not None:
             self._miss(self.shape, "the second branch never came")
         if self.prev_latent is not None and self.branch == 0:
-            self.template = None  # the last step made one call (guidance ended or off): nothing to predict from
+            self.template = (
+                None  # the last step made one call (guidance ended or off): nothing to predict from
+            )
         self._reset_step()
         self.prev_latent = latent
         self.b0 = (args, kwargs)
@@ -423,7 +442,12 @@ class CfgBatchRouter:
                 return None
             self.disable(f"the doubled call failed ({type(exc).__name__}: {exc})")
             return None
-        self.kept = {"out": other, "snapshots": snapshots, "t0": t0 if timing else None, "latent": latent}
+        self.kept = {
+            "out": other,
+            "snapshots": snapshots,
+            "t0": t0 if timing else None,
+            "latent": latent,
+        }
         self.stats["batched_steps"] += 1
         return mine
 
@@ -462,7 +486,9 @@ def _snapshot(call: tuple) -> list:
     """The second branch's predicted arguments, tensors cloned: an in-place write between the two calls is caught."""
     mg = _mg()
     torch = _torch()
-    return [(p, v.detach().clone() if isinstance(v, torch.Tensor) else v) for p, v in mg._leaves(call)]
+    return [
+        (p, v.detach().clone() if isinstance(v, torch.Tensor) else v) for p, v in mg._leaves(call)
+    ]
 
 
 def _matches(snapshots: list, call: tuple) -> bool:
@@ -495,7 +521,9 @@ def _pad_text(first: dict, second: dict) -> None:
         if mask_key not in first and mask_key not in second:
             raise _NotBatchable(f"{emb_key}: prompt lengths differ and the model takes no mask")
         length = max(a.shape[1], b.shape[1])
-        given = [m for m in (first.get(mask_key), second.get(mask_key)) if isinstance(m, torch.Tensor)]
+        given = [
+            m for m in (first.get(mask_key), second.get(mask_key)) if isinstance(m, torch.Tensor)
+        ]
         dtype = given[0].dtype if given else torch.long
         for kw, emb in ((first, a), (second, b)):
             mask = kw.get(mask_key)
@@ -557,7 +585,11 @@ def merge_branches(first_call: tuple, second_call: tuple, batch: int) -> tuple[t
     return b_args, b_kwargs
 
 
-def split_output(out: Any, batch: int, depth: int = 0) -> tuple[Any, Any]:
+def split_output(
+    out: Any,
+    batch: int,
+    depth: int = 0,
+) -> tuple[Any, Any]:
     """(first, second) branch of a doubled output, split on a leading dim of ``2 * batch``."""
     torch = _torch()
     if isinstance(out, torch.Tensor):
@@ -576,11 +608,12 @@ def split_output(out: Any, batch: int, depth: int = 0) -> tuple[Any, Any]:
         return [p[0] for p in pairs], [p[1] for p in pairs]
     if isinstance(out, dict):
         pairs = {k: split_output(v, batch, depth + 1) for k, v in out.items()}
-        return type(out)((k, v[0]) for k, v in pairs.items()), type(out)((k, v[1]) for k, v in pairs.items())
+        return type(out)((k, v[0]) for k, v in pairs.items()), type(out)(
+            (k, v[1]) for k, v in pairs.items()
+        )
     fields = getattr(out, "__dataclass_fields__", None)
     if fields is not None:
         import dataclasses
-
         pairs = {name: split_output(getattr(out, name), batch, depth + 1) for name in fields}
         return (
             dataclasses.replace(out, **{k: v[0] for k, v in pairs.items()}),
@@ -592,7 +625,12 @@ def split_output(out: Any, batch: int, depth: int = 0) -> tuple[Any, Any]:
 _ROUTERS: "weakref.WeakKeyDictionary[Any, CfgBatchRouter]" = weakref.WeakKeyDictionary()
 
 
-def install_cfg_batch(pipe: Any, *, offload_policy: str, logger: Any = None) -> Optional[str]:
+def install_cfg_batch(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    logger: Any = None,
+) -> Optional[str]:
     """Arm :class:`CfgBatchRouter` on ``pipe.transformer``; the decline reason, or None when armed. An optional lever:
     it never fails a load."""
     try:
@@ -603,7 +641,12 @@ def install_cfg_batch(pipe: Any, *, offload_policy: str, logger: Any = None) -> 
         return f"{type(exc).__name__}: {exc}"
 
 
-def _install(pipe: Any, *, offload_policy: str, logger: Any = None) -> Optional[str]:
+def _install(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    logger: Any = None,
+) -> Optional[str]:
     reason = cfg_batch_decline(pipe, offload_policy = offload_policy)
     if reason is not None:
         if logger is not None:
@@ -612,7 +655,9 @@ def _install(pipe: Any, *, offload_policy: str, logger: Any = None) -> Optional[
     denoiser = pipe.transformer
     router = CfgBatchRouter(
         denoiser,
-        reason = "forced" if cfg_batch_mode() == "force" else f"offloaded denoiser ({offload_policy})",
+        reason = "forced"
+        if cfg_batch_mode() == "force"
+        else f"offloaded denoiser ({offload_policy})",
         logger = logger,
     )
     try:

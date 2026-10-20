@@ -18,11 +18,26 @@ class Flux2Transformer2DModel(torch.nn.Module):
         self.w = torch.nn.Parameter(torch.linspace(0.5, 1.5, 8))
         self.calls = []
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, txt_ids, img_ids, guidance = None,
-                joint_attention_kwargs = None, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        txt_ids,
+        img_ids,
+        guidance = None,
+        joint_attention_kwargs = None,
+        return_dict = False,
+    ):
         self.calls.append(int(hidden_states.shape[0]))
         text = encoder_hidden_states.mean(dim = 1, keepdim = True)
-        out = hidden_states * self.w + text + timestep.view(-1, 1, 1) + txt_ids.float().mean() + img_ids.float().mean()
+        out = (
+            hidden_states * self.w
+            + text
+            + timestep.view(-1, 1, 1)
+            + txt_ids.float().mean()
+            + img_ids.float().mean()
+        )
         return (out,)
 
 
@@ -34,8 +49,17 @@ class QwenImageTransformer2DModel(torch.nn.Module):
         super().__init__()
         self.w = torch.nn.Parameter(torch.full((8,), 0.75))
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, encoder_hidden_states_mask = None,
-                img_shapes = None, guidance = None, attention_kwargs = None, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        encoder_hidden_states_mask = None,
+        img_shapes = None,
+        guidance = None,
+        attention_kwargs = None,
+        return_dict = False,
+    ):
         assert len(img_shapes) == hidden_states.shape[0]
         if encoder_hidden_states_mask is None:
             encoder_hidden_states_mask = torch.ones(encoder_hidden_states.shape[:2])
@@ -61,7 +85,14 @@ class _Pipe:
         self.transformer = transformer
 
 
-def _flux_loop(model, steps = 6, *, neg = None, guided = None, between = None):
+def _flux_loop(
+    model,
+    steps = 6,
+    *,
+    neg = None,
+    guided = None,
+    between = None,
+):
     """The diffusers FLUX.2-klein loop: per step one latent object, cond then uncond call, CFG combine."""
     torch.manual_seed(0)
     latents = torch.randn(1, 4, 8)
@@ -73,21 +104,37 @@ def _flux_loop(model, steps = 6, *, neg = None, guided = None, between = None):
     for i in range(steps):
         t = torch.full((1,), 1.0 - i / steps)
         latent_model_input = latents.clone()
-        cond = model(hidden_states = latent_model_input, timestep = t / 1000, encoder_hidden_states = pos,
-                     txt_ids = txt_ids, img_ids = img_ids, return_dict = False)[0]
+        cond = model(
+            hidden_states = latent_model_input,
+            timestep = t / 1000,
+            encoder_hidden_states = pos,
+            txt_ids = txt_ids,
+            img_ids = img_ids,
+            return_dict = False,
+        )[0]
         pred = cond
         if between is not None:
             between(i, neg)
         if guided is None or guided(i):
-            uncond = model(hidden_states = latent_model_input, timestep = t / 1000, encoder_hidden_states = neg,
-                           txt_ids = txt_ids, img_ids = img_ids, return_dict = False)[0]
+            uncond = model(
+                hidden_states = latent_model_input,
+                timestep = t / 1000,
+                encoder_hidden_states = neg,
+                txt_ids = txt_ids,
+                img_ids = img_ids,
+                return_dict = False,
+            )[0]
             pred = uncond + 4.0 * (cond - uncond)
         latents = latents - 0.1 * pred
         outs.append(pred)
     return latents, outs
 
 
-def _armed(model, monkeypatch, mode = None):
+def _armed(
+    model,
+    monkeypatch,
+    mode = None,
+):
     if mode is not None:
         monkeypatch.setenv(cb.CFG_BATCH_ENV, mode)
     pipe = _Pipe(_offloaded(model))
@@ -119,10 +166,22 @@ def test_qwen_unequal_prompt_lengths_and_img_shapes_batch(monkeypatch):
         img_shapes = [[(1, 2, 2)]]
         for i in range(6):
             t = torch.full((1,), 1.0 - i / 6)
-            c = model(hidden_states = latents, timestep = t / 1000, encoder_hidden_states = pos,
-                      encoder_hidden_states_mask = pos_mask, img_shapes = img_shapes, return_dict = False)[0]
-            u = model(hidden_states = latents, timestep = t / 1000, encoder_hidden_states = neg,
-                      encoder_hidden_states_mask = neg_mask, img_shapes = img_shapes, return_dict = False)[0]
+            c = model(
+                hidden_states = latents,
+                timestep = t / 1000,
+                encoder_hidden_states = pos,
+                encoder_hidden_states_mask = pos_mask,
+                img_shapes = img_shapes,
+                return_dict = False,
+            )[0]
+            u = model(
+                hidden_states = latents,
+                timestep = t / 1000,
+                encoder_hidden_states = neg,
+                encoder_hidden_states_mask = neg_mask,
+                img_shapes = img_shapes,
+                return_dict = False,
+            )[0]
             latents = latents - 0.1 * (u + 4.0 * (c - u))
         return latents
 
@@ -140,7 +199,9 @@ def test_a_changed_second_branch_reruns_plain_and_stops_after_three_misses(monke
         if i >= 2:
             neg.add_(0.5)
 
-    ref, _ = _flux_loop(_offloaded(Flux2Transformer2DModel()), steps = 8, neg = torch.zeros(1, 5, 8), between = between)
+    ref, _ = _flux_loop(
+        _offloaded(Flux2Transformer2DModel()), steps = 8, neg = torch.zeros(1, 5, 8), between = between
+    )
     model = Flux2Transformer2DModel()
     _pipe, router = _armed(model, monkeypatch)
     got, _ = _flux_loop(model, steps = 8, neg = torch.zeros(1, 5, 8), between = between)
@@ -164,8 +225,12 @@ def test_a_third_call_per_step_turns_batching_off(monkeypatch):
     model = Flux2Transformer2DModel()
     _pipe, router = _armed(model, monkeypatch)
     x = torch.randn(1, 4, 8)
-    kw = dict(timestep = torch.ones(1), encoder_hidden_states = torch.randn(1, 5, 8), txt_ids = torch.zeros(1, 5, 4),
-              img_ids = torch.ones(1, 4, 4))
+    kw = dict(
+        timestep = torch.ones(1),
+        encoder_hidden_states = torch.randn(1, 5, 8),
+        txt_ids = torch.zeros(1, 5, 4),
+        img_ids = torch.ones(1, 4, 4),
+    )
     for _ in range(3):
         model(hidden_states = x, **kw)
     assert router.disabled == "more than two denoiser calls per step"
@@ -248,10 +313,26 @@ def test_sync_waits_on_the_latents_card(monkeypatch):
 
 
 def test_merge_pads_text_and_joins_per_sample_lists():
-    a = ((), {"hidden_states": torch.zeros(1, 2), "encoder_hidden_states": torch.ones(1, 3, 2),
-              "encoder_hidden_states_mask": torch.ones(1, 3), "img_shapes": [[(1, 2, 2)]], "scale": 1.0})
-    b = ((), {"hidden_states": torch.zeros(1, 2), "encoder_hidden_states": torch.ones(1, 5, 2),
-              "encoder_hidden_states_mask": None, "img_shapes": [[(1, 2, 2)]], "scale": 1.0})
+    a = (
+        (),
+        {
+            "hidden_states": torch.zeros(1, 2),
+            "encoder_hidden_states": torch.ones(1, 3, 2),
+            "encoder_hidden_states_mask": torch.ones(1, 3),
+            "img_shapes": [[(1, 2, 2)]],
+            "scale": 1.0,
+        },
+    )
+    b = (
+        (),
+        {
+            "hidden_states": torch.zeros(1, 2),
+            "encoder_hidden_states": torch.ones(1, 5, 2),
+            "encoder_hidden_states_mask": None,
+            "img_shapes": [[(1, 2, 2)]],
+            "scale": 1.0,
+        },
+    )
     _args, kw = cb.merge_branches(a, b, 1)
     assert kw["encoder_hidden_states"].shape == (2, 5, 2)
     assert kw["encoder_hidden_states_mask"].tolist() == [[1, 1, 1, 0, 0], [1, 1, 1, 1, 1]]
