@@ -81,6 +81,7 @@ from storage.studio_db import (
     list_chat_threads,
     remap_chat_thread_document_ids,
     set_chat_project_working_folder,
+    ProjectWorkingFolderConflictError,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -342,6 +343,10 @@ class ChatProject(BaseModel):
 class ChatProjectWorkingFolder(BaseModel):
     model_config = ConfigDict(extra = "forbid", populate_by_name = True)
     native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+
+
+class ChatProjectCreate(ChatProject):
+    nativePathLease: Optional[str] = Field(default = None, min_length = 1)
 
 
 class ChatAgentsMd(BaseModel):
@@ -1284,9 +1289,20 @@ def list_projects(
 
 
 @router.post("/projects", response_model = ChatProject)
-def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
+def save_project(payload: ChatProjectCreate, current_subject: str = Depends(get_current_subject)):
+    lease = getattr(payload, "nativePathLease", None)
+    if lease is not None and not is_owner_context():
+        raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
     try:
-        return ChatProject(**upsert_chat_project(payload.model_dump()))
+        project = payload.model_dump(exclude = {"nativePathLease"})
+        if lease is None:
+            return ChatProject(**upsert_chat_project(project))
+        working_folder = _resolve_project_working_folder(lease)
+        return ChatProject(**upsert_chat_project(project, working_folder = working_folder))
+    except HTTPException:
+        raise
+    except ProjectWorkingFolderConflictError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except ProjectWorkspaceError as exc:
         # A project is the only thing Unsloth writes to Documents, so only this error and only its own path: the same
         # upsert also opens the database, which lives elsewhere.
@@ -1297,6 +1313,17 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
             "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
             "location.",
             event = "chat_history.create_project_workspace_failed",
+            log = logger,
+        ) from exc
+    except Exception as exc:
+        if lease is None:
+            raise
+        # The grant is spent: HTTPException keeps CORS so the webview does not resend it (#13131).
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not create the project.",
+            event = "chat_history.create_project_with_folder_failed",
             log = logger,
         ) from exc
 
