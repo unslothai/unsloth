@@ -12563,11 +12563,14 @@ class VideoBackend:
                                 reuse_live_server = False,
                                 compute_bytes = compute_bytes,
                             )
+                            from .sd_cpp_backend import _explicit_threads
                             generated = runtime.engine.generate_video(
                                 runtime.files,
                                 video_params,
                                 output_path = str(output_path),
                                 offload = render_flags,
+                                # sd.cpp's default undercounts M5 Pro / Max and ignores env / cgroup quota
+                                threads = _explicit_threads(),
                                 env = dict(runtime.env) or None,
                                 on_log = on_log,
                                 cancel_event = cancel,

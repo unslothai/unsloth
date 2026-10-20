@@ -890,6 +890,7 @@ class SdCppEngine:
         *,
         output_path: str,
         offload: Optional[list[str]] = None,
+        threads: Optional[int] = None,
         verbose: bool = False,
         extra_args: Optional[list[str]] = None,
         timeout: Optional[float] = NATIVE_GENERATION_TIMEOUT_S,
@@ -904,6 +905,7 @@ class SdCppEngine:
             params,
             output_path = str(self._prepare_out(output_path)),
             offload = offload,
+            threads = threads,
             verbose = verbose,
             extra_args = extra_args,
         )
