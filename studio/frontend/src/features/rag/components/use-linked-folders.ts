@@ -54,8 +54,9 @@ export function useLinkedFolders(
     if (!scopeType || (isTauri && nativePathLeasesSupported)) return;
     let active = true;
     void listServerSourceFolders()
-      .then(({ folders }) => {
-        if (active) setServerFolders(folders);
+      .then((response) => {
+        // A backend without the route can still answer 200 (an SPA fallback or a stub).
+        if (active) setServerFolders(Array.isArray(response?.folders) ? response.folders : []);
       })
       .catch(() => {
         if (active) setServerFolders([]);

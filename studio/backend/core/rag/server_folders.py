@@ -70,9 +70,14 @@ def _labels(paths: list[str]) -> list[str]:
     limit = [max(1, len(p) - 1) if Path(path).anchor else len(p) for p, path in zip(parts, paths)]
     depth = [1] * len(paths)
     while True:
-        labels = [_tail(path, p, d) for path, p, d in zip(paths, parts, depth)]
+        tails = [_tail(path, p, d) for path, p, d in zip(paths, parts, depth)]
+        # A non-UTF-8 name decodes to lone surrogates, which the JSON response cannot encode.
+        labels = [tail.encode("utf-8", "replace").decode("utf-8") for tail in tails]
+        # Deepen only names that are really equal; ones equal after the replacement go to the tag.
         clashing = [
-            i for i, label in enumerate(labels) if labels.count(label) > 1 and depth[i] < limit[i]
+            i
+            for i, tail in enumerate(tails)
+            if labels.count(labels[i]) > 1 and tails.count(tail) > 1 and depth[i] < limit[i]
         ]
         if not clashing:
             # Still equal only below different drives or shares: name a drive letter, else an opaque tag.
@@ -92,16 +97,12 @@ def available_folders() -> list[dict[str, str]]:
         try:
             normalized, _ = _resolve(path)
         except (ValueError, RuntimeError) as exc:
-            _warn_once(f"{ENV_NAME}: skipping {path}: {exc}")
+            _warn_once(f"{ENV_NAME}: skipping {path!r}: {exc}")
             continue
         if normalized not in resolved.values():
             resolved[folder_id] = normalized
     labels = _labels(list(resolved.values()))
-    # A non-UTF-8 name decodes to lone surrogates, which the JSON response cannot encode.
-    return [
-        {"id": folder_id, "displayName": label.encode("utf-8", "replace").decode("utf-8")}
-        for folder_id, label in zip(resolved, labels)
-    ]
+    return [{"id": folder_id, "displayName": label} for folder_id, label in zip(resolved, labels)]
 
 
 def display_name(folder_id: str) -> str | None:

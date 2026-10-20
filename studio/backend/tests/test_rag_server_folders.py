@@ -66,11 +66,13 @@ def test_an_undecodable_path_does_not_break_the_listing(source, monkeypatch):
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "only Linux filesystems accept non-UTF-8 names")
 def test_a_non_utf8_folder_name_still_serializes(rag_home, monkeypatch):
-    raw = os.fsencode(rag_home) + b"/caf\xe9"
-    os.mkdir(raw)
-    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps([os.fsdecode(raw)]))
+    raws = [os.fsencode(rag_home) + name for name in (b"/caf\xe9", b"/caf\xe8")]
+    for raw in raws:
+        os.mkdir(raw)
+    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps([os.fsdecode(raw) for raw in raws]))
     choices = server_folders.available_folders()
-    assert [c["displayName"] for c in choices] == ["caf?"]
+    names = [c["displayName"] for c in choices]
+    assert len(set(names)) == 2 and all(name.startswith("caf? (") for name in names)
     json.dumps(choices, ensure_ascii = False).encode("utf-8")
 
 
