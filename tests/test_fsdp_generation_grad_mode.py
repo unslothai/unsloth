@@ -98,8 +98,7 @@ def test_fsdp2_under_inference_mode_is_the_reported_failure(no_launcher, tmp_pat
     [("true", False), ("1", False), ("false", True), ("", True)],
 )
 def test_deepspeed_launch_scores_under_no_grad(no_launcher, value, inference):
-    """DeepSpeed ZeRO-3 keeps parameters it gathered (persistent ones for good): an inference-mode
-    gather leaves inference tensors the training step cannot save for backward."""
+    """ZeRO-3 keeps gathered persistent params: inference-mode gathers poison backward."""
     no_launcher.setenv("ACCELERATE_USE_DEEPSPEED", value)
     assert _mode_inside(torch.nn.Linear(2, 2)) == (inference, False)
 
@@ -107,7 +106,7 @@ def test_deepspeed_launch_scores_under_no_grad(no_launcher, value, inference):
 def test_zero3_partitioned_model_scores_under_no_grad(no_launcher):
     no_launcher.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
     model = torch.nn.Linear(2, 2)
-    model.weight.ds_id = 0  # what deepspeed.zero.Init / ZeRO-3 partitioning stamps on every parameter
+    model.weight.ds_id = 0
     assert _mode_inside(model) == (False, False)
 
 

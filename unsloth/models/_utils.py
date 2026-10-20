@@ -7993,8 +7993,7 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
     )
     if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
         return torch.no_grad()
-    # DeepSpeed ZeRO-3 all-gathers parameters for a forward and keeps the small persistent ones, so
-    # the same poisoning applies; ZeRO-1 / 2 lose nothing but the inference-mode speedup.
+    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies.
     if os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in ("1", "true", "yes", "on"):
         return torch.no_grad()
     if isinstance(shared_state, dict) and "DEEPSPEED" in str(shared_state.get("distributed_type", "")):

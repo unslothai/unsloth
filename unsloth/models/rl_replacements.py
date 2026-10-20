@@ -2619,8 +2619,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 )
                 lm_head_bias = None
             _head_log_softmax = chunked_hidden_states_selective_log_softmax
-            # DeepSpeed ZeRO-3 released the head after the forward (a 0-element placeholder):
-            # score with one gathered read-only copy, and size the chunks from it.
+            # ZeRO-3 released the head after the forward: score with one gathered read-only copy.
             _zero3_head = None
             try:
                 from unsloth_zoo.fused_losses.cross_entropy_loss import (
