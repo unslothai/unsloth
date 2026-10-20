@@ -567,6 +567,33 @@ def test_a_config_ini_that_turns_the_gpu_sampler_on_is_guarded_too(launch, monke
     assert launch.backend.guard_gpu_sampler({}) == {"backend_sampling": False}
 
 
+def test_a_config_ini_logit_bias_goes_to_the_cpu(launch, monkeypatch, tmp_path):
+    # Review round 5: /props leaves logit_bias out, and llama.cpp appends the [*] and [default]
+    # biases, which the GPU sampler scatters instead of summing.
+    ini = tmp_path / "config.ini"
+    ini.write_text("[*]\nlogit-bias = 15+2\n[default]\nlogit-bias = 15+3\n")
+    monkeypatch.setattr(llama_cpp, "_llama_config_files", lambda env, platform = None: [str(ini)])
+    assert "--backend-sampling" in launch()
+    payload = {"top_k": 0, "top_p": 1, "min_p": 0, "temperature": 1}
+    assert launch.backend.guard_gpu_sampler(payload) == {**payload, "backend_sampling": False}
+    # A config without a bias leaves the same request on the GPU.
+    ini.write_text("[default]\nctx-size = 4096\n")
+    launch.backend._healthy = False
+    launch()
+    assert launch.backend.guard_gpu_sampler(payload) is payload
+
+
+def test_an_unreadable_config_ini_counts_as_a_bias(tmp_path):
+    from core.inference.llama_cpp import _config_files_set_logit_bias
+
+    assert _config_files_set_logit_bias([str(tmp_path / "missing.ini")])
+    ini = tmp_path / "c.ini"
+    ini.write_text("[default]\n  logit_bias = 1+1\n")
+    assert _config_files_set_logit_bias([str(ini)])
+    ini.write_text("[default]\ntop-k = 20\n")
+    assert not _config_files_set_logit_bias([str(ini)])
+
+
 def test_a_server_reporting_the_cpu_sampler_is_left_alone(launch):
     launch.props = lambda backend: _props(backend_sampling = False, samplers = _TK)
     assert "--backend-sampling" in launch()

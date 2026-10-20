@@ -7959,6 +7959,28 @@ def _llama_config_files(env: Mapping[str, str], platform: Optional[str] = None) 
     return [path for path in paths if os.path.exists(path)]
 
 
+_CONFIG_LOGIT_BIAS_KEYS = frozenset({"logit-bias", "logit_bias", "l", "llama_arg_logit_bias"})
+
+
+def _config_files_set_logit_bias(paths: Sequence[str]) -> bool:
+    """Whether any llama.cpp config.ini in ``paths`` may set a logit bias; True if one is unreadable.
+
+    /props leaves logit_bias out, and llama.cpp appends the biases of every section it applies
+    (``[*]`` and the model's), so a config bias is a default the guard cannot otherwise see.
+    """
+    for path in paths:
+        try:
+            with open(path, encoding = "utf-8", errors = "replace") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return True
+        for line in lines:
+            key, sep, _value = line.partition("=")
+            if sep and key.strip().lstrip("-").lower() in _CONFIG_LOGIT_BIAS_KEYS:
+                return True
+    return False
+
+
 def _gpu_sampler_envelope_breach(
     payload: Mapping,
     launch: Mapping,
@@ -9530,6 +9552,9 @@ class LlamaCppBackend:
             **{k: v for k, v in argv_defaults.items() if k not in _PROPS_SAMPLING_FIELDS},
             **reported,
         }
+        if not defaults.get("logit_bias") and _config_files_set_logit_bias(config_files):
+            # Its value is not knowable here; any bias is outside the envelope, so say "some".
+            defaults["logit_bias"] = [["config.ini", 0]]
         if not on:
             self._backend_sampling_launch = None
             self._server_sampling_defaults = defaults
