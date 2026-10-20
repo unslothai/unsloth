@@ -3362,6 +3362,16 @@ def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
     return _unsloth_grpo_hidden_states_signal(model) is not False
 
 
+def _unsloth_pref_returns_hidden_states(model, tensor, lm_head):
+    """``_unsloth_grpo_returns_hidden_states`` for the preference routes, which need a zoo that writes the hidden-state
+    markers: a square head with no signal is a forward that ignored the flag, so its output is real logits."""
+    if tensor.shape[-1] != lm_head.shape[1]:
+        return False
+    if lm_head.shape[0] != lm_head.shape[1]:
+        return True
+    return _unsloth_grpo_hidden_states_signal(model) is True
+
+
 def _unsloth_grpo_hidden_states_signal(model):
     """``True``/``False`` if the forward honours ``UNSLOTH_RETURN_HIDDEN_STATES``, ``None`` when neither marker is present. See ``_unsloth_grpo_returns_hidden_states`` for where each marker is set. Walks the wrapper chain because the markers are set on whichever object the trainer saw, which may be the DDP module or the PEFT base model rather than the object handed to the logprob loop."""
     candidates = []
@@ -5201,7 +5211,7 @@ def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_cho
     ``all_logits`` holding real logits for TRL's own body (the forward ignored the flag, or a shape TRL rejects)."""
     unwrapped = self.accelerator.unwrap_model(model)
     multiply, divide, softcap = _unsloth_pref_logit_transforms(unwrapped)
-    if not _unsloth_grpo_returns_hidden_states(unwrapped, states, head.weight):
+    if not _unsloth_pref_returns_hidden_states(unwrapped, states, head.weight):
         return None, states
     input_ids = concatenated_batch["concatenated_input_ids"]
     labels = concatenated_batch["concatenated_labels"]
@@ -5398,6 +5408,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
         _unsloth_resolve_logit_scales,
         _unsloth_grpo_returns_hidden_states,
         _unsloth_grpo_hidden_states_signal,
+        _unsloth_pref_returns_hidden_states,
         _unsloth_gkd_dense_head,
         _unsloth_stock_logps_hook,
         _unsloth_pref_chunked_head,
@@ -5528,7 +5539,7 @@ def _unsloth_dpo_returns_hidden_states(self, chunked, logits):
     if chunked is None:
         return False
     unwrapped, head, _ = chunked
-    hidden = _unsloth_grpo_returns_hidden_states(unwrapped, logits, head.weight)
+    hidden = _unsloth_pref_returns_hidden_states(unwrapped, logits, head.weight)
     if not hidden:
         fallbacks = self.__dict__.setdefault("_unsloth_dpo_chunked_fallbacks", {})
         reason = "forward returned logits, not hidden states"
@@ -5904,6 +5915,7 @@ for _dpo_item in (
     _unsloth_resolve_logit_scales,
     _unsloth_grpo_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
+    _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,
@@ -6126,6 +6138,7 @@ for _kto_item in (
     _unsloth_resolve_logit_scales,
     _unsloth_grpo_returns_hidden_states,
     _unsloth_grpo_hidden_states_signal,
+    _unsloth_pref_returns_hidden_states,
     _unsloth_gkd_dense_head,
     _unsloth_gkd_logit_transforms,
     _unsloth_pref_logit_transforms,

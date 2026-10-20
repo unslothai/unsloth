@@ -362,6 +362,7 @@ def test_generated_items_are_self_contained():
             "_unsloth_gkd_dense_head",
             "_unsloth_grpo_returns_hidden_states",
             "_unsloth_grpo_hidden_states_signal",
+            "_unsloth_pref_returns_hidden_states",
             "_unsloth_get_model_config",
             "_unsloth_text_configs",
         ):
@@ -369,3 +370,23 @@ def test_generated_items_are_self_contained():
         assert (
             "from unsloth_zoo.fused_losses.chunked_logprob import unsloth_chunked_logprobs" in pre
         )
+
+
+def test_square_head_needs_an_affirmative_hidden_state_signal():
+    # vocab_size == hidden_size: the width cannot tell hidden states from logits. A forward with no marker ignored
+    # UNSLOTH_RETURN_HIDDEN_STATES, so projecting its output again would score logits through the head twice.
+    class Plain(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    square, wide = torch.zeros(8, 8), torch.zeros(10, 8)
+    out = torch.zeros(1, 2, 8)
+    plain = Plain()
+    assert rl._unsloth_pref_returns_hidden_states(plain, out, square) is False
+    assert rl._unsloth_pref_returns_hidden_states(plain, out, wide) is True
+    assert rl._unsloth_pref_returns_hidden_states(plain, torch.zeros(1, 2, 10), wide) is False
+    marked = Plain()
+    marked.__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__ = True
+    assert rl._unsloth_pref_returns_hidden_states(marked, out, square) is True
+    # GRPO keeps its leniency for a zoo too old to write the marker.
+    assert rl._unsloth_grpo_returns_hidden_states(plain, out, square) is True

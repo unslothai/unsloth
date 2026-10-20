@@ -2477,7 +2477,9 @@ class FastSentenceTransformer(FastModel):
 
         # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+. UNSLOTH_COMPILE_DISABLE=1 keeps the path and skips only its torch.compile (_apply_torch_compile).
         is_encoder_model = model_type.lower() in FastSentenceTransformer.ENCODER_MODEL_TYPES
-        if is_encoder_model:
+        # Only the fallback loader forwards load_in_8bit; UNSLOTH_COMPILE_DISABLE=1 kept 8-bit encoders there.
+        keep_8bit = load_in_8bit and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") == "1"
+        if is_encoder_model and not keep_8bit:
             # torch.compile mode "default" is safest for PEFT/LoRA training; "reduce-overhead" uses CUDA Graphs, which are incompatible with PEFT.
             compile_mode = "default"
 
