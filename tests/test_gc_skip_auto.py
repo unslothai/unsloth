@@ -478,8 +478,9 @@ def test_auto_ignores_gradients_on_another_gpu(monkeypatch):
     _fake_step(model, rows = 16)
     model.tower.grad = torch.empty(gib // 8, device = "meta")  # 0.5 GiB, not on the planned card
     model(torch.zeros(1, 16, 4))
-    # 0.5 GiB step x 4 = 2 GiB activations, 1 GiB tower AdamW: (5 - 3) * 0.75 - 1 = 0.5 GiB, 2 layers.
-    assert len(planner.kept) == 2
+    # 0.5 GiB step x 4 = 2 GiB activations, tower AdamW state on its own card: (5 - 2) * 0.75 - 1 =
+    # 1.25 GiB, five 0.25 GiB layers.
+    assert len(planner.kept) == 5
     monkeypatch.undo()
 
 
@@ -582,3 +583,27 @@ def test_explicit_value_removes_an_earlier_auto_planner(monkeypatch):
     model(torch.zeros(1, 16, 4))
     assert planner.kept is None
     monkeypatch.undo()
+
+
+def test_auto_reserves_pending_state_only_on_the_planned_card(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 3 * gib)
+    model = _FakeModel([gib // 16] * 8, memory)
+    # A large trainable tower on another card ("meta" stands in for cuda:1): its AdamW state lives there.
+    model.tower = torch.nn.Parameter(torch.empty(gib, device = "meta"))
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    # (3 - 0.5) * 0.75 - 1 = 0.875 GiB: all 8 layers (before: 8 GiB tower state, nothing kept).
+    assert len(planner.kept) == 8
+    monkeypatch.undo()
+
+
+def test_counts_apply_only_to_checkpointable_layers():
+    ns, found = _load()
+    model = _FakeModel([1] * 6, {"allocated": 0})
+    for i in (1, 3, 5):
+        model.model.layers[i] = torch.nn.Linear(4, 4)  # e.g. blocks without the flag
+    assert ns["skip_checkpointing"](model, 3) == [0, 2, 4]

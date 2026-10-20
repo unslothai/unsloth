@@ -8422,7 +8422,9 @@ class _AutoCheckpointSkip:
     """checkpoint_skip_layers = "auto": once, after step 1, un-checkpoint as many layers as fit.
     Per-layer cost = the largest allocation any eligible layer's reentrant recompute leaves in the
     first backward (hybrid stacks mix attention and Mamba blocks); AdamW state is reserved for every
-    trainable param the optimizer has no state for yet. Single process only: under torchrun each rank
+    trainable param the optimizer has no state for yet. Sized for the trainer batch at the longest of
+    max_length, max_seq_length and the measured length: inputs a collator expands past that (images,
+    audio) need max_seq_length set to their bound. Single process only: under torchrun each rank
     would pick its own K."""
 
     MARGIN = 1 << 30
@@ -8668,7 +8670,11 @@ class _AutoCheckpointSkip:
         # State an optimizer step already allocated is excluded by usable_cuda_bytes; reserve the rest
         # (sparse MoE experts, unused towers and gradient accumulation have none yet).
         trainable = [p for p in self.model.parameters() if p.requires_grad]
-        optimizer = sum(p.numel() * 8 for p in trainable if not self._has_optimizer_state(p))
+        optimizer = sum(
+            p.numel() * 8
+            for p in trainable
+            if p.device == device and not self._has_optimizer_state(p)
+        )
         # foreach AdamW allocates about one fp32 copy of the params (sqrt of exp_avg_sq) every step,
         # on each param's own card.
         optimizer += sum(p.numel() * 4 for p in trainable if p.device == device)
@@ -8715,7 +8721,11 @@ def skip_checkpointing(model, layers = 0):
     layer_list = find_decoder_layers(model)
     swapper = getattr(model, "_unsloth_block_swap", None)
     swapped = set(getattr(swapper, "indices", None) or ())
-    eligible = [i for i in range(len(layer_list)) if i not in swapped]
+    eligible = [
+        i
+        for i, layer in enumerate(layer_list)
+        if i not in swapped and hasattr(layer, "gradient_checkpointing")
+    ]
     if layers == "max":
         chosen = eligible
     else:
