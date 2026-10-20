@@ -7,10 +7,8 @@ type AutoFocusEvent = {
   currentTarget: EventTarget | null;
 };
 
-/** Radix focuses a dialog's first tabbable element on open. In recipe dialogs that is a FieldLabel
- *  hint button, and its tooltip opens on focus, so a hint pops up unasked. Focus the dialog itself
- *  instead: Tab still reaches every hint, and nothing opens until the user moves. A caller's own
- *  handler runs first and wins if it picks a target. */
+/** Radix focuses the first tabbable on open, a FieldLabel hint whose tooltip opens on focus, so
+ *  focus the dialog itself; a caller's handler runs first and wins if it prevents the default. */
 export function focusRecipeDialogOnOpen<E extends AutoFocusEvent>(
   event: E,
   onOpenAutoFocus?: (event: E) => void,

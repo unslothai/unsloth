@@ -7,9 +7,6 @@ import test from "node:test";
 import { focusRecipeDialogOnOpen } from "../src/features/recipe-studio/dialogs/shared/recipe-dialog-focus.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-// Radix focuses a dialog's first tabbable element on open. In recipe dialogs that is a FieldLabel
-// hint button, whose tooltip opens on focus, so the first hint popped up before the user did anything.
-
 const ROUTES_THROUGH_HELPER =
   /onOpenAutoFocus=\{\(event\) =>\s*focusRecipeDialogOnOpen\(event, onOpenAutoFocus\)\s*\}/;
 const PROP_TAKEN_OUT_OF_SPREAD = /children,\s*onOpenAutoFocus,\s*\.\.\.props/;
