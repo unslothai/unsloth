@@ -451,8 +451,7 @@ def test_validation_400_with_param(client, body, param):
 
 
 def test_unsloth_recipe_fields_reach_the_engine_and_the_recipe(client, monkeypatch):
-    # #14335: the Images tab recipe keys (width/height/steps/guidance/seed/negative_prompt) were
-    # dropped here, so the image came out 1024x1024 at the model defaults with a random seed.
+    # #14335: these keys were dropped, giving 1024x1024 at the model defaults with a random seed.
     store = {}
 
     def _save(image, meta):
@@ -505,7 +504,6 @@ def test_one_recipe_field_leaves_the_other_default(client):
 
 
 def test_seed_minus_one_means_random(client):
-    # Ignored before this route took seed, so a client sending -1 must keep getting a random seed, not a 400.
     assert _post(client, {"prompt": "p", "seed": -1}).status_code == 200
     assert client.backend.calls[0]["seed"] is None
 

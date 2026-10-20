@@ -5758,7 +5758,6 @@ class ImageGenerationRequest(BaseModel):
     stream: Optional[bool] = Field(
         None, description = "Streaming image generation is not supported; omit or set false."
     )
-    # Unsloth Studio extensions, as on /v1/videos; a plain OpenAI request leaves them all out.
     width: Optional[int] = Field(
         None,
         ge = 256,
@@ -5804,7 +5803,7 @@ class ImageGenerationRequest(BaseModel):
     @field_validator("seed", mode = "before")
     @classmethod
     def _minus_one_seed_means_random(cls, value):
-        # -1 is the usual "random seed" (A1111, stable-diffusion.cpp); this route ignored seed before, so it must not start 400ing.
+        # -1 = random (A1111, sd.cpp); seed was ignored here before, so -1 must not start 400ing.
         return None if value == -1 else value
 
 

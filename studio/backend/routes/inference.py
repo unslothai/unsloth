@@ -53352,8 +53352,6 @@ def _parse_openai_image_size(size: str) -> tuple[int, int]:
 
 
 def _openai_image_dims(body: ImageGenerationRequest) -> tuple[int, int]:
-    """(width, height) from ``size``, or from the width/height extension when sent. Raises
-    ValueError with a client-facing message."""
     if body.width is None and body.height is None:
         return _parse_openai_image_size(body.size)
     if body.width is None or body.height is None:
