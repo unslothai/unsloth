@@ -9356,6 +9356,8 @@ def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypat
     assert grid() == (1234, 8192) and backend._vlm_batch_row_cache("base", ())._step == 1234
     backend._kv_runtime_quant_kwargs = lambda: {"kv_bits": 4}
     assert grid() == (1234, 1234)
+    backend._kv_runtime_quant_kwargs, backend._kv_cache_window = lambda: {}, 4096
+    assert grid() == (1234, 1234)
 
 
 # ── Unset generation budget ──────────────────────────────────────────────

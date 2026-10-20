@@ -4794,11 +4794,12 @@ class MLXInferenceBackend:
         """Rows a prefix-reuse session prefills in: the planned step only where unsloth_zoo runs it
         layer by layer in mlx-vlm's steps and copies snapshots inside it, keeping them on mlx-vlm's
         grid; else mlx-vlm's step. TurboQuant converts the cache between forwards, which a copy inside
-        one would miss."""
+        one would miss; past a KV window the model derives positions from a rotated cache per forward."""
         step = getattr(self, "_prefill_step", None)
         if (
             step
             and getattr(self, "_prefill_layer_step", None)
+            and getattr(self, "_kv_cache_window", None) is None
             and not self._kv_runtime_quant_kwargs()
         ):
             return step
