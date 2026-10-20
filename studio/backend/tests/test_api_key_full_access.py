@@ -144,3 +144,27 @@ def test_the_door_refuses_only_api_key_full_access(monkeypatch, path, flags, api
         assert _OPT_IN in response.json()["detail"]
     else:
         assert response.status_code == 503, response.text
+
+
+@pytest.mark.parametrize("flags", _FLAGS[:2])
+@pytest.mark.parametrize("api", [True, False], ids = ["api_key", "ui_session"])
+def test_durable_chat_runs_refuse_api_key_full_access_before_queueing(flags, api):
+    from routes import chat_generation_runs as runs
+
+    payload = runs.CreateChatGenerationRun(
+        runId = "r1",
+        threadId = "t1",
+        userMessageId = "u1",
+        assistantMessageId = "a1",
+        requestPayload = {"messages": [{"role": "user", "content": "hi"}], **flags},
+    )
+    token = bind_account(as_api_caller(OWNER) if api else OWNER)
+    try:
+        if api:
+            with pytest.raises(HTTPException) as refused:
+                runs._sanitize_request(payload)
+            assert refused.value.status_code == 400 and _OPT_IN in refused.value.detail
+        else:
+            runs._sanitize_request(payload)
+    finally:
+        reset_account(token)
