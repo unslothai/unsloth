@@ -4473,6 +4473,12 @@ class _ApplyOnInputDevice:
     def __init__(self, function):
         self.function = function
 
+    def __getattr__(self, name):
+        # The wrapped kernel's sentinels and ``forward`` stay visible: the fused head adapter reads them.
+        if name == "function":
+            raise AttributeError(name)
+        return getattr(self.function, name)
+
     def apply(self, hidden, *args):
         device = hidden.device
         backend = getattr(torch, device.type, None) if device.type in ("cuda", "xpu") else None
@@ -4549,6 +4555,13 @@ class _UnslothFusedLinearHead:
         self._default_chunk = int(
             getattr(sys.modules.get("trl.trainer.utils"), "_CHUNKED_LOGPROB_CHUNK_SIZE", 32768)
         )
+
+    def __getattr__(self, name):
+        # TRL's kernel (or the device wrapper around it) keeps its attributes visible, so a later patch pass
+        # recognises what it already wrapped.
+        if name == "function":
+            raise AttributeError(name)
+        return getattr(self.function, name)
 
     def _row_cap(self, hidden, weight, bias, chunk_size, outputs):
         """``max_rows_per_chunk`` keeping the zoo kernel's logits buffer within TRL's tile for the same call

@@ -638,6 +638,56 @@ def test_kto16_reference_fallback_keeps_truncation_clamp(fallback, monkeypatch):
         assert all(torch.equal(a, b) for a, b in zip(got, want))
 
 
+_TRL16_KTO_KL = '''
+def _compute_kl_logps(self, model, batch):
+        """Compute KL log probabilities for a given batch."""
+        KL_logps = None
+        if self.calculate_KL:
+            _non_model_keys = {
+                "completion_input_ids",
+                "completion_attention_mask",
+                "completion_mask",
+                "KL_completion_mask",
+                "KL_completion_token_type_ids",
+                "KL_completion_mm_token_type_ids",
+                "label",
+                "ref_logps",
+                "ref_KL_logps",
+            }
+            KL_model_kwargs = {k: v for k, v in batch.items() if k not in _non_model_keys}
+            KL_model_kwargs["input_ids"] = KL_model_kwargs.pop("KL_completion_input_ids")
+            KL_model_kwargs["attention_mask"] = KL_model_kwargs.pop("KL_completion_attention_mask")
+            # KL sequences have different widths from the main completion after flush_left; override token-type
+            # tensors with the KL-specific ones the collator built for exactly this purpose.
+            if "KL_completion_token_type_ids" in batch:
+                KL_model_kwargs["token_type_ids"] = batch["KL_completion_token_type_ids"]
+            if "KL_completion_mm_token_type_ids" in batch:
+                KL_model_kwargs["mm_token_type_ids"] = batch["KL_completion_mm_token_type_ids"]
+
+            with torch.no_grad():
+                KL_logits = model(**KL_model_kwargs).logits
+
+            shift_KL_logits = KL_logits[:, :-1, :].contiguous()
+            KL_per_token_logps = selective_log_softmax(
+                shift_KL_logits, batch["KL_completion_input_ids"][:, 1:].contiguous()
+            )
+            KL_per_token_logps[batch["KL_completion_mask"][:, 1:] == 0] = 0.0
+            KL_logps = KL_per_token_logps.sum(-1)
+        return KL_logps'''
+
+
+def test_kto16_kl_fallback_keeps_truncation_clamp():
+    """TRL 1.6's _compute_kl_logps: kto_trainer_align_completion_logps clamps the KL logits to the ids it is given;
+    the rewritten method's TRL branch must keep that clamp (the rewrite moves those lines into its else branch)."""
+    source = textwrap.indent(textwrap.dedent(_TRL16_KTO_KL).strip("\n") + "\n", "    ")
+    pre_pr = rl.kto_trainer_align_completion_logps("_compute_kl_logps", source)
+    assert pre_pr != source and "_uns_kl_n = min(" in pre_pr
+    new = _kto_chain("_compute_kl_logps", source)
+    assert "_unsloth_fused_pass_logps" in new
+    assert new.count("_uns_kl_n = min(") == 1
+    compile(textwrap.dedent(new), "<kl>", "exec")
+
+
 def _hooked_init(self, seed):
     _TinyLM.__init__(self, seed)
     self.lm_head.register_forward_hook(lambda module, args, output: None)

@@ -144,6 +144,47 @@ def test_patch_is_idempotent(monkeypatch):
     assert first.function is _Kernel
 
 
+@pytest.mark.parametrize("kernel", ["modern", "no_bias"])
+def test_device_and_fused_head_wrappers_see_each_other(kernel, monkeypatch):
+    """A split model's device wrapper and the fused head adapter, in either order and patched again: no nesting, and
+    a TRL 1.1 - 1.13 kernel (no ``bias``) never gets the adapter."""
+    base = _Kernel if kernel == "modern" else _NoBiasKernel
+    utils = types.ModuleType("trl.trainer.utils")
+    utils._ChunkedLogProbFunction = unsloth_rl._ApplyOnInputDevice(base)
+    monkeypatch.setitem(sys.modules, "trl.trainer.utils", utils)
+    trainer = sys.modules.get("trl.trainer")
+    if trainer is not None:
+        monkeypatch.setattr(trainer, "utils", utils, raising = False)
+    unsloth_rl.patch_trl_fused_lm_head_kernel()
+    first = utils._ChunkedLogProbFunction
+    if kernel == "no_bias":
+        assert isinstance(first, unsloth_rl._ApplyOnInputDevice)
+    else:
+        assert isinstance(first, unsloth_rl._UnslothFusedLinearHead)
+        assert getattr(first, "_unsloth_device_patched", False)
+    unsloth_rl.patch_trl_fused_lm_head_kernel()
+    assert utils._ChunkedLogProbFunction is first
+    wrapped = unsloth_rl._ApplyOnInputDevice(unsloth_rl._UnslothFusedLinearHead(base))
+    assert getattr(wrapped, "_unsloth_fused_linear", False)
+
+
+def test_stock_logps_hook_finds_fused_pass_rewrites():
+    """A rewritten method that only calls the fused-pass helpers (KTO _compute_kl_logps, DPO ref precompute) is still
+    the owner, so a subclass overriding get_batch_logps below it is detected."""
+    from unsloth.models import rl_replacements as rr
+
+    class Rewritten:
+        def _compute_kl_logps(self, model, batch):
+            return _unsloth_fused_pass_logps(self, model, batch)  # noqa: F821  (only its name is read)
+
+    class Sub(Rewritten):
+        def get_batch_logps(self, *args):
+            return None
+
+    assert rr._unsloth_stock_logps_hook(Rewritten(), "_compute_kl_logps", ("get_batch_logps",))
+    assert not rr._unsloth_stock_logps_hook(Sub(), "_compute_kl_logps", ("get_batch_logps",))
+
+
 def test_adapter_honours_the_kill_switch_after_install(monkeypatch):
     """UNSLOTH_FUSED_LINEAR=0 set after the adapter was installed (a notebook re-run) still serves TRL's kernel."""
     hidden, weight, bias, targets = _inputs(4)

@@ -5123,9 +5123,12 @@ def _unsloth_stock_logps_hook(
     body would call the override (or it reads the full logits the chunked path replaces with stand-ins)."""
     owner = None
     for klass in type(self).__mro__:
-        # The rewritten body calls a chunked helper; a subclass method wrapping it via super() does not.
+        # The rewritten body calls a chunked or fused-pass helper; a subclass method wrapping it via super() does not.
         names = getattr(getattr(vars(klass).get(method), "__code__", None), "co_names", ())
-        if any(name.startswith("_unsloth_") and "chunked" in name for name in names):
+        if any(
+            name.startswith("_unsloth_") and ("chunked" in name or "fused_pass" in name)
+            for name in names
+        ):
             owner = klass
             break
     if owner is None:
@@ -6349,7 +6352,8 @@ def _kto_rewrite_kl(function):
         + f"{i}    {m.group('out')} = _unsloth_fused_pass_logps(\n"
         + f"{i}        self, _unsloth_kto_kl, {m.group('logits')}, {m.group('ids')}, {_fused_pass_mask(m)}\n"
         + f"{i}    )\n"
-        + _fused_pass_else(m)
+        # TRL 1.6's shape gets the truncation clamp kto_trainer_align_completion_logps would have added.
+        + _kto_ref_else(function, m)
         + function[m.end() :]
     )
     new = _KTO_KL_INIT.sub(
