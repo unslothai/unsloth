@@ -1741,10 +1741,7 @@ def _h3_budgeted_launch_flags(
     *,
     cap: Any = None,
 ) -> list[str]:
-    """``flags`` as one sd.cpp process should start: the committed ``--max-vram -1`` placeholder replaced by an
-    explicit budget from the card's free VRAM read now (``runtime.vram_free_probe``), never above ``cap`` (a retry's
-    smaller budget). Anything unknown -- no probe, an unreadable card, too little left, the kill switch -- keeps the
-    flags as committed, i.e. sd.cpp's own reading."""
+    """Swap ``--max-vram -1`` for a budget from free VRAM read now, never above ``cap``; anything unknown keeps -1."""
     from .sd_cpp_args import (
         explicit_vram_budget_enabled,
         graph_cut_budget_gib,
@@ -1754,8 +1751,7 @@ def _h3_budgeted_launch_flags(
     )
 
     out = list(flags)
-    # Only the committed "-1": a UMA pinned-weight reserve (-17.05) is sd.cpp's own reading less the pinned weights,
-    # and replacing it with free-minus-2-GiB would hand sd.cpp the memory those weights take.
+    # Never replace a UMA pinned-weight reserve (-17.05): it would hand sd.cpp the memory those weights take.
     if not explicit_vram_budget_enabled() or not max_vram_is_placeholder(max_vram_value(out)):
         return out
     probe = getattr(runtime, "vram_free_probe", None)
@@ -1763,8 +1759,7 @@ def _h3_budgeted_launch_flags(
         free = probe() if probe is not None else None
     except Exception:  # noqa: BLE001 -- an unreadable card keeps sd.cpp's own reading
         free = None
-    # A card read now with too little left for any budget: sd.cpp's own "-1" (free minus 1 GiB, read after its context)
-    # is already below this reading, while a retry cap from an earlier launch could exceed it.
+    # Too little free now: "-1" is already below this reading, while an earlier retry cap could exceed it.
     known_small = False
     if isinstance(free, dict):
         budget: Any = {}
@@ -1783,7 +1778,6 @@ def _h3_budgeted_launch_flags(
             budget = min(budget, float(cap))
     if not budget:
         if cap is not None and not known_small:
-            # A retry with no fresh reading still runs smaller than the budget that failed.
             out = with_max_vram_budget(out, cap)
         logger.info(
             "video.h3_native_vram_budget: free VRAM unreadable or too small (%s); %s",
@@ -1802,8 +1796,7 @@ def _h3_budgeted_launch_flags(
 
 
 def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
-    """Stop the server for a smaller-budget retry, unless another consumer asked for its memory: checked and stopped
-    under the slot's lock, so a release landing in between is neither lost nor answered with a fresh server."""
+    """Stop for a retry unless a release is pending; under the slot lock so a racing release is not lost."""
     restart = getattr(slot, "restart_for_retry", None)
     if restart is not None:
         return bool(restart(reason))
@@ -1814,8 +1807,6 @@ def _h3_restart_for_retry(slot: Any, reason: str) -> bool:
 
 
 def _h3_retry_vram_cap(launched: "Optional[Sequence[str]]", error: str) -> Any:
-    """The smaller budget to retry a render with after a device OOM under an explicit ``--max-vram``, or None (not an
-    OOM, no explicit budget, or already at the floor)."""
     from .sd_cpp_args import (
         GRAPH_CUT_RETRY_SCALE,
         explicit_max_vram_gib,
@@ -1840,15 +1831,8 @@ def _h3_cuda_cc_fallback(
     accelerator_names: "Sequence[Any]",
     device_name: Optional[str],
 ) -> "Optional[tuple[int, int]]":
-    """The compute capability the BF16 cuBLAS route is decided on, when sd-cli's ``--list-devices`` could not be read.
-    The device name comes from that same listing, so it is usually missing here: then no ``--backend`` pin is emitted
-    and sd.cpp renders on its default device, visible ordinal 0, which is the one read (never the requested ordinal
-    or the lowest capability across cards, either of which may describe another card on a mixed host).
-
-    The listing is the only source ``sd_cpp_cuda_compute_capability`` has, and one probe that times out (a stalled
-    driver on a busy host) or exits non-zero left it None, which silently dropped a known sm80+ card onto the exact
-    kernels (H3 at 8 GB: 29.3 vs ~5 s/step). torch is a second reading of the same CUDA runtime under the same mask; it
-    is consulted only for a CUDA build whose listing is missing, never to override one that was read."""
+    """torch's compute capability when ``--list-devices`` was unreadable (else sm80+ fell to exact kernels: 29.3 vs
+    ~5 s/step). Unpinned reads visible ordinal 0, sd.cpp's default, never the lowest across a mixed host."""
     from .sd_cpp_backend import (
         _accelerator_class_of,
         sd_cpp_device_listing_known,
@@ -1859,8 +1843,7 @@ def _h3_cuda_cc_fallback(
         return cuda_cc
     if sd_cpp_device_listing_known(binary):
         return cuda_cc
-    # The build's own accelerator: only an install record says what an executable was built for. A requested "cuda"
-    # does not, so an unowned SD_CLI_PATH build (Vulkan, CPU) never gets the CUDA cuBLAS route from torch's reading.
+    # Only the install record says what the build targets; an unowned SD_CLI_PATH build may be Vulkan / CPU.
     if not any(
         isinstance(name, str) and _accelerator_class_of(name) == "cuda"
         for name in accelerator_names
@@ -1883,7 +1866,6 @@ def _h3_cuda_cc_fallback(
 
 
 def _pairs(flags: "Sequence[str]") -> "list[tuple[str, str]]":
-    """``(flag, value)`` for each flag followed by a value, for log lines."""
     items = list(flags or ())
     return [(items[i], items[i + 1]) for i in range(len(items) - 1) if items[i].startswith("--")]
 
@@ -1894,7 +1876,6 @@ def _h3_one_shot_with_vram_retry(
     render_flags: "Sequence[str]",
     cancel: threading.Event,
 ) -> Any:
-    """One sd-cli render with the explicit ``--max-vram`` budget, retried once at a smaller one on a device OOM."""
     launch = _h3_budgeted_launch_flags(runtime, render_flags)
     try:
         return run(launch)
@@ -2488,16 +2469,14 @@ def _h3_card_free_bytes(
     *,
     single_card_only: bool = False,
 ) -> Optional[int]:
-    """Free VRAM of the H3 render card, or None (keeps the committed offload flags). ``single_card_only``: an unpinned
-    render on a box with more than one visible card reads None. sd.cpp then picks its own device, and one card's
-    scalar budget applied to every card would steer that pick to whichever card ties first."""
+    """Free VRAM of the H3 render card, or None. ``single_card_only``: None on multi-card boxes, where one card's
+    scalar budget applied to every card would steer sd.cpp's own device pick."""
     if single_card_only and _h3_visible_card_count(device) != 1:
         return None
     return _h3_card_memory_bytes(device, ordinal)[0]
 
 
 def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:
-    """Visible GPUs by nvidia-smi / amd-smi (no CUDA context), or None when unreadable."""
     if device != "cuda":
         return None
     try:
@@ -5323,7 +5302,6 @@ class VideoBackend:
             offloaded_flags = native_fit_flags,
             offload_refusal = native_fit_refusal,
             fit_inputs = native_fit_inputs,
-            # The card sd.cpp runs on: the pinned one, or its default device (visible ordinal 0) when unpinned.
             vram_free_probe = (
                 functools.partial(
                     _h3_card_free_bytes,
@@ -12337,8 +12315,7 @@ class VideoBackend:
                     if retry_cap is not None and is_device_oom_text(str(exc)):
                         slot.stop("render failed")
                         raise
-                    # A start that ran out of device memory under an explicit budget gets the same one smaller retry
-                    # a render does, on the server, rather than disabling the server for the session.
+                    # A start-time device OOM gets one smaller retry instead of disabling the server.
                     cap = _h3_retry_vram_cap(getattr(slot, "attempted_flags", None), str(exc))
                     if cap is not None and _h3_restart_for_retry(
                         slot, "server start out of memory"
@@ -12363,8 +12340,6 @@ class VideoBackend:
                 except RuntimeError as exc:
                     if cancel.is_set():
                         raise SdCppCancelled("sd-server generation was cancelled.") from exc
-                    # Device OOM under an explicit budget (another process took VRAM since the launch reading):
-                    # one more start at a smaller budget, on a fresh server, before anything else.
                     cap = (
                         _h3_retry_vram_cap(getattr(slot, "launched_flags", None), str(exc))
                         if retry_cap is None

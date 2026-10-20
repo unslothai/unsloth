@@ -1814,8 +1814,7 @@ class MiniMaxH3NativeRuntime:
     offload_refusal: Optional[str] = None
     # Auto only: re-fit inputs, so an offloaded render is judged on live readings rather than the load's.
     fit_inputs: Any = None
-    # Free VRAM of the render card(s) right now (bytes, or ``{sd.cpp device: bytes}``), read before each sd.cpp launch
-    # to turn the committed ``--max-vram -1`` into an explicit budget; None keeps sd.cpp's own reading.
+    # Free VRAM now (bytes or ``{device: bytes}``), read per launch for the explicit ``--max-vram`` budget.
     vram_free_probe: Optional[Callable[[], Any]] = None
 
 
@@ -1927,9 +1926,8 @@ class H3NativeServerSlot:
         self._server: Any = None
         self._stopping: Any = None
         self._signature: Optional[tuple] = None
-        # The argv flags the live (or last) server actually started with, ``launch_transform`` applied.
         self.launched_flags: Optional[tuple[str, ...]] = None
-        # The argv of the latest start attempt, set before it runs (``launched_flags`` only after it succeeds).
+        # Set before a start runs; ``launched_flags`` only after it succeeds.
         self.attempted_flags: Optional[tuple[str, ...]] = None
         self._lock = threading.RLock()
         self._busy = 0
@@ -1972,8 +1970,7 @@ class H3NativeServerSlot:
         render holds the generate lock through the model load, so unload and Cancel would otherwise wait it out.
         ``pre_spawn`` runs only when a process is about to start, under the slot lock and after any old server has
         stopped: it returns the flags to start with (a live memory fit) or raises to refuse the start.
-        ``launch_transform`` then rewrites only the argv the process starts with (the explicit ``--max-vram`` budget
-        read at this moment); the signature keeps the untransformed flags, so a budget that differs launch to launch
+        ``launch_transform`` rewrites only the argv; the signature keeps untransformed flags so a varying budget
         never makes a reusable server look stale."""
         import threading
 
@@ -2001,7 +1998,6 @@ class H3NativeServerSlot:
             launch_tuple = (
                 tuple(launch_transform(flag_tuple)) if launch_transform is not None else flag_tuple
             )
-            # What this start tried, kept even when it fails: a start-time device OOM is retried from it.
             self.attempted_flags = launch_tuple
             server = SdCppServer(self.server_binary)
             managed = is_managed_binary(self.server_binary)
@@ -2108,9 +2104,8 @@ class H3NativeServerSlot:
         return self._release_pending
 
     def restart_for_retry(self, reason: str) -> bool:
-        """Stop the server for a retry unless a release is pending (then keep that release and return False). One
-        locked step: a release arriving between a check and ``stop()`` would be cleared by ``_stop_locked`` and the
-        retry's fresh server would outlive the render that was asked to give its memory back."""
+        """Stop for a retry unless a release is pending. One locked step: a release racing a separate check would be
+        cleared by ``_stop_locked`` and the fresh server would outlive the render asked to free its memory."""
         with self._lock:
             if self._release_pending is not None:
                 return False

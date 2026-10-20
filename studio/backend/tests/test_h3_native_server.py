@@ -247,7 +247,6 @@ class _FakeSlot:
             # The real slot fits a start under its lock and starts with the flags the fit returns.
             flags = list(pre_spawn())
         if launch_transform is not None:
-            # The argv the process would start with; the real slot keeps the signature on ``flags``.
             self.launched_flags = tuple(launch_transform(tuple(flags or ())))
         self.got.append((flags, env))
         return self.server

@@ -54,13 +54,11 @@ def _no_kill_switch(monkeypatch):
     monkeypatch.delenv(args_mod.GRAPH_CUT_EXPLICIT_BUDGET_ENV, raising = False)
 
 
-# -- pure helpers -------------------------------------------------------------------------------------------------
 
 
 def test_budget_is_free_minus_reserve_rounded_down():
     assert args_mod.graph_cut_budget_gib(None) is None
     assert args_mod.graph_cut_budget_gib(int(8.0 * GiB)) == 6.0
-    # Rounded down to 1/100 GiB: never above the plan.
     assert args_mod.graph_cut_budget_gib(int(7.999 * GiB)) == 5.99
     # Under the floor after the reserve: keep sd.cpp's own reading.
     assert args_mod.graph_cut_budget_gib(int(2.9 * GiB)) is None
@@ -130,7 +128,6 @@ def test_a_host_allocation_failure_is_not_a_device_oom():
     assert args_mod.is_device_oom_text("CUDA error: out of memory\n  current device: 0")
 
 
-# -- launch flags -------------------------------------------------------------------------------------------------
 
 
 class _Rt:
@@ -154,7 +151,6 @@ def test_launch_flags_read_the_card_at_launch():
     # A retry cap is a ceiling, never a floor.
     assert video_mod._h3_budgeted_launch_flags(rt, _COMMITTED, cap = 5.5)[3] == "5.50"
     assert video_mod._h3_budgeted_launch_flags(rt, _COMMITTED, cap = 50.0)[3] == "8.00"
-    # Per device: each card's own reading.
     rt = _Rt({"cuda0": int(10 * GiB), "cuda1": int(16 * GiB)})
     assert video_mod._h3_budgeted_launch_flags(rt, _COMMITTED)[3] == "cuda0=8.00,cuda1=14.00"
 
@@ -224,7 +220,6 @@ def test_retry_cap():
     assert video_mod._h3_retry_vram_cap(None, _AUDIT_OOM) is None
 
 
-# -- the real server slot: budget in argv, not in the signature ---------------------------------------------------
 
 
 def test_slot_launches_with_the_budget_but_reuses_on_the_placeholder(monkeypatch):
@@ -272,7 +267,6 @@ def test_slot_launches_with_the_budget_but_reuses_on_the_placeholder(monkeypatch
     slot.stop()
 
 
-# -- render paths: one retry at a smaller budget on a device OOM --------------------------------------------------
 
 
 class _Server:
@@ -579,7 +573,6 @@ def test_one_shot_retries_once_smaller_on_device_oom():
         video_mod._h3_one_shot_with_vram_retry(rt, bad, _COMMITTED, threading.Event())
 
 
-# -- load: the committed flags keep the placeholder and the runtime carries the probe ----------------------------
 
 
 def _load(monkeypatch, tmp_path, **kw):
@@ -607,7 +600,6 @@ def test_load_commits_the_placeholder_and_a_probe(monkeypatch, tmp_path):
     assert reads and reads[-1][0] == "cuda"
 
 
-# -- CUDA compute capability when --list-devices could not be read ------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -708,7 +700,6 @@ def test_cc_fallback_reads_the_card_sd_cpp_runs_on_and_only_an_owned_cuda_build(
     # No device name means no --backend pin: sd.cpp renders on CUDA0, so that card is read (not the lowest across cards).
     assert fb(None, accelerator_names = ("cuda",), device_name = None, **kw) == (7, 5)
     assert asked == [0]
-    # A resolved pin reads the pinned card.
     assert fb(None, accelerator_names = ("cuda",), device_name = "CUDA1", **kw) == (8, 9)
     assert asked == [0, 1]
     # No install record (an SD_CLI_PATH build): its accelerator is unknown, so no CUDA route from torch.
@@ -740,7 +731,6 @@ def test_an_unpinned_render_on_several_cards_takes_no_scalar_budget(monkeypatch)
     assert video_mod._h3_card_free_bytes("cuda", None, single_card_only = True) is None
     monkeypatch.setattr(video_mod, "_h3_visible_card_count", lambda device: 1)
     assert video_mod._h3_card_free_bytes("cuda", None, single_card_only = True) == int(9 * GiB)
-    # A pinned card reads its own memory whatever the count.
     monkeypatch.setattr(video_mod, "_h3_visible_card_count", lambda device: 2)
     assert video_mod._h3_card_free_bytes("cuda", 1) == int(9 * GiB)
 

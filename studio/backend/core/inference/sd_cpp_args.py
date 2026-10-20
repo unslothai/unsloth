@@ -371,18 +371,11 @@ GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 # The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
-# The committed flags keep the "-1" above as a placeholder (it is what a live server's signature is compared on); a
-# process launch swaps it for an explicit GiB budget read by Studio right before the spawn. sd.cpp resolves "-1" once,
-# after its own CUDA context exists, as free minus 1 GiB, and caches it, so neither form follows memory that moves later
-# and neither reserves VRAM against another process. What the explicit value changes is the headroom: the reading is
-# taken before the child exists, so the reserve covers the child's own CUDA context and library workspaces (~1 GiB)
-# plus the 1 GiB "-1" spared, which absorbs the output-caching and cuBLAS workspace spikes a contended render hit; and a
-# device OOM under it can be retried once at a smaller budget. Any other negative value (the UMA pinned-weight reserve
-# of h3_native_memory_fit) is a reserve sd.cpp applies itself and is never replaced.
+# The committed "-1" is a placeholder (live server signatures compare on it); a launch swaps it for an explicit GiB
+# budget read before the spawn, so the 2 GiB reserve also covers the child's own CUDA context and cuBLAS workspaces.
+# Other negative values (UMA pinned-weight reserve) are applied by sd.cpp itself and never replaced.
 GRAPH_CUT_BUDGET_RESERVE_BYTES = 2 << 30
-# Below this the explicit budget buys nothing over sd.cpp's own reading: keep "-1".
 GRAPH_CUT_MIN_BUDGET_BYTES = 1 << 30
-# A render that still ran out of device memory under an explicit budget is retried once at this share of it.
 GRAPH_CUT_RETRY_SCALE = 0.75
 GRAPH_CUT_EXPLICIT_BUDGET_ENV = "UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET"
 
@@ -406,9 +399,7 @@ def graph_cut_budget_gib(
     reserve_bytes: int = GRAPH_CUT_BUDGET_RESERVE_BYTES,
     scale: float = 1.0,
 ) -> Optional[float]:
-    """GiB to pass as ``--max-vram`` for a device with ``free_bytes`` free, or None (keep sd.cpp's reading) when the
-    reading is unknown or what is left after the reserve is below ``GRAPH_CUT_MIN_BUDGET_BYTES``. Rounded DOWN to
-    1/100 GiB so the printed value never exceeds the plan."""
+    """``--max-vram`` GiB for ``free_bytes`` free, or None (keep "-1"). Rounded DOWN so it never exceeds the plan."""
     if free_bytes is None:
         return None
     budget = (int(free_bytes) - int(reserve_bytes)) * float(scale)
@@ -422,7 +413,6 @@ def _format_gib(value: float) -> str:
 
 
 def max_vram_value(flags: Sequence[str]) -> Optional[str]:
-    """The ``--max-vram`` argument in ``flags``, or None when the flag is absent / dangling."""
     items = list(flags)
     for i, flag in enumerate(items):
         if flag == "--max-vram":
@@ -431,7 +421,6 @@ def max_vram_value(flags: Sequence[str]) -> Optional[str]:
 
 
 def max_vram_is_auto(value: Optional[str]) -> bool:
-    """True for a single negative ``--max-vram`` value (sd.cpp's live free-VRAM reading less that many GiB)."""
     if value is None or "=" in value or "," in value:
         return False
     try:
@@ -441,8 +430,7 @@ def max_vram_is_auto(value: Optional[str]) -> bool:
 
 
 def max_vram_is_placeholder(value: Optional[str]) -> bool:
-    """True only for the committed ``-1`` of ``GRAPH_CUT_VRAM_FLAGS``: the one value a launch may swap for an explicit
-    budget. A computed reserve (``-17.05`` on a UMA device) is sd.cpp's to apply, not a placeholder."""
+    """Only the committed ``-1``; a computed UMA reserve (``-17.05``) is sd.cpp's to apply, not a placeholder."""
     if not max_vram_is_auto(value):
         return False
     return float(value) == float(GRAPH_CUT_VRAM_FLAGS[1])  # type: ignore[arg-type]
@@ -451,10 +439,7 @@ def max_vram_is_placeholder(value: Optional[str]) -> bool:
 def with_max_vram_budget(
     flags: Sequence[str], budget: "Optional[float | dict[str, float]]"
 ) -> list[str]:
-    """``flags`` with the ``-1`` placeholder ``--max-vram`` replaced by ``budget``: one GiB value for every device, or
-    a ``{device: GiB}`` map rendered as sd.cpp's per-device form (``cuda0=6.25,cuda1=12.50``). Unchanged when the flag
-    is absent, already explicit, a computed reserve, or ``budget`` is None / empty, so a caller can never widen a value
-    the user or the UMA fit set."""
+    """Replace only the ``-1`` placeholder (dict -> ``cuda0=6.25,cuda1=12.50``), never a user or UMA-fit value."""
     out = list(flags)
     if not budget:
         return out
@@ -469,7 +454,6 @@ def with_max_vram_budget(
 
 
 def explicit_max_vram_gib(flags: Sequence[str]) -> "Optional[float | dict[str, float]]":
-    """The explicit budget in ``flags`` as ``with_max_vram_budget`` takes it, or None (absent, auto, unparseable)."""
     value = max_vram_value(flags)
     if value is None or max_vram_is_auto(value):
         return None
@@ -489,8 +473,7 @@ def explicit_max_vram_gib(flags: Sequence[str]) -> "Optional[float | dict[str, f
 def scaled_vram_budget(
     budget: "float | dict[str, float]", scale: float
 ) -> "Optional[float | dict[str, float]]":
-    """``budget`` times ``scale`` (per device), rounded down to 1/100 GiB; None once any device would fall below
-    ``GRAPH_CUT_MIN_BUDGET_BYTES``, where a smaller budget no longer means a working one."""
+    """``budget * scale`` per device, or None once any device falls below ``GRAPH_CUT_MIN_BUDGET_BYTES``."""
     floor_gib = GRAPH_CUT_MIN_BUDGET_BYTES / float(1 << 30)
 
     def one(gib: float) -> Optional[float]:
@@ -505,9 +488,7 @@ def scaled_vram_budget(
     return one(float(budget))
 
 
-# What ggml prints when a device allocation fails (CUDA / HIP / Vulkan / Metal), and the graph-cut stage that hit it
-# (ggml_runner.cpp's fail_segment). Not the model manager's "cannot make enough memory available" warning: it precedes
-# recoveries too, and renders that complete print it.
+# Not the model manager's "cannot make enough memory available": completed renders print it too.
 _DEVICE_OOM_MARKERS: tuple[str, ...] = (
     "erroroutofdevicememory",
     "out_of_device_memory",
@@ -521,9 +502,7 @@ _DEVICE_OOM_MARKERS: tuple[str, ...] = (
     "failed during workspace allocation",
     "failed during allocated capacity check",
 )
-# A bare "out of memory" names a device failure only on a line that says which device API failed: ggml prints
-# "CUDA error: out of memory" / "hipMalloc ... out of memory", while a host allocation ("host malloc failed: out of
-# memory", std::bad_alloc) is cured by nothing a smaller VRAM budget does.
+# Bare "out of memory" counts only beside a device API name; host OOM is not cured by a smaller VRAM budget.
 _DEVICE_OOM_CONTEXT: tuple[str, ...] = ("cuda", "hip", "rocm", "vulkan", "metal", "ggml_backend")
 _HOST_OOM_MARKERS: tuple[str, ...] = (
     "host malloc",
@@ -535,7 +514,6 @@ _HOST_OOM_MARKERS: tuple[str, ...] = (
 
 
 def is_device_oom_text(text: Optional[str]) -> bool:
-    """True when an sd.cpp failure message (with its log tail) reports a device allocation failure, not a host one."""
     if not text:
         return False
     for line in str(text).lower().splitlines():

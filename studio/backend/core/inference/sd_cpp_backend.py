@@ -585,26 +585,21 @@ def sd_cpp_cuda_compute_capability(
 
 
 def sd_cpp_device_listing_known(binary: Optional[str]) -> bool:
-    """True when a ``--list-devices`` answer of this exact file is cached (what ``probe = False`` readers use)."""
     if not binary:
         return False
     seen = _LAST_DEVICE_LISTING.get(binary)
     return seen is not None and seen[0] == _binary_stat_identity(binary)
 
 
-# The torch capability reading runs when sd-cli's own --list-devices timed out, i.e. possibly on a stalled driver; the
-# CUDA calls take no deadline, so the caller waits at most this long and an unanswered reading stays unknown.
+# Runs when --list-devices timed out (possibly a stalled driver); CUDA calls have no deadline, so bound the wait.
 TORCH_CC_TIMEOUT_S = 10.0
 
 
 def torch_cuda_compute_capability(
     ordinal: Optional[int], *, timeout_s: Optional[float] = None
 ) -> Optional[tuple[int, int]]:
-    """Compute capability torch reports for CUDA ordinal ``ordinal`` (the lowest visible card when None), or None on
-    a non-CUDA torch (ROCm included: its numbers are not sm versions), any error, or no answer within ``timeout_s``
-    (default ``TORCH_CC_TIMEOUT_S``; the reading runs on a daemon thread that is left behind if it hangs). The second
-    source for ``sd_cpp_cuda_compute_capability`` when the build's ``--list-devices`` listing could not be read: torch
-    and a CUDA sd.cpp enumerate the same runtime under the same visibility mask, so the indices agree."""
+    """torch's compute capability for ``ordinal`` (lowest visible when None), or None on ROCm (not sm numbers),
+    error or timeout (the daemon thread is left behind). Same runtime and mask as CUDA sd.cpp, so indices agree."""
     import threading
 
     result: list = []

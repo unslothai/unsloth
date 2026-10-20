@@ -4927,9 +4927,8 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
 
 
 def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
-    """``no_context``: never touch torch's per-device reading, which creates a driver context that stays resident in
-    this process. The devices then come back empty when nvidia-smi cannot answer, and always on ROCm, whose amd-smi
-    rows need that reading (unified-memory totals, Windows dedicated usage) to be right."""
+    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
+    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
     device = get_device()
     if no_context and IS_ROCM and device == DeviceType.CUDA:
         return {
