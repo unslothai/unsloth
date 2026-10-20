@@ -7562,10 +7562,7 @@ def _unsloth_save_torchao(
             clean_gpu_cache()
 
 
-# ExecuTorch export_llm settings that reproduce qat_scheme="int8-int4" (phone-deployment) exactly:
-# Int8DynamicActivationIntxWeightConfig(int4, PerGroup(32)) == 8da4w at group_size 32 with affine qparams
-# (use_hqq false), and IntxWeightOnlyConfig(int8, PerAxis(0)) embeddings == embedding_quantize "8,0".
-# export_llm defaults to group_size 128 and use_hqq true, which moves the model off what QAT trained.
+# Must match qat_scheme="int8-int4"; export_llm defaults (group_size 128, use_hqq true) do not.
 EXECUTORCH_PHONE_DEPLOYMENT_CONFIG = """\
 # ExecuTorch export_llm config matching Unsloth qat_scheme="phone-deployment" (int8-int4).
 # Export from a merged 16-bit checkpoint (model.save_pretrained_merged(dir, tokenizer)), converted to

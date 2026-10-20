@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""QAT scheme construction on tiny CPU models: phone-deployment alias, Gemma3 scaled
-embeddings, group-size divisibility and LoRA adapters."""
+"""QAT scheme construction on tiny CPU models."""
 
 from __future__ import annotations
 

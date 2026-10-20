@@ -7622,8 +7622,7 @@ def _fake_quantized_embedding_class(original_cls):
 def _restore_fake_quantized_embedding_subclasses(
     model: torch.nn.Module, originals: Dict[str, torch.nn.Module]
 ) -> None:
-    """torchao's FakeQuantizedEmbedding is a plain nn.Embedding, so QAT prepare drops a subclass forward such as
-    Gemma3's embed_scale (sqrt(hidden_size)) multiply, and the loss explodes. Put the subclass forward back."""
+    """QAT prepare swaps in a plain FakeQuantizedEmbedding, dropping e.g. Gemma3's embed_scale; restore it."""
     if not originals:
         return
     from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
@@ -7808,8 +7807,7 @@ def _convert_torchao_model(model):
 
 
 def _group_size_linear_filter(model, group_size, qat_scheme):
-    """Linear filter for a PerGroup(group_size) scheme: in_features must be a multiple of group_size, else the
-    fake quantizer's reshape fails at the first forward. Warns about the base Linears left in full precision."""
+    """PerGroup filter: in_features not divisible by group_size breaks the fake quantizer's reshape."""
     filter_fn = lambda m, _: (
         isinstance(m, torch.nn.Linear)
         and m.in_features >= group_size
@@ -7839,9 +7837,7 @@ def _is_lora_adapter_name(fqn: str) -> bool:
 
 
 def _exclude_lora_adapters_from_qat(model, torchao_config) -> None:
-    """QAT fake-quantizes the frozen base weights only (torchao / torchtune QAT + LoRA): the adapters are merged
-    into the base weight before quantization, so fake-quantizing lora_A / lora_B simulates nothing that ships.
-    UNSLOTH_QAT_FAKE_QUANTIZE_LORA=1 keeps the previous behaviour. Models without LoRA modules are untouched."""
+    """Adapters are merged before quantization, so only base weights are fake-quantized."""
     if os.environ.get("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "0") == "1":
         return
     if not any(_is_lora_adapter_name(name) for name, _ in model.named_modules()):
@@ -7869,7 +7865,7 @@ def _prepare_model_for_qat(
     except ImportError:
         raise ImportError(TORCHAO_MSG)
 
-    # from_pretrained aliases this too; get_peft_model passes the scheme straight here.
+    # get_peft_model passes the scheme straight here, unaliased.
     if qat_scheme == "phone-deployment":
         qat_scheme = "int8-int4"
 
