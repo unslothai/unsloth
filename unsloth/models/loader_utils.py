@@ -316,8 +316,7 @@ def sync_deepspeed_mixed_precision(args):
                 changed.append(key)
     hf_config = getattr(args, "hf_deepspeed_config", None)
     if hf_config is not None and isinstance(getattr(hf_config, "config", None), dict):
-        # trainer_config_process already recorded the old flags: drop the precision mismatches it
-        # queued (the config now agrees) and recompute its cached dtype as it does.
+        # trainer_config_process already queued mismatches for the old flags; the config now agrees.
         mismatches = getattr(hf_config, "mismatches", None)
         if isinstance(mismatches, list):
             mismatches[:] = [
@@ -369,7 +368,6 @@ def set_deepspeed_fused_lora_leaf_modules(layers):
     """Fused LoRA kernels read weights without calling their modules, so ZeRO-3's prefetch trace breaks unless layers are leaves."""
     layers = list(layers)
     for layer in layers:
-        # Remembered so the trainer can still mark it once a later TrainingArguments enables ZeRO-3.
         layer._unsloth_fused_lora_layer = True
     if not deepspeed_zero3_requested():
         return 0
@@ -379,8 +377,7 @@ def set_deepspeed_fused_lora_leaf_modules(layers):
 
 
 def apply_deepspeed_zero3_model_setup(model):
-    """Redo the load-time ZeRO-3 setup from the trainer (before `deepspeed.initialize`): a model loaded
-    before TrainingArguments(deepspeed=...) saw no DeepSpeed config. Idempotent; a no-op unless ZeRO-3."""
+    """Redo load-time ZeRO-3 setup at trainer time, for models loaded before DeepSpeed was visible."""
     if not hasattr(model, "modules") or not deepspeed_zero3_requested():
         return
     try:

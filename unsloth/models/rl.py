@@ -2702,7 +2702,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "if tuple(getattr(args, k, False) for k in ('fp16', 'bf16', 'fp16_full_eval', 'bf16_full_eval')) != _unsloth_precision_requested:\n"
                 "    from unsloth.models.loader_utils import sync_deepspeed_mixed_precision\n"
                 "    sync_deepspeed_mixed_precision(args)\n"
-                # The model may have loaded before TrainingArguments(deepspeed=...) made ZeRO-3 visible.
                 "if model is not None:\n"
                 "    from unsloth.models.loader_utils import apply_deepspeed_zero3_model_setup\n"
                 "    apply_deepspeed_zero3_model_setup(model)\n"

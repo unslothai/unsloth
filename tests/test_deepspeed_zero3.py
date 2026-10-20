@@ -241,7 +241,6 @@ def test_resync_clears_queued_precision_mismatches_and_dtype():
 
     from transformers.integrations import deepspeed as hf_ds
 
-    # The prefix we drop is the one transformers writes in fill_match.
     assert 'self.mismatches.append(f"- ds {ds_key_long}={ds_val} vs hf {hf_key}={hf_val}")' in (
         inspect.getsource(hf_ds)
     )
@@ -387,7 +386,6 @@ def test_trainer_hook_redoes_zero3_setup_for_a_model_loaded_before_deepspeed(
 
     model = _tiny_qwen3_moe()
     layers = list(model.model.layers)
-    # Load time: no DeepSpeed visible, nothing marked.
     assert loader_utils.set_deepspeed_moe_leaf_modules(model) == ()
     assert loader_utils.set_deepspeed_fused_lora_leaf_modules(layers[:1]) == 0
     model._unsloth_vlm_gc_non_reentrant = True
