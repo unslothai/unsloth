@@ -202,7 +202,9 @@ export function RlDatasetRoles({
   useEffect(() => {
     // Deferred so loadColumns' state resets run in a callback, not the effect body.
     let live = true;
-    void Promise.resolve().then(() => live && loadColumns());
+    void Promise.resolve().then(() => {
+      if (live) void loadColumns();
+    });
     // The preview row is shared: a reply landing after unmount must not overwrite it.
     return () => {
       live = false;
