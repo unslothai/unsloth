@@ -2088,8 +2088,12 @@ def test_a_user_device_pick_declines_the_warm_start_beside_other_cards(
 ):
     # The memory probe reads the image model's card, not the one the user picked.
     sidecar, _launched, _memory, model, _mmproj = warmable
-    monkeypatch.setenv(var, value)
+    monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: 0)
     monkeypatch.setattr(pup, "_cuda_device_count", lambda: count)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "started"
+    sidecar._cancel_idle_locked()
+    sidecar._process = sidecar._key = None
+    monkeypatch.setenv(var, value)
     assert sidecar.warm(binary = "b", model = model, mmproj = None) == expected
     sidecar._cancel_idle_locked()
 
