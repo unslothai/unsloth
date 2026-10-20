@@ -64,6 +64,8 @@ def _mint(account: Any, limit: float) -> tuple[str, dict]:
         name = storage.STUDIO_CHAT_TOOLS_KEY_NAME,
         expires_at = expires.isoformat(),
         internal = True,
+        # A reset since the chat request authenticated refuses the mint, as for any new key.
+        expect_gen = account.credential_gen,
         # Pinned to this account, as Deep Research does: the username could name a recreated namesake.
         account_id = None if record.is_owner else record.account_id,
     )
@@ -121,13 +123,13 @@ def call(
         logger.warning("Could not mint an Unsloth Studio chat tools key: %s", exc)
         return f"Error: MCP tool '{name}' failed: Unsloth Studio could not authorize this call."
     try:
-        port = getattr(app.state, "server_port", None)
         caller = Caller(
             token = key,
             account_id = account.account_id,
             # A prompt-injected model must not reach host files, even the owner's.
             direct_local = False,
-            public_base = f"http://127.0.0.1:{port}" if port else "http://127.0.0.1",
+            # Empty: media links come back origin-relative, so they open from any browser (LAN, tunnel, proxy).
+            public_base = "",
             studio_app = app,
             hf_token = None,
             call_scoped = True,

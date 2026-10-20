@@ -494,9 +494,12 @@ async def _get_current_credential(
                 detail = _invalid_api_key_detail(token),
             )
         record, secret = verified
+        generation = credential_generation(secret)
         # A second lookup by username would bind whoever owns that name after a delete and re-create.
-        bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
-        return record["username"], credential_generation(secret)
+        bind_account(
+            AccountContext(record["account_id"], record["username"], record["role"], generation)
+        )
+        return record["username"], generation
 
     subject = _decode_subject_without_verification(token)
     if subject is None:
@@ -526,7 +529,14 @@ async def _get_current_credential(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid token payload",
         )
-    bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
+    bind_account(
+        AccountContext(
+            record["account_id"],
+            record["username"],
+            record["role"],
+            credential_generation(jwt_secret),
+        )
+    )
     # A managed token carrying the desktop marker gets no owner password-change bypass.
     is_desktop = payload.get("desktop") is True and record.get("role") == "owner"
     if must_change_password and not allow_password_change and not is_desktop:

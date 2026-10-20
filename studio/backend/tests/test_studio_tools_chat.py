@@ -579,3 +579,52 @@ def test_a_chat_request_with_mcp_remembers_the_server_loop(monkeypatch):
         assert loop.run_until_complete(select()) is media_chat_tools.server_loop()
     finally:
         loop.close()
+
+
+def _owner_with_generation():
+    record = storage.get_user_record("unsloth")
+    return AccountContext(
+        OWNER.account_id,
+        OWNER.username,
+        OWNER.role,
+        storage.credential_generation(record["jwt_secret"]),
+    )
+
+
+def test_a_password_reset_after_the_chat_authenticated_refuses_the_mint(
+    studio_home, accounts, server_loop, monkeypatch
+):
+    app = studio(monkeypatch, RUN_PAYLOADS)
+    account = _owner_with_generation()
+    assert account == OWNER  # the generation is not part of the account's identity
+    assert not bridge(account, "list_training_runs").startswith(
+        "Error"
+    ), "the current generation mints"
+    storage.update_password("unsloth", "a-new-password-123", revoke_refresh_tokens = True)
+    seen = len(app.state.seen)
+    refused = bridge(account, "list_training_runs")
+    assert refused.startswith("Error: ") and "could not authorize" in refused, refused
+    assert len(app.state.seen) == seen
+    assert [key["is_active"] for key in chat_keys()] == [0]
+
+
+def test_chat_tool_media_links_are_origin_relative(studio_home, accounts, server_loop, monkeypatch):
+    from studio_mcp.media import image_gallery_path, public_url
+
+    studio(monkeypatch, RUN_PAYLOADS)
+    callers = []
+    real = studio_tools_mcp._call
+
+    async def spy(caller, name, args):
+        callers.append(caller)
+        return await real(caller, name, args)
+
+    monkeypatch.setattr(studio_tools_mcp, "_call", spy)
+    assert not bridge(OWNER, "list_training_runs").startswith("Error")
+    (caller,) = callers
+    assert caller.public_base == "" and caller.call_scoped and not caller.direct_local
+    # A browser resolves these against whatever address it reached Unsloth Studio on.
+    assert (
+        public_url(caller, image_gallery_path("img-1"))
+        == "/api/inference/images/gallery/img-1/file"
+    )

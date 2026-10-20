@@ -53,6 +53,8 @@ def resource_link(
 
 def _base(caller: Caller) -> str:
     """The outer request's base, with the tunnel's scheme when it came through cloudflared, which reaches Unsloth Studio over plain http."""
+    if not caller.public_base:
+        return ""
     base = urlsplit(caller.public_base)
     tunnel = getattr(getattr(caller.studio_app, "state", None), "cloudflare_url", None)
     if isinstance(tunnel, str) and tunnel:
