@@ -56,7 +56,11 @@ def _found(M, model):
 
 def _eager_ssm(M, model):
     return sorted(
-        {type(layer).__name__ for layer, legacy in M._layers(model) if not legacy and M._is_ssm_layer(layer)}
+        {
+            type(layer).__name__
+            for layer, legacy in M._layers(model)
+            if not legacy and M._is_ssm_layer(layer)
+        }
     )
 
 
@@ -68,7 +72,12 @@ _EXPECTED = {
     "gpt_neox": ({"gpt_neox.layers": ["GPTNeoXLayer"]}, []),
     "gpt2": ({"transformer.h": ["GPT2Block"]}, []),
     "olmo_hybrid": (
-        {"model.layers": ["OlmoHybridAttentionDecoderLayer", "OlmoHybridLinearAttentionDecoderLayer"]},
+        {
+            "model.layers": [
+                "OlmoHybridAttentionDecoderLayer",
+                "OlmoHybridLinearAttentionDecoderLayer",
+            ]
+        },
         [],
     ),
     "mllama": (
@@ -96,7 +105,9 @@ def test_text_decoder_lists_are_found(model_type):
     model = _meta_model(model_type)
     lists, eager = _EXPECTED[model_type]
     found = _found(M, model)
-    compiled = sorted({c for classes in found.values() for c in classes} - set(_eager_ssm(M, model)))
+    compiled = sorted(
+        {c for classes in found.values() for c in classes} - set(_eager_ssm(M, model))
+    )
     assert compiled == sorted({c for classes in lists.values() for c in classes} - set(eager))
     assert set(_eager_ssm(M, model)) <= set(eager)
     # transformers < 5 builds zamba2's hybrid layer as a plain Module: the list is not found there.
@@ -107,7 +118,15 @@ def test_text_decoder_lists_are_found(model_type):
 @pytest.mark.parametrize(
     "model_type, lists",
     [
-        ("mllama", {"model.language_model.layers": ["MllamaCrossAttentionDecoderLayer", "MllamaSelfAttentionDecoderLayer"]}),
+        (
+            "mllama",
+            {
+                "model.language_model.layers": [
+                    "MllamaCrossAttentionDecoderLayer",
+                    "MllamaSelfAttentionDecoderLayer",
+                ]
+            },
+        ),
         ("qwen2_5_vl", {"model.language_model.layers": ["Qwen2_5_VLDecoderLayer"]}),
         ("gemma3", {"model.language_model.layers": ["Gemma3DecoderLayer"]}),
         ("llava", {"model.language_model.layers": ["LlamaDecoderLayer"]}),
@@ -144,7 +163,11 @@ def _layer_class(name, base = None):
         base.__init__(self)
         self.proj = torch.nn.Linear(8, 8)
 
-    def forward(self, hidden_states, attention_mask = None):
+    def forward(
+        self,
+        hidden_states,
+        attention_mask = None,
+    ):
         return self.proj(hidden_states) + hidden_states
 
     return type(name, (base,), {"__init__": __init__, "forward": forward})
@@ -167,7 +190,11 @@ def test_mixed_shared_and_tower_layers(monkeypatch):
     monkeypatch.setattr(torch, "compile", _fake_compile(calls))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(M, "_torch_supported", lambda: True)
-    Attn, Ssm, Tower = _layer_class("ToyAttnLayer"), _layer_class("ToySsmLayer"), _layer_class("ToyVisionLayer")
+    Attn, Ssm, Tower = (
+        _layer_class("ToyAttnLayer"),
+        _layer_class("ToySsmLayer"),
+        _layer_class("ToyVisionLayer"),
+    )
     Plain = _layer_class("ToyPlainBlock", torch.nn.Module)
 
     class ToyMambaMixer(torch.nn.Module):
@@ -186,14 +213,20 @@ def test_mixed_shared_and_tower_layers(monkeypatch):
     model.blocks_without_embedding = torch.nn.ModuleList([Tower()])
     model.plain = torch.nn.Module()
     model.plain.wte = torch.nn.Embedding(4, 8)
-    model.plain.h = torch.nn.ModuleList([Plain(), Plain()])  # no GradientCheckpointingLayer: suffix rule
+    model.plain.h = torch.nn.ModuleList(
+        [Plain(), Plain()]
+    )  # no GradientCheckpointingLayer: suffix rule
     assert [c.__name__ for c in M._decoder_layer_classes(model)] == [
         "ToyAttnLayer",
         "ToySsmLayer",
         "ToyPlainBlock",
     ]
     assert len(M._layers(model)) == 5
-    limit = torch._dynamo.config.recompile_limit if hasattr(torch._dynamo.config, "recompile_limit") else None
+    limit = (
+        torch._dynamo.config.recompile_limit
+        if hasattr(torch._dynamo.config, "recompile_limit")
+        else None
+    )
     wrapped = M.patch_block_compile(model)
     assert wrapped == ["ToyAttnLayer", "ToyPlainBlock"]
     assert ssm._unsloth_block_mode == M._OFF

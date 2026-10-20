@@ -756,7 +756,14 @@ _TOWER_SEGMENTS = (
 )
 _LAYER_SUFFIXES = ("DecoderLayer", "Block", "Layer")
 # The module holding a text decoder's layer list also holds its token embedding.
-_TEXT_EMBEDDINGS = ("embed_tokens", "wte", "embed_in", "word_embeddings", "tok_embeddings", "embeddings")
+_TEXT_EMBEDDINGS = (
+    "embed_tokens",
+    "wte",
+    "embed_in",
+    "word_embeddings",
+    "tok_embeddings",
+    "embeddings",
+)
 
 
 def _gc_layer_class():
@@ -768,11 +775,7 @@ def _gc_layer_class():
 
 
 def _in_tower(name):
-    return any(
-        segment in part
-        for part in name.lower().split(".")
-        for segment in _TOWER_SEGMENTS
-    )
+    return any(segment in part for part in name.lower().split(".") for segment in _TOWER_SEGMENTS)
 
 
 def _is_ssm_layer(layer):
