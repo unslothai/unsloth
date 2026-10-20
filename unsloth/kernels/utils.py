@@ -1482,6 +1482,57 @@ def _gemv_rows_cap(device):
     return cap
 
 
+# bitsandbytes >= 0.50 fuses dequantize + matmul for any row count. For decode batches above the GEMV
+# cap it beats our dequantize + matmul end to end only where the GPU, not the launch loop, is the
+# bottleneck (T4: +23-30% tok/s at batch 8-16; A100 / RTX PRO 6000: 15-30% slower). Fixed per arch,
+# like the GEMV table. UNSLOTH_BNB_GEMM_4BIT=0 keeps the dequantize path, =1 uses it on any arch.
+_BNB_GEMM_4BIT_MAX_ROWS = 16
+_BNB_GEMM_4BIT_ARCHS = {(7, 5)}
+_BNB_GEMM_4BIT = None
+_BNB_GEMM_4BIT_DEVICE = {}
+
+
+def _bnb_gemm_4bit_device_ok(device):
+    index = device.index
+    ok = _BNB_GEMM_4BIT_DEVICE.get(index)
+    if ok is None:
+        try:
+            ok = (
+                os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1"
+                or torch.cuda.get_device_capability(device) in _BNB_GEMM_4BIT_ARCHS
+            )
+        except Exception:
+            ok = False
+        _BNB_GEMM_4BIT_DEVICE[index] = ok
+    return ok
+
+
+def _bnb_gemm_4bit_ok(X, quant_state):
+    global _BNB_GEMM_4BIT
+    if _BNB_GEMM_4BIT is None:
+        try:
+            _BNB_GEMM_4BIT = (
+                bnb is not None
+                and torch.version.hip is None
+                and os.environ.get("UNSLOTH_BNB_GEMM_4BIT") != "0"
+                and hasattr(torch.ops.bitsandbytes, "gemm_4bit")
+            )
+        except Exception:
+            _BNB_GEMM_4BIT = False
+    return (
+        _BNB_GEMM_4BIT
+        and X.is_cuda
+        and _bnb_gemm_4bit_device_ok(X.device)
+        and type(quant_state) is not list
+        and X.dtype in (torch.float16, torch.bfloat16)
+        and getattr(quant_state, "quant_type", None) in ("nf4", "fp4")
+        # matmul_4bit raises for any other nested blocksize.
+        and (not quant_state.nested or quant_state.state2.blocksize == 256)
+        and not torch.is_grad_enabled()
+        and not _is_compiling()
+    )
+
+
 def _gemv_rows(X, W, quant_state, out):
     """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
     M = X.shape[0]
@@ -1631,6 +1682,8 @@ def fast_linear_forward(
         and (rows := _gemv_rows(X, W, W_quant, out)) is not None
     ):
         out = rows
+    elif bsz <= _BNB_GEMM_4BIT_MAX_ROWS and _bnb_gemm_4bit_ok(X, W_quant):
+        out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)
