@@ -421,3 +421,82 @@ def test_fused_bnb_checkpoint_refused_in_float16_without_load_in_4bit(tmp_path, 
             load_in_4bit = load_in_4bit,
             dtype = torch.float16,
         )
+
+
+def test_bin_index_packed_without_quant_state_refuses(tmp_path):
+    # The fused dtype is read from the indexed .bin shard, so packed bytes without .absmax are caught.
+    d = tmp_path / "ckpt"
+    d.mkdir()
+    shard = "pytorch_model-00001-of-00001.bin"
+    torch.save(_tensors(FUSED_PACKED, True), str(d / shard))
+    (d / "pytorch_model.bin.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {n: shard for n in FUSED_PACKED}})
+    )
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    with pytest.raises(RuntimeError, match = "quantization state"):
+        _fused(cfg, str(d))
+    # Dense 16-bit experts in the same layout stay fused.
+    torch.save(_tensors(FUSED_DENSE, False), str(d / shard))
+    assert _fused(cfg, str(d)) is True
+
+
+def test_hub_bin_index_with_unknown_fused_dtype_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    # Shard not cached and not a safetensors header: dense or packed is unknown.
+    _hub(monkeypatch, {"pytorch_model.bin.index.json": {n: "x.bin" for n in FUSED_PACKED}})
+    with pytest.raises(loader_utils.GptOssUnknownExpertLayoutError, match = "dtype"):
+        _fused(cfg, "someone/gpt-oss-bin")
+
+
+def _both_formats(tmp_path):
+    # Older split safetensors beside a newer fused .bin.
+    d = tmp_path / "ckpt"
+    d.mkdir()
+    save_file(_tensors(SPLIT, False), str(d / "model.safetensors"))
+    torch.save(_tensors(FUSED_QS, False), str(d / "pytorch_model.bin"))
+    return str(d)
+
+
+def test_use_safetensors_selects_the_probed_file(tmp_path):
+    path = _both_formats(tmp_path)
+    cfg = SimpleNamespace(quantization_config = BNB_QC)
+    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path) is False
+    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path, use_safetensors = True) is False
+    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path, use_safetensors = False) is True
+
+
+def test_sync_passes_use_safetensors(tmp_path, monkeypatch):
+    path = _both_formats(tmp_path)
+    monkeypatch.setenv("UNSLOTH_MODEL_NAME", "gpt_oss,_load_in_4bit_")
+    monkeypatch.setenv("UNSLOTH_GPT_OSS_BNB4BIT_PATCHED", "0")
+    loader_utils.sync_unsloth_model_name_bnb_flags(
+        True,
+        False,
+        config = SimpleNamespace(quantization_config = BNB_QC),
+        model_name = path,
+        use_safetensors = False,
+    )
+    assert os.environ["UNSLOTH_MODEL_NAME"] == "gpt_oss,"
+
+
+def test_loader_forwards_use_safetensors_to_the_probe(tmp_path, monkeypatch):
+    from unsloth import FastLanguageModel
+    from unsloth.models import loader
+
+    seen = []
+
+    def probe(config, model_name = None, **kwargs):
+        seen.append(kwargs.get("use_safetensors"))
+        return True
+
+    monkeypatch.setattr(loader, "gpt_oss_checkpoint_has_fused_experts", probe)
+    with pytest.raises(NotImplementedError, match = "overflow"):
+        FastLanguageModel.from_pretrained(
+            _fused_bnb_tiny(tmp_path),
+            max_seq_length = 64,
+            load_in_4bit = True,
+            dtype = torch.float16,
+            use_safetensors = False,
+        )
+    assert seen and all(v is False for v in seen)

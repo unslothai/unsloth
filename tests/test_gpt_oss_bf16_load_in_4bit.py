@@ -202,3 +202,29 @@ def test_bf16_checkpoint_4bit_generate_matches_prefill(tmp_path):
         rel = float((got - expect).norm() / expect.norm())
         assert rel < 2e-2, (step, rel)
     assert torch.equal(full[:, n - 1 : -1].argmax(-1), seq[:, n:])
+
+
+
+@pytest.mark.parametrize(
+    "name, config, load_in_4bit, keeps",
+    [
+        ("unsloth/gpt-oss-20b-BF16", SimpleNamespace(), True, False),  # bnb 4-bit
+        ("unsloth/gpt-oss-20b-BF16", SimpleNamespace(), False, True),  # 8-bit: as before the PR
+        ("openai/gpt-oss-20b", SimpleNamespace(quantization_config = MXFP4_QC), True, True),
+        ("openai/gpt-oss-120b", SimpleNamespace(quantization_config = MXFP4_QC), False, True),
+        ("unsloth/Llama-3.2-1B", SimpleNamespace(), False, False),
+    ],
+)
+def test_unquantized_gpt_oss_takes_bnb_only_for_4bit(name, config, load_in_4bit, keeps):
+    # bnb 8-bit replaces nn.Linear only, so the fused expert parameters would stay 16-bit.
+    assert loader_utils.gpt_oss_keeps_checkpoint_quantization(name, config, load_in_4bit) is keeps
+
+
+def test_vision_uses_the_gpt_oss_bnb_rule():
+    import inspect
+
+    from unsloth.models import vision
+
+    source = inspect.getsource(vision.FastBaseModel.from_pretrained)
+    assert "gpt_oss_keeps_checkpoint_quantization(model_name, auto_config, load_in_4bit)" in source
+    assert '"gpt-oss-20b" in model_name.lower()' not in source

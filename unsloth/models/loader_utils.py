@@ -3758,10 +3758,12 @@ def _checkpoint_tensor_dtypes(
     cache_dir = None,
     local_files_only = False,
     variant = None,
+    use_safetensors = None,
 ):
     """{tensor name: dtype} from the index / headers, never downloading weights. A dtype is only read for
     fused expert weights (None where unknown); returns None if the names are unreadable. Mirrors the
-    transformers file order (safetensors, then pytorch_model.bin) and its `variant` naming. Raises
+    transformers file order (safetensors, then pytorch_model.bin), its `variant` naming and its
+    `use_safetensors` choice (False reads only pytorch_model.bin, True only safetensors). Raises
     _UnreadableCheckpointNames for a lone pytorch_model.bin that cannot be read without its weights."""
     if not isinstance(model_name, str) or not model_name:
         return None
@@ -3771,34 +3773,57 @@ def _checkpoint_tensor_dtypes(
     bin_index, bin_single = (
         _with_variant(f, variant) for f in ("pytorch_model.bin.index.json", "pytorch_model.bin")
     )
+    if use_safetensors is False:
+        st_index = st_single = None
+    elif use_safetensors:
+        bin_index = bin_single = None
+    index_files = [f for f in (st_index, bin_index) if f]
+
+    def _local_shard_dtypes(path, names):
+        if path.endswith(".safetensors"):
+            return _safetensors_dtypes(path, names)
+        found = _bin_dtypes(path)
+        return {n: found.get(n) for n in names}
+
+    def _fill_fused_dtypes(weight_map, shard_dtypes):
+        # Only the fused expert dtype matters (packed bytes vs dense); each shard is read once.
+        out = dict.fromkeys(weight_map)
+        shards = {}
+        for name, shard in weight_map.items():
+            if name.endswith(_FUSED_EXPERT_SUFFIX):
+                shards.setdefault(shard, []).append(name)
+        for shard, names in shards.items():
+            try:
+                found = shard_dtypes(shard, names)
+            except Exception:
+                continue
+            out.update({n: found.get(n) for n in names})
+        return out
+
     try:
         if os.path.isdir(model_name):
             root = os.path.join(model_name, subfolder) if subfolder else model_name
-            for index_file in (st_index, bin_index):
+            for index_file in index_files:
                 index_path = os.path.join(root, index_file)
                 if not os.path.exists(index_path):
                     continue
                 weight_map = _index_weight_map(index_path)
-                out = dict.fromkeys(weight_map)
-                for name, shard in weight_map.items():
-                    if name.endswith(_FUSED_EXPERT_SUFFIX) and shard.endswith(".safetensors"):
-                        try:
-                            out.update(_safetensors_dtypes(os.path.join(root, shard), [name]))
-                        except Exception:
-                            pass
-                return out
-            single_path = os.path.join(root, st_single)
-            if os.path.exists(single_path):
+                return _fill_fused_dtypes(
+                    weight_map,
+                    lambda shard, names: _local_shard_dtypes(os.path.join(root, shard), names),
+                )
+            single_path = os.path.join(root, st_single) if st_single else None
+            if single_path and os.path.exists(single_path):
                 return _safetensors_dtypes(single_path)
-            single_path = os.path.join(root, bin_single)
-            if os.path.exists(single_path):
+            single_path = os.path.join(root, bin_single) if bin_single else None
+            if single_path and os.path.exists(single_path):
                 try:
                     return _bin_dtypes(single_path)
                 except Exception:
                     raise _UnreadableCheckpointNames(single_path)
             return None
 
-        if not local_files_only and not subfolder and not variant:
+        if not local_files_only and not subfolder and not variant and st_single:
             try:
                 from huggingface_hub import get_safetensors_metadata
 
@@ -3814,27 +3839,45 @@ def _checkpoint_tensor_dtypes(
         from huggingface_hub import hf_hub_download
 
         hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
-        for index_file in (st_index, bin_index):
+        for index_file in index_files:
             try:
                 index_path = hf_hub_download(
                     model_name, index_file, local_files_only = local_files_only, **hub
                 )
             except Exception:
                 continue
-            return dict.fromkeys(_index_weight_map(index_path))
-        # Single files: an already cached one is read from disk, else only its safetensors header.
-        try:
-            return _safetensors_dtypes(
-                hf_hub_download(model_name, st_single, local_files_only = True, **hub)
-            )
-        except Exception:
-            pass
-        if not local_files_only:
-            remote = f"{subfolder}/{st_single}" if subfolder else st_single
-            try:
+            weight_map = _index_weight_map(index_path)
+
+            # A cached shard is read from disk; otherwise only a safetensors header is range read.
+            def _hub_shard_dtypes(shard, names):
+                try:
+                    path = hf_hub_download(model_name, shard, local_files_only = True, **hub)
+                except Exception:
+                    path = None
+                if path is not None:
+                    return _local_shard_dtypes(path, names)
+                if local_files_only or not shard.endswith(".safetensors"):
+                    return {}
+                remote = f"{subfolder}/{shard}" if subfolder else shard
                 return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+
+            return _fill_fused_dtypes(weight_map, _hub_shard_dtypes)
+        # Single files: an already cached one is read from disk, else only its safetensors header.
+        if st_single:
+            try:
+                return _safetensors_dtypes(
+                    hf_hub_download(model_name, st_single, local_files_only = True, **hub)
+                )
             except Exception:
                 pass
+            if not local_files_only:
+                remote = f"{subfolder}/{st_single}" if subfolder else st_single
+                try:
+                    return _hub_safetensors_header_dtypes(model_name, remote, revision, token)
+                except Exception:
+                    pass
+        if not bin_single:
+            return None
         try:
             cached_bin = hf_hub_download(model_name, bin_single, local_files_only = True, **hub)
         except Exception:
@@ -3872,12 +3915,12 @@ def _gpt_oss_bnb_checkpoint_expert_layout(dtypes):
     if not fused:
         return None
     for name in fused:
-        if name + ".absmax" not in dtypes and dtypes[name] in (
-            "U8",
-            "I8",
-            "torch.uint8",
-            "torch.int8",
-        ):
+        if name + ".absmax" in dtypes:
+            continue
+        if dtypes[name] is None:
+            # Packed bytes and dense weights look the same by name alone.
+            return "fused_unknown_dtype"
+        if dtypes[name] in ("U8", "I8", "torch.uint8", "torch.int8"):
             return "fused_no_quant_state"
     return "fused"
 
@@ -3924,6 +3967,13 @@ def gpt_oss_checkpoint_has_fused_experts(
             "`pytorch_model.bin.index.json`, or download it locally first."
         ) from None
     layout = _gpt_oss_bnb_checkpoint_expert_layout(dtypes)
+    if layout == "fused_unknown_dtype":
+        raise GptOssUnknownExpertLayoutError(
+            f"Unsloth: `{model_name}` is a bitsandbytes gpt-oss checkpoint with fused experts and no "
+            "4-bit quantization state, and the dtype of its expert weights cannot be read without "
+            "downloading them, so packed 4-bit bytes (unrestorable) cannot be told apart from 16-bit "
+            "weights. Download it locally first, or re-save it with `safe_serialization = True`."
+        )
     if layout == "fused_no_quant_state":
         raise RuntimeError(
             f"Unsloth: `{model_name}` is a 4-bit gpt-oss checkpoint whose fused expert weights were saved "
@@ -3952,6 +4002,17 @@ def refuse_gpt_oss_fused_4bit_float16(dtype):
         "or dtype = torch.float16) its fused 4-bit experts would overflow. Use the pre-quantized "
         "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
     )
+
+
+def gpt_oss_keeps_checkpoint_quantization(model_name, config, load_in_4bit):
+    """True when a gpt-oss-20b / -120b load ignores load_in_4bit / load_in_8bit and keeps the checkpoint's own
+    quantization (MXFP4, or 16-bit). An unquantized checkpoint still takes bnb 4-bit (its fused experts are
+    quantized), but not 8-bit: bnb 8-bit only replaces nn.Linear, so the fused expert parameters would stay
+    16-bit."""
+    name = str(model_name).lower()
+    if "gpt-oss-20b" not in name and "gpt-oss-120b" not in name:
+        return False
+    return bool(getattr(config, "quantization_config", None)) or not load_in_4bit
 
 
 def sync_unsloth_model_name_bnb_flags(

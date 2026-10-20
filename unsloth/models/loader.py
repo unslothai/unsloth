@@ -2553,6 +2553,7 @@ class FastModel(FastBaseModel):
                         cache_dir = kwargs.get("cache_dir"),
                         local_files_only = local_files_only,
                         variant = kwargs.get("variant"),
+                        use_safetensors = kwargs.get("use_safetensors"),
                     )
                 )
             except GptOssUnknownExpertLayoutError:
