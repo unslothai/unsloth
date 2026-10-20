@@ -10751,7 +10751,13 @@ class DiffusionBackend:
         return unified_memory_shortfall_message(plan, family = fam.name)
 
     def _small_host_decision(
-        self, source: Any, pipe_kwargs: dict, target: Any, dtype: Any, *, lora_active: bool,
+        self,
+        source: Any,
+        pipe_kwargs: dict,
+        target: Any,
+        dtype: Any,
+        *,
+        lora_active: bool,
         single_file_path: Optional[str] = None,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot."""
