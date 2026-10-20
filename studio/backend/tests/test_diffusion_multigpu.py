@@ -1000,9 +1000,7 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
         x = latents.clone()
         for i in range(steps):
             t = torch.tensor(1000.0 * (1.0 - i / steps))
-            a = dit(hidden_states = x, timestep = t / 1000, encoder_hidden_states = cond)[
-                0
-            ]
+            a = dit(hidden_states = x, timestep = t / 1000, encoder_hidden_states = cond)[0]
             b = dit(hidden_states = x, timestep = t / 1000, encoder_hidden_states = uncond)[0]
             x = x - 0.1 * (b + 4.0 * (a - b))
         return x
@@ -1016,9 +1014,7 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
 
 def test_bitwise_equal_distinguishes_signed_zero():
     assert mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([0.0]))
-    assert mg._bitwise_equal(
-        torch.tensor(0.5), torch.tensor(1.0) / 2
-    )
+    assert mg._bitwise_equal(torch.tensor(0.5), torch.tensor(1.0) / 2)
     assert not mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([-0.0]))
     assert not mg._bitwise_equal(torch.tensor([1.0]), torch.tensor([1.0], dtype = torch.float64))
 
@@ -1430,9 +1426,7 @@ def test_split_video_request_is_guarded_on_every_card():
     # the decode card is priced for the decoded clip; the denoiser card for its weights, the base headroom and the
     # decoded frames copied back to it
     frames_mib = -(-1280 * 720 * 121 * 3 * 4 // (1 << 20))
-    home_mib = max(
-        frames_mib, vid._VIDEO_DENOISE_ACTIVATION_MIB
-    )
+    home_mib = max(frames_mib, vid._VIDEO_DENOISE_ACTIVATION_MIB)
     tight = {0: 4 + home_mib + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
     message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
     assert clip > 0 and message is not None and "cuda:1" in message
@@ -1530,9 +1524,7 @@ def test_force_mode_refines_a_resident_plan(monkeypatch):
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
-        assert (
-            mg.refine_plan_for_multigpu(object(), plan) is plan
-        )
+        assert mg.refine_plan_for_multigpu(object(), plan) is plan
         monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.secondary_ordinal == 1 and refined.offload_policy == dm.OFFLOAD_NONE
@@ -2050,9 +2042,7 @@ def test_replica_rebuild_counts_the_allocator_cache_as_free(monkeypatch):
     dit = _Dit()
     router, _replicas = _router(dit)
     router.secondary = torch.device("cuda", 1)
-    monkeypatch.setattr(
-        mg, "_free_total_mib", lambda o: (100, 15360)
-    )
+    monkeypatch.setattr(mg, "_free_total_mib", lambda o: (100, 15360))
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d = None: 4096 << 20)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda d = None: 0)
     monkeypatch.setattr(mg, "_device_context", lambda d: contextlib.nullcontext())
@@ -2226,23 +2216,17 @@ def test_begin_load_hands_the_picked_cards_to_the_load_thread(monkeypatch, modul
     assert seen["selection"] is None
 
 
-
-
 def test_fingerprint_sees_buffers_and_the_peft_adapter_selection():
     dit = _Dit()
     dit.proj.register_buffer("w_scale", torch.ones(4))
     base = mg.weights_fingerprint(dit)
-    dit.proj.w_scale.mul_(
-        2.0
-    )
+    dit.proj.w_scale.mul_(2.0)
     edited = mg.weights_fingerprint(dit)
     assert edited != base
     dit.proj.w_scale = torch.ones(4)
     assert mg.weights_fingerprint(dit) not in (base, edited)
     before = mg.weights_fingerprint(dit)
-    dit.proj._active_adapter = [
-        "a"
-    ]
+    dit.proj._active_adapter = ["a"]
     with_a = mg.weights_fingerprint(dit)
     dit.proj._active_adapter = ["b"]
     assert len({before, with_a, mg.weights_fingerprint(dit)}) == 3
