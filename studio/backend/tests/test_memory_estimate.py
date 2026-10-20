@@ -4289,6 +4289,22 @@ def test_a_weightless_probe_never_runs_the_evaluations_its_model_asks_for(monkey
     assert mx.get_peak_memory() >= 2**28
 
 
+@pytest.mark.skipif(not _HAVE_MLX, reason = "resolves an mlx-vlm architecture")
+def test_a_text_model_only_mlx_vlm_builds_is_sized_on_mlx_vlm_and_served_as_text(monkeypatch):
+    zoo, asked = _types.ModuleType("unsloth_zoo.mlx.loader"), []
+    zoo._mlx_vlm_only_text_model = lambda config, model_type: (
+        asked.append(model_type) or "engram_config" in config
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", zoo)
+    refused = {"model_type": "deepseek_v4", "engram_config": {}}
+    assert mm._builds_on_mlx_vlm(refused)
+    assert not mm._builds_on_mlx_vlm({"model_type": "deepseek_v4"})
+    assert asked == ["deepseek_v4", "deepseek_v4"]
+    assert not mm._loads_as_vision(refused)
+    _, make_cache, _ = next(mm._probe_models(refused, None))
+    assert make_cache.__module__ == "mlx_vlm.models.cache"
+
+
 class TestKvBytes:
     def test_a_hybrid_plan_is_far_cheaper_than_charging_every_layer_as_attention(self):
         hybrid = [_RECURRENT] * 30 + [_GROWING] * 10
