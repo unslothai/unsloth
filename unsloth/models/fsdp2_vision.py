@@ -40,6 +40,22 @@ _AUDIO_INPUTS = (
     "input_audio_embeds",
     "audio_input_features",
 )
+# Named per speaker / stream: Moshi's `user_input_values` / `moshi_input_values`
+# (transformers/models/moshi/modeling_moshi.py MoshiForConditionalGeneration.forward), each encoded by
+# its own audio_encoder.encode call.
+_AUDIO_INPUT_RE = re.compile(r"^\w+_(input_values|audio_values)$")
+
+
+def _audio_inputs(signature):
+    """The audio inputs a forward takes: the known names, then any `*_input_values` /
+    `*_audio_values` parameter. All known names for a signature that cannot be read."""
+    if signature is None:
+        return ()
+    names = [n for n in _AUDIO_INPUTS if n in signature.parameters]
+    names += [n for n in signature.parameters if _AUDIO_INPUT_RE.match(n) and n not in names]
+    return tuple(names)
+
+
 _AUDIO_TOWER_NAMES = ("audio_tower", "audio_model", "audio_encoder", "audio")
 _AUDIO_PROJECTOR_NAMES = (
     "embed_audio",
@@ -224,41 +240,76 @@ class _Modality:
         self.ready = ready
         self.run_dummy = False
 
+    def groups(self, signature):
+        """The inputs, one group per encoder call: each input the host takes is encoded on its own
+        (Qwen-VL runs `visual` once for pixel_values and once more for pixel_values_videos; Moshi
+        encodes user_input_values and moshi_input_values separately), so presence is agreed per input.
+        The image inputs a dummy stands in for (`ready`) are one group, the first."""
+        taken = [
+            n
+            for n in self.inputs
+            if signature is None or n in signature.parameters or _takes_any_kwargs(signature)
+        ] or list(self.inputs)
+        if self.ready is None:
+            return [(n,) for n in taken]
+        covered = tuple(n for n in taken if n != "pixel_values_videos")
+        return ([covered] if covered else []) + [(n,) for n in taken if n not in covered]
+
 
 def _install_presence_agreement(host, modalities, device_of):
-    """Every forward of `host`, before any encoder runs: one all-reduce over [present per modality,
-    cannot-run-a-dummy per modality]. A modality present on some ranks only makes the ranks without it
-    run its dummy (`run_dummy`), or, when a dummy cannot be built on some rank lacking it, raises on
-    every rank alike (the ranks with it would otherwise wait in collectives the others never enter).
-    A dummy that cannot be built is found before the collective, so that failure is agreed too."""
+    """Every forward of `host`, before any encoder runs: one all-reduce over [present per input,
+    cannot-run-a-dummy per modality]. Each input is encoded by its own call, so an input present on
+    some ranks only makes the ranks without it run the modality's dummy (`run_dummy`, the image inputs
+    a dummy stands in for), or, when there is no dummy for that input or it cannot be built on some
+    rank lacking it, raises on every rank alike (the ranks with it would otherwise wait in
+    collectives the others never enter). A dummy that cannot be built is found before the
+    collective, so that failure is agreed too."""
     signature = _forward_signature(host)
+    plan = [(m, m.groups(signature)) for m in modalities]
+    slots = [
+        (m, g, j == 0 and m.ready is not None and "pixel_values_videos" not in g)
+        for m, groups in plan
+        for j, g in enumerate(groups)
+    ]
 
     def agree(module, args, kwargs):
         for m in modalities:
             m.run_dummy = False
         if _in_generate():
             return None
-        present = [_given(signature, host, args, kwargs, m.inputs) for m in modalities]
+        present = [_given(signature, host, args, kwargs, g) for _, g, _ in slots]
         unready = []
-        for m, here in zip(modalities, present):
-            ok = here
-            if not here and m.ready is not None:
-                try:
-                    ok = bool(m.ready())
-                except Exception:
-                    ok = False
+        for m, groups in plan:
+            ok = True
+            if m.ready is not None and groups:
+                ok = _given(signature, host, args, kwargs, groups[0])
+                if not ok:
+                    try:
+                        ok = bool(m.ready())
+                    except Exception:
+                        ok = False
             unready.append(not ok)
         counts, world = _agree_counts(present + unready, device_of())
-        n = len(modalities)
-        for i, m in enumerate(modalities):
+        n = len(slots)
+        for i, (m, group, covered) in enumerate(slots):
             if not 0 < counts[i] < world:
                 continue  # every rank has it, or none does: the collectives already match
-            if counts[n + i]:
+            no_dummy = counts[n + modalities.index(m)] if covered else True
+            if no_dummy:
+                why = (
+                    m.why
+                    if covered or m.ready is None
+                    else (
+                        f"encodes `{group[0]}` in a call of its own, which Unsloth has no dummy for"
+                    )
+                )
+                which = "" if len(plan[modalities.index(m)][1]) == 1 else f" (input `{group[0]}`)"
                 raise RuntimeError(
                     f"Unsloth: native FSDP2 got a micro-batch with {m.label} on {counts[i]} of {world} "
-                    f"ranks. {type(host).__name__} {m.why}, so the ranks without {m.label} would skip "
-                    "collectives the others run and the job would hang. Give every rank's micro-batch "
-                    f"{m.label} (or none), for example by grouping samples by modality into batches."
+                    f"ranks{which}. {type(host).__name__} {why or 'cannot build a dummy input here'}, "
+                    f"so the ranks without it would skip collectives the others run and the job would "
+                    f"hang. Give every rank's micro-batch {m.label} (or none), for example by grouping "
+                    "samples by modality into batches."
                 )
             m.run_dummy = not present[i]
         return None
@@ -289,7 +340,7 @@ def _audio_host(model, vision_host = None):
     candidates += list(model.modules())
     for module in candidates:
         signature = _forward_signature(module)
-        if signature is None or not any(n in signature.parameters for n in _AUDIO_INPUTS):
+        if not _audio_inputs(signature):
             continue
         if any(_audio_tower(m) is not None for m in module.modules()):
             return module
@@ -544,13 +595,14 @@ def _audio_plan(model, vision_host = None):
         for module in (
             [vision_host] + list(model.modules()) if vision_host is not None else model.modules()
         ):
-            signature = _forward_signature(module)
-            if signature is not None and any(n in signature.parameters for n in _AUDIO_INPUTS):
-                return module, _Modality("audio", _AUDIO_INPUTS, _NO_ENCODER)
+            names = _audio_inputs(_forward_signature(module))
+            if names:
+                return module, _Modality("audio", names, _NO_ENCODER)
         return None
     if not _managed_by_fsdp(*_audio_modules(host)):
         return None
-    return host, _Modality("audio", _AUDIO_INPUTS, "runs an audio tower Unsloth has no dummy for")
+    names = _audio_inputs(_forward_signature(host))
+    return host, _Modality("audio", names, "runs an audio tower Unsloth has no dummy for")
 
 
 def install_vision_dummy(model):
