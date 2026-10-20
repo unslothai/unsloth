@@ -144,6 +144,20 @@ _UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
     ("win_amd64", "2.10"): frozenset({"cp311", "cp312", "cp313"}),
     ("win_amd64", "2.11"): frozenset({"cp311", "cp312", "cp313"}),
     ("win_amd64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_x86_64", "2.10"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_x86_64", "2.11"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_x86_64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_aarch64", "2.10"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_aarch64", "2.11"): frozenset({"cp311", "cp312", "cp313"}),
+    ("linux_aarch64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
+}
+
+# Extra cells that carry only some packages. On Linux torch 2.10 to 2.12 ours replace upstream's
+# causal-conv1d / mamba-ssm (205 / 351 MB, every arch and -lineinfo); upstream flash-attn 2.8.1 is
+# already smaller there than ours, so it keeps resolving upstream.
+_UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
+    "linux_x86_64": frozenset({"causal_conv1d", "mamba_ssm"}),
+    "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),
 }
 
 # Windows on ARM has one CUDA torch, NVIDIA's 2.14.0+cu134 (CUDA 13.4, the first with a Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there.
@@ -219,6 +233,9 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
         return None
     cxx11abi, published_pythons = platform_spec
     if extra_pythons is not None:
+        extra_prefixes = _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES.get(platform_tag)
+        if extra_prefixes is not None and filename_prefix not in extra_prefixes:
+            return None
         published_pythons = extra_pythons
     if env.get("platform_tag") == "win_arm64" and (
         filename_prefix not in _UNSLOTH_WIN_ARM64_PREFIXES
