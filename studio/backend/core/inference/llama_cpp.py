@@ -19468,10 +19468,16 @@ class LlamaCppBackend:
                             ):
                                 device_lost_seen = True
                                 self._retire_device_lost_server_soon(proc)
-                            elif not device_lost_seen and any(
-                                marker in line for marker in _METAL_BACKEND_POISONED_MARKERS
+                            elif (
+                                not device_lost_seen
+                                and not metal_poison.get("pending")
+                                and any(marker in line for marker in _METAL_BACKEND_POISONED_MARKERS)
                             ):
-                                device_lost_seen = True
+                                # Not latched like device loss: a request can make the
+                                # server echo this text (a grammar parse error prints the
+                                # grammar), so retirement first confirms a compute failure
+                                # and re-arms this when it does not find one.
+                                metal_poison["pending"] = True
                                 self._retire_device_lost_server_soon(
                                     proc, metal_poison = metal_poison
                                 )
@@ -26828,6 +26834,9 @@ class LlamaCppBackend:
                 # Added on top of --fit-target for a DSpark/DFlash sidecar the child's
                 # fitter cannot size; 0 when none launches or it runs on the CPU.
                 _sidecar_fit_reserve_mib = 0
+                _sidecar_fit_reserve_eligible_mib = 0
+                # The trailing --fit-target that re-adds the reserve over a user margin.
+                _sidecar_override_flags: List[str] = []
                 _sidecar_kind_for_fit = None
                 # The fit and launch must use the same Model Memory snapshot.
                 from utils.model_memory_settings import capture_model_memory_settings
@@ -28842,6 +28851,10 @@ class LlamaCppBackend:
                             and _mtp_effective in ("dspark", "dflash")
                             and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
                             and not _extra_args_set_spec_type(extra_args)
+                            # A bare --model-draft in extras still loads (has_dft()), so
+                            # dropping it would only free the reserve; same guard as the
+                            # discrete-GPU drop.
+                            and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
                         ):
                             # The un-reserved budget: under the flat fallback
                             # _apple_fit_budget_mib already holds a fraction back for
@@ -28851,8 +28864,13 @@ class LlamaCppBackend:
                             _sc_target_mib = (
                                 _apple_model_size_fit + _kv_bytes(_sc_ctx) + _cc_bytes(_sc_ctx)
                             ) / (1024 * 1024)
+                            # _apple_model_size_fit carries the drafter's compute charge; the
+                            # target alone does not, while the combined bound keeps it.
+                            _sc_target_only_mib = _sc_target_mib - (
+                                self._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024)
+                            )
                             if (
-                                _sc_target_mib
+                                _sc_target_only_mib
                                 <= _apple_budget_mib
                                 < _sc_target_mib
                                 + self._sidecar_fit_reserve_mib(_mtp_bytes(_sc_ctx), mtp_draft_path)
@@ -29611,16 +29629,38 @@ class LlamaCppBackend:
                     _fit_device_count = len(
                         gpu_indices if gpu_indices is not None else _detected_gpus
                     )
+                    # A draft pinned to another device (--device-draft Vulkan1 next to
+                    # Vulkan0) allocates there, so the scalar margin would only starve
+                    # the target. Off Metal, keep the reserve only for a pin that names
+                    # the target's own device.
+                    _draft_pin = _extra_args_draft_device_pin(extra_args)
+                    _draft_on_target_device = True
+                    if _draft_pin is not None and _apple_budget_mib <= 0:
+                        _main_dev = _extra_args_main_device(extra_args)
+                        if _main_dev is None and is_vulkan_backend:
+                            _target_ids = (
+                                gpu_indices
+                                if gpu_indices is not None
+                                else [g[0] for g in _detected_gpus]
+                            )
+                            _main_dev = f"Vulkan{_target_ids[0]}" if _target_ids else None
+                        _draft_on_target_device = bool(_main_dev) and (
+                            _draft_pin.strip().lower() == _main_dev.strip().lower()
+                        )
                     if (
-                        use_fit
-                        and _mtp_will_engage
+                        _mtp_will_engage
                         and _mtp_reserves_gpu
                         and _sidecar_kind_for_fit is not None
+                        and _draft_on_target_device
                         and (_apple_budget_mib > 0 or _fit_device_count == 1)
                     ):
-                        _sidecar_fit_reserve_mib = self._sidecar_fit_reserve_mib(
+                        # Priced even under --fit off: a startup-OOM retry turns the
+                        # fitter on with the drafter still loaded.
+                        _sidecar_fit_reserve_eligible_mib = self._sidecar_fit_reserve_mib(
                             _mtp_reserve_bytes, _mtp_draft_for_budget or mtp_draft_path
                         )
+                        if use_fit:
+                            _sidecar_fit_reserve_mib = _sidecar_fit_reserve_eligible_mib
                     if _mtp_will_engage:
                         _mtp_note = self._mtp_reserve_note(
                             _mtp_reserve_bytes,
@@ -31802,6 +31842,28 @@ class LlamaCppBackend:
                     logger.info(
                         f"Appending user extra args to llama-server: {list(_emit_extra_args)}"
                     )
+                    # A user --fit-target is last-wins over Studio's, which carried the
+                    # sidecar reserve: keep the user's margin and re-add the reserve.
+                    _user_fit_margin = fit_target_margin_in(_emit_extra_args, None)
+                    if (
+                        _sidecar_fit_reserve_mib
+                        and _user_fit_margin is not None
+                        and fit_is_effectively_on(cmd, os.environ)
+                    ):
+                        _sidecar_override_flags = [
+                            "--fit-target",
+                            str(
+                                math.ceil(
+                                    max(
+                                        _VRAM_FLOOR_RESERVE_MIB,
+                                        _metal_fit_target_floor_mib,
+                                        _user_fit_margin,
+                                    )
+                                    + _sidecar_fit_reserve_mib
+                                )
+                            ),
+                        ]
+                        cmd.extend(_sidecar_override_flags)
                 # Last so it wins: the drafter CPU pin on a virtualised Metal device
                 # is a correctness fix, not a preference, and llama.cpp is last-wins.
                 if _pv_draft_cpu_pin:
@@ -33124,6 +33186,33 @@ class LlamaCppBackend:
                             _run = list(run_cmd)
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
+                            # The fitter now runs next to a sidecar it cannot size; the
+                            # --fit off launch emitted no margin, so carry the reserve.
+                            if (
+                                _sidecar_fit_reserve_eligible_mib
+                                and not _sidecar_fit_reserve_mib
+                                and "--model-draft" in _run
+                                and server_caps.get("supports_fit_target")
+                                and fit_is_effectively_on(_run, os.environ)
+                            ):
+                                _retry_margin = max(
+                                    self._fit_target_margin_mib(
+                                        auto_fit = auto_fit,
+                                        fit_target_delta_mib = _fit_target_delta_mib,
+                                        floor_mib = _metal_fit_target_floor_mib,
+                                    ),
+                                    fit_target_margin_in(extra_args, None) or 0.0,
+                                )
+                                _run.extend(
+                                    [
+                                        "--fit-target",
+                                        str(
+                                            math.ceil(
+                                                _retry_margin + _sidecar_fit_reserve_eligible_mib
+                                            )
+                                        ),
+                                    ]
+                                )
                             # Same reasoning as the page-lock below, one step
                             # earlier: the fit picked "none" because it had proved
                             # the load fits, and that proof is what just failed, so
@@ -34383,6 +34472,26 @@ class LlamaCppBackend:
                             strip_split_mode = False,
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
+                    # The drafter is gone, so is the margin kept for it.
+                    if _sidecar_fit_reserve_mib:
+                        _fb_integrity = self._ctx_integrity_flags(
+                            *_integrity_args,
+                            fit_target_delta_mib = _fit_target_delta_mib,
+                            fit_target_floor_mib = _metal_fit_target_floor_mib,
+                        )
+                        _integrity_at = _subsequence_index(fallback_cmd, _integrity_flags, 0)
+                        if (
+                            fallback_cmd[_integrity_at : _integrity_at + len(_integrity_flags)]
+                            == _integrity_flags
+                        ):
+                            fallback_cmd[_integrity_at : _integrity_at + len(_integrity_flags)] = (
+                                _fb_integrity
+                            )
+                        if _sidecar_override_flags:
+                            # The user's own trailing margin is last again.
+                            fallback_cmd = _without_subsequence(
+                                fallback_cmd, _sidecar_override_flags
+                            )
                     # Restore the cut slots; if they fail (unified KV refused), retry as cut.
                     _fb_cut = (
                         (
@@ -38941,6 +39050,17 @@ class LlamaCppBackend:
         what _respawn_if_dead already recovers. ``metal_poison`` marks the Metal variant:
         a failed command buffer (usually out of memory) latches the backend the same way.
         """
+        if metal_poison is not None:
+            # Outside the locks: the probe waits on the child for up to its timeout.
+            if (
+                served_by is None
+                or served_by is not self._process
+                or served_by.poll() is not None
+                or self._cancel_event.is_set()
+                or not self._metal_compute_failure_confirmed()
+            ):
+                metal_poison["pending"] = False
+                return
         # _serial_load_lock too: a Metal strike is charged to the load it read, so an
         # explicit load must not publish another model between the kill and that read.
         with self._respawn_lock, self._serial_load_lock:
@@ -38977,6 +39097,26 @@ class LlamaCppBackend:
             # The logger raises once stdout is closed; recovery must not.
             pass
 
+    def _metal_compute_failure_confirmed(self) -> bool:
+        """Whether the child really fails compute: a poisoned Metal backend rejects every
+        graph, so a one-token completion comes back 500 "Compute error.". The log marker
+        alone is not proof, since request text can reach the server's error output."""
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/completion",
+                json = {"prompt": " ", "n_predict": 1, "stream": False},
+                headers = self._auth_headers,
+                timeout = 10.0,
+                trust_env = False,
+            )
+            if resp.status_code < 500:
+                return False
+            error = resp.json().get("error", {})
+            message = error.get("message", "") if isinstance(error, dict) else error
+            return str(message).rstrip().endswith("Compute error.")
+        except Exception:
+            return False
+
     @staticmethod
     def _metal_oom_key(intent):
         """The load an OOM strike is charged to: the speculative mode is what the fallback
@@ -39009,6 +39149,9 @@ class LlamaCppBackend:
         try:
             name = self._model_identifier
             if strikes >= 2:
+                # The child is killed and not replaced: an identical explicit load must
+                # spawn one rather than adopt this state as already loaded.
+                self._healthy = False
                 self._metal_oom_terminal_key = key
                 logger.error(
                     f"llama-server for '{name}' ran out of Metal memory again in {where} "
@@ -39018,10 +39161,16 @@ class LlamaCppBackend:
                 )
                 return
             requested_mode = getattr(intent, "speculative_type", None)
+            recovery_extras = list(getattr(intent, "extra_args", None) or ())
+            # A bare --model-draft in the extras survives an Off reload (has_dft()), so
+            # that drafter is the user's, not removable here.
             auto_sidecar = (
                 self._speculative_type in ("draft-dspark", "draft-dflash")
                 and _canonicalize_spec_mode(requested_mode) in (None, "auto")
-                and not _extra_args_set_spec_type(list(getattr(intent, "extra_args", None) or ()))
+                and not _extra_args_set_spec_type(recovery_extras)
+                and not _extra_args_mtp_draft_path(
+                    recovery_extras, env = _child_spec_env(recovery_extras)
+                )
             )
             if auto_sidecar and self._maybe_recover_from_mtp_crash(sidecar_oom = True):
                 logger.warning(

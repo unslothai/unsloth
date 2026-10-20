@@ -68,6 +68,8 @@ def harness(monkeypatch):
         backend._model_identifier = "unsloth/DeepSeek-V4.1-Flash-1017-GGUF"
         backend._last_load_intent = intent
         backend._speculative_type = speculative_type
+        # The child here is a stub with no HTTP server: stand in for a compute that fails.
+        backend._metal_compute_failure_confirmed = lambda: True
         loads = []
 
         def fake_load_model(new_intent):
