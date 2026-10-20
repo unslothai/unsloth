@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { hardwareGpuMemorySplitGb } from "../src/hooks/gpu-vram.ts";
+import { hardwareGpuMemoryGb } from "../src/hooks/gpu-vram.ts";
 
 // /api/system/hardware rows from 2x Radeon AI PRO R9700 + a Ryzen 9 9950X iGPU on Windows ROCm.
 const r9700 = {
@@ -21,36 +21,43 @@ const igpu = {
   sharedMemoryHostBackedGb: 34.26,
 };
 
-test("a Windows ROCm iGPU splits into its carve-out and the shared system RAM", () => {
-  const split = hardwareGpuMemorySplitGb(igpu);
-  assert.ok(split);
-  assert.equal(Math.round(split.dedicated), 2);
-  assert.equal(Math.round(split.shared), 34);
-  assert.equal(split.total, 36.23);
+test("a Windows ROCm iGPU shows its own carve-out, not the system RAM it can borrow", () => {
+  const memory = hardwareGpuMemoryGb(igpu);
+  assert.ok(memory);
+  assert.equal(Math.round(memory.gb), 2);
+  assert.equal(memory.integrated, true);
 });
 
-test("a discrete card is not split", () => {
-  assert.equal(hardwareGpuMemorySplitGb(r9700), null);
+test("a discrete card shows its full VRAM and is not marked integrated", () => {
+  assert.deepEqual(hardwareGpuMemoryGb(r9700), {
+    gb: 31.86,
+    integrated: false,
+  });
 });
 
-test("a row from an older backend without the memory flags is not split", () => {
-  assert.equal(hardwareGpuMemorySplitGb({ vramTotalGb: 36.23 }), null);
+test("an integrated GPU with no carve-out of its own keeps its whole total", () => {
+  // NVIDIA integrated (GB10, Jetson): the backend reports the whole total as host-backed.
+  const gb10 = {
+    vramTotalGb: 119.7,
+    sharedMemory: true,
+    unifiedMemory: true,
+    sharedMemoryHostBackedGb: 119.7,
+  };
+  assert.deepEqual(hardwareGpuMemoryGb(gb10), { gb: 119.7, integrated: true });
 });
 
-test("an unknown total is not split", () => {
-  assert.equal(hardwareGpuMemorySplitGb({ ...igpu, vramTotalGb: null }), null);
+test("a row from an older backend without the memory flags keeps the plain total", () => {
+  assert.deepEqual(hardwareGpuMemoryGb({ vramTotalGb: 36.23 }), {
+    gb: 36.23,
+    integrated: false,
+  });
 });
 
-test("the About tab labels the split with the System tab's wording", () => {
-  const about = readFileSync(
-    new URL("../src/features/settings/tabs/about-tab.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(about, /hardwareGpuMemorySplitGb\(gpu\)/);
-  assert.match(about, /settings\.resources\.environment\.vramWithShared/);
+test("an unknown total shows nothing", () => {
+  assert.equal(hardwareGpuMemoryGb({ ...igpu, vramTotalGb: null }), null);
 });
 
-test("the hardware route forwards the memory flags the split needs", () => {
+test("the hardware route forwards the memory flags", () => {
   const main = readFileSync(
     new URL("../../backend/main.py", import.meta.url),
     "utf8",

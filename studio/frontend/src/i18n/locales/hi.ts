@@ -3208,6 +3208,7 @@ export const hi = {
       audioCppVersion: "audio.cpp संस्करण",
       hardware: "हार्डवेयर",
       gpu: "GPU",
+      gpuIntegrated: "इंटीग्रेटेड",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

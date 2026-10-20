@@ -287,11 +287,12 @@ export const BUDGET = {
   // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
   // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
   // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
-  // Splitting an iGPU's memory into VRAM + shared on Settings > About adds 327 B raw / 27 B transfer (6,844,101 ->
-  // 6,844,428 B raw, 2,060,889 -> 2,060,916 B transfer against e326020e4b, one machine and build, Node 24, chunk
-  // count unchanged at 96): the About tab and gpu-vram are already in the startup chunks. Raised by that growth.
-  transferBytes: 2_061_150,
-  rawBytes: 6_844_588,
+  // Showing an iGPU's own memory, marked integrated, on Settings > About adds 474 B raw / 97 B transfer (6,844,101 ->
+  // 6,844,575 B raw, 2,060,889 -> 2,060,986 B transfer against e326020e4b, one machine and build, Node 24, chunk
+  // count unchanged at 96): the About tab, gpu-vram and the English catalog are already in the startup chunks.
+  // Raised by that growth.
+  transferBytes: 2_061_220,
+  rawBytes: 6_844_735,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

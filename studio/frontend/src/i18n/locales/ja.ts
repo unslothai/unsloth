@@ -3168,6 +3168,7 @@ export const ja = {
       audioCppVersion: "audio.cpp バージョン",
       hardware: "ハードウェア",
       gpu: "GPU",
+      gpuIntegrated: "内蔵",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

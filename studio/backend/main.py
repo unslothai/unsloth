@@ -3094,7 +3094,7 @@ def get_hardware_info(
             {
                 "name": d.get("name"),
                 "vram_total_gb": d.get("memory_total_gb"),
-                # An iGPU's total is mostly system RAM; the About tab splits it like Settings > System.
+                # An iGPU's total is mostly borrowed system RAM; the About tab shows only its own carve-out.
                 "shared_memory": d.get("shared_memory") is True,
                 "unified_memory": d.get("unified_memory") is True,
                 "shared_memory_host_backed_gb": d.get("shared_memory_host_backed_gb"),

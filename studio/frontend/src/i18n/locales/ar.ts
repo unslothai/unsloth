@@ -3199,6 +3199,7 @@ export const ar = {
       audioCppVersion: "إصدار audio.cpp",
       hardware: "الأجهزة",
       gpu: "GPU",
+      gpuIntegrated: "مدمجة",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

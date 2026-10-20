@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
-import { hardwareGpuMemorySplitGb } from "@/hooks/gpu-vram";
+import { hardwareGpuMemoryGb } from "@/hooks/gpu-vram";
 import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
 import { type TranslationKey, useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
@@ -97,15 +97,12 @@ function aboutGpuMemoryText(
   gpu: HardwareInfo["gpus"][number],
   t: ReturnType<typeof useT>,
 ): string {
-  if (gpu.vramTotalGb == null) return "";
-  const split = hardwareGpuMemorySplitGb(gpu);
-  if (split && split.dedicated > 0) {
-    return ` · ${t("settings.resources.environment.vramWithShared", {
-      vram: `${Math.round(split.dedicated)} GiB`,
-      shared: `${Math.round(split.shared)} GiB`,
-    })}`;
-  }
-  return ` · ${Math.round(gpu.vramTotalGb)} GiB`;
+  const memory = hardwareGpuMemoryGb(gpu);
+  if (!memory) return "";
+  const gb = memory.gb < 1 ? memory.gb.toFixed(1) : Math.round(memory.gb);
+  return memory.integrated
+    ? ` · ${gb} GiB (${t("settings.about.gpuIntegrated")})`
+    : ` · ${gb} GiB`;
 }
 
 export function AboutTab() {
