@@ -241,3 +241,14 @@ def test_device_properties_are_read_per_card(monkeypatch):
     assert tuning.get_device_properties().SIZE_SMEM == smem[0]
     current["device"] = 1
     assert tuning.get_device_properties().SIZE_SMEM == smem[1]
+
+
+def test_autotune_cache_reads_the_per_card_tuners_config():
+    # The selected config lives on the per-card copy on multi-GPU hosts; reading the shared kernel misses it.
+    import ast
+
+    tree = ast.parse((GG_DIR.parent / "autotune_cache.py").read_text())
+    reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "best_config"]
+    assert reads and all(
+        isinstance(n.value, ast.Call) and getattr(n.value.func, "id", None) == "_autotuner_for" for n in reads
+    )
