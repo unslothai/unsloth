@@ -299,6 +299,11 @@ export const BUDGET = {
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
   // Explicit browser download names retain the prior startup margin.
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
   // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
@@ -306,8 +311,8 @@ export const BUDGET = {
   // The chat's Unsloth Studio tools preset and the "Not in chat" note add 233 B raw / 15 B transfer (measured
   // against the MCP tab build, one machine and build, Node 24, 97 chunks), in the eager chat chunk and English
   // catalog. Raised by that.
-  transferBytes: 2_063_045,
-  rawBytes: 6_850_054,
+  transferBytes: 2_065_642,
+  rawBytes: 6_859_681,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -250,6 +250,7 @@ const TABS: TabDef[] = [
     id: "mcp",
     labelKey: "settings.tabs.mcp",
     icon: McpServerIcon,
+    badgeKey: "common.new",
   },
   {
     id: "voice",

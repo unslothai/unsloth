@@ -3272,6 +3272,7 @@ export const ptBR = {
       audioCppVersion: "Versão do audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrada",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

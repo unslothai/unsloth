@@ -361,7 +361,8 @@ def test_the_non_peft_branch_marks_the_checkpoint_as_not_disposable(
     checkpoint.mkdir()
     model = _FakeModel(str(checkpoint))
     seen = _run_export(monkeypatch, save_mod, tmp_path, model)
-    assert seen["model_directory"] == str(checkpoint)
+    # Converted from a staged copy inside the GGUF folder, still never reclaimable.
+    assert os.path.dirname(seen["model_directory"]) == str(tmp_path / "export" / "model_gguf")
     assert seen["merge_is_disposable"] is False
 
 

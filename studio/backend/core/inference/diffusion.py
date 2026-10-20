@@ -108,6 +108,7 @@ from .diffusion_device import (
     resolve_selected_cuda_ordinal,
     resolve_selected_cuda_ordinals,
 )
+from .diffusion_cfg_batch import cfg_batch_status, end_cfg_batch_render, install_cfg_batch
 from .diffusion_multigpu import (
     AUTOMATIC_ORDINALS,
     end_cfg_render,
@@ -1934,6 +1935,17 @@ def _planned_quant_scheme(
     )
 
 
+def _is_local_cache_entry(source: Any) -> bool:
+    """A source resolved from Studio's local pre-quant cache, not a hosted repo or an operator's file."""
+    if getattr(source, "kind", None) != "path":
+        return False
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+        return bool(path_in_cache(getattr(source, "location", None)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _prequant_probe(
     fam: Optional[DiffusionFamily], *, base_repo: Optional[str], prequant_path: Optional[str]
 ) -> Callable[[str], bool]:
@@ -2866,6 +2878,20 @@ def _bg_compile_module(
     )
 
 
+def _prequant_bakes_auto_accumulate(source: Any) -> bool:
+    """Hosted repos and local cache entries bake the auto fp8 accumulate (forced-mode builds are never cached)."""
+    kind = getattr(source, "kind", None)
+    if kind == "repo":
+        return True
+    if kind != "path":
+        return False
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+        return path_in_cache(getattr(source, "location", None) or "")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -3656,7 +3682,8 @@ class DiffusionBackend:
             source = usable_prequant_source(
                 fam, candidate, path_override = path_override, base_repo = base_repo
             )
-            if source is None:
+            if source is None or _is_local_cache_entry(source):
+                # Lower rungs never come from the local cache: one earlier explicit load must not change auto's pick.
                 continue
             # Same cached-only rule _uncached_prequant_repo applies to the winner. That guard runs
             # select_transformer_quant_scheme, which only ever sees the winner, so a retry that returned an UNCACHED
@@ -5114,9 +5141,13 @@ class DiffusionBackend:
                     )
                     if source is None:
                         continue
+                    if rung != scheme and _is_local_cache_entry(source):
+                        # Cache seeds only auto's pick: one explicit int8 load must not turn later auto loads into int8.
+                        continue
                     # The loader's checkpoint validation refuses a FORCED fp8 accumulate the artifact does not bake,
-                    # but only after the plan dropped the released shards. An operator's own file is left to it.
-                    if getattr(source, "kind", None) == "repo" and hosted_fast_accum_conflict(
+                    # but only after the plan dropped the released shards. Hosted artifacts and Studio's own local
+                    # pre-quant cache entries both bake the auto value; an operator's own file is left to it.
+                    if _prequant_bakes_auto_accumulate(source) and hosted_fast_accum_conflict(
                         rung, fast_accum
                     ):
                         continue
@@ -8839,6 +8870,18 @@ class DiffusionBackend:
                                     engaged.append(scheme)
                                 if engaged and len(engaged) == len(denoisers):
                                     transformer_quant_engaged = engaged[0]
+                                    self._save_pipeline_quant_to_cache(
+                                        pipe,
+                                        fam,
+                                        denoisers,
+                                        loras = loras,
+                                        base = base,
+                                        source_base = _base_local_dir or fetch_base,
+                                        cancel_check = lambda: self._raise_if_load_cancelled(
+                                            _load_token
+                                        ),
+                                    )
+                                    self._raise_if_load_cancelled(_load_token)
                                 else:
                                     # A clean decline can remain bf16; a partial in-place conversion is unusable.
                                     dirty = [
@@ -9605,6 +9648,8 @@ class DiffusionBackend:
                     )
                     # After every forward wrapper of the speed / graph layers, so the replica sees the final module.
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
+                    # both branches through one offloaded forward; declines when CFG-parallel took the slot
+                    install_cfg_batch(pipe, offload_policy = effective_policy, logger = logger)
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
@@ -9971,6 +10016,12 @@ class DiffusionBackend:
                         self._prequant_fallback_note,
                     )
                 if transformer is not None:
+                    from .diffusion_prequant_cache import note_hit, path_in_cache
+
+                    if getattr(source, "kind", None) == "path" and path_in_cache(
+                        getattr(source, "location", "")
+                    ):
+                        note_hit(source.location, logger)
                     if scheme == TQ_NVFP4:
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
@@ -10072,7 +10123,50 @@ class DiffusionBackend:
         check_cancelled()
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
+        if fam is not None and not _has_active_lora(lora_specs):
+            # Best-effort: cache this build so the next load of the same weights skips the dense transformer.
+            from .diffusion_prequant_cache import save_runtime_quant
+            save_runtime_quant(
+                getattr(pipe, "transformer", None),
+                fam,
+                base_repo = base,
+                source_base = base_local_dir or fetch_base,
+                logger = logger,
+                cancel_check = check_cancelled,
+            )
+            check_cancelled()
         return pipe, scheme
+
+    @staticmethod
+    def _save_pipeline_quant_to_cache(
+        pipe: Any,
+        fam: Any,
+        denoisers: Any,
+        *,
+        loras: Any,
+        base: Optional[str],
+        source_base: Optional[str],
+        cancel_check: Optional[Callable[[], None]] = None,
+    ) -> Optional[str]:
+        """Cache a load-time quantized ``transformer`` (single denoiser only, the cache keys that component; no LoRA).
+        Never raises."""
+        try:
+            names = [attr for attr, _module in (denoisers or ())]
+            if fam is None or names != ["transformer"] or _has_active_lora(loras):
+                return None
+            from .diffusion_prequant_cache import save_runtime_quant
+
+            return save_runtime_quant(
+                getattr(pipe, "transformer", None),
+                fam,
+                base_repo = base,
+                source_base = source_base,
+                logger = logger,
+                cancel_check = cancel_check,
+            )
+        except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
+            logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
+            return None
 
     @staticmethod
     def _assemble_pipe(
@@ -12698,6 +12792,7 @@ class DiffusionBackend:
                 if restore_vae is not None:
                     restore_vae()
                 end_cfg_render(getattr(state, "pipe", None))
+                end_cfg_batch_render(getattr(state, "pipe", None))
                 if restore_resident is not None:
                     try:
                         restore_resident()
@@ -12983,6 +13078,7 @@ class DiffusionBackend:
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "multi_gpu": multigpu_placement_status(state.pipe),
+            "cfg_batch": cfg_batch_status(state.pipe),
             "resolved": resolved,
             "generation_defaults": _generation_defaults_for(
                 state.repo_id,

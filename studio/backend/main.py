@@ -3096,7 +3096,14 @@ def get_hardware_info(
         # "5,3") would mislabel by array index.
         devices = get_backend_visible_gpu_info().get("devices", [])
         body["gpus"] = [
-            {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
+            {
+                "name": d.get("name"),
+                "vram_total_gb": d.get("memory_total_gb"),
+                # An iGPU's total is mostly borrowed system RAM; the About tab shows only its own carve-out.
+                "shared_memory": d.get("shared_memory") is True,
+                "unified_memory": d.get("unified_memory") is True,
+                "shared_memory_host_backed_gb": d.get("shared_memory_host_backed_gb"),
+            }
             for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
         ]
         body["llama_cpp"] = get_installed_llama_version()

@@ -27,6 +27,8 @@ from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
+from . import diffusion_cond_blocks as cond_blocks
+
 logger = get_logger(__name__)
 
 FLUX3_KLEIN_FAMILY_NAME = "flux.3-klein"
@@ -399,13 +401,20 @@ class _Flux3KleinPipelineMixin:
                         if negatives is None
                         else negatives[call_index if len(negatives) > 1 else 0]
                     )
-                with self._step_hooks(
-                    mp,
-                    callback_on_step_end,
-                    num_inference_steps = int(num_inference_steps),
-                    first_call = call_index == 0,
-                ):
-                    out = mp(**kwargs, output = "images")
+                # The base model's text and reference streams run once per call, not once per step and branch.
+                transformer = getattr(self, "transformer", None)
+                if not self.is_distilled:
+                    cond_blocks.begin_render(transformer)
+                try:
+                    with self._step_hooks(
+                        mp,
+                        callback_on_step_end,
+                        num_inference_steps = int(num_inference_steps),
+                        first_call = call_index == 0,
+                    ):
+                        out = mp(**kwargs, output = "images")
+                finally:
+                    cond_blocks.end_render(transformer)
                 images.extend(out if isinstance(out, list) else [out])
         except _Flux3Interrupted:
             images = []
@@ -560,6 +569,9 @@ def load_flux3_pipeline(
     reason = flux3_family_blocks_mismatch(family_name, blocks, repo_id)
     if reason is not None:
         raise ValueError(reason)
+    if blocks == FLUX3_BASE_BLOCKS:
+        # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
+        cond_blocks.prepare(transformer)
     # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
     scheduler = flux3_blocks(blocks).init_pipeline().scheduler
     return flux3_pipeline_class()(
