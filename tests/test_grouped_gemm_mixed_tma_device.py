@@ -9,6 +9,7 @@ import contextlib
 import importlib.util
 import sys
 import types
+import typing
 from pathlib import Path
 
 import pytest
@@ -183,4 +184,60 @@ def test_launches_are_guarded_on_the_operands_device(monkeypatch):
         module._grouped_gemm_dW_impl(X = X, dY = dY, **common)
         scratch = [alloc(128, 128, 0).device for alloc in allocations]
     assert launches == [dev, dev, dev]
-    assert scratch == [dev, dev, dev]
+    # set_allocator is process-wide: the callback must follow the current device (pinned by the guard),
+    # never capture one launch's card for every later launch on any card.
+    assert scratch and all(d.type == "cuda" and d.index in (None, 0) for d in scratch)
+
+
+class _Tuner:
+    def __init__(self):
+        self.cache = {}
+
+
+def test_each_card_autotunes_its_own_copy(monkeypatch):
+    module, _ = _load(monkeypatch, [H100, A100])
+    monkeypatch.setattr(module.torch.cuda, "device_count", lambda: 2)
+    base = _Tuner()
+    base.cache["shape"] = "h100-config"
+    tuner0 = module._autotuner_for(base, torch.device("cuda", 0))
+    tuner1 = module._autotuner_for(base, torch.device("cuda", 1))
+    assert tuner0 is not tuner1 and tuner0.cache == {} and tuner1.cache == {}
+    assert module._autotuner_for(base, torch.device("cuda", 1)) is tuner1
+    assert base.cache == {"shape": "h100-config"}
+
+
+def test_single_card_keeps_the_shared_autotuner(monkeypatch):
+    module, _ = _load(monkeypatch, [H100])
+    monkeypatch.setattr(module.torch.cuda, "device_count", lambda: 1)
+    base = _Tuner()
+    assert module._autotuner_for(base, torch.device("cuda", 0)) is base
+
+
+def test_device_properties_are_read_per_card(monkeypatch):
+    import ast
+    from dataclasses import dataclass
+
+    source = (GG_DIR / "kernels" / "tuning.py").read_text()
+    wanted = {"DeviceProperties", "_DEVICE_PROPERTIES", "get_device_properties"}
+    nodes = [
+        node for node in ast.parse(source).body
+        if getattr(node, "name", None) in wanted
+        or any(getattr(t, "id", None) in wanted for t in getattr(node, "targets", []) + [getattr(node, "target", None)])
+    ]
+    smem = {0: 232448, 1: 166912}
+    fake_utils = types.SimpleNamespace(
+        get_device_properties = lambda index: {
+            "multiprocessor_count": 132, "max_num_regs": 65536, "max_shared_mem": smem[index], "warpSize": 32,
+        }
+    )
+    fake_triton = types.SimpleNamespace(
+        runtime = types.SimpleNamespace(driver = types.SimpleNamespace(active = types.SimpleNamespace(utils = fake_utils)))
+    )
+    namespace = {"torch": torch, "triton": fake_triton, "dataclass": dataclass, "Optional": typing.Optional}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "tuning.py", "exec"), namespace)
+    tuning = types.SimpleNamespace(**namespace)
+    current = {"device": 0}
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: current["device"])
+    assert tuning.get_device_properties().SIZE_SMEM == smem[0]
+    current["device"] = 1
+    assert tuning.get_device_properties().SIZE_SMEM == smem[1]

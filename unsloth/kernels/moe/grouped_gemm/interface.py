@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GNU Affero General Public License v3.0
 # Copyright 2023-present the Unsloth team. All rights reserved.
 
+import copy
 import functools
 import inspect
 import logging
@@ -56,6 +57,21 @@ def _check_tma_support():
 
 
 _SUPPORTS_TMA = _check_tma_support()
+
+_DEVICE_AUTOTUNERS = {}
+
+
+def _autotuner_for(kernel, device):
+    """Triton's autotune key omits the device, so on several GPUs each card tunes its own copy."""
+    if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
+        return kernel
+    key = (id(kernel), device.index)
+    if key not in _DEVICE_AUTOTUNERS:
+        tuner = copy.copy(kernel)
+        tuner.cache = {}
+        _DEVICE_AUTOTUNERS[key] = tuner
+    return _DEVICE_AUTOTUNERS[key]
+
 
 # triton.set_allocator is Triton 3.0+.
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
@@ -165,7 +181,7 @@ def _grouped_gemm_forward_impl(
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
-                return torch.empty(size, device = X.device, dtype = torch.int8)
+                return torch.empty(size, device = "cuda", dtype = torch.int8)
 
             triton.set_allocator(alloc_fn)
 
@@ -265,7 +281,7 @@ def _grouped_gemm_forward_impl(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_forward_kernel if autotune else _grouped_gemm_forward_kernel
+    kernel = _autotuner_for(_autotuned_grouped_gemm_forward_kernel, X.device) if autotune else _grouped_gemm_forward_kernel
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
@@ -333,7 +349,7 @@ def _grouped_gemm_dX_impl(
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
-                return torch.empty(size, device = dY.device, dtype = torch.int8)
+                return torch.empty(size, device = "cuda", dtype = torch.int8)
 
             triton.set_allocator(alloc_fn)
 
@@ -409,7 +425,7 @@ def _grouped_gemm_dX_impl(
                 "USE_TMA_STORE": use_tma_store,
             }
         )
-    kernel = _autotuned_grouped_gemm_dX_kernel if autotune else _grouped_gemm_dX_kernel
+    kernel = _autotuner_for(_autotuned_grouped_gemm_dX_kernel, dY.device) if autotune else _grouped_gemm_dX_kernel
 
     is_fake = _is_tracing(dY, W)
     if not is_fake:
@@ -474,7 +490,7 @@ def _grouped_gemm_dW_impl(
         if _HAS_SET_ALLOCATOR and not getattr(triton, "_unsloth_allocator_set", False):
 
             def alloc_fn(size: int, alignment: int, stream: int):
-                return torch.empty(size, device = X.device, dtype = torch.int8)
+                return torch.empty(size, device = "cuda", dtype = torch.int8)
 
             triton.set_allocator(alloc_fn)
 
@@ -557,7 +573,7 @@ def _grouped_gemm_dW_impl(
             }
         )
 
-    kernel = _autotuned_grouped_gemm_dW_kernel if autotune else _grouped_gemm_dW_kernel
+    kernel = _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device) if autotune else _grouped_gemm_dW_kernel
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:

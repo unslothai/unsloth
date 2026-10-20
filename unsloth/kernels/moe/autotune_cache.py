@@ -391,7 +391,7 @@ _HEURISTIC_SMEM_STEP_DOWN = {
 
 
 def _device_smem_per_block() -> Optional[int]:
-    # Per current device: tuning.get_device_properties() caches the first device's limit process-wide.
+    # Read per current device: the launching card on a mixed host.
     try:
         index = torch.cuda.current_device()
     except Exception:
