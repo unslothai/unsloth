@@ -574,10 +574,13 @@ _FRAME_HTML = r"""<!doctype html>
             const raw = url != null ? String(url) : null;
             let next = raw !== null ? resolve(raw) : null;
             // A router that builds its URL from location.pathname gets "srcdoc": put the page's path back.
-            const fromShell = raw !== null && /^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw);
+            // Next.js cuts location.href past "about://" and gets "cdoc", which its state keeps for Back.
+            const fromShell = raw !== null && (/^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw) || /^\/?cdoc(?=[?#]|$)/.exec(raw));
             if (fromShell && cfg.url) {
               const page = new URL(pageUrl);
-              next = new URL(page.pathname + raw.slice(fromShell[0].length), page.origin).href;
+              const path = page.pathname + raw.slice(fromShell[0].length);
+              next = new URL(path, page.origin).href;
+              if (state?.__N && state.as === raw) state = { ...state, as: path };
             }
             // A router re-asserting the shell's own path is not a navigation.
             if (next && new URL(next).pathname === shellPathname) next = null;

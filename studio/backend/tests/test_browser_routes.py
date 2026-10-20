@@ -144,6 +144,9 @@ def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
     for guard in (
         "return nativeFetch(input, init).finally(done);",
         "/^(?:about:)?srcdoc(?=[?#]|$)/",
+        "/^\\/?cdoc(?=[?#]|$)/",
+        # Back to Next.js's first route would otherwise route to /cdoc and crash the page.
+        "if (state?.__N && state.as === raw) state = { ...state, as: path };",
     ):
         assert guard in shell, guard
 
