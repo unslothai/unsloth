@@ -507,6 +507,7 @@ def test_chatbackend_reads_reasoning_from_the_selected_named_template(monkeypatc
         ["--chat-template-file=/tmp/custom.jinja"],
         ["--chat_template", "chatml"],
         ["--chat_template_file", "/tmp/custom.jinja"],
+        ["--no-jinja"],
     ],
 )
 def test_chatbackend_gguf_template_override_keeps_the_model_recommendation(monkeypatch, extra_args):
