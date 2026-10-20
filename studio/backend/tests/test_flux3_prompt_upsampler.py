@@ -2219,8 +2219,11 @@ def test_an_external_backend_path_is_unknown_even_for_a_vulkan_bundle(monkeypatc
 
     monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: vulkan))
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    calls = []
+    monkeypatch.setattr(pup, "_vulkan_rows", lambda b, retry_empty = False: calls.append(b) or list(_VULKAN_ROWS))
     monkeypatch.setenv("GGML_BACKEND_PATH", "/opt/ggml/backends")
     assert pup._vulkan_device_args("b", 0) is None
+    assert calls == []
 
 
 def test_a_user_main_gpu_is_a_device_pick(monkeypatch):
