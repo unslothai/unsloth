@@ -104,14 +104,14 @@ class SegmenterVariant:
 # SAM 3.1's detector in transformers' Sam3Model format, BF16 (converted from facebook/sam3.1's sam3.1_multiplex.pt).
 SAM31_REPO = "unsloth/sam3.1"
 # The unsloth/sam3.1 commit the files below were verified at.
-SAM31_REVISION = "b0f2e5dbd5f466ff0495c04ca29eaefb0a2421b5"
+SAM31_REVISION = "6cfffd097f83c94fdedf56e8d09d4f89174b733e"
 # 1_680_935_372 bytes of bf16 safetensors plus the configs and tokenizer.
 SAM31_CONFIG_BYTES = 5_037_537
 SAM31_SIZE_BYTES = 1_680_935_372 + SAM31_CONFIG_BYTES
 # The commit of unsloth/sam3.1 that holds the pre-quantized files (with the configs and tokenizer). None offers no
 # pre-quantized download and every load uses bf16 unless a file is already on disk; a file missing at this commit
 # downloads bf16 instead.
-SAM31_PREQUANT_REVISION: Optional[str] = "771260d967c16d2712c6f336b32c8d8ea829fa7d"
+SAM31_PREQUANT_REVISION: Optional[str] = "6cfffd097f83c94fdedf56e8d09d4f89174b733e"
 # Built by scripts/build_segmenter_prequant_checkpoint.py from the bf16 model.safetensors above; accuracy gate,
 # exclusions and the auto rule in diffusion_segment_quant. int8 is the ConvRot build unless UNSLOTH_SAM3_INT8_CONVROT=0.
 SAM31_PREQUANT = (
