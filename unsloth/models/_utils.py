@@ -7580,7 +7580,14 @@ def _embedding_subclasses(model: torch.nn.Module) -> Dict[str, torch.nn.Module]:
 
 
 def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -> None:
-    """Copy the buffers and plain attributes an Embedding subclass adds (e.g. embed_scale) onto dst."""
+    """Copy the parameters, submodules, buffers and plain attributes an Embedding subclass adds (e.g.
+    Gemma3's embed_scale, T5Gemma2's eoi_embedding) onto dst."""
+    for name, param in src._parameters.items():
+        if name not in dst._parameters:
+            dst.register_parameter(name, param)
+    for name, module in src._modules.items():
+        if name not in dst._modules:
+            dst.add_module(name, module)
     for name, buffer in src._buffers.items():
         if name not in dst._buffers:
             dst.register_buffer(
@@ -7612,7 +7619,7 @@ def _fake_quantized_embedding_class(original_cls):
 
     def __reduce_ex__(self, protocol):
         # Pickle by the original class, so a fresh process (torch.load, spawn workers) rebuilds this one.
-        return (_rebuild_fake_quantized_embedding, (original_cls,), self.__dict__.copy())
+        return (_rebuild_fake_quantized_embedding, (original_cls,), self.__getstate__())
 
     name = "_FakeQuantized_" + re.sub(
         r"\W", "_", f"{original_cls.__module__}.{original_cls.__qualname__}"

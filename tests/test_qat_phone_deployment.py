@@ -169,6 +169,45 @@ def test_lora_fake_quant_opt_out(monkeypatch):
     assert _is_fake_quantized(q_proj.lora_A["default"])
 
 
+class _EoiEmbedding(torch.nn.Embedding):
+    # T5Gemma2TextScaledWordEmbedding pattern: an extra registered parameter read in forward.
+    def __init__(self, num, dim):
+        super().__init__(num, dim)
+        self.eoi_embedding = torch.nn.Parameter(torch.ones(dim))
+
+    def forward(self, input_ids):
+        out = super().forward(input_ids)
+        out[input_ids == 0] = self.eoi_embedding.to(out.dtype)
+        return out
+
+
+@pytest.mark.parametrize("convert", [False, True])
+def test_embedding_subclass_keeps_extra_parameters(convert):
+    model = _tiny_gemma3()
+    model.model.embed_tokens = _EoiEmbedding(model.config.vocab_size, model.config.hidden_size)
+    eoi = model.model.embed_tokens.eoi_embedding
+    model = _prepare_model_for_qat(model, "int8-int4")
+    if convert:
+        _convert_torchao_model(model)
+    emb = model.get_input_embeddings()
+    assert isinstance(emb, _EoiEmbedding)
+    assert emb.eoi_embedding is eoi
+    with torch.no_grad():
+        out = emb(torch.tensor([[0, 1, 2]]))
+    assert torch.equal(out[0, 0], eoi)
+
+
+def test_compiled_fake_quantized_embedding_pickles():
+    import pickle
+
+    model = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4")
+    emb = model.get_input_embeddings()
+    emb.compile()
+    restored = pickle.loads(pickle.dumps(emb))
+    assert type(restored) is type(emb)
+    assert "_compiled_call_impl" not in vars(restored) or restored._compiled_call_impl is None
+
+
 def test_fake_quantized_embedding_subclass_pickles():
     import io
     import pickle
