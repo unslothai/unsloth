@@ -154,6 +154,22 @@ def _worker(rank, world, port, out, case, tmp):
                 res["n"] = len(want)
             except Exception as exc:
                 res["load_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        elif case == "full_save_wait":
+            # Full finetuning: only rank 0 writes the gathered model. Slow its write down; rank 1
+            # must not return from save_model before the files exist.
+            import time
+
+            src = native.shard_model(_model(False, 1, tmp), cfg)
+            if rank == 0:
+                save = native._save_unwrapped
+
+                def slow_save(*args, **kwargs):
+                    time.sleep(3.0)
+                    return save(*args, **kwargs)
+
+                native._save_unwrapped = slow_save
+            _trainer(src, tmp).save_model(ckpt)
+            res["written_on_return"] = os.path.isfile(os.path.join(ckpt, "model.safetensors"))
         elif case == "buffers":
             src = native.shard_model(_model(False, 1, tmp, buffers = True), cfg)
             state = native.native_full_state_dict(src)
@@ -229,6 +245,12 @@ def test_load_best_model_uses_native_loader(case, tmp_path):
     for rank, r in _run(case, tmp_path).items():
         assert "load_error" not in r, (rank, r)
         assert r["n"] > 0 and r["max_diff"] == 0.0, (rank, r)
+
+
+def test_full_save_non_writers_wait_for_the_write(tmp_path):
+    pytest.importorskip("transformers")
+    for rank, r in _run("full_save_wait", tmp_path).items():
+        assert r["written_on_return"], (rank, r)
 
 
 def test_resume_restores_persistent_buffers(tmp_path):

@@ -2174,9 +2174,20 @@ def _install_trainer_hooks():
                 if writer is not False and self.args.should_save:
                     _save_unwrapped(self, root, output_dir)
         else:
+            from .fsdp2_save import _dist, _wait_for_writer
+
             state_dict = native_full_state_dict(root)
-            if self.args.should_save:
-                _save_unwrapped(self, root, output_dir, state_dict = state_dict)
+            writer = bool(self.args.should_save)
+            try:
+                if writer:
+                    _save_unwrapped(self, root, output_dir, state_dict = state_dict)
+            finally:
+                # As in fsdp2_gathered: the other ranks wait for the (possibly multi-GB) write
+                # through the store, so they cannot run ahead into the optimizer save's or the next
+                # step's collectives and hit their timeout while rank 0 is still writing.
+                dist = _dist()
+                if dist is not None:
+                    _wait_for_writer(dist, writer)
         if getattr(self.args, "push_to_hub", False) and not _internal_call:
             self.push_to_hub(commit_message = "Model save", revision = self.args.hub_revision)
 
