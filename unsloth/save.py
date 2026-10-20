@@ -7585,9 +7585,24 @@ backend:
 """
 
 
-def _write_executorch_export_config(qat_scheme, directory):
+# HF model_types whose architecture ExecuTorch's export_llm ModelType covers (llama2/3.x, smollm2, qwen2.5, qwen3,
+# qwen3.5, phi-4-mini, lfm2); anything else (Gemma3, ...) goes through optimum-executorch instead.
+_EXPORT_LLM_MODEL_TYPES = {"llama", "qwen2", "qwen3", "qwen3_5", "qwen3_5_text", "phi3", "lfm2"}
+
+
+def _write_executorch_export_config(qat_scheme, directory, model_type = None):
     """Write and print the ExecuTorch export settings matching a phone-deployment QAT model."""
     if qat_scheme != "int8-int4":
+        return None
+    settings = (
+        "8da4w linear (dynamic int8 activations, int4 weights, group size 32, affine, not HQQ) and 8-bit "
+        "per-channel embeddings"
+    )
+    if model_type not in _EXPORT_LLM_MODEL_TYPES:
+        print(
+            f"Unsloth: ExecuTorch's export_llm does not support model type {model_type!r}; export the merged "
+            f"16-bit model with optimum-executorch (XNNPACK recipe) using {settings}, to match this QAT recipe."
+        )
         return None
     path = None
     if directory is not None and os.path.isdir(directory):
@@ -7654,12 +7669,14 @@ def unsloth_save_pretrained_torchao(
             token = token,
         )
 
-    if torchao_config is None and not push_to_hub:
+    if torchao_config is None and getattr(self._torchao_config, "_unsloth_builtin_recipe", False):
         # The PEFT path merges and writes the quantized copy to the "-torchao" sibling; the rest write in place.
+        # Hub saves get the printed flags only.
         save_directory = str(save_directory)
         _write_executorch_export_config(
             qat_scheme,
-            save_directory + "-torchao" if is_peft else save_directory,
+            None if push_to_hub else (save_directory + "-torchao" if is_peft else save_directory),
+            model_type = getattr(getattr(self, "config", None), "model_type", None),
         )
 
     for _ in range(3):

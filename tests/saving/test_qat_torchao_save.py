@@ -289,6 +289,7 @@ def test_phone_deployment_save_writes_executorch_config(monkeypatch, tmp_path, q
     model = _PeftStub() if peft else _Model()
     model._torchao_config = _int8_qat_config()
     model._torchao_config.qat_scheme = qat_scheme
+    model._torchao_config._unsloth_builtin_recipe = True
     save_mod.unsloth_save_pretrained_torchao(model, str(target), tokenizer = object())
     path = tmp_path / ("out-torchao" if peft else "out") / "executorch_export_config.yaml"
     stale = tmp_path / ("out" if peft else "out-torchao") / "executorch_export_config.yaml"
@@ -306,3 +307,31 @@ def test_phone_deployment_save_writes_executorch_config(monkeypatch, tmp_path, q
         "embedding_quantize": "8,0",
     }
     assert config["backend"]["xnnpack"]["enabled"] is True
+
+
+@pytest.mark.parametrize("case", ["custom_recipe", "gemma3", "hub"])
+def test_phone_deployment_config_only_where_it_applies(monkeypatch, tmp_path, capsys, case):
+    target = tmp_path / "out"
+
+    def fake_save(model, save_directory, **kw):
+        os.makedirs(save_directory, exist_ok = True)
+
+    monkeypatch.setattr(save_mod, "_unsloth_save_torchao_with_attached_config", fake_save)
+    model = _Model()
+    model._torchao_config = _int8_qat_config()
+    model._torchao_config.qat_scheme = "int8-int4"
+    if case != "custom_recipe":
+        # A recipe Unsloth built from the scheme name; a custom TorchAOConfig keeps only the label.
+        model._torchao_config._unsloth_builtin_recipe = True
+    if case == "gemma3":
+        model.config.model_type = "gemma3_text"
+    kwargs = dict(push_to_hub = True, token = "x") if case == "hub" else {}
+    save_mod.unsloth_save_pretrained_torchao(model, str(target), tokenizer = object(), **kwargs)
+    assert not (target / "executorch_export_config.yaml").exists()
+    printed = capsys.readouterr().out
+    if case == "custom_recipe":
+        assert "ExecuTorch" not in printed
+    elif case == "gemma3":
+        assert "optimum-executorch" in printed and "group size 32" in printed
+    else:
+        assert "group_size=32" in printed

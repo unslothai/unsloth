@@ -167,3 +167,26 @@ def test_lora_fake_quant_opt_out(monkeypatch):
     model = _prepare_model_for_qat(model, "int8-int4")
     q_proj = model.base_model.model.model.layers[0].self_attn.q_proj
     assert _is_fake_quantized(q_proj.lora_A["default"])
+
+
+def test_fake_quantized_embedding_subclass_pickles():
+    import io
+    import pickle
+
+    model = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4")
+    emb = model.get_input_embeddings()
+    assert _is_fake_quantized(emb)
+    restored = pickle.loads(pickle.dumps(emb))
+    assert type(restored) is type(emb)
+    buf = io.BytesIO()
+    torch.save(emb, buf)
+    buf.seek(0)
+    assert type(torch.load(buf, weights_only = False)) is type(emb)
+
+
+def test_builtin_recipe_flag_only_for_scheme_names():
+    model = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4")
+    assert model._torchao_config._unsloth_builtin_recipe is True
+    custom = _int8_embedding_config()
+    model = _prepare_model_for_qat(_tiny_gemma3(), custom)
+    assert not getattr(model._torchao_config, "_unsloth_builtin_recipe", False)

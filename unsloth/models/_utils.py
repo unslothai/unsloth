@@ -7610,11 +7610,16 @@ def _fake_quantized_embedding_class(original_cls):
         _copy_embedding_subclass_state(embedding, self)
         return embedding
 
-    cls = type(
-        f"FakeQuantized{original_cls.__name__}",
-        (original_cls, FakeQuantizedEmbedding),
-        {"to_embedding": to_embedding, "__module__": __name__},
+    name = "_FakeQuantized_" + re.sub(
+        r"\W", "_", f"{original_cls.__module__}.{original_cls.__qualname__}"
     )
+    cls = type(
+        name,
+        (original_cls, FakeQuantizedEmbedding),
+        {"to_embedding": to_embedding, "__module__": __name__, "__qualname__": name},
+    )
+    # A module attribute, so pickle (torch.save(model), multiprocessing) can find the class by name.
+    globals()[name] = cls
     _FAKE_QUANTIZED_EMBEDDING_CLASSES[original_cls] = cls
     return cls
 
@@ -8009,6 +8014,8 @@ def _prepare_model_for_qat(
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
         assert torchao_config is not None, f"TorchAOConfig was not set for {qat_scheme}"
+        # Built here from the scheme name, so save-time export hints may assume its exact recipe.
+        torchao_config._unsloth_builtin_recipe = True
         _exclude_lora_adapters_from_qat(model, torchao_config)
     else:
         torchao_config = qat_scheme
