@@ -41,7 +41,7 @@ def _stub_unsloth_save():
     if "unsloth.save" in sys.modules:
         return
     path = os.path.join(REPO, "unsloth", "save.py")
-    tree = ast.parse(open(path).read())
+    tree = ast.parse(open(path, encoding = "utf-8").read())
     fn = next(
         n
         for n in tree.body

@@ -1905,7 +1905,7 @@ def _read_checkpoint_weights(checkpoint):
     for name in _WEIGHT_INDEXES:
         path = os.path.join(checkpoint, name)
         if os.path.isfile(path):
-            with open(path) as f:
+            with open(path, encoding = "utf-8") as f:
                 files = sorted(set(json.load(f)["weight_map"].values()))
             state = {}
             for shard in files:

@@ -202,7 +202,7 @@ def _worker(rank, world, port, case, out):
         result.update(ok = True, worst_rel_grad = worst, compared = compared)
     except Exception as exc:
         result.update(ok = False, error = f"{type(exc).__name__}: {str(exc)[:300]}")
-    with open(f"{out}.{rank}", "w") as f:
+    with open(f"{out}.{rank}", "w", encoding = "utf-8") as f:
         json.dump(result, f)
     try:
         dist.destroy_process_group()
@@ -247,7 +247,7 @@ def _run(case, tmp_path):
     results = []
     for rank in range(2):
         try:
-            with open(f"{out}.{rank}") as f:
+            with open(f"{out}.{rank}", encoding = "utf-8") as f:
                 results.append(json.load(f))
         except FileNotFoundError:
             results.append({"rank": rank, "ok": False, "error": "no result (hung or killed)"})

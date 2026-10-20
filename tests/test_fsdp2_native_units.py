@@ -223,7 +223,7 @@ def _worker(rank, world, port, repo, loader, lora, out):
                 )
         if rank == 0:
             import json
-            with open(out, "w") as f:
+            with open(out, "w", encoding = "utf-8") as f:
                 json.dump(result, f)
     finally:
         dist.destroy_process_group()
@@ -236,7 +236,7 @@ def _run(repo, loader, lora, tmp_path):
     mp.spawn(_worker, args = (2, _free_port(), repo, loader, lora, out), nprocs = 2, join = True)
     import json
 
-    with open(out) as f:
+    with open(out, encoding = "utf-8") as f:
         return json.load(f)
 
 
@@ -446,7 +446,7 @@ def _mixed_worker(
             "direct_read_diff": abs(logits - ref_w),
         }
         if rank == 0:
-            with open(out, "w") as f:
+            with open(out, "w", encoding = "utf-8") as f:
                 json.dump(result, f)
     finally:
         dist.destroy_process_group()
@@ -459,7 +459,7 @@ def test_mixed_dtype_full_ft_keeps_norms_replicated(tmp_path):
 
     out = str(tmp_path / "mixed.json")
     mp.spawn(_mixed_worker, args = (2, _free_port(), out), nprocs = 2, join = True)
-    r = json.load(open(out))
+    r = json.load(open(out, encoding = "utf-8"))
     assert r["norms_plain"] and r["linears_sharded"], r
     assert r["replicated"] and r["replicated"] > 0, r
     assert r["splits"] == 1, r
@@ -482,7 +482,7 @@ def test_lora_frozen_fp32_norms_stay_replicated(tmp_path):
 
     out = str(tmp_path / "lora_mixed.json")
     mp.spawn(_mixed_worker, args = (2, _free_port(), out, True), nprocs = 2, join = True)
-    r = json.load(open(out))
+    r = json.load(open(out, encoding = "utf-8"))
     assert r["norms_plain"] and r["linears_sharded"], r
     assert r["splits"] == 0, r  # trainable adapters are all sharded
     _check_unsharded(r)
@@ -583,7 +583,7 @@ def _knobs_worker(rank, world, port, out):
             "n_units": len(units),
         }
         if rank == 0:
-            with open(out, "w") as f:
+            with open(out, "w", encoding = "utf-8") as f:
                 json.dump(result, f)
     finally:
         dist.destroy_process_group()
@@ -596,7 +596,7 @@ def test_perf_knobs_shard_frozen_prefetch(tmp_path):
 
     out = str(tmp_path / "knobs.json")
     mp.spawn(_knobs_worker, args = (2, _free_port(), out), nprocs = 2, join = True)
-    r = json.load(open(out))
+    r = json.load(open(out, encoding = "utf-8"))
     assert r["frozen_plain"] and r["lora_sharded"], r
     assert r["calls"] == list(range(r["n_units"])), r
     assert r["reshards"][0] is False and r["reshards"][-1] is True, r
@@ -659,7 +659,7 @@ def _skip_worker(rank, world, port, out, guard):
         except AttributeError as exc:
             error = str(exc)
         if rank == 0:
-            with open(out, "w") as f:
+            with open(out, "w", encoding = "utf-8") as f:
                 json.dump({"error": error}, f)
     finally:
         dist.destroy_process_group()
@@ -674,7 +674,7 @@ def test_accumulation_with_skipped_unit(guard, tmp_path):
 
     out = str(tmp_path / "skip.json")
     mp.spawn(_skip_worker, args = (2, _free_port(), out, guard), nprocs = 2, join = True)
-    r = json.load(open(out))
+    r = json.load(open(out, encoding = "utf-8"))
     if guard:
         assert r["error"] is None, r
     else:
@@ -692,7 +692,7 @@ def test_replicated_params_drift_without_averaging(tmp_path):
 
     out = str(tmp_path / "noavg.json")
     mp.spawn(_mixed_worker, args = (2, _free_port(), out, False, False), nprocs = 2, join = True)
-    r = json.load(open(out))
+    r = json.load(open(out, encoding = "utf-8"))
     assert r["moved"] and r["drift"] > 0.0, r
 
 
@@ -834,7 +834,7 @@ def _fit_worker(rank, world, port, out, units_mode):
             "worst": worst,
         }
         if rank == 0:
-            with open(out, "w") as f:
+            with open(out, "w", encoding = "utf-8") as f:
                 json.dump(result, f)
     finally:
         dist.destroy_process_group()
@@ -851,7 +851,7 @@ def test_fit_layout_through_shard_model(units_mode, tmp_path):
 
     out = str(tmp_path / "fit.json")
     mp.spawn(_fit_worker, args = (2, _free_port(), out, units_mode), nprocs = 2, join = True)
-    r = json.load(open(out))
+    r = json.load(open(out, encoding = "utf-8"))
     assert r["layout"]["fits"] and r["layout"]["replicate_frozen"], r
     assert r["layout"]["reshard_after_forward"] is False, r
     assert r["frozen_plain"] and r["lora_sharded"], r
@@ -892,7 +892,7 @@ def _gather_dtype_worker(rank, world, port, out):
             native.shard_model(m, native.FSDP2Config(fit_layout = fit))
             result[name] = str(m._unsloth_fsdp2_mp_policy.param_dtype)
         if rank == 0:
-            with open(out, "w") as f:
+            with open(out, "w", encoding = "utf-8") as f:
                 json.dump(result, f)
     finally:
         dist.destroy_process_group()
@@ -908,7 +908,7 @@ def test_fit_layout_gathers_float32_masters_as_stored(tmp_path):
 
     out = str(tmp_path / "gather.json")
     mp.spawn(_gather_dtype_worker, args = (2, _free_port(), out), nprocs = 2, join = True)
-    r = json.load(open(out))
+    r = json.load(open(out, encoding = "utf-8"))
     assert r == {"fit": "None", "sharded": "torch.bfloat16"}, r
 
 
@@ -980,7 +980,7 @@ def _recompute_cast_worker(rank, world, port, out, patched):
         except Exception as exc:  # CheckpointError: bf16 saved, float32 recomputed
             error = f"{type(exc).__name__}: {str(exc)[:200]}"
         if rank == 0:
-            with open(out, "w") as f:
+            with open(out, "w", encoding = "utf-8") as f:
                 json.dump({"error": error}, f)
     finally:
         dist.destroy_process_group()
@@ -997,7 +997,7 @@ def test_recompute_sees_the_cast_inputs(patched, tmp_path):
 
     out = str(tmp_path / f"recompute_{patched}.json")
     mp.spawn(_recompute_cast_worker, args = (2, _free_port(), out, patched), nprocs = 2, join = True)
-    r = json.load(open(out))
+    r = json.load(open(out, encoding = "utf-8"))
     if patched:
         assert r["error"] is None, r
     else:
