@@ -8228,6 +8228,26 @@ def _build_usage_chunk(
         compaction_input = last_usage.get("compaction_input_tokens") or 0
         compaction_output = last_usage.get("compaction_output_tokens") or 0
         context_tokens = uncached_input + cache_creation + cache_read + completion_tokens
+        # Top-level counts sum every sampling iteration (server tools add some); the last one is the context.
+        iterations = last_usage.get("iterations")
+        final = next(
+            (
+                it
+                for it in reversed(iterations if isinstance(iterations, list) else [])
+                if isinstance(it, dict) and it.get("type") in ("message", "fallback_message")
+            ),
+            None,
+        )
+        if final is not None:
+            context_tokens = sum(
+                int(final.get(field) or 0)
+                for field in (
+                    "input_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                    "output_tokens",
+                )
+            )
         prompt_tokens = uncached_input + cache_creation + cache_read + compaction_input
         completion_tokens += compaction_output
         if not (prompt_tokens or completion_tokens):

@@ -77,6 +77,32 @@ def test_build_usage_chunk_anthropic_includes_compaction_iteration_tokens():
     assert usage["context_tokens"] == 24_000
 
 
+def test_build_usage_chunk_anthropic_context_is_the_last_message_iteration():
+    line = _build_usage_chunk(
+        "chatcmpl-iterations",
+        "anthropic",
+        {
+            "input_tokens": 4_400,
+            "output_tokens": 400,
+            "iterations": [
+                {"type": "message", "input_tokens": 2_000, "output_tokens": 100},
+                {"type": "compaction", "input_tokens": 9_000, "output_tokens": 300},
+                {
+                    "type": "message",
+                    "input_tokens": 2_400,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 300,
+                },
+                {"type": "advisor_message", "input_tokens": 50_000, "output_tokens": 10},
+            ],
+        },
+    )
+    usage = json.loads(line[len("data: ") :])["usage"]
+    assert usage["prompt_tokens"] == 4_400
+    assert usage["completion_tokens"] == 400
+    assert usage["context_tokens"] == 2_700
+
+
 def test_build_usage_chunk_openai_shape():
     line = _build_usage_chunk(
         "chatcmpl-y",
