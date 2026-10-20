@@ -174,9 +174,27 @@ def _image_only_modules(mm, tower = None):
     return [m for m in mm.modules() if "CrossAttention" in type(m).__name__ and id(m) not in skip]
 
 
-def _given(signature, module, args, kwargs, names):
-    """Whether this forward call passes a non-None value for any of `names`."""
-    if any(kwargs.get(name) is not None for name in names):
+def _is_media_value(value):
+    """A tensor, or a non-empty list / tuple holding one (batched per-sample images)."""
+    if isinstance(value, torch.Tensor):
+        return True
+    if isinstance(value, (list, tuple)):
+        return any(_is_media_value(v) for v in value)
+    return False
+
+
+def _given(
+    signature,
+    module,
+    args,
+    kwargs,
+    names,
+    tensors_only = False,
+):
+    """Whether this forward call passes a non-None value (a tensor value with `tensors_only`) for any
+    of `names`."""
+    check = _is_media_value if tensors_only else (lambda v: v is not None)
+    if any(check(kwargs.get(name)) for name in names):
         return True
     if not args or signature is None:
         return False
@@ -184,7 +202,7 @@ def _given(signature, module, args, kwargs, names):
         bound = signature.bind_partial(module, *args, **kwargs).arguments
     except TypeError:
         return False
-    return any(bound.get(name) is not None for name in names)
+    return any(check(bound.get(name)) for name in names)
 
 
 def _agree_counts(
@@ -246,6 +264,7 @@ class _Modality:
         self.why = why
         self.ready = ready
         self.run_dummy = False
+        self.tensors_only = False
 
     def groups(self, signature):
         """The inputs, one group per encoder call: each input the host takes is encoded on its own
@@ -283,13 +302,20 @@ def _install_presence_agreement(
         for m, groups in plan
         for j, g in enumerate(groups)
     ]
+    pairs = [
+        (l, c)
+        for l, (ml, _, _) in enumerate(slots)
+        if ml.tensors_only
+        for c, (_, _, covered) in enumerate(slots)
+        if covered
+    ]
 
     def agree(module, args, kwargs):
         for m in modalities:
             m.run_dummy = False
         if _in_generate():
             return None
-        present = [_given(signature, host, args, kwargs, g) for _, g, _ in slots]
+        present = [_given(signature, host, args, kwargs, g, m.tensors_only) for m, g, _ in slots]
         unready = []
         for m, groups in plan:
             ok = True
@@ -301,29 +327,44 @@ def _install_presence_agreement(
                     except Exception:
                         ok = False
             unready.append(not ok)
-        counts, world = _agree_counts(present + unready, device_of(), mesh)
+        # A generic input arriving with a dummy-covered group on exactly the same ranks is that
+        # group's companion (image_grid_thw with pixel_values): the dummy stands in for both.
+        xor = [present[l] != present[c] for l, c in pairs]
+        counts, world = _agree_counts(present + unready + xor, device_of(), mesh)
         n = len(slots)
+        mismatched = []
         for i, (m, group, covered) in enumerate(slots):
             if not 0 < counts[i] < world:
                 continue  # every rank has it, or none does: the collectives already match
-            no_dummy = counts[n + modalities.index(m)] if covered else True
-            if no_dummy:
-                why = (
-                    m.why
-                    if covered or m.ready is None
-                    else (
-                        f"encodes `{group[0]}` in a call of its own, which Unsloth has no dummy for"
-                    )
-                )
-                which = "" if len(plan[modalities.index(m)][1]) == 1 else f" (input `{group[0]}`)"
-                raise RuntimeError(
-                    f"Unsloth: native FSDP2 got a micro-batch with {m.label} on {counts[i]} of {world} "
-                    f"ranks{which}. {type(host).__name__} {why or 'cannot build a dummy input here'}, "
-                    f"so the ranks without it would skip collectives the others run and the job would "
-                    f"hang. Give every rank's micro-batch {m.label} (or none), for example by grouping "
-                    "samples by modality into batches."
-                )
-            m.run_dummy = not present[i]
+            if covered and not counts[n + modalities.index(m)]:
+                m.run_dummy = not present[i]
+                continue
+            companion = any(
+                l == i
+                and 0 < counts[c] < world
+                and not counts[n + modalities.index(slots[c][0])]
+                and counts[n + len(plan) + k] == 0
+                for k, (l, c) in enumerate(pairs)
+            )
+            if not companion:
+                mismatched.append((i, m, group, covered))
+        if mismatched:
+            i, m, group, covered = mismatched[0]
+            why = (
+                m.why
+                if covered or m.ready is None
+                else (f"encodes `{group[0]}` in a call of its own, which Unsloth has no dummy for")
+            )
+            single = len(plan[modalities.index(m)][1]) == 1 and not m.tensors_only
+            which = "" if single else f" (input `{group[0]}`)"
+            names = sorted({g[0] for _, _, g, _ in mismatched})
+            raise RuntimeError(
+                f"Unsloth: native FSDP2 got a micro-batch with {m.label} on {counts[i]} of {world} "
+                f"ranks{which}. {type(host).__name__} {why or 'cannot build a dummy input here'}, "
+                f"so the ranks without it would skip collectives the others run and the job would "
+                f"hang. Mismatched inputs: {', '.join(names)}. Give every rank's micro-batch "
+                f"{m.label} (or none), for example by grouping samples by modality into batches."
+            )
         return None
 
     host.register_forward_pre_hook(agree, with_kwargs = True)
@@ -617,6 +658,169 @@ def _audio_plan(model, vision_host = None):
     return host, _Modality("audio", names, "runs an audio tower Unsloth has no dummy for")
 
 
+# Forward arguments that are text (or control) inputs, never a media encoder's: everything else a
+# multimodal model's forward takes is a candidate media input of the generic agreement.
+_TEXT_KWARGS = frozenset(
+    (
+        "input_ids",
+        "attention_mask",
+        "labels",
+        "position_ids",
+        "past_key_values",
+        "inputs_embeds",
+        "token_type_ids",
+        "cache_position",
+        "use_cache",
+        "logits_to_keep",
+        "num_logits_to_keep",
+        "num_items_in_batch",
+        "output_attentions",
+        "output_hidden_states",
+        "output_router_logits",
+        "return_dict",
+        "return_loss",
+        "head_mask",
+        "decoder_input_ids",
+        "decoder_attention_mask",
+        "decoder_inputs_embeds",
+        "decoder_head_mask",
+        "cross_attn_head_mask",
+        "encoder_outputs",
+        "encoder_hidden_states",
+        "encoder_attention_mask",
+        "task_ids",
+        "kwargs",
+        "args",
+    )
+)
+# Media inputs by name (the ones above in this module, Fuyu's image_patches, ...) or by shape of the
+# name, for models whose config carries no media sub-config.
+_MEDIA_KWARG_RE = re.compile(
+    r"(pixel|image|img|video|audio|speech|patch|wave|mel|spectrogram|_features$|_values$)"
+)
+_MEDIA_CONFIG_RE = re.compile(r"(vision|visual|image|video|audio|speech)\w*_config$")
+_BACKBONE_NAMES = ("language_model", "text_model", "text_decoder")
+
+
+def _forward_chain(model):
+    """The outermost module and the wrapped models its forward hands kwargs to (PeftModel ->
+    LoraModel -> the transformers model), outermost first."""
+    chain = [model]
+    for _ in range(6):
+        current = chain[-1]
+        inner = None
+        children = current.__dict__.get("_modules", {})
+        for attr in ("base_model", "model", "module", "_orig_mod"):
+            child = children.get(attr)  # registered children only (PeftModel forwards attributes)
+            if isinstance(child, torch.nn.Module) and all(child is not c for c in chain):
+                if attr == "model" and getattr(child, "config", None) is None:
+                    continue  # a decoder stack, not a wrapped model
+                inner = child
+                break
+        if inner is None:
+            break
+        chain.append(inner)
+    return chain
+
+
+def _media_candidates(chain):
+    """Sorted forward argument names, over the wrapper chain, that may carry a media input."""
+    names = set()
+    for module in chain:
+        signature = _forward_signature(module)
+        if signature is None:
+            continue
+        for name, param in signature.parameters.items():
+            if name == "self" or name in _TEXT_KWARGS:
+                continue
+            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                continue
+            names.add(name)
+    return sorted(names)
+
+
+def _is_multimodal(chain, candidates):
+    """A media sub-config (vision_config, audio_config, audio_encoder_config, ...) on the model's
+    config, or a media-looking input in its forward."""
+    for module in chain:
+        config = getattr(module, "config", None)
+        if config is None:
+            continue
+        for name in list(getattr(config, "__dict__", {})):
+            if _MEDIA_CONFIG_RE.search(name) and getattr(config, name, None) is not None:
+                return True
+    known = set(_VISION_INPUTS) | set(_AUDIO_INPUTS)
+    return any(n in known or _MEDIA_KWARG_RE.search(n) for n in candidates)
+
+
+def _outside_backbone(model, chain):
+    """Parameters outside the language model that are trainable or FSDP-managed (a DTensor): the
+    ones a media input alone reaches. The text backbone (`language_model` / `text_model`, else the
+    decoder) and the input / output embeddings do not count."""
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        try:
+            from torch.distributed._tensor import DTensor
+        except ImportError:
+            DTensor = None
+    inside = set()
+    backbones = [m for n, m in model.named_modules() if n.rsplit(".", 1)[-1] in _BACKBONE_NAMES]
+    if not backbones:
+        for module in chain:
+            get = getattr(module, "get_decoder", None)
+            try:
+                decoder = get() if callable(get) else None
+            except Exception:
+                decoder = None
+            if isinstance(decoder, torch.nn.Module) and decoder is not module:
+                backbones.append(decoder)
+                break
+    for module in chain:
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            try:
+                embedding = getattr(module, getter)()
+            except Exception:
+                embedding = None
+            if isinstance(embedding, torch.nn.Module):
+                backbones.append(embedding)
+    for module in backbones:
+        inside.update(id(p) for p in module.parameters())
+    return [
+        n
+        for n, p in model.named_parameters()
+        if id(p) not in inside
+        and (p.requires_grad or (DTensor is not None and isinstance(p, DTensor)))
+    ]
+
+
+def _generic_media_plan(model, named):
+    """The outermost forward agrees on every media input whenever a multimodal model has trainable
+    or FSDP-managed parameters outside its language model: one bit per candidate input (a fixed,
+    sorted list of forward argument names read now). Inputs a named modality covers keep its dummy;
+    the others have none, so a mismatch raises on every rank. Returns (host, leftover modality or
+    None), or None (text-only model, or nothing outside the backbone)."""
+    chain = _forward_chain(model)
+    candidates = _media_candidates(chain)
+    if not candidates or not _is_multimodal(chain, candidates):
+        return None
+    outside = _outside_backbone(model, chain)
+    if not outside:
+        return None
+    covered = {n for m in named for n in m.inputs}
+    leftover = tuple(n for n in candidates if n not in covered)
+    modality = None
+    if leftover:
+        modality = _Modality(
+            "media",
+            leftover,
+            f"runs parameters outside its language model for this input (e.g. {outside[0]}) and "
+            "Unsloth has no dummy for it",
+        )
+        modality.tensors_only = True
+    return model, modality
+
+
 def install_vision_dummy(model):
     """Per-modality presence agreement on a natively sharded `model` (vision and audio encoders that
     issue gradient / gather collectives). Every forward agrees over ranks, with one small all-reduce,
@@ -639,6 +843,16 @@ def install_vision_dummy(model):
             modalities = [plan[1]] if plan[1] is not None else []
             modalities += list(plan[3]) if len(plan) > 3 else []
             hosts.setdefault(id(plan[0]), (plan[0], []))[1].extend(modalities)
+    generic = (
+        None
+        if getattr(model, _INSTALLED, False)
+        else _generic_media_plan(model, [m for _, ms in hosts.values() for m in ms])
+    )
+    if generic is not None:
+        # One agreement, on the outermost forward (every rank runs it, and the media kwargs pass
+        # through it by name): the named modalities (and their dummies) plus every other media input.
+        named = [m for _, ms in hosts.values() for m in ms]
+        hosts = {id(generic[0]): (generic[0], named + ([generic[1]] if generic[1] else []))}
     if not hosts:
         return None
     from .fsdp2_save import model_mesh
