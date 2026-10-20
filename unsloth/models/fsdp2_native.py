@@ -431,7 +431,11 @@ def _units_sharing_params(
     return bad
 
 
-def _drop_units_sharing_params(model, units, ignored_params = ()):
+def _drop_units_sharing_params(
+    model,
+    units,
+    ignored_params = (),
+):
     """Drop sharing units into the root, repeated: the root may then share with another unit."""
     dropped = []
     while True:
@@ -1277,7 +1281,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         )
     config = config or FSDP2Config.from_env()
     ignored_params = config.ignored_params or ()
-    units = list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
+    units = (
+        list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
+    )
     extra_units = (
         _large_root_embeddings(model, units, config.split_large_root_embeddings)
         if config.units is None
