@@ -138,8 +138,10 @@ def _worker(rank, world, port, out, case):
     )
     import torch.distributed as dist
 
+    # Ranks 2 and 3 can wait at a world barrier while the other pair shards a model, which takes
+    # more than 30 s on a loaded CI runner; _run's deadline still catches a real hang.
     dist.init_process_group(
-        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 30)
+        "gloo", rank = rank, world_size = world, timeout = datetime.timedelta(seconds = 150)
     )
     try:
         native = _load_native()
@@ -228,5 +230,5 @@ def test_layout_agreement_is_per_mesh():
 
 def test_a_sub_mesh_shards_without_the_other_ranks():
     pytest.importorskip("peft")
-    results = _run("subgroup", timeout = 120)
+    results = _run("subgroup")
     assert [results[r]["sharded"] for r in range(WORLD)] == [True, True, False, False], results
