@@ -161,6 +161,10 @@ def test_http_link_creates_a_real_folder_and_sync_job(source, rag_home, client):
     from core.rag import store
     from storage import rag_db
 
+    if not rag_db.rag_available():
+        pytest.skip(
+            reason = "sqlite-vec cannot load here (a Python built without SQLite extension loading)"
+        )
     http, _ = client
     with closing(rag_db.get_connection()) as conn:
         store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
