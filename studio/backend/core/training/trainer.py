@@ -670,8 +670,7 @@ class UnslothTrainer:
                 from transformers import AutoProcessor
                 self.tokenizer = AutoProcessor.from_pretrained(
                     lookup_name,
-                    # Labels are encoded before the model is loaded. Match the
-                    # English/transcribe prefix used by FastModel below.
+                    # Labels are encoded before load_model: match FastModel's English/transcribe prefix.
                     language = "English",
                     task = "transcribe",
                     trust_remote_code = trust_remote_code,
