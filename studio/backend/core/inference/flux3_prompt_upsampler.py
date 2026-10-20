@@ -992,15 +992,17 @@ def _vulkan_device_args(
         listing = "".join(f"Vulkan{row['index']}\t{row['name']}\n" for row in rows)
         name, position = physical_card_name(ordinal)
         device = sd_cpp_device_named(binary, name, position = position, listing = listing)
-        if len(rows) == 1:
-            # Nothing to choose, but the sole Vulkan device must be the card the memory probe read: by exact name, as
-            # containment takes an `RX 7600 XT` for an `RX 7600`. One torch card has no other to confuse it with.
-            import torch
-            exact = bool(name) and _normalized_card_name(
-                _without_driver_tag(rows[0]["name"])
-            ) == _normalized_card_name(name)
-            return [] if device and (exact or torch.cuda.device_count() <= 1) else None
-        return ["--device", device] if device else None
+        if not device:
+            return None
+        # By exact model, as containment takes an `RX 7600 XT` for an `RX 7600`; a lone device beside one torch card
+        # has no other to be confused with.
+        import torch
+
+        matched = next((row["name"] for row in rows if f"Vulkan{row['index']}" == device), "")
+        exact = bool(name) and _normalized_card_name(_without_driver_tag(matched)) == _normalized_card_name(name)
+        if not exact and (len(rows) > 1 or torch.cuda.device_count() > 1):
+            return None
+        return [] if len(rows) == 1 else ["--device", device]
     except Exception:  # noqa: BLE001
         return None
 

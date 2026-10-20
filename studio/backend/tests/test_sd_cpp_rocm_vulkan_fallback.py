@@ -2767,6 +2767,15 @@ class TestSelectedCardIndexSpaces:
         assert sd_cpp_backend._physical_index_of(0, env = {"HIP_VISIBLE_DEVICES": ""}) == (None, True)
 
 
+    def test_repeated_mask_entries_follow_hip_and_rocr_rules(self, monkeypatch):
+        """clr keeps the first of a repeated HIP entry; ROCr ends the list at a repeat."""
+        from core.inference import sd_cpp_backend
+
+        monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
+        assert sd_cpp_backend._physical_index_of(1, env = {"HIP_VISIBLE_DEVICES": "0,0,1"}) == (1, True)
+        assert sd_cpp_backend._physical_index_of(0, env = {"ROCR_VISIBLE_DEVICES": "2,2,3"}) == (2, True)
+        assert sd_cpp_backend._physical_index_of(1, env = {"ROCR_VISIBLE_DEVICES": "2,2,3"}) == (None, True)
+
 def _recorded_proven(store: dict, klass: str = "rocm") -> bool:
     record = (store.get("sd_cpp_accelerator_runtime_failures") or {}).get(klass) or {}
     return bool(record.get("proven", False))

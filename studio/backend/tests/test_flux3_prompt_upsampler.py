@@ -2191,3 +2191,18 @@ def test_a_hip_mask_on_a_cuda_torch_never_steers_the_vulkan_pin(
 def test_a_negative_ordinal_is_never_pinned():
     assert pup._child_device_mask(-1) == {}
     assert pup._vulkan_device_args("b", -1) == []
+
+
+@pytest.mark.parametrize(
+    "row, pinned", [("AMD Radeon RX 7600 XT (RADV NAVI33)", False), ("AMD Radeon RX 7600 (RADV NAVI33)", True)]
+)
+def test_a_loose_name_match_beside_other_vulkan_devices_is_unknown(spawn_argv, monkeypatch, row, pinned):
+    # An iGPU beside the XT must not make the XT stand in for the RX 7600 the memory probe read.
+    import torch
+
+    state, _run = spawn_argv
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    state["names"] = ["AMD Radeon RX 7600"]
+    state["ordinal"] = 0
+    state["rows"] = [_VULKAN_ROWS[0], {"index": 1, "name": row}]
+    assert pup._vulkan_device_args("b", 0) == (["--device", "Vulkan1"] if pinned else None)

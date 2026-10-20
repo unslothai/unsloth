@@ -679,6 +679,11 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
         entries = _mask_entries(raw)
         if entries is None:
             return None, True
+        # clr keeps the first of a repeated HIP entry; ROCr stops at one (utils/hardware/amd.py).
+        if raw is hip:
+            entries = list(dict.fromkeys(entries))
+        elif len(set(entries)) < len(entries):
+            entries = entries[: next(i for i, e in enumerate(entries) if e in entries[:i])]
         if visible is None:
             visible = entries
         else:
