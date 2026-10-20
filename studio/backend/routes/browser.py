@@ -2127,6 +2127,8 @@ async def _run_in_pool(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+        # Drain late failures without cancelling queued work, which must release its slot.
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
 @router.post("/fetch")
