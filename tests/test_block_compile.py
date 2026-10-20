@@ -895,3 +895,51 @@ def test_selective_dequant_off_never_reads_a_packed_expert_stack(monkeypatch):
     M._experts_outside(layer)
     assert reads == []
     assert not getattr(layer.mlp.experts, "_unsloth_block_outside", False)
+
+
+def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
+    # Under ZeRO-3 a compiled region reads the empty parameter placeholder: never compile.
+    import weakref
+
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(M, "_torch_supported", lambda: True)
+
+    class FakeDsConfig:
+        def is_zero3(self):
+            return True
+
+    ds = types.ModuleType("transformers.integrations.deepspeed")
+    config = FakeDsConfig()
+    ds._hf_deepspeed_config_weak_ref = weakref.ref(config)
+    monkeypatch.setitem(sys.modules, ds.__name__, ds)
+
+    cls = _toy_class()
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([cls(), cls()])
+    assert M.patch_block_compile(model) == []  # ZeRO-3 live at load: nothing wrapped
+
+    # ZeRO-3 configured after the load (TrainingArguments built later): the forward checks.
+    ds._hf_deepspeed_config_weak_ref = None
+    assert M.patch_block_compile(model) == [cls.__name__]
+    x = torch.randn(2, 4, 8, requires_grad = True)
+    ds._hf_deepspeed_config_weak_ref = weakref.ref(config)
+    model.layers[0](x).sum().backward()
+    assert calls == []
+    # Parameters partitioned by deepspeed.zero.Init (ds_id) without a live HF config.
+    ds._hf_deepspeed_config_weak_ref = None
+    model.layers[1].proj.weight.ds_id = 0
+    model.layers[1](x).sum().backward()
+    assert calls == []
+    model.layers[0](x).sum().backward()
+    assert calls  # no ZeRO-3: compiled

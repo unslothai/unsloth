@@ -32,6 +32,24 @@ def _enabled():
     ) not in ("1", "partial")
 
 
+def _zero3_partitioned(layer = None):
+    # DeepSpeed ZeRO-3 gathers a partitioned weight when eager code reads it; inside a compiled
+    # region the parameter is the empty placeholder. Same check as zoo's
+    # zero3_partitioned_training (the live HF DeepSpeed config), plus a partitioned parameter.
+    module = sys.modules.get("transformers.integrations.deepspeed")
+    ref = getattr(module, "_hf_deepspeed_config_weak_ref", None)
+    config = ref() if ref is not None else None
+    try:
+        if config is not None and config.is_zero3():
+            return True
+    except Exception:
+        pass
+    if layer is not None:
+        for param in layer.parameters():
+            return hasattr(param, "ds_id")
+    return False
+
+
 def _forced_float32(module):
     # Zoo's float32-forced patches round to fp16 on purpose; Inductor drops those roundings.
     # Stamped per layer at load: the env var only describes the latest load.
@@ -671,6 +689,7 @@ def _wrap(cls, compile_options):
             or _has_cache(args, kwargs)
             or not _enabled()
             or _forced_float32(self)
+            or _zero3_partitioned(self)
         ):
             return original(self, hidden_states, *args, **kwargs)
         if not self.__dict__.get("_unsloth_block_moe_done", False):
@@ -829,7 +848,13 @@ def patch_block_compile(model):
             else:
                 layer.__dict__["_unsloth_forced_float32"] = bool(forced)
     forced = env if forced is None else forced
-    if forced or not _enabled() or not torch.cuda.is_available() or not _torch_supported():
+    if (
+        forced
+        or not _enabled()
+        or not torch.cuda.is_available()
+        or not _torch_supported()
+        or _zero3_partitioned()
+    ):
         return []
     classes = _decoder_layer_classes(model)
     if not classes:
