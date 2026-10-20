@@ -432,7 +432,9 @@ def test_a_rotated_file_at_another_group_is_refused():
             **rotation_metadata(group, ["vision_encoder.backbone.layers.9.mlp.fc1"]),
         }
 
-    check = lambda m, **k: sq.checkpoint_problem(PREQUANT_FORMAT_ROTATED, m, scheme = "int8", rotated = True, **k)  # noqa: E731
+    check = lambda m, **k: sq.checkpoint_problem(
+        PREQUANT_FORMAT_ROTATED, m, scheme = "int8", rotated = True, **k
+    )  # noqa: E731
     assert check(meta(sq.SEGMENTER_CONVROT_GROUP)) is None
     assert "ConvRot group 16" in check(meta(16))
     assert check(meta(16), convrot_group = 16) is None
