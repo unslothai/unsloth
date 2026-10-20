@@ -76,6 +76,24 @@ def _no_torch_apple_silicon(monkeypatch, *, mlx_on_disk: bool):
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
 
 
+def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypatch):
+    # A chat-only Windows / Linux install on a GPU host: "needs an NVIDIA or AMD GPU" is wrong.
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    assert hw.detect_hardware() == hw.DeviceType.CPU
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.current_chat_only_verdict() == ("no_torch", None)
+
+
+def test_a_torch_install_off_mac_without_an_accelerator_stays_no_gpu(monkeypatch):
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "no_gpu"
+
+
 def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatch):
     # GGUF-only by request: not a broken stack, so the UI must not send the user to
     # `unsloth studio update`, which keeps no-torch and cannot enable Train.

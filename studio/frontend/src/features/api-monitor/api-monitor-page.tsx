@@ -26,6 +26,10 @@ import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {
+  type ModelConfigHandoffRequest,
+  createModelConfigHandoffRequestId,
+} from "@/features/model-picker";
+import {
   lanApiUrls,
   loadLanAccess,
   useSettingsDialogStore,
@@ -50,8 +54,16 @@ import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
+import {
+  residentHasRunSettings,
+  residentHasSlotsSetting,
+  runSettingsRequest,
+  slotsSettingsRequest,
+} from "./slots-settings-request";
+import { useResidentRunTarget } from "./use-resident-run-target";
 import {
   type MonitorStatusFilter,
   filterEntries,
@@ -356,10 +368,13 @@ function PayloadBlock({
   loading?: boolean;
   tone?: "error";
 }): ReactElement {
-  const preview =
-    body.length > 12_000
-      ? `${body.slice(0, 11_997).replace(/[\uD800-\uDBFF]$/, "")}...`
-      : body;
+  const [showAll, setShowAll] = useState(false);
+  const preview = payloadPreview(body);
+  const canShowAll =
+    !truncated &&
+    preview !== body &&
+    body.length <= PAYLOAD_SHOW_ALL_MAX_CHARS;
+  const shown = showAll && canShowAll ? body : preview;
   return (
     <section className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -367,7 +382,18 @@ function PayloadBlock({
           {title}
         </h3>
         <div className="flex items-center gap-1">
-          {truncated || preview !== body ? (
+          {canShowAll ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="xs"
+              aria-pressed={showAll}
+              onClick={() => setShowAll((value) => !value)}
+              className="text-ui-10 text-muted-foreground"
+            >
+              {showAll ? "Show less" : "Show all"}
+            </Button>
+          ) : truncated || preview !== body ? (
             <span className="text-ui-10 text-muted-foreground">
               preview only
             </span>
@@ -385,7 +411,7 @@ function PayloadBlock({
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
         )}
       >
-        {loading && !body ? "Loading…" : preview || "–"}
+        {loading && !body ? "Loading…" : shown || "–"}
       </pre>
     </section>
   );
@@ -536,12 +562,14 @@ function RequestDetail({
       ) : null}
 
       <PayloadBlock
+        key={`${entry.id}:prompt`}
         title="Prompt"
         body={prompt}
         truncated={entry.prompt_truncated && detail?.prompt == null}
         loading={loading}
       />
       <PayloadBlock
+        key={`${entry.id}:reply`}
         title="Reply"
         body={reply}
         truncated={entry.reply_truncated && !detailIsCurrent}
@@ -587,6 +615,13 @@ export function ApiMonitorPage(): ReactElement {
   // block raw unloads while a picker load could finish afterward without a lifecycle guard.
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const [unloadError, setUnloadError] = useState<string | null>(null);
+  const resident = useResidentRunTarget(data?.active_model);
+  const [configRequest, setConfigRequest] =
+    useState<ModelConfigHandoffRequest | null>(null);
+  const canEditSettings =
+    !modelLoading && !unloading && residentHasRunSettings(resident);
+  const canEditSlots =
+    !modelLoading && !unloading && residentHasSlotsSetting(resident);
 
   useEffect(() => {
     const refreshRemoteBase = () => {
@@ -727,6 +762,15 @@ export function ApiMonitorPage(): ReactElement {
       : serverStatus === "ready"
         ? "Ready"
         : "No model loaded";
+  const slotsLabel = data?.queue
+    ? `${data.queue.active}/${data.queue.capacity} busy${
+        data.queue.queued > 0 ? ` · ${data.queue.queued} queued` : ""
+      }`
+    : "";
+  const slotsClassName = cn(
+    "text-ui-12 tabular-nums text-foreground",
+    (data?.queue?.queued ?? 0) > 0 && "text-amber-700 dark:text-amber-500",
+  );
 
   return (
     <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
@@ -746,6 +790,19 @@ export function ApiMonitorPage(): ReactElement {
             onSettled={refresh}
             onUnloadActive={unloadActiveModel}
             unloading={unloading}
+            configRequest={configRequest}
+            onConfigRequestAdopted={() => setConfigRequest(null)}
+            onOpenSettings={
+              canEditSettings
+                ? () =>
+                    setConfigRequest(
+                      runSettingsRequest(
+                        resident,
+                        createModelConfigHandoffRequestId(),
+                      ),
+                    )
+                : undefined
+            }
           />
           <ToolbarTooltip
             label={paused ? "Resume the live feed" : "Pause the live feed"}
@@ -893,15 +950,29 @@ export function ApiMonitorPage(): ReactElement {
             <span className="text-ui-10 font-medium uppercase tracking-wider text-muted-foreground">
               Slots
             </span>
-            <span
-              className={cn(
-                "text-ui-12 tabular-nums text-foreground",
-                data.queue.queued > 0 && "text-amber-700 dark:text-amber-500",
-              )}
-            >
-              {data.queue.active}/{data.queue.capacity} busy
-              {data.queue.queued > 0 ? ` · ${data.queue.queued} queued` : ""}
-            </span>
+            {canEditSlots ? (
+              <ToolbarTooltip label="Change parallel slots">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setConfigRequest(
+                      slotsSettingsRequest(
+                        resident,
+                        createModelConfigHandoffRequestId(),
+                      ),
+                    )
+                  }
+                  className={cn(
+                    slotsClassName,
+                    "w-fit cursor-pointer text-left underline decoration-dotted decoration-muted-foreground/60 underline-offset-4 hover:decoration-foreground",
+                  )}
+                >
+                  {slotsLabel}
+                </button>
+              </ToolbarTooltip>
+            ) : (
+              <span className={slotsClassName}>{slotsLabel}</span>
+            )}
           </div>
         ) : null}
         <div className="flex min-w-0 flex-1 flex-col">

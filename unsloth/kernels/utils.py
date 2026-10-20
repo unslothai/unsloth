@@ -327,9 +327,9 @@ def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
 
-# Set by models/fsdp2_qlora.prepare_fsdp2_qlora: only FSDP2-sharded 4-bit weights lose quant_state, so every
-# other LoRA forward keeps the single getattr(W, "quant_state") and never reaches _base_quant_state.
-_FSDP2_QLORA_PREPARED = False
+# Only an FSDP2 all-gathered 4-bit weight loses quant_state, and its packed bytes are (N, 1): the getters
+# gate _base_quant_state on that shape, per weight. Never on a process-global flag: dynamo guards on a
+# global it reads, so preparing one FSDP2 QLoRA model recompiled every compiled dense LoRA forward (#13880).
 
 
 def _base_quant_state(base_layer, W):
@@ -459,7 +459,7 @@ def get_lora_parameters(proj):
 
     W_quant = getattr(W, "quant_state", None)
     if W_quant is None:
-        if _FSDP2_QLORA_PREPARED:
+        if getattr(W, "ndim", 0) == 2 and W.shape[1] == 1:
             W_quant = _base_quant_state(base_layer, W)
         # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
         # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
@@ -520,7 +520,7 @@ def get_lora_parameters_bias(proj):
 
     W_quant = getattr(W, "quant_state", None)
     if W_quant is None:
-        if _FSDP2_QLORA_PREPARED:
+        if getattr(W, "ndim", 0) == 2 and W.shape[1] == 1:
             W_quant = _base_quant_state(base_layer, W)
         # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
         # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
@@ -1696,6 +1696,7 @@ def matmul_lora(
     B,
     s,
     out = None,
+    use_global_buffer = True,
 ):
     dtype = X.dtype
 
@@ -1722,7 +1723,7 @@ def matmul_lora(
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W

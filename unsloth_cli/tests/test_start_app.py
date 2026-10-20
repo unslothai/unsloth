@@ -863,6 +863,84 @@ def test_vscode_in_a_dev_container_prints_the_group(studio, monkeypatch, name):
     assert not (studio["home"] / ".config" / "Code").exists()
 
 
+@pytest.mark.parametrize(
+    "marker, engine", [("/.dockerenv", "docker"), ("/run/.containerenv", "podman")]
+)
+def test_vscode_in_a_plain_container_prints_the_group(studio, monkeypatch, marker, engine):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES"):
+        monkeypatch.delenv(var, raising = False)
+    real_exists = os.path.exists
+    monkeypatch.setattr(
+        start.os.path,
+        "exists",
+        lambda p: p == marker
+        or (p not in ("/.dockerenv", "/run/.containerenv") and real_exists(p)),
+    )
+    user_dir = studio["home"] / ".config" / "Code" / "User"
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" in result.output
+    assert f"{engine} run -p 8888:8888" in result.output and "ssh -L" not in result.output
+    assert not user_dir.exists()
+
+    # A dead file an earlier release wrote here is left alone and the group is still printed.
+    user_dir.mkdir(parents = True)
+    (user_dir / "chatLanguageModels.json").write_text("[]\n")
+    (user_dir / "chatLanguageModels.json.unsloth-backup").write_text("[]\n")
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" in result.output
+    assert (user_dir / "chatLanguageModels.json").read_text() == "[]\n"
+
+    # VS Code itself running in the container keeps the write.
+    (user_dir / "globalStorage").mkdir()
+    assert CliRunner().invoke(start.start_app, ["vscode"]).exit_code == 0
+    assert "Unsloth" in (user_dir / "chatLanguageModels.json").read_text()
+
+
+def test_vscode_in_a_container_writes_a_user_dir_it_never_targeted(studio, monkeypatch):
+    # A bind-mounted or fresh VS Code user dir holding only this file is VS Code's, not residue.
+    config = _vscode_config(studio, monkeypatch)
+    config.write_text("[]\n")
+    monkeypatch.setattr(start, "_container_engine", lambda: "docker")
+    for var in start._VSCODE_REMOTE_ENV:
+        monkeypatch.delenv(var, raising = False)
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" not in result.output
+    assert [g["name"] for g in json.loads(config.read_text())] == ["Unsloth"]
+
+    # Its own earlier write there does not make the dir look stale.
+    monkeypatch.setitem(MODEL, "id", "unsloth/Qwen3.5-4B-GGUF")
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+    assert result.exit_code == 0, result.output
+    assert "nothing was written" not in result.output
+    assert [m["id"] for m in json.loads(config.read_text())[0]["models"]] == [MODEL["id"]]
+
+
+@pytest.mark.parametrize("name", ["REMOTE_CONTAINERS", "CODESPACES"])
+def test_vscode_in_a_docker_backed_dev_container_keeps_the_forwarding_hint(
+    studio, monkeypatch, name
+):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start.sys, "platform", "linux")
+    for var in start._VSCODE_REMOTE_ENV:
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setenv(name, "true")
+    monkeypatch.setattr(start, "_container_engine", lambda: "docker")
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert "ssh -L 8888:127.0.0.1:8888" in result.output and "docker run" not in result.output
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "WSL paths are POSIX paths")
 def test_vscode_under_wsl_says_to_use_a_local_window(studio, monkeypatch, tmp_path):
     monkeypatch.setattr(start.sys, "platform", "linux")

@@ -102,7 +102,14 @@ def test_the_two_begin_load_signatures_declare_local_files_only_alike():
 # ── The route, driven onto the native engine ───────────────────────────────
 
 
-def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
+def _drive_the_images_load(
+    monkeypatch,
+    *,
+    user_initiated: bool,
+    engine_choice = None,
+    begin_load_error = None,
+    notes = None,
+):
     """Run ``POST /images/load``'s body with the NATIVE engine selected; return the mock engine.
 
     Autospec'd off the real class, so the call the route makes is bound against the real
@@ -116,6 +123,22 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
 
     engine = create_autospec(SdCppDiffusionBackend, instance = True)
     engine.begin_load.return_value = {"loaded": False, "repo_id": None}
+    if begin_load_error is not None:
+        engine.begin_load.side_effect = begin_load_error
+    if notes is not None:
+        # The before-load snapshot is taken before begin_load starts the worker.
+        monkeypatch.setattr(
+            router_module,
+            "loaded_state_of",
+            lambda e: notes.append(("snapshot", engine.begin_load.call_count, e is engine)),
+        )
+        monkeypatch.setattr(
+            router_module,
+            "note_engine_pick",
+            lambda pick, loaded_by = None, before = None: notes.append(
+                (pick, engine.begin_load.call_count, loaded_by is engine)
+            ),
+        )
     engine.preflight_base_access.return_value = None
 
     monkeypatch.setattr(router_module, "predict_engine", lambda *a, **k: ENGINE_SD_CPP)
@@ -142,6 +165,7 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
             DiffusionLoadRequest(
                 model_path = "unsloth/FLUX.1-dev-GGUF",
                 gguf_filename = "flux1-dev-Q4_K_M.gguf",
+                engine = engine_choice,
             ),
             "test-user",
             user_initiated = user_initiated,
@@ -159,6 +183,23 @@ def test_the_images_page_can_load_on_the_native_engine(monkeypatch, user_initiat
 
     engine.begin_load.assert_called_once()
     assert engine.begin_load.call_args.kwargs["local_files_only"] is (not user_initiated)
+
+
+def test_the_engine_pick_is_recorded_only_once_the_engine_accepted_the_load(monkeypatch):
+    # Recorded after begin_load, not at selection: a refusal past selection keeps the resident model's provenance.
+    notes = []
+    _drive_the_images_load(monkeypatch, user_initiated = True, engine_choice = "sd_cpp", notes = notes)
+    assert notes == [("snapshot", 0, True), ("sd_cpp", 1, True)]
+    notes.clear()
+    with pytest.raises(Exception):
+        _drive_the_images_load(
+            monkeypatch,
+            user_initiated = True,
+            engine_choice = "sd_cpp",
+            begin_load_error = RuntimeError("busy"),
+            notes = notes,
+        )
+    assert notes == [("snapshot", 0, True)]
 
 
 # ── The native loader honours it ───────────────────────────────────────────
