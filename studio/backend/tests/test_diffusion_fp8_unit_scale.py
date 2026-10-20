@@ -346,11 +346,17 @@ def test_compiled_graph_after_a_cached_rowwise_one_uses_the_dispatcher(tmp_path)
     for arm in ("base", "head"):
         proc = subprocess.run(
             [sys.executable, "-c", _COMPILE_CHILD, arm],
-            env = env, capture_output = True, text = True, timeout = 600, cwd = str(backend),
+            env = env,
+            capture_output = True,
+            text = True,
+            timeout = 600,
+            cwd = str(backend),
         )
         assert proc.returncode == 0, proc.stderr[-3000:]
         runs[arm] = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert runs["head"]["installed"] is True and runs["base"]["calls"] and runs["head"]["calls"], runs
+    assert (
+        runs["head"]["installed"] is True and runs["base"]["calls"] and runs["head"]["calls"]
+    ), runs
     assert runs["base"]["unit"] is False, runs
     # Without its own cache key the installed run reloads the base run's row-wise graph from the shared cache.
     assert runs["head"]["unit"] is True, runs
