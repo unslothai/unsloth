@@ -368,9 +368,7 @@ export function SettingsDialog() {
   } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // One scroller hosts every panel, so a new panel would open at the offset the last one was left at.
-  // panelTab, not activeTab: the old panel must not jump while the new one renders deferred. Runs
-  // before the search-jump effect below, which then scrolls from the top.
+  // Shared scroller: reset per tab. panelTab, not activeTab, so the old panel does not jump mid-defer.
   // biome-ignore lint/correctness/useExhaustiveDependencies: panelTab is the trigger, not an input.
   useLayoutEffect(() => {
     mainScrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
