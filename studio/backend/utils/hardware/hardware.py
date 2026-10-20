@@ -2063,6 +2063,12 @@ def _video_capability_verdict() -> dict:
                 "This PyTorch build exposes no Metal (MPS) device, so the video pipelines have "
                 "nowhere to run. Reinstall PyTorch with MPS support to enable video generation."
             )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Studio is running under Rosetta (x86_64 Python), which has no Metal (MPS) device for the "
+            "video pipelines. Re-run the installer from a native arm64 terminal to enable video generation."
+        )
     elif platform.system() == "Darwin":
         # Ahead of the torch/GPU branches below: neither installing torch nor adding a GPU enables video on an Intel Mac, so it must not be told to try either.
         reason = "macos_unsupported"
