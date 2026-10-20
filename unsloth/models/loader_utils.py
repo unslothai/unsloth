@@ -3716,7 +3716,11 @@ def refuse_gpt_oss_fused_4bit_float16(dtype):
     )
 
 
-def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit, config = None):
+def sync_unsloth_model_name_bnb_flags(
+    load_in_4bit,
+    load_in_8bit,
+    config = None,
+):
     """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb state (after get_model_name remap + check_and_disable). The per-load env is built from the pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss. `_load_in_4bit_` is kept off for a fused unquantized `config`."""
     name = os.environ.get("UNSLOTH_MODEL_NAME", "")
     if "gpt_oss" not in name.replace("-", "_"):

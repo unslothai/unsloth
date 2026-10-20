@@ -33,6 +33,7 @@ def gpt_oss_checkpoint_has_fused_experts(config):
 def sync_unsloth_model_name_bnb_flags(*args, **kwargs):
     return loader_utils.sync_unsloth_model_name_bnb_flags(*args, **kwargs)
 
+
 BNB_QC = {"quant_method": "bitsandbytes", "load_in_4bit": True}
 MXFP4_QC = {"quant_method": "mxfp4"}
 
@@ -58,8 +59,12 @@ def test_fused_checkpoint_detection():
     assert gpt_oss_checkpoint_has_fused_experts(None) is None
     assert gpt_oss_checkpoint_has_fused_experts(SimpleNamespace()) is True
     assert gpt_oss_checkpoint_has_fused_experts(SimpleNamespace(quantization_config = None)) is True
-    assert gpt_oss_checkpoint_has_fused_experts(SimpleNamespace(quantization_config = BNB_QC)) is False
-    assert gpt_oss_checkpoint_has_fused_experts(SimpleNamespace(quantization_config = MXFP4_QC)) is False
+    assert (
+        gpt_oss_checkpoint_has_fused_experts(SimpleNamespace(quantization_config = BNB_QC)) is False
+    )
+    assert (
+        gpt_oss_checkpoint_has_fused_experts(SimpleNamespace(quantization_config = MXFP4_QC)) is False
+    )
 
 
 @pytest.mark.parametrize(
