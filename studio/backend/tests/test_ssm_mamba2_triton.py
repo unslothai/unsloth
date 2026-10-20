@@ -190,7 +190,7 @@ def test_training_worker_routes_triton_loads_to_the_pure_wheel(monkeypatch):
     assert kwargs["wheel_url_builder"] is wheel_utils.mamba_ssm_pure_wheel_url
     assert kwargs["allow_source_build"] is False and kwargs["import_name"] == "mamba_ssm"
     # And the worker's load path asks the shared predicate before installing anything.
-    src = (_BACKEND / "core" / "training" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
     assert "triton_only = mamba2_runs_on_triton(kernels)" in src
 
 
@@ -341,7 +341,7 @@ def test_training_worker_reports_whether_the_pure_wheel_took(monkeypatch):
             )
             is result
         )
-    src = (_BACKEND / "core" / "training" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
     # On a False answer the run takes the CUDA route: causal-conv1d, then the CUDA mamba-ssm.
     start = src.index("triton_only = mamba2_runs_on_triton(kernels)")
     block = src[start : src.index("_ensure_flash_attn_for_long_context(", start)]
@@ -503,7 +503,7 @@ def test_training_cuda_route_replaces_the_extension_free_wheel(monkeypatch, tmp_
     assert seen["replacing"] is True and seen["extension"] == ssm_runtime.MAMBA_SSM_EXTENSION
     assert "mamba_ssm" not in sys.modules
     # And the CUDA-route call asks for the extension.
-    src = (_BACKEND / "core" / "training" / "worker.py").read_text()
+    src = (_BACKEND / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
     assert "extension = MAMBA_SSM_EXTENSION" in src
 
 
