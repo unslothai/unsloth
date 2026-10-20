@@ -49,12 +49,15 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
     {"vllm", "llama_cpp", "ollama", "openrouter", "kimi", "lemonade", "qwen", "qwencloud"}
 )
 
-# LM Studio 400s on {"type": "json_object"} ("must be 'json_schema' or 'text'"); an any-object schema is the same
-# constraint. A retry, not the default: some OpenAI-compatible APIs accept json_object but not json_schema.
-_JSON_OBJECT_AS_SCHEMA: dict[str, Any] = {
-    "type": "json_schema",
-    "json_schema": {"name": "response", "schema": {"type": "object"}},
-}
+
+# LM Studio 400s on {"type": "json_object"} ("must be 'json_schema' or 'text'"); a json_schema of the same object is the
+# same constraint. A retry, not the default: some OpenAI-compatible APIs accept json_object but not json_schema.
+def _json_object_as_schema(response_format: dict[str, Any]) -> dict[str, Any]:
+    """Keep the llama.cpp-style `schema` member; absent or empty means any object, as in grammar_constraint."""
+    schema = response_format.get("schema")
+    if not isinstance(schema, dict) or not schema:
+        schema = {"type": "object"}
+    return {"type": "json_schema", "json_schema": {"name": "response", "schema": schema}}
 
 
 def _json_object_refused_for_schema(
@@ -1176,7 +1179,7 @@ async def _stream_post_with_compat_fallbacks(
                 body = _with_max_completion_tokens(body)
                 logger.info("Upstream rejected max_tokens; retrying with max_completion_tokens")
             elif _json_object_refused_for_schema(400, error_text, body.get("response_format")):
-                body = {**body, "response_format": _JSON_OBJECT_AS_SCHEMA}
+                body = {**body, "response_format": _json_object_as_schema(body["response_format"])}
                 logger.info("Upstream refused json_object; retrying as json_schema")
             else:
                 yield response

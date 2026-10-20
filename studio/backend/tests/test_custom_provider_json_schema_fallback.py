@@ -79,6 +79,15 @@ def test_json_object_refusal_is_retried_once_as_json_schema():
     assert not any('"error"' in line for line in lines)
 
 
+def test_schema_retry_keeps_a_supplied_json_object_schema():
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"]}
+    bodies: list[dict] = []
+    _run(_schema_only_server(bodies), {"type": "json_object", "schema": schema})
+
+    assert [b["response_format"]["type"] for b in bodies] == ["json_object", "json_schema"]
+    assert bodies[1]["response_format"]["json_schema"]["schema"] == schema
+
+
 def test_servers_that_accept_json_object_are_sent_it_unchanged():
     bodies: list[dict] = []
 
