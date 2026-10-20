@@ -3662,7 +3662,7 @@ def _staged_checkpoint_copy_bytes(
     save_directory,
     state_dict = None,
 ):
-    """Bytes `_stage_reused_checkpoint` will COPY rather than link: zero unless the GGUF folder is on another filesystem from the reused checkpoint (no hard link) and symlinks are refused there (Windows without Developer Mode), when every weight file is copied. Never raises; unmeasurable is zero."""
+    """Bytes `_stage_reused_checkpoint` will COPY rather than link: every linked file's size when neither a hard link (another filesystem, FAT/exFAT) nor a symlink (Windows without Developer Mode) can be made from the reused checkpoint into the GGUF folder, else zero. Never raises; unmeasurable is zero."""
     import tempfile
     try:
         if not _gguf_reuses_loaded_checkpoint(model, state_dict):
@@ -3670,29 +3670,32 @@ def _staged_checkpoint_copy_bytes(
         source = os.path.abspath(
             str(getattr(model, "_unsloth_modelscope_snapshot", None) or model.config._name_or_path)
         )
+        linked = []
+        for root, _dirs, files in os.walk(source):
+            for name in files:
+                path = os.path.join(root, name)
+                size = os.path.getsize(path)
+                if _gguf_stage_links(name, size):
+                    linked.append((path, size))
+        if not linked:
+            return 0
         probe = os.path.abspath(_gguf_output_directory(save_directory))
         while not os.path.isdir(probe):
             parent = os.path.dirname(probe)
             if parent == probe:
                 return 0
             probe = parent
-        if os.stat(source).st_dev == os.stat(probe).st_dev:
-            return 0
-        scratch = tempfile.mkdtemp(prefix = ".unsloth_gguf_symlink_probe_", dir = probe)
+        scratch = tempfile.mkdtemp(prefix = ".unsloth_gguf_link_probe_", dir = probe)
         try:
-            os.symlink(source, os.path.join(scratch, "link"), target_is_directory = True)
-            return 0
-        except OSError:
-            pass
+            for link in (os.link, os.symlink):
+                try:
+                    link(linked[0][0], os.path.join(scratch, link.__name__))
+                    return 0
+                except OSError:
+                    continue
         finally:
             shutil.rmtree(scratch, ignore_errors = True)
-        total = 0
-        for root, _dirs, files in os.walk(source):
-            for name in files:
-                size = os.path.getsize(os.path.join(root, name))
-                if _gguf_stage_links(name, size):
-                    total += size
-        return total
+        return sum(size for _path, size in linked)
     except Exception:
         return 0
 
