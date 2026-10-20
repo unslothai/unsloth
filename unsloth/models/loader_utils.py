@@ -367,13 +367,37 @@ def set_deepspeed_moe_leaf_modules(model):
 
 def set_deepspeed_fused_lora_leaf_modules(layers):
     """Fused LoRA kernels read weights without calling their modules, so ZeRO-3's prefetch trace breaks unless layers are leaves."""
+    layers = list(layers)
+    for layer in layers:
+        # Remembered so the trainer can still mark it once a later TrainingArguments enables ZeRO-3.
+        layer._unsloth_fused_lora_layer = True
     if not deepspeed_zero3_requested():
         return 0
-    n = 0
     for layer in layers:
         layer._z3_leaf = True
-        n += 1
-    return n
+    return len(layers)
+
+
+def apply_deepspeed_zero3_model_setup(model):
+    """Redo the load-time ZeRO-3 setup from the trainer (before `deepspeed.initialize`): a model loaded
+    before TrainingArguments(deepspeed=...) saw no DeepSpeed config. Idempotent; a no-op unless ZeRO-3."""
+    if not hasattr(model, "modules") or not deepspeed_zero3_requested():
+        return
+    try:
+        set_deepspeed_moe_leaf_modules(model)
+        set_deepspeed_fused_lora_leaf_modules(
+            m for m in model.modules() if getattr(m, "_unsloth_fused_lora_layer", False)
+        )
+    except Exception as exc:
+        print(f"Unsloth: could not apply the DeepSpeed ZeRO-3 model setup ({exc}).")
+    if getattr(model, "_unsloth_vlm_gc_non_reentrant", False) and not getattr(
+        model, "_unsloth_warned_zero3_gc", False
+    ):
+        model._unsloth_warned_zero3_gc = True
+        print(
+            "Unsloth: this model was loaded without DeepSpeed detected, so it uses non-reentrant gradient "
+            "checkpointing, which can fail under ZeRO-3. Load the model under the DeepSpeed launch instead."
+        )
 
 
 UNSLOTH_DEVICE_MAP = "unsloth"

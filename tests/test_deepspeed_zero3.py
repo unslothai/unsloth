@@ -376,3 +376,51 @@ def test_only_layers_with_installed_fused_kernels_are_leaves():
     o = layer(o = llama.apply_lora_o)
     mlp = layer(mlp = True)
     assert llama._fused_lora_layers([plain, qkv, o, mlp], fused_mlp) == [qkv, o, mlp]
+
+
+def test_trainer_hook_redoes_zero3_setup_for_a_model_loaded_before_deepspeed(
+    no_ds_env, fake_set_z3_leaf, capsys
+):
+    """Loaded and PEFT-patched before TrainingArguments(deepspeed=...): the trainer hook marks the leaves."""
+    import weakref
+    import transformers.integrations.deepspeed as hf_ds
+
+    model = _tiny_qwen3_moe()
+    layers = list(model.model.layers)
+    # Load time: no DeepSpeed visible, nothing marked.
+    assert loader_utils.set_deepspeed_moe_leaf_modules(model) == ()
+    assert loader_utils.set_deepspeed_fused_lora_leaf_modules(layers[:1]) == 0
+    model._unsloth_vlm_gc_non_reentrant = True
+    assert not any(getattr(m, "_z3_leaf", False) for m in model.modules())
+
+    class _Cfg:
+        config = {"zero_optimization": {"stage": 3}}
+
+    cfg = _Cfg()
+    no_ds_env.setattr(hf_ds, "_hf_deepspeed_config_weak_ref", weakref.ref(cfg))
+    for _ in range(2):
+        loader_utils.apply_deepspeed_zero3_model_setup(model)
+        blocks = [m for m in model.modules() if type(m).__name__ == "Qwen3MoeSparseMoeBlock"]
+        assert len(blocks) == 2 and all(m._z3_leaf for m in blocks)
+        assert layers[0]._z3_leaf and not getattr(layers[1], "_z3_leaf", False)
+        assert sum(bool(getattr(m, "_z3_leaf", False)) for m in model.modules()) == 3
+    assert capsys.readouterr().out.count("non-reentrant gradient checkpointing") == 1
+
+
+def test_trainer_hook_is_a_no_op_without_zero3(no_ds_env, fake_set_z3_leaf):
+    model = _tiny_qwen3_moe()
+    loader_utils.set_deepspeed_fused_lora_leaf_modules(list(model.model.layers))
+    loader_utils.apply_deepspeed_zero3_model_setup(model)
+    loader_utils.apply_deepspeed_zero3_model_setup("not-a-model")
+    assert fake_set_z3_leaf == []
+    assert not any(getattr(m, "_z3_leaf", False) for m in model.modules())
+
+
+def test_rl_trainer_source_redoes_zero3_setup():
+    import inspect
+    from unsloth.models import rl
+
+    source = inspect.getsource(rl)
+    assert source.index("sync_deepspeed_mixed_precision(args)") < source.index(
+        "apply_deepspeed_zero3_model_setup(model)"
+    )

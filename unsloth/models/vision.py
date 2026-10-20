@@ -5090,6 +5090,10 @@ class FastBaseModel:
         _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
         if _force_non_reentrant:
             use_reentrant = False
+        # Read by apply_deepspeed_zero3_model_setup when ZeRO-3 only shows up at trainer time.
+        model._unsloth_vlm_gc_non_reentrant = bool(
+            use_gradient_checkpointing and not use_reentrant and not _force_non_reentrant
+        )
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
