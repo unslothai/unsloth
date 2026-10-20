@@ -4535,7 +4535,7 @@ class _UnslothFusedLinearHead:
 
     def __init__(self, function):
         self.function = function
-        # TRL 1.1 - 1.14's kernel takes no ``outputs`` and returns ``(log_probs, entropy)``.
+        # TRL 1.14's kernel (1.1 - 1.13 take no bias and are not wrapped) takes no ``outputs`` and returns ``(log_probs, entropy)``.
         try:
             forward = getattr(function, "forward", None)
             self._legacy = (
@@ -4637,8 +4637,11 @@ class _UnslothFusedLinearHead:
                 outputs,
             )
         # TRL > 1.16 scores over a per-row kept set (support_ids); the zoo kernel scores the full vocabulary.
+        # UNSLOTH_FUSED_LINEAR=0 set after the adapter was installed still restores TRL's kernel.
         if support_ids is not None:
             return self.function.apply(*args, support_ids)
+        if os.environ.get("UNSLOTH_FUSED_LINEAR", "1") == "0":
+            return self.function.apply(*args)
         try:
             from unsloth_zoo.fused_losses.fused_linear import fused_linear_logprobs
         except Exception:

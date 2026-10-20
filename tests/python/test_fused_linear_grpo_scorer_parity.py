@@ -9,6 +9,7 @@ the head dtype), the importance ratio of identical policies would start away fro
 
 from __future__ import annotations
 
+import inspect
 import os
 import textwrap
 import types
@@ -79,5 +80,14 @@ def test_no_grad_scores_equal_policy_scores(monkeypatch):
     if device == "cuda":
         # The legacy helper rounds logits to bf16 on CUDA, so it cannot stand in for the policy scorer.
         with torch.no_grad():
-            legacy = zoo_rl.chunked_hidden_states_selective_log_softmax(hidden, head, index, 4)
+            # A zoo with the fused public scorer needs fused_linear = False for its own chunked path.
+            kw = (
+                {"fused_linear": False}
+                if "fused_linear"
+                in inspect.signature(zoo_rl.chunked_hidden_states_selective_log_softmax).parameters
+                else {}
+            )
+            legacy = zoo_rl.chunked_hidden_states_selective_log_softmax(
+                hidden, head, index, 4, **kw
+            )
         assert (policy.detach() - legacy).abs().max().item() > 1e-3

@@ -144,6 +144,17 @@ def test_patch_is_idempotent(monkeypatch):
     assert first.function is _Kernel
 
 
+def test_adapter_honours_the_kill_switch_after_install(monkeypatch):
+    """UNSLOTH_FUSED_LINEAR=0 set after the adapter was installed (a notebook re-run) still serves TRL's kernel."""
+    hidden, weight, bias, targets = _inputs(4)
+    monkeypatch.setenv("UNSLOTH_FUSED_LINEAR", "0")
+    before = _Kernel._calls
+    got = unsloth_rl._UnslothFusedLinearHead(_Kernel).apply(
+        hidden, weight, bias, targets, 1.0, 4096, None, 1.0, ("log_probs",)
+    )
+    assert _Kernel._calls == before + 1 and got[0] == "trl"
+
+
 def test_patch_respects_the_kill_switch(monkeypatch):
     utils = types.ModuleType("trl.trainer.utils")
     utils._ChunkedLogProbFunction = _Kernel
@@ -218,7 +229,10 @@ def test_preference_selectors_respect_the_kill_switch(selector, monkeypatch):
 
 
 @pytest.mark.parametrize("selector", ["orpo_cpo", "dpo_kto"])
-@pytest.mark.parametrize("hook", ["forward_hook", "forward_pre_hook", "patched_forward"])
+@pytest.mark.parametrize(
+    "hook",
+    ["forward_hook", "forward_pre_hook", "patched_forward", "backward_hook", "backward_pre_hook"],
+)
 def test_preference_selectors_reject_hooked_heads(selector, hook):
     """The chunked / fused kernels read the head's weight directly, skipping whatever its forward would add."""
     model, trainer = _HeadLM(), _selector_trainer()
@@ -228,6 +242,15 @@ def test_preference_selectors_reject_hooked_heads(selector, hook):
         head.register_forward_hook(lambda module, args, output: output * 0.5)
     elif hook == "forward_pre_hook":
         head.register_forward_pre_hook(lambda module, args: (args[0] * 2,))
+    elif hook == "backward_hook":
+        # Reading the weight directly would skip it: the head's gradients would silently change.
+        head.register_full_backward_hook(
+            lambda module, grad_in, grad_out: tuple(None if g is None else g * 0.5 for g in grad_in)
+        )
+    elif hook == "backward_pre_hook":
+        head.register_full_backward_pre_hook(
+            lambda module, grad_out: tuple(g * 0.5 for g in grad_out)
+        )
     else:
         head.forward = lambda x: torch.nn.functional.linear(x, head.weight) * 0.5
     assert not _selected(selector, trainer, model)

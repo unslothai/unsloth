@@ -5164,12 +5164,15 @@ def _unsloth_pref_chunked_head(self, model):
     head = _unsloth_gkd_dense_head(unwrapped)
     if head is None:
         return None
-    # The kernel reads weight / bias directly: a hooked head (accelerate, forward hooks) is not F.linear(h, W, b).
+    # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+    # F.linear(h, W, b), and its backward hooks would never see the gradient.
     if (
         hasattr(head, "_hf_hook")
         or "forward" in vars(head)
         or head._forward_hooks
         or head._forward_pre_hooks
+        or head._backward_hooks
+        or getattr(head, "_backward_pre_hooks", None)
     ):
         return None
     # MiniCPM3 divides hidden states by logits_scaling before the head.
@@ -5476,12 +5479,15 @@ def _unsloth_dpo_chunked_head(
         head = _unsloth_gkd_dense_head(unwrapped)
         if head is None:
             reason = "output head is not a dense nn.Linear"
-        # The kernel reads weight / bias directly: a hooked head (accelerate, forward hooks) is not F.linear(h, W, b).
+        # The kernel reads weight / bias directly: a hooked head (accelerate, forward / backward hooks) is not
+        # F.linear(h, W, b), and its backward hooks would never see the gradient.
         elif (
             hasattr(head, "_hf_hook")
             or "forward" in vars(head)
             or head._forward_hooks
             or head._forward_pre_hooks
+            or head._backward_hooks
+            or getattr(head, "_backward_pre_hooks", None)
         ):
             reason = "output head has hooks or a patched forward"
     if reason is None:
