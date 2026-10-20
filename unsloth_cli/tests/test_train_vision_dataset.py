@@ -288,6 +288,46 @@ def test_a_native_audio_model_is_told_its_dataset_has_audio(tmp_path, monkeypatc
     assert trainer.load_kwargs["is_dataset_audio"] is True
 
 
+@pytest.mark.parametrize("name", ["clip.amr", "clip.aiff", "clip.caf", "clip.bin"])
+def test_audio_paths_with_other_suffixes_and_path_dicts_count_as_audio(tmp_path, monkeypatch, name):
+    clip = tmp_path / name
+    clip.write_bytes(b"#!AMR\n\x3c\x00")
+    rows = [{"audio": {"bytes": None, "path": str(clip)}, "text": "hello"}]
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        _local_model(tmp_path, _TEXT_CONFIG, _AUDIO_VLM_TOKENIZER),
+        "--local-dataset",
+        _local_parquet(tmp_path, rows),
+    )
+
+    assert trainer.load_kwargs["is_dataset_audio"] is True
+
+
+def test_every_local_dataset_path_is_checked_for_images(tmp_path, monkeypatch):
+    from datasets import Dataset
+
+    text = tmp_path / "text.parquet"
+    Dataset.from_list(_TEXT_ROWS).to_parquet(str(text))
+    images = tmp_path / "images.parquet"
+    Dataset.from_list(_IMAGE_ROWS).to_parquet(str(images))
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        _local_model(tmp_path, _VISION_CONFIG, _TEXT_TOKENIZER),
+        "--local-dataset",
+        str(text),
+        "--local-dataset",
+        str(images),
+    )
+
+    assert trainer.load_kwargs["is_dataset_image"] is True
+
+
 def test_a_saved_to_disk_image_dataset_trains_the_vision_model(tmp_path, monkeypatch):
     from datasets import Dataset
     from PIL import Image

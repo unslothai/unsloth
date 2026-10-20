@@ -83,6 +83,8 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
 
 # Enough rows to see past a leading empty or broken media value.
 _MEDIA_SNIFF_ROWS = 16
+# Containers the PyAV audio decoder reads beyond the detector's extension list.
+_MORE_AUDIO_EXTENSIONS = (".amr", ".aif", ".aiff", ".aifc", ".caf")
 
 
 def _dataset_modalities(
@@ -106,31 +108,38 @@ def _dataset_modalities(
         and not is_vision_model(model_name, hf_token = hf_token)
     ):
         return False, False
+
+    def preview(path):
+        if not os.path.isabs(path) and not os.path.exists(path):
+            path = resolve_dataset_path(path)
+        if (Path(path) / "dataset_info.json").exists() or (Path(path) / "state.json").exists():
+            from datasets import DatasetDict, load_from_disk
+
+            dataset = load_from_disk(str(path))
+            if isinstance(dataset, DatasetDict):
+                dataset = dataset["train"] if "train" in dataset else next(iter(dataset.values()))
+            return dataset
+        dataset, _ = _load_local_preview_slice(
+            dataset_path = Path(path), train_split = "train", preview_size = _MEDIA_SNIFF_ROWS
+        )
+        return dataset
+
+    image = audio = False
     try:
         ensure_audio_decoding()
         if cfg.data.local_dataset:
-            path = cfg.data.local_dataset[0]
-            if not os.path.isabs(path) and not os.path.exists(path):
-                path = resolve_dataset_path(path)
-            if (Path(path) / "dataset_info.json").exists() or (Path(path) / "state.json").exists():
-                from datasets import DatasetDict, load_from_disk
-                dataset = load_from_disk(str(path))
-                if isinstance(dataset, DatasetDict):
-                    dataset = (
-                        dataset["train"] if "train" in dataset else next(iter(dataset.values()))
-                    )
-            else:
-                dataset, _ = _load_local_preview_slice(
-                    dataset_path = Path(path), train_split = "train", preview_size = _MEDIA_SNIFF_ROWS
-                )
+            previews = [preview(path) for path in cfg.data.local_dataset]
         else:
-            dataset = load_dataset_cache_safe(cfg.data.dataset, split = "train", token = hf_token)
-        detected = detect_multimodal_dataset(dataset)
-        image, audio = _media_columns_hold_media(dataset, detected)
+            previews = [load_dataset_cache_safe(cfg.data.dataset, split = "train", token = hf_token)]
+        for dataset in previews:
+            detected = detect_multimodal_dataset(dataset)
+            has_image, has_audio = _media_columns_hold_media(dataset, detected)
+            image = image or (detected["is_image"] and has_image)
+            audio = audio or (detected["is_audio"] and has_audio)
     except Exception as exc:  # noqa: BLE001
         typer.echo(f"Warning: could not check the dataset for images or audio: {exc}", err = True)
         return False, False
-    return detected["is_image"] and image, detected["is_audio"] and audio
+    return image, audio
 
 
 def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
@@ -172,11 +181,11 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
 
     def reference(value, kind):
         if isinstance(value, dict):
-            value = value.get("bytes")
+            value = value.get("bytes") or value.get("path")
         if isinstance(value, (bytes, bytearray)):
             return sniff(bytes(value[:12]), kind)
         path = bare(value)
-        if not path or Path(path).suffix:
+        if not path:
             return False
         if path.lower().startswith(("http://", "https://")):
             from urllib.request import Request, urlopen
@@ -202,7 +211,7 @@ def _media_columns_hold_media(dataset, detected) -> tuple[bool, bool]:
     def audio(column):
         return isinstance(features.get(column), Audio) or any(
             _is_audio_value(value)
-            or bare(value).lower().endswith(_AUDIO_EXTENSIONS)
+            or bare(value).lower().endswith(_AUDIO_EXTENSIONS + _MORE_AUDIO_EXTENSIONS)
             or reference(value, "audio")
             for value in values(column)
         )
