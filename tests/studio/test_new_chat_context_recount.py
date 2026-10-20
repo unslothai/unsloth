@@ -3081,6 +3081,9 @@ _LIVE_CHANGES = {
     "delete_a_middle_turn": "(live) => [live[0], live[1], live[4], live[5]]",
     "delete_every_reply": "(live) => live.slice(0, 1)",
     "delete_everything": "(live) => []",
+    "delete_every_reply_to_an_image_only_prompt": (
+        "(live) => [{ ...live[0], content: [{ type: 'image', image: 'data:image/png;base64,AAAA' }] }]"
+    ),
 }
 
 
@@ -3132,6 +3135,16 @@ _LIVE_CHANGES = {
         ("delete_everything", "", {"counts": 1, "total": 12, "estimated": None}),
         (
             "delete_everything",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": None, "estimated": None},
+        ),
+        (
+            "delete_every_reply_to_an_image_only_prompt",
+            "",
+            {"counts": 0, "total": None, "estimated": None},
+        ),
+        (
+            "delete_every_reply_to_an_image_only_prompt",
             "external::openai::gpt-x",
             {"counts": 0, "total": None, "estimated": None},
         ),

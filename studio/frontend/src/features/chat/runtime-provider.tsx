@@ -4143,9 +4143,8 @@ function ThreadContextUsageRecount({
       void refreshContextUsage({ threadId: activeThreadId });
       return;
     }
-    const next =
-      usage ?? (priced.ran && shown != null && !shown.estimated ? null : estimateBranch(branch));
-    if (!next) return;
+    if (usage == null && priced.ran && shown != null && !shown.estimated) return;
+    const next = usage ?? estimateBranch(branch);
     store.setThreadContextUsage(activeThreadId, next);
     store.setContextUsage(next);
   }, [
