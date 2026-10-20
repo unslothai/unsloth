@@ -811,13 +811,19 @@ def test_variant_table():
     sam31, sam3 = seg.SEGMENTER_VARIANTS["sam3.1"], seg.SEGMENTER_VARIANTS["sam3"]
     assert sam31.repo == seg.SAM31_REPO and re.fullmatch(r"[\w.-]+/[\w.-]+", sam31.repo)
     assert sam31.gated is False and sam3.gated is True
-    assert sam3.repo == "facebook/sam3" and sam3.license_url == "https://huggingface.co/facebook/sam3"
+    assert (
+        sam3.repo == "facebook/sam3" and sam3.license_url == "https://huggingface.co/facebook/sam3"
+    )
     # bf16 SAM 3.1 is half of the fp32 facebook/sam3 download.
     assert 1_600_000_000 < sam31.size_bytes < 1_800_000_000 < 3_400_000_000 < sam3.size_bytes
     for variant in seg.SEGMENTER_VARIANTS.values():
         assert variant.id in seg.SEGMENTER_SPECS
         spec = seg.SEGMENTER_SPECS[variant.id]
-        assert (spec.repo, spec.files, spec.revision) == (variant.repo, variant.files, variant.revision)
+        assert (spec.repo, spec.files, spec.revision) == (
+            variant.repo,
+            variant.files,
+            variant.revision,
+        )
         assert "model.safetensors" in variant.files and "sam3.pt" not in variant.files
         assert not any(name.endswith(".pt") for name in variant.files)
         assert variant.license_url.startswith(f"https://huggingface.co/{variant.repo}")
@@ -830,7 +836,9 @@ def test_pinned_revision_constants():
     assert _SHA.fullmatch(seg.SAM31_REVISION)
     for variant in seg.SEGMENTER_VARIANTS.values():
         assert variant.revision == "main" or _SHA.fullmatch(variant.revision)
-        assert seg.pinned_revision(variant) == (None if variant.revision == "main" else variant.revision)
+        assert seg.pinned_revision(variant) == (
+            None if variant.revision == "main" else variant.revision
+        )
     assert seg.pinned_revision(seg.SEGMENTER_VARIANTS["sam3"]) == seg.SAM3_REVISION
 
 
@@ -848,7 +856,9 @@ def test_variant_env_choice(monkeypatch):
 
 
 def _cached(*ids):
-    return lambda model_id = seg.DEFAULT_VARIANT, **_k: f"/cache/{model_id}" if model_id in ids else None
+    return (
+        lambda model_id = seg.DEFAULT_VARIANT, **_k: f"/cache/{model_id}" if model_id in ids else None
+    )
 
 
 def test_active_variant_prefers_the_default_and_keeps_an_existing_sam3(monkeypatch):
@@ -873,12 +883,22 @@ def test_status_reports_gated_and_ungated_variants(monkeypatch):
     monkeypatch.setattr(seg, "_cached_snapshot", _cached())
     monkeypatch.setenv(seg.ENV_VARIANT, "sam3")
     body = seg.status()
-    assert (body["variant"], body["label"], body["repo"], body["gated"]) == ("sam3", "SAM 3", "facebook/sam3", True)
+    assert (body["variant"], body["label"], body["repo"], body["gated"]) == (
+        "sam3",
+        "SAM 3",
+        "facebook/sam3",
+        True,
+    )
     assert body["revision"] == seg.SAM3_REVISION and body["size_bytes"] == seg.SAM3_SIZE_BYTES
     assert body["downloaded"] is False
     monkeypatch.setenv(seg.ENV_VARIANT, "sam3.1")
     body = seg.status()
-    assert (body["variant"], body["label"], body["repo"], body["gated"]) == ("sam3.1", "SAM 3.1", seg.SAM31_REPO, False)
+    assert (body["variant"], body["label"], body["repo"], body["gated"]) == (
+        "sam3.1",
+        "SAM 3.1",
+        seg.SAM31_REPO,
+        False,
+    )
     assert body["size_bytes"] == seg.SAM31_SIZE_BYTES
     monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3.1"))
     assert seg.status()["downloaded"] is True
@@ -903,7 +923,11 @@ def test_override_still_wins_over_the_variant(tmp_path, monkeypatch):
     monkeypatch.delenv(seg.ENV_VARIANT)
     monkeypatch.setattr(seg, "_cached_snapshot", lambda *a, **k: pytest.fail("cache read"))
     body = seg.status()
-    assert body["variant"] == seg.DEFAULT_VARIANT and body["gated"] is False and body["downloaded"] is True
+    assert (
+        body["variant"] == seg.DEFAULT_VARIANT
+        and body["gated"] is False
+        and body["downloaded"] is True
+    )
     assert seg.active_variant().id == seg.DEFAULT_VARIANT
 
 
