@@ -113,5 +113,7 @@ def test_zero3_partitioned_model_scores_under_no_grad(no_launcher):
 def test_deepspeed_accelerator_state_scores_under_no_grad(no_launcher):
     state = pytest.importorskip("accelerate.state")
     no_launcher.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
-    no_launcher.setattr(state.AcceleratorState, "_shared_state", {"distributed_type": "DistributedType.DEEPSPEED"})
+    no_launcher.setattr(
+        state.AcceleratorState, "_shared_state", {"distributed_type": "DistributedType.DEEPSPEED"}
+    )
     assert _mode_inside(torch.nn.Linear(2, 2)) == (False, False)
