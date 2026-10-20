@@ -7610,18 +7610,30 @@ def _fake_quantized_embedding_class(original_cls):
         _copy_embedding_subclass_state(embedding, self)
         return embedding
 
+    def __reduce_ex__(self, protocol):
+        # Pickle by the original class, so a fresh process (torch.load, spawn workers) rebuilds this one.
+        return (_rebuild_fake_quantized_embedding, (original_cls,), self.__dict__.copy())
+
     name = "_FakeQuantized_" + re.sub(
         r"\W", "_", f"{original_cls.__module__}.{original_cls.__qualname__}"
     )
     cls = type(
         name,
         (original_cls, FakeQuantizedEmbedding),
-        {"to_embedding": to_embedding, "__module__": __name__, "__qualname__": name},
+        {
+            "to_embedding": to_embedding,
+            "__reduce_ex__": __reduce_ex__,
+            "__module__": __name__,
+            "__qualname__": name,
+        },
     )
-    # A module attribute, so pickle (torch.save(model), multiprocessing) can find the class by name.
-    globals()[name] = cls
     _FAKE_QUANTIZED_EMBEDDING_CLASSES[original_cls] = cls
     return cls
+
+
+def _rebuild_fake_quantized_embedding(original_cls):
+    cls = _fake_quantized_embedding_class(original_cls)
+    return cls.__new__(cls)
 
 
 def _restore_fake_quantized_embedding_subclasses(

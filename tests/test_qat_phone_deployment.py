@@ -184,6 +184,40 @@ def test_fake_quantized_embedding_subclass_pickles():
     assert type(torch.load(buf, weights_only = False)) is type(emb)
 
 
+def test_fake_quantized_embedding_unpickles_in_fresh_process(tmp_path):
+    import os
+    import pickle
+    import subprocess
+    import sys
+
+    model = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4")
+    emb = model.get_input_embeddings()
+    path = tmp_path / "emb.pkl"
+    path.write_bytes(pickle.dumps(emb))
+    ids = torch.tensor([[1, 2, 3]])
+    expected = emb(ids)
+    code = (
+        "import pickle, sys, torch\n"
+        f"emb = pickle.loads(open({str(path)!r}, 'rb').read())\n"
+        "print(type(emb).__name__, float(emb.embed_scale))\n"
+        "torch.save(emb(torch.tensor([[1, 2, 3]])), sys.argv[1])\n"
+    )
+    out_path = tmp_path / "out.pt"
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([os.getcwd(), env.get("PYTHONPATH", "")])
+    res = subprocess.run(
+        [sys.executable, "-c", code, str(out_path)],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+        env = env,
+    )
+    assert res.returncode == 0, res.stderr[-3000:]
+    assert res.stdout.split()[-2] == type(emb).__name__
+    assert float(res.stdout.split()[-1]) == float(emb.embed_scale)
+    assert torch.equal(torch.load(out_path), expected)
+
+
 def test_builtin_recipe_flag_only_for_scheme_names():
     model = _prepare_model_for_qat(_tiny_gemma3(), "int8-int4")
     assert model._torchao_config._unsloth_builtin_recipe is True
