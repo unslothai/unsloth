@@ -2996,10 +2996,10 @@ def _macos_pairing_gap(monkeypatch, installed_llama_tag: str) -> list[str]:
     return listed
 
 
-def _plan_on_macos():
+def _plan_on_macos(published_repo: str = "unslothai/whisper.cpp"):
     return M._release_plan_for_host(
         _host("macos", "arm64", macos_version = (15, 7)),
-        published_repo = "unslothai/whisper.cpp",
+        published_repo = published_repo,
         published_release_tag = None,
         whisper_tag = "latest",
         requested_backend = "metal",
@@ -3054,3 +3054,12 @@ def test_macos_still_walks_back_when_the_tags_pair_but_selection_failed_otherwis
         _plan_on_macos()
     assert not isinstance(raised.value, M.LlamaPairingGapError)
     assert listed == ["unslothai/whisper.cpp"]
+
+
+def test_a_custom_release_repo_keeps_the_walk_when_llama_is_ahead(monkeypatch):
+    # Only our releases are published in llama.cpp build order; another repo may hold an older
+    # release that pairs with a newer llama.cpp.
+    listed = _macos_pairing_gap(monkeypatch, "b10080-mix-0000000")
+    with pytest.raises(M.LlamaPairingGapError):
+        _plan_on_macos("someone/whisper.cpp")
+    assert listed == ["someone/whisper.cpp"]

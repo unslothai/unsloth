@@ -1749,6 +1749,8 @@ def _release_plan_for_host(
     if (
         not requested_specific_tag
         and isinstance(first_error, LlamaPairingGapError)
+        # Our releases track llama.cpp builds in order; a custom repo's need not.
+        and published_repo == DEFAULT_PUBLISHED_REPO
         and first_bundle is not None
         and _installed_llama_is_ahead(first_bundle.manifest, host)
     ):
