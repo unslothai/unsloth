@@ -390,8 +390,50 @@ def find_shard_units(model) -> list:
     # Module (pre-)order = forward order for the usual layouts; the fallback units are re-sorted in.
     order = {id(m): i for i, m in enumerate(model.modules())}
     units.sort(key = lambda m: order.get(id(m), 0))
+    units, dropped = _drop_units_sharing_params(model, units)
+    if dropped:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(dropped)} blocks ({', '.join(sorted(set(dropped)))}) in the "
+            "root unit: they share parameters with other blocks or modules (Zamba2's shared transformer), "
+            "which one FSDP2 unit each would silently untie."
+        )
     check_shard_units(model, units)
     return units
+
+
+def _param_owners(model):
+    """id(parameter) -> ids of every module holding it directly (more than one = tied / shared)."""
+    owners = {}
+    for module in model.modules():
+        for p in module.parameters(recurse = False):
+            owners.setdefault(id(p), set()).add(id(module))
+    return owners
+
+
+def _units_sharing_params(model, units):
+    """Indices of units holding a parameter that a module outside the unit also holds. fully_shard(unit)
+    replaces the parameter only on the unit's own modules: the other holder keeps the original, which the
+    next fully_shard (another unit, or the root) shards again as an independent copy, so the tie is gone."""
+    owners = _param_owners(model)
+    bad = []
+    for i, unit in enumerate(units):
+        mine = {id(m) for m in unit.modules()}
+        if any(owners.get(id(p), set()) - mine for p in unit.parameters()):
+            bad.append(i)
+    return bad
+
+
+def _drop_units_sharing_params(model, units):
+    """Units minus those sharing parameters outside themselves (their modules then belong to the root,
+    whose one unit holds every copy of a shared parameter). Repeated: a dropped unit's parameters belong to
+    the root, which may share them with another unit."""
+    dropped = []
+    while True:
+        bad = set(_units_sharing_params(model, units))
+        if not bad:
+            return units, dropped
+        dropped += [type(units[i]).__name__ for i in bad]
+        units = [u for i, u in enumerate(units) if i not in bad]
 
 
 def _block_compiled(module):
@@ -418,6 +460,14 @@ def check_shard_units(model, units):
         for child in module.children():
             parents.setdefault(id(child), module)
     unit_ids = {id(u) for u in units}
+    shared = _units_sharing_params(model, units)
+    if shared:
+        unit = units[shared[0]]
+        raise RuntimeError(
+            f"Unsloth: native FSDP2 shard unit `{names.get(id(unit), type(unit).__name__)}` holds parameters "
+            "that another unit or module also holds (tied / shared weights). One FSDP2 unit per holder would "
+            "silently untie them: keep every holder of a shared parameter in one unit (or the root)."
+        )
     for unit in units:
         if unit is model:
             raise RuntimeError(
