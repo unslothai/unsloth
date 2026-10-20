@@ -231,7 +231,8 @@ def test_eval_mode_skips_dropout_like_peft(monkeypatch, device):
     for g, e in zip(got, expected):
         torch.testing.assert_close(g, e)
     name, args = spy.calls[0]
-    assert name == "LoRA_QKV" and args[-4:] == (None, None, None, None)
+    # p = 0 in eval, but the dropout route is kept so the plain path's global dequant scratch is not.
+    assert name == "LoRA_QKV" and args[-4:] == ((0.0, 0.0, 0.0), None, None, None)
 
 
 @pytest.mark.parametrize("device", DEVICES)

@@ -37,6 +37,7 @@ import {
   useState,
 } from "react";
 import {
+  type ModelConfigFocus,
   type ModelConfigHandoffRequest,
   modelConfigTarget,
   modelConfigTargetIsResident,
@@ -148,6 +149,11 @@ interface ModelSelectorProps {
   /** The one opaque on-device artifact kind this task runtime may load. */
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
+  /** A second Recommended group under its own label, e.g. "More models". */
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: HubCapabilityFilter;
   /** Tasks the Search Hub link narrows the Audio filter to, when the page's runs differ from `task`. */
@@ -384,6 +390,7 @@ function ModelSelectorContent({
   communityModelPolicy,
   opaqueKind,
   rowFilter,
+  moreModels,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -417,6 +424,10 @@ function ModelSelectorContent({
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -470,6 +481,7 @@ function ModelSelectorContent({
   const [adoptedConfigRequestId, setAdoptedConfigRequestId] = useState<
     string | null
   >(null);
+  const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
 
   // The picker remounts on each open but this section state does not, so re-derive the default
   // section on the open edge.
@@ -484,6 +496,7 @@ function ModelSelectorContent({
     }
     if (!open && wasOpen.current) {
       setConfigTarget(null);
+      setConfigFocus(null);
     }
     wasOpen.current = open;
   }, [open, wantsConnectedDefault, hasAdditionalOnDeviceModels]);
@@ -535,6 +548,7 @@ function ModelSelectorContent({
       ? id.slice(NPU_MODEL_PREFIX.length)
       : undefined;
     setConfigTarget(modelConfigTarget(id, meta, displayName));
+    setConfigFocus(null);
   };
   const requestedConfigTarget = useMemo(
     () =>
@@ -571,6 +585,7 @@ function ModelSelectorContent({
   ) {
     setAdoptedConfigRequestId(configRequest.requestId);
     setConfigTarget(requestedConfigTarget);
+    setConfigFocus(configRequest.focus ?? null);
   }
   useEffect(() => {
     if (!configRequest || adoptedConfigRequestId !== configRequest.requestId) {
@@ -642,7 +657,11 @@ function ModelSelectorContent({
                 visibleLoadedConfig,
               )}
               target={visibleConfigTarget}
-              onBack={() => setConfigTarget(null)}
+              onBack={() => {
+                setConfigTarget(null);
+                setConfigFocus(null);
+              }}
+              focusField={configFocus ?? undefined}
               onRun={(config, isDiffusion) =>
                 onSelect(
                   visibleConfigTarget.configId ?? visibleConfigTarget.id,
@@ -697,6 +716,7 @@ function ModelSelectorContent({
               communityModelPolicy={communityModelPolicy}
               opaqueKind={opaqueKind}
               rowFilter={rowFilter}
+              moreModels={moreModels}
               npu={npu}
               section={effectiveHubSection}
               sectionToggle={
@@ -763,6 +783,7 @@ export function ModelSelector({
   communityModelPolicy = "none",
   opaqueKind,
   rowFilter,
+  moreModels,
   hubCapability,
   hubTask,
   placeholder,
@@ -783,6 +804,9 @@ export function ModelSelector({
 
   const optionById = useMemo(() => {
     const all = new Map<string, ModelOption>();
+    for (const model of moreModels?.models ?? []) {
+      all.set(model.id, model);
+    }
     for (const model of models) {
       all.set(model.id, model);
     }
@@ -825,7 +849,7 @@ export function ModelSelector({
       });
     }
     return all;
-  }, [externalModels, loraModels, models]);
+  }, [externalModels, loraModels, models, moreModels]);
 
   // A task-owned quant names the trigger only while the trigger shows that loaded model.
   const triggerGgufVariant =
@@ -985,6 +1009,7 @@ export function ModelSelector({
         communityModelPolicy={communityModelPolicy}
         opaqueKind={opaqueKind}
         rowFilter={rowFilter}
+        moreModels={moreModels}
       />
     </Popover>
   );

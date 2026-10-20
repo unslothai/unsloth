@@ -321,6 +321,33 @@ def test_python_inferred_install_uses_the_deferred_discrete_card():
     assert "repo.amd.com/rocm/whl/gfx120X-all" in calls and _STRIX_INDEX not in calls, calls
 
 
+@pytest.mark.parametrize(
+    "devices,inferred,expected",
+    [
+        (("gfx942", "gfx1151"), "gfx1151", _STRIX_INDEX),
+        (("gfx1103", "gfx942"), "gfx1103", "repo.amd.com/rocm/whl/gfx110X-all"),
+        (("gfx942", "gfx1103"), "gfx1103", "repo.amd.com/rocm/whl/gfx110X-all"),
+    ],
+)
+def test_python_versionless_inferred_install_keeps_an_installable_arch(devices, inferred, expected):
+    # No ROCm version and no per-arch index for the KFD pick: switching to it installed nothing.
+    calls = routing._run_install(
+        gfx_devices = devices, inferred = inferred, rocm_version = None, rocm_gpu_visible = False
+    )
+    assert expected in calls, calls
+
+
+def test_python_versionless_gfx950_ahead_of_an_apu_keeps_the_generic_fallback():
+    # gfx950 has no per-arch index, but a known minimum generic tag the versionless fallback picks.
+    calls = routing._run_install(
+        gfx_devices = ("gfx950", "gfx1151"),
+        inferred = "gfx1151",
+        rocm_version = None,
+        rocm_gpu_visible = False,
+    )
+    assert _STRIX_INDEX not in calls and "download.pytorch.org/whl/rocm" in calls, calls
+
+
 @_POSIX
 @pytest.mark.parametrize("hsa,expected", [("", "gfx1201"), ("11.5.1", "gfx1151")])
 def test_install_sh_strix_keeps_its_index_under_an_hsa_override(hsa, expected):

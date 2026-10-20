@@ -1152,6 +1152,14 @@ def sft_trainer_assistant_mask_fallback(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_assistant_mask_fallback)
 
 
+def _unsloth_grpo_autocast_forced_float32(self):
+    # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built would answer for it here.
+    forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
+    if forced is None:
+        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    return forced
+
+
 def _unsloth_grpo_autocast(self):
     """Decide the GRPO autocast once and latch it on the trainer. ACCELERATE_MIXED_PRECISION is process wide, so a trainer built later but run first would hand this trainer its precision; args belongs to this trainer."""
     if not hasattr(self, "_autocast_enabled"):
@@ -1169,10 +1177,7 @@ def _unsloth_grpo_autocast(self):
         # "no" is a real value: full finetuning and an explicit float32 load both set it, and reading it as bfloat16 raises on a T4 or V100.
         self._autocast_enabled = precision != "no"
         self._autocast_force_float32 = False
-        # Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is process wide, so a model loaded after this trainer was built would answer for it here.
-        forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
-        if forced is None:
-            forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+        forced = _unsloth_grpo_autocast_forced_float32(self)
         if forced and precision != "bf16":
             # Gemma3 / gpt-oss set "no" but still want float16 autocast; a trainer already on bf16 keeps it, since float16 is what the forced list avoids.
             self._autocast_dtype = torch.float16
@@ -1180,6 +1185,26 @@ def _unsloth_grpo_autocast(self):
             self._autocast_force_float32 = True
 
     return self._autocast_enabled, self._autocast_dtype
+
+
+def _unsloth_grpo_autocast_unscored(self):
+    """Latch for a step that ran no scoring forward. Where the ordinary latch would force float16 autocast on a
+    forced float32 model (Gemma3 on a T4) without vLLM, record no loss autocast instead: nothing latched there
+    before the TRL old-logprob gate came back, so zoo trained it without autocast. A forced-family trainer on
+    bf16 (full finetuning) keeps its bf16 latch. Recorded on the trainer rather than left to zoo's
+    process-wide fallback, which a later model or trainer may have changed. Under vLLM the old-policy
+    forward always ran and latched, so it latches as before."""
+    fresh = not hasattr(self, "_autocast_enabled")
+    latched = _unsloth_grpo_autocast(self)
+    if (
+        fresh
+        and not getattr(self, "use_vllm", False)
+        and getattr(self, "_autocast_force_float32", False)
+    ):
+        self._autocast_dtype = torch.float16
+        self._autocast_enabled = False
+        latched = (self._autocast_enabled, self._autocast_dtype)
+    return latched
 
 
 def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
@@ -1191,6 +1216,64 @@ def _unsloth_grpo_autocast_kwargs(self, device_type = DEVICE_TYPE_TORCH):
         # Already inside an autocast: inherit its dtype by omitting the key, since autocast passes whatever it gets to set_autocast_dtype.
         return {"enabled": enabled}
     return {"enabled": enabled, "dtype": dtype}
+
+
+def _unsloth_grpo_refuse_unscored_support(self):
+    """With compute_efficient no old / ref logps are scored here, so the gate below in
+    _get_per_token_logps_and_entropies never runs, and the zoo loss scores the current policy over
+    its own kept set against vLLM's logprobs. When that set cannot be the sampler's (an unsynced
+    vLLM sampler, a reference model, reused rollouts), mark the trainer refused, which the zoo loss
+    honours by scoring the full vocabulary."""
+    if getattr(self, "_unsloth_truncated_support_refused", False):
+        return
+    try:
+        from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
+        if not grpo_truncated_support_kwargs(self):
+            return
+    except Exception:
+        return
+    mismatch = _unsloth_grpo_support_mismatch(self)
+    if mismatch:
+        import warnings
+        warnings.warn(
+            "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+            f"{', '.join(mismatch)}: the scored policy is not the sampler, so its top_k / top_p / "
+            "min_p kept set differs from vLLM's and the PPO ratio would be unnormalised. "
+            "Scoring over the full vocabulary instead.",
+            stacklevel = 2,
+        )
+        self._unsloth_truncated_support_refused = True
+
+
+def _unsloth_grpo_support_mismatch(self):
+    """Why UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 cannot score this trainer, or [] when it can.
+
+    Each scoring call rebuilds the top_k / top_p / min_p kept set from its own logits and always keeps the
+    scored token. That is the sampler's set only while the scored weights are the rollout's. A reference
+    model (beta != 0), or old logps TRL keeps because generation is not aligned to the optimizer step
+    (gradient_accumulation_steps % (steps_per_generation * num_iterations) != 0), keeps another set: a
+    token outside it gets a denominator that depends on the scored token, so the implied probabilities do
+    not sum to 1 and the PPO ratio / KL inputs are wrong. A shared set would need the sampler's kept ids.
+    """
+    reasons = []
+    if getattr(self, "_unsloth_vllm_sync_skip", False):
+        reasons.append("vLLM weight sync is skipped, so rollouts use the initial weights")
+    beta = getattr(self, "beta", 0.0)
+    if beta is not None and float(beta) != 0.0:
+        reasons.append(f"beta={beta} scores a reference model")
+    args = getattr(self, "args", None)
+    accumulation = int(getattr(args, "gradient_accumulation_steps", 1) or 1)
+    steps_per_generation = int(getattr(args, "steps_per_generation", None) or accumulation)
+    num_iterations = getattr(self, "num_iterations", None)
+    if num_iterations is None:
+        num_iterations = getattr(args, "num_iterations", 1)
+    num_iterations = int(num_iterations or 1)
+    if accumulation % (steps_per_generation * num_iterations) != 0:
+        reasons.append(
+            f"num_iterations={num_iterations} / steps_per_generation={steps_per_generation} "
+            f"reuse rollouts across optimizer steps"
+        )
+    return reasons
 
 
 def _unsloth_grpo_accumulation_steps(trainer):
@@ -2426,8 +2509,8 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         compute_efficient = False,
     ):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
-            # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too.
-            _unsloth_grpo_autocast(self)
+            # Older TRL calls this instead of _get_per_token_logps_and_entropies: latch here too (see below).
+            _unsloth_grpo_autocast_unscored(self)
             return None  # Unsloth efficient GRPO
         _unsloth_grpo_autocast(self)
 
@@ -2472,7 +2555,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         # All Unsloth code in this function is licensed under AGPL3.
         if compute_efficient:
             # No scoring forward may run (vLLM, beta = 0): latch precision here, not from the shared env.
-            _unsloth_grpo_autocast(self)
+            _unsloth_grpo_autocast_unscored(self)
+            # The current policy is then scored only in the zoo loss: refuse the kept set there too.
+            _unsloth_grpo_refuse_unscored_support(self)
             return None, None
         else:
             _unsloth_grpo_autocast(self)
@@ -2556,6 +2641,22 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 from unsloth_zoo.rl_replacements import grpo_truncated_support_kwargs
                 _support_kwargs = grpo_truncated_support_kwargs(self)
             except Exception:
+                _support_kwargs = {}
+            _support_mismatch = _unsloth_grpo_support_mismatch(self) if _support_kwargs else []
+            if _support_mismatch:
+                # Left unmarked, the zoo loss drops the kept set for the current policy as well.
+                if not getattr(self, "_unsloth_truncated_support_refused", False):
+                    import warnings
+                    warnings.warn(
+                        "Unsloth: ignoring UNSLOTH_GRPO_TRUNCATED_SUPPORT=1 because "
+                        f"{', '.join(_support_mismatch)}: those logprobs come from weights other "
+                        "than the rollout's, whose top_k / top_p / min_p kept set differs from the "
+                        "sampler's, so per-policy kept sets give unnormalised PPO ratios and KL. "
+                        "Scoring over the full vocabulary instead.",
+                        stacklevel = 2,
+                    )
+                    # Also silences the zoo's refusal, which would blame the unsloth version.
+                    self._unsloth_truncated_support_refused = True
                 _support_kwargs = {}
             if _support_kwargs:
                 from functools import partial
@@ -3465,6 +3566,15 @@ def _unsloth_grpo_sample_weight_mode():
     return exclude, aggregation == "prompt"
 
 
+def _unsloth_trl_masks_unscorable():
+    try:
+        import trl
+        from packaging.version import Version
+        return Version(trl.__version__) >= Version("1.6.0")
+    except Exception:
+        return True
+
+
 def _unsloth_grpo_sample_weight(
     trainer, mode, rewards_per_func, completion_mask, tool_mask, process_slice
 ):
@@ -3511,7 +3621,10 @@ def _unsloth_grpo_sample_weight(
         rewards = (per_func.view_as(rewards_per_func) * weights).nansum(dim = 1)
     else:
         rewards = (rewards_per_func * weights).nansum(dim = 1)
-    rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
+    if _unsloth_trl_masks_unscorable():
+        # TRL >= 1.6 leaves a completion no reward function scored out of its group's statistics;
+        # older TRL scores it 0 (nansum), so its group has variance and real advantages there.
+        rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
     variance = nan_variance(rewards.view(-1, num_generations), 1).squeeze(1)
     group_keep = torch.ones_like(variance, dtype = torch.bool)
     if exclude:
@@ -3547,12 +3660,24 @@ def _unsloth_grpo_is_metric_values(delta, flat_is_ratio, mask, sequence_level):
     return delta[keep], per_row
 
 
+def _unsloth_grpo_is_sequence_level(args_mode):
+    # One IS ratio per sequence: TRL's sequence_* and unsloth_zoo's geometric_* (verl seq_mean_k1),
+    # with the UNSLOTH_GRPO_VLLM_IS_MODE override unsloth_zoo's grpo_accumulated_loss applies.
+    import os as _os
+    mode = _os.environ.get("UNSLOTH_GRPO_VLLM_IS_MODE", "") or args_mode or "token_truncate"
+    return str(mode).startswith(("sequence_", "geometric_"))
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_unscored_support))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_text_configs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
@@ -3563,7 +3688,9 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_accumulation_steps))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_metric_values))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_is_sequence_level))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight_mode))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_trl_masks_unscorable))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_sample_weight))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_vision_inputs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_split_vision_by_sample))
@@ -3936,7 +4063,8 @@ def grpo_trainer_compute_loss(function_name, function):
                     **_grpo_accumulated_loss_kwargs,
                 )
         if "train" in self._metrics:
-            mode = "eval" if self.control.should_evaluate else "train"
+            # model.training like TRL; should_evaluate is False under eval_on_start and evaluate().
+            mode = "train" if self.model.training else "eval"
             self._metrics[mode]["completion_length"].append(completion_length.item())
             self._metrics[mode]["kl"].append(mean_kl.item())
         else:
@@ -3952,8 +4080,9 @@ def grpo_trainer_compute_loss(function_name, function):
                 delta,
                 flat_is_ratio,
                 completion_mask,
-                (getattr(self.args, "vllm_importance_sampling_mode", None) or "token_truncate")
-                in ("sequence_mask", "sequence_truncate"),
+                _unsloth_grpo_is_sequence_level(
+                    getattr(self.args, "vllm_importance_sampling_mode", None)
+                ),
             )
             mean_delta = (
                 torch.mean(delta)
