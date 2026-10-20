@@ -89,7 +89,7 @@ def test_failed_slow_reload_still_raises_when_unrepairable(tmp_path):
 
 @pytest.fixture(scope = "module")
 def starling():
-    # Tokenizer files only (~2 MB); the model this check was written for, <sep> at id 32002.
+    # Tokenizer files only: the model this check was written for, <sep> at id 32002.
     try:
         from huggingface_hub import hf_hub_download
 
