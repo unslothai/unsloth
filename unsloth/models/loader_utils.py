@@ -1837,16 +1837,19 @@ def _fp8_load_as_is(
     from transformers import AutoConfig
 
     try:
+        from peft import PeftConfig
+
+        # The loader treats a repo holding both config.json and adapter_config.json as an adapter too.
+        PeftConfig.from_pretrained(model_name, revision = revision, token = token)
+        return True
+    except Exception:
+        pass
+    try:
         config = AutoConfig.from_pretrained(
             model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
         )
     except Exception:
-        try:
-            from peft import PeftConfig
-            PeftConfig.from_pretrained(model_name, revision = revision, token = token)
-            return True
-        except Exception:
-            return False
+        return False
     text_config = getattr(config, "text_config", None)
     return bool(
         getattr(config, "quantization_config", None)

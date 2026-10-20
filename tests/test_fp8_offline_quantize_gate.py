@@ -153,3 +153,15 @@ def test_fp8_artifacts_of_same_named_repos_do_not_collide(monkeypatch, tmp_path)
     a = loader_utils._offline_quantize_to_fp8("org-a/model", "row")
     b = loader_utils._offline_quantize_to_fp8("org-b/model", "row")
     assert a != b
+
+
+def test_an_adapter_with_a_config_json_counts_as_an_adapter(tmp_path):
+    import json
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"model_type": "llama", "architectures": ["LlamaForCausalLM"]})
+    )
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"peft_type": "LORA", "base_model_name_or_path": "my-org/Base", "r": 8})
+    )
+    assert loader_utils._fp8_load_as_is(str(tmp_path)) is True
