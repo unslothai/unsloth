@@ -7,6 +7,7 @@ import { decideToolCall } from "@/features/chat/tool-decision";
 import { translate } from "@/i18n";
 import { toolBrief, toolLabel } from "./approval-brief";
 import { SPECTRUM_SIDE } from "./orb-config";
+import { onMainFocus, returnFromWidget, type WidgetReturn } from "./orb-widget-return";
 import {
   type Area,
   ORB_WIDGET_ACTION_EVENT,
@@ -174,16 +175,20 @@ function loadTauri(): Promise<Tauri> {
   return tauri;
 }
 
-let floating = false;
+const mode: WidgetReturn = { floating: false };
 let warm: Promise<boolean> | null = null;
 
-function reveal(t: Tauri): void {
-  floating = false;
+function showMain(t: Tauri): void {
   void t
     .invoke("reveal_main_window")
     .catch(() => t.win.getCurrentWindow().show())
     // WebKit can leave the capture track open but silent across the swap: start the mic over.
     .finally(() => reacquireMic("back"));
+}
+
+/** Back to the app: the in-app orb shows again and the widget hides (show_main_window). */
+function reveal(t: Tauri): void {
+  returnFromWidget(mode, (c) => useChatRuntimeStore.getState().setVoiceOrbCollapsed(c), () => showMain(t));
 }
 
 /**
@@ -233,7 +238,7 @@ export function prewarmOrbWidget(): Promise<boolean> {
       useChatRuntimeStore.subscribe((s, prev) => {
         if (s.voiceMode === "off" && prev.voiceMode !== "off") {
           // Voice ended from somewhere else: nothing left for the widget to show.
-          if (floating) reveal(t);
+          if (mode.floating) reveal(t);
           return;
         }
         if (
@@ -251,7 +256,20 @@ export function prewarmOrbWidget(): Promise<boolean> {
     );
     offs.push(watchLook(push));
     offs.push(await t.listen(ORB_WIDGET_READY_EVENT, push));
-    offs.push(streamSpectrum(t.emitTo, () => floating));
+    offs.push(streamSpectrum(t.emitTo, () => mode.floating));
+    // A Dock click, the tray or the app menu bring the main window back natively; its
+    // focus is how this side hears about it.
+    offs.push(
+      await t.win.getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        const back = onMainFocus(
+          focused,
+          mode,
+          (c) => useChatRuntimeStore.getState().setVoiceOrbCollapsed(c),
+          () => showMain(t),
+        );
+        if (back) voiceTrace("ui.orbWidget.backByFocus");
+      }),
+    );
     offs.push(
       await t.listen<unknown>(ORB_WIDGET_ACTION_EVENT, ({ payload }) => {
         if (!isOrbWidgetAction(payload)) return;
@@ -277,7 +295,7 @@ export function prewarmOrbWidget(): Promise<boolean> {
       await widget.once("tauri://destroyed", () => {
         for (const off of offs.splice(0)) off();
         warm = null;
-        if (floating) reveal(t);
+        if (mode.floating) reveal(t);
       }),
     );
     push();
@@ -315,7 +333,7 @@ export async function openOrbWidget(cursor: Point | null = null): Promise<void> 
     const at =
       (cursor ? placeAtCursor(cursor, screens) : null) ??
       placeOrbWidget(saved, screens, current ? toArea(current.workArea, current.scaleFactor) : null);
-    floating = true;
+    mode.floating = true;
     useChatRuntimeStore.getState().setVoiceOrbCollapsed(true);
     // One native call places and shows the widget and fades the main window in the same turn.
     await t.invoke("enter_orb_widget_mode", {
@@ -327,7 +345,8 @@ export async function openOrbWidget(cursor: Point | null = null): Promise<void> 
       warm: wasWarm,
     });
   } catch (error) {
-    floating = false;
     voiceTrace("ui.orbWidget.error", { error: String(error) });
+    // The widget may already be up with the main window left as it was: undo both.
+    if (mode.floating) void loadTauri().then(reveal);
   }
 }

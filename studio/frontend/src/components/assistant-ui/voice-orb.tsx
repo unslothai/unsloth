@@ -115,10 +115,10 @@ const blobRaw = new Float32Array(SPECTRUM_BANDS);
 const blobEased = new Float32Array(SPECTRUM_BANDS);
 const blobControls = createBlobControls();
 
-function blobPath(bands: Float32Array, t: number, level: number, k = 1): string {
+function blobPath(bands: Float32Array, level: number, k = 1): string {
   const c = (ORB_BOX * k) / 2;
-  // The slow turn keeps it alive.
-  foldControls(bands, -Math.PI / 2 + t * 0.15, blobControls);
+  // Held still with the mirror axis horizontal: lows on the right, highs on the left.
+  foldControls(bands, 0, blobControls);
   return `path("${blobBezierPath(blobControls, ORB_R + level * 3, BLOB_AMP, c, c, k)}")`;
 }
 
@@ -185,7 +185,7 @@ function useBlobClip(
           return;
         }
       }
-      el.style.clipPath = blobPath(blobEased, now / 1000, blobLevel, k);
+      el.style.clipPath = blobPath(blobEased, blobLevel, k);
     };
     raf = requestAnimationFrame(tick);
     // The clip is left where it is: the next run carries on from it.

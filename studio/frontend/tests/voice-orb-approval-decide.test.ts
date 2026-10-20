@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import * as orbWidget from "../src/features/chat/voice/orb-widget.ts";
+import * as orbWidgetReturn from "../src/features/chat/voice/orb-widget-return.ts";
 import { type StubElement, loadWithStubs, stubJsxRuntime } from "./helpers/module-stubs.ts";
 
 type Entry = { approvalId: string; sessionId: string; autoAllowKey: string; imageDisclosure?: unknown };
@@ -202,7 +203,9 @@ async function loadHost(confirmations: Record<string, Entry>, inVoiceThread: str
   };
   const tauri = {
     "@tauri-apps/api/webviewWindow": { WebviewWindow: { getByLabel: async () => widget } },
-    "@tauri-apps/api/window": {},
+    "@tauri-apps/api/window": {
+      getCurrentWindow: () => ({ onFocusChanged: async () => () => undefined }),
+    },
     "@tauri-apps/api/event": {
       emitTo: async (_target: string, event: string, payload: unknown) => {
         emitted.push({ event, payload });
@@ -230,6 +233,7 @@ async function loadHost(confirmations: Record<string, Entry>, inVoiceThread: str
       "./approval-brief": { toolBrief: (id: string) => `brief ${id}`, toolLabel: (id: string) => id },
       "./orb-config": { SPECTRUM_SIDE: {} },
       "./orb-widget": orbWidget,
+      "./orb-widget-return": orbWidgetReturn,
       "./voice-loop-bridge": {
         describeToolCall: (id: string) => (inVoiceThread.includes(id) ? { toolName: "x", args: {} } : null),
         requestVoicePauseToggle: () => undefined,

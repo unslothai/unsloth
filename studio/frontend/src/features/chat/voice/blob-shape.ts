@@ -3,7 +3,7 @@
 
 /**
  * The orb's spectrum edge: the log bands folded once round the ring, low to high and
- * back, mirrored and slowly turning, so the voice's energy makes a big blob on one side
+ * back and mirrored, so the voice's energy makes a big blob on one side
  * and a little one opposite. Drawn from 32 control points, joined by one
  * closed path of cubic beziers whose tangents are continuous everywhere. Only the
  * control points change per frame.
