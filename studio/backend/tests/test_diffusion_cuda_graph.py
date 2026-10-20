@@ -1190,16 +1190,26 @@ def _named_dit(name):
 
 def _policy():
     from core.inference.diffusion_dynamic_text import PROMPT_LENGTH_POLICY
-
     return PROMPT_LENGTH_POLICY
 
 
-def _step(handle, text_len, value = 0.0):
+def _step(
+    handle,
+    text_len,
+    value = 0.0,
+):
     """One denoiser call whose text stream is ``text_len`` tokens (the graph key follows it)."""
-    return handle(_t((1, 64), value = value), encoder_hidden_states = _t((1, text_len)), return_dict = False)
+    return handle(
+        _t((1, 64), value = value), encoder_hidden_states = _t((1, text_len)), return_dict = False
+    )
 
 
-def _render(handle, text_len, steps = 3, negative_len = 7):
+def _render(
+    handle,
+    text_len,
+    steps = 3,
+    negative_len = 7,
+):
     """A true-CFG render: per step the prompt's call, then the negative prompt's."""
     for i in range(steps):
         _step(handle, text_len, value = float(i))
@@ -1212,7 +1222,12 @@ class _LenDiT:
     def __init__(self):
         self.calls = 0
 
-    def forward(self, hidden_states, encoder_hidden_states = None, return_dict = True):
+    def forward(
+        self,
+        hidden_states,
+        encoder_hidden_states = None,
+        return_dict = True,
+    ):
         self.calls += 1
         return (_FakeTensor((1, 64), value = ("out", hidden_states.value), tag = "out"),)
 
@@ -1245,7 +1260,9 @@ def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, 
     _render(handle, 15)  # generation 2: a new prompt length, the same negative prompt
     assert handle.stats["captures"] == 2
     assert stub_torch._records["graphs"] == graphs  # no capture begun
-    assert handle.stats["length_eager"] == 3  # the prompt's calls ran the step itself, once each (no warm-up)
+    assert (
+        handle.stats["length_eager"] == 3
+    )  # the prompt's calls ran the step itself, once each (no warm-up)
     assert module.calls == calls + 3
     assert handle.stats["replays"] == replays + 3  # the negative prompt's graph still replays
     assert len(handle.cache) == 2 and handle.stats["evictions"] == 0
@@ -1260,7 +1277,9 @@ def test_the_ungraphed_step_returns_what_the_step_itself_returns(stub_torch, mon
     handle = _armed(_len_dit("ZImageTransformer2DModel"))
     _render(handle, 32, negative_len = 32)
     out = _step(handle, 64, value = 5.0)
-    assert out[0].value == ("out", 5.0) and out[0].clone_of is None  # the forward's own tensor, not a pool clone
+    assert (
+        out[0].value == ("out", 5.0) and out[0].clone_of is None
+    )  # the forward's own tensor, not a pool clone
 
 
 def test_a_fixed_length_family_records_as_before(stub_torch):
@@ -1321,7 +1340,12 @@ def test_block_graphs_decline_a_variable_length_denoiser(stub_torch, monkeypatch
     monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
     pipe = types.SimpleNamespace(transformer = _named_dit("QwenImageTransformer2DModel"))
     assert cg.prompt_length_reason(pipe).startswith(cg.PROMPT_LENGTH_REASON)
-    assert cg.prompt_length_reason(types.SimpleNamespace(transformer = _named_dit("Flux2Transformer2DModel"))) is None
+    assert (
+        cg.prompt_length_reason(
+            types.SimpleNamespace(transformer = _named_dit("Flux2Transformer2DModel"))
+        )
+        is None
+    )
     family = types.SimpleNamespace(name = "qwen-image")
     monkeypatch.setenv(cg.FORCE_FAMILIES_ENV, "qwen-image")
     assert cg.prompt_length_reason(pipe, family) is None

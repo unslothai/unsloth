@@ -1936,7 +1936,9 @@ def prompt_length_reason(pipe: Any, family: Any = None) -> Optional[str]:
         return None
     try:
         from .diffusion_dynamic_text import prompt_length_varies  # noqa: PLC0415
-        names = sorted({type(m).__name__ for m in _denoiser_modules(pipe) if prompt_length_varies(m)})
+        names = sorted(
+            {type(m).__name__ for m in _denoiser_modules(pipe) if prompt_length_varies(m)}
+        )
     except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's graphs
         return None
     if not names:
@@ -2277,9 +2279,9 @@ def arm_block_graphs(
     if whole and len(step) == len(whole):
         # The whole step stays primary; where per-block graphs are the default they arm for the calls it leaves eager.
         pipe._unsloth_cuda_graph_mode = "step"
-        why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or prompt_length_reason(
-            pipe, family
-        )
+        why = _block_basics(
+            target, family, cache_engaged, speed_mode, family_default
+        ) or prompt_length_reason(pipe, family)
         if why is None:
             _attach_block_fallback(pipe, step, target, hooked, pinned, logger)
         return handles
@@ -2288,9 +2290,9 @@ def arm_block_graphs(
         # whose blocks still record.
         return handles
     # A block's graph keys on its input shapes too, and the text stream runs through the blocks.
-    why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or prompt_length_reason(
-        pipe, family
-    )
+    why = _block_basics(
+        target, family, cache_engaged, speed_mode, family_default
+    ) or prompt_length_reason(pipe, family)
     if whole:
         uninstall_all(whole, logger = logger)
     pipe._unsloth_cuda_graph_mode = None
