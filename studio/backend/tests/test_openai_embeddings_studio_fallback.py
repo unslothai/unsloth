@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import copy
 import os
 import sys
 import threading
@@ -264,15 +265,15 @@ def test_non_boolean_truncate_is_400(studio_embedder):
     assert "'truncate'" in error.detail
 
 
-_CLS, _SEP, _UBATCH = 101, 102, 4
+_CLS, _SEP = 101, 102
 
 
-def _llama_overflow_server(message):
+def _llama_overflow_server(ubatch, n_ctx):
     """llama-server's /tokenize (one token per word, CLS/SEP as add_special) and an embeddings
-    endpoint refusing any input past _UBATCH tokens with ``message`` (#14309)."""
+    endpoint refusing an input past ``ubatch`` (500) and then past ``n_ctx`` (400) (#14309)."""
     import httpx
 
-    embedded = []
+    embedded, tokenized = [], []
 
     def _tokens(item):
         if isinstance(item, list):
@@ -288,35 +289,46 @@ def _llama_overflow_server(message):
             **_kwargs,
         ):
             if url.endswith("/tokenize"):
+                tokenized.append(json["content"])
                 tokens = _tokens(json["content"])
                 return httpx.Response(
                     200, json = {"tokens": tokens if json["add_special"] else tokens[1:-1]}
                 )
-            embedded.append(json)
+            # A snapshot: httpx serializes the body at send time, and the route reuses the dict.
+            embedded.append(copy.deepcopy(json))
             items = [json["input"]] if isinstance(json["input"], str) else json["input"]
             for item in items:
                 n = len(_tokens(item))
-                if n > _UBATCH:
-                    status, text = message
+                if n > ubatch:
                     return httpx.Response(
-                        status, json = {"error": {"message": text.format(n = n, limit = _UBATCH)}}
+                        500,
+                        json = {
+                            "error": {
+                                "message": f"input ({n} tokens) is too large to process. increase "
+                                f"the physical batch size (current batch size: {ubatch})"
+                            }
+                        },
+                    )
+                if n > n_ctx:
+                    return httpx.Response(
+                        400,
+                        json = {
+                            "error": {
+                                "message": f"input ({n} tokens) is larger than the max context "
+                                f"size ({n_ctx} tokens). skipping"
+                            }
+                        },
                     )
             return httpx.Response(200, json = {"data": [{"embedding": [0.5]} for _ in items]})
 
         async def aclose(self):
             return None
 
-    return _Client, embedded
+    return _Client, embedded, tokenized
 
 
-_OVERFLOW_MESSAGES = [
-    (
-        500,
-        "input ({n} tokens) is too large to process. increase the physical batch size "
-        "(current batch size: {limit})",
-    ),
-    (400, "input ({n} tokens) is larger than the max context size ({limit} tokens). skipping"),
-]
+# (ubatch, n_ctx): the batch refuses first, the context refuses first.
+_OVERFLOW_LIMITS = [(4, 512), (512, 4)]
 
 
 def _resident_embedding_gguf(studio_embedder, client):
@@ -334,9 +346,9 @@ def _resident_embedding_gguf(studio_embedder, client):
     )
 
 
-@pytest.mark.parametrize("message", _OVERFLOW_MESSAGES)
-def test_resident_embedding_gguf_truncates_an_oversized_input(studio_embedder, message):
-    client, embedded = _llama_overflow_server(message)
+@pytest.mark.parametrize("ubatch, n_ctx", _OVERFLOW_LIMITS)
+def test_resident_embedding_gguf_truncates_an_oversized_input(studio_embedder, ubatch, n_ctx):
+    client, embedded, _ = _llama_overflow_server(ubatch, n_ctx)
     _resident_embedding_gguf(studio_embedder, client)
     payload = _call({"input": ["aa bbb c dddd e", "x y"], "model": "org/E-GGUF"})
     assert len(payload["data"]) == 2
@@ -346,9 +358,11 @@ def test_resident_embedding_gguf_truncates_an_oversized_input(studio_embedder, m
     assert "truncate" not in embedded[0]
 
 
-@pytest.mark.parametrize("message", _OVERFLOW_MESSAGES)
-def test_resident_embedding_gguf_keeps_the_error_when_truncate_is_false(studio_embedder, message):
-    client, embedded = _llama_overflow_server(message)
+@pytest.mark.parametrize("ubatch, n_ctx", _OVERFLOW_LIMITS)
+def test_resident_embedding_gguf_keeps_the_error_when_truncate_is_false(
+    studio_embedder, ubatch, n_ctx
+):
+    client, embedded, _ = _llama_overflow_server(ubatch, n_ctx)
     _resident_embedding_gguf(studio_embedder, client)
     response = asyncio.run(
         inference_route.openai_embeddings(
@@ -356,7 +370,7 @@ def test_resident_embedding_gguf_keeps_the_error_when_truncate_is_false(studio_e
             "tester",
         )
     )
-    assert response.status_code == message[0]
+    assert response.status_code == (500 if ubatch < n_ctx else 400)
     assert len(embedded) == 1
     assert "truncate" not in embedded[0]
 
@@ -1582,3 +1596,25 @@ def test_stashed_gguf_embeds_reads_the_stashed_model_header(monkeypatch, tmp_pat
 
     monkeypatch.setattr(inference_route, "_probe_backend", _Probe)
     assert inference_route._stashed_gguf_embeds() is True
+
+
+def test_resident_embedding_gguf_recuts_for_a_context_below_the_batch(studio_embedder):
+    client, embedded, tokenized = _llama_overflow_server(6, 4)
+    _resident_embedding_gguf(studio_embedder, client)
+    payload = _call({"input": ["aa bbb c dddd e ff gg hh"], "model": "org/E-GGUF"})
+    assert len(payload["data"]) == 1
+    assert [body["input"] for body in embedded[1:]] == [
+        [[_CLS, 2, 3, 1, 4, _SEP]],
+        [[_CLS, 2, 3, _SEP]],
+    ]
+    # Tokenized once with and once without special tokens, reused for the second cut.
+    assert len(tokenized) == 2
+
+
+def test_resident_embedding_gguf_skips_tokenizing_strings_that_cannot_overflow(studio_embedder):
+    client, embedded, tokenized = _llama_overflow_server(20, 512)
+    _resident_embedding_gguf(studio_embedder, client)
+    long = " ".join(["a"] * 30)
+    _call({"input": [long, "x", "y z"], "model": "org/E-GGUF"})
+    assert embedded[1]["input"][1:] == ["x", "y z"]
+    assert set(tokenized) == {long}

@@ -40473,11 +40473,12 @@ def _llama_embedding_overflow_limit(resp) -> Optional[int]:
 
 
 async def _truncated_llama_embedding_inputs(
-    client, base_url, headers, value, limit
+    client, base_url, headers, value, limit, cache: dict
 ) -> Optional[list]:
     """``value`` with every string past ``limit`` tokens replaced by its first tokens, keeping the
     special tokens llama-server adds around a string (it adds none to a token array). None when
-    nothing could be cut, so the caller returns llama-server's own error."""
+    nothing could be cut, so the caller returns llama-server's own error. ``cache`` keeps the
+    tokenizations across the batch-limit and context-limit retries."""
     items = [value] if isinstance(value, str) else value
     # A top-level array holding numbers is one prompt (tokens, or tokens mixed with strings).
     if not isinstance(items, list) or any(not isinstance(item, (str, list)) for item in items):
@@ -40497,15 +40498,19 @@ async def _truncated_llama_embedding_inputs(
         return tokens if isinstance(tokens, list) else None
 
     out, cut = [], False
-    for item in items:
-        if isinstance(item, str):
-            full = await tokenize(item, True)
+    for index, item in enumerate(items):
+        # A token is at least one byte, so a short string fits without a /tokenize round trip.
+        if isinstance(item, str) and len(item.encode()) + 8 > limit:
+            if index not in cache:
+                cache[index] = [await tokenize(item, True), None]
+            full, bare = cache[index]
             if full is None:
                 return None
             if len(full) > limit:
-                bare = await tokenize(item, False)
                 if bare is None:
-                    return None
+                    bare = cache[index][1] = await tokenize(item, False)
+                    if bare is None:
+                        return None
                 extra = len(full) - len(bare)
                 head = next((h for h in range(extra + 1) if full[h : h + len(bare)] == bare), None)
                 if head is not None and limit > extra:
@@ -40677,10 +40682,16 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             )
             # llama-server refuses an input past one physical batch or the slot context; retry
             # with the oversized inputs cut to the limit it reported. Bounded: ubatch, then n_ctx.
+            original, cache, limit = body.get("input"), {}, None
             for _ in range(2):
-                limit = _llama_embedding_overflow_limit(resp) if truncate else None
-                inputs = limit and await _truncated_llama_embedding_inputs(
-                    _client, llama_backend.base_url, headers, body.get("input"), limit
+                reported = _llama_embedding_overflow_limit(resp) if truncate else None
+                if not reported:
+                    break
+                # Always cut the client's own inputs, so a context limit below the batch limit
+                # re-cuts the strings, not the token arrays the first retry sent.
+                limit = min(limit or reported, reported)
+                inputs = await _truncated_llama_embedding_inputs(
+                    _client, llama_backend.base_url, headers, original, limit, cache
                 )
                 if not inputs:
                     break
