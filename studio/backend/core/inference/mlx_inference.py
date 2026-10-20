@@ -77,6 +77,20 @@ VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
+def _prefill_layer_step(model, step):
+    """mlx-vlm's step when unsloth_zoo runs every prefill call of ``model`` as consecutive calls of
+    it, layer by layer, and ``step`` is a multiple of it; else ``None``."""
+    if not step:
+        return None
+    try:
+        from unsloth_zoo.mlx.offload import wide_prefill_step
+        wide = wide_prefill_step(model)
+    except Exception:
+        return None
+    own = vlm_prefill_step()
+    return own if wide == own and step % own == 0 else None
+
+
 def vlm_prefill_step():
     """mlx-vlm's own step, so an unreused request prefills as mlx-vlm does. It divides every
     boundary, so a step no grid can be built on falls back here rather than reaching a request."""
@@ -243,6 +257,7 @@ class _ForwardRecord:
     __slots__ = (
         "forwards",
         "capture_at",
+        "capture_rows",
         "snapshot",
         "tail_at",
         "tail",
@@ -253,6 +268,7 @@ class _ForwardRecord:
     def __init__(self):
         self.forwards = 0
         self.capture_at = 0
+        self.capture_rows = 0
         self.snapshot = None
         self.tail_at = 0
         self.tail = None
@@ -275,6 +291,23 @@ def _prompt_wide_position_ids(args, kwargs):
         kwargs.get("inputs_embeds"), "shape", None
     )
     return bool(chunk_shape) and len(chunk_shape) > 1 and shape[-1] != chunk_shape[1]
+
+
+def _forward_capturing(base, model, args, kwargs, cache, rows):
+    """The forward, and the snapshot unsloth_zoo's layer-by-layer prefill copies once ``rows`` rows
+    of it are in every entry; ``None`` unless every entry was copied."""
+    from unsloth_zoo.mlx.offload import capture_prefill_rows
+
+    def copy(entry):
+        try:
+            return copy_cache_entries([entry])[0]
+        except Exception as exc:
+            logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
+
+    with capture_prefill_rows(rows, copy) as captured:
+        output = base.__call__(model, *args, **kwargs)
+    snapshot = [captured.get(id(entry)) for entry in cache]
+    return output, snapshot if all(entry is not None for entry in snapshot) else None
 
 
 def _recording_class(base):
@@ -301,10 +334,11 @@ def _recording_class(base):
             )
         # As the next forward begins, not as the boundary one returns: generate_step converts the cache between the
         # two (KV quantization).
+        boundary = record is not None and record.forwards == record.capture_at
         if (
             record is not None
             and record.forwards
-            and record.forwards in (record.capture_at, record.tail_at)
+            and (boundary and not record.capture_rows or record.forwards == record.tail_at)
             and cache is not None
         ):
             try:
@@ -312,11 +346,16 @@ def _recording_class(base):
             except Exception as exc:
                 logger.info("MLX VLM prompt cache: cache layout not copied (%s)", exc)
             else:
-                if record.forwards == record.capture_at:
+                if boundary:
                     record.snapshot = copied
                 else:
                     record.tail = copied
-        output = base.__call__(self, *args, **kwargs)
+        if boundary and record.capture_rows and cache is not None:
+            output, record.snapshot = _forward_capturing(
+                base, self, args, kwargs, cache, record.capture_rows
+            )
+        else:
+            output = base.__call__(self, *args, **kwargs)
         if record is not None:
             record.forwards += 1
         return output
@@ -637,8 +676,10 @@ class VLMPromptCacheSession:
         media_block = None,
         policy_hosts = (),
         step = VLM_PREFILL_STEP,
+        window = None,
     ):
         self.step = step
+        self.window = window or step
         self._store = store
         self._key = key
         self._media_token_ids = tuple(media_token_ids)
@@ -708,7 +749,11 @@ class VLMPromptCacheSession:
             self.cache = entries
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
-        record.capture_at = (boundary - prefix_len) // self.step
+        rows = boundary - prefix_len
+        # A boundary inside a window is copied by the layers as they pass it.
+        record.capture_at, record.capture_rows = (
+            divmod(rows, self.window) if rows >= 0 else (rows, 0)
+        )
         if prefix_len <= boundary < len(token_ids) - 1:
             record.tail_at = record.capture_at + 1
         self.reused_tokens = prefix_len
@@ -4242,7 +4287,7 @@ class _VisionBatchSession:
                     completion_batch_size = width,
                     # Rows quantize their own caches where the single path's decode does.
                     **backend._kv_runtime_quant_kwargs(),
-                    **backend._prefill_step_kwargs(GenerationDefaults),
+                    **backend._prefill_step_kwargs(GenerationDefaults, grid = True),
                 ),
                 **({} if self._speculative is None else {"speculative": self._speculative}),
             )
@@ -4418,6 +4463,7 @@ class MLXInferenceBackend:
         self._turboquant_refusal = ""
         self._speculative_draft = None
         self._prefill_step = None  # the planned step while experts are on disk, else the runtime's
+        self._prefill_layer_step = None
         self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
@@ -4561,7 +4607,8 @@ class MLXInferenceBackend:
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
-                step = getattr(self, "_prefill_step", None) or vlm_prefill_step(),
+                step = self._snapshot_grid(),
+                window = getattr(self, "_prefill_step", None) or vlm_prefill_step(),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -4618,7 +4665,7 @@ class MLXInferenceBackend:
             make_cache,
             media_ids,
             releases_unserved = bool(images),
-            step = getattr(self, "_prefill_step", None) or vlm_prefill_step(),
+            step = self._snapshot_grid(),
         )
 
     @staticmethod
@@ -4743,10 +4790,29 @@ class MLXInferenceBackend:
             return entries
         return _quantize_kv_entries(entries, bits)
 
-    def _prefill_step_kwargs(self, target = None):
+    def _snapshot_grid(self):
+        """Rows prefix-reuse snapshots sit on: the planned step, or mlx-vlm's own where unsloth_zoo
+        prefills each planned step layer by layer in it and a snapshot inside one can be cut there.
+        TurboQuant converts the cache between forwards, which a cut inside one would miss."""
+        step = getattr(self, "_prefill_step", None)
+        if (
+            step is None
+            or getattr(self, "_prefill_layer_step", None) is None
+            or self._kv_runtime_quant_kwargs()
+        ):
+            return step or vlm_prefill_step()
+        return self._prefill_layer_step
+
+    def _prefill_step_kwargs(
+        self,
+        target = None,
+        grid = False,
+    ):
         """``prefill_step_size`` for the planned step, else nothing (the runtime's own); with a
         *target* (a constructor, or unsloth_zoo's defaults type), only when it takes one."""
         step = getattr(self, "_prefill_step", None)
+        if step is not None and grid:
+            step = self._snapshot_grid()
         if step is None or not (target is None or _takes_prefill_step(target)):
             return {}
         return {"prefill_step_size": step}
@@ -5230,6 +5296,7 @@ class MLXInferenceBackend:
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
         # Each prefill step re-reads experts on disk: prefill, and price, in the planned step.
         self._prefill_step = offload["prefill_step"] if _offload["experts"]["applied"] else None
+        self._prefill_layer_step = _prefill_layer_step(self._model, self._prefill_step)
         if self._prefill_step:
             _offloaded["prefill_chunk"] = self._prefill_step
         _priceable = not (is_distributed or is_lora or dtype is not None)
@@ -5541,6 +5608,7 @@ class MLXInferenceBackend:
             del self.models[model_name]
         self._speculative_draft = None
         self._prefill_step = None
+        self._prefill_layer_step = None
         self._model = None
         self._tokenizer = None
         self._processor = None
@@ -6895,7 +6963,7 @@ class MLXInferenceBackend:
             if session.media_block is not None:
                 vlm_kwargs.update(session.media_block.generate_kwargs())
             # Reused and unreused turns must prefill on the same grid to match.
-            vlm_kwargs["prefill_step_size"] = session.step
+            vlm_kwargs["prefill_step_size"] = session.window
         else:
             vlm_kwargs.update(self._kv_quant_generate_kwargs())
             vlm_kwargs.update(self._prefill_step_kwargs())
@@ -7321,7 +7389,7 @@ class MLXInferenceBackend:
             max_tokens = max(plan.max_tokens for plan in plans),
             prefill_batch_size = len(plans),
             completion_batch_size = len(plans),
-            **self._prefill_step_kwargs(GenerationDefaults),
+            **self._prefill_step_kwargs(GenerationDefaults, grid = True),
         )
 
         with (
