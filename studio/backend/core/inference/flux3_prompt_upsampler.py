@@ -921,14 +921,15 @@ def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
     try:
         from core.inference.llama_cpp import LlamaCppBackend
 
-        if str(
-            os.environ.get("LLAMA_ARG_DEVICE", "")
-        ).strip() or not LlamaCppBackend._is_vulkan_backend(binary):
+        # The user's own device pick wins: LLAMA_ARG_DEVICE, or a Vulkan mask that renumbers what the probe lists.
+        if (
+            str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip()
+            or str(os.environ.get("GGML_VK_VISIBLE_DEVICES", "")).strip()
+            or not LlamaCppBackend._is_vulkan_backend(binary)
+        ):
             return []
         # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
         rows = _vulkan_rows(binary)
-        if len(rows) == 1:
-            return []
         if not rows:
             import torch
 
@@ -943,6 +944,9 @@ def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
         listing = "".join(f"Vulkan{row['index']}\t{row['name']}\n" for row in rows)
         name, position = physical_card_name(ordinal)
         device = sd_cpp_device_named(binary, name, position = position, listing = listing)
+        if len(rows) == 1:
+            # Nothing to choose, but the sole Vulkan device must be the card the memory probe read.
+            return [] if device else None
         return ["--device", device] if device else None
     except Exception:  # noqa: BLE001
         return None

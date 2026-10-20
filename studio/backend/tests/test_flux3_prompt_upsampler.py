@@ -1077,9 +1077,30 @@ def test_non_vulkan_and_single_card_launches_keep_their_argv(spawn_argv, monkeyp
     assert "--device" not in run()[0]
     monkeypatch.delenv("LLAMA_ARG_DEVICE")
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
-    state["rows"] = [_VULKAN_ROWS[2]]  # one Vulkan device: nothing to choose
+    state["rows"] = [_VULKAN_ROWS[2]]  # one Vulkan device, the image model's card: nothing to choose
     argv, env = run()
     assert "--device" not in argv and env == {}
+
+
+def test_vulkan_sole_device_must_be_the_image_models_card(spawn_argv, warmable, monkeypatch):
+    import torch
+
+    state, run = spawn_argv
+    sidecar, launched, _memory, model, _mmproj = warmable
+    # torch holds the image model on the 7900 XTX, but the only Vulkan device is the iGPU.
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    state["names"] = ["AMD Radeon RX 7900 XTX"]
+    state["ordinal"] = 0
+    state["rows"] = [_VULKAN_ROWS[0]]
+    assert "--device" not in run()[0]
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "placement"
+
+
+def test_users_vulkan_mask_wins(spawn_argv, monkeypatch):
+    state, run = spawn_argv
+    # GGML_VK_VISIBLE_DEVICES renumbers the probe's devices, so a position-based pick could name another card.
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1,2")
+    assert "--device" not in run()[0]
 
 
 def test_vulkan_pins_one_torch_card_beside_an_igpu(spawn_argv, monkeypatch):
