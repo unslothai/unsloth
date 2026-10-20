@@ -2383,12 +2383,12 @@ export async function buildLocalTokenCountExtras(
           rag_scope: {
             ...(ragEnabled && ragSource.type === "kb"
               ? { kb_id: ragSource.kbId }
-              : {
-                  ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
-                  ...(projectRagEnabled && ragProjectId
-                    ? { project_id: ragProjectId }
-                    : {}),
-                }),
+              : ragEnabled && threadId
+                ? { thread_id: threadId }
+                : {}),
+            ...(projectRagEnabled && ragProjectId
+              ? { project_id: ragProjectId }
+              : {}),
             // An unpersisted New Chat has neither id, and {} is falsy in Python, so the count alone would
             // drop the tool and its nudge.
             default_top_k: ragTopK,
@@ -4843,26 +4843,20 @@ export function createOpenAIStreamAdapter(
         if (transitionSignal.aborted) return;
         const ragScope =
           runtime.ragEnabled || projectRagEnabled
-            ? runtime.ragEnabled && runtime.ragSource.type === "kb"
-              ? {
-                  kb_id: runtime.ragSource.kbId,
-                  default_top_k: runtime.ragTopK,
-                  mode: runtime.ragMode,
-                  autoinject: runtime.ragAutoInject,
-                  autoinject_min_score: runtime.ragAutoInjectMinScore,
-                }
-              : {
-                  ...(runtime.ragEnabled
+            ? {
+                ...(runtime.ragEnabled && runtime.ragSource.type === "kb"
+                  ? { kb_id: runtime.ragSource.kbId }
+                  : runtime.ragEnabled
                     ? { thread_id: resolvedThreadId }
                     : {}),
-                  ...(projectRagEnabled && researchProjectId
-                    ? { project_id: researchProjectId }
-                    : {}),
-                  default_top_k: runtime.ragTopK,
-                  mode: runtime.ragMode,
-                  autoinject: runtime.ragAutoInject,
-                  autoinject_min_score: runtime.ragAutoInjectMinScore,
-                }
+                ...(projectRagEnabled && researchProjectId
+                  ? { project_id: researchProjectId }
+                  : {}),
+                default_top_k: runtime.ragTopK,
+                mode: runtime.ragMode,
+                autoinject: runtime.ragAutoInject,
+                autoinject_min_score: runtime.ragAutoInjectMinScore,
+              }
             : undefined;
 
         const threadKey = resolvedThreadId;
@@ -6943,14 +6937,12 @@ export function createOpenAIStreamAdapter(
                           rag_scope: {
                             ...(ragEnabled && ragSource.type === "kb"
                               ? { kb_id: ragSource.kbId }
-                              : {
-                                  ...(ragEnabled && resolvedThreadId
-                                    ? { thread_id: resolvedThreadId }
-                                    : {}),
-                                  ...(projectRagEnabled && ragProjectId
-                                    ? { project_id: ragProjectId }
-                                    : {}),
-                                }),
+                              : ragEnabled && resolvedThreadId
+                                ? { thread_id: resolvedThreadId }
+                                : {}),
+                            ...(projectRagEnabled && ragProjectId
+                              ? { project_id: ragProjectId }
+                              : {}),
                             default_top_k: ragTopK,
                             mode: ragMode,
                             autoinject: resolveAutoInject(
@@ -7146,14 +7138,12 @@ export function createOpenAIStreamAdapter(
                         rag_scope: {
                           ...(ragEnabled && ragSource.type === "kb"
                             ? { kb_id: ragSource.kbId }
-                            : {
-                                ...(ragEnabled && resolvedThreadId
-                                  ? { thread_id: resolvedThreadId }
-                                  : {}),
-                                ...(projectRagEnabled && ragProjectId
-                                  ? { project_id: ragProjectId }
-                                  : {}),
-                              }),
+                            : ragEnabled && resolvedThreadId
+                              ? { thread_id: resolvedThreadId }
+                              : {}),
+                          ...(projectRagEnabled && ragProjectId
+                            ? { project_id: ragProjectId }
+                            : {}),
                           default_top_k: ragTopK,
                           mode: ragMode,
                           autoinject: resolveAutoInject(

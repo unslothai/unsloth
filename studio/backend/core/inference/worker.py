@@ -1195,7 +1195,7 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
             raise RuntimeError("The loaded backend does not read video.")
         gen_kwargs["video"] = cmd["video_base64"]
     # Only a raw completion carries these; its batch rows are planned from them.
-    for raw in ("prompt_ids", "penalty_window", "grammar"):
+    for raw in ("prompt_ids", "penalty_window", "grammar", "n_probs"):
         if raw in cmd:
             gen_kwargs[raw] = cmd[raw]
 
@@ -1279,6 +1279,7 @@ _COMPLETION_OPTIONS = (
     "stop",
     "penalty_window",
     "grammar",
+    "n_probs",
 )
 
 
