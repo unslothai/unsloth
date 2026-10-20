@@ -3141,7 +3141,8 @@ def _fused_lora_layers(layers, mlp_function):
         if getattr(getattr(layer, "self_attn", None), "apply_qkv", None) is apply_lora_qkv
         or getattr(getattr(layer, "self_attn", None), "apply_o", None) is apply_lora_o
         or any(
-            getattr(getattr(getattr(layer, "mlp", None), name, None), "__func__", None) is mlp_function
+            getattr(getattr(getattr(layer, "mlp", None), name, None), "__func__", None)
+            is mlp_function
             for name in ("forward", "_unsloth_forward")
         )
     ]

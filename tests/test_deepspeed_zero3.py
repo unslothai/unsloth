@@ -273,7 +273,9 @@ def test_resync_dtype_follows_the_flags_when_sections_are_absent():
         fp16_full_eval = False,
         bf16_full_eval = False,
         deepspeed_plugin = types.SimpleNamespace(deepspeed_config = config),
-        hf_deepspeed_config = types.SimpleNamespace(config = config, mismatches = [], _dtype = torch.float32),
+        hf_deepspeed_config = types.SimpleNamespace(
+            config = config, mismatches = [], _dtype = torch.float32
+        ),
     )
     assert loader_utils.sync_deepspeed_mixed_precision(args) == []
     assert args.hf_deepspeed_config._dtype is torch.bfloat16
@@ -354,7 +356,11 @@ def test_only_layers_with_installed_fused_kernels_are_leaves():
     def fused_mlp(self, x):
         return x
 
-    def layer(qkv = None, o = None, mlp = False):
+    def layer(
+        qkv = None,
+        o = None,
+        mlp = False,
+    ):
         m = torch.nn.Module()
         m.self_attn = torch.nn.Module()
         m.self_attn.apply_qkv = qkv or (lambda *a: None)
