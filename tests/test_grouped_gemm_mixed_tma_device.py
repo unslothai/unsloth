@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TMA support is process-wide, so on H100 (cuda:0) + A100 (cuda:1) it must hold on every visible
-card, not just the current one; launches and Triton scratch must follow the operands' device."""
+"""Mixed H100+A100: TMA must hold on every card; launches and scratch follow the operands' device."""
 
 import ast
 import contextlib
@@ -184,8 +183,7 @@ def test_launches_are_guarded_on_the_operands_device(monkeypatch):
         module._grouped_gemm_dW_impl(X = X, dY = dY, **common)
         scratch = [alloc(128, 128, 0).device for alloc in allocations]
     assert launches == [dev, dev, dev]
-    # set_allocator is process-wide: the callback must follow the current device (pinned by the guard),
-    # never capture one launch's card for every later launch on any card.
+    # set_allocator is process-wide: follow the current device, never capture one launch's card.
     assert scratch and all(d.type == "cuda" and d.index in (None, 0) for d in scratch)
 
 
