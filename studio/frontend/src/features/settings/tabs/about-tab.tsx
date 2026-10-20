@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
+import { hardwareGpuMemorySplitGb } from "@/hooks/gpu-vram";
 import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
 import { type TranslationKey, useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
@@ -90,6 +91,21 @@ function acceleratorRuntimes(hw: HardwareInfo): RuntimeRow[] {
     rows.push({ labelKey: "settings.about.xpu", version: hw.xpu });
   }
   return rows;
+}
+
+function aboutGpuMemoryText(
+  gpu: HardwareInfo["gpus"][number],
+  t: ReturnType<typeof useT>,
+): string {
+  if (gpu.vramTotalGb == null) return "";
+  const split = hardwareGpuMemorySplitGb(gpu);
+  if (split && split.dedicated > 0) {
+    return ` · ${t("settings.resources.environment.vramWithShared", {
+      vram: `${Math.round(split.dedicated)} GiB`,
+      shared: `${Math.round(split.shared)} GiB`,
+    })}`;
+  }
+  return ` · ${Math.round(gpu.vramTotalGb)} GiB`;
 }
 
 export function AboutTab() {
@@ -191,9 +207,7 @@ export function AboutTab() {
             >
               <code className="font-mono text-xs text-muted-foreground">
                 {gpu.name ?? "—"}
-                {gpu.vramTotalGb != null
-                  ? ` · ${Math.round(gpu.vramTotalGb)} GiB`
-                  : ""}
+                {aboutGpuMemoryText(gpu, t)}
               </code>
             </SettingsRow>
           ))}

@@ -113,6 +113,22 @@ export function deviceSharedMemorySplitGb(
   return totals.shared > 0 ? totals : null;
 }
 
+/** `deviceSharedMemorySplitGb` for a `/api/system/hardware` row (About tab). */
+export function hardwareGpuMemorySplitGb(gpu: {
+  vramTotalGb: number | null;
+  sharedMemory?: boolean;
+  unifiedMemory?: boolean;
+  sharedMemoryHostBackedGb?: number | null;
+}): GpuMemoryTotalsGb | null {
+  if (gpu.vramTotalGb == null) return null;
+  return deviceSharedMemorySplitGb({
+    memory_total_gb: gpu.vramTotalGb,
+    shared_memory: gpu.sharedMemory === true,
+    unified_memory: gpu.unifiedMemory === true,
+    shared_memory_host_backed_gb: gpu.sharedMemoryHostBackedGb ?? null,
+  });
+}
+
 export function gpuSharedHostMemoryGb(devices: MemoryTotalDevice[]): number {
   return gpuMemoryTotalsGb(devices).shared;
 }
