@@ -56,11 +56,19 @@ def _make_real_torchtune(root: Path) -> None:
     )
 
 
+# An installed torchtune must not leak into the "absent" cases: only the fake packages under `path` count.
+_HIDE_SITE_TORCHTUNE = (
+    "import os as _os, sys as _sys\n"
+    "_sys.path[:] = [_p for _p in _sys.path if _p == {path!r} or not "
+    "_os.path.exists(_os.path.join(_p or '.', 'torchtune'))]\n"
+)
+
+
 def _run(code: str, path: Path) -> dict:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(path)
     out = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(code)],
+        [sys.executable, "-c", _HIDE_SITE_TORCHTUNE.format(path = str(path)) + textwrap.dedent(code)],
         env = env,
         capture_output = True,
         text = True,
