@@ -3068,7 +3068,7 @@ export function HubModelPicker({
   onBrowseHub,
   onConfigureConnection,
   onModelsChange,
-  onConfigure,
+  onConfigure: onConfigureProp,
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
@@ -3080,6 +3080,7 @@ export function HubModelPicker({
   opaqueKind,
   npu,
   rowFilter,
+  moreModels,
 }: {
   models: ModelOption[];
   /** Task-runtime downloads using a cache layout the shared Hub inventory cannot represent (for
@@ -3120,6 +3121,11 @@ export function HubModelPicker({
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   npu?: NpuPickerSource;
   rowFilter?: ModelPickerRowFilter;
+  /** A second Recommended group under its own ListLabel; rows reuse the recommended renderer. */
+  moreModels?: {
+    label: string;
+    models: (ModelOption & { sizeBytes?: number | null })[];
+  };
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -3146,6 +3152,8 @@ export function HubModelPicker({
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  // Run settings is the chat load form, which the Images and Video pages never read.
+  const onConfigure = diffusionLoad ? undefined : onConfigureProp;
   const audioTaskPicker = taskFilterHasAudio(task);
   // What the backend actually holds, not the dropdown highlight: an image or video load evicts
   // the chat model and leaves the pick untouched, so rows kept a "Loaded" badge with nothing
@@ -3277,11 +3285,11 @@ export function HubModelPicker({
   // hasGgufSuffix is the fallback rather than conflating unknown with known-not-GGUF.
   const modelGgufIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const model of models) {
+    for (const model of [...models, ...(moreModels?.models ?? [])]) {
       if (model.isGguf) ids.add(model.id.toLowerCase());
     }
     return ids;
-  }, [models]);
+  }, [models, moreModels]);
   // Both listings contribute GGUF hints so a tag-only GGUF still expands variants instead of loading as a checkpoint.
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
@@ -3455,12 +3463,16 @@ export function HubModelPicker({
     () =>
       new Set(
         task && catalog
-          ? models
-              .filter((model) => artifactForRepoId(model.id, catalog) !== null)
-              .map((model) => model.id.trim().toLowerCase())
+          ? [
+              ...models.filter(
+                (model) => artifactForRepoId(model.id, catalog) !== null,
+              ),
+              // Catalog rows the seed lacks, so a downloaded new folder still lists On Device.
+              ...(moreModels?.models ?? []),
+            ].map((model) => model.id.trim().toLowerCase())
           : [],
       ),
-    [catalog, models, task],
+    [catalog, models, moreModels, task],
   );
   const pickerInventory = useChatPickerInventory({
     enabled: true,
@@ -4081,6 +4093,9 @@ export function HubModelPicker({
       pinnedFamilies: catalog
         ?.filter((g) => g.pinToTop)
         .map((g) => g.canonicalId.toLowerCase()),
+      pinnedTogether: catalog
+        ?.filter((g) => g.pinToTop && g.pinRowsTogether)
+        .map((g) => g.canonicalId.toLowerCase()),
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
@@ -4122,6 +4137,57 @@ export function HubModelPicker({
     isLoadableCommunityRepo,
     runsCheckpointQuant,
     chatSupportedCheckpointQuant,
+  ]);
+
+  const moreById = useMemo(
+    () =>
+      new Map(
+        (moreModels?.models ?? []).map((model) => [model.id.toLowerCase(), model]),
+      ),
+    [moreModels],
+  );
+  // The "More" group: page-filtered by the caller, then the row, format and fit filters the
+  // recommended rows above use, with no repeats.
+  const moreRows = useMemo<HfModelResult[]>(() => {
+    const above = new Set(recommendedRows.map((r) => r.id.toLowerCase()));
+    const source = loadScopedGpu(inferenceGpu, Boolean(task));
+    return (moreModels?.models ?? [])
+      .filter((model) => !above.has(model.id.toLowerCase()))
+      .filter((model) => !rowFilter || rowFilter({ id: model.id }))
+      .filter((model) => !isHiddenModelId(model.id))
+      .filter((model) =>
+        matchesFormatFilter(model.id, model.isGguf ?? true, formatFilter),
+      )
+      .map((model) => ({
+        id: model.id,
+        downloads: 0,
+        likes: 0,
+        isGguf: model.isGguf ?? true,
+        estimatedSizeBytes: model.sizeBytes ?? undefined,
+      }))
+      .filter(
+        (row) =>
+          !fitOnDeviceOnly ||
+          cachedIdFor(row.id) !== null ||
+          hfModelFitsDevice(row, source, {
+            budgetFraction,
+            mediaLoad: diffusionLoad,
+            hostPooledMemory: gpu.loadDeviceSharesHostMemory,
+            gpuCount: source.deviceCount,
+          }),
+      );
+  }, [
+    moreModels,
+    recommendedRows,
+    rowFilter,
+    formatFilter,
+    fitOnDeviceOnly,
+    cachedIdFor,
+    inferenceGpu,
+    gpu,
+    task,
+    budgetFraction,
+    diffusionLoad,
   ]);
 
   // Per-row meta and VRAM badge from the recommended listing's own metadata, with the curated
@@ -4187,6 +4253,7 @@ export function HubModelPicker({
       ...recommendedSearch.results,
       ...catalogSeedRows,
       ...communityBrowse.results,
+      ...moreRows,
     ]) {
       if (map.has(r.id)) continue;
       const isG = isKnownGgufRepo(r.id);
@@ -4262,6 +4329,7 @@ export function HubModelPicker({
     recommendedSearch.results,
     communityBrowse.results,
     catalogSeedRows,
+    moreRows,
     catalog,
     catalogFit,
     task,
@@ -5391,13 +5459,17 @@ export function HubModelPicker({
     return (
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
-      searchableRecommendedIds(catalogSeedIds, recommendedIds)
+      dedupe([
+        ...searchableRecommendedIds(catalogSeedIds, recommendedIds),
+        ...moreRows.map((r) => r.id),
+      ])
         // What the row shows, plus the vendor id a mirror row answers to.
         .filter((id) =>
           pickerSearchMatches(
             id,
             aliasesOf(id),
-            catalog ? curatedRow(id).name : null,
+            moreById.get(id.toLowerCase())?.name ??
+              (catalog ? curatedRow(id).name : null),
             q,
           ),
         )
@@ -5411,13 +5483,20 @@ export function HubModelPicker({
             !fitOnDeviceOnly ||
             cachedIdFor(id) !== null ||
             runsCheckpointQuant({ id }) ||
-            searchRowFits({ id }),
+            // A More row's catalog size, as browse judged it: its id alone may be unsizable.
+            searchRowFits({
+              id,
+              estimatedSizeBytes:
+                moreById.get(id.toLowerCase())?.sizeBytes ?? undefined,
+            }),
         )
     );
   }, [
     showHfSection,
     debouncedQuery,
     catalogSeedIds,
+    moreRows,
+    moreById,
     recommendedIds,
     aliasesOf,
     catalog,
@@ -5786,8 +5865,9 @@ export function HubModelPicker({
     }
 
     if (section === "recommended") {
+      // The More group renders right after the recommended rows, so it continues the same order.
       keys.push(
-        ...recommendedRows
+        ...[...recommendedRows, ...moreRows]
           .filter((r) => !loadedRowIds.has(r.id.toLowerCase()))
           .map((r) => makeModelOptionKey("recommended", r.id)),
       );
@@ -5816,6 +5896,7 @@ export function HubModelPicker({
     sortedLmStudio,
     lmStudioCollapsed,
     recommendedRows,
+    moreRows,
     section,
     showHfSection,
     sortedLocalDir,
@@ -8402,7 +8483,8 @@ export function HubModelPicker({
                     {showNpuBrowse ? (
                       <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
                     ) : null}
-                    {recommendedRows.length === 0 &&
+                    {/* Catalog rows already listed below stand in for a pending or failed Hub list. */}
+                    {recommendedRows.length + moreRows.length === 0 &&
                     recommendedEmpty === "loading" ? (
                       <div className="flex items-center gap-2 px-5 py-3">
                         <Spinner className="size-3 text-muted-foreground" />
@@ -8410,33 +8492,53 @@ export function HubModelPicker({
                           Loading models…
                         </span>
                       </div>
-                    ) : recommendedRows.length === 0 &&
+                    ) : recommendedRows.length + moreRows.length === 0 &&
                       recommendedEmpty === "failed" ? (
                       <HubFailureHint
                         message={recommendedSearch.error}
                         onRetry={recommendedSearch.retry}
                       />
-                    ) : recommendedRows.length === 0 ? (
+                    ) : recommendedRows.length + moreRows.length === 0 ? (
                       <div className="px-2.5 py-2 text-xs text-muted-foreground">
                         No models found.
                       </div>
                     ) : (
-                      recommendedRows.map((r) => {
+                      [...recommendedRows, ...moreRows].map((r, index) => {
                         const id = r.id;
-                        if (loadedRowIds.has(id.toLowerCase())) return null;
+                        const more = moreById.get(id.toLowerCase());
+                        const moreLabel =
+                          index === recommendedRows.length && moreModels ? (
+                            <ListLabel key="more-models" divider>
+                              {moreModels.label}
+                            </ListLabel>
+                          ) : null;
+                        if (loadedRowIds.has(id.toLowerCase())) return moreLabel;
                         const info = recommendedMeta.get(id);
                         const isG = isKnownGgufRepo(id);
                         const optionKey = makeModelOptionKey("recommended", id);
                         return (
                           <div key={id}>
+                            {moreLabel}
                             {renderHubModelRow(
                               id,
                               <ModelRow
-                                label={curatedRow(id).name}
+                                label={more?.name ?? curatedRow(id).name}
                                 tags={curatedRow(id).tags}
                                 hubUrl={hubRepoUrl(id)}
+                                tooltipText={
+                                  more?.description ? (
+                                    <>
+                                      <span className="block break-words">
+                                        {more.name}
+                                      </span>
+                                      <span className="block text-ui-10 mt-1">
+                                        {more.description}
+                                      </span>
+                                    </>
+                                  ) : undefined
+                                }
                                 alignMeta="hub"
-                                showSize={hubRowsShowSize}
+                                showSize={hubRowsShowSize || Boolean(more)}
                                 // Without the owner a community row reads as an unsloth upload.
                                 hideOwner={isUnslothOwned(id)}
                                 downloaded={cachedIdFor(id) !== null}
@@ -8550,7 +8652,10 @@ export function HubModelPicker({
                           {renderHubModelRow(
                             id,
                             <ModelRow
-                              label={curatedRow(id).name}
+                              label={
+                                moreById.get(id.toLowerCase())?.name ??
+                                curatedRow(id).name
+                              }
                               tags={curatedRow(id).tags}
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"

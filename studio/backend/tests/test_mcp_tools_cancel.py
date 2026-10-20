@@ -5,14 +5,17 @@ import asyncio
 import types
 
 import pytest
+from fastapi.responses import JSONResponse
 
-from studio_mcp import export_jobs
+from studio_mcp import export_jobs, job_store
 
 from .mcp_harness import bodies, register_export_job, run_tool, sequence
 
 START = "/api/train/start-requests/req-1/cancel"
 RECIPE = "/api/data-recipe/jobs/rec-1/cancel"
 DOWNLOAD = "/api/hub/datasets/download/cancel"
+MODEL_DOWNLOAD = "/api/hub/download/cancel"
+VIDEO = "/api/inference/video/generate/cancel"
 STOPPING = "Stop requested. Training will stop at the next safe step."
 PAYLOADS = {
     ("GET", "/api/train/status"): {"job_id": "job-7", "is_training_running": True},
@@ -30,6 +33,7 @@ PAYLOADS = {
     ("POST", "/api/inference/video/generate/cancel"): {"cancelled": True},
     ("POST", "/api/inference/cancel"): {"cancelled": 1},
     ("POST", DOWNLOAD): {"repo_id": "a/b", "state": "cancelling"},
+    ("POST", MODEL_DOWNLOAD): {"job_key": "a/b::q4_k_m", "state": "cancelling"},
 }
 
 
@@ -65,9 +69,15 @@ def _call(
         ),
         ({"kind": "recipe", "id": "rec-1"}, RECIPE, None),
         ({"kind": "image"}, "/api/inference/images/generate/cancel", None),
-        ({"kind": "video"}, "/api/inference/video/generate/cancel", None),
+        ({"kind": "video"}, VIDEO, {"video_id": None}),
+        ({"kind": "video", "id": "vid-1"}, VIDEO, {"video_id": "vid-1"}),
         ({"kind": "chat", "id": "mcp-abc"}, "/api/inference/cancel", {"cancel_id": "mcp-abc"}),
         ({"kind": "dataset_download", "id": "a/b"}, DOWNLOAD, {"repo_id": "a/b"}),
+        (
+            {"kind": "model_download", "id": "a/b::Q4_K_M"},
+            MODEL_DOWNLOAD,
+            {"repo_id": "a/b", "gguf_variant": "Q4_K_M"},
+        ),
     ],
 )
 def test_each_kind_reaches_its_route(monkeypatch, args, route, body):
@@ -77,6 +87,24 @@ def test_each_kind_reaches_its_route(monkeypatch, args, route, body):
     (call,) = [c for c in studio.state.calls if c[0] == "POST"]
     assert call[1] == route
     assert (bodies(studio, route)[0] if call[3] else None) == body
+
+
+def test_a_video_id_that_is_not_rendering_is_reported(monkeypatch):
+    refused = JSONResponse({"detail": "That video is not rendering."}, status_code = 409)
+    result, _studio = _call(
+        monkeypatch, {"kind": "video", "id": "vid-2"}, {("POST", VIDEO): refused}
+    )
+    assert result["isError"] is True
+    assert "That video is not rendering." in result["content"][0]["text"]
+
+
+@pytest.mark.parametrize("kind", ["image", "diffusion_training"])
+def test_an_id_on_a_kind_that_takes_none_is_refused_before_any_route(monkeypatch, kind):
+    result, studio = _call(monkeypatch, {"kind": kind, "id": "x-1"})
+    assert result["isError"] is True
+    text = result["content"][0]["text"]
+    assert f"cancel(kind='{kind}') takes no id: this cancel stops the running one" in text
+    assert studio.state.calls == []
 
 
 def test_training_without_an_id_stops_the_running_job(monkeypatch):
@@ -162,7 +190,7 @@ def _cancel_directly(monkeypatch, job_run, answers):
         await asyncio.sleep(0)
         result = await cancel_module.cancel("export", job.job_id)
         status = job.status
-        export_jobs.mark_cancelled(job)
+        job_store.mark_cancelled(job)
         await asyncio.gather(job.task, return_exceptions = True)
         job.status = status
         return job, result, calls
@@ -231,6 +259,7 @@ IDLE_ANSWERS = [
     ("chat", "/api/inference/cancel", {"cancelled": 0}),
     ("dataset_download", DOWNLOAD, {"repo_id": "a/b", "state": "completed"}),
     ("dataset_download", DOWNLOAD, {"repo_id": "a/b", "state": "cancelled"}),
+    ("model_download", MODEL_DOWNLOAD, {"job_key": "a/b::", "state": "idle"}),
 ]
 IDS = {
     "training": "job-7",
@@ -238,6 +267,7 @@ IDS = {
     "recipe": "rec-1",
     "chat": "mcp-abc",
     "dataset_download": "a/b",
+    "model_download": "a/b",
 }
 
 

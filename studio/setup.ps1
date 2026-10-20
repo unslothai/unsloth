@@ -9622,7 +9622,9 @@ Complete-FrontendBuildBackground -IfDone
 # corrupt runtime must be installed or repaired even when the venv is current.
 if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     $_mxcInstaller = Join-Path $PSScriptRoot "install_mxc_prebuilt.py"
-    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\windows-x86_64"
+    # Must match mxc_runtime._installed_package_root(): ARM64 PCs get Microsoft's ARM64 build.
+    $_mxcArchDir = if ((Get-UvHostArch) -eq "arm64") { "windows-arm64" } else { "windows-x86_64" }
+    $_mxcInstallDir = Join-Path $StudioHome "mxc-runtime\$_mxcArchDir"
     if (Test-Path -LiteralPath $_mxcInstaller -PathType Leaf) {
         substep "installing Windows MXC Preview runtime..."
         # Optional, so a nonzero exit or stderr line must reach the fallback below, not stop setup.
@@ -10555,6 +10557,9 @@ if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
         }
     } elseif ($audioCppExit -eq 3) {
         step "audio.cpp" "install busy; keeping existing runtime" "Yellow"
+    } elseif ($audioCppOutput -match "cannot be read by this account") {
+        # An elevated run left it owned by Administrators (#14052); only an elevated shell can remove it.
+        step "audio.cpp" "$AudioCppDir is unreadable (left by an elevated run); in an elevated PowerShell run Remove-Item -Recurse -Force `"$AudioCppDir`", then unsloth studio update" "Yellow"
     } else {
         step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "Yellow"
     }

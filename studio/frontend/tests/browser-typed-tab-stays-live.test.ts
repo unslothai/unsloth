@@ -165,7 +165,7 @@ test("a typed notice sent after the page left does not mark the next page", () =
 
 test("only the first private input channel from this page can report edits", () => {
   const backend = readFileSync(new URL("../../backend/routes/browser.py", import.meta.url), "utf8");
-  const start = backend.indexOf("      let page = null;");
+  const start = backend.indexOf("      const FOLLOW_CLICK_MS = ");
   const relay = backend.slice(start, backend.indexOf("    </script>", start));
   type Port = { onmessage?: (event: { data: unknown }) => void };
   const child = {};
@@ -173,9 +173,11 @@ test("only the first private input channel from this page can report edits", () 
   const parent = { postMessage: (data: unknown) => forwarded.push(data) };
   let listener: (event: { source: unknown; data: unknown; ports: Port[] }) => void;
   let now = 0;
+  let violation: (event: { effectiveDirective: string; blockedURI: string }) => void;
   const document = {
     createElement: () => ({ contentWindow: child, setAttribute() {} }),
-    body: { appendChild() {} }, head: { appendChild() {} }, addEventListener() {},
+    body: { appendChild() {} }, head: { appendChild() {} },
+    addEventListener: (_: string, callback: typeof violation) => { violation = callback; },
   };
   new Function("window", "document", "parent", "performance", "boot", "escapeAttr", "inject", relay)(
     { addEventListener: (_: string, callback: typeof listener) => { listener = callback; } },
@@ -209,6 +211,11 @@ test("only the first private input channel from this page can report edits", () 
     { source: "unsloth-browser", type: "typed", reset: false },
     { source: "unsloth-browser", type: "typed", reset: false },
   ]);
+  forwarded.length = 0;
+  send(child, { source: "unsloth-browser", type: "linkClick", url: "https://docs.example/next" });
+  assert.deepEqual(forwarded, []);
+  violation!({ effectiveDirective: "frame-src", blockedURI: "https://docs.example/" });
+  assert.deepEqual(forwarded, [{ source: "unsloth-browser", type: "navigate", url: "https://docs.example/next" }]);
 });
 
 test("bootstrap precedes page scripts without moving a leading doctype", () => {
