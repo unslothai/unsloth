@@ -340,3 +340,32 @@ def test_vad_routes_check_a_managed_accounts_model_access(monkeypatch):
     )
     assert load.status_code == 403 and detect.status_code == 403
     assert checked == ["someorg/not-allowed-vad", "someorg/not-allowed-vad"] and calls == []
+
+
+def test_a_managed_voice_load_checks_access_before_any_hub_lookup(monkeypatch):
+    """voice=true runs the model-access check first; a refused repo is never resolved on the Hub."""
+    from fastapi import HTTPException
+
+    from core.inference import audio_cpp_models
+    from hub.services.models import account_access
+    from routes import inference
+
+    events = []
+
+    def deny(reference, *args, **kwargs):
+        events.append(("access", reference))
+        raise HTTPException(status_code = 403, detail = "Model not allowed")
+
+    monkeypatch.setattr(account_access, "require_model_access", deny)
+    monkeypatch.setattr(
+        audio_cpp_models, "resolve", lambda *a, **k: events.append(("resolve", a[0])) or None
+    )
+    client = _voice_client([inference.router, inference.studio_router])
+    _as_account(monkeypatch, "bob", "user")
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+
+    response = client.post(
+        "/api/inference/load", json = {"model_path": "secretorg/private-llm-GGUF", "voice": True}
+    )
+    assert response.status_code == 403
+    assert events == [("access", "secretorg/private-llm-GGUF")]

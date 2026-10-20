@@ -71,6 +71,7 @@ import {
   voiceNotesEpoch, } from "@/features/chat/voice/thinking-filler";
 import { clearVoiceDecisions } from "@/features/chat/voice/voice-decisions";
 import {
+  describeToolCall,
   getVoiceMode,
   registerToolCallDescriber,
   registerVoiceBargeAbort,
@@ -113,7 +114,7 @@ import {
 } from "./early-interject";
 import { type HoldToStop, createHoldToStop } from "./hold-to-stop";
 import { type OrbDwell, createOrbDwell } from "./orb-dwell";
-import { ORB_WIDGET_LONG_PRESS_MS } from "./orb-widget";
+import { ORB_WIDGET_LONG_PRESS_MS, pendingApproval } from "./orb-widget";
 import { isRevealPrefix, isTypedVoiceSubmit } from "./typed-send";
 
 // Tracks the previous thread-running state across the first-send remount, so the
@@ -123,6 +124,13 @@ let _prevRunning = false;
 // The thread whose run the loop is voicing. Module-level for the same reason: New Chat
 // remounts VoiceEngine, and the reset that follows must still find the run to stop.
 let _voicedThreadId: string | null = null;
+
+// Tool calls of the voiced chat waiting on Allow / Deny, filtered as the floating orb does: a
+// Compare pane or a background chat raising its own card is not voice mode's to speak about.
+function voicedApprovalCount(s: ReturnType<typeof useChatRuntimeStore.getState>): number {
+  const pending = pendingApproval(s.toolConfirmations, s.activeThreadId, (id) => describeToolCall(id) !== null);
+  return pending ? pending.more + 1 : 0;
+}
 
 // Voice coalescing window: after a finished utterance is appended as a user
 // bubble, wait this long for another utterance before generating. Utterances that
@@ -833,8 +841,7 @@ export const VoiceEngine: FC = () => {
     // ("How many?" then "Too many cannolis"): it joins the hold, never dropped
     // on its own, and the two go as one when the reply ends.
     const continuing = queuedUtteranceRef.current.length > 0 && !repeated;
-    const awaitingApproval =
-      Object.keys(useChatRuntimeStore.getState().toolConfirmations).length > 0;
+    const awaitingApproval = voicedApprovalCount(useChatRuntimeStore.getState()) > 0;
     const action = interjectUnderApproval(
       sameAsk
         ? "ignore"
@@ -928,7 +935,7 @@ export const VoiceEngine: FC = () => {
   // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
   // The priority order itself lives in deriveOrbState, which is pure and tested.
   // A tool call paused for Allow/Deny: say so once per card, after whatever is playing.
-  const confirmationCount = useChatRuntimeStore((s) => Object.keys(s.toolConfirmations).length);
+  const confirmationCount = useChatRuntimeStore(voicedApprovalCount);
   const confirmationsSeenRef = useRef(0);
   useEffect(() => {
     const before = confirmationsSeenRef.current;
@@ -946,7 +953,7 @@ export const VoiceEngine: FC = () => {
     let tries = 0;
     const timer = setInterval(() => {
       tries++;
-      if (Object.keys(useChatRuntimeStore.getState().toolConfirmations).length === 0) {
+      if (voicedApprovalCount(useChatRuntimeStore.getState()) === 0) {
         clearInterval(timer);
         return;
       }
@@ -1050,6 +1057,8 @@ export const VoiceEngine: FC = () => {
 
   // Helper: transition to "active" and start the mic.
   const activateLoop = useCallback(() => {
+    // Turning voice on starts clean: nothing held from a session before it carries in.
+    if (voiceModeRef.current !== "active") clearHeldTurn();
     setLoopVoiceMode("active");
     voiceModeRef.current = "active";
     setVoiceModeState("active");
@@ -1163,8 +1172,7 @@ export const VoiceEngine: FC = () => {
           const now = Date.now();
           // Waiting on the Allow/Deny card: the approval line said what is needed, so no
           // "working on it" style asides on top of it.
-          const awaitingApproval =
-            Object.keys(useChatRuntimeStore.getState().toolConfirmations).length > 0;
+          const awaitingApproval = voicedApprovalCount(useChatRuntimeStore.getState()) > 0;
           const asideGapOk = now - lastAsideAtRef.current >= ASIDE_MIN_GAP_MS;
           if (
             !awaitingApproval &&

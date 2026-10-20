@@ -142,31 +142,16 @@ function renderCard(opts: { name: string | null; disclosure?: boolean }) {
   return { labels: buttons.map((b) => b.props.children), press, calls };
 }
 
-test("the orb card's buttons make the chat card's decision, Always allow naming the tool", () => {
+test("the orb card's buttons make the chat card's decision, with no Always allow", () => {
+  // Its line can be a cut-down view of the call, so a lasting grant is left to the chat card.
   const card = renderCard({ name: "web_search" });
-  assert.deepEqual(card.labels, [
-    "browser.agent.allow",
-    "browser.agentSettings.alwaysAllow",
-    "browser.agent.deny",
-  ]);
+  assert.deepEqual(card.labels, ["browser.agent.allow", "browser.agent.deny"]);
   card.press("browser.agent.allow");
-  card.press("browser.agentSettings.alwaysAllow");
   card.press("browser.agent.deny");
   assert.deepEqual(card.calls, [
-    ["c1", "allow", undefined],
-    ["c1", "allow", "web_search"],
-    ["c1", "deny", undefined],
+    ["c1", "allow"],
+    ["c1", "deny"],
   ]);
-});
-
-test("with the call's tool unknown, Always allow is not offered rather than granting \"tool\"", () => {
-  const card = renderCard({ name: null });
-  assert.deepEqual(card.labels, ["browser.agent.allow", "browser.agent.deny"]);
-  assert.equal(renderCard({ name: "" }).labels.length, 2);
-});
-
-test("a call that sends an image is never offered Always allow", () => {
-  assert.equal(renderCard({ name: "web_search", disclosure: true }).labels.length, 2);
 });
 
 // --- the floating widget's host ---

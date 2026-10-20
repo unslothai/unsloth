@@ -483,9 +483,12 @@ class _SklearnUnpickler(pickle.Unpickler):
             return super().find_class(module, name)
         if module == "collections" and name in ("OrderedDict", "defaultdict"):
             return super().find_class(module, name)
-        if module.split(".")[0] in _PICKLE_PACKAGES:
+        # A dotted name walks attributes ("subprocess.Popen" off a module that imports it), and a
+        # class re-exported from elsewhere is not one of these packages' own: both are refused.
+        if "." not in name and module.split(".")[0] in _PICKLE_PACKAGES:
             found = super().find_class(module, name)
-            if isinstance(found, type):
+            home = str(getattr(found, "__module__", "") or "").split(".")[0]
+            if isinstance(found, type) and home in _PICKLE_PACKAGES:
                 return found
         raise pickle.UnpicklingError(
             f"voice model pickle refers to {module}.{name}, which is not allowed"

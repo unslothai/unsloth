@@ -196,8 +196,10 @@ class AudioCppVadSidecar:
         entry = resolve_vad_model(model, network = False)
         from core.inference.stt_sidecar import _training_active
 
-        on_cpu = _training_active()
         with self._lock:
+            # Decided under the lock training admission's release takes, so a load cannot read
+            # "no training" and then start on the GPU after admission has freed it.
+            on_cpu = _training_active()
             if (
                 self._model is not None
                 and self._model.id == entry.id

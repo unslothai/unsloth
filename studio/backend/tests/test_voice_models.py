@@ -552,3 +552,30 @@ def test_filler_bank_never_sounds_like_an_answer():
     assert len(texts) > 50
     bad = [t for t in texts if re.search(_AGREEMENT_OR_REFUSAL, t, re.I)]
     assert bad == []
+
+
+def _global_call(module: str, name: str, arg: str) -> bytes:
+    """A protocol 4 pickle calling ``module`` / ``name`` (a dotted name allowed) with one argument."""
+    import pickle
+
+    def text(x):
+        b = x.encode()
+        return b"\x8c" + bytes([len(b)]) + b
+
+    args = pickle.dumps((arg,), protocol = 4)[2:-1]
+    return b"\x80\x04" + text(module) + text(name) + b"\x93" + args + b"R."
+
+
+@pytest.mark.parametrize(
+    "module,name",
+    [
+        ("numpy.f2py", "subprocess.Popen"),
+        ("scipy._lib._testutils", "subprocess.Popen"),
+        ("numpy", "testing.Tester"),
+    ],
+)
+def test_voice_pickles_refuse_a_dotted_or_foreign_global(tmp_path, module, name):
+    import pickle
+    (tmp_path / "model.pkl").write_bytes(_global_call(module, name, "true"))
+    with pytest.raises(pickle.UnpicklingError, match = "not allowed"):
+        vm._TfidfClassifier(tmp_path)

@@ -2,28 +2,21 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { decideToolCall } from "@/features/chat/tool-decision";
 import { toolBrief } from "@/features/chat/voice/approval-brief";
-import { alwaysAllowToolName } from "@/features/chat/voice/orb-widget";
-import { describeToolCall } from "@/features/chat/voice/voice-loop-bridge";
 import { useT } from "@/i18n";
 import { type FC, useState } from "react";
 
 // The orb's own surface for a tool call waiting on Allow / Deny: the same decision the chat
 // card and the floating orb's popup make (decideToolCall), so whichever answers, all three
-// clear. Always allow stays here, as on the chat card; only the tiny floating popup drops it.
+// clear. Always allow is not offered here: this line can be a cut-down view of the call (a
+// script reads as "python"), so a grant that outlives it is made on the chat card, which shows it all.
 export const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) => {
   const t = useT();
-  const disclosure = useChatRuntimeStore((s) => s.toolConfirmations[id]?.imageDisclosure);
   const [pending, setPending] = useState(false);
-  // Always allow grants a tool by name for the chat: with the call not found, it is not offered.
-  const alwaysName = disclosure ? null : alwaysAllowToolName(describeToolCall(id));
-  const decide = (decision: "allow" | "deny", always = false) => {
+  const decide = (decision: "allow" | "deny") => {
     setPending(true);
-    void decideToolCall(id, decision, always && alwaysName ? alwaysName : undefined).finally(() =>
-      setPending(false),
-    );
+    void decideToolCall(id, decision).finally(() => setPending(false));
   };
   const brief = toolBrief(id);
   return (
@@ -45,11 +38,6 @@ export const OrbApprovalCard: FC<{ id: string; more: number }> = ({ id, more }) 
         <Button size="xs" disabled={pending} onClick={() => decide("allow")}>
           {t("browser.agent.allow")}
         </Button>
-        {alwaysName ? (
-          <Button size="xs" variant="outline" disabled={pending} onClick={() => decide("allow", true)}>
-            {t("browser.agentSettings.alwaysAllow")}
-          </Button>
-        ) : null}
         <Button size="xs" variant="destructive" disabled={pending} onClick={() => decide("deny")}>
           {t("browser.agent.deny")}
         </Button>

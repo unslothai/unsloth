@@ -369,6 +369,9 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
     // of these before the first loud frame, so a soft opening word is not trimmed off.
     const chunkNotSilent: boolean[] = [];
     let voicedMs = 0;
+    // The held turn this session belongs to, taken as it opens: a clear while it is still
+    // recording (voice off, a chat switch, Stop, a typed send) drops what it hears.
+    const epoch = heldEpoch;
     if (vadDisabled && useChatRuntimeStore.getState().selectedVadModelId !== vadDisabledFor) {
       vadDisabled = false;
     }
@@ -665,7 +668,6 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         const store = useChatRuntimeStore.getState();
         store.setVoiceTranscribing(true);
         let transcript = "";
-        const epoch = heldEpoch;
         try {
           transcript = (
             await transcribeAudioBlob(wav, { model: modelId })

@@ -18808,7 +18808,16 @@ async def load_model_gated(
     from core.inference.llama_cpp import GpuMemoryShortError
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
 
-    if request.voice and not await asyncio.to_thread(_is_voice_model, request):
+    if request.voice and account_access.managed_account():
+        # Checked before the voice lookup below reaches the Hub: a managed account names only models it
+        # may use, and the lookup runs with that account's token, never the owner's.
+        await asyncio.to_thread(account_access.require_model_access, request.model_path)
+        voice_probe = request.model_copy(
+            update = {"hf_token": account_access.account_hf_token(request.hf_token)}
+        )
+    else:
+        voice_probe = request
+    if request.voice and not await asyncio.to_thread(_is_voice_model, voice_probe):
         raise HTTPException(
             status_code = 400,
             detail = "Only an audio.cpp speech or transcription model can load as voice mode's voice.",

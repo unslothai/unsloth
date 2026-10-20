@@ -1537,6 +1537,7 @@ async def delete_project(
     # The project's chats go with it, so their archives and documents have to as well.
     await run_in_threadpool(_remove_thread_rag_data, member_ids, cutoff = cutoff)
     await run_in_threadpool(chat_originals.sweep)
+    await run_in_threadpool(_remove_voice_log_rows, member_ids)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1889,6 +1890,8 @@ async def clear_history(
         _remove_thread_rag_data, list(dict.fromkeys(thread_ids + cleared)), cutoff = cutoff
     )
     await run_in_threadpool(chat_originals.sweep)
+    # The voice decision log keeps transcripts by thread id; the cleared chats' rows go too.
+    await run_in_threadpool(_remove_voice_log_rows, list(dict.fromkeys(thread_ids + cleared)))
     # "Clear all chats" is the common bulk delete.
     # delete_files matches DELETE /threads: off by default, since the files are the user's.
     removed, kept = await _remove_sandboxes(list(dict.fromkeys(thread_ids + cleared)), delete_files)

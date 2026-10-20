@@ -3146,8 +3146,18 @@ export function ChatPage({
     useChatRuntimeStore.getState().setVadSlotLoaded(false);
   }, [voiceMode, unloadOwnVoice]);
 
-  // Leaving Chat with voice mode on unmounts this without voiceMode going "off".
-  useEffect(() => unloadOwnVoice, [unloadOwnVoice]);
+  // Leaving Chat with voice mode on unmounts this without voiceMode going "off": release what
+  // voice-off would, the transcriber and the speech detector too (the detector has no idle unload).
+  useEffect(
+    () => () => {
+      unloadOwnVoice();
+      if (prevVoiceModeRef.current === "off") return;
+      void unloadSttModel().catch(() => {});
+      void unloadVadModel();
+      useChatRuntimeStore.getState().setVadSlotLoaded(false);
+    },
+    [unloadOwnVoice],
+  );
 
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
