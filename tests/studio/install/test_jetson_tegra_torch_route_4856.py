@@ -224,6 +224,8 @@ def _run_cpu_note(
 def test_install_sh_cpu_note_keeps_the_jetson_diagnosis(tmp_path, tegra):
     out = _run_cpu_note(tmp_path, tegra)
     assert "NVIDIA Jetson detected" in out
+    # The JetPack remedy is here too: a Jetson nvidia-smi cannot see returns before get_torch_index_url's warning.
+    assert "install-pytorch-jetson-platform" in out
     assert "No GPU detected" not in out and "AMD ROCm users" not in out
     assert "--no-torch" in out
 
