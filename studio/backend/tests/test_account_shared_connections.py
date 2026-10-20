@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 
+import asyncio
 import http.server
 import json
 import sqlite3
@@ -23,7 +24,14 @@ from hub.services.models import account_access as access
 from routes import provider_credentials, providers
 from storage import credential_secrets, providers_db, studio_db
 from utils import managed_provider_url_settings as mpu
-from utils.account_context import OWNER, AccountContext, bind_account, reset_account, run_as
+from utils.account_context import (
+    OWNER,
+    AccountContext,
+    arun_as,
+    bind_account,
+    reset_account,
+    run_as,
+)
 from utils.paths import studio_db_path
 
 ALICE = AccountContext("a" * 32, "alice")
@@ -323,6 +331,26 @@ def test_listing_a_shared_connection_shows_only_the_models_the_owner_enabled(ups
             "/providers/models", json = {"provider_type": "custom", "provider_id": provider_id}
         )
     assert [model["id"] for model in response.json()] == UPSTREAM_MODELS
+
+
+def test_a_shared_reader_queues_on_the_owner_lock_without_reading_the_store(monkeypatch):
+    provider_id = owner_connection()
+    config = run_as(ALICE, providers_db.get_provider, provider_id)
+
+    async def guard(**kwargs):
+        return provider_credentials.provider_config_guard(provider_id, **kwargs)
+
+    def no_store_read(*args, **kwargs):
+        raise AssertionError("provider store read on the event loop")
+
+    async def check():
+        owner_lock = await arun_as(OWNER, guard())
+        monkeypatch.setattr(providers_db, "get_connection", no_store_read)
+        assert await arun_as(ALICE, guard()) is not owner_lock
+        reader = await arun_as(ALICE, guard(shared_by_owner = config["shared_by_owner"]))
+        assert reader is owner_lock
+
+    asyncio.run(check())
 
 
 def test_a_shared_lan_connection_still_needs_the_private_address_switch(upstream):

@@ -25709,7 +25709,9 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         base_url = validate_provider_base_url(base_url)
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
@@ -25961,7 +25963,9 @@ async def _external_stt_transcription(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
@@ -30660,7 +30664,10 @@ async def _proxy_to_external_provider(
     if managed is not None:
         api_key = managed.api_key
     elif saved_provider_snapshot is not None:
-        async with provider_config_guard(payload.provider_id):
+        async with provider_config_guard(
+            payload.provider_id,
+            shared_by_owner = bool(saved_provider_snapshot.get("shared_by_owner")),
+        ):
             current = await asyncio.to_thread(providers_db.get_provider, payload.provider_id)
             routing_fields = (
                 "provider_type",
@@ -51641,7 +51648,9 @@ async def _external_image_generation(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
-    async with provider_config_guard(provider_id):
+    async with provider_config_guard(
+        provider_id, shared_by_owner = bool(config.get("shared_by_owner"))
+    ):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         routing_fields = ("provider_type", "base_url", "is_enabled")
         if current is None or any(
