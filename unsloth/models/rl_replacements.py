@@ -2626,7 +2626,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     unsloth_zero3_gathered,
                     unsloth_zero3_partitioned,
                 )
-            except ImportError:
+            except (ImportError, NotImplementedError):
+                # Older zoo, or zoo refusing to import without an accelerator (CPU gloo workers).
                 pass
             else:
                 if unsloth_zero3_partitioned(lm_head) or unsloth_zero3_partitioned(
