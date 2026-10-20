@@ -614,6 +614,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.2-dev",
         profile = FamilyProfile(te_int8_skip = (3, 0), preview_factors = "flux2"),
         pipeline_class = "Flux2Pipeline",
+        # cudnn.benchmark's per-process VAE conv pick rendered 5 variants of one seed over 7 fresh B200 processes
+        # (one card and layer split alike); held off, every process renders the same image.
+        cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-dev",
