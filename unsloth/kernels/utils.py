@@ -1485,9 +1485,11 @@ def _gemv_rows_cap(device):
 # bitsandbytes >= 0.50 fuses dequantize + matmul for any row count. For decode batches above the GEMV
 # cap it beats our dequantize + matmul end to end only where the GPU, not the launch loop, is the
 # bottleneck (T4: +23-43% tok/s at batch 8-16; A100 / RTX PRO 6000: 15-30% slower). Fixed per arch,
-# like the GEMV table. UNSLOTH_BNB_GEMM_4BIT=0 keeps the dequantize path, =1 uses it on any arch.
+# like the GEMV table. UNSLOTH_BNB_GEMM_4BIT=0 keeps the dequantize path, =1 uses it on any arch and dtype.
 _BNB_GEMM_4BIT_MAX_ROWS = 16
 _BNB_GEMM_4BIT_ARCHS = {(7, 5)}
+# sm75 has fp16 MMA only: bitsandbytes itself dequantizes bf16 batches of 8+ there.
+_BNB_GEMM_4BIT_DTYPES = (torch.float16,)
 # None until first use, then False (no visible GPU in the table: fast_linear_forward skips the check) or True.
 _BNB_GEMM_4BIT = None
 _BNB_GEMM_4BIT_DEVICE = {}
@@ -1512,9 +1514,11 @@ def _bnb_gemm_4bit_device_ok(device):
     return ok
 
 
-def _bnb_gemm_4bit_ok(X, quant_state):
-    global _BNB_GEMM_4BIT
+def _bnb_gemm_4bit_ok(X, W, quant_state):
+    global _BNB_GEMM_4BIT, _BNB_GEMM_4BIT_DTYPES
     if _BNB_GEMM_4BIT is None:
+        if os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1":
+            _BNB_GEMM_4BIT_DTYPES = (torch.float16, torch.bfloat16)
         try:
             _BNB_GEMM_4BIT = (
                 bnb is not None
@@ -1527,10 +1531,13 @@ def _bnb_gemm_4bit_ok(X, quant_state):
             _BNB_GEMM_4BIT = False
     return (
         _BNB_GEMM_4BIT
+        and X.dtype in _BNB_GEMM_4BIT_DTYPES
         and X.is_cuda
         and _bnb_gemm_4bit_device_ok(X.device)
+        # bitsandbytes passes raw pointers to the kernel on X's device.
+        and W.device == X.device
         and type(quant_state) is not list
-        and X.dtype in (torch.float16, torch.bfloat16)
+        and quant_state.absmax.device == X.device
         and getattr(quant_state, "quant_type", None) in ("nf4", "fp4")
         # matmul_4bit raises for any other nested blocksize.
         and (not quant_state.nested or quant_state.state2.blocksize == 256)
@@ -1691,7 +1698,7 @@ def fast_linear_forward(
     elif (
         _BNB_GEMM_4BIT is not False
         and bsz <= _BNB_GEMM_4BIT_MAX_ROWS
-        and _bnb_gemm_4bit_ok(X, W_quant)
+        and _bnb_gemm_4bit_ok(X, W, W_quant)
     ):
         out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:

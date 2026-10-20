@@ -169,11 +169,12 @@ def _linear4bit(
     n,
     k,
     seed = 0,
+    dtype = torch.bfloat16,
 ):
     bnb = pytest.importorskip("bitsandbytes")
     torch.manual_seed(seed)
-    proj = bnb.nn.Linear4bit(k, n, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
-    W = torch.randn(n, k, dtype = torch.bfloat16)
+    proj = bnb.nn.Linear4bit(k, n, bias = False, compute_dtype = dtype, quant_type = "nf4")
+    W = torch.randn(n, k, dtype = dtype)
     proj.weight = bnb.nn.Params4bit(W, requires_grad = False, quant_type = "nf4")
     return proj.to("cuda")
 
@@ -421,8 +422,8 @@ def _bnb_gemm_utils():
 @pytest.mark.parametrize("bsz", [5, 8, 16])
 def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
     utils = _bnb_gemm_utils()
-    proj = _linear4bit(1024, 4096)
-    X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    proj = _linear4bit(1024, 4096, dtype = torch.float16)
+    X = torch.randn(bsz, 1, 4096, dtype = torch.float16, device = "cuda")
     ref = (
         X.float().view(bsz, -1)
         @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
@@ -434,18 +435,21 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
     with torch.no_grad():
         first = utils.fast_linear_forward(proj, X)
         assert first.shape == (bsz, 1, 1024)
-        assert _rel_err(first.view(bsz, -1), ref) < TOL[torch.bfloat16]
-        out = torch.empty(bsz, 1, 1024, dtype = torch.bfloat16, device = "cuda")
+        assert _rel_err(first.view(bsz, -1), ref) < TOL[torch.float16]
+        out = torch.empty(bsz, 1, 1024, dtype = torch.float16, device = "cuda")
         assert utils.fast_linear_forward(proj, X, out = out) is out
         assert torch.equal(out, first)
 
 
-@pytest.mark.parametrize("case", ["switch_off", "other_arch", "too_many_rows", "grad"])
+@pytest.mark.parametrize(
+    "case", ["switch_off", "other_arch", "too_many_rows", "grad", "bf16", "weight_elsewhere"]
+)
 def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
     utils = _bnb_gemm_utils()
-    proj = _linear4bit(1024, 4096)
     bsz = utils._BNB_GEMM_4BIT_MAX_ROWS + 1 if case == "too_many_rows" else 8
-    X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    dtype = torch.bfloat16 if case == "bf16" else torch.float16
+    proj = _linear4bit(1024, 4096, dtype = dtype)
+    X = torch.randn(bsz, 1, 4096, dtype = dtype, device = "cuda")
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", case != "switch_off")
     if case == "other_arch":
@@ -453,6 +457,12 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
         monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DEVICE", {})
     else:
         monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
+    if case == "weight_elsewhere":
+        # An offloaded weight: the route must decline before bitsandbytes reads its pointer.
+        assert not utils._bnb_gemm_4bit_ok(
+            X.view(bsz, -1), proj.weight.data.cpu(), proj.weight.quant_state
+        )
+        return
     calls = []
     real = utils.fast_dequantize
     monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: calls.append(1) or real(*a, **k))
@@ -466,18 +476,20 @@ def test_the_bnb_gemm_runs_only_on_listed_archs_unless_forced(env, monkeypatch):
     utils = _bnb_gemm_utils()
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", None)
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DEVICE", {})
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DTYPES", utils._BNB_GEMM_4BIT_DTYPES)
     if env is None:
         monkeypatch.delenv("UNSLOTH_BNB_GEMM_4BIT", raising = False)
     else:
         monkeypatch.setenv("UNSLOTH_BNB_GEMM_4BIT", env)
-    proj = _linear4bit(1024, 4096)
-    X = torch.randn(8, 4096, dtype = torch.bfloat16, device = "cuda")
+    proj = _linear4bit(1024, 4096, dtype = torch.float16)
+    X = torch.randn(8, 4096, dtype = torch.float16, device = "cuda")
     listed = [
         torch.cuda.get_device_capability(i) in utils._BNB_GEMM_4BIT_ARCHS
         for i in range(torch.cuda.device_count())
     ]
     with torch.no_grad():
-        ok = utils._bnb_gemm_4bit_ok(X, proj.weight.quant_state)
+        ok = utils._bnb_gemm_4bit_ok(X, proj.weight.data, proj.weight.quant_state)
     # Decided once for the process: off when no visible GPU is listed, so the decode loop skips the check.
     assert utils._BNB_GEMM_4BIT == (env != "0" and (env == "1" or any(listed)))
     assert ok == (env != "0" and (env == "1" or listed[X.device.index]))
+    assert (torch.bfloat16 in utils._BNB_GEMM_4BIT_DTYPES) == (env == "1")
