@@ -897,8 +897,9 @@ _VULKAN_ROWS_TTL_S = 120.0
 _vulkan_rows_memo: dict = {}
 
 
-def _vulkan_rows(binary: str) -> list:
-    """The Vulkan probe's rows, reused briefly: a warm start and the launch it precedes would each spawn it."""
+def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
+    """The Vulkan probe's rows, reused briefly: a warm start and the launch it precedes would each spawn it.
+    ``retry_empty``: a cached empty answer may have been transient, so probe again."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     try:
@@ -906,7 +907,7 @@ def _vulkan_rows(binary: str) -> list:
     except OSError:
         key = (binary, None)
     hit = _vulkan_rows_memo.get(key)
-    if hit is not None and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S:
+    if hit is not None and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S and (hit[0] or not retry_empty):
         return hit[0]
     rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
     _vulkan_rows_memo.clear()
@@ -914,7 +915,22 @@ def _vulkan_rows(binary: str) -> list:
     return rows
 
 
-def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
+def _user_device_pick() -> bool:
+    """LLAMA_ARG_DEVICE or a Vulkan mask: the user's own device choice, which the memory probe never read."""
+    return any(str(os.environ.get(var, "")).strip() for var in ("LLAMA_ARG_DEVICE", "GGML_VK_VISIBLE_DEVICES"))
+
+
+def _prefetch_vulkan_rows(binary: str) -> None:
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        if not _user_device_pick() and LlamaCppBackend._is_vulkan_backend(binary):
+            _vulkan_rows(binary)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _vulkan_device_args(binary: str, ordinal: Optional[int], retry_empty: bool = False) -> Optional[list]:
     """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] if not pinned this way,
     None if the card's Vulkan device is unknown."""
     if ordinal is None:
@@ -922,18 +938,18 @@ def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
     try:
         from core.inference.llama_cpp import LlamaCppBackend
 
-        # The user's own device pick wins: LLAMA_ARG_DEVICE, or a Vulkan mask that renumbers what the probe lists.
-        if (
-            str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip()
-            or str(os.environ.get("GGML_VK_VISIBLE_DEVICES", "")).strip()
-            or not LlamaCppBackend._is_vulkan_backend(binary)
-        ):
-            return []
-        # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
-        rows = _vulkan_rows(binary)
-        if not rows:
-            import torch
+        import torch
 
+        # The user's own device pick wins (a Vulkan mask renumbers what the probe lists).
+        if _user_device_pick():
+            return []
+        if not LlamaCppBackend._is_vulkan_backend(binary):
+            # A backend loaded from GGML_BACKEND_PATH may be Vulkan, which ignores the visibility masks.
+            external = str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
+            return None if external and torch.cuda.device_count() > 1 else []
+        # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
+        rows = _vulkan_rows(binary, retry_empty = retry_empty)
+        if not rows:
             # Unreadable: unknown with several cards, as before on one.
             return None if torch.cuda.device_count() > 1 else []
     except Exception:  # noqa: BLE001
@@ -1214,7 +1230,7 @@ class PromptUpsamplerSidecar:
             if layers == 0:
                 cmd.append("--no-mmproj-offload")
         if layers:
-            cmd += _vulkan_device_args(binary, ordinal) or []
+            cmd += _vulkan_device_args(binary, ordinal, retry_empty = True) or []
         sock.close()
         if is_process_shutting_down():
             raise UpsamplerUnavailableError("Unsloth is shutting down.")
@@ -1456,6 +1472,11 @@ class PromptUpsamplerSidecar:
             # every eviction.
             if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
                 return "gpu"
+            # A user-picked device is not the card the memory probe reads; its first enhanced run starts it.
+            if _user_device_pick() and _cuda_device_count() > 1:
+                return "placement"
+            # The Vulkan probe can take its full timeout, so it runs before the slot that renders queue behind.
+            _prefetch_vulkan_rows(binary)
             # The engine's generation slot, held until the server is up: a render or model transition that arrives
             # meanwhile queues behind the start instead of overlapping it (a load cancels it first through
             # stop_for_handover). Not taken while one runs or a load is in flight.

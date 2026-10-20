@@ -2065,3 +2065,58 @@ def test_a_renamed_row_matches_the_first_valid_locked_box():
     caption, rows = pup.split_box_table(pup.reconcile_layout_caption(answer, locked))
     assert caption == "A red balloon <obj_1>."
     assert [row["id"] for row in rows] == ["obj_1"] and rows[0]["desc"] == "A red balloon."
+
+
+def test_the_launch_reprobes_a_cached_empty_vulkan_answer(monkeypatch):
+    # A transient empty probe in warm() must not leave the real launch unpinned for the TTL.
+    from core.inference import llama_cpp
+
+    answers = [[], list(_VULKAN_ROWS)]
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda b = None: answers.pop(0))
+    )
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    assert pup._vulkan_rows("/x/llama-server") == []
+    assert pup._vulkan_rows("/x/llama-server") == []
+    assert pup._vulkan_rows("/x/llama-server", retry_empty = True) == _VULKAN_ROWS
+
+
+@pytest.mark.parametrize("var, value", [("LLAMA_ARG_DEVICE", "CUDA1"), ("GGML_VK_VISIBLE_DEVICES", "1")])
+@pytest.mark.parametrize("count, expected", [(2, "placement"), (1, "started")])
+def test_a_user_device_pick_declines_the_warm_start_beside_other_cards(
+    warmable, monkeypatch, var, value, count, expected
+):
+    # The memory probe reads the image model's card, not the one the user picked.
+    sidecar, _launched, _memory, model, _mmproj = warmable
+    monkeypatch.setenv(var, value)
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: count)
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == expected
+    sidecar._cancel_idle_locked()
+
+
+@pytest.mark.parametrize("count, expected", [(2, None), (1, [])])
+def test_an_external_backend_path_is_unknown_placement_beside_other_cards(monkeypatch, count, expected):
+    import torch
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: False))
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: count)
+    monkeypatch.setenv("GGML_BACKEND_PATH", "/opt/ggml/libggml-vulkan.so")
+    assert pup._vulkan_device_args("b", 0) == expected
+    monkeypatch.delenv("GGML_BACKEND_PATH")
+    assert pup._vulkan_device_args("b", 0) == []
+
+
+def test_the_vulkan_probe_runs_before_the_render_slot(warmable, monkeypatch):
+    # A slow probe under the slot would hold renders and handovers until its timeout.
+    from core.inference import llama_cpp
+
+    sidecar, _launched, _memory, model, _mmproj = warmable
+    order = []
+    take = pup._take_render_slot
+    monkeypatch.setattr(pup, "_take_render_slot", lambda: order.append("slot") or take())
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True))
+    monkeypatch.setattr(pup, "_vulkan_rows", lambda b, retry_empty = False: order.append("probe") or [])
+    sidecar.warm(binary = "b", model = model, mmproj = None)
+    assert order[:2] == ["probe", "slot"]
+    sidecar._cancel_idle_locked()
