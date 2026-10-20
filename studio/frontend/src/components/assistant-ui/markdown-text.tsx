@@ -1589,7 +1589,7 @@ function MarkdownTextRenderer({
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${repairSettled}`}
             mode="streaming"
             parseIncompleteMarkdown={repairSettled}
             remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
