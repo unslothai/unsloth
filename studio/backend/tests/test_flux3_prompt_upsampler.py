@@ -1106,7 +1106,9 @@ def test_vulkan_sole_device_must_be_the_image_models_card(spawn_argv, warmable, 
         (1, "AMD Radeon RX 7600 XT (RADV NAVI33)", True),  # one torch card: as before
     ],
 )
-def test_sole_vulkan_device_needs_the_exact_model_beside_other_cards(spawn_argv, monkeypatch, count, row, pinned):
+def test_sole_vulkan_device_needs_the_exact_model_beside_other_cards(
+    spawn_argv, monkeypatch, count, row, pinned
+):
     import torch
 
     state, _run = spawn_argv

@@ -954,10 +954,9 @@ def _vulkan_device_args(binary: str, ordinal: Optional[int]) -> Optional[list]:
             # Nothing to choose, but the sole Vulkan device must be the card the memory probe read: by exact name, as
             # containment takes an `RX 7600 XT` for an `RX 7600`. One torch card has no other to confuse it with.
             import torch
-
-            exact = bool(name) and _normalized_card_name(_without_driver_tag(rows[0]["name"])) == _normalized_card_name(
-                name
-            )
+            exact = bool(name) and _normalized_card_name(
+                _without_driver_tag(rows[0]["name"])
+            ) == _normalized_card_name(name)
             return [] if device and (exact or torch.cuda.device_count() <= 1) else None
         return ["--device", device] if device else None
     except Exception:  # noqa: BLE001
