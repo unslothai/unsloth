@@ -262,6 +262,53 @@ def test_a_replaced_backend_asks_the_hardware_again(monkeypatch):
     assert asked == ["probe", "probe"]
 
 
+def test_picker_plans_embeddinggemma_on_llama_server(monkeypatch):
+    stored = {"backend": None}
+    _resolve_auto_for(monkeypatch, stored = stored)
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+    monkeypatch.setattr(embeddings, "sentence_transformers_can_load", lambda *a, **k: True)
+    effective = {"model": "org/previous-embedder"}
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: effective["model"])
+    plan = embeddings.resolved_backend_for_model
+
+    assert plan("unsloth/embeddinggemma-300m") == "llama-server"
+    assert plan("unsloth/embeddinggemma-2") == "llama-server"
+    # Exact ids: a fine-tune need not publish the GGUF the preference relies on.
+    assert plan("org/embeddinggemma-300m-finetune") == "sentence-transformers"
+    # Only the plan: the runtime follows the saved record, so an env-configured model keeps its space.
+    assert embeddings._resolve_auto_for_model("unsloth/embeddinggemma-300m") == (
+        "sentence-transformers"
+    )
+    # The model in effect without a record runs on that default, and its Settings status must say so.
+    effective["model"] = "unsloth/embeddinggemma-300m"
+    assert plan("unsloth/embeddinggemma-300m") == "sentence-transformers"
+    effective["model"] = "org/previous-embedder"
+
+    # A model saved on sentence-transformers keeps the space its documents were indexed in.
+    stored["backend"] = "sentence-transformers"
+    assert plan("unsloth/embeddinggemma-300m") == "sentence-transformers"
+    stored["backend"] = None
+
+    monkeypatch.setattr(config, "EMBED_DEVICE", "gpu")
+    assert plan("unsloth/embeddinggemma-300m") == "sentence-transformers"
+    monkeypatch.setattr(config, "EMBED_DEVICE", "auto")
+
+    monkeypatch.setenv("RAG_EMBED_GGUF_REPO", "org/other-GGUF")
+    assert plan("unsloth/embeddinggemma-300m") == "sentence-transformers"
+    monkeypatch.delenv("RAG_EMBED_GGUF_REPO")
+
+    monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
+    assert plan("unsloth/embeddinggemma-300m") == "sentence-transformers"
+    monkeypatch.setattr(config, "EMBED_BACKEND", "auto")
+
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: False)
+    assert plan("unsloth/embeddinggemma-300m") == "sentence-transformers"
+
+
 def test_a_resolution_that_never_asked_the_hardware_keeps_nothing(monkeypatch):
     """``_get_backend`` clears the per-thread answer before resolving, and that clear is
     load-bearing: the identity and active-backend probes also resolve ``auto`` outside the

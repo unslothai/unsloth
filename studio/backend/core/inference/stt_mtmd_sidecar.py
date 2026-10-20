@@ -17,13 +17,14 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import secrets
 import socket
 import subprocess
 import threading
 import time
 import urllib.request
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
@@ -312,10 +313,34 @@ def is_model_downloaded(model_id: str) -> bool:
     return downloaded
 
 
-class _MtmdDownloadState:
-    """Tracks the two-file download of one mtmd dictation model."""
+def _hub_entry_missing(exc: BaseException) -> bool:
+    """The Hub answered that this file (or revision) does not exist, as opposed to a network, auth or gate error."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return bool(names & {"EntryNotFoundError", "RemoteEntryNotFoundError", "RevisionNotFoundError"})
 
-    def __init__(self) -> None:
+
+class _MtmdDownloadState:
+    """Tracks the two-file download of one mtmd dictation model.
+
+    ``specs`` / ``cached_paths`` / ``resolve`` let another llama.cpp sidecar (the FLUX.3 prompt upsampler) reuse the
+    same pinned two-file download; None keeps the dictation catalogue, looked up at call time. A spec with a ``files``
+    tuple downloads those files instead of its model and projector (the Images text-to-mask segmenter).
+    """
+
+    def __init__(
+        self,
+        specs: Optional[dict] = None,
+        cached_paths = None,
+        resolve = None,
+        label: str = "mtmd STT",
+        describe_error = None,
+    ) -> None:
+        self._specs = specs
+        self._cached_paths_fn = cached_paths
+        self._resolve_fn = resolve
+        self._label = label
+        # (model_id, exception or worker stderr) -> a message for the UI, or None for the generic one.
+        self._describe_error_fn = describe_error
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
@@ -328,6 +353,23 @@ class _MtmdDownloadState:
         self._revision: Optional[str] = None
         self._hub_cache: Optional[Path] = None
         self._cancelled = False
+
+    def _spec(self, model_id: str):
+        return (self._specs if self._specs is not None else MTMD_STT_MODELS)[model_id]
+
+    def _resolve(self, model_id: Optional[str]) -> str:
+        return (self._resolve_fn or resolve_mtmd_model_id)(model_id)
+
+    def _describe_error(self, model_id: str, error: object) -> Optional[str]:
+        if self._describe_error_fn is None:
+            return None
+        try:
+            return self._describe_error_fn(model_id, error)
+        except Exception:  # noqa: BLE001 -- the generic message still reaches the UI
+            return None
+
+    def _cached_paths(self, model_id: str, **kwargs):
+        return (self._cached_paths_fn or _cached_model_paths)(model_id, **kwargs)
 
     def status(self) -> dict:
         with self._lock:
@@ -402,7 +444,7 @@ class _MtmdDownloadState:
             total = total if total is not None else self._total_bytes
             if not model_id or hub_cache is None or not selected_files:
                 return None
-            repo = MTMD_STT_MODELS[model_id].repo
+            repo = self._spec(model_id).repo
             done = sum(
                 _downloaded_file_bytes(
                     hub_cache = hub_cache,
@@ -423,7 +465,7 @@ class _MtmdDownloadState:
         model_id: str,
         hf_token: Optional[str] = None,
     ) -> str:
-        model_id = resolve_mtmd_model_id(model_id)
+        model_id = self._resolve(model_id)
         hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -464,19 +506,45 @@ class _MtmdDownloadState:
         if hub_cache is None:
             from core.inference.stt_sidecar import _active_hf_hub_cache
             hub_cache = self._hub_cache or _active_hf_hub_cache()
-        spec = MTMD_STT_MODELS[model_id]
+        spec = self._spec(model_id)
         registry = None
         owner = None
         try:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
             selected: list[_SelectedHubFile] = []
-            revision: Optional[str] = None
-            for filename in (spec.model_file, spec.mmproj_file):
-                meta = get_hf_file_metadata(
-                    hf_hub_url(spec.repo, filename, revision = revision),
-                    token = normalize_token(hf_token),
-                )
+            # A spec may pin a commit (the segmenter's variants); none, or a branch such as "main", resolves the newest.
+            pinned = getattr(spec, "revision", None)
+            revision: Optional[str] = (
+                pinned if isinstance(pinned, str) and _HF_COMMIT_SHA.fullmatch(pinned) else None
+            )
+            for filename in getattr(spec, "files", None) or (spec.model_file, spec.mmproj_file):
+                try:
+                    meta = get_hf_file_metadata(
+                        hf_hub_url(spec.repo, filename, revision = revision),
+                        token = normalize_token(hf_token),
+                    )
+                except Exception as exc:
+                    fallback = getattr(spec, "fallback", None)
+                    if not fallback or not _hub_entry_missing(exc):
+                        raise
+                    # A spec whose file is not published (yet) at its revision downloads its fallback instead:
+                    # the segmenter's pre-quantized file falls back to the bf16 one.
+                    logger.info(
+                        "%s: %s is not on %s at %s (%s); downloading %s instead",
+                        self._label,
+                        filename,
+                        spec.repo,
+                        revision or "main",
+                        type(exc).__name__,
+                        fallback,
+                    )
+                    with self._lock:
+                        if self._cancelled:
+                            return
+                        self._model_id = fallback
+                    self._run(fallback, hf_token, hub_cache)
+                    return
                 if revision is None:
                     revision = meta.commit_hash
                     if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
@@ -526,7 +594,7 @@ class _MtmdDownloadState:
                 cancelled = self._cancelled
             if process.returncode == 0 and not cancelled:
                 if (
-                    _cached_model_paths(
+                    self._cached_paths(
                         model_id,
                         hub_cache = hub_cache,
                         revision = revision,
@@ -547,14 +615,22 @@ class _MtmdDownloadState:
                     self._cancelled = True
                     return
             detail = stderr.decode("utf-8", "replace").strip()
-            logger.warning("mtmd STT download failed for %s: %s", model_id, detail)
+            logger.warning("%s download failed for %s: %s", self._label, model_id, detail)
             with self._lock:
-                self._error = modelscope_missing(detail) or f"Download failed for '{model_id}'."
+                self._error = (
+                    self._describe_error(model_id, detail)
+                    or modelscope_missing(detail)
+                    or f"Download failed for '{model_id}'."
+                )
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
-                    logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
-                    self._error = modelscope_missing(exc) or f"Download failed for '{model_id}'."
+                    logger.warning("%s download failed for %s: %s", self._label, model_id, exc)
+                    self._error = (
+                        self._describe_error(model_id, exc)
+                        or modelscope_missing(exc)
+                        or f"Download failed for '{model_id}'."
+                    )
         finally:
             # Release first: it is the half that would wedge the repository.
             if registry is not None and owner is not None:
@@ -591,6 +667,7 @@ class MtmdSttSidecar:
         self._start_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
+        self._api_key: Optional[str] = None
         self._model_id: Optional[str] = None
         self._binary_path_revision: Optional[int] = None
         self._loading = False
@@ -667,6 +744,7 @@ class MtmdSttSidecar:
         finally:
             self._process = None
             self._port = None
+            self._api_key = None
             self._model_id = None
             self._binary_path_revision = None
 
@@ -829,10 +907,7 @@ class MtmdSttSidecar:
     def _ensure_model_downloaded(self, model_id: str) -> tuple[str, str]:
         paths = _cached_model_paths(model_id)
         if paths is None:
-            raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' is not downloaded. "
-                "Download it in Settings, then Voice, before loading it."
-            )
+            raise SttModelNotDownloadedError(f"STT model '{model_id}' is not downloaded yet.")
         return paths
 
     def load(
@@ -970,6 +1045,23 @@ class MtmdSttSidecar:
                 raise SttLoadCancelledError(
                     "Unsloth is shutting down; not starting the MTMD server."
                 )
+            from core.inference.llama_cpp import (
+                LlamaCppBackend,
+                _llama_server_api_key_enabled,
+                _llama_server_key_launch,
+            )
+
+            api_key = key_file = None
+            key_env: dict = {}
+            # A custom build without --api-key-file would exit on the flag; it runs keyless as before.
+            if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
+                binary
+            ).get("supports_api_key_file", True):
+                # Per-launch key against permissive CORS; read once at startup, so deleted once ready.
+                api_key = secrets.token_urlsafe(32)
+                key_argv, key_env, key_file = _llama_server_key_launch(api_key)
+                # Right after the binary: --no-mmproj-offload has to stay last.
+                cmd[1:1] = key_argv
             process = subprocess.Popen(
                 cmd,
                 # nothing reads these, and an undrained pipe blocks llama-server mid-startup once its logs fill the
@@ -979,7 +1071,7 @@ class MtmdSttSidecar:
                 stdin = subprocess.DEVNULL,
                 # bundled libs and pip CUDA runtimes on the loader path, secrets scrubbed, as the chat backend spawns
                 # the same binary
-                env = _llama_server_child_env(binary),
+                env = {**_llama_server_child_env(binary), **key_env},
                 # Die with Unsloth, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
@@ -995,7 +1087,13 @@ class MtmdSttSidecar:
                 raise SttLoadCancelledError(
                     "Unsloth is shutting down; not starting the MTMD server."
                 )
-            if not self._wait_for_server(process, port, cancel_event):
+            try:
+                ready = self._wait_for_server(process, port, cancel_event)
+            finally:
+                if key_file is not None:
+                    with suppress(OSError):
+                        key_file.unlink()
+            if not ready:
                 # Reap it here: _process was never assigned, so unload() cannot reach a child that ignores SIGTERM and
                 # keeps port and VRAM.
                 _reap(process)
@@ -1009,6 +1107,7 @@ class MtmdSttSidecar:
             with self._lock:
                 self._process = process
                 self._port = port
+                self._api_key = api_key
                 self._model_id = model_id
                 self._binary_path_revision = path_revision
                 self._gpu_disabled = training
@@ -1076,6 +1175,7 @@ class MtmdSttSidecar:
         self.load(model_id, request_cancel_event = cancel_event)
         with self._lock:
             port = self._port
+            api_key = self._api_key
             if port is None or not self._process_alive():
                 raise SttUnavailableError("The dictation server is not running.")
             # Another client can switch models in the gap between that load returning and this lock, and the port read
@@ -1098,6 +1198,7 @@ class MtmdSttSidecar:
                 wav_bytes,
                 audio_seconds,
                 cancel_event = cancel_event,
+                **({"api_key": api_key} if api_key else {}),
                 **({"on_progress": on_progress} if on_progress is not None else {}),
             )
             if cancel_event is not None and cancel_event.is_set():
@@ -1131,6 +1232,7 @@ class MtmdSttSidecar:
         *,
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
+        api_key: Optional[str] = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -1172,7 +1274,10 @@ class MtmdSttSidecar:
                 "POST",
                 "/v1/chat/completions",
                 body = json.dumps(payload).encode("utf-8"),
-                headers = {"Content-Type": "application/json"},
+                headers = {
+                    "Content-Type": "application/json",
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                },
             )
             with connection.getresponse() as response:
                 if on_progress is not None and 200 <= response.status < 300:

@@ -156,7 +156,7 @@ test("hydration does not mark itself saved when the write failed", () => {
 
   assert.match(
     src,
-    /const hydrationSaved = savePerModelConfig\( configId, target\.ggufVariant, rememberedConfig, hydrationEvicted, \); setSavedRemember\(hydrationSaved\);/,
+    /const hydrationSaved = savePerModelConfig\( configId, target\.ggufVariant, storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\), hydrationEvicted, \); setSavedRemember\(hydrationSaved\);/,
   );
 });
 
@@ -171,7 +171,7 @@ test("hydration propagates what its own write evicted", () => {
   // The write hands savePerModelConfig somewhere to report evictions.
   assert.match(
     src,
-    /savePerModelConfig\( configId, target\.ggufVariant, rememberedConfig, hydrationEvicted, \)/,
+    /savePerModelConfig\( configId, target\.ggufVariant, storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\), hydrationEvicted, \)/,
   );
   // And they are cleared the way the save path clears them: mirrored fields only.
   assert.match(

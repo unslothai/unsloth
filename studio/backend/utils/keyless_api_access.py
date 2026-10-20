@@ -45,6 +45,11 @@ _INFERENCE_ROUTES = frozenset(
         ("GET", "/props"),
         ("GET", "/v1/props"),
         ("GET", "/version"),
+        # /v1/models for Open WebUI's management view; /models/load and /models/unload stay keyed.
+        ("GET", "/models"),
+        # Token counters, like /v1/chat/count_tokens. Not /slots or /metrics: those are server-wide.
+        ("POST", "/tokenize"),
+        ("POST", "/detokenize"),
     }
 )
 

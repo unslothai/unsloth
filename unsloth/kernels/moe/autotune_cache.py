@@ -159,7 +159,7 @@ def get_or_autotune_moe_kernels(
         logger.info(
             f"UNSLOTH_MOE_DISABLE_AUTOTUNE=1: Using Heuristic (Safe) MoE kernel configs for SM{device_capability[0]}{device_capability[1]}"
         )
-        return _get_heuristic_configs()
+        return _get_heuristic_configs(n_dim = 2 * intermediate_dim, k_dim = hidden_dim)
     if not force_autotune and cache_key in _kernel_config_cache:
         logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
         return _kernel_config_cache[cache_key]
@@ -224,7 +224,7 @@ def get_or_autotune_moe_kernels(
                 "Unsloth: Your Triton version might be incompatible with TMA features. Falling back to default configs."
             )
         logger.info("Falling back to default kernel configurations")
-        return _get_default_configs()
+        return _get_default_configs(n_dim = 2 * intermediate_dim, k_dim = hidden_dim)
 
 
 def _run_moe_autotuning(
@@ -355,10 +355,83 @@ def _run_moe_autotuning(
 
     return config_fwd, config_bwd_dx, config_bwd_dw
 
-    return config_fwd, config_bwd_dx, config_bwd_dw
+
+_MIN_FALLBACK_BLOCK_SIZE = 16
 
 
-def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
+def _fit_block_size(block_size: int, dim: Optional[int]) -> int:
+    # Largest power of two <= block_size and >= 16 dividing dim; else unchanged (the kernel asserts still fire).
+    if dim is None or dim <= 0 or dim % block_size == 0:
+        return block_size
+    candidate = 1 << (block_size.bit_length() - 1)
+    while candidate >= _MIN_FALLBACK_BLOCK_SIZE:
+        if dim % candidate == 0:
+            return candidate
+        candidate >>= 1
+    return block_size
+
+
+def _fit_configs_to_dims(
+    configs: Tuple[Any, Any, Any], n_dim: Optional[int], k_dim: Optional[int]
+) -> Tuple[Any, Any, Any]:
+    # The kernels static_assert K % BLOCK_SIZE_K == 0 and N % BLOCK_SIZE_N == 0; W is [E, N, K] for all three.
+    # BLOCK_SIZE_M tiles the masked per-expert token count, so it stays.
+    for config in configs:
+        config.BLOCK_SIZE_N = _fit_block_size(config.BLOCK_SIZE_N, n_dim)
+        config.BLOCK_SIZE_K = _fit_block_size(config.BLOCK_SIZE_K, k_dim)
+    return configs
+
+
+# Triton metadata.shared (16-bit) of the 4-stage 64x64x256 dX: 122,880 B, over the 101,376 B of L4 / RTX PRO 6000;
+# 3 stages need 81,920 B. sm_75 needs 65,536 B (no cp.async multi-buffering), so it is excluded.
+# kind -> {(BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_stages): (bytes, fitting num_stages, its bytes)}
+_HEURISTIC_SMEM_STEP_DOWN = {
+    "dX": {(64, 64, 256, 4): (122880, 3, 81920)},
+}
+
+
+def _device_smem_per_block() -> Optional[int]:
+    # Per current device: tuning.get_device_properties() caches the first device's limit process-wide.
+    try:
+        index = torch.cuda.current_device()
+    except Exception:
+        return None
+    try:
+        return int(torch.cuda.get_device_properties(index).shared_memory_per_block_optin)
+    except Exception:
+        try:
+            return int(
+                triton.runtime.driver.active.utils.get_device_properties(index)["max_shared_mem"]
+            )
+        except Exception:
+            return None
+
+
+def _fit_heuristic_configs_to_smem(configs: Tuple[Any, Any, Any]) -> Tuple[Any, Any, Any]:
+    try:
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return configs
+        if torch.cuda.get_device_capability()[0] < 8:
+            return configs
+    except Exception:
+        return configs
+    smem = _device_smem_per_block()
+    if smem is None:
+        return configs
+    for kind, config in zip(("fwd", "dX", "dW"), configs):
+        key = (config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K, config.num_stages)
+        entry = _HEURISTIC_SMEM_STEP_DOWN.get(kind, {}).get(key)
+        if entry is not None and entry[2] <= smem < entry[0]:
+            config.num_stages = entry[1]
+            logger.info(
+                f"MoE heuristic {kind} config: num_stages {key[3]} -> {entry[1]} to fit {smem} B shared memory"
+            )
+    return configs
+
+
+def _get_heuristic_configs(
+    n_dim: Optional[int] = None, k_dim: Optional[int] = None
+) -> Tuple[Any, Any, Any]:
     """
     Get 'Safe Heuristic' kernel configurations.
     These are verified to be safe on A100 (SM80) and provide ~9x speedup on H100/B200.
@@ -409,10 +482,13 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
         use_tma_store = False,
     )
 
-    return config_fwd, config_bwd_dx, config_bwd_dw
+    configs = _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
+    return _fit_heuristic_configs_to_smem(configs)
 
 
-def _get_default_configs() -> Tuple[Any, Any, Any]:
+def _get_default_configs(
+    n_dim: Optional[int] = None, k_dim: Optional[int] = None
+) -> Tuple[Any, Any, Any]:
     """Get default kernel configurations as fallback."""
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
@@ -455,7 +531,7 @@ def _get_default_configs() -> Tuple[Any, Any, Any]:
         use_tma_store = False,
     )
 
-    return config_fwd, config_bwd_dx, config_bwd_dw
+    return _fit_configs_to_dims((config_fwd, config_bwd_dx, config_bwd_dw), n_dim, k_dim)
 
 
 def clear_cache() -> None:

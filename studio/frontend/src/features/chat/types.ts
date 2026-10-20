@@ -22,9 +22,11 @@ export interface ProjectRecord {
   instructions?: string;
   rootPath?: string | null;
   sandboxPath?: string | null;
+  workingFolder?: string | null;
   archived: boolean;
   createdAt: number;
   updatedAt: number;
+  lastActivityAt?: number | null;
 }
 
 export interface ThreadRecord {

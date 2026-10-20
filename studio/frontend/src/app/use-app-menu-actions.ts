@@ -10,7 +10,7 @@ import { type AppMenuAction, menuAccelerators } from "./app-menu-chords";
 export type { AppMenuAction } from "./app-menu-chords";
 
 // Only the macOS desktop app has these menus.
-const hasAppMenus = isTauri && isMacPlatform();
+export const hasAppMenus = isTauri && isMacPlatform();
 
 // Serialized, so the unmount disable never lands before the sync it follows.
 let syncQueue: Promise<unknown> = Promise.resolve();

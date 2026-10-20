@@ -141,8 +141,12 @@ def require_explicit_credentials(values: dict) -> None:
 def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
     if not managed_account():
         return
+    from hub.services.models import account_access
+
     for key in ("model_name", "base_model", "base_model_id", "hf_dataset"):
         account_path(values.get(key), reference = True)
+    for key in ("model_name", "base_model", "base_model_id"):
+        account_access.require_model_allowed(values.get(key))
     for key, repo_type in (
         ("model_local_path", "model"),
         ("dataset_local_path", "dataset"),
@@ -161,7 +165,6 @@ def validate_job_paths(values: dict, *, cached_resources: bool = False) -> None:
         reference = values.get(key)
         # A cached claim pins the shared cache, so the caller's token never authorizes it.
         if values.get(claimed) and reference:
-            from hub.services.models import account_access
             account_access.require_model_access(str(reference), repo_type)
     for key in (
         "checkpoint_path",
@@ -411,7 +414,7 @@ def retire_account_jobs(account: AccountContext) -> None:
     from hub.services.models.downloads import (
         retire_account_downloads as retire_account_model_downloads,
     )
-    from core.rag import folder_sync, ingestion
+    from core.rag import folder_sync, ingestion, reembed
     from core.research_runs import retire_account_research
     from routes.inference import retire_stt_downloads
 
@@ -420,6 +423,7 @@ def retire_account_jobs(account: AccountContext) -> None:
         retire_account_model_downloads,
         retire_stt_downloads,
         ingestion.retire_account_ingestions,
+        reembed.retire_account_reembed,
         folder_sync.retire_account_sync,
         lambda: retire_account_research(account),
     ):

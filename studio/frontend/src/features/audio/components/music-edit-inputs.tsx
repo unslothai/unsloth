@@ -4,7 +4,7 @@
 import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { type JSX, type Ref, useEffect } from "react";
+import { type JSX, type Ref, useEffect, useState } from "react";
 import type { AudioSourceStatus } from "../hooks/audio-source-state";
 import {
   EXTEND_MAX_S,
@@ -60,6 +60,7 @@ export function MusicEditInputs({
   const action: MusicEditAction | null =
     draft.action && actions.includes(draft.action) ? draft.action : null;
   const sourceDurationS = draft.source?.durationS ?? null;
+  const [draggedExtendS, setDraggedExtendS] = useState<number | null>(null);
 
   // The tabs always show a choice, so a missing or stale action takes the first one.
   const firstAction = actions[0] ?? null;
@@ -133,7 +134,7 @@ export function MusicEditInputs({
               durationS={preview.durationS}
               src={preview.src}
               label={preview.label}
-              tailS={action === "extend" ? draft.extendS : 0}
+              tailS={action === "extend" ? (draggedExtendS ?? draft.extendS) : 0}
             />
           )
         }
@@ -209,7 +210,7 @@ export function MusicEditInputs({
           max={1}
           step={0.05}
           onChange={(strength) => onChange({ strength })}
-          displayValue={(draft.strength ?? defaultStrength).toFixed(2)}
+          format={(v) => v.toFixed(2)}
           disabled={disabled}
           info="Lower keeps more of the original."
         />
@@ -223,6 +224,7 @@ export function MusicEditInputs({
           max={EXTEND_MAX_S}
           step={1}
           onChange={(extendS) => onChange({ extendS })}
+          onDraft={setDraggedExtendS}
           disabled={disabled}
           info="New music is added after the clip's end."
         />

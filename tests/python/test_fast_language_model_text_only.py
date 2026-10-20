@@ -62,8 +62,6 @@ def _param_default(method, name):
 
 
 def _load_text_only_namespace():
-    # Exec the _utils text-only helpers into one namespace (no unsloth import), in dependency order so cross-references
-    # resolve.
     source = _source(UTILS_PATH)
     import transformers
     from packaging.version import Version
@@ -124,7 +122,6 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastLanguageModel", "from_pretrained")
 
-    # text_only defaults False (opt-in); both FastModel delegations forward it.
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
@@ -145,14 +142,12 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
 
 
 def test_fast_model_text_only_does_not_override_explicit_auto_model():
-    # AST-based so formatting/refactors that keep the structure do not break it.
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastModel", "from_pretrained")
 
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
-    # load_text_only is text_only AND a check that the caller did not pass auto_model.
     def _is_guarded_bool(value):
         names = _names_in(value)
         has_none_check = any(
@@ -178,7 +173,6 @@ def test_fast_model_text_only_does_not_override_explicit_auto_model():
         )
 
     assert _forwards_kwarg(method)
-    # Falls back to the full model unless the family has its own text decoder.
     assert _calls_function(method, "_is_family_text_decoder")
     assert _assigns_name(
         method,
@@ -199,7 +193,6 @@ def test_fast_base_model_text_only_bypasses_vision_auto_model():
         "auto_model",
         lambda v: isinstance(v, ast.Name) and v.id == "AutoModelForCausalLM",
     )
-    # Text-only path: strip config, apply the family guard, inject the key remap.
     assert _calls_function(method, "_get_text_only_config")
     assert _calls_function(method, "_is_family_text_decoder")
     assert _calls_function(method, "_apply_text_only_key_mapping")
@@ -235,7 +228,6 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
 
 
 def test_helper_defined_once_in_utils_and_imported():
-    # _get_text_only_config defined only in _utils, imported by loader + vision.
     def _defines(path):
         return any(
             isinstance(n, ast.FunctionDef) and n.name == "_get_text_only_config"
@@ -263,7 +255,6 @@ def _load_util_func(name):
 
 
 def test_text_only_guard_predicate_across_vlm_families():
-    # Text-only taken only when the resolved class remaps VLM weights.
     transformers = pytest.importorskip("transformers")
     from transformers import AutoModelForCausalLM
 
@@ -277,11 +268,9 @@ def test_text_only_guard_predicate_across_vlm_families():
             getattr(cfg, "model_type", ""), getattr(text, "model_type", "")
         )
 
-    # Dedicated text decoder remaps language_model.* -> strip vision.
     assert takes_text_only(transformers.Gemma3Config()) is True
 
-    # No text class (Qwen2-VL/Mllama) or a generic reused decoder that would
-    # load random weights (Llava/PaliGemma/Idefics3/InternVL) -> keep full model.
+    # No text class, or a reused generic decoder that would load random weights: keep full model.
     for name in [
         "Qwen2VLConfig",
         "Qwen2_5_VLConfig",
@@ -305,7 +294,6 @@ def test_text_only_helper_preserves_quantization_config():
     config.quantization_config = sentinel
     text_config = helper(config, "google/gemma-3-27b-it")
     assert getattr(text_config, "quantization_config", None) is sentinel
-    # The parent's shared text sub-config must not be mutated.
     assert getattr(config.get_text_config(), "quantization_config", None) is None
 
 
@@ -350,8 +338,7 @@ def test_text_only_helper_unwraps_read_only_proxy_without_quantization():
 
 
 def test_text_only_key_mapping_targets_published_prefixes():
-    # Remap the published VLM decoder prefixes, applying only on transformers >=5
-    # (on 4.x base_model_prefix handles it and a mapping hurts).
+    # Mapping applies only on transformers >=5; on 4.x base_model_prefix handles it.
     transformers = pytest.importorskip("transformers")
     get_key_mapping = _load_util_func("_get_text_only_key_mapping")
     mapping = get_key_mapping(transformers.Gemma3Config(), transformers.Gemma3TextConfig())
@@ -413,8 +400,7 @@ def _write_published_gemma3_checkpoint(tmp_path, sentinel):
     save_dir = tmp_path / "vlm"
     full_model.save_pretrained(save_dir, safe_serialization = True)
 
-    # tf >=5 saves under an outer "model." prefix;
-    # strip it to reproduce the language_model.model.* layout the published Gemma 3 checkpoints use.
+    # tf >=5 saves under an outer "model." prefix; strip it to match published Gemma 3 layout.
     real_dir = tmp_path / "real"
     real_dir.mkdir()
     weights = {}
@@ -434,8 +420,6 @@ def _write_published_gemma3_checkpoint(tmp_path, sentinel):
 
 
 def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_path):
-    # PR #5816: text-only loading of a Gemma 3 VLM checkpoint must load real language weights, not random ones.
-    # Fails on tf >=5 without the key_mapping fix.
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
 
@@ -470,7 +454,7 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
 
 
 def test_gemma3_text_only_save_reloads_as_the_decoder(tmp_path):
-    # #12554: tf 5 save_pretrained reverses the load's key_mapping unless the loader drops it.
+    # tf 5 save_pretrained reverses the load's key_mapping unless the loader drops it.
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
     if int(transformers.__version__.split(".")[0]) < 5:
@@ -505,7 +489,6 @@ def test_gemma3_text_only_save_reloads_as_the_decoder(tmp_path):
 
 
 def test_text_only_loaders_keep_the_key_mapping_they_drop():
-    # #12554: the family-decoder branch must hand its mapping to _drop_text_only_key_mapping.
     def _from_apply(value):
         return (
             isinstance(value, ast.Call)

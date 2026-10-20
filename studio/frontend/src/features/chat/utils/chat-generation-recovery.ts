@@ -48,6 +48,7 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   const chunk = payload as
     | {
         _reasoningDurationMs?: unknown;
+        _contextUsage?: unknown;
         context_truncated?: unknown;
         quote_cut?: unknown;
         usage?: unknown;
@@ -56,7 +57,12 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
     | null
     | undefined;
   if (!chunk || typeof chunk !== "object") return false;
-  if ("_reasoningDurationMs" in chunk || chunk.context_truncated || chunk.quote_cut) {
+  if (
+    "_reasoningDurationMs" in chunk ||
+    "_contextUsage" in chunk ||
+    chunk.context_truncated ||
+    chunk.quote_cut
+  ) {
     return false;
   }
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
@@ -406,7 +412,16 @@ export function requestParsesThinkTags(payload: {
   enable_thinking?: boolean | null;
   reasoning_effort?: string | null;
   thinking?: { type?: string } | null;
+  provider_type?: string | null;
+  external_model?: string | null;
+  model?: string | null;
 }): boolean {
+  const provider = payload.provider_type?.trim().toLowerCase();
+  const model = (payload.external_model ?? payload.model)?.trim().toLowerCase();
+  const sonnet55BetweenTools =
+    provider === "anthropic" &&
+    (model === "claude-sonnet-5-5" || model?.startsWith("claude-sonnet-5-5-") === true);
+  if (sonnet55BetweenTools) return true;
   return !(
     payload.thinking?.type === "disabled" ||
     payload.enable_thinking === false ||
@@ -812,12 +827,17 @@ export function isLiveGenerationRun(runId: string): boolean {
   return liveGenerationRuns.has(runId);
 }
 
-/** Whether `threadId` has a durable run, streaming here or named by the server. A
- *  subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence. */
-export function threadHasDurableGenerationRun(threadId: string): boolean {
+export function threadHasLiveGenerationRun(threadId: string): boolean {
   for (const [runId, owner] of liveGenerationThreads.entries()) {
     if (owner === threadId && !provisionalGenerationRuns.has(runId)) return true;
   }
+  return false;
+}
+
+/** Whether `threadId` has a durable run, streaming here or named by the server. A
+ *  subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence. */
+export function threadHasDurableGenerationRun(threadId: string): boolean {
+  if (threadHasLiveGenerationRun(threadId)) return true;
   for (const owner of serverActiveGenerationRuns.values()) {
     if (owner === threadId) return true;
   }

@@ -97,11 +97,11 @@ test("preset application clamps live Max Tokens to the active external cap", () 
   );
   assert.match(
     settings,
-    /onParamsChange\(applyPresetParamsWithinCurrentLimits\(p\),\s*\{\s*minPChoiceEdited: true,\s*\}\)/,
+    /setParams\(applyPresetParamsWithinCurrentLimits\(p\),\s*\{\s*minPChoiceEdited: true,\s*\}\)/,
   );
   assert.match(
     settings,
-    /onParamsChange\(\s*applyPresetParamsWithinCurrentLimits\(fallbackPreset\),\s*\{ minPChoiceEdited: true \},\s*\)/,
+    /setParams\(\s*applyPresetParamsWithinCurrentLimits\(fallbackPreset\),\s*\{ minPChoiceEdited: true \},\s*\)/,
   );
 });
 
@@ -113,6 +113,6 @@ test("lowering an active external cap immediately clamps live Max Tokens", () =>
   // writes back through the preset-source bookkeeping.
   assert.match(
     settings,
-    /useEffect\(\(\) => \{\s*const clampedMaxTokens = resolveExternalMaxTokensClamp\(\{[\s\S]*?settingsHydrated,[\s\S]*?hasActiveExternalProvider: activeExternalProvider != null,[\s\S]*?isExternalModel,[\s\S]*?maxTokens: params\.maxTokens,[\s\S]*?maxTokensMax,[\s\S]*?\}\);[\s\S]*?if \(clampedMaxTokens == null\) \{[\s\S]*?maxTokens: clampedMaxTokens[\s\S]*?setActivePresetSource\(nextSource\)[\s\S]*?onParamsChange\(nextParams\)/,
+    /useEffect\(\(\) => \{\s*const clampedMaxTokens = resolveExternalMaxTokensClamp\(\{[\s\S]*?settingsHydrated,[\s\S]*?hasActiveExternalProvider: activeExternalProvider != null,[\s\S]*?isExternalModel,[\s\S]*?maxTokens: params\.maxTokens,[\s\S]*?maxTokensMax,[\s\S]*?\}\);[\s\S]*?if \(clampedMaxTokens == null\) \{[\s\S]*?maxTokens: clampedMaxTokens[\s\S]*?setActivePresetSource\(nextSource\)[\s\S]*?setParams\(nextParams\)/,
   );
 });

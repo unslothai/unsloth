@@ -104,6 +104,15 @@ export function gpuMemoryTotalsGb(
   };
 }
 
+/** One device row's total split the way the VRAM tile splits it; null for dedicated-only VRAM. A Windows ROCm iGPU
+ * reports its BIOS carve-out plus the shared pool as one total (#8942). */
+export function deviceSharedMemorySplitGb(
+  device: MemoryTotalDevice,
+): GpuMemoryTotalsGb | null {
+  const totals = gpuMemoryTotalsGb([device]);
+  return totals.shared > 0 ? totals : null;
+}
+
 export function gpuSharedHostMemoryGb(devices: MemoryTotalDevice[]): number {
   return gpuMemoryTotalsGb(devices).shared;
 }

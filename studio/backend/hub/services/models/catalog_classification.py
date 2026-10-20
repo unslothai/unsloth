@@ -24,7 +24,9 @@ from utils.gguf_archs import (
 from utils.paths.path_utils import file_contents_available_locally
 
 
-_DIFFUSION_GGUF_ARCHS = frozenset({"flux", "flux2", "qwen_image", "qwenimage", "z_image", "zimage"})
+_DIFFUSION_GGUF_ARCHS = frozenset(
+    {"flux", "flux2", "qwen_image", "qwenimage", "qwen_image21", "qwenimage21", "z_image", "zimage"}
+)
 _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
 )
@@ -252,14 +254,36 @@ def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> 
     arch = _gguf_architecture(str(path))
     if is_audio_cpp_gguf_architecture(arch):
         return _audio_cpp_classification(path, name_hints)[0]
+    if arch is None or arch.lower() == "sdxl":
+        whole = _whole_pipeline_gguf_task(path)
+        if whole is not None:
+            return whole
     return _arch_to_task(arch, name_hints = name_hints)
+
+
+def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
+    """Images task for a whole-pipeline SDXL GGUF: sd.cpp ``convert`` writes no architecture, so the name fallback
+    would call it a chat model."""
+    try:
+        from core.inference.diffusion_content import whole_pipeline_gguf_family
+
+        family = whole_pipeline_gguf_family(str(path))
+        if family is None:
+            return None
+        from core.inference.diffusion_engine_router import family_buildable_here
+        from core.inference.diffusion_families import detect_family
+
+        buildable = family_buildable_here(detect_family("", override = family), model_kind = "gguf")
+    except Exception:
+        return None
+    return "text-to-image" if buildable else _UNSUPPORTED_DIFFUSION_TASK
 
 
 def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     if any(_is_h3_bundle_gguf_hint(hint) for hint in name_hints):
         return _VIDEO_GEN_TASK
     if arch is None:
-        # Qwen-Image-2.1 GGUFs have kv_count 0, so the name is the only evidence, as for a cloud placeholder.
+        # unsloth/Qwen-Image-2.1-GGUF has kv_count 0 (others declare "qwen_image21"): the name is the only evidence.
         return _unhydrated_gguf_task(name_hints)
     normalized = arch.lower()
     if is_audio_cpp_gguf_architecture(normalized):

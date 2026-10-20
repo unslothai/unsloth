@@ -4,21 +4,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
+import {
+  DEFAULT_ENGINE_LAUNCH_FIELDS,
+  engineLaunchFieldsFromParams,
+} from "../src/features/chat/lib/engine-launch-fields.ts";
 
 const composer = readSrc("features/chat/shared-composer.tsx");
 const start = composer.indexOf("const paneEngine = ");
 const end = composer.indexOf("let loadTrustRemoteCode", start);
 assert.ok(start >= 0 && end > start);
-const paneFields = new Function(
+const paneFieldsBody = new Function(
   "targetIsGguf",
   "ownConfig",
   "reconcilePersistedGpuIds",
+  "engineLaunchFieldsFromParams",
   `${composer.slice(start, end)} return paneEngineFields;`,
-) as (
+);
+const paneFields = (
   targetIsGguf: boolean,
   ownConfig: Record<string, unknown>,
   reconcile: (ids: number[] | null) => number[] | null,
-) => Record<string, unknown>;
+): Record<string, unknown> =>
+  paneFieldsBody(
+    targetIsGguf,
+    ownConfig,
+    reconcile,
+    engineLaunchFieldsFromParams,
+  );
 const reconcile = (ids: number[] | null) => ids;
 
 test("a compare pane loads its remembered vLLM or SGLang settings", () => {
@@ -36,9 +48,23 @@ test("a compare pane loads its remembered vLLM or SGLang settings", () => {
     engine: "sglang",
     engine_precision: "int4",
     engine_parallelism: "pipeline",
+    ...DEFAULT_ENGINE_LAUNCH_FIELDS,
     load_in_4bit: false,
     gpu_ids: [1, 2],
   });
+  const tuned = paneFields(
+    false,
+    {
+      engine: "vllm",
+      engineKvCacheDtype: "fp8",
+      engineSeed: 0,
+      engineGpuMemoryUtilization: 0.5,
+    },
+    reconcile,
+  );
+  assert.equal(tuned.engine_kv_cache_dtype, "fp8");
+  assert.equal(tuned.engine_seed, 0);
+  assert.equal(tuned.engine_gpu_memory_utilization, 0.5);
   assert.equal(composer.match(/\.\.\.paneEngineFields,/g)?.length, 2);
 });
 

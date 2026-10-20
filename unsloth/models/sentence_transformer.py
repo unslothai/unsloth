@@ -1106,9 +1106,14 @@ class FastSentenceTransformer(FastModel):
         cache_dir = None,
         revision = None,
         module_subfolder = "",
+        transformer_class = None,
     ):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
+
+        # A repo's Transformer subclass, built around our model.
+        if transformer_class is not None:
+            Transformer = transformer_class
 
         # Prevents loading the model a second time and redirects AutoProcessor/AutoTokenizer so Transformer.__init__ picks up our pre-fixed tokenizer.
         from transformers import AutoProcessor, AutoTokenizer
@@ -1362,7 +1367,7 @@ class FastSentenceTransformer(FastModel):
     @staticmethod
     def _is_transformer_module_ref(class_ref):
         """Name ST's Transformer without importing anything, since importing to compare is the same
-        execution the gate refuses. Any other spelling is caught by `is Transformer` in
+        execution the gate refuses. Any other spelling (or a subclass) is caught by `issubclass` in
         _load_modules, after gating; refusals all live in _resolve_module_class."""
         if not isinstance(class_ref, str):
             return False
@@ -2063,7 +2068,13 @@ class FastSentenceTransformer(FastModel):
                         cache_dir = cache_dir,
                         revision = revision,
                     )
-                    is_transformer_module = module_class is Transformer
+                    # Stock load() would re-read the weights unpatched; a subclass's own load() may restore its state, so keep it.
+                    is_transformer_module = (
+                        isinstance(module_class, type)
+                        and issubclass(module_class, Transformer)
+                        and inspect.getattr_static(module_class, "load", None)
+                        is inspect.getattr_static(Transformer, "load", None)
+                    )
 
                 if is_transformer_module:
                     transformer_module = FastSentenceTransformer._create_transformer_module(
@@ -2076,6 +2087,7 @@ class FastSentenceTransformer(FastModel):
                         cache_dir,
                         revision,
                         module_subfolder = module_config.get("path") or "",
+                        transformer_class = module_class,
                     )
                     modules[name] = transformer_module
                 else:
@@ -3024,11 +3036,23 @@ class FastSentenceTransformer(FastModel):
                     target_modules = target_modules,
                     lora_dropout = lora_dropout,
                     bias = bias,
+                    layers_to_transform = layers_to_transform,
+                    layers_pattern = layers_pattern,
+                    use_rslora = use_rslora,
                     use_dora = use_dora,
+                    modules_to_save = modules_to_save,
+                    init_lora_weights = init_lora_weights,
+                    loftq_config = loftq_config or {},
                     task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
+                from ._utils import _mark_unsloth_disable_data_parallel
+                from .llama import _unfreeze_modules_to_save
+
+                # float16 modules_to_save copies must train in float32 or GradScaler refuses to unscale them (#1200).
+                _unfreeze_modules_to_save(peft_model)
+                _mark_unsloth_disable_data_parallel(peft_model)
 
                 qat_scheme = kwargs.get("qat_scheme", None)
                 if qat_scheme is not None:
@@ -3206,6 +3230,13 @@ def _patch_sentence_transformer_trainer():
                     if hasattr(self.args, "fp16_full_eval"):
                         self.args.fp16_full_eval = False
 
+        if os.environ.get("UNSLOTH_LOG_MFU", "0") == "1":
+            try:
+                from ..utils.mfu import add_mfu_callback
+                add_mfu_callback(self)
+            except Exception as exc:
+                print(f"Unsloth: could not enable MFU logging ({exc}).")
+
     SentenceTransformerTrainer.__init__ = _patched_init
     SentenceTransformerTrainer._unsloth_auto_compile_patched = True
 
@@ -3374,6 +3405,42 @@ def _patch_pooling_float16_accumulation():
     Pooling._unsloth_float16_pooling = True
 
 
+def _patch_dense_input_dtype():
+    """Cast Dense input to its weight dtype: the float32 pooled vector meets float16 Dense
+    weights (EmbeddingGemma on T4), which F.linear refuses without autocast."""
+    try:
+        from sentence_transformers.models import Dense
+    except Exception:
+        return
+    if getattr(Dense, "_unsloth_input_dtype", False):
+        return
+    _original_forward = Dense.forward
+
+    def forward(self, features, *args, **kwargs):
+        key = getattr(self, "module_input_name", "sentence_embedding")
+        weight = getattr(getattr(self, "linear", None), "weight", None)
+        x = features.get(key, None) if hasattr(features, "get") else None
+        if not (
+            torch.is_tensor(x)
+            and torch.is_tensor(weight)
+            and x.is_floating_point()
+            and x.dtype != weight.dtype
+            and not torch.is_autocast_enabled(x.device.type)
+        ):
+            return _original_forward(self, features, *args, **kwargs)
+        features[key] = x.to(weight.dtype)
+        try:
+            return _original_forward(self, features, *args, **kwargs)
+        finally:
+            if getattr(self, "module_output_name", key) != key:
+                features[key] = x
+
+    forward.__wrapped__ = _original_forward
+    Dense.forward = forward
+    Dense._unsloth_input_dtype = True
+
+
 _patch_sentence_transformer_trainer()
 _patch_st_trainer_load_from_checkpoint()
 _patch_pooling_float16_accumulation()
+_patch_dense_input_dtype()

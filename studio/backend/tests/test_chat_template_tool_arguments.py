@@ -67,6 +67,27 @@ class _StrictTemplateTokenizer:
         return "RENDERED"
 
 
+class _StrictToolOrderTokenizer:
+    def __init__(self):
+        self.seen_messages = []
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kw,
+    ):
+        self.seen_messages.append(messages)
+        for index, message in enumerate(messages):
+            if message.get("role") == "tool":
+                previous = messages[index - 1] if index else {}
+                if previous.get("role") not in ("assistant", "tool"):
+                    raise ValueError("A tool message must follow an assistant or tool message.")
+        return "RENDERED"
+
+
 def test_string_arguments_are_parsed_to_dict():
     out = _normalize_tool_call_arguments(_conv('{"query": "sweden"}'))
     args = out[1]["tool_calls"][0]["function"]["arguments"]
@@ -87,6 +108,142 @@ def test_render_succeeds_on_strict_template_with_string_arguments():
     # Regression: strict template + string args used to raise.
     result = apply_chat_template_for_generation(_StrictTemplateTokenizer(), _conv('{"query": "x"}'))
     assert result == "RENDERED"
+
+
+def test_render_repairs_orphan_tool_result_after_native_template_failure():
+    tok = _StrictToolOrderTokenizer()
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "name": "web_search", "content": "21C sunny"},
+    ]
+
+    assert apply_chat_template_for_generation(tok, messages) == "RENDERED"
+    repaired = tok.seen_messages[-1]
+    assert [message["role"] for message in repaired] == ["user", "assistant", "tool"]
+    assert repaired[1]["tool_calls"][0]["id"] == "replayed_tool_1"
+    assert repaired[2]["tool_call_id"] == "replayed_tool_1"
+
+
+class _CallLinkedToolTokenizer:
+    """gpt-oss rule: each result answers a call of the preceding assistant; no two assistant turns in a row."""
+
+    def __init__(self):
+        self.seen_messages = []
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kw,
+    ):
+        self.seen_messages.append(messages)
+        call_ids = None
+        previous_role = None
+        for message in messages:
+            role = message.get("role")
+            if role == "assistant" and previous_role == "assistant":
+                raise ValueError("Conversation roles must alternate")
+            if role == "assistant":
+                call_ids = {call.get("id") for call in message.get("tool_calls") or ()}
+            elif role == "tool":
+                if not call_ids or message.get("tool_call_id") not in call_ids:
+                    raise ValueError(
+                        "Message has tool role, but there was no previous assistant message with a tool call!"
+                    )
+            else:
+                call_ids = None
+            previous_role = role
+        return "RENDERED"
+
+
+def test_render_gives_an_assistant_text_turn_the_orphan_call():
+    tok = _CallLinkedToolTokenizer()
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "content": "checking"},
+        {"role": "tool", "tool_call_id": "c1", "name": "web_search", "content": "21C sunny"},
+    ]
+
+    assert apply_chat_template_for_generation(tok, messages) == "RENDERED"
+    repaired = tok.seen_messages[-1]
+    assert [message["role"] for message in repaired] == ["user", "assistant", "tool"]
+    assert repaired[1]["content"] == "checking"
+    assert [call["id"] for call in repaired[1]["tool_calls"]] == ["c1"]
+    assert "tool_calls" not in messages[1]
+
+
+class _FirstCallNamesResultsTokenizer(_CallLinkedToolTokenizer):
+    def apply_chat_template(self, messages, **kw):
+        super().apply_chat_template(messages, **kw)
+        lines, last = [], None
+        for message in messages:
+            if message.get("tool_calls"):
+                last = message["tool_calls"][0]["function"]["name"]
+            elif message.get("role") == "tool":
+                lines.append(f"functions.{last}: {message['content']}")
+        return "\n".join(lines)
+
+
+def test_render_gives_each_orphan_result_its_own_call():
+    tok = _FirstCallNamesResultsTokenizer()
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "tool_call_id": "c1", "name": "web_search", "content": "21C sunny"},
+        {"role": "tool", "name": "web_fetch", "content": "rain later"},
+    ]
+
+    rendered = apply_chat_template_for_generation(tok, messages)
+    assert rendered == "functions.web_search: 21C sunny\nfunctions.web_fetch: rain later"
+    repaired = tok.seen_messages[-1]
+    assert [message["role"] for message in repaired] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    assert [m["tool_calls"][0]["id"] for m in repaired if m.get("tool_calls")] == [
+        "c1",
+        "replayed_tool_3",
+    ]
+    assert repaired[4]["tool_call_id"] == "replayed_tool_3"
+
+
+def test_orphan_repair_is_idempotent_and_leaves_linked_results_alone():
+    from core.inference.chat_template_helpers import _repair_orphan_tool_results
+
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "name": "web_search", "content": "21C sunny"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
+        {"role": "tool", "tool_call_id": "c2", "content": "rain"},
+    ]
+    snapshot = json.loads(json.dumps(messages))
+
+    repaired = _repair_orphan_tool_results(messages)
+    assert [message["role"] for message in repaired] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    assert repaired[3:] == messages[2:]
+    assert _repair_orphan_tool_results(repaired) is repaired
+    assert messages == snapshot
+
+
+def test_render_keeps_valid_tool_result_history_unchanged():
+    tok = _StrictToolOrderTokenizer()
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "21C sunny"},
+    ]
+
+    assert apply_chat_template_for_generation(tok, messages) == "RENDERED"
+    assert tok.seen_messages == [messages]
 
 
 class _RecordingTokenizer:
@@ -357,6 +514,20 @@ def test_render_succeeds_on_single_call_template_with_parallel_calls():
     # Regression: two calls in one turn used to break every later render.
     result = apply_chat_template_for_generation(_SingleToolCallTokenizer(), _parallel_conv())
     assert result == "RENDERED"
+
+
+def test_orphan_repair_is_not_built_when_an_earlier_fallback_renders(monkeypatch):
+    # Llama 3.x: the split renders parallel calls, so the orphan scan must not run.
+    import core.inference.chat_template_helpers as helpers
+
+    def _must_not_run(messages):
+        raise AssertionError("orphan repair built although the split rendered")
+
+    monkeypatch.setattr(helpers, "_repair_orphan_tool_results", _must_not_run, raising = False)
+    assert (
+        apply_chat_template_for_generation(_SingleToolCallTokenizer(), _parallel_conv())
+        == "RENDERED"
+    )
 
 
 def test_string_arguments_and_parallel_calls_are_repaired_together():

@@ -1,18 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""transformers can keep a module and drop the names peft imports from it.
-
-`Ministral_3_(3B)_Reinforcement_Learning_Sudoku_Game` dies on main with
-
-    ImportError: cannot import name '_MODEL_TO_CONVERSION_PATTERN'
-    from 'transformers.conversion_mapping'
-
-import_fixes already stubs both modules when they are ABSENT, but here the
-module is present and only the symbol is gone, so the guard fell through and
-no-oped. The names peft imports at module top are backfilled onto the real
-module instead: additive only, so a transformers that still exports them is
-untouched.
-"""
+"""Backfills names peft imports onto existing transformers modules that lack them; additive only."""
 
 import importlib
 import importlib.util
@@ -25,13 +13,7 @@ import pytest
 
 
 def _load_import_fixes():
-    """By file path, not `from unsloth import ...`.
-
-    `version-compat-ci.yml`'s `daily-fresh-fetch` job collects this whole
-    directory with pytest as its only dependency, and importing the package
-    runs `_gpu_init.py`, which needs NumPy. Collection would stop there,
-    before a single test in this directory ran.
-    """
+    """Loads import_fixes.py by path: importing unsloth runs _gpu_init.py, which needs NumPy."""
     path = Path(__file__).resolve().parents[2] / "unsloth" / "import_fixes.py"
     spec = importlib.util.spec_from_file_location("unsloth_import_fixes_for_backfill_tests", path)
     module = importlib.util.module_from_spec(spec)
@@ -50,7 +32,7 @@ def fake_modules():
     for name in F._PEFT_CONVERSION_SYMBOLS:
         mod = types.ModuleType(name)
         mod.__file__ = f"<fake {name}>"
-        mod.something_else = object()  # proves the module is not replaced
+        mod.something_else = object()
         sys.modules[name] = mod
     try:
         yield {n: sys.modules[n] for n in F._PEFT_CONVERSION_SYMBOLS}
@@ -70,12 +52,7 @@ def test_the_missing_names_are_added(fake_modules):
 
 
 def test_the_transformers_package_keeps_no_stub(fake_modules):
-    """The donor stub must not reach the package either.
-
-    `import transformers.conversion_mapping as m` resolves through the package attribute,
-    not sys.modules, so a stub attached there outlives the real module going back into
-    sys.modules and answers every later conversion lookup with None.
-    """
+    """A stub on the package attribute outlives the restore and answers later lookups with None."""
     parent = types.ModuleType("transformers")
     saved = sys.modules.get("transformers")
     sys.modules["transformers"] = parent
@@ -118,15 +95,7 @@ def test_it_is_idempotent(fake_modules):
 
 
 def test_a_module_blocked_by_another_drift_is_retried(monkeypatch):
-    """The two drifts together used to be unrecoverable in one pass.
-
-    `transformers.conversion_mapping` imports names from
-    `transformers.core_model_loading` at its own module top, so while those are
-    missing, importing it raises and the pass skips it. Backfilling
-    core_model_loading later in the SAME pass unblocks that import, but nothing
-    came back for conversion_mapping and `_gpu_init` calls this guard once, so an
-    installation carrying both drifts stayed broken.
-    """
+    """A module blocked by another drift is retried, since _gpu_init runs the guard only once."""
     names = list(F._PEFT_CONVERSION_SYMBOLS)
     blocked, unblocker = names[0], names[-1]
     assert blocked != unblocker, "this test needs two modules to order"
@@ -141,7 +110,6 @@ def test_a_module_blocked_by_another_drift_is_retried(monkeypatch):
     def fake_import(name, *a, **kw):
         if name == blocked:
             attempts["blocked"] += 1
-            # Importable only once the other module has been backfilled, which is exactly the real dependency.
             other = sys.modules.get(unblocker)
             if other is None or any(
                 not hasattr(other, s) for s in F._PEFT_CONVERSION_SYMBOLS[unblocker]
@@ -188,7 +156,6 @@ def test_the_retry_stops_when_a_module_stays_unimportable(monkeypatch):
     monkeypatch.setattr(importlib, "import_module", always_fails)
     try:
         assert F._backfill_missing_conversion_symbols() is False
-        # Nothing was added, so the loop breaks after one pass.
         assert calls["n"] == len(names)
     finally:
         for name, mod in saved.items():
@@ -199,26 +166,7 @@ def test_the_retry_stops_when_a_module_stays_unimportable(monkeypatch):
 
 
 def _peft_converter_source():
-    """peft's own source, from the installed package or from GitHub.
-
-    `version-compat-ci.yml`'s `daily-fresh-fetch` job installs only pytest, so
-    `find_spec("peft")` is None there and this authority check reported as a
-    skip: a new import added upstream would never fail the guard it exists to
-    be. The pinned-symbol suites in this directory already read upstream over
-    the network, so do the same and fall back to the installed copy.
-
-    Both layouts are tried, the single module and the package, because peft can
-    split this file into `transformers_weight_conversion/__init__.py` at any
-    time. A packaging-only move would 404 the sole URL and drop straight back
-    to the installed copy, which is absent in that job, so the guard would go
-    quiet exactly when upstream churn is highest.
-    `test_peft_pinned_symbols.py` already probes the same pair.
-
-    A package `__init__.py` that only re-exports would then report no transformers
-    imports at all, so the submodules it pulls in at import time are fetched too
-    and appended. Importing the package runs them, so an unlisted symbol in one
-    breaks startup exactly as it would in the flat file.
-    """
+    """Fetches peft's converter from GitHub in module and package layouts; CI has no installed peft."""
     import os
     import urllib.error
     import urllib.request
@@ -248,14 +196,9 @@ def _peft_converter_source():
     pkg = base + "transformers_weight_conversion/"
     init = fetch(pkg + "__init__.py")
     if init is not None:
-        # Breadth-first, not one level: importing the package runs `.core`, which runs whatever IT imports relatively,
-        # so a transformers import two levels down breaks startup exactly the same way. `seen` keeps a cycle from
-        # looping.
+        # Breadth-first: transformers imports nested deeper still break startup. `seen` stops cycles.
         sources = [init]
-        # Each entry is the module's dotted path from the package root.
-        # A child's own relative imports resolve against ITS package, not the root: in a nested split where `__init__`
-        # imports `.sub.core` and `sub/core.py` imports `.ops`, Python reads that as `sub.ops`, so carry the prefix
-        # rather than fetching `ops.py`.
+        # A child's relative imports resolve against ITS package, so carry the dotted prefix.
         pending = _resolved_relative_targets("", init)
         seen = set()
         while pending:
@@ -286,10 +229,7 @@ def _peft_converter_source():
         if (exc.name or "") in (module, "peft.utils", "peft"):
             pytest.skip("this peft has no weight converter")
         raise
-    # If peft turns the converter into a package, `getsource` returns only the `__init__.py` re-exports, and the
-    # implementation's own transformers imports -- the ones that would fail at startup -- are never read. That is
-    # the packaging churn this whole fallback exists for, so read the child modules too rather than a shim that
-    # imports nothing.
+    # If the converter becomes a package, getsource returns only __init__ re-exports, so read children too.
     sources = [inspect.getsource(loaded)]
     for path in getattr(loaded, "__path__", ()) or ():
         import pkgutil
@@ -297,28 +237,19 @@ def _peft_converter_source():
             try:
                 sources.append(inspect.getsource(importlib.import_module(f"{module}.{info.name}")))
             except Exception:
-                continue  # a child that will not import cannot be read
+                continue
     return "\n".join(sources)
 
 
-# The converter package itself, so an absolute import of its own children can be told from an unrelated one.
 _CONVERTER_MODULE = "peft.utils.transformers_weight_conversion"
 
 
 def _resolved_relative_targets(package, src):
-    """`_relative_import_targets`, resolved against the importing module's package.
-
-    A level counts dots: `from .ops import X` is level 1 and resolves inside
-    `package`, `from ..ops import X` is level 2 and resolves one package up.
-    Prefixing `package` onto every name regardless probed `sub.ops` for the
-    second form and silently read nothing, which is a drift check that cannot
-    fail. A level that walks above the converter package leaves the code this
-    test is about, so it is dropped rather than guessed at.
-    """
+    """Resolves each relative level against the package; a level that walks above the package is dropped."""
     parts = package.split(".") if package else []
     resolved = []
     for level, name in _relative_import_targets(src):
-        if level == 0:  # absolute, already rooted at the converter package
+        if level == 0:
             resolved.append(name)
             continue
         drop = level - 1
@@ -330,24 +261,14 @@ def _resolved_relative_targets(package, src):
 
 
 def _relative_import_targets(src):
-    """`(level, submodule)` for every relative import a module runs at import time.
-
-    `from .core import X` and `from . import core` both name `core`, at level 1.
-    The level travels with the name because the caller has to resolve it against
-    the importing module's own package. Only the modules the package actually
-    pulls in are followed, so a package that re-exports one implementation file
-    costs one extra fetch.
-    """
+    """Returns (level, submodule) pairs; the caller resolves each against the importing package."""
     import ast
 
     targets = []
 
     def visit(body) -> None:
         for node in body:
-            # Absolute, but still the package's own child: peft can re-export its implementation as `from
-            # peft.utils.transformers_weight_conversion.core import build`, which loads the same file a relative
-            # import would and was queued by neither branch. Level 0 marks a name that is already rooted at the
-            # converter package.
+            # Absolute import of the package's own child loads the same file a relative import would.
             if (
                 isinstance(node, ast.ImportFrom)
                 and not node.level
@@ -370,16 +291,13 @@ def _relative_import_targets(src):
             if isinstance(node, ast.ImportFrom) and node.level:
                 if node.module:
                     targets.append((node.level, node.module))
-                    # `from .sub import core` imports `pkg.sub.core` when `core` is a module, whether or not
-                    # `sub/__init__.py` re-exports it, and queueing only `sub` read the shim and none of the
-                    # transformers imports in the file that actually has them. A name that turns out to be a symbol is
-                    # simply a fetch that finds nothing, which the caller already skips.
+                    # `from .sub import core` imports pkg.sub.core whether or not sub/__init__ re-exports it.
                     targets.extend(
                         (node.level, f"{node.module}.{alias.name}")
                         for alias in node.names
                         if alias.name != "*"
                     )
-                else:  # `from . import a, b`
+                else:
                     targets.extend((node.level, alias.name) for alias in node.names)
                 continue
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Import)):
@@ -387,9 +305,7 @@ def _relative_import_targets(src):
             if isinstance(node, ast.If) and _is_type_checking(node.test):
                 visit(node.body if isinstance(node.test, ast.UnaryOp) else node.orelse)
                 continue
-            # Same import-time traversal as `_transformers_imports`: a package can pull its implementation in from
-            # inside `if not TYPE_CHECKING:` or a `try:`, and importing it still runs that, so those children have to
-            # be walked too.
+            # Children imported under `if not TYPE_CHECKING:` or `try:` still run, so walk them.
             for field in ("body", "orelse", "finalbody", "handlers", "cases"):
                 child = getattr(node, field, None)
                 if not isinstance(child, list):
@@ -416,25 +332,7 @@ def _is_type_checking(test) -> bool:
 
 
 def _transformers_imports(src):
-    """{module: {symbol}} for every import transformers... executed at module load.
-
-    AST, not a regex over the source. A regex for the parenthesised form alone
-    read `from transformers.core_model_loading import A, B` as importing
-    nothing, and looking up only the modules already in the table never
-    examined a third transformers module at all. Either one leaves the drift
-    this file exists to catch reporting green.
-
-    Walking the whole tree is equally wrong in the other direction. An import
-    under `if TYPE_CHECKING:` or inside a function body never runs when the
-    converter is imported, so it cannot raise the startup `ImportError` this
-    backfill exists to absorb; requiring it in the table would fail
-    `daily-fresh-fetch` over a type annotation. So descend only through
-    statements that execute at module load: `if`/`try`/`with`/loop bodies yes,
-    typing-only branches and function bodies no. A class body is NOT a function
-    body: it executes the moment the module defines the class, so an import
-    inside one can break startup and is collected. A conditional module-level
-    import counts too -- it can run, and that is the bar.
-    """
+    """Walks only import-time statements: skips TYPE_CHECKING and function bodies, keeps class bodies."""
     import ast
 
     out = {}
@@ -444,9 +342,7 @@ def _transformers_imports(src):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("transformers"):
                 out.setdefault(node.module, set()).update(a.name for a in node.names)
                 continue
-            # `import transformers.x` raises the same startup ModuleNotFoundError as the `from` form, and skipping it
-            # let a newly required submodule break the converter with this check still green. It binds no symbols, so
-            # the module is recorded with an empty set.
+            # `import transformers.x` fails at startup like the `from` form; it binds no symbols.
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.startswith("transformers"):
@@ -455,7 +351,6 @@ def _transformers_imports(src):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if isinstance(node, ast.If) and _is_type_checking(node.test):
-                # `if TYPE_CHECKING:` never runs; `if not TYPE_CHECKING:` runs the OTHER branch.
                 visit(node.body if isinstance(node.test, ast.UnaryOp) else node.orelse)
                 continue
             for field in ("body", "orelse", "finalbody", "handlers", "cases"):
@@ -465,7 +360,7 @@ def _transformers_imports(src):
                 for item in child:
                     if isinstance(item, ast.stmt):
                         visit([item])
-                    else:  # an ExceptHandler holds its own statement list
+                    else:
                         visit(getattr(item, "body", []))
 
     visit(ast.parse(src).body)
@@ -487,15 +382,7 @@ def test_both_import_spellings_are_parsed():
 
 
 def test_only_imports_that_run_at_module_load_are_collected():
-    """An import the converter never executes cannot break importing it.
-
-    The backfill absorbs the `ImportError` raised while importing peft's
-    converter, so the drift guard must be scoped to the same thing. A
-    `TYPE_CHECKING` import or a function-local one is invisible at that moment;
-    demanding it in `_PEFT_CONVERSION_SYMBOLS` would redden `daily-fresh-fetch`
-    for an annotation. Anything that can run at load, including under a plain
-    `if` or a `try`, still counts.
-    """
+    """Only load-time imports belong in _PEFT_CONVERSION_SYMBOLS; a TYPE_CHECKING import must not."""
     src = (
         "from typing import TYPE_CHECKING\n"
         "from transformers.core_model_loading import ConversionOps\n"
@@ -519,20 +406,13 @@ def test_only_imports_that_run_at_module_load_are_collected():
         "transformers.runtime": {"AtRuntime"},
         "transformers.optional": {"MaybeThere"},
         "transformers.fallback": {"Instead"},
-        # A module-level class body runs the moment the class is defined, so an import in one can break the very import
-        # this backfill absorbs. A class inside a function does not.
+        # A module-level class body runs at import time; a class inside a function does not.
         "transformers.classbody": {"AtClassCreation"},
     }
 
 
 def test_the_package_layout_is_fetched_when_the_module_layout_is_gone(monkeypatch):
-    """A packaging-only move upstream must not silently disable this guard.
-
-    `daily-fresh-fetch` installs only pytest, so a 404 on the single module URL
-    falls through to an absent peft and the authority check reports a skip. The
-    fetch therefore has to know both layouts, the same pair
-    `test_peft_pinned_symbols.py` probes.
-    """
+    """A packaging-only upstream move must still be caught: fetch both the module and package layouts."""
     import io
     import urllib.error
     import urllib.request
@@ -552,11 +432,7 @@ def test_the_package_layout_is_fetched_when_the_module_layout_is_gone(monkeypatc
 
 
 def test_a_package_split_is_followed_more_than_one_level(monkeypatch):
-    """Importing the package runs `.core`, which runs whatever IT imports.
-
-    Fetching only the immediate children left a transformers import two levels down
-    invisible, so the authority check stayed green while startup could still fail on it.
-    """
+    """Follows package children recursively: a transformers import two levels down would go unread."""
     import io
     import urllib.error
     import urllib.request
@@ -649,11 +525,7 @@ def test_a_relative_import_under_an_import_time_block_is_followed(monkeypatch):
 
 
 def test_a_nested_package_resolves_relative_imports_from_its_own_path(monkeypatch):
-    """`sub/core.py` doing `from .ops import x` means `sub.ops`, not `ops`.
-
-    Resolving every child against the package root fetched the wrong file, so a
-    transformers import in the nested implementation was never read.
-    """
+    """Relative imports resolve against each module's own package, so sub/core.py's .ops means sub.ops."""
     import io
     import urllib.error
     import urllib.request
@@ -662,7 +534,6 @@ def test_a_nested_package_resolves_relative_imports_from_its_own_path(monkeypatc
         "transformers_weight_conversion/__init__.py": "from .sub.core import build\n",
         "transformers_weight_conversion/sub/core.py": "from .ops import apply\n",
         "transformers_weight_conversion/sub/ops.py": ("from transformers.nested import DeepOne\n"),
-        # The wrong resolution would land here instead.
         "transformers_weight_conversion/ops.py": ("from transformers.wrong_level import NotThis\n"),
     }
 
@@ -679,33 +550,22 @@ def test_a_nested_package_resolves_relative_imports_from_its_own_path(monkeypatc
 
 
 def test_an_unrecoverable_conversion_map_fails_on_use(caplog):
-    """An empty map is the one shape that fails silently.
-
-    peft copies it at import and then calls `.get(model_type, None)`; a None makes
-    `_convert_peft_config_moe` return early, so every affected adapter loads with its
-    legacy targets unconverted and nothing is logged. Every other runtime symbol here is
-    backfilled fail-on-use for that reason.
-    """
+    """An empty map must fail on use, since peft's .get() on it would silently skip the conversion."""
     stand_in = F._UnavailableConversionPatternMap()
 
-    # peft's own line: `_MODEL_TO_CONVERSION_PATTERN = _MODEL_TO_CONVERSION_PATTERN.copy()`
     copied = stand_in.copy()
     assert isinstance(copied, F._UnavailableConversionPatternMap), "a plain copy is silent again"
 
-    # ...then `_MODEL_TO_CONVERSION_PATTERN["mixtral"] = "mixtral"`, which must still work.
     copied["mixtral"] = "mixtral"
     assert copied.get("mixtral") == "mixtral"
     assert copied["mixtral"] == "mixtral"
 
-    # A fused-MoE lookup we cannot answer honestly raises where it happens.
     with pytest.raises(RuntimeError):
         copied.get("qwen3_moe", None)
     with pytest.raises(RuntimeError):
         copied["qwen3_moe"]
 
-    # But peft reaches _convert_peft_config_moe for ANY model type with a checkpoint conversion mapping, and for a
-    # non-MoE one None IS the right answer: the function returns without a MoE rewrite, exactly as it would with the
-    # real map. Raising there would break ordinary adapter loads to guard a case they are not in.
+    # peft calls _convert_peft_config_moe for any mapped type; for non-MoE None is correct.
     assert copied.get("llama", None) is None
     assert copied.get("gemma3", "fallback") == "fallback"
     with pytest.raises(KeyError):
@@ -723,7 +583,6 @@ def test_an_unrecoverable_map_is_what_the_backfill_actually_installs(fake_module
         installed, F._UnavailableConversionPatternMap
     ), "an empty dict here is the silent mis-conversion this exists to stop"
 
-    # And a real map still comes through as an ordinary dict.
     monkeypatch.setattr(F, "_recover_conversion_pattern_map", lambda _real: {"qwen3_moe": "qwen3"})
     delattr(fake_modules["transformers.conversion_mapping"], "_MODEL_TO_CONVERSION_PATTERN")
     assert F._backfill_missing_conversion_symbols() is True
@@ -735,12 +594,7 @@ def test_an_unrecoverable_map_is_what_the_backfill_actually_installs(fake_module
 
 
 def test_a_re_exporting_package_is_followed_to_its_implementation(monkeypatch):
-    """A package `__init__.py` that only re-exports imports nothing from transformers.
-
-    Reading it alone reports an empty import set, so the authority check passes while the
-    implementation module it pulls in can still break startup on an unlisted symbol. Importing the
-    package runs that module, so the guard has to read it.
-    """
+    """A re-exporting __init__ reports no transformers imports; read the implementation module it runs."""
     import io
     import urllib.error
     import urllib.request
@@ -770,9 +624,7 @@ def test_a_re_exporting_package_is_followed_to_its_implementation(monkeypatch):
 
 def test_the_symbol_list_matches_what_peft_imports():
     """Two lists that can drift; peft's own source is the authority."""
-    # Not `importorskip`: on pytest 8 to 9.0 that also swallows an ImportError raised INSIDE an existing converter,
-    # which is exactly the drift this test exists to catch -- peft adding an import we do not backfill would report as
-    # a skip. Skip only when the module is genuinely absent.
+    # Not importorskip: pytest 8 to 9.0 also swallows ImportErrors raised inside the converter.
     imports = _transformers_imports(_peft_converter_source())
     known = F._PEFT_CONVERSION_SYMBOLS
     for module, imported in imports.items():
@@ -793,15 +645,8 @@ def test_the_backfill_runs_from_the_guard():
     assert "_backfill_missing_conversion_symbols() or patched_any" in src
 
 
-# --- what the first review round found --------------------------------------
-
-
 def test_the_model_type_map_is_recovered_not_emptied(fake_modules):
-    """peft copies this dict and looks model families up in it, so handing it
-    the stub's empty one drops every alias silently: `_convert_peft_config_moe`
-    misses the lookup and leaves legacy LoRA targets unconverted, with no
-    error. A rename is the likeliest reason for the name to go, so the map is
-    found by shape."""
+    """Recover the real model-type map by shape; the empty stub would silently drop every alias."""
     real = fake_modules["transformers.conversion_mapping"]
     real._RENAMED_CONVERSION_PATTERN = {
         "qwen3_moe": "qwen2_moe",
@@ -836,11 +681,7 @@ def test_a_non_string_dict_is_not_mistaken_for_the_map(fake_modules):
 
 
 def test_a_called_symbol_refuses_rather_than_answering_wrongly(fake_modules):
-    """The stub bodies are inert on purpose: on transformers <5 the whole
-    module is ours and peft's converter never runs. On a real transformers it
-    does run -- the donor `rename_source_key` takes three arguments and always
-    returns the original key, while peft also calls it with a prefix and an
-    adapter state dict."""
+    """Stubs refuse when called: peft passes arguments the donor rename_source_key ignores."""
     F._backfill_missing_conversion_symbols()
     core = fake_modules["transformers.core_model_loading"]
     with pytest.raises(RuntimeError, match = "would silently mis-convert"):
@@ -857,10 +698,7 @@ def test_a_class_valued_symbol_stays_a_class(fake_modules):
 
 
 def test_a_type_check_against_a_placeholder_raises_rather_than_missing():
-    """Answering False is the dangerous answer. peft buckets its conversion
-    entries by type -- `isinstance(entry, WeightConverter)`, `isinstance(op,
-    Concatenate)` -- so a placeholder that quietly matches nothing drops the
-    operations and converts the adapter wrongly with no error."""
+    """Placeholder types must raise on isinstance; answering False makes peft silently drop operations."""
     placeholder = F._unsupported_conversion_symbol(
         "transformers.core_model_loading.WeightConverter", donor_value = type
     )
@@ -955,20 +793,10 @@ def test_the_fetcher_walks_a_package():
     assert "__path__" in src and "iter_modules" in src
 
 
-# --- what the second review round found -------------------------------------
-
-
 def test_a_fused_moe_type_that_does_not_say_moe_still_refuses():
-    """Eleven of the twenty-four fused MoE model types are not named for it.
-
-    `deepseek_v3`, `dots1`, `longcat_flash`, `minimax`, `mellum`, `qwen3_next`,
-    `solar_open` and `flex_olmo` all map to `mixtral` or `qwen2_moe`, which are
-    the only two base patterns peft rewrites for. A substring test over the name
-    answered the default for exactly the checkpoints the stand-in exists to
-    protect.
-    """
+    """Fused MoE types often lack 'moe' in their name, so the stand-in must not guess by substring."""
     stand_in = F._UnavailableConversionPatternMap().copy()
-    stand_in["mixtral"] = "mixtral"  # peft's own line, and it must keep working
+    stand_in["mixtral"] = "mixtral"
 
     for model_type in (
         "deepseek_v3",
@@ -989,10 +817,8 @@ def test_a_fused_moe_type_that_does_not_say_moe_still_refuses():
         with pytest.raises(RuntimeError):
             stand_in[model_type]
 
-    # The naming convention is still honoured on top, for a type added later.
     with pytest.raises(RuntimeError):
         stand_in.get("some_new_moe", None)
-    # And a non-MoE type is still answered with the default.
     assert stand_in.get("llama", None) is None
 
 
@@ -1009,10 +835,7 @@ def test_the_moe_snapshot_matches_the_installed_transformers():
 
 
 def test_the_snapshot_covers_the_types_unsloth_registers_itself():
-    """Unsloth adds its own model types to the live map at runtime, so whether the comparison
-    above sees them depends on which tests ran first in the worker. Checked here directly, so
-    a registration the snapshot does not know about fails every time, not only in some orders.
-    """
+    """Unsloth registers its own types at runtime; the snapshot must list them regardless of test order."""
     source = (
         Path(__file__).resolve().parents[2] / "unsloth" / "models" / "longcat_lsa.py"
     ).read_text(encoding = "utf-8")
@@ -1025,13 +848,7 @@ def test_the_snapshot_covers_the_types_unsloth_registers_itself():
 
 
 def test_an_unrelated_string_dictionary_is_not_installed_as_the_map(fake_modules):
-    """Shape alone selects the biggest `dict[str, str]`, not the right one.
-
-    A module that renamed the conversion map is just as likely to carry an alias
-    table or a doc map, and installing that maps a coincidentally matching model
-    type to the wrong conversion family -- and bypasses the stand-in, so every
-    other MoE lookup goes back to a silent None.
-    """
+    """Shape alone is not enough: an alias or doc str-to-str dict could be mistaken for the map."""
     real = fake_modules["transformers.conversion_mapping"]
     real._DOC_ALIASES = {f"key_{i}": f"value_{i}" for i in range(50)}
     real._RENAMED = {
@@ -1059,12 +876,7 @@ def test_only_an_unrelated_dictionary_leaves_the_map_unrecovered(fake_modules):
 
 
 def test_a_parent_relative_import_resolves_above_its_own_package(monkeypatch):
-    """`from ..ops import x` in `sub/core.py` means `ops`, not `sub.ops`.
-
-    Prefixing the current package onto every name regardless probed a path that
-    is not there, read nothing, and left the transformers import in the real
-    target out of the drift check -- a check that then cannot fail.
-    """
+    """from ..ops in sub/core.py resolves to ops, one package up, not sub.ops; a wrong guess hides drift."""
     import io
     import urllib.error
     import urllib.request
@@ -1073,7 +885,6 @@ def test_a_parent_relative_import_resolves_above_its_own_package(monkeypatch):
         "transformers_weight_conversion/__init__.py": "from .sub.core import build\n",
         "transformers_weight_conversion/sub/core.py": "from ..ops import apply\n",
         "transformers_weight_conversion/ops.py": "from transformers.parent import UpOne\n",
-        # Where the level-blind resolution would look instead.
         "transformers_weight_conversion/sub/ops.py": (
             "from transformers.wrong_level import NotThis\n"
         ),
@@ -1090,11 +901,7 @@ def test_a_parent_relative_import_resolves_above_its_own_package(monkeypatch):
 
 
 def test_a_relative_import_above_the_package_root_is_dropped(monkeypatch):
-    """`from ...elsewhere import x` leaves the converter package entirely.
-
-    There is nothing under the fetch root to read, and guessing a path produces
-    a 404 per level. The walk drops it rather than probing.
-    """
+    """Imports that climb above the fetch root are dropped, not probed, since each guessed path 404s."""
     import io
     import urllib.error
     import urllib.request
@@ -1117,11 +924,7 @@ def test_a_relative_import_above_the_package_root_is_dropped(monkeypatch):
 
 
 def test_a_moe_named_model_that_is_not_fused_still_loads():
-    """`_convert_peft_config_moe` is keyed on `mixtral` and `qwen2_moe` alone and
-    returns without a rewrite for anything else, so refusing on the NAME turned
-    three working adapter loads into hard errors. All three ship today:
-    `qwen3_5_moe_text` converts as `qwen3_5_text`, and both Granite MoE variants
-    as `granitemoe`."""
+    """Only mixtral and qwen2_moe are rewritten, so refusing other MoE-named types by name broke loads."""
     stand_in = F._UnavailableConversionPatternMap()
     for model_type in ("qwen3_5_moe_text", "granitemoehybrid", "granitemoeshared"):
         assert stand_in.get(model_type) is None, model_type
@@ -1134,6 +937,15 @@ def test_a_fused_moe_model_is_still_refused():
     for model_type in ("qwen3_moe", "minimax", "deepseek_v3", "olmoe"):
         with pytest.raises(RuntimeError, match = "conversion map"):
             stand_in.get(model_type)
+
+
+def test_a_fused_class_name_alias_is_refused_in_its_own_case():
+    """Upstream keys some fused entries by class name (UnlimitedOcrTextModel), which says nothing
+    about MoE: lowercasing it before the snapshot lookup let it fall through to a silent None."""
+    stand_in = F._UnavailableConversionPatternMap()
+    assert F._PEFT_MOE_CONVERSION_PATTERNS["UnlimitedOcrTextModel"] == "qwen2_moe"
+    with pytest.raises(RuntimeError, match = "conversion map"):
+        stand_in.get("UnlimitedOcrTextModel")
 
 
 def test_an_unknown_moe_name_is_still_refused():
@@ -1203,12 +1015,7 @@ def test_the_fused_snapshot_matches_upstream():
 
 
 def test_a_fromlist_child_module_is_queued_too():
-    """`from .sub import core` imports `pkg.sub.core` when `core` is a module.
-
-    Queueing only `sub` fetched the package shim, whose `__init__.py` may
-    re-export nothing, so the transformers imports in the file that actually has
-    them were never read and the drift check could not fail.
-    """
+    """Child modules in a from-import must be queued; the package __init__ may re-export nothing."""
     targets = _relative_import_targets("from .sub import core, HELPER\n")
     assert (1, "sub") in targets, "the package itself is still followed"
     assert (1, "sub.core") in targets, "the child module was never queued"
@@ -1236,13 +1043,7 @@ def test_a_module_form_import_inside_a_function_is_still_ignored():
 
 
 def test_an_absolute_import_of_a_child_is_queued():
-    """A package can re-export its implementation absolutely.
-
-    `from peft.utils.transformers_weight_conversion.core import build` loads the
-    same file the relative form would, and the relative-only branch queued
-    nothing, so the fetcher read `__init__.py` and none of the transformers
-    imports in `core.py`. Level 0 marks a name already rooted at the package.
-    """
+    """Absolute imports of a child module are queued too, level 0 marking a name rooted at the package."""
     src = f"from {_CONVERTER_MODULE}.core import build\n"
     assert (0, "core") in _relative_import_targets(src)
     assert _resolved_relative_targets("", src) == ["core", "core.build"]
@@ -1298,13 +1099,7 @@ def test_an_import_in_a_match_case_inside_a_function_is_still_ignored():
 
 
 def test_the_two_base_patterns_are_in_the_snapshot():
-    """`mixtral` and `qwen2_moe` map to themselves and were left out.
-
-    Not harmless: the substring hint answers False for `mixtral`, which says
-    nothing about MoE, so the stand-in handed back the silent default for a type
-    peft really does rewrite. It also failed the live comparison outright on
-    transformers 5.5.0, which pyproject permits.
-    """
+    """mixtral and qwen2_moe must be in the snapshot; the substring hint alone misses mixtral."""
     for name in ("mixtral", "qwen2_moe"):
         assert F._PEFT_MOE_CONVERSION_PATTERNS.get(name) == name
     stand_in = F._UnavailableConversionPatternMap()
@@ -1339,12 +1134,7 @@ def test_the_unconverted_list_is_still_outside_the_upstream_map():
 
 
 def test_the_moe_aware_map_wins_over_the_inert_donor():
-    """Two backfills cover the same two submodules and both are `hasattr`-gated,
-    so whichever runs first decides what `_MODEL_TO_CONVERSION_PATTERN` IS. The
-    general pass donates an inert `{}`, which answers every lookup with a silent
-    None; this one installs a map that refuses a fused-MoE lookup it cannot
-    answer. Order is the only thing keeping a fused MoE adapter from loading
-    with its LoRA targets unconverted and no error."""
+    """The MoE-aware map must install before the inert donor, or fused MoE adapters load unconverted."""
     src = inspect.getsource(F.fix_peft_transformers_weight_conversion_import)
     mine = src.index("_backfill_missing_conversion_symbols()")
     general = src.index("_backfill_missing_peft_symbols(_submodule)")

@@ -11,6 +11,9 @@ import {
 } from "zustand/middleware";
 import {
   getAppliedInterfaceZoom,
+  holdSkippedContent,
+  releaseSkippedContent,
+  remeasureSkippedContent,
   setAppliedInterfaceZoom,
 } from "../lib/interface-scale-runtime.ts";
 
@@ -108,6 +111,8 @@ let interfaceScaleApplicationQueue = Promise.resolve();
 /** Browser-only multiplier on --ui-font-scale; spacing and icons follow. */
 export const INTERFACE_SCALE_VAR = "--ui-interface-scale";
 
+let appliedWebZoom: number | null = null;
+
 /**
  * The browser scales through the UI tokens, not CSS `zoom`: root zoom inflates
  * viewport units (a 100dvh shell overflows at 125%).
@@ -116,6 +121,10 @@ function applyWebInterfaceScale(scale: number): void {
   if (typeof document === "undefined") return;
   const zoom = interfaceScaleToZoom(scale);
   setLayoutScale(zoom);
+  if (appliedWebZoom !== null && appliedWebZoom !== zoom) {
+    remeasureSkippedContent();
+  }
+  appliedWebZoom = zoom;
   const style = document.documentElement.style;
   if (zoom === 1) style.removeProperty(INTERFACE_SCALE_VAR);
   else style.setProperty(INTERFACE_SCALE_VAR, String(zoom));
@@ -124,6 +133,18 @@ function applyWebInterfaceScale(scale: number): void {
 /** Token multiplier: the scale in the browser, 1 on desktop (webview zoom). */
 export function webInterfaceScaleFactor(scale: number): number {
   return isTauri ? 1 : interfaceScaleToZoom(scale);
+}
+
+const holdsContainmentAcrossZoom = !(
+  typeof navigator !== "undefined" && navigator.userAgent.includes("Windows")
+);
+
+function holdContainmentAcrossZoom(): void {
+  if (holdsContainmentAcrossZoom) holdSkippedContent();
+}
+
+function releaseContainmentAfterZoom(): void {
+  if (holdsContainmentAcrossZoom) releaseSkippedContent();
 }
 
 export function applyInterfaceScale(scale: number): Promise<void> {
@@ -139,7 +160,12 @@ export function applyInterfaceScale(scale: number): Promise<void> {
     }
     const { getCurrentWebview } = await import("@tauri-apps/api/webview");
     const zoom = interfaceScaleToZoom(nextScale);
-    await getCurrentWebview().setZoom(zoom);
+    holdContainmentAcrossZoom();
+    try {
+      await getCurrentWebview().setZoom(zoom);
+    } finally {
+      releaseContainmentAfterZoom();
+    }
     if (nextScale !== requestedInterfaceScale) {
       // a timed-out command can overwrite a newer native zoom when it finishes.
       appliedInterfaceScale = null;
@@ -175,6 +201,7 @@ export function applyInterfaceScaleBeforeFirstPaint(
       // settle, and everything after it waits behind that. Cut it loose or the retry in
       // `provider.tsx` and every later scale change are dead until restart.
       interfaceScaleApplicationQueue = Promise.resolve();
+      releaseContainmentAfterZoom();
       resolve();
     }, timeoutMs);
     void applied.finally(() => {

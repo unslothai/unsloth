@@ -720,6 +720,27 @@ test("a binary stand-down that cannot repair does not decline the shortcut", () 
   );
 });
 
+test("an MLX resident is judged on its speculative settings, a standing ngram reading as auto", () => {
+  const mlx = { ...DEFAULTS, is_gguf: false, is_mlx: true, speculative_type: "auto" };
+  const ngram = { ...STANDING, speculativeType: "ngram" };
+  assert.equal(matches(mlx, BLANK, ngram), true);
+  assert.equal(matches({ ...mlx, speculative_type: "ngram" }, BLANK, ngram), false);
+  assert.equal(matches(mlx, { ...BLANK, speculativeType: "eagle3" }), false);
+  const drafted = { ...BLANK, speculativeType: "auto", specDraftModel: "o/d" };
+  assert.equal(matches({ ...mlx, spec_draft_model: "o/d" }, drafted), true);
+  assert.equal(matches(mlx, drafted), false);
+  const deep = { ...BLANK, speculativeType: "mtp", specDraftNMax: 6 };
+  assert.equal(matches({ ...mlx, speculative_type: "mtp", spec_draft_n_max: 6 }, deep), true);
+  assert.equal(matches({ ...mlx, speculative_type: "mtp", spec_draft_n_max: 4 }, deep), false);
+  // An MLX load reads "+ngram" as its kind, which already copies; GGUF keeps the two apart.
+  const copying = { ...BLANK, speculativeType: "mtp+ngram" };
+  assert.equal(matches({ ...mlx, speculative_type: "mtp" }, copying), true);
+  assert.equal(matches({ ...DEFAULTS, speculative_type: "mtp" }, copying), false);
+  // llama.cpp's retry arms: an identical MLX load dedupes.
+  const notFound = { ...mlx, spec_fallback_reason: "drafter_not_found" };
+  assert.equal(residentSpeculativeNeedsRepair(notFound, "auto"), false);
+});
+
 test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
   // requested_context_length is set only by the llama.cpp path. A safetensors or MLX
   // status never carries it, and the resolver answers the generation length for a
@@ -1071,6 +1092,17 @@ test("a diffusion resident is not judged on the chat-only invocation fields", ()
   );
   // And a real difference outside those four still reloads on diffusion.
   assert.equal(matches({ ...diffusion, cache_type_kv: "q8_0" }, BLANK), false);
+});
+
+test("a diffusion pick matches its lowest GPU or the GPUs it split over (#6347)", () => {
+  // Fits one card: the runner reports only the lowest picked GPU.
+  const single = { ...DEFAULTS, is_diffusion: true, requested_gpu_ids: [0], gpu_ids: [0] };
+  assert.equal(matches(single, { ...BLANK, selectedGpuIds: [1, 0] }), true);
+  // Too big for one card: it reports the whole sorted pick it split over.
+  const split = { ...DEFAULTS, is_diffusion: true, requested_gpu_ids: [0, 1], gpu_ids: [0, 1] };
+  assert.equal(matches(split, { ...BLANK, selectedGpuIds: [1, 0] }), true);
+  // Narrowing that pick to one card is a reload.
+  assert.equal(matches(split, { ...BLANK, selectedGpuIds: [0] }), false);
 });
 
 test("a dropped diffusion split is rechecked once the shim can apply it", () => {
@@ -1973,7 +2005,7 @@ test("a pick asks the status about its own model and keeps or replaces the other
   assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /const keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(paramsNow\.checkpoint\) && loadedNow\.length > 1;/,
+    /let keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(paramsNow\.checkpoint\) && loadedNow\.length > 1;/,
   );
   assert.match(USE_CHAT_MODEL_RUNTIME, /touchesOnlySelected \? \(paramsNow\.checkpoint \?\? undefined\) : undefined,/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, keepsOthers \|\| touchesOnlySelected\);/);
@@ -1991,7 +2023,7 @@ test("a pick asks the status about its own model and keeps or replaces the other
 test("ejects stop only the ejected model's chats; eject all asks once and unloads the others first", () => {
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /function stopQueuedRuns\(decision: StopRunningChatsDecision, scoped: boolean\): void \{\s*if \(scoped\) \{\s*requestPromptQueueStop\(decision\.promptQueueThreadIds\);\s*return;\s*\}\s*cancelPreStreamRunReservations\(decision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(decision\.promptQueueThreadIds\);/,
+    /function stopQueuedRuns\(decision: StopRunningChatsDecision, scoped: boolean\): void \{\s*if \(scoped\) \{\s*requestScopedLocalPromptQueueStop\(decision\.promptQueueThreadIds\);\s*return;\s*\}\s*cancelPreStreamRunReservations\(decision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(decision\.promptQueueThreadIds\);/,
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
@@ -1999,7 +2031,7 @@ test("ejects stop only the ejected model's chats; eject all asks once and unload
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*params\.checkpoint\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
+    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*checkpoint\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
   );
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, Boolean\(scope\)\);/);
   assert.match(

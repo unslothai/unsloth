@@ -113,3 +113,19 @@ export function h3PerfSuffix(
   if (id === H3_GGUF_ID) return "Slow";
   return null;
 }
+
+/** Video pipelines whose fp8 / int8 load runs a quantized DiT (a hosted pre-quantized checkpoint, else quantized at
+ *  load). Other video rows stay bare: the dense-quant row rule is image-only. */
+const DENSE_QUANT_VIDEO_PIPELINES = new Set(["lightricks/ltx-2.5-diffusers"]);
+
+/** Speed qualifier for those video rows, from the same host scheme list as the image rows. */
+export function videoDensePerfSuffix(
+  repoId: string,
+  host: HostClass,
+  denseQuantSchemes?: readonly string[] | null,
+): string | null {
+  if (!hostRunsDenseQuant(host)) return null;
+  return DENSE_QUANT_VIDEO_PIPELINES.has(repoId.trim().toLowerCase())
+    ? densePerfSuffix(denseQuantSchemes)
+    : null;
+}

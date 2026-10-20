@@ -17,7 +17,7 @@ BACKEND_KEY = "systemone_backend"
 NATIVE_CTX_KEY = "systemone_native_ctx"
 DEFAULT_MODEL = "laya-multilingual"
 DEVICES = ("cpu", "gpu")
-BACKENDS = ("auto", "llama.cpp", "pytorch")
+BACKENDS = ("auto", "llama.cpp", "mlx", "pytorch")
 DEFAULT_NATIVE_CTX = 16384
 # -c / -b / -ub of the llama.cpp decision server; compute memory grows with it (~0.24 MiB GPU per token).
 NATIVE_CTX_RANGE = (512, 65536)
@@ -71,9 +71,11 @@ def runtime_unavailable_reason() -> str | None:
 
 
 def llama_cpp_only(name: Any) -> bool:
-    """A GGUF-only catalog entry: llama.cpp serves it without PyTorch."""
+    """A catalog entry served without PyTorch: a GGUF by llama.cpp, an MLX-only entry by unsloth-zoo's MLX engine."""
     from core.systemone.catalog import CHECKPOINTS
-    return getattr(CHECKPOINTS.get(name), "layout", None) == "gguf"
+
+    entry = CHECKPOINTS.get(name)
+    return getattr(entry, "layout", None) == "gguf" or getattr(entry, "backend", None) == "mlx"
 
 
 def get_enabled() -> bool:
@@ -99,7 +101,13 @@ def get_device() -> str:
     if device_locked():
         return "gpu" if _env(ENV_DEVICE).lower() in ("gpu", "auto") else "cpu"
     stored = _owner_setting(DEVICE_KEY)
-    return stored if stored in DEVICES else "cpu"
+    if stored in DEVICES:
+        return stored
+    from utils.hardware.hardware import DeviceType, get_device as detected_device
+
+    # Only where unloading gives all of Laya's memory back: its own process, or MLX.
+    gpu = (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX)
+    return "gpu" if detected_device() in gpu else "cpu"
 
 
 def clef_device() -> str:
@@ -173,7 +181,7 @@ def validate(
         values[DEVICE_KEY] = device
     if backend is not None:
         if backend not in BACKENDS:
-            raise ValueError("Runtime must be auto, llama.cpp or pytorch.")
+            raise ValueError("Runtime must be auto, llama.cpp, mlx or pytorch.")
         values[BACKEND_KEY] = backend
     if native_ctx is not None:
         if not _valid_ctx(native_ctx):

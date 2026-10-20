@@ -1231,29 +1231,31 @@ def test_shutdown_retires_the_detection_epoch():
 
 # ------------------------------------------- the MCP status tool stays off-loop
 def test_the_mcp_status_tool_reads_hardware_off_the_event_loop():
-    """get_gpu_utilization() reaches detection, which blocks on the warm import."""
-    path = _BACKEND / "mcp_server.py"
-    tree = ast.parse(path.read_text(encoding = "utf-8"))
-    called_directly = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "get_gpu_utilization"
-    ]
-    assert not called_directly, (
-        "the MCP status tool calls get_gpu_utilization() inline again; it blocks "
-        "the event loop on the warm's torch import"
-    )
-    offloaded = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "to_thread"
-        and any(isinstance(a, ast.Name) and a.id == "get_gpu_utilization" for a in node.args)
-    ]
-    assert offloaded, "the hardware read is no longer handed to a worker thread"
+    """get_gpu_utilization() reaches detection, which blocks on the warm import. The MCP tools
+    must not call it at all: studio_status reads /api/train/hardware, whose route runs it in a
+    worker thread."""
+    sources = [_BACKEND / "mcp_server.py", *sorted((_BACKEND / "studio_mcp").rglob("*.py"))]
+    for path in sources:
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        named = [
+            node
+            for node in ast.walk(tree)
+            # A name, an attribute, or a name imported from a module.
+            if "get_gpu_utilization" in (getattr(node, "id", None), getattr(node, "attr", None))
+            or isinstance(node, ast.ImportFrom)
+            and "get_gpu_utilization" in [alias.name for alias in node.names]
+        ]
+        assert not named, (
+            f"{path.name} reaches get_gpu_utilization() again; it blocks the event loop on the "
+            "warm's torch import"
+        )
+    status = (_BACKEND / "studio_mcp" / "tools" / "status.py").read_text(encoding = "utf-8")
+    routes = {node.value for node in ast.walk(ast.parse(status)) if isinstance(node, ast.Constant)}
+    assert "/api/train/hardware" in routes, "studio_status no longer reads the hardware route"
+    training = (_BACKEND / "routes" / "training.py").read_text(encoding = "utf-8")
+    assert (
+        "await asyncio.to_thread(get_gpu_utilization)" in training
+    ), "the hardware route no longer hands the read to a worker thread"
 
 
 # -------------------------------- an authed reply is not both settled and not

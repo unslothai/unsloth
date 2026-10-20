@@ -49,6 +49,11 @@ export function revealNativeDownload(id: string): Promise<void> {
   return invoke<void>("browser_download_reveal", { id });
 }
 
+/** Opens with the default app; programs and scripts are refused. */
+export function openNativeDownload(id: string): Promise<void> {
+  return invoke<void>("browser_download_open", { id });
+}
+
 /** Whether each download is still where it was saved; all true outside the desktop app. */
 export async function nativeDownloadsExist(ids: string[]): Promise<boolean[]> {
   if (!isTauri || ids.length === 0) return ids.map(() => true);
