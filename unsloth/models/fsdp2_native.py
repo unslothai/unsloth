@@ -401,7 +401,11 @@ def find_shard_units(model) -> list:
     return units
 
 
-def _units_sharing_params(model, units, ignored = ()):
+def _units_sharing_params(
+    model,
+    units,
+    ignored = (),
+):
     """Indices of units sharing a parameter with another unit or an outside module: fully_shard(unit)
     would untie it. Counted per unit, so one module instance reused by two units is caught too."""
     skip = {id(p) for p in ignored}
@@ -443,7 +447,11 @@ def _block_compiled(module):
     return bool(getattr(getattr(type(module), "forward", None), "_unsloth_block_compiled", False))
 
 
-def check_shard_units(model, units, ignored_params = ()):
+def check_shard_units(
+    model,
+    units,
+    ignored_params = (),
+):
     """The one hard torch.compile rule: no FSDP unit inside a (compiled) decoder block or inside another
     unit. Unsloth compiles each decoder block's forward (fullgraph=False); FSDP2's hooks are dynamo
     disabled, so a unit nested inside the block (an expert, a router, a LoRA / norm submodule) is a silent
