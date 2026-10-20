@@ -291,7 +291,9 @@ def _run_moe_autotuning(
         permute_y = False,
         autotune = True,
     )
-    triton_config_fwd = _autotuner_for(_autotuned_grouped_gemm_forward_kernel, hidden_states.device).best_config
+    triton_config_fwd = _autotuner_for(
+        _autotuned_grouped_gemm_forward_kernel, hidden_states.device
+    ).best_config
 
     config_fwd = KernelConfigForward(
         BLOCK_SIZE_M = triton_config_fwd.kwargs["BLOCK_SIZE_M"],
@@ -316,7 +318,9 @@ def _run_moe_autotuning(
         permute_y = False,
         autotune = True,
     )
-    triton_config_bwd_dx = _autotuner_for(_autotuned_grouped_gemm_dX_kernel, dummy_grad.device).best_config
+    triton_config_bwd_dx = _autotuner_for(
+        _autotuned_grouped_gemm_dX_kernel, dummy_grad.device
+    ).best_config
 
     # Safe Backward Configs: 64x64x256
     config_bwd_dx = KernelConfigBackward_dX(
@@ -341,7 +345,9 @@ def _run_moe_autotuning(
         permute_y = False,
         autotune = True,
     )
-    triton_config_bwd_dw = _autotuner_for(_autotuned_grouped_gemm_dW_kernel, hidden_states.device).best_config
+    triton_config_bwd_dw = _autotuner_for(
+        _autotuned_grouped_gemm_dW_kernel, hidden_states.device
+    ).best_config
 
     config_bwd_dw = KernelConfigBackward_dW(
         BLOCK_SIZE_M = triton_config_bwd_dw.kwargs["BLOCK_SIZE_M"],

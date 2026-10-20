@@ -281,7 +281,11 @@ def _grouped_gemm_forward_impl(
             }
         )
 
-    kernel = _autotuner_for(_autotuned_grouped_gemm_forward_kernel, X.device) if autotune else _grouped_gemm_forward_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_forward_kernel, X.device)
+        if autotune
+        else _grouped_gemm_forward_kernel
+    )
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
@@ -425,7 +429,11 @@ def _grouped_gemm_dX_impl(
                 "USE_TMA_STORE": use_tma_store,
             }
         )
-    kernel = _autotuner_for(_autotuned_grouped_gemm_dX_kernel, dY.device) if autotune else _grouped_gemm_dX_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_dX_kernel, dY.device)
+        if autotune
+        else _grouped_gemm_dX_kernel
+    )
 
     is_fake = _is_tracing(dY, W)
     if not is_fake:
@@ -573,7 +581,11 @@ def _grouped_gemm_dW_impl(
             }
         )
 
-    kernel = _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device) if autotune else _grouped_gemm_dW_kernel
+    kernel = (
+        _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device)
+        if autotune
+        else _grouped_gemm_dW_kernel
+    )
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:

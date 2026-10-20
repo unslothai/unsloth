@@ -220,20 +220,34 @@ def test_device_properties_are_read_per_card(monkeypatch):
     source = (GG_DIR / "kernels" / "tuning.py").read_text()
     wanted = {"DeviceProperties", "_DEVICE_PROPERTIES", "get_device_properties"}
     nodes = [
-        node for node in ast.parse(source).body
+        node
+        for node in ast.parse(source).body
         if getattr(node, "name", None) in wanted
-        or any(getattr(t, "id", None) in wanted for t in getattr(node, "targets", []) + [getattr(node, "target", None)])
+        or any(
+            getattr(t, "id", None) in wanted
+            for t in getattr(node, "targets", []) + [getattr(node, "target", None)]
+        )
     ]
     smem = {0: 232448, 1: 166912}
     fake_utils = types.SimpleNamespace(
         get_device_properties = lambda index: {
-            "multiprocessor_count": 132, "max_num_regs": 65536, "max_shared_mem": smem[index], "warpSize": 32,
+            "multiprocessor_count": 132,
+            "max_num_regs": 65536,
+            "max_shared_mem": smem[index],
+            "warpSize": 32,
         }
     )
     fake_triton = types.SimpleNamespace(
-        runtime = types.SimpleNamespace(driver = types.SimpleNamespace(active = types.SimpleNamespace(utils = fake_utils)))
+        runtime = types.SimpleNamespace(
+            driver = types.SimpleNamespace(active = types.SimpleNamespace(utils = fake_utils))
+        )
     )
-    namespace = {"torch": torch, "triton": fake_triton, "dataclass": dataclass, "Optional": typing.Optional}
+    namespace = {
+        "torch": torch,
+        "triton": fake_triton,
+        "dataclass": dataclass,
+        "Optional": typing.Optional,
+    }
     exec(compile(ast.Module(body = nodes, type_ignores = []), "tuning.py", "exec"), namespace)
     tuning = types.SimpleNamespace(**namespace)
     current = {"device": 0}
@@ -250,5 +264,6 @@ def test_autotune_cache_reads_the_per_card_tuners_config():
     tree = ast.parse((GG_DIR.parent / "autotune_cache.py").read_text())
     reads = [n for n in ast.walk(tree) if isinstance(n, ast.Attribute) and n.attr == "best_config"]
     assert reads and all(
-        isinstance(n.value, ast.Call) and getattr(n.value.func, "id", None) == "_autotuner_for" for n in reads
+        isinstance(n.value, ast.Call) and getattr(n.value.func, "id", None) == "_autotuner_for"
+        for n in reads
     )
