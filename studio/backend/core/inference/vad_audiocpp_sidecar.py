@@ -151,6 +151,12 @@ class AudioCppVadSidecar:
             return self._model.id if self._model and self._server_alive() else None
 
     @property
+    def on_cpu(self) -> bool:
+        """Whether the live server runs on the CPU (it holds no VRAM through training)."""
+        with self._lock:
+            return self._on_cpu
+
+    @property
     def is_loading(self) -> bool:
         return self._loading is not None
 

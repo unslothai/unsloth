@@ -101,3 +101,22 @@ def test_the_detector_runs_on_the_cpu_while_training_holds_the_gpu(monkeypatch, 
     training["on"] = False
     sidecar.load(None)
     assert launched == [True, False]
+
+
+@pytest.mark.parametrize("on_cpu", [False, True])
+def test_training_admission_frees_a_gpu_placed_detector(monkeypatch, on_cpu):
+    """free_stt_model_for_training releases the detector unless it already runs on the CPU."""
+    from routes import training_vram
+
+    unloaded = []
+    fake = SimpleNamespace(
+        loaded_model = vad.DEFAULT_VAD_MODEL,
+        on_cpu = on_cpu,
+        unload = lambda: unloaded.append(True) or True,
+    )
+    monkeypatch.setattr(vad, "get_audio_cpp_vad_sidecar", lambda: fake)
+
+    freed = training_vram.free_stt_model_for_training(reason = "test")
+
+    assert (f"vad:{vad.DEFAULT_VAD_MODEL}" in freed) is (not on_cpu)
+    assert unloaded == ([] if on_cpu else [True])
