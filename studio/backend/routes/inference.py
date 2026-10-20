@@ -40453,10 +40453,12 @@ async def _studio_embeddings(
     return Response(content = json.dumps(payload), media_type = "application/json")
 
 
-# llama-server's refusals past one micro-batch (500) or the slot context (400), server-context.cpp.
+# llama-server's refusals past one micro-batch (500) or the slot context (400), server-context.cpp;
+# a splittable slot (LAST pooling, e.g. Qwen3-Embedding) refuses n_tokens >= n_ctx instead.
 _LLAMA_EMBED_OVERFLOW_RE = re.compile(
     r"input \(\d+ tokens\) is (?:too large to process\. increase the physical batch size "
     r"\(current batch size: (\d+)\)|larger than the max context size \((\d+) tokens\))"
+    r"|request \(\d+ tokens\) exceeds the available context size \((\d+) tokens\)"
 )
 
 
@@ -40467,7 +40469,11 @@ def _llama_embedding_overflow_limit(resp) -> Optional[int]:
         match = _LLAMA_EMBED_OVERFLOW_RE.search(resp.json()["error"]["message"])
     except Exception:  # noqa: BLE001
         return None
-    return int(match.group(1) or match.group(2)) if match else None
+    if not match:
+        return None
+    if match.group(3):
+        return int(match.group(3)) - 1
+    return int(match.group(1) or match.group(2))
 
 
 async def _truncated_llama_embedding_inputs(

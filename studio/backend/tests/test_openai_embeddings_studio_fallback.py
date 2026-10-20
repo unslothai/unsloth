@@ -268,7 +268,11 @@ def test_non_boolean_truncate_is_400(studio_embedder):
 _CLS, _SEP = 101, 102
 
 
-def _llama_overflow_server(ubatch, n_ctx):
+def _llama_overflow_server(
+    ubatch,
+    n_ctx,
+    can_split = False,
+):
     import httpx
 
     embedded, tokenized = [], []
@@ -297,6 +301,18 @@ def _llama_overflow_server(ubatch, n_ctx):
             items = [json["input"]] if isinstance(json["input"], str) else json["input"]
             for item in items:
                 n = len(_tokens(item))
+                if can_split and n >= n_ctx:
+                    return httpx.Response(
+                        400,
+                        json = {
+                            "error": {
+                                "message": f"request ({n} tokens) exceeds the available context "
+                                f"size ({n_ctx} tokens), try increasing it"
+                            }
+                        },
+                    )
+                if can_split:
+                    continue
                 if n > ubatch:
                     return httpx.Response(
                         500,
@@ -352,6 +368,14 @@ def test_resident_embedding_gguf_truncates_an_oversized_input(studio_embedder, u
     assert len(embedded) == 2
     assert embedded[1]["input"] == [[_CLS, 2, 3, _SEP], "x y"]
     assert "truncate" not in embedded[0]
+
+
+def test_resident_embedding_gguf_truncates_for_a_splittable_slot(studio_embedder):
+    client, embedded, _ = _llama_overflow_server(512, 5, can_split = True)
+    _resident_embedding_gguf(studio_embedder, client)
+    payload = _call({"input": ["aa bbb c dddd e", "x y"], "model": "org/E-GGUF"})
+    assert len(payload["data"]) == 2
+    assert embedded[1]["input"] == [[_CLS, 2, 3, _SEP], "x y"]
 
 
 @pytest.mark.parametrize("ubatch, n_ctx", _OVERFLOW_LIMITS)
