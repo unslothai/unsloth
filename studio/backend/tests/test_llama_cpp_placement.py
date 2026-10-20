@@ -5887,3 +5887,103 @@ def test_the_header_scan_refuses_what_it_cannot_parse(tmp_path):
     with pytest.raises(ValueError):
         LlamaCppBackend._gguf_scan_tensor_bytes(str(bad))
     assert LlamaCppBackend()._gguf_tensor_scan(str(bad)) is None
+
+
+# Discrete before integrated (#7624): a unified-memory APU's "free" is system RAM.
+_APU = (0, 60_000, 0)
+_DGPU = (1, 16_000, 16_384)
+
+
+def _mixed_host_launch(
+    tmp_path,
+    monkeypatch,
+    memory,
+    *,
+    gguf_gb,
+    path,
+    rocm = (),
+    cuda = (),
+    **kw,
+):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set(rocm))
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_INTEGRATED_CUDA_IDS",
+        {LlamaCppBackend._integrated_cuda_mask_key(): set(cuda)},
+    )
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend._get_gguf_size_bytes = lambda _path: int(gguf_gb * 1024**3)
+    if path != "filesize":
+        backend._can_estimate_kv = lambda: True
+        backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 64 * 1024
+        backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+        backend._estimate_compute_buffer_bytes = lambda **k: 1
+
+        def read_metadata(_path):
+            backend._context_length = 131_072
+
+        backend._read_gguf_metadata = read_metadata
+        kw["n_ctx"] = 0 if path == "auto_ctx" else 8192
+    return _launch(backend, gguf, **kw)["env"].get("CUDA_VISIBLE_DEVICES")
+
+
+@pytest.mark.parametrize("path", ["filesize", "auto_ctx", "explicit_ctx"])
+@pytest.mark.parametrize(
+    "memory, rocm, cuda, expected",
+    [
+        ([_APU, _DGPU], {0}, (), "1"),
+        ([(0, 60_000, 65_536), _DGPU], {0}, (), "1"),
+        ([(0, 16_000, 16_384), (1, 60_000, 0)], {1}, (), "0"),
+        ([_APU, _DGPU], (), {0}, "1"),
+    ],
+    ids = ["rocm_apu_total0", "rocm_apu_total", "apu_second", "cuda_integrated"],
+)
+def test_auto_placement_prefers_a_discrete_gpu_that_holds_the_model(
+    tmp_path, monkeypatch, memory, rocm, cuda, expected, path
+):
+    got = _mixed_host_launch(
+        tmp_path, monkeypatch, memory, gguf_gb = 8, path = path, rocm = rocm, cuda = cuda
+    )
+    assert got == expected
+
+
+@pytest.mark.parametrize("path", ["filesize", "auto_ctx", "explicit_ctx"])
+@pytest.mark.parametrize(
+    "memory, rocm, gguf_gb, gpu_ids, expected",
+    [
+        # Homogeneous hosts: most usable VRAM wins, as before.
+        ([(0, 10_000, 16_384), (1, 16_000, 16_384)], (), 8, None, "1"),
+        ([_APU, (1, 30_000, 0)], {0, 1}, 8, None, "0"),
+        # Only the APU holds it.
+        ([_APU, _DGPU], {0}, 20, None, "0"),
+        # The user's pick and a mask that leaves only the APU.
+        ([_APU, _DGPU], {0}, 8, [0], "0"),
+        ([_APU, _DGPU], {0}, 8, [0, 1], "0"),
+        ([_APU], {0}, 8, None, "0"),
+    ],
+    ids = ["discrete_only", "integrated_only", "only_apu_fits", "pick_apu", "pick_both", "mask_apu"],
+)
+def test_discrete_first_leaves_other_placements_alone(
+    tmp_path, monkeypatch, memory, rocm, gguf_gb, gpu_ids, expected, path
+):
+    kw = {"gpu_ids": gpu_ids} if gpu_ids is not None else {}
+    got = _mixed_host_launch(
+        tmp_path, monkeypatch, memory, gguf_gb = gguf_gb, path = path, rocm = rocm, **kw
+    )
+    assert got == expected
+
+
+def test_select_gpus_discrete_tier_keeps_a_spread_request_spread():
+    gib = 1024**3
+    gpus = [(0, 60_000), (1, 16_000)]
+    total = {0: 0, 1: 16_384}
+    # Two devices requested but one is discrete: the tier cannot honor it, so both count.
+    assert LlamaCppBackend._select_gpus(
+        8 * gib, gpus, total_by_idx = total, min_gpus = 2, integrated = frozenset({0})
+    ) == ([0, 1], False)
+    assert LlamaCppBackend._select_gpus(
+        8 * gib, gpus, total_by_idx = total, integrated = frozenset({0})
+    ) == ([1], False)
+    assert LlamaCppBackend._select_gpus(8 * gib, gpus, total_by_idx = total) == ([0], False)

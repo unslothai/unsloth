@@ -15685,12 +15685,17 @@ class LlamaCppBackend:
             if len(parts) not in (4, 5, 6):
                 continue
             try:
+                free_b, total_b = int(parts[1]), int(parts[3])
+                # Intel's Windows driver can report a heap budget above the heap size;
+                # ggml clamps it the same way (ggml-org/llama.cpp#29277).
+                if 0 < total_b < free_b:
+                    free_b = total_b
                 rows.append(
                     {
                         "index": int(parts[0]),
-                        "free_mib": int(parts[1]) // (1024 * 1024),
+                        "free_mib": free_b // (1024 * 1024),
                         "is_igpu": parts[2] == "1",
-                        "total_mib": int(parts[3]) // (1024 * 1024),
+                        "total_mib": total_b // (1024 * 1024),
                         "name": parts[4].strip() if len(parts) >= 5 else "",
                         # Absent on an older staged probe, so it reads unknown and declines.
                         "type_known": len(parts) >= 6 and parts[5].strip() == "1",
@@ -17693,11 +17698,15 @@ class LlamaCppBackend:
         per_device_overhead_bytes: int = 0,
         min_gpus: int = 1,
         shared: frozenset = frozenset(),
+        integrated: frozenset = frozenset(),
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
         ``shared``: GPUs another loaded model runs on. A model that fits one card alone
         takes a card outside it when one fits, so two models don't share compute.
+
+        ``integrated``: unified-memory GPUs (APU, SoC). When the discrete GPUs alone
+        hold the model they are chosen, same order as below; else every GPU counts.
 
         ``min_gpus`` (default 1, capped at ``len(gpus)``) keeps a downgraded
         tensor/multi-GPU request spread instead of collapsing to one card.
@@ -17721,6 +17730,22 @@ class LlamaCppBackend:
             return None, True
 
         min_gpus = max(1, min(min_gpus, len(gpus)))
+        # Discrete first, as llama.cpp and Ollama do: an APU's "free" is system RAM and
+        # outranked a dGPU that holds the model (#7624). A tier that cannot keep a
+        # spread request spread falls through to every GPU.
+        discrete = [g for g in gpus if g[0] not in integrated] if integrated else gpus
+        if min_gpus <= len(discrete) < len(gpus):
+            picked, use_fit = LlamaCppBackend._select_gpus(
+                model_size_bytes,
+                discrete,
+                usable_fraction = usable_fraction,
+                total_by_idx = total_by_idx,
+                per_device_overhead_bytes = per_device_overhead_bytes,
+                min_gpus = min_gpus,
+                shared = shared,
+            )
+            if not use_fit and picked and len(picked) >= min_gpus:
+                return picked, False
         model_size_mib = model_size_bytes / (1024 * 1024)
         if usable_fraction is None:
             usable_fraction = _active_vram_fraction()
@@ -17784,6 +17809,7 @@ class LlamaCppBackend:
         min_gpus: int = 1,
         split_extra_bytes: int = 0,
         shared: frozenset = frozenset(),
+        integrated: frozenset = frozenset(),
     ) -> tuple[Optional[list[int]], bool]:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
 
@@ -17804,6 +17830,7 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = min_gpus,
             shared = shared,
+            integrated = integrated,
         )
         if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
             return gpu_indices, use_fit
@@ -17814,6 +17841,7 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes + split_extra_bytes,
             min_gpus = min_gpus,
+            integrated = integrated,
         )
         if not retry_fit and retry_indices and len(retry_indices) >= 2:
             return retry_indices, retry_fit
@@ -17825,6 +17853,7 @@ class LlamaCppBackend:
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = 1,
             shared = shared,
+            integrated = integrated,
         )
         if not single_fit and single is not None and len(single) == 1:
             return single, False
@@ -19082,6 +19111,7 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         include_requested: bool = False,
         exact: bool = False,
+        integrated: frozenset = frozenset(),
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
@@ -19142,6 +19172,7 @@ class LlamaCppBackend:
                 split_extra_bytes = (
                     split_extra_for_slots(slots) if split_extra_for_slots else split_extra_bytes
                 ),
+                integrated = integrated,
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -26679,6 +26710,7 @@ class LlamaCppBackend:
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
                 _shared_gpus = frozenset()
+                _integrated_gpus = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
                 # the except arm restores use_fit=True without rebinding
@@ -26876,6 +26908,16 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
+                    # Unified-memory candidates, ranked after discrete GPUs by automatic
+                    # placement only. Vulkan auto already dropped its iGPUs above.
+                    if not gpu_ids and not is_vulkan_backend and len(gpus) > 1:
+                        # CUDA from the cache _get_gpu_memory filled, as the RAM guard reads it.
+                        _unified = self._rocm_unified_memory_gpu_ids() | set(
+                            LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                                LlamaCppBackend._integrated_cuda_mask_key(), ()
+                            )
+                        )
+                        _integrated_gpus = frozenset(idx for idx, _free in gpus if idx in _unified)
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
                     _shared_gpu_ids = (
@@ -28428,6 +28470,7 @@ class LlamaCppBackend:
                                 min_gpus = _layer_min_gpus,
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
                                 shared = _shared_gpus,
+                                integrated = _integrated_gpus,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                             # use_fit = the pin failed and --fit on will offload; say why.
@@ -28538,8 +28581,19 @@ class LlamaCppBackend:
                                 if _unshared is not None:
                                     ranked.remove(_unshared)
                                     ranked.insert(0, _unshared)
-                            for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
-                                subset = ranked[:n_gpus]
+                            # Discrete prefixes first, as in _select_gpus: an APU's system-RAM
+                            # "free" outranked a dGPU that holds the model (#7624).
+                            _discrete_ranked = [g for g in ranked if g[0] not in _integrated_gpus]
+                            _subsets = [
+                                (n, tier[:n])
+                                for tier in (
+                                    (_discrete_ranked, ranked)
+                                    if _auto_min_gpus <= len(_discrete_ranked) < len(ranked)
+                                    else (ranked,)
+                                )
+                                for n in range(_auto_min_gpus, len(tier) + 1)
+                            ]
+                            for n_gpus, subset in _subsets:
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
                                 _ms = _subset_model_size(n_gpus)
                                 # Compute buffer is replicated per device in a layer
@@ -28611,8 +28665,7 @@ class LlamaCppBackend:
                                 # handing placement to --fit on and host offload.
                                 effective_ctx = min(_AUTO_OFFLOAD_CTX, effective_ctx)
                                 if effective_ctx > 0:
-                                    for n_gpus in range(_auto_min_gpus, len(ranked) + 1):
-                                        subset = ranked[:n_gpus]
+                                    for n_gpus, subset in _subsets:
                                         kv = _kv_bytes(effective_ctx)
                                         footprint_mib = (
                                             _subset_model_size(n_gpus)
@@ -28654,6 +28707,7 @@ class LlamaCppBackend:
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
                             min_gpus = _layer_min_gpus,
                             shared = _shared_gpus,
+                            integrated = _integrated_gpus,
                         )
                         if use_fit and not explicit_ctx:
                             # Without KV metadata, llama.cpp owns the fit. Keep the
@@ -29071,6 +29125,7 @@ class LlamaCppBackend:
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _placement_ctx_checkpoints,
+                            integrated = _integrated_gpus,
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel
