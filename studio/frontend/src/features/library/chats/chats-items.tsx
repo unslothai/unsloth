@@ -82,7 +82,8 @@ import { CARD_SHADOW, OVERLAY_CONTROL, RAISED_SURFACE } from "../surface";
 const CARD = cn(
   RAISED_SURFACE,
   CARD_SHADOW,
-  "group/chat relative flex aspect-[8/7] cursor-pointer flex-col gap-2.5 self-stretch rounded-[calc(var(--radius-xl)-2px)] px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
+  // min-w-0: a grid item's automatic minimum is its content, so a long project line widened the card past its column.
+  "group/chat relative flex aspect-[8/7] min-w-0 cursor-pointer flex-col gap-2.5 self-stretch rounded-[calc(var(--radius-xl)-2px)] px-5 pb-3.5 pt-5 transition hover:bg-neutral-100 hover:shadow-none dark:hover:bg-accent/60",
 );
 import {
   type ChatContents,
