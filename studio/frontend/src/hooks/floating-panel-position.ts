@@ -6,8 +6,7 @@ export const FLOATING_PANEL_POSITION_KEYS = {
   apiMonitor: "unsloth_api_monitor_position",
 } as const;
 
-/** Where the user dropped a panel, relative to its constraints box. A null axis is still anchored
- *  to the far edge, as an undragged panel is. */
+/** User's drop spot in its constraints box; a null axis stays anchored to the far edge. */
 export type PanelIntent = { left: number | null; top: number | null };
 
 function axis(value: unknown): number | null | undefined {
@@ -38,15 +37,11 @@ export function storePanelIntent(key: string | undefined, intent: PanelIntent): 
   }
 }
 
-/** Display position for one axis: the user's spot clamped to the room there is now, or the far
- *  edge when they never moved it. The intent itself is never rewritten by this. */
 export function placeAxis(intent: number | null, max: number): number {
   return intent === null ? max : Math.max(0, Math.min(max, intent));
 }
 
-/** A minimized Desktop window on Windows resizes the page to 0x0 (tao reports the minimized
- *  client size and the webview is auto-resized to it); laying out against that parks every panel
- *  in the top-left corner. */
+/** Minimized Windows Desktop resizes the page to 0x0 (tao); laying out against it parks panels top-left. */
 export function isDegenerateBox(box: { width: number; height: number }): boolean {
   return !(box.width > 0 && box.height > 0);
 }

@@ -95,8 +95,7 @@ export function useFloatingPanelLayout(
   const contentRef = useRef<HTMLDivElement>(null);
   const dragSessionRef = useRef<DragSession | null>(null);
   const dragFrameRef = useRef(0);
-  // Where the user left the panel, never rewritten by a clamp: a shrunken (or minimized) window
-  // only changes where it is painted, so growing back puts it where they left it.
+  // User's spot, never rewritten by a clamp.
   const [storedIntent] = useState(() => readPanelIntent(storageKey));
   const intentRef = useRef<PanelIntent>(storedIntent ?? { left: null, top: null });
   const preferredWidthRef = useRef<number | null>(null);
@@ -380,7 +379,6 @@ export function useFloatingPanelLayout(
     } = session;
     dragSessionRef.current = null;
     if (left !== baseLeft || top !== baseTop) {
-      // An axis the drag did not move keeps its anchor or its earlier spot.
       const intent = intentRef.current;
       intentRef.current = {
         left: left !== baseLeft ? left : intent.left,

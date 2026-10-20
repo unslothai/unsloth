@@ -162,8 +162,7 @@ test("suppression retains layout but does not publish a phantom frame", () => {
 test("a net-zero docked drag must not discard the saved full-width X", () => {
   const update = layoutSource.slice(layoutSource.indexOf("function updateDrag"), layoutSource.indexOf("function finishDrag"));
   const finish = layoutSource.slice(layoutSource.indexOf("function finishDrag"));
-  // Intermediate pointer moves are provisional. Only a released displacement on
-  // an axis replaces the user's earlier placement on that axis.
+  // Only a released drag replaces the stored spot, per axis.
   assert.doesNotMatch(update, /intentRef\.current/);
   assert.match(finish, /left: left !== baseLeft \? left : intent\.left,/);
   assert.match(finish, /top: top !== baseTop \? top : intent\.top,/);

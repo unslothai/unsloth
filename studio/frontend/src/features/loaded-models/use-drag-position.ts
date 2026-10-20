@@ -96,13 +96,11 @@ export type UseDragPosition = {
 type Fit = { width: number; height: number; viewport: Viewport };
 
 export function useDragPosition(storageKey: string): UseDragPosition {
-  // Where the user left the card. A clamp never writes back here, so a window that shrank (or a
-  // minimize, which on Windows Desktop resizes the page to 0x0) does not lose the spot.
+  // User's spot; clamps never write back, so a shrink or 0x0 minimize cannot lose it.
   const [chosen, setPosition] = useState<DragPosition | null>(() =>
     typeof window === "undefined" ? null : readStored(storageKey),
   );
-  // Zero width/height until measured: the observer cannot fire before the first paint, and this
-  // keeps at least the top-left corner of a spot saved on a wider screen in view meanwhile.
+  // Zero size until measured keeps a wider-screen spot's top-left corner in view before first paint.
   const [fit, setFit] = useState<Fit>(() => ({
     width: 0,
     height: 0,
@@ -162,8 +160,7 @@ export function useDragPosition(storageKey: string): UseDragPosition {
   // A window that shrank, or a panel that grew when expanded, would otherwise strand it off screen
   // with nothing able to bring it back. Deliberately not keyed on `position`: it used to be, so
   // every frame of a drag tore the observer down and built a new one, and observing re-measures,
-  // which forced a synchronous layout each time. reclamp only records the fit, and returns the same
-  // object when nothing changed, so attaching on mount costs at most one render.
+  // which forced a synchronous layout each time. reclamp returns the same object when unchanged.
   useEffect(() => {
     if (!panelEl) return;
     const measure = () => {

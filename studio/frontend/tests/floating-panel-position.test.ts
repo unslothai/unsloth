@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Floating panels (Live monitor, API monitor, Loaded models) wandered: a window that shrank clamped
-// the panel and the clamp became its new home, and minimizing Unsloth Desktop on Windows resizes
-// the page to 0x0, so every panel landed in the top-left corner and stayed there (#14330). The
-// user's spot is now kept apart from where it is painted, and the two monitors remember it.
+// #14330: a clamp (e.g. the 0x0 Windows minimize) became the panel's new home.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -61,11 +58,9 @@ test("the card returns to its spot after a minimize and restore", () => {
   const card = { width: 268, height: 160 };
   const chosen = { left: 900, top: 500 };
   const big = { width: 1440, height: 900 };
-  // Before the fix the clamped result was written back, so the 0x0 frame was the new home.
   const minimized = clampToViewport(chosen, card.width, card.height, { width: 0, height: 0 });
   assert.deepEqual(minimized, { left: 8, top: 8 });
   assert.deepEqual(clampToViewport(minimized, card.width, card.height, big), { left: 8, top: 8 });
-  // Now the chosen spot is what gets clamped on every measurement.
   assert.deepEqual(clampToViewport(chosen, card.width, card.height, big), chosen);
 });
 
