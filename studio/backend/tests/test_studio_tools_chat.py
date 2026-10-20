@@ -32,6 +32,7 @@ from utils.mcp_access import set_mcp_enabled
 
 from .mcp_harness import (
     MCP_HEADERS,
+    PNG,
     SENTINEL_ROOTS,
     WAV,
     b64,
@@ -115,6 +116,21 @@ def bridge(
 ):
     kw.setdefault("timeout", 30.0)
     return run_as(account, studio_tools_mcp.call, name, args or {}, **kw)
+
+
+def minted_keys(monkeypatch):
+    """The chat tools key rows as minted; the bridge deletes them when its call ends."""
+    rows = []
+    real = storage.create_api_key
+
+    def spy(*args, **kwargs):
+        key, row = real(*args, **kwargs)
+        if kwargs.get("name") == storage.STUDIO_CHAT_TOOLS_KEY_NAME:
+            rows.append(dict(row, is_internal = int(bool(kwargs.get("internal")))))
+        return key, row
+
+    monkeypatch.setattr(storage, "create_api_key", spy)
+    return rows
 
 
 def chat_keys(account_id = None):
@@ -257,19 +273,20 @@ def test_a_denylisted_tool_is_unknown_and_never_forwarded(
     result = bridge(OWNER, name, {"model": "x", "config": {}, "messages": []})
     assert result.startswith("Error: ") and "Unknown tool" in result, result
     assert sent == [] and app.state.seen == []
-    assert [row["is_active"] for row in chat_keys()] == [0]
+    assert chat_keys() == []
 
 
 def test_a_call_runs_through_routes_as_the_owner_with_a_revoked_internal_key(
     studio_home, accounts, server_loop, monkeypatch
 ):
     app = studio(monkeypatch, RUN_PAYLOADS)
+    minted = minted_keys(monkeypatch)
     result = bridge(OWNER, "list_training_runs", timeout = None)
     assert "qwen-lora" in result and not result.startswith("Error"), result
     seen = {entry["path"]: entry for entry in app.state.seen}
     assert seen["/api/train/runs"]["account"].is_owner
-    (key,) = chat_keys()
-    assert key["is_internal"] == 1 and key["is_active"] == 0
+    (key,) = minted
+    assert key["is_internal"] == 1 and chat_keys() == []
     # A timeout of None waits up to an hour; the key outlives that by its grace and never passes 6 h.
     lifetime = datetime.fromisoformat(key["expires_at"]) - datetime.fromisoformat(key["created_at"])
     assert timedelta(minutes = 64) < lifetime <= timedelta(minutes = 65)
@@ -281,12 +298,13 @@ def test_a_managed_account_runs_as_itself_and_owner_only_routes_refuse_it(
     studio_home, accounts, server_loop, monkeypatch
 ):
     app = studio(monkeypatch, RUN_PAYLOADS, owner_only = {"/api/train/runs"})
+    minted = minted_keys(monkeypatch)
     refused = bridge(accounts.alice, "list_training_runs")
     assert refused.startswith("Error: ") and "installation owner" in refused, refused
     assert {entry["account"].account_id for entry in app.state.seen} == {accounts.alice.account_id}
     assert bridge(OWNER, "list_training_runs").find("qwen-lora") >= 0
-    (key,) = chat_keys(accounts.alice.account_id)
-    assert key["is_internal"] == 1 and key["is_active"] == 0
+    alice_key = next(key for key in minted if key.get("account_id") == accounts.alice.account_id)
+    assert alice_key["is_internal"] == 1 and chat_keys(accounts.alice.account_id) == []
 
 
 def test_the_key_never_passes_six_hours():
@@ -330,7 +348,7 @@ def test_cancel_stops_the_route_and_revokes_the_key(
     result = bridge(accounts.alice, "list_training_runs", cancel_event = stop)
     assert result == "Error: MCP tool 'list_training_runs' cancelled"
     assert time.monotonic() - started < 10
-    assert [row["is_active"] for row in chat_keys(accounts.alice.account_id)] == [0]
+    assert chat_keys(accounts.alice.account_id) == []
     deadline = time.monotonic() + 5
     while not holder.cancelled and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -341,14 +359,14 @@ def test_a_timeout_revokes_the_key(studio_home, accounts, server_loop, monkeypat
     studio(monkeypatch, {**RUN_PAYLOADS, RUNS: _blocking_route(SimpleNamespace())})
     result = bridge(OWNER, "list_training_runs", timeout = 1.0)
     assert result == "Error: MCP tool 'list_training_runs' timed out after 1s"
-    assert [row["is_active"] for row in chat_keys()] == [0]
+    assert chat_keys() == []
 
 
 def test_a_tool_error_revokes_the_key(studio_home, accounts, server_loop, monkeypatch):
     studio(monkeypatch, {**RUN_PAYLOADS, RUNS: JSONResponse({"detail": "boom"}, status_code = 500)})
     result = bridge(OWNER, "list_training_runs")
     assert result.startswith("Error: "), result
-    assert [row["is_active"] for row in chat_keys()] == [0]
+    assert chat_keys() == []
 
 
 def test_no_mint_means_no_call_and_never_the_owner(studio_home, accounts, server_loop, monkeypatch):
@@ -518,6 +536,7 @@ def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(
     studio_home, accounts, server_loop, monkeypatch
 ):
     studio(monkeypatch, RUN_PAYLOADS)
+    minted = minted_keys(monkeypatch)
 
     def no_session(*a, **k):
         raise AssertionError("the Unsloth Studio tools row must not use a pooled session")
@@ -543,7 +562,8 @@ def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(
         {},
         config_check = lambda: False,
     )
-    assert stale.startswith("Error: ") and len(chat_keys()) == 1
+    # The stale call mints nothing: only the first call ever had a key.
+    assert stale.startswith("Error: ") and len(minted) == 1 and chat_keys() == []
 
 
 def test_a_structured_call_outside_the_bridge_has_no_caller(studio_home, accounts):
@@ -605,7 +625,7 @@ def test_a_password_reset_after_the_chat_authenticated_refuses_the_mint(
     refused = bridge(account, "list_training_runs")
     assert refused.startswith("Error: ") and "could not authorize" in refused, refused
     assert len(app.state.seen) == seen
-    assert [key["is_active"] for key in chat_keys()] == [0]
+    assert chat_keys() == []
 
 
 def test_chat_tool_media_links_are_origin_relative(studio_home, accounts, server_loop, monkeypatch):
@@ -628,3 +648,95 @@ def test_chat_tool_media_links_are_origin_relative(studio_home, accounts, server
         public_url(caller, image_gallery_path("img-1"))
         == "/api/inference/images/gallery/img-1/file"
     )
+
+
+GALLERY = "/api/inference/images/gallery"
+MEDIA_ROUTES = {
+    ("POST", "/api/inference/images/generate"): {
+        "images": [
+            {
+                "id": "img-1",
+                "url": f"{GALLERY}/img-1/file",
+                "prompt": "a red fox",
+                "width": 64,
+                "height": 64,
+                "steps": 4,
+                "guidance": 0.0,
+                "seed": 1,
+                "model": "black-forest-labs/FLUX.1-schnell",
+            }
+        ]
+    },
+    ("GET", "/api/inference/images/generate-progress"): {"active": False},
+    ("GET", f"{GALLERY}/img-1/file"): lambda request: Response(PNG, media_type = "image/png"),
+    ("GET", f"{GALLERY}/img-1/signed-url"): {"url": f"{GALLERY}/img-1/file-signed?token=t.img-1"},
+    ("POST", "/v1/audio/run"): {
+        "clips": [
+            {
+                "id": "clip-1",
+                "url": "/v1/audio/gallery/clip-1/file",
+                "duration_s": 1.0,
+                "sample_rate": 24000,
+                "workflow": "speak",
+                "text": "hi",
+                "model": "m",
+            }
+        ],
+        "group_id": None,
+        "model": "m",
+        "audio": None,
+    },
+    ("GET", "/v1/audio/gallery/clip-1/file"): lambda request: Response(WAV, media_type = "audio/wav"),
+    ("GET", "/v1/audio/gallery/clip-1/signed-url"): {
+        "url": "/v1/audio/gallery/clip-1/file-signed?token=t.clip-1"
+    },
+    ("GET", "/api/inference/status"): {"loaded": []},
+}
+
+
+@pytest.mark.parametrize(
+    "name,args,link",
+    [
+        (
+            "generate_image",
+            {"prompt": "a red fox", "return_media": "link"},
+            "img-1.png: /api/inference/images/gallery/img-1/file-signed",
+        ),
+        ("generate_image", {"prompt": "a red fox"}, None),
+        (
+            "generate_audio",
+            {"workflow": "speak", "text": "hello there"},
+            "clip-1.wav: /v1/audio/gallery/clip-1/file-signed",
+        ),
+    ],
+)
+def test_chat_media_tools_return_their_links_as_text(
+    studio_home, accounts, server_loop, monkeypatch, name, args, link
+):
+    # A ResourceLink needs an absolute URI and a chat call's links are origin-relative.
+    studio(monkeypatch, MEDIA_ROUTES)
+    result = bridge(OWNER, name, args, timeout = 30.0)
+    assert not result.startswith("Error"), result
+    if link:
+        assert link in result, result
+
+
+def test_every_chat_tools_key_row_is_deleted_after_its_call(
+    studio_home, accounts, server_loop, monkeypatch
+):
+    import sqlite3
+
+    studio(monkeypatch, RUN_PAYLOADS)
+    for account in (OWNER, accounts.alice):
+        for _ in range(3):
+            assert not bridge(account, "list_training_runs").startswith("Error")
+    conn = sqlite3.connect(storage.DB_PATH)
+    try:
+        for table in ("api_keys", "account_api_keys"):
+            left = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE name = ?",
+                (storage.STUDIO_CHAT_TOOLS_KEY_NAME,),
+            ).fetchone()[0]
+            assert left == 0, table
+    finally:
+        conn.close()

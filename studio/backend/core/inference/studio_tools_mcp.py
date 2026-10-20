@@ -74,7 +74,8 @@ def _mint(account: Any, limit: float) -> tuple[str, dict]:
 def _revoke(key_id: int) -> None:
     from auth import storage
     try:
-        storage.revoke_internal_api_key(key_id)
+        # Deleted, not just revoked: one row per tool call would otherwise pile up in auth.db.
+        storage.delete_internal_api_key(key_id)
     except Exception:  # noqa: BLE001 - the key still expires on its own
         logger.exception("Could not revoke the Unsloth Studio chat tools key %s", key_id)
 
