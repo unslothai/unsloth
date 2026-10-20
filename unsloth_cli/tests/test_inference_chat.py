@@ -387,7 +387,12 @@ _QWEN3_TEMPLATE = (
 _ALWAYS_THINKING_TEMPLATE = "{{- '<|im_start|>assistant\n<think>\n' }}{# </think> #}"
 
 
-def _qwen_backend(kind, model_id, template = None, **flags):
+def _qwen_backend(
+    kind,
+    model_id,
+    template = None,
+    **flags,
+):
     if kind == "gguf":
         fake = _FakeGgufBackend()
         fake.model_identifier = model_id
