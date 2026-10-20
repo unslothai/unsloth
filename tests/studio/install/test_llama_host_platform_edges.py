@@ -8,6 +8,7 @@ import builtins
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import subprocess
 import sys
@@ -123,6 +124,21 @@ def test_windows_rocm_with_physical_nvidia_never_takes_vulkan(monkeypatch):
     # Vulkan ignores CUDA_VISIBLE_DEVICES; a hidden NVIDIA card must not be enumerated.
     host = _host(has_rocm = True, has_physical_nvidia = True, visible_cuda_devices = "-1")
     assert _direct_names([VULKAN, CPU], host) == [CPU]
+    assert _single_name([VULKAN, CPU], host, monkeypatch) == CPU
+
+
+@pytest.mark.parametrize(
+    "trace",
+    [
+        dict(nvidia_smi = "C:/Windows/System32/nvidia-smi.exe"),
+        dict(compute_caps = ["89"]),
+        dict(physical_compute_caps = ["89"]),
+    ],
+)
+def test_windows_rocm_following_torch_keeps_nvidia_out_of_vulkan(trace, monkeypatch):
+    # Following ROCm torch clears has_physical_nvidia, but Vulkan would still enumerate the card.
+    host = _host(has_rocm = True, **trace)
+    assert _direct_names([ROCM, VULKAN, CPU], host) == [ROCM, CPU]
     assert _single_name([VULKAN, CPU], host, monkeypatch) == CPU
 
 
@@ -363,3 +379,45 @@ def test_non_jetson_or_cuda13_arm64_unchanged(tegra_fs, driver, caps, lines, exp
     assert names == names_base
     if expected is not None:
         assert names[:1] == expected
+
+
+def _jetson_cuda12(monkeypatch):
+    _fake_tegra(monkeypatch, release_file = True)
+    return _arm_host((12, 6), ["87"])
+
+
+CUDA12_MARKER = {"backend": "cuda", "runtime_line": "cuda12", "supported_sms": ["87", "90"]}
+
+
+def test_jetson_rejects_an_existing_cuda_prebuilt(tmp_path, monkeypatch):
+    # Installed before the Jetson check: an update must not keep or reuse it.
+    monkeypatch.setattr(
+        ILP, "compatible_linux_runtime_lines", lambda host: ["cuda12"]
+    )
+    monkeypatch.setattr(ILP, "_existing_install_runs", lambda *_a: True)
+    (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(json.dumps(CUDA12_MARKER))
+    _fake_tegra(monkeypatch)
+    server = _arm_host((12, 6), ["87"])
+    assert ILP._kept_install_covers_host(CUDA12_MARKER, server)
+    assert ILP.reusable_existing_install(tmp_path, server)
+    host = _jetson_cuda12(monkeypatch)
+    assert not ILP._kept_install_covers_host(CUDA12_MARKER, host)
+    assert not ILP.reusable_existing_install(tmp_path, host)
+    assert ILP._kept_install_covers_host({"backend": "cpu"}, host)
+
+
+def test_jetson_stored_cuda_request_falls_back_to_detection(monkeypatch):
+    def no_plans(*_a, **_k):
+        raise ILP.PrebuiltFallback("no compatible Linux prebuilt asset was found")
+
+    monkeypatch.setattr(ILP, "resolve_simple_install_release_plans", no_plans)
+    monkeypatch.setattr(ILP, "_rocm_torch_preferred", lambda: False)
+    host = _jetson_cuda12(monkeypatch)
+    with pytest.raises(ILP.BackendUnavailable):
+        ILP.select_backend_install(
+            backend = "cuda",
+            llama_tag = "latest",
+            published_repo = "unslothai/llama.cpp",
+            published_release_tag = "",
+            host = host,
+        )

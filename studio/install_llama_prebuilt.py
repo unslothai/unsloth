@@ -839,6 +839,18 @@ def _upstream_windows_hip_asset_names(release_tag: str, assets: "Iterable[str]")
     return ([legacy] if legacy in names else []) + [name for _version, name in versioned]
 
 
+def _windows_rocm_vulkan_fallback_allowed(host: HostInfo) -> bool:
+    """Vulkan behind HIP only with no HIP mask and no NVIDIA trace: it honours neither mask,
+    and following ROCm torch clears has_physical_nvidia while the card stays enumerable."""
+    return not (
+        host.has_physical_nvidia
+        or host.nvidia_smi
+        or host.physical_compute_caps
+        or host.compute_caps
+        or _hip_visible_device_mask_set()
+    )
+
+
 def windows_cuda_arch_for_host(host: HostInfo) -> str:
     """CUDA prebuilt arch token for a Windows host: arm64 on Windows on ARM, else x64.
 
@@ -1358,7 +1370,7 @@ def direct_upstream_release_plan(
                     )
                 )
             # Vulkan before CPU if HIP is missing or fails validation; never past a HIP mask, which Vulkan ignores.
-            if not host.has_physical_nvidia and not _hip_visible_device_mask_set():
+            if _windows_rocm_vulkan_fallback_allowed(host):
                 vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
                 vulkan_url = assets.get(vulkan_asset)
                 if vulkan_url:
@@ -4346,7 +4358,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         if (
             host.has_intel_gpu
             or host.has_amd_gpu_without_rocm
-            or (host.has_rocm and not _hip_visible_device_mask_set())
+            or (host.has_rocm and _windows_rocm_vulkan_fallback_allowed(host))
         ) and not host.has_physical_nvidia:
             vendor = (
                 "AMD ROCm"
@@ -9807,6 +9819,8 @@ def _kept_install_covers_host(marker: "dict[str, Any] | None", host: HostInfo) -
     marker = marker or {}
     backend = marker_backend(marker)
     if backend == "cuda":
+        if _tegra_blocks_arm64_cuda(host):
+            return False
         line = marker.get("runtime_line")
         if isinstance(line, str) and line.startswith("cuda") and host.driver_cuda_version:
             lines = (
@@ -9902,7 +9916,9 @@ def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
         return True
     # #12842: below the floor a CUDA prebuilt still answers --version but loads no kernel.
     marker = load_prebuilt_metadata(install_dir) or {}
-    if marker_backend(marker) == "cuda" and driver_below_cuda_prebuilt_floor(host):
+    if marker_backend(marker) == "cuda" and (
+        driver_below_cuda_prebuilt_floor(host) or _tegra_blocks_arm64_cuda(host)
+    ):
         return False
     return _existing_install_runs(install_dir, host)
 
@@ -11644,7 +11660,9 @@ def select_backend_install(
         )
     except PrebuiltFallback as exc:
         # #12842: a stored cuda choice must fall back to detection, not fail the update.
-        if route.backend == "cuda" and driver_below_cuda_prebuilt_floor(route.host):
+        if route.backend == "cuda" and (
+            driver_below_cuda_prebuilt_floor(route.host) or _tegra_blocks_arm64_cuda(route.host)
+        ):
             raise BackendUnavailable(str(exc)) from exc
         raise
     if route.rocm_fallback_host is not None:
