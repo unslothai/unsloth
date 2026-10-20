@@ -504,6 +504,17 @@ def _opened_path(handle: int) -> Optional[str]:
     return os.readlink(proc) if os.path.islink(proc) else None
 
 
+def _same_bytes(handle: int, staged: Path, size: int) -> bool:
+    with os.fdopen(os.dup(handle), "rb") as source, open(staged, "rb") as copy:
+        source.seek(0)
+        while size:
+            chunk = source.read(min(size, 1 << 20))
+            if not chunk or copy.read(len(chunk)) != chunk:
+                return False
+            size -= len(chunk)
+    return True
+
+
 def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
     """A name for *path*'s current file in a private directory, for the OS opener.
 
@@ -545,14 +556,17 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         staging.mkdir(parents = True, exist_ok = True)
         _prune_open_staging(staging)
         # Opening the same file again reuses its copy, so repeated opens of a large file do not fill the disk.
-        key = f"{info.st_dev}-{info.st_ino}-{info.st_size}-{info.st_mtime_ns}-"
+        # Compared byte for byte: an app may have edited the copy, and coarse mtimes miss a same-size rewrite.
+        key = f"{info.st_dev}-{info.st_ino}-{info.st_size}-"
         for entry in staging.glob(key + "*"):
             try:
                 staged = os.lstat(entry / path.name)
-                if stat_module.S_ISREG(staged.st_mode) and staged.st_nlink == 1 and (
-                    staged.st_size,
-                    staged.st_mtime_ns,
-                ) == (info.st_size, info.st_mtime_ns):
+                if (
+                    stat_module.S_ISREG(staged.st_mode)
+                    and staged.st_nlink == 1
+                    and staged.st_size == info.st_size
+                    and _same_bytes(handle, entry / path.name, info.st_size)
+                ):
                     os.utime(entry)
                     return entry / path.name
             except OSError:
@@ -560,10 +574,10 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         target = Path(tempfile.mkdtemp(prefix = key, dir = staging)) / path.name
         try:
             with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
+                source.seek(0)
                 remaining = info.st_size
                 while remaining and (chunk := source.read(min(remaining, 1 << 20))):
                     remaining -= copy.write(chunk)
-            os.utime(target, ns = (info.st_atime_ns, info.st_mtime_ns))
         except OSError:
             shutil.rmtree(target.parent, ignore_errors = True)
             raise

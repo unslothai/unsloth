@@ -6735,13 +6735,16 @@ def test_opening_a_file_again_reuses_its_copy_until_either_changes(tmp_path, mon
     assert path_utils._stage_for_open(video, video.parent) == first
     assert len(list((tmp_path / "cache" / "open-staging").iterdir())) == 1
 
-    first.write_bytes(b"edited in the app")
+    first.write_bytes(b"frames v0")
     edited = path_utils._stage_for_open(video, video.parent)
     assert edited != first and edited.read_bytes() == b"frames v1"
 
-    video.write_bytes(b"frames v2, longer")
+    # Same size and, as on a coarse-timestamp volume, the same mtime.
+    before = video.stat()
+    video.write_bytes(b"frames v2")
+    os.utime(video, ns = (before.st_atime_ns, before.st_mtime_ns))
     changed = path_utils._stage_for_open(video, video.parent)
-    assert changed not in (first, edited) and changed.read_bytes() == b"frames v2, longer"
+    assert changed not in (first, edited) and changed.read_bytes() == b"frames v2"
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
