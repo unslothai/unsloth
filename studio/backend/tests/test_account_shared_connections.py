@@ -103,6 +103,7 @@ def owner_connection(
     *,
     shared = True,
     models = None,
+    available_models = None,
 ):
     with client_for(OWNER) as client:
         created = client.post(
@@ -112,6 +113,7 @@ def owner_connection(
                 "display_name": "Household Gufo",
                 "base_url": base_url,
                 "models": models if models is not None else UPSTREAM_MODELS[:2],
+                "available_models": available_models or [],
                 "shared": shared,
             },
         )
@@ -300,6 +302,27 @@ def test_listing_models_through_a_shared_lan_connection(monkeypatch, upstream):
     assert response.status_code == 200, response.text
     assert [model["id"] for model in response.json()] == UPSTREAM_MODELS[:2]
     assert seen == ["Bearer owner-secret"]
+
+
+def test_listing_a_shared_connection_shows_only_the_models_the_owner_enabled(upstream):
+    base_url, _ = upstream
+    provider_id = owner_connection(
+        base_url, models = UPSTREAM_MODELS[:1], available_models = UPSTREAM_MODELS
+    )
+    mpu.set_managed_private_provider_urls_allowed(True)
+    [row] = listed(ALICE)
+    assert row["available_models"] == UPSTREAM_MODELS[:1]
+    with client_for(ALICE) as client:
+        response = client.post(
+            "/providers/models", json = {"provider_type": "custom", "provider_id": provider_id}
+        )
+    assert response.status_code == 200, response.text
+    assert [model["id"] for model in response.json()] == UPSTREAM_MODELS[:1]
+    with client_for(OWNER) as client:
+        response = client.post(
+            "/providers/models", json = {"provider_type": "custom", "provider_id": provider_id}
+        )
+    assert [model["id"] for model in response.json()] == UPSTREAM_MODELS
 
 
 def test_a_shared_lan_connection_still_needs_the_private_address_switch(upstream):

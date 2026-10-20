@@ -846,7 +846,7 @@ def shared_connection_view(row: dict) -> dict | None:
         )
     view["models"] = [model for model in models if connection_model_allowed(model)]
     view["available_models"] = [
-        model for model in row.get("available_models") or [] if connection_model_allowed(model)
+        model for model in row.get("available_models") or [] if model in view["models"]
     ]
     return view if view["models"] else None
 

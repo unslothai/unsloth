@@ -662,6 +662,12 @@ def _is_shared_saved_target(payload) -> bool:
     )
 
 
+def _shared_target_models(payload) -> set[str] | None:
+    if not _is_shared_saved_target(payload):
+        return None
+    return set((providers_db.get_provider(payload.provider_id) or {}).get("models") or [])
+
+
 def _bind_saved_provider_target(payload):
     """Use the saved provider's endpoint whenever its saved credential may be used."""
     if not payload.provider_id or payload.encrypted_api_key:
@@ -1062,14 +1068,10 @@ async def list_provider_model_capabilities(
     _current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    shared = _is_shared_saved_target(payload)
+    shared_models = _shared_target_models(payload)
     capabilities = await _list_model_capabilities(payload, via_api_key)
-    if shared:
-        capabilities = [
-            entry
-            for entry in capabilities
-            if account_access.connection_model_allowed(entry.get("id", ""))
-        ]
+    if shared_models is not None:
+        capabilities = [entry for entry in capabilities if entry.get("id", "") in shared_models]
     return capabilities
 
 
@@ -1147,7 +1149,7 @@ async def list_provider_models(
     An explicit encrypted key takes precedence over the saved provider key.
     """
 
-    shared = _is_shared_saved_target(payload)
+    shared_models = _shared_target_models(payload)
     payload = _bind_saved_provider_target(payload)
     info = get_connectable_provider_info(payload.provider_type)
     if info is None:
@@ -1171,7 +1173,7 @@ async def list_provider_models(
                 owned_by = None,
             )
             for m in info.get("default_models", [])
-            if not shared or account_access.connection_model_allowed(m)
+            if shared_models is None or m in shared_models
         ]
 
     base_url = payload.base_url or info["base_url"]
@@ -1212,7 +1214,7 @@ async def list_provider_models(
         return [
             ProviderModelInfo(id = m, display_name = m, context_length = None, owned_by = None)
             for m in ids
-            if not shared or account_access.connection_model_allowed(m)
+            if shared_models is None or m in shared_models
         ]
 
     try:
@@ -1254,8 +1256,8 @@ async def list_provider_models(
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
         # Optional cap after filtering to keep large catalogs picker-sized. Unsorted, so "first N matches"; pair with
         # default_models for flagships.
-        if shared:
-            models = [m for m in models if account_access.connection_model_allowed(m.get("id", ""))]
+        if shared_models is not None:
+            models = [m for m in models if m.get("id", "") in shared_models]
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
             models = models[:limit]
