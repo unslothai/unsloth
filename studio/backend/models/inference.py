@@ -5666,6 +5666,21 @@ class DiffusionStatusResponse(BaseModel):
         "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
         "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
     )
+    negative_prompt_min_guidance: Optional[float] = Field(
+        None,
+        description = "The guidance a negative prompt is used above (1 for classifier-free guidance, 0 for "
+        "Z-Image and Krea 2 on diffusers); null when guidance does not gate it. Drives the Negative prompt hint.",
+    )
+    supports_guidance: bool = Field(
+        True,
+        description = "Whether the loaded model reads the guidance value on this engine (drives the Guidance "
+        "control). False for FLUX.3 Klein (distilled) on diffusers, whose pipeline has no guidance.",
+    )
+    supports_live_preview: bool = Field(
+        True,
+        description = "Whether generations on this load can stream live denoise previews (drives the Live preview "
+        "switch). False on the native engine and for families without a fitted preview map.",
+    )
     prompt_hint: Optional[str] = Field(
         None,
         description = "How the loaded model reads prompts, in one or two sentences; null when "

@@ -2592,6 +2592,14 @@ def _map_guidance(
     return cfg, None
 
 
+def _negative_prompt_guidance_threshold(fam: DiffusionFamily) -> Optional[float]:
+    """The guidance a negative prompt is used above here: sd.cpp drops it unless _map_guidance gives cfg > 1. None
+    for the embedded-guidance families, which never use one."""
+    if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
+        return None
+    return 0.0 if fam.name == "z-image" else 1.0
+
+
 def _assert_shards_beside_index(kind: str, path: str) -> None:
     """sd-cli resolves a ``*.safetensors.index.json`` encoder's shards relative to the index, so every shard it names
     must sit in the same snapshot directory. The shards are fetched as their own assets, which normally lands them
@@ -4991,6 +4999,10 @@ class SdCppDiffusionBackend:
             ),
             "supports_controlnet": False,
             "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
+            "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),
+            # Every family maps guidance to sd.cpp's cfg or embedded guidance (_map_guidance). No denoise previews.
+            "supports_guidance": True,
+            "supports_live_preview": False,
             "prompt_hint": state.family.prompt_hint,
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,

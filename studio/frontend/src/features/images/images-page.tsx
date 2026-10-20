@@ -757,6 +757,7 @@ function SliderField({
   max,
   step,
   onChange,
+  disabled,
 }: {
   label: string;
   hint?: ReactNode;
@@ -765,6 +766,7 @@ function SliderField({
   max: number;
   step: number;
   onChange: (v: number) => void;
+  disabled?: boolean;
 }) {
   return (
     <ParamSlider
@@ -776,6 +778,7 @@ function SliderField({
       max={max}
       step={step}
       onChange={onChange}
+      disabled={disabled}
     />
   );
 }
@@ -2089,6 +2092,21 @@ export function ImagesPage({
   const controlnetSupported = Boolean(status?.loaded && status?.supports_controlnet);
   const controlnetCapable = !external && controlnetSupported;
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
+  // A model that reads no guidance here (FLUX.3 distilled on diffusers) runs at its own value, so the control is
+  // fixed there and the request and recipe carry that value.
+  const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
+  const effectiveGuidance = guidanceFixed
+    ? (status?.generation_defaults?.guidance ?? DEFAULT_GEN.guidance)
+    : guidance;
+  // The guidance a negative prompt needs: 0 with no model loaded or on an older backend, the old rule.
+  const negativeMinGuidance =
+    status?.loaded && status.negative_prompt_min_guidance !== undefined
+      ? status.negative_prompt_min_guidance
+      : 0;
+  const negativeEngaged =
+    negativeCapable && (negativeMinGuidance === null || effectiveGuidance > negativeMinGuidance);
+  const livePreviewUnavailable =
+    !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
   const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
@@ -4977,12 +4995,11 @@ export function ImagesPage({
           res = await generateDiffusionImage({
             prompt: prompt.trim(),
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-            negative_prompt:
-              negativeCapable && guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+            negative_prompt: negativeEngaged ? negativePrompt.trim() || undefined : undefined,
             width: w,
             height: h,
             steps,
-            guidance,
+            guidance: effectiveGuidance,
             // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
             // would regenerate batch-mates.
             seed: baseSeed + i * batchSize,
@@ -5089,7 +5106,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5459,11 +5476,16 @@ export function ImagesPage({
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           Live preview
-          <InfoHint>Show a rough preview of the image while it denoises. Costs no measurable speed and never changes the final image.</InfoHint>
+          <InfoHint>
+            {livePreviewUnavailable
+              ? "The loaded model shows no preview while it denoises on this engine."
+              : "Show a rough preview of the image while it denoises. Costs no measurable speed and never changes the final image."}
+          </InfoHint>
         </span>
         <Switch
-          checked={livePreview}
+          checked={livePreview && !livePreviewUnavailable}
           onCheckedChange={(on) => setLivePreviewOff(!on)}
+          disabled={livePreviewUnavailable}
           aria-label="Live preview"
         />
       </div>
@@ -6109,7 +6131,11 @@ export function ImagesPage({
                 onChange={setNegativePrompt}
                 open={negativeOpen}
                 onOpenChange={setNegativeOpen}
-                hint="What to steer the image away from. Only used when guidance is above 0."
+                hint={
+                  negativeMinGuidance === null
+                    ? "What to steer the image away from."
+                    : `What to steer the image away from. Only used when guidance is above ${negativeMinGuidance}.`
+                }
               />
             )}
             {!external && !loraCapable && offersNativeLoraReload(status) && (
@@ -6292,12 +6318,17 @@ export function ImagesPage({
                 </div>
                 <SliderField
                   label="Guidance"
-                  hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
-                  value={guidance}
+                  hint={
+                    guidanceFixed
+                      ? "The loaded model is distilled to run without guidance, so this value has no effect and stays at its default."
+                      : "Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
+                  }
+                  value={effectiveGuidance}
                   min={0}
                   max={15}
                   step={0.5}
                   onChange={setGuidance}
+                  disabled={guidanceFixed}
                 />
               </>
             )}

@@ -87,6 +87,12 @@ export interface DiffusionStatus {
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // The guidance a negative prompt is used above; null when guidance does not gate it, absent on older backends.
+  negative_prompt_min_guidance?: number | null;
+  // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
+  supports_guidance?: boolean;
+  // False when this load streams no denoise previews (native engine, families without a preview map).
+  supports_live_preview?: boolean;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).

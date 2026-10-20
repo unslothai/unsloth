@@ -62,6 +62,18 @@ def preview_wanted(requested: Optional[bool]) -> bool:
     return True if requested is None else bool(requested)
 
 
+def preview_available(family: Optional[str], device: Any) -> bool:
+    """Whether ``LatentPreviewer.create`` can preview this family on this device when asked: the kill switch is
+    off, the family has a fitted map and the device is CUDA (no event to poll elsewhere)."""
+    if not env_enabled() or factors_for(family) is None:
+        return False
+    try:
+        import torch
+        return torch.device(device).type == "cuda" and torch.cuda.is_available()
+    except Exception:  # noqa: BLE001 - a status read must never fail on this
+        return False
+
+
 @functools.lru_cache(maxsize = 64)
 def factors_for(family: Optional[str]) -> Optional[LatentRGB]:
     """Cached so a family keeps one object, and its device copy is uploaded once per process."""
