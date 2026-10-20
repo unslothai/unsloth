@@ -13,7 +13,9 @@ samples as the CPU chain does (min_p near 1, top_k past the vocabulary, min_keep
 a custom sampler order, logit_bias, a fixed seed without top_p, an active sampler with no
 backend implementation: XTC, DRY, typical-p, top-n-sigma, mirostat) back to the CPU with
 backend_sampling: false. Launch flags are read as llama.cpp reads them (underscore spellings,
-short aliases, every --spec-type appended).
+short aliases, every --spec-type appended). A field the request omits takes the default the
+running server reports in /props, which also holds a llama.cpp config.ini; a server whose /props
+does not carry them sends every request to the CPU.
 
 The gate: the binary must advertise the flag (an unknown argument stops an older
 llama-server from starting), a GPU must be there and hold the output layer, the backend
@@ -334,6 +336,63 @@ def test_launch_speculates(argv, env, expected):
 _MEMORY = [(0, 40 * 1024**3, 48 * 1024**3)]
 _CAPS = {"found": True, "supports_kv_unified": True, "supports_backend_sampling": True}
 
+# llama-server's own defaults as /props reports them (default_generation_settings.params,
+# tools/server/server-task.cpp task_params::to_json(true) at 18b4ec5f1, trimmed).
+_PROPS_PARAMS = {
+    "seed": 4294967295,
+    "temperature": 0.8,
+    "dynatemp_range": 0.0,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0.05,
+    "top_n_sigma": -1.0,
+    "xtc_probability": 0.0,
+    "xtc_threshold": 0.1,
+    "typical_p": 1.0,
+    "dry_multiplier": 0.0,
+    "dry_penalty_last_n": -1,
+    "mirostat": 0,
+    "min_keep": 0,
+    "samplers": [
+        "penalties",
+        "dry",
+        "top_n_sigma",
+        "top_k",
+        "typ_p",
+        "top_p",
+        "min_p",
+        "xtc",
+        "temperature",
+    ],
+    "backend_sampling": False,
+}
+_SAMPLER_CHARS = dict(zip("edskypmxt", _PROPS_PARAMS["samplers"]))
+
+
+def _props(backend_sampling = True, **params):
+    return {
+        "default_generation_settings": {
+            "n_ctx": 4096,
+            "params": {**_PROPS_PARAMS, "backend_sampling": backend_sampling, **params},
+        }
+    }
+
+
+def _props_as_launched(backend):
+    """What the fake server reports: llama.cpp's defaults under the argv it was spawned with."""
+    launch = backend._backend_sampling_launch
+    params = {}
+    for field, raw in (launch or {}).items():
+        if field == "logit_bias":
+            continue  # not in the /props view
+        if field == "samplers" and isinstance(raw, str):
+            params[field] = raw.split(";") if ";" in raw else [_SAMPLER_CHARS[c] for c in raw]
+        elif isinstance(raw, list):
+            params[field] = raw
+        else:
+            params[field] = float(raw)
+    return _props(launch is not None, **params)
+
 
 @pytest.fixture
 def launch(tmp_path, monkeypatch):
@@ -341,6 +400,11 @@ def launch(tmp_path, monkeypatch):
     monkeypatch.delenv("LLAMA_ARG_BACKEND_SAMPLING", raising = False)
     backend, _ = _backend(tmp_path, vulkan = False, memory = _MEMORY)
     gguf = _write_gguf(tmp_path / "Qwen3-0.6B-Q8_0.gguf")
+    monkeypatch.setattr(
+        llama_cpp, "_llama_config_files", lambda env, platform = None: [], raising = False
+    )
+    # The running server's /props; a test swaps go.props for another server's answer.
+    backend._query_server_props = lambda: go.props(backend)
 
     def go(
         caps = _CAPS,
@@ -360,6 +424,7 @@ def launch(tmp_path, monkeypatch):
         return _launch(backend, gguf, **kw)["cmd"]
 
     go.backend = backend
+    go.props = _props_as_launched
     return go
 
 
@@ -416,6 +481,152 @@ def test_a_users_own_flag_records_the_underscore_order(launch):
     assert cmd.count("-bs") == 1 and "--backend-sampling" not in cmd
     guarded = launch.backend.guard_gpu_sampler({"temperature": 0, "top_k": 20})
     assert guarded.get("backend_sampling") is False
+
+
+# ---- the running server's own defaults, read back from /props ----
+# llama.cpp also takes defaults from a config.ini (/etc/llama.cpp, ${XDG_CONFIG_HOME:-~/.config}/
+# llama.cpp, %PROGRAMDATA% / %APPDATA% on Windows; common/arg.cpp) that no argv or env shows, so
+# the guard fills omitted fields from what /props reports, and fails closed without it.
+
+_TK = ["temperature", "top_k"]  # [default] sampler-seq = tk, as /props reports it
+
+
+def test_a_config_ini_sampler_order_seen_through_props_goes_to_the_cpu(launch):
+    # Review round 4: sampler-seq = tk in config.ini, then temperature 0 + top_k 20, aborted
+    # llama-server with the GPU sampler on; the argv shows nothing.
+    launch.props = lambda backend: _props(samplers = _TK)
+    assert "--backend-sampling" in launch()
+    assert launch.backend.guard_gpu_sampler({"temperature": 0, "top_k": 20}) == {
+        "temperature": 0,
+        "top_k": 20,
+        "backend_sampling": False,
+    }
+    own_order = {"temperature": 0, "top_k": 20, "samplers": "edskypmxt"}
+    assert launch.backend.guard_gpu_sampler(own_order) is own_order
+
+
+@pytest.mark.parametrize(
+    "server, inside, outside",
+    [
+        # general.sampling.* style defaults, or a config.ini key: whatever /props reports.
+        ({"min_p": 1.0}, {"min_p": 0.05}, {"top_k": 20}),
+        ({"top_k": 10**6}, {"top_k": 40}, {"min_p": 0.05}),
+        ({"xtc_probability": 0.5, "xtc_threshold": 0.1}, {"xtc_probability": 0}, {}),
+        ({"mirostat": 2}, {"mirostat": 0}, {"temperature": 0}),
+        ({"seed": 42, "top_p": 1.0}, {"top_p": 0.9}, {"top_k": 20}),
+        ({"samplers": ["top_k", "typ_p", "top_p", "min_p", "temperature"]}, None, {}),
+    ],
+)
+def test_the_servers_reported_defaults_are_what_an_omitted_field_takes(
+    launch, server, inside, outside
+):
+    launch.props = lambda backend: _props(**server)
+    assert "--backend-sampling" in launch()
+    launch.backend._vocab_size = _VOCAB
+    if inside is None:  # the client's own order, llama.cpp's default
+        inside = {"samplers": _PROPS_PARAMS["samplers"]}
+    assert launch.backend.guard_gpu_sampler(inside) is inside
+    assert launch.backend.guard_gpu_sampler(outside) == {**outside, "backend_sampling": False}
+
+
+@pytest.mark.parametrize(
+    "props",
+    [
+        None,  # unreadable: an error, a 401, a timeout
+        {"default_generation_settings": {"n_ctx": 4096}},  # no params at all
+        {"default_generation_settings": {"n_ctx": 4096, "top_k": 40}},  # an older flat shape
+        _props(samplers = "tk"),  # not the list /props sends
+        {
+            "default_generation_settings": {
+                "params": {k: v for k, v in _PROPS_PARAMS.items() if k != "min_p"}
+            }
+        },
+    ],
+    ids = ["unreadable", "no-params", "flat", "samplers-not-a-list", "missing-field"],
+)
+def test_unknown_defaults_send_every_request_to_the_cpu(launch, props):
+    launch.props = lambda backend: props
+    assert "--backend-sampling" in launch()
+    launch.backend._vocab_size = _VOCAB
+    for payload in ({}, {"top_k": 20, "min_p": 0.05}, {"temperature": 0}):
+        assert launch.backend.guard_gpu_sampler(payload) == {**payload, "backend_sampling": False}
+
+
+def test_a_config_ini_that_turns_the_gpu_sampler_on_is_guarded_too(launch, monkeypatch):
+    # backend-sampling = true in config.ini: no flag in the argv, the server samples on the GPU.
+    monkeypatch.setattr(llama_cpp, "_llama_config_files", lambda env, platform = None: ["c.ini"])
+    launch.props = lambda backend: _props(samplers = _TK)
+    cmd = launch(caps = {**_CAPS, "supports_backend_sampling": False})
+    assert "--backend-sampling" not in cmd
+    guarded = launch.backend.guard_gpu_sampler({"temperature": 0, "top_k": 20})
+    assert guarded.get("backend_sampling") is False
+    # Unreadable there too: a config file might have turned it on, so nothing is assumed.
+    launch.props = lambda backend: None
+    launch.backend._healthy = False
+    launch(caps = {**_CAPS, "supports_backend_sampling": False})
+    assert launch.backend.guard_gpu_sampler({}) == {"backend_sampling": False}
+
+
+def test_a_server_reporting_the_cpu_sampler_is_left_alone(launch):
+    launch.props = lambda backend: _props(backend_sampling = False, samplers = _TK)
+    assert "--backend-sampling" in launch()
+    payload = {"temperature": 0, "top_k": 20}
+    assert launch.backend.guard_gpu_sampler(payload) is payload
+    # A client's own opt-in is checked against the same reported defaults.
+    assert launch.backend.guard_gpu_sampler({**payload, "backend_sampling": True}) == {
+        **payload,
+        "backend_sampling": False,
+    }
+
+
+def test_a_respawn_refreshes_the_reported_defaults(launch):
+    # _respawn_if_dead marks the dead server unhealthy and reloads through load_model, the
+    # path launch() drives; the next server's /props replaces the last one's.
+    payload = {"temperature": 0, "top_k": 20}
+
+    def respawn(props):
+        launch.props = props
+        launch.backend._healthy = False
+        assert "--backend-sampling" in launch()
+
+    respawn(lambda backend: _props(samplers = _TK))
+    assert launch.backend.guard_gpu_sampler(payload).get("backend_sampling") is False
+    respawn(_props_as_launched)
+    assert launch.backend.guard_gpu_sampler(payload) is payload
+    respawn(lambda backend: None)
+    assert launch.backend.guard_gpu_sampler(payload).get("backend_sampling") is False
+    respawn(_props_as_launched)
+    assert launch.backend.guard_gpu_sampler(payload) is payload
+
+
+def test_an_argv_logit_bias_still_counts_beside_props(launch):
+    # /props leaves logit_bias out of its view, so the argv reading still supplies it.
+    cmd = launch(extra_args = ["-bs", "-l", "1+1"])
+    assert "-bs" in cmd
+    assert launch.backend.guard_gpu_sampler({}) == {"backend_sampling": False}
+
+
+def test_the_config_files_llama_cpp_reads(tmp_path):
+    from core.inference.llama_cpp import _llama_config_files
+
+    for root in ("xdg", "home/.config", "appdata", "programdata"):
+        (tmp_path / root / "llama.cpp").mkdir(parents = True)
+        (tmp_path / root / "llama.cpp" / "config.ini").write_text("[default]\nsampler-seq = tk\n")
+    xdg = str(tmp_path / "xdg" / "llama.cpp" / "config.ini")
+    home = str(tmp_path / "home" / ".config" / "llama.cpp" / "config.ini")
+    found = _llama_config_files({"XDG_CONFIG_HOME": str(tmp_path / "xdg")}, "linux")
+    assert xdg in found
+    assert home in _llama_config_files({"HOME": str(tmp_path / "home")}, "linux")
+    assert home not in _llama_config_files(
+        {"HOME": str(tmp_path / "home"), "XDG_CONFIG_HOME": str(tmp_path / "none")}, "linux"
+    )
+    assert _llama_config_files(
+        {"PROGRAMDATA": str(tmp_path / "programdata"), "APPDATA": str(tmp_path / "appdata")},
+        "win32",
+    ) == [
+        str(tmp_path / "programdata" / "llama.cpp" / "config.ini"),
+        str(tmp_path / "appdata" / "llama.cpp" / "config.ini"),
+    ]
 
 
 def test_the_opt_out_launches_as_before(launch, monkeypatch):
