@@ -79,6 +79,12 @@ from core.inference.context_window import (
     turn_is_servable,
 )
 from core.inference.llama_tool_schema import llama_grammar_tools
+from core.inference.split_policy import (
+    GpuInfo as _SplitGpuInfo,
+    binary_supports_tensor_split as _binary_supports_tensor_split,
+    choose_split_mode as _choose_split_mode,
+    mtp_draft_depth_for_split as _mtp_draft_depth_for_split,
+)
 from core.inference.stream_errors import stream_error_from_chunk
 from hub.utils.hf_errors import modelscope_missing
 from hub.utils.hf_tokens import (
@@ -8627,6 +8633,8 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
         self._tensor_parallel: bool = False
+        # Last auto split-mode decision (split_policy.SplitDecision), None when the policy did not run.
+        self._auto_split_decision = None
         # GPU memory strategy applied on the active load ("auto"/"manual").
         self._gpu_memory_mode: str = "auto"
         # Manual-mode load options (echoed back so the UI round-trips them).
@@ -12934,6 +12942,35 @@ class LlamaCppBackend:
             return saw
         except Exception:
             return False
+
+    @staticmethod
+    def _gpu_names_by_physical_id() -> dict[int, str]:
+        """Physical GPU id -> device name, keyed the way _all_selected_gpus_match keys
+        them (CUDA_VISIBLE_DEVICES mapping). Empty on ROCm, no CUDA or any error, which
+        the split policy reads as "names unknown" (layer split)."""
+        try:
+            import torch
+
+            if getattr(torch.version, "hip", None) is not None:
+                return {}
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return {}
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+            names: dict[int, str] = {}
+            for ordinal in range(torch.cuda.device_count()):
+                try:
+                    name = torch.cuda.get_device_properties(ordinal).name or ""
+                except Exception:
+                    continue
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                names[pid] = name
+            return names
+        except Exception:
+            return {}
 
     @staticmethod
     def _is_datacenter_gpu(gpu_indices = None) -> bool:
@@ -27090,6 +27127,74 @@ class LlamaCppBackend:
                         # add full free with no cushion among known-total GPUs.
                         return sum(max(0.0, _gpu_usable(g, frac)) for g in subset)
 
+                    # Auto split mode (core/inference/split_policy.py): with no explicit
+                    # choice (toggle off, no --split-mode / --tensor-split, no inherited
+                    # LLAMA_ARG_SPLIT_MODE) a dense model that needs several matching idle
+                    # GPUs runs --split-mode tensor. Decided here, before the MTP reserve
+                    # and every tensor -> layer downgrade below, so an auto tensor load is
+                    # priced and gated exactly like a toggled one.
+                    self._auto_split_decision = None
+                    if (
+                        gpu_memory_mode != "manual"
+                        and not tensor_parallel
+                        and not tensor_split
+                        and not preserve_multi_gpu_on_layer
+                        and not is_vulkan_backend
+                        and len(gpus) >= 2
+                    ):
+                        try:
+                            _split_names = self._gpu_names_by_physical_id()
+                            _single_pick, _single_fit = self._select_gpus(
+                                model_size,
+                                gpus,
+                                usable_fraction = _vram_frac,
+                                total_by_idx = total_by_idx,
+                                shared = _shared_gpus,
+                            )
+                            _fits_one = (
+                                not _single_fit
+                                and _single_pick is not None
+                                and len(_single_pick) == 1
+                            )
+                            _split_gpus = [
+                                _SplitGpuInfo(
+                                    index = idx,
+                                    name = _split_names.get(idx),
+                                    total_mib = int(total_by_idx.get(idx, 0) or 0),
+                                    free_mib = int(free),
+                                )
+                                for idx, free in gpus
+                            ]
+                            _split_decision = _choose_split_mode(
+                                is_moe = self.n_moe_layers > 0,
+                                gpus = _split_gpus,
+                                fits_one_gpu = _fits_one,
+                                binary_supports_tensor = _binary_supports_tensor_split(server_caps),
+                                p2p_veto = (
+                                    None
+                                    if _fits_one
+                                    else self._p2p_veto_reason([g[0] for g in gpus])
+                                ),
+                                draft_active = (_canonicalize_spec_mode(speculative_type) or "auto")
+                                != "off",
+                                split_mode_override = split_mode_override,
+                                shared_gpus = _shared_gpus,
+                            )
+                        except Exception as _split_exc:
+                            logger.debug(f"auto split-mode policy failed: {_split_exc}")
+                            _split_decision = None
+                        if _split_decision is not None:
+                            self._auto_split_decision = _split_decision
+                            logger.info(
+                                "Split mode: %s (%s, %s)",
+                                _split_decision.mode,
+                                "auto" if _split_decision.auto else "unchanged",
+                                _split_decision.reason,
+                            )
+                            if _split_decision.auto and _split_decision.mode == "tensor":
+                                tensor_parallel = True
+                                planned_flash_attn = _replanned_flash_attn(tensor_parallel)
+
                     # Resolve effective context: 0 means let llama-server use
                     # the model's native length. Only expand to a known native
                     # length if metadata exists; else keep 0 as a sentinel.
@@ -27305,7 +27410,12 @@ class LlamaCppBackend:
                         # gpus to bypass the planner -- keep the GPU draft depth the
                         # launch flags also use, instead of the CPU default.
                         _mtp_eff_n_max = (
-                            3 if _mtp_effective == "dspark" else (2 if _detected_gpus else 3)
+                            3
+                            if _mtp_effective == "dspark"
+                            else _mtp_draft_depth_for_split(
+                                "tensor" if (tensor_parallel and _detected_gpus) else None,
+                                2 if _detected_gpus else 3,
+                            )
                         )
                     # Separate-drafter weights live on GPU (an embedded head is
                     # already in model_size). Size the drafter the launch loads, by
@@ -31005,6 +31115,9 @@ class LlamaCppBackend:
                     model_identifier = model_identifier,
                     model_path = model_path,
                     gpus = bool(_detected_gpus),
+                    # The split the child runs (after every downgrade), for Studio's
+                    # own MTP depth; the fit-time reserve above used the same rule.
+                    split_mode = "tensor" if tensor_parallel else None,
                     binary = binary,
                     mtp_draft_path = (
                         None if _spec_canon in ("dspark", "dflash") else launch_mtp_draft_path
@@ -35081,8 +35194,12 @@ class LlamaCppBackend:
         mtp_drafter_unloadable: bool = False,
         eagle3_draft_path: Optional[str] = None,
         mtp_trained: Optional[bool] = None,
+        split_mode: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
+
+        ``split_mode`` ("tensor" / "layer" / None) picks Studio's own MTP depth from
+        split_policy.MTP_DRAFT_DEPTH_BY_SPLIT; a user depth or a trained head's wins.
 
         Side effects: sets ``self._speculative_type`` (resolved internal
         emit), ``self._requested_spec_mode`` (canonical UI mode for the
@@ -35281,7 +35398,7 @@ class LlamaCppBackend:
                 return n
             if mtp_trained and trained_steps and self._spec_drafter_kind == "mtp":
                 return trained_steps  # the depth the exported head was trained for
-            return 2 if gpus else 3
+            return _mtp_draft_depth_for_split(split_mode if gpus else None, 2 if gpus else 3)
 
         def _emit_dspark() -> None:
             """Append --model-draft <sidecar> --spec-type draft-dspark + n-max.
