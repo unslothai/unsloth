@@ -1233,7 +1233,7 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         model,
         param_dtype = param_dtype,
         reshard_after_forward = config.reshard_after_forward,
-        device = device if device.type == "cuda" else None,
+        device = device,  # a CPU mesh has no GPU capacity: the per-block sharded layout
         cpu_offload = config.cpu_offload,
         fits = config.fit_layout,
         replicate_frozen = None if config.shard_frozen is None else not config.shard_frozen,
@@ -1286,9 +1286,9 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         qlora = infos.get("bnb_qlora")
         ignored, _ = _unify_dtypes(
             model,
-            []
-            if layout.root_only
-            else units,  # root only: every trainable param is in the root group
+            # Root only: every trainable param is in the root group. Otherwise the split root
+            # embedding tables are units of their own, not part of the root's dtype group.
+            [] if layout.root_only else units + list(extra_units),
             param_dtype,
             can_ignore = config.replicate_minority_dtype and _supports_ignored_params(fully_shard),
         )

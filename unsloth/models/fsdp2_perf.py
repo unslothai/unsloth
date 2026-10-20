@@ -67,6 +67,10 @@ def _param_bytes(params, dtype = None):
 
 
 def _device_bytes(device = None):
+    """Total memory of the GPU the model trains on; 0 for a CPU (or other non-CUDA) mesh, which plans
+    the per-block sharded layout as a CPU-only host does."""
+    if device is not None and torch.device(device).type != "cuda":
+        return 0
     try:
         if device is None:
             device = torch.cuda.current_device()
