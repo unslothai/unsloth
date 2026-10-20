@@ -354,7 +354,6 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
 
 
 def _install_fp8_unit_scale() -> None:
-    """Every pre-quant container and rebuild mode: sm_89 precise-accumulate fp8 GEMMs take the unit-scale form."""
     try:
         from .diffusion_fp8_unit_scale import install
         install()

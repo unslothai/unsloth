@@ -1737,7 +1737,6 @@ def _quiet_config(cls: Any, **kwargs: Any) -> Any:
 
 
 def _install_fp8_unit_scale() -> None:
-    """sm_89: route torchao's per-row fp8 GEMM through the unit-scale form (see diffusion_fp8_unit_scale)."""
     try:
         import logging
 

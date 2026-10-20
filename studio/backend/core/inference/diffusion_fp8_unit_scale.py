@@ -60,10 +60,8 @@ _CACHE_TAG_PREFIX = "unsloth_fp8_unit_scale="
 
 
 def _set_compile_cache_tag(tag: Optional[str]) -> None:
-    """Key torch's on-disk compile caches (FX graph + AOTAutograd) on the dispatcher. Their key is the Dynamo graph,
-    which reads ``F.linear`` on a Float8Tensor with or without the patch, so without a tag a graph cached before
-    install (or under the kill switch) is reused: the row-wise GEMM keeps running, or ``=0`` keeps the unit-scale one.
-    Other tag segments are kept; ``None`` removes ours."""
+    """Key torch's FX/AOTAutograd caches on the dispatcher: the Dynamo graph is identical with or without the patch,
+    so untagged, a graph cached on the other side of install / the kill switch is reused. ``None`` removes our tag."""
     try:
         import torch.compiler.config as _cc
     except Exception:  # noqa: BLE001 - torch without compiler config: no persistent compile cache to split
@@ -129,7 +127,6 @@ def install(logger: Any = None) -> bool:
         bias: Optional[Any] = None,
         use_fast_accum: bool = False,
     ) -> Any:
-        # Fast accumulate (Studio's default) leaves on the first test: the wrapper costs one bool check there.
         if (
             (force or not use_fast_accum)
             and output_scale is None
@@ -159,8 +156,7 @@ def install(logger: Any = None) -> bool:
             )
             if isinstance(acc, tuple):  # torch < 2.5 returns (out, amax)
                 acc = acc[0]
-            # bf16 * fp32 promotes without a separate upcast copy, then in place: eager (no compile) saves one
-            # fp32 [M, N] buffer and a pass; same fp32 math and result, and Inductor fuses either form.
+            # bf16 * fp32 promotes without an upcast copy; in place saves an fp32 [M, N] buffer eagerly, same result.
             out = acc * a_scale.float()
             out.mul_(b_scale.float())
             if bias is not None:
