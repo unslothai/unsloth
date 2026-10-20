@@ -891,13 +891,49 @@ def test_preference_rendering_drops_the_null_fields_arrow_adds():
     assert rendered[0]["chosen"] == "<assistant>Sunny."
 
 
-def test_tool_call_arguments_lose_the_nulls_other_rows_add():
+def test_tool_call_arguments_keep_their_nulls():
     from core.training.rl import _without_nulls
 
-    call = {"function": {"name": "weather", "arguments": {"city": "Paris", "expression": None}}}
+    call = {"function": {"name": "update", "arguments": {"nickname": None}}, "id": None}
     msgs = _without_nulls([{"role": "assistant", "content": None, "tool_calls": [call]}])
-    assert msgs[0]["tool_calls"][0]["function"]["arguments"] == {"city": "Paris"}
+    assert msgs[0]["tool_calls"][0] == {
+        "function": {"name": "update", "arguments": {"nickname": None}}
+    }
     assert msgs[0]["content"] is None
+
+
+def test_prompts_ending_on_a_tool_result_render():
+    pytest.importorskip("trl")
+    from core.training.rl import render_preference_rows
+
+    class _Tok:
+        def apply_chat_template(
+            self,
+            messages,
+            add_generation_prompt = False,
+            tokenize = False,
+            **kw,
+        ):
+            text = "".join(f"<{m['role']}>{m.get('content')}" for m in messages)
+            return text + ("<assistant>" if add_generation_prompt else "")
+
+    prompt = [
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "calling"},
+        {"role": "tool", "content": "sunny"},
+    ]
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": prompt,
+                "chosen": [{"role": "assistant", "content": "Sunny."}],
+                "rejected": [{"role": "assistant", "content": "No."}],
+            }
+        ]
+    )
+    rendered = render_preference_rows(ds, _Tok())
+    assert rendered[0]["prompt"].endswith("<tool>sunny<assistant>")
+    assert rendered[0]["chosen"] == "Sunny."
 
 
 def test_structured_tool_schemas_lose_the_nulls_other_rows_add():
