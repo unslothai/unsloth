@@ -3,7 +3,6 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import type { SearchEngineId } from "./address";
 
 /** When the bookmarks toolbar shows, as Firefox offers it. */
@@ -115,7 +114,11 @@ export const useBrowserPrefsStore = create<BrowserPrefsState>()(
     },
   ),
 );
-syncAcrossWindows(useBrowserPrefsStore);
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useBrowserPrefsStore.persist.getOptions().name) void useBrowserPrefsStore.persist.rehydrate();
+  });
+}
 
 /** The zoom a page is at unless the reader zooms it. */
 export function defaultZoom(): number {
