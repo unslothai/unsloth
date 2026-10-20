@@ -10180,6 +10180,9 @@ class LlamaCppBackend:
             # Row and tensor modes split within a tensor; per-layer shares don't describe them.
             # argv only: a non-layer inherited LLAMA_ARG_SPLIT_MODE is popped before launch.
             or _extra_args_split_mode(extra_args, {}) not in (None, "layer")
+            # RPC devices go ahead of the local ones, so the shares would land on them.
+            or (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+            or str(env.get("LLAMA_ARG_RPC", "")).strip()
             # A surviving device list owns the share order; a gpu_ids pin strips it.
             or (
                 not pin_owns_devices

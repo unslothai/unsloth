@@ -251,8 +251,9 @@ def test_a_row_or_tensor_split_mode_leaves_the_split_to_llama_cpp():
             layer_min_gpus = 1, tensor_parallel = False, pin_owns_devices = True,
         )
 
-    for args in (["-sm", "row"], ["--split-mode=tensor"]):
+    for args in (["-sm", "row"], ["--split-mode=tensor"], ["--rpc", "10.0.0.2:50052"]):
         assert call(args, {}) is None, args
+    assert call([], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}) is None
     # The launch pops an inherited non-layer mode, so the child runs layer split.
     import pytest
 
