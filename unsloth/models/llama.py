@@ -3148,6 +3148,24 @@ def _fused_lora_layers(layers, mlp_function):
     ]
 
 
+def _legacy_block_compile(model):
+    """Per-block compile for FastLanguageModel LoRA. Off before torch 2.11 unless =1: untraced
+    fused LoRA (fast_lora.TRACE_LORA_FUNCTIONS) splits each block."""
+    mode = os.environ.get("UNSLOTH_BLOCK_COMPILE_LEGACY", "auto")
+    if mode == "0":
+        return []
+    if mode != "1":
+        from ..kernels.fast_lora import TRACE_LORA_FUNCTIONS
+        if not TRACE_LORA_FUNCTIONS:
+            return []
+    try:
+        from ._block_compile import patch_block_compile
+        return patch_block_compile(model)
+    except Exception as e:
+        logger.warning(f"Unsloth: per-block compile not installed: {e}")
+        return []
+
+
 class FastLlamaModel:
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
@@ -3943,6 +3961,14 @@ class FastLlamaModel:
                         load_in_fp8,
                         fast_inference,
                     )
+
+                from .loader_utils import refuse_fast_inference_load_in_8bit
+
+                refuse_fast_inference_load_in_8bit(
+                    load_in_8bit,
+                    model_config,
+                    kwargs.get("quantization_config", None),
+                )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
                 _vllm_model_name = resolve_vllm_model_path(
@@ -5184,6 +5210,7 @@ class FastLlamaModel:
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
         _unsloth_install_pretrain_detector(model)
+        _legacy_block_compile(model)
         return model
 
     @staticmethod

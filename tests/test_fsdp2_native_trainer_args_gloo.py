@@ -13,7 +13,9 @@ Plus the launcher env: an explicit native backend turns accelerate's FSDP launch
 import multiprocessing
 import os
 
-if multiprocessing.parent_process() is not None:
+if multiprocessing.parent_process() is not None or getattr(
+    multiprocessing.current_process(), "_inheriting", False
+):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import ast  # noqa: E402

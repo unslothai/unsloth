@@ -122,6 +122,13 @@ _skills_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _no_vae_structural_verdict_cache(monkeypatch):
+    """Structural VAE fusion verdicts persist under Studio's cache root; tests must not read or write the real one
+    (the cache tests turn it on against a temp dir)."""
+    monkeypatch.setenv("UNSLOTH_VAE_FUSED_STRUCTURAL_CACHE", "0")
+
+
+@pytest.fixture(autouse = True)
 def _zoo_without_gdn_decode_kernel(monkeypatch):
     # Whether Qwen3.5 / Qwen3-Next ask for causal-conv1d depends on the installed unsloth_zoo; pin the
     # older-zoo answer so results do not follow the host. Tests of the newer zoo patch it back.
