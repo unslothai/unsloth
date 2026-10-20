@@ -3651,6 +3651,52 @@ _GGUF_LINK_MIN_BYTES = 256 * 1024**2
 _GGUF_COPIED_PREFIXES = ("tokenizer", "vocab", "spiece", "sentencepiece", "merges")
 
 
+def _gguf_stage_links(name, size):
+    if name.lower().startswith(_GGUF_COPIED_PREFIXES):
+        return False
+    return name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES) or size >= _GGUF_LINK_MIN_BYTES
+
+
+def _staged_checkpoint_copy_bytes(
+    model,
+    save_directory,
+    state_dict = None,
+):
+    """Bytes `_stage_reused_checkpoint` will COPY rather than link: zero unless the GGUF folder is on another filesystem from the reused checkpoint (no hard link) and symlinks are refused there (Windows without Developer Mode), when every weight file is copied. Never raises; unmeasurable is zero."""
+    import tempfile
+    try:
+        if not _gguf_reuses_loaded_checkpoint(model, state_dict):
+            return 0
+        source = os.path.abspath(
+            str(getattr(model, "_unsloth_modelscope_snapshot", None) or model.config._name_or_path)
+        )
+        probe = os.path.abspath(_gguf_output_directory(save_directory))
+        while not os.path.isdir(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                return 0
+            probe = parent
+        if os.stat(source).st_dev == os.stat(probe).st_dev:
+            return 0
+        scratch = tempfile.mkdtemp(prefix = ".unsloth_gguf_symlink_probe_", dir = probe)
+        try:
+            os.symlink(source, os.path.join(scratch, "link"), target_is_directory = True)
+            return 0
+        except OSError:
+            pass
+        finally:
+            shutil.rmtree(scratch, ignore_errors = True)
+        total = 0
+        for root, _dirs, files in os.walk(source):
+            for name in files:
+                size = os.path.getsize(os.path.join(root, name))
+                if _gguf_stage_links(name, size):
+                    total += size
+        return total
+    except Exception:
+        return 0
+
+
 def _stage_reused_checkpoint(source, gguf_directory):
     """A throwaway copy of the user's checkpoint folder for the converter to read. Weights are
     linked; everything else is copied, subfolders included, because the tokenizer save (e.g.
@@ -3673,10 +3719,7 @@ def _stage_reused_checkpoint(source, gguf_directory):
                     continue  # the GGUF output folder sits inside the checkpoint
                 os.mkdir(dst)
                 _stage(src, dst)
-            elif not name.lower().startswith(_GGUF_COPIED_PREFIXES) and (
-                name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES)
-                or os.path.getsize(src) >= _GGUF_LINK_MIN_BYTES
-            ):
+            elif _gguf_stage_links(name, os.path.getsize(src)):
                 for link in (os.link, os.symlink):
                     try:
                         link(src, dst)
@@ -3896,6 +3939,12 @@ def _preflight_gguf_disk(
             )
         except Exception:
             need_sibling = 0
+        # Lands in the `_gguf` sibling with the conversion, so it is charged to both figures.
+        staged_copy = _staged_checkpoint_copy_bytes(model, save_directory, state_dict)
+        need += staged_copy
+        need_with_cache += staged_copy
+        if need_sibling > 0:
+            need_sibling += staged_copy
         # The first phase a disposable merge peaks at: merge plus intermediate GGUF, before any quant. quantization_methods = () still prices the intermediate, which must exist to be read.
         try:
             need_merge_phase = estimate_gguf_export_bytes(

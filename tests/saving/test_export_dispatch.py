@@ -731,3 +731,33 @@ def test_staged_checkpoint_copies_tokenizer_subfolders_and_resolves_a_relative_s
         assert template.read_text() == "{{ bos_token }}"
     finally:
         save_mod._drop_staged_checkpoint(staged)
+
+
+@pytest.mark.parametrize("symlinks_work", [True, False])
+def test_preflight_prices_a_staged_copy_only_when_nothing_can_link(
+    monkeypatch, tmp_path, symlinks_work
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"W" * 100)
+    (checkpoint / "tokenizer.json").write_text("{}")
+    model = _FakeModel()
+    model.config = type("cfg", (), {"_name_or_path": str(checkpoint)})()
+    monkeypatch.setattr(save_mod, "_gguf_reuses_loaded_checkpoint", lambda *_args: True)
+    real_stat = os.stat
+
+    def _other_device(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if os.path.abspath(path) == str(checkpoint):
+            return os.stat_result((*result[:2], result.st_dev + 1, *result[3:]))
+        return result
+
+    def _refused(*_args, **_kwargs):
+        raise OSError("symlink privilege not held")
+
+    monkeypatch.setattr(save_mod.os, "stat", _other_device)
+    if not symlinks_work:
+        monkeypatch.setattr(save_mod.os, "symlink", _refused)
+    copied = save_mod._staged_checkpoint_copy_bytes(model, str(tmp_path / "out" / "model"))
+    assert copied == (0 if symlinks_work else 100)
+    assert not [p for p in tmp_path.rglob(".unsloth_gguf_symlink_probe_*")]
