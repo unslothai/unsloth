@@ -6440,6 +6440,10 @@ _BREAKDOWN_HOST_ROW_RE = re.compile(
 )
 
 
+# llama-fit-params maps the model and compiles Metal shaders; a cold run is slow.
+_METAL_FIT_PROBE_TIMEOUT_S = 120
+
+
 def _parse_metal_memory_breakdown(output: str) -> Optional[tuple[int, int, int]]:
     """Parse the first llama.cpp table as ``(metal_model_mib, host_model_mib, rows)``.
 
@@ -14110,28 +14114,49 @@ class LlamaCppBackend:
         """Measure full-offload model buffers with the sibling ``llama-fit-params``.
 
         Discounted launches pin the same placement. Results are cached by probe and model
-        identity; a missing, failed, or unreadable probe returns None.
+        identity; a missing, failed, or unreadable probe returns None and leaves the reason
+        in ``_metal_probe_failure``. Only answers that would repeat are cached: a timeout
+        (cold shader compile) or a crash may not, and the probe's mode is in the key so an
+        exec-bit repair re-probes.
         """
+        self._metal_probe_failure = None
         if not binary or not model_path:
+            self._metal_probe_failure = "no binary or model path"
             return None
         try:
             probe = _llama_lib_dir(binary) / "llama-fit-params"
+        except OSError:
+            self._metal_probe_failure = "llama-fit-params not found"
+            return None
+        try:
             probe_stat = probe.stat()
+        except OSError:
+            self._metal_probe_failure = f"llama-fit-params not found at {probe}"
+            return None
+        try:
             model_stat = os.stat(model_path)
         except OSError:
+            self._metal_probe_failure = "model file unreadable"
+            return None
+        if os.name != "nt" and not os.access(probe, os.X_OK):
+            self._metal_probe_failure = f"llama-fit-params at {probe} is not executable"
             return None
         key = (
             str(probe),
             probe_stat.st_size,
             probe_stat.st_mtime_ns,
+            probe_stat.st_mode,
             model_path,
             model_stat.st_size,
             model_stat.st_mtime_ns,
         )
         cached = getattr(self, "_metal_model_mib_cache", None)
         if cached is not None and cached[0] == key:
+            self._metal_probe_failure = cached[2]
             return cached[1]
         measured: Optional[tuple[int, int, int]] = None
+        failure: Optional[str] = None
+        cacheable = True
         try:
             env = self._llama_server_env_for_binary(str(binary))
             for name in tuple(env):
@@ -14144,18 +14169,36 @@ class LlamaCppBackend:
                 encoding = "utf-8",
                 errors = "replace",
                 # A cold Metal shader compile lands here instead of at the launch.
-                timeout = 120,
+                timeout = _METAL_FIT_PROBE_TIMEOUT_S,
                 check = False,
                 env = env,
                 **_windows_hidden_subprocess_kwargs(),
             )
-            if result.returncode == 0:
-                measured = _parse_metal_memory_breakdown(
-                    (result.stdout or "") + "\n" + (result.stderr or "")
+            output = (result.stdout or "") + "\n" + (result.stderr or "")
+            if result.returncode != 0:
+                failure = f"llama-fit-params exited with code {result.returncode}"
+                cacheable = False
+            else:
+                measured = _parse_metal_memory_breakdown(output)
+                if measured is None:
+                    failure = "llama-fit-params printed no Metal memory breakdown"
+            if failure:
+                tail = " | ".join(
+                    line.strip() for line in output.strip().splitlines()[-3:] if line.strip()
                 )
+                if tail:
+                    failure = f"{failure}: {tail[-300:]}"
+        except subprocess.TimeoutExpired:
+            failure = f"llama-fit-params timed out after {_METAL_FIT_PROBE_TIMEOUT_S} s"
+            cacheable = False
         except Exception as e:
-            logger.debug(f"llama-fit-params memory probe failed: {e}")
-        self._metal_model_mib_cache = (key, measured)
+            failure = f"llama-fit-params could not run: {e}"
+            cacheable = False
+        if failure:
+            logger.debug(f"llama-fit-params memory probe failed: {failure}")
+        self._metal_probe_failure = failure
+        if cacheable:
+            self._metal_model_mib_cache = (key, measured, failure)
         return measured
 
     def _metal_demand_paged_embedding_bytes(
@@ -14227,8 +14270,9 @@ class LlamaCppBackend:
         measured = self._metal_measured_model_mib(binary, model_path)
         if measured is None:
             logger.info(
-                "Metal fit: could not measure how llama.cpp maps this model (llama-fit-params "
-                "missing or unreadable), so its %.2f GB of input embeddings stay charged.",
+                "Metal fit: could not measure how llama.cpp maps this model (%s), so its "
+                "%.2f GB of input embeddings stay charged.",
+                getattr(self, "_metal_probe_failure", None) or "llama-fit-params unavailable",
                 embeddings / (1024**3),
             )
             return 0
