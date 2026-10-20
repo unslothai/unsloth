@@ -526,6 +526,39 @@ def _split_mixed_stream_tail_residuals(tail_hidden: Any, head_output: Any) -> Op
     )
 
 
+def _rebind_fbcache_block_hooks(transformer: Any) -> None:
+    """Point already-registered FBCache block hooks at the current ``FBCBlockHook.new_forward``.
+
+    ``HookRegistry.register_hook`` keeps ``partial(hook.new_forward, module)``, the method as it was
+    at registration, so hooks installed before ``install_fbcache_mixed_stream_tail`` (an FBCache we
+    adopt instead of re-enabling) would still run the stock tail and crash FLUX.2. Best-effort."""
+    try:
+        import functools
+
+        from diffusers.hooks.first_block_cache import _FBC_BLOCK_HOOK, FBCBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return
+    current = getattr(FBCBlockHook, "new_forward", None)
+    if current is None:
+        return
+    for module in transformer.modules():
+        registry = getattr(module, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) if registry is not None else None
+        hook = hooks.get(_FBC_BLOCK_HOOK) if isinstance(hooks, dict) else None
+        fn_ref = getattr(hook, "fn_ref", None) if hook is not None else None
+        bound = getattr(fn_ref, "forward", None)
+        if not isinstance(hook, FBCBlockHook) or not isinstance(bound, functools.partial):
+            continue
+        if getattr(bound.func, "__func__", None) is current:
+            continue
+        try:
+            fn_ref.forward = functools.update_wrapper(
+                functools.partial(hook.new_forward, *bound.args), hook.new_forward
+            )
+        except Exception:  # noqa: BLE001 - diffusers internals moved; leave this hook as it is
+            pass
+
+
 def install_fbcache_mixed_stream_tail() -> bool:
     """Make First-Block-Cache work when the head block is dual-stream and the tail single-stream.
 
@@ -702,6 +735,7 @@ def apply_step_cache(
             # May not be a cache we installed, so the post-enable integration cannot be assumed
             # done. Both idempotent; skipping the first strands the child-registry list.
             _invalidate_child_registry_cache(transformer)
+            _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)
             try:
                 transformer._unsloth_step_cache = f"{mode}@{thr}"
@@ -755,6 +789,7 @@ def apply_step_cache(
             # _cache_config was None. register_hook refuses a duplicate name BEFORE changing
             # anything, so those hooks are intact and tearing them down would cost a healthy cache.
             _invalidate_child_registry_cache(transformer)
+            _rebind_fbcache_block_hooks(transformer)
             _compile_hooked_block_inners(transformer, logger)
             # The marker MUST be set before reporting success: it is what keeps the CUDA graph
             # wrapper eager over these live hooks. Mode only; the threshold is its installer's.

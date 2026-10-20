@@ -242,3 +242,22 @@ def test_apply_step_cache_on_flux2_renders(stock_tail_hook):
     assert torch.equal(full[0], cached[0])
     for a, b in zip(full[1:], cached[1:]):
         torch.testing.assert_close(b, a, rtol = 1e-5, atol = 1e-5)
+
+
+def test_apply_step_cache_adopts_a_cache_enabled_before_the_patch(stock_tail_hook):
+    """An FBCache enabled with the stock tail hook (same threshold, so apply_step_cache adopts it rather than
+    re-enabling) must run the patched tail too, not the bound stock method diffusers captured at registration."""
+    torch, FirstBlockCacheConfig, *_ = _diffusers()
+    model, inputs = _tiny_flux2()
+    pipe = _Flux2Pipe(model, inputs)
+    steps = (1.0, 1.0, 1.0)
+    full = pipe(steps)
+    model.enable_cache(FirstBlockCacheConfig(threshold = 0.5))  # hooks bound to the stock tail
+    try:
+        assert dc.apply_step_cache(pipe, mode = "fbcache", threshold = 0.5) == "fbcache"
+        cached = pipe(steps)
+    finally:
+        model.disable_cache()
+    assert torch.equal(full[0], cached[0])
+    for a, b in zip(full[1:], cached[1:]):
+        torch.testing.assert_close(b, a, rtol = 1e-5, atol = 1e-5)
