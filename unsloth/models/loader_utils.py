@@ -321,6 +321,17 @@ def sync_deepspeed_mixed_precision(args):
     return changed
 
 
+def vlm_gradient_checkpointing_reentrant():
+    """Whether FastModel keeps Unsloth's reentrant (offloaded) gradient checkpointing.
+
+    Under DDP it switches to non-reentrant checkpointing: re-entrant recompute marks a VLM's
+    parameters ready twice in DDP's reducer (#3713). FSDP2 and DeepSpeed have no such reducer; each
+    reduces from its own hooks. Under DeepSpeed ZeRO-3 non-reentrant recompute re-runs the parameter
+    gather hooks and fails torch's saved-tensor check ("A different number of tensors was saved
+    during the original forward and recomputation"), so both keep the reentrant path, as one GPU does."""
+    return not is_distributed() or fsdp2_requested() or deepspeed_zero_stage() is not None
+
+
 def _is_moe_block(module):
     children = dict(module.named_children())
     return "experts" in children and ("gate" in children or "router" in children)

@@ -257,3 +257,21 @@ def test_rl_trainer_source_resyncs_deepspeed_after_the_precision_switch():
     switch = source.index("Switching to float32 training since model cannot work with float16")
     sync = source.index("sync_deepspeed_mixed_precision(args)")
     assert first < switch < sync
+
+
+# FastModel gradient checkpointing under a distributed launch.
+@pytest.mark.parametrize(
+    "distributed, fsdp2, stage, reentrant",
+    [
+        (False, False, None, True),  # one GPU
+        (True, False, None, False),  # DDP: non-reentrant (#3713)
+        (True, True, None, True),  # FSDP2
+        (True, False, 3, True),  # DeepSpeed ZeRO-3: non-reentrant recompute fails its checks
+        (True, False, 2, True),  # DeepSpeed ZeRO-2: no DDP reducer either
+    ],
+)
+def test_vlm_gradient_checkpointing_reentrant(monkeypatch, distributed, fsdp2, stage, reentrant):
+    monkeypatch.setattr(loader_utils, "is_distributed", lambda: distributed)
+    monkeypatch.setattr(loader_utils, "fsdp2_requested", lambda: fsdp2)
+    monkeypatch.setattr(loader_utils, "deepspeed_zero_stage", lambda: stage)
+    assert loader_utils.vlm_gradient_checkpointing_reentrant() is reentrant

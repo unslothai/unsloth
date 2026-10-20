@@ -142,6 +142,7 @@ from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
     _bnb_bits_requested,
+    vlm_gradient_checkpointing_reentrant,
     set_deepspeed_moe_leaf_modules,
     fsdp2_requested,
     DEFAULT_DEVICE_MAP,
@@ -5083,7 +5084,7 @@ class FastBaseModel:
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         # FSDP2 has no DDP reducer to mark twice: each unit reduce-scatters in its own post-backward hook,
         # recompute included, so it keeps Unsloth's offloaded checkpointing (and unsloth_stream) as 1 GPU does.
-        use_reentrant = not is_distributed() or fsdp2_requested()
+        use_reentrant = vlm_gradient_checkpointing_reentrant()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
         _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
