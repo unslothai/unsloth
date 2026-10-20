@@ -356,7 +356,7 @@ def _is_block_list(container, no_split):
     return True
 
 
-def find_shard_units(model) -> list:
+def find_shard_units(model, ignored_params = ()) -> list:
     """Repeated decoder / vision / audio blocks in module order: every child of the outermost
     nn.ModuleLists of blocks (model.layers, language_model.layers, vision_tower.*.layers, ...); never a
     unit inside a unit (MoE experts, fused-LoRA Linears stay in their block's unit). Only when no such list
@@ -390,14 +390,14 @@ def find_shard_units(model) -> list:
     # Module (pre-)order = forward order for the usual layouts; the fallback units are re-sorted in.
     order = {id(m): i for i, m in enumerate(model.modules())}
     units.sort(key = lambda m: order.get(id(m), 0))
-    units, dropped = _drop_units_sharing_params(model, units)
+    units, dropped = _drop_units_sharing_params(model, units, ignored_params)
     if dropped:
         _print_rank0(
             f"Unsloth: native FSDP2 keeps {len(dropped)} blocks ({', '.join(sorted(set(dropped)))}) in the "
             "root unit: they share parameters with other blocks or modules (Zamba2's shared transformer), "
             "which one FSDP2 unit each would silently untie."
         )
-    check_shard_units(model, units)
+    check_shard_units(model, units, ignored_params)
     return units
 
 
@@ -431,11 +431,11 @@ def _units_sharing_params(
     return bad
 
 
-def _drop_units_sharing_params(model, units):
+def _drop_units_sharing_params(model, units, ignored_params = ()):
     """Drop sharing units into the root, repeated: the root may then share with another unit."""
     dropped = []
     while True:
-        bad = set(_units_sharing_params(model, units))
+        bad = set(_units_sharing_params(model, units, ignored_params))
         if not bad:
             return units, dropped
         dropped += [type(units[i]).__name__ for i in bad]
@@ -1276,14 +1276,15 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
             "wrap it again."
         )
     config = config or FSDP2Config.from_env()
-    units = list(config.units) if config.units is not None else find_shard_units(model)
+    ignored_params = config.ignored_params or ()
+    units = list(config.units) if config.units is not None else find_shard_units(model, ignored_params)
     extra_units = (
         _large_root_embeddings(model, units, config.split_large_root_embeddings)
         if config.units is None
         else []
     )
     # Explicitly ignored parameters stay replicated, so units may share them.
-    check_shard_units(model, units + extra_units, config.ignored_params or ())
+    check_shard_units(model, units + extra_units, ignored_params)
     _refuse_tensor_parallel_model(model)
     device = _shard_device(model, config.device)
     dist = _ensure_process_group(device, config.backend, config.timeout)

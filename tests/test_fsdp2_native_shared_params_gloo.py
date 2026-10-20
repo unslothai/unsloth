@@ -99,6 +99,7 @@ def test_explicitly_ignored_shared_params_pass_the_check():
     model = _reused_module_model()
     ignored = set(model.layers[0].shared.parameters())
     assert native.check_shard_units(model, list(model.layers), ignored)
+    assert native.find_shard_units(model, ignored) == list(model.layers)
 
 
 def test_find_shard_units_keeps_sharing_blocks_in_the_root():
