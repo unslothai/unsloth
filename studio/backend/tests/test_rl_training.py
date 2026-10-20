@@ -230,6 +230,35 @@ def test_grpo_drops_non_finite_logits_only_on_fp16_only_gpus(monkeypatch, fp16_o
     assert kw["args"].generation_kwargs == expected
 
 
+@pytest.mark.parametrize("version, loss_type", [("0.18.2", "bnpo"), ("0.23.1", "dapo")])
+def test_default_dapo_falls_back_to_bnpo_on_old_trl(monkeypatch, version, loss_type):
+    warnings = []
+    monkeypatch.setitem(
+        sys.modules,
+        "trl",
+        types.SimpleNamespace(
+            __version__ = version, GRPOConfig = _FakeGRPOConfig, GRPOTrainer = lambda **kw: kw
+        ),
+    )
+    spec = {
+        "name": "l",
+        "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+    }
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024},
+        settings = {},
+        reward_specs = [spec],
+        on_warning = warnings.append,
+    )
+    assert kw["args"].loss_type == loss_type
+    assert bool(warnings) == (loss_type == "bnpo")
+
+
 def test_request_refuses_unknown_grpo_variant():
     with pytest.raises(ValidationError):
         TrainingStartRequest(
