@@ -30,7 +30,7 @@ const UNSLOTH_SITES: Site[] = [
   { title: "Unsloth", url: "https://unsloth.ai", icon: "/sticker.png" },
   {
     title: "Unsloth Docs",
-    url: "https://docs.unsloth.ai",
+    url: "https://unsloth.ai/docs",
     icon: "/sticker.png",
   },
 ];
@@ -46,11 +46,25 @@ const OTHER_SITES: Site[] = [
 
 const KNOWN_SITES = [...UNSLOTH_SITES, ...OTHER_SITES];
 
-// The proxied view loads the docs at the address docs.unsloth.ai redirects to; the home page stays blocked.
+// The proxied view keeps the docs; the unsloth.ai home page stays blocked.
 const PROXIED_SITES: Site[] = [
   { title: "Unsloth Docs", url: "https://unsloth.ai/docs", icon: "/sticker.png" },
   ...OTHER_SITES,
 ];
+
+/** One suggestion per host, except the docs, which share unsloth.ai with the home page. */
+function siteKey(url: string): string {
+  const host = hostOf(url);
+  if (host === "docs.unsloth.ai") return "unsloth.ai/docs";
+  if (host !== "unsloth.ai") return host;
+  try {
+    return /^\/docs(?:\/|$)/.test(new URL(url).pathname)
+      ? "unsloth.ai/docs"
+      : host;
+  } catch {
+    return host;
+  }
+}
 
 const SUGGESTED_COUNT = 4;
 const RECENTS_PER_PAGE = 5;
@@ -63,12 +77,12 @@ function suggestedSites(
 ): Site[] {
   const byHost = new Map<string, { site: Site; visits: number }>();
   for (const item of history) {
-    const host = hostOf(item.url);
+    const host = siteKey(item.url);
     const seen = byHost.get(host);
     if (seen) seen.visits += 1;
     else {
       const icon = KNOWN_SITES.find(
-        (site) => hostOf(site.url) === host,
+        (site) => siteKey(site.url) === host,
       )?.icon;
       byHost.set(host, {
         site: { title: item.title || host, url: item.url, icon },
@@ -80,12 +94,12 @@ function suggestedSites(
     .filter((site) => site.visits > 1)
     .sort((a, b) => b.visits - a.visits)
     .map((site) => site.site);
-  const hosts = new Set(sites.map((site) => hostOf(site.url)));
+  const hosts = new Set(sites.map((site) => siteKey(site.url)));
   for (const site of defaults)
-    if (!hosts.has(hostOf(site.url))) sites.push(site);
-  const off = new Set(hidden);
+    if (!hosts.has(siteKey(site.url))) sites.push(site);
+  const off = new Set(hidden.map((key) => siteKey(`https://${key}`)));
   return sites
-    .filter((site) => !off.has(hostOf(site.url)))
+    .filter((site) => !off.has(siteKey(site.url)))
     .slice(0, SUGGESTED_COUNT);
 }
 
@@ -109,7 +123,7 @@ function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
   const t = useT();
   const { navigate } = useBrowserStore.getState();
   const remove = () =>
-    useBrowserPrefsStore.getState().hideSuggestion(hostOf(site.url));
+    useBrowserPrefsStore.getState().hideSuggestion(siteKey(site.url));
   return (
     <LinkContextMenu
       url={site.url}
