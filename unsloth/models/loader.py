@@ -55,6 +55,7 @@ from .loader_utils import (
     _tag_model_with_fp8_torchao_config,
     get_model_name,
     gpt_oss_checkpoint_has_fused_experts,
+    refuse_gpt_oss_fused_4bit_float16,
     _prefer_legacy_lowercase_cache,
     is_distributed,
     is_automatic_device_map,
@@ -2537,6 +2538,7 @@ class FastModel(FastBaseModel):
         if load_in_4bit and _bnb_compatible_quant and not _gpt_oss_fused:
             string += "_load_in_4bit_"
         elif load_in_4bit and _bnb_compatible_quant:
+            refuse_gpt_oss_fused_4bit_float16(dtype)
             print(
                 "Unsloth: this gpt-oss checkpoint is not pre-quantized, so it loads with its own "
                 "fused expert layout. A pre-quantized checkpoint such as "

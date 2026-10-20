@@ -3704,6 +3704,18 @@ def gpt_oss_checkpoint_has_fused_experts(config):
     return False
 
 
+def refuse_gpt_oss_fused_4bit_float16(dtype):
+    """The fused 4-bit experts compute in the model dtype; gpt-oss expert down outputs overflow float16
+    (the pre-quantized split classes keep down_projs in float32)."""
+    if dtype != torch.float16:
+        return
+    raise NotImplementedError(
+        "Unsloth: this gpt-oss checkpoint is not pre-quantized, and in float16 (this GPU has no bfloat16, "
+        "or dtype = torch.float16) its 4-bit experts would overflow. Use the pre-quantized "
+        "unsloth/gpt-oss-20b-unsloth-bnb-4bit (or -120b), or a GPU with bfloat16."
+    )
+
+
 def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit, config = None):
     """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb state (after get_model_name remap + check_and_disable). The per-load env is built from the pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss. `_load_in_4bit_` is kept off for a fused unquantized `config`."""
     name = os.environ.get("UNSLOTH_MODEL_NAME", "")

@@ -37,6 +37,23 @@ BNB_QC = {"quant_method": "bitsandbytes", "load_in_4bit": True}
 MXFP4_QC = {"quant_method": "mxfp4"}
 
 
+def test_fused_4bit_refused_in_float16():
+    with pytest.raises(NotImplementedError, match = "overflow"):
+        loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.float16)
+    loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.bfloat16)
+    loader_utils.refuse_gpt_oss_fused_4bit_float16(torch.float32)
+
+
+def test_loader_refuses_before_the_fused_4bit_load():
+    import inspect
+
+    from unsloth.models import loader
+
+    source = inspect.getsource(loader)
+    branch = source.index("this gpt-oss checkpoint is not pre-quantized, so it loads")
+    assert "refuse_gpt_oss_fused_4bit_float16(dtype)" in source[branch - 300 : branch]
+
+
 def test_fused_checkpoint_detection():
     assert gpt_oss_checkpoint_has_fused_experts(None) is None
     assert gpt_oss_checkpoint_has_fused_experts(SimpleNamespace()) is True
