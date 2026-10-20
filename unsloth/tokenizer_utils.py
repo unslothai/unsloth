@@ -1769,7 +1769,7 @@ def check_tokenizer(
                         if remove_generic and (try_removal[j] == bad_token):
                             setattr(tokenizer, try_mapper[j], None)
                             setattr(tokenizer, try_mapper[j] + "_id", None)
-                    # get_vocab covers ids left in the base vocab; the encodes cover a post-processor (TemplateProcessing single / pair) still emitting a removed id.
+                    # Ids left in the base vocab or emitted by a post-processor template must fit too.
                     probe_ids = [max(tokenizer.get_vocab().values(), default = -1)]
                     probe_ids += tokenizer("a").input_ids
                     try:
