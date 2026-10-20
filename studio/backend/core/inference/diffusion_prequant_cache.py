@@ -987,7 +987,9 @@ def _flatten(state_dict: dict) -> tuple[dict, dict]:
             ):
                 flat[name] = _FlatRef(lambda v = value, f = field: getattr(v, f), clone)
             else:
-                flat[name] = clone  # unrecognised naming: keep torchao's copy (correct, not bounded)
+                flat[name] = (
+                    clone  # unrecognised naming: keep torchao's copy (correct, not bounded)
+                )
         del part
     header["tensor_names"] = json.dumps(names)
     if roots:
