@@ -1120,14 +1120,23 @@ def _all_trainable_float32(model):
     return bool(trainable) and all(p.dtype == torch.float32 for p in trainable)
 
 
-def _agree_over_ranks(dist, device, flags):
+def _agree_over_ranks(
+    dist,
+    device,
+    flags,
+    mesh = None,
+):
     """Every rank must pick the same layout (a per-rank memory heuristic could differ on mixed GPUs):
-    elementwise MIN of the boolean flags over ranks. One collective, at shard time only."""
+    elementwise AND of the boolean flags over the ranks of `mesh` (FSDP2Config.mesh; the world for
+    the default mesh), so disjoint sub-meshes decide on their own and a sub-group shards without the
+    other ranks calling in. At shard time only."""
     if not flags:
         return flags
+    from .fsdp2_save import mesh_all_reduce
+
     t = torch.tensor([1 if f else 0 for f in flags], dtype = torch.int32, device = device)
-    dist.all_reduce(t, op = dist.ReduceOp.MIN)
-    return [bool(v) for v in t.tolist()]
+    ranks = mesh_all_reduce(t, mesh, dist)
+    return [int(v) == ranks for v in t.tolist()]
 
 
 def _place_replicated(params, device):
@@ -1243,7 +1252,10 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
         layout.root_only = False
         layout.reasons.append("replicate_frozen=False (fully_shard has no ignored_params)")
     layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch = _agree_over_ranks(
-        dist, device, [layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch]
+        dist,
+        device,
+        [layout.fits, layout.replicate_frozen, layout.root_only, layout.prefetch],
+        config.mesh,
     )
     # reshard_after_forward is derived from `fits` (when not set by config / env): derive it again from
     # the agreed value, or a rank that fit alone keeps its blocks gathered while the others reshard, and

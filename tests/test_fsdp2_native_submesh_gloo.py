@@ -8,7 +8,9 @@ sharding its own model replica on its own data):
   mesh's two ranks, not over all four (the other pair's data would leak in); on a 2 x 2 HSDP mesh
   over all four ranks, over all four;
 * the per-input media agreement counts only the mesh's ranks: a mixed batch in one pair raises
-  there, while the other pair, whose ranks agree, trains."""
+  there, while the other pair, whose ranks agree, trains;
+* the one-time layout agreement in shard_model runs over the mesh too: pairs whose GPUs differ pick
+  their own fit layout, and one pair shards while the other never calls shard_model."""
 
 import multiprocessing
 import os
@@ -91,6 +93,39 @@ def _case_media(rank):
         return {"step": f"{type(exc).__name__}: {str(exc)[:300]}"}
 
 
+def _case_fit(native, rank):
+    """Rank 3's GPU is too small for the fit layout, the others' are not: only pair [2, 3] falls back
+    to the sharded layout."""
+    perf = sys.modules["unsloth.models.fsdp2_perf"]
+    perf._device_bytes = lambda device = None: 0 if rank == 3 else 1 << 40
+    agreed = {}
+    original = native._agree_over_ranks
+
+    def record(*args, **kwargs):
+        agreed["flags"] = original(*args, **kwargs)
+        return agreed["flags"]
+
+    native._agree_over_ranks = record
+    mesh = _submesh(rank)
+    native.shard_model(_lora(1), native.FSDP2Config(param_dtype = torch.float32, mesh = mesh))
+    return {"fits": agreed["flags"][0]}
+
+
+def _case_subgroup(native, rank):
+    """Only pair [0, 1] shards a model; ranks 2 and 3 never call shard_model."""
+    import torch.distributed as dist
+
+    mesh = _submesh(rank)
+    res = {"sharded": False}
+    if rank < 2:
+        model = native.shard_model(
+            _lora(1), native.FSDP2Config(param_dtype = torch.float32, mesh = mesh)
+        )
+        res["sharded"] = native.is_native_fsdp2(model)
+    dist.barrier()
+    return res
+
+
 def _worker(rank, world, port, out, case):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
@@ -110,6 +145,11 @@ def _worker(rank, world, port, out, case):
         native = _load_native()
         if case == "media":
             res = _case_media(rank)
+        elif case == "fit":
+            importlib.import_module("unsloth.models.fsdp2_perf")
+            res = _case_fit(native, rank)
+        elif case == "subgroup":
+            res = _case_subgroup(native, rank)
         else:
             res = _case_grads(native, rank, hsdp = case == "hsdp")
         out.put((rank, res))
@@ -178,3 +218,15 @@ def test_replicated_grads_average_over_a_whole_hsdp_mesh():
     for rank, r in _run("hsdp").items():
         assert r["mesh_ranks"] == [[0, 1], [2, 3]], (rank, r)
         assert r["pair_diff"] > 1e-6 and r["world_diff"] < r["pair_diff"] / 100, (rank, r)
+
+
+def test_layout_agreement_is_per_mesh():
+    pytest.importorskip("peft")
+    results = _run("fit")
+    assert [results[r]["fits"] for r in range(WORLD)] == [True, True, False, False], results
+
+
+def test_a_sub_mesh_shards_without_the_other_ranks():
+    pytest.importorskip("peft")
+    results = _run("subgroup", timeout = 120)
+    assert [results[r]["sharded"] for r in range(WORLD)] == [True, True, False, False], results
