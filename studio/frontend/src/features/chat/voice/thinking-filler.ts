@@ -83,6 +83,8 @@ export function pickWriting(rand: () => number = Math.random): string {
 
 // Nothing has played this long after the run started: say something.
 export const QUIET_FALLBACK_AFTER_MS = 2500;
+// A "say nothing" verdict stops holding once the reply has taken this long with nothing spoken.
+export const SILENT_VERDICT_LIMIT_MS = 6000;
 // Text is arriving but the first sentence has not played this long after the last aside.
 export const WRITING_AFTER_MS = 2500;
 

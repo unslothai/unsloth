@@ -53,6 +53,7 @@ import { deriveOrbState } from "@/features/chat/voice/orb-state";
 import {
   ASIDE_MIN_GAP_MS, type FillerDecision,
   QUIET_FALLBACK_AFTER_MS,
+  SILENT_VERDICT_LIMIT_MS,
   STAGE2_AFTER_MS,
   type ToolKind,
   WRITING_AFTER_MS,
@@ -1160,12 +1161,16 @@ export const VoiceEngine: FC = () => {
             sayAsideRef.current(pickStage2(latestAssistantToolKinds()));
           }
           // The classifier chose silence and nothing has played: the quiet reads
-          // as a miss after a couple of seconds, so bridge it.
+          // as a miss after a couple of seconds, so bridge it. A "none" verdict holds
+          // only while the reply is quick; a tool call or a long think still gets one line.
+          const toolKinds = latestAssistantToolKinds();
+          const silenceOverrun =
+            !text && (toolKinds.length > 0 || now - runStartedAtRef.current >= SILENT_VERDICT_LIMIT_MS);
           if (
             !awaitingApproval &&
             asideGapOk &&
             !f &&
-            !fillerAnsweredRef.current &&
+            (!fillerAnsweredRef.current || silenceOverrun) &&
             quietFallbackAt === null &&
             !isPlayingRef.current &&
             now - runStartedAtRef.current >= QUIET_FALLBACK_AFTER_MS &&
@@ -1174,8 +1179,12 @@ export const VoiceEngine: FC = () => {
             quietFallbackAt = now;
             lastFallbackAtRef.current = now;
             spokenThisTurnRef.current = true;
-            voiceTrace("engine.fillerFallback", { sinceStart: now - runStartedAtRef.current });
-            sayAsideRef.current(pickQuietFallback());
+            voiceTrace("engine.fillerFallback", {
+              sinceStart: now - runStartedAtRef.current,
+              overrode: fillerAnsweredRef.current,
+              tools: toolKinds.length,
+            });
+            sayAsideRef.current(toolKinds.length > 0 ? pickStage2(toolKinds) : pickQuietFallback());
           }
           // Text is arriving (the writing step) but its first sentence is still on
           // the way, and the last aside was a while ago: "almost there" is true now,
