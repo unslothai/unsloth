@@ -117,8 +117,7 @@ def test_new_conditioning_tensor_recomputes(monkeypatch):
 
 
 def test_in_place_edit_of_cached_source_is_not_a_hit(monkeypatch):
-    """Same object, same data_ptr: Studio never writes into the guider's tensors, but the cache is per render, so
-    a fresh render after end_render recomputes regardless."""
+    """Same object and data_ptr still hits within a render; a fresh render after end_render recomputes."""
     cls = _flux3()
     monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
     model = _tiny(cls)

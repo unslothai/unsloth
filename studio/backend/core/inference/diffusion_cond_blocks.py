@@ -1,27 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Conditioning blocks once per render: run a denoiser's conditioning-only work once per render instead of every step.
+"""Run FLUX.3 Klein Base's conditioning-only work (text and reference-image mode blocks at timestep 0) once per render.
 
-FLUX.3 Klein Base runs the text context and the reference images through their own per-mode blocks at timestep 0
-(diffusers ``Flux3Transformer2DModel``: ``txt_mode_blocks`` and ``mode_blocks["image_cond"]``, with their
-modulations, input projections and RoPE). Nothing there reads the latent or the step's timestep, so every step
-recomputes the same tensors, for each CFG branch. ComfyUI runs them once per run (``comfy/ldm/flux3/model.py``
-``preprocess_conds``, called from ``comfy/model_base.py`` ``Flux3.extra_conds``); a flow-map checkpoint (the
-distilled Klein) adds the step's target time to those modulations, so it keeps the per-step path, as ComfyUI does.
-
-A forward pre-hook computes the conditioning states on the first call of each branch, keyed by the identity of the
-pipeline's own conditioning tensors (the modular denoise loop passes the same ``prompt_embeds`` /
-``negative_prompt_embeds`` / ``image_cond_*`` objects every step), and hands them to the forward as one tensor dict.
-The hook runs before the instance forward, so a whole-step CUDA graph sees the cached states as ordinary inputs
-(copied into its static buffers on every replay) and never bakes a stale tensor. The cache is cleared at the start and
-end of every pipeline call, so a LoRA or weight change between renders never meets an old entry.
-
-Armed only for renders with reference images: the text stream alone is ~0.6% of a 1024^2 step, inside the noise.
-
-Same images bit for bit: the cached tensors are the ones the first step computed, and recomputing them is
-deterministic. Kill switch ``UNSLOTH_DIFFUSION_COND_BLOCKS=0``. Installed only when the diffusers forward is the one
-the replacement below mirrors (source hash), so a diffusers update falls back to the stock forward.
+Nothing there reads the latent or the step's timestep, so ComfyUI also runs it once (``comfy/ldm/flux3/model.py``
+``preprocess_conds``). A flow-map checkpoint (distilled Klein) feeds the target time into those modulations, so it
+keeps the per-step path. A forward pre-hook caches the states per branch, keyed by the identity of the pipeline's
+conditioning tensors; it runs before the forward, so a whole-step CUDA graph copies them into its static buffers on
+every replay and never bakes a stale tensor. The cache is cleared at the start and end of every pipeline call, so a
+LoRA or weight change never meets an old entry. Bit-identical output. Kill switch ``UNSLOTH_DIFFUSION_COND_BLOCKS=0``;
+installed only when the diffusers forward source hash matches, else the stock forward.
 """
 
 from __future__ import annotations
@@ -76,8 +64,7 @@ class _Entry:
 
 
 def _offloaded(module: Any) -> Optional[str]:
-    """A denoiser whose weights stream (diffusers / accelerate hooks): running its conditioning blocks outside the
-    forward would reorder the offload prefetch, so it keeps the stock path."""
+    """Offloaded weights keep the stock path: running conditioning blocks outside the forward reorders prefetch."""
     for name, sub in module.named_modules():
         if getattr(sub, "_hf_hook", None) is not None:
             return f"{name or '<root>'} carries an accelerate hook"
@@ -153,8 +140,7 @@ def _flux3_cached_forward(
     return_dict: bool = True,
     unsloth_cond: Optional[dict] = None,
 ) -> Any:
-    """``Flux3Transformer2DModel.forward`` that takes the conditioning states precomputed (``unsloth_cond``); the
-    image path below is the stock forward's, op for op. Without ``unsloth_cond`` it IS the stock forward."""
+    """Stock forward op for op, taking precomputed ``unsloth_cond``; without it, it IS the stock forward."""
     stock = _stock_forward(self)
     if unsloth_cond is None:
         return stock(
@@ -241,9 +227,7 @@ def _stock_forward(module: Any) -> Any:
 
 
 def patch_class(cls: type) -> Optional[str]:
-    """Give ``cls`` the forward that accepts precomputed conditioning (once). Without ``unsloth_cond`` it runs the
-    stock forward, so it can be installed at load, before a CUDA graph or a compile binds the class forward. None
-    when installed, else why not."""
+    """Install the cached forward on ``cls`` (safe before a CUDA graph or compile binds it). None, else why."""
     if any(c in _PATCHED for c in cls.__mro__):
         return None
     sha = _forward_sha(cls)
@@ -285,8 +269,7 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     if hidden_states is None or ehs is None or txt_ids is None or (ich is None) != (iid is None):
         return None
     if ich is None and not module.__dict__.get("_unsloth_cond_text_only"):
-        # Text alone is ~0.6% of a 1024^2 step, inside the noise on a B200 (compiled + CUDA graphs); the reference
-        # stream (~4k tokens per image) is where the saving is, so a text-only render keeps the stock forward.
+        # Text alone is ~0.6% of a 1024^2 step (noise on B200); the saving is the ~4k-token reference stream.
         return None
     if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
         return None
@@ -321,7 +304,6 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
 
 
 def _applies(transformer: Any) -> Optional[str]:
-    """None when the cache can run on ``transformer``, else why not."""
     if type(transformer).__name__ != "Flux3Transformer2DModel":
         return "not a FLUX.3 transformer"
     if bool(getattr(getattr(transformer, "config", None), "flow_map", False)):
@@ -330,8 +312,7 @@ def _applies(transformer: Any) -> Optional[str]:
 
 
 def prepare(transformer: Any, logger: Any = None) -> bool:
-    """At load, before the speed layer: patch the class forward a later CUDA graph or compile binds. True when the
-    cache can arm on this transformer."""
+    """Call at load, before the speed layer binds the class forward. True when the cache can arm."""
     if transformer is None or not enabled():
         return False
     why = _applies(transformer) or patch_class(type(transformer))
@@ -344,9 +325,8 @@ def prepare(transformer: Any, logger: Any = None) -> bool:
 
 
 def begin_render(transformer: Any, logger: Any = None) -> bool:
-    """Arm for one pipeline call: drop old states, re-check the switch and offload, and keep the pre-hook LAST so
-    it runs inside the scope earlier hooks open (dynamic text dims mark the text length dynamic for the compiled
-    blocks it calls). True when armed."""
+    """Arm for one pipeline call. The pre-hook must stay LAST so it runs inside earlier hooks' scope (dynamic text
+    dims marks the text length dynamic for the compiled blocks)."""
     if transformer is None:
         return False
     clear(transformer)
@@ -393,7 +373,6 @@ def end_render(transformer: Any) -> None:
 
 
 def clear(transformer: Any) -> None:
-    """Drop every cached state."""
     if transformer is not None:
         cache = transformer.__dict__.get("_unsloth_cond_cache")
         if cache:
