@@ -158,3 +158,77 @@ def test_auto_backs_off_without_reentrant_checkpointing():
     _step(model, ids)
     assert not hasattr(model, "_unsloth_auto_skip")
     assert _checkpointed(model) == [True] * 6
+
+
+def test_auto_without_cuda_says_so_once(monkeypatch, capsys):
+    ns, found = _load()
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    model = _model()
+    assert ns["skip_checkpointing"](model, "auto") == []
+    assert ns["skip_checkpointing"](model, "auto") == []
+    out = capsys.readouterr().out
+    assert out.count("needs a CUDA GPU") == 1, out
+    assert _checkpointed(model) == [True] * 6
+    assert not hasattr(model, "_unsloth_auto_skip")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+def test_auto_ignores_allocation_spike_before_first_step():
+    ns, found = _load()
+    ids = torch.randint(0, 128, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
+    model = _model(device = "cuda")
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    # 3 GiB usable; a 2 GiB loading spike before training must not be read as activations.
+    ns["usable_cuda_bytes"] = lambda device: 3 << 30
+    spike = torch.empty(2 << 30, dtype = torch.uint8, device = "cuda")
+    del spike
+    _step(model, ids)
+    _step(model, ids)
+    assert planner.kept == [0, 1, 2, 3, 4, 5]
+    assert _checkpointed(model) == [False] * 6
+
+
+def _big_model():
+    torch.manual_seed(0)
+    config = Qwen3Config(
+        vocab_size = 32000,
+        hidden_size = 1024,
+        intermediate_size = 4096,
+        num_hidden_layers = 6,
+        num_attention_heads = 8,
+        num_key_value_heads = 4,
+        head_dim = 128,
+    )
+    model = Qwen3ForCausalLM(config).float().cuda().train()
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    model.max_seq_length = 64
+    return model
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.parametrize("optimizer_stepped", [True, False])
+def test_auto_reserves_optimizer_state_only_when_not_allocated(optimizer_stepped):
+    ns, found = _load()
+    ids = torch.randint(0, 32000, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
+    model = _big_model()
+    numel = sum(p.numel() for p in model.parameters())
+    assert numel * 8 > (1 << 30)  # AdamW state well above the planner's slack
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-5)
+    # Usable memory after step 1 (state already excluded when it exists): grads + 1.6 GiB.
+    ns["usable_cuda_bytes"] = lambda device: numel * 4 + int(1.6 * (1 << 30))
+    model(input_ids = ids, labels = ids).loss.backward()
+    if optimizer_stepped:
+        optimizer.step()
+        optimizer.zero_grad(set_to_none = True)
+    model(input_ids = ids, labels = ids).loss.backward()  # plans at this forward
+    if optimizer_stepped:
+        # Full finetuning: the state is in memory_allocated already and must not be reserved again.
+        assert planner.kept == [0, 1, 2, 3, 4, 5]
+    else:
+        # Gradient accumulation: the state does not exist yet, so it is reserved and nothing fits.
+        assert planner.kept == []
+    del optimizer, model
+    torch.cuda.empty_cache()

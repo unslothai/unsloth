@@ -8420,10 +8420,12 @@ def _gc_keep_layers_env():
 class _AutoCheckpointSkip:
     """checkpoint_skip_layers = "auto": once, after step 1, un-checkpoint as many layers as fit.
     Per-layer cost = allocation left by its reentrant recompute in the first backward; AdamW state is
-    counted even if not yet allocated. Single process only: under torchrun each rank would pick its own K."""
+    reserved unless an optimizer step already allocated it. Single process only: under torchrun each
+    rank would pick its own K."""
 
     MARGIN = 1 << 30
     FRACTION = 0.75
+    _warned_no_cuda = False
 
     def __init__(self, model, layers, probe):
         self.model = model
@@ -8436,10 +8438,17 @@ class _AutoCheckpointSkip:
         self.layer_bytes = None
         self.layer_rows = 1
         self.kept = None
+        self.step_peak = None
+        self.stepped = False
 
     @classmethod
     def install(cls, model):
         if not torch.cuda.is_available():
+            if not cls._warned_no_cuda:
+                cls._warned_no_cuda = True
+                print(
+                    'Unsloth: checkpoint_skip_layers = "auto" needs a CUDA GPU; every layer stays checkpointed.'
+                )
             return None
         try:
             from .loader_utils import is_distributed
@@ -8474,6 +8483,12 @@ class _AutoCheckpointSkip:
         self.handles.append(model.register_forward_pre_hook(self._model_pre_hook))
         self.handles.append(self.probe.register_forward_pre_hook(self._probe_pre_hook))
         self.handles.append(self.probe.register_forward_hook(self._probe_hook))
+        try:
+            from torch.optim.optimizer import register_optimizer_step_pre_hook
+        except ImportError:
+            register_optimizer_step_pre_hook = None
+        if register_optimizer_step_pre_hook is not None:
+            self.handles.append(register_optimizer_step_pre_hook(self._optimizer_pre_hook))
         model._unsloth_auto_skip = self
         return self
 
@@ -8498,10 +8513,9 @@ class _AutoCheckpointSkip:
         if device is None:
             return
         if self.started is None:
-            self.started = (
-                torch.cuda.memory_allocated(device),
-                torch.cuda.max_memory_allocated(device),
-            )
+            # Step-local peak: a model-loading spike must not count as activations.
+            torch.cuda.reset_peak_memory_stats(device)
+            self.started = torch.cuda.memory_allocated(device)
             return
         if self.layer_bytes is not None:
             self.plan(device)
@@ -8531,15 +8545,32 @@ class _AutoCheckpointSkip:
         self.layer_bytes = max(0, torch.cuda.memory_allocated(device) - self.before)
         self.before = None
 
+    def _optimizer_pre_hook(self, optimizer, args, kwargs):
+        if self.started is None or self.stepped:
+            return
+        trainable = {id(p) for p in self.model.parameters() if p.requires_grad}
+        if not any(id(p) in trainable for group in optimizer.param_groups for p in group["params"]):
+            return
+        # Forward + backward peak, before the optimizer allocates its state and temporaries.
+        device = self._device(self.probe)
+        if device is not None:
+            self.step_peak = torch.cuda.max_memory_allocated(device)
+        self.stepped = True
+
     def plan(self, device):
         self.remove()
-        allocated_start, max_start = self.started
-        peak = max(torch.cuda.max_memory_allocated(device), max_start)
+        allocated_start = self.started
+        peak = self.step_peak if self.step_peak is not None else torch.cuda.max_memory_allocated(device)
         # A short first batch (dynamic padding) under-measures: size for max_seq_length rows.
         max_seq = getattr(self.model, "max_seq_length", None) or 0
         scale = max(1.0, max_seq / max(1, self.layer_rows)) if max_seq else 1.0
         activation_peak = max(0, peak - allocated_start) * scale
-        optimizer = sum(p.numel() * 8 for p in self.model.parameters() if p.requires_grad)
+        # After an optimizer step its state is allocated, so usable_cuda_bytes already excludes it.
+        optimizer = (
+            0
+            if self.stepped
+            else sum(p.numel() * 8 for p in self.model.parameters() if p.requires_grad)
+        )
         headroom = usable_cuda_bytes(device) - activation_peak - optimizer
         budget = headroom * self.FRACTION - self.MARGIN
         per_layer = self.layer_bytes * scale
