@@ -6405,6 +6405,13 @@ def _sidecar_reserve_margin_flags(
         return []
     if not fit_is_effectively_on(args, env):
         return []
+    # --fit-target is one scalar for every device: a launch spanning several (a
+    # surviving --device list or LLAMA_ARG_DEVICE) would withhold it on each card.
+    devices = _extra_args_main_device(args) or (os.environ if env is None else env).get(
+        "LLAMA_ARG_DEVICE"
+    )
+    if devices and len([d for d in str(devices).split(",") if d.strip()]) > 1:
+        return []
     want = math.ceil(
         max(base_margin_mib, fit_target_margin_in(user_args or (), env) or 0.0) + reserve_mib
     )
@@ -6412,6 +6419,38 @@ def _sidecar_reserve_margin_flags(
     if have is not None and have >= want:
         return []
     return ["--fit-target", str(want)]
+
+
+def _drop_sidecar_margins(
+    cmd: List[str],
+    integrity_flags: List[str],
+    rebuilt_integrity: List[str],
+    override_pairs: Iterable[List[str]],
+) -> List[str]:
+    """``cmd`` with the sidecar reserve taken back off, for a launch without the drafter.
+
+    Only the integrity block's margin pair is swapped for the rebuilt one: a single-sequence
+    recovery may already have rewritten the rest of that block (``--kv-unified`` gone), so
+    matching the whole block would miss. Each trailing pair a launch appended goes newest
+    first and from the back, so a user's identical earlier pair survives and their own
+    trailing margin is last again."""
+    out = list(cmd)
+    if "--fit-target" in integrity_flags:
+        old_at = integrity_flags.index("--fit-target")
+        old_margin = integrity_flags[old_at : old_at + 2]
+        new_margin: List[str] = []
+        if "--fit-target" in rebuilt_integrity:
+            new_at = rebuilt_integrity.index("--fit-target")
+            new_margin = rebuilt_integrity[new_at : new_at + 2]
+        at = _subsequence_index(out, old_margin, 0)
+        if out[at : at + 2] == old_margin:
+            out[at : at + 2] = new_margin
+    for pair in reversed(list(override_pairs)):
+        for i in range(len(out) - len(pair), -1, -1):
+            if out[i : i + len(pair)] == pair:
+                del out[i : i + len(pair)]
+                break
+    return out
 
 
 _HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
@@ -26865,6 +26904,11 @@ class LlamaCppBackend:
                 _sidecar_fit_reserve_eligible_mib = 0
                 # The trailing --fit-target that re-adds the reserve over a user margin.
                 _sidecar_override_flags: List[str] = []
+                # Every such pair any launch appended (a retry can re-price it upward),
+                # so the drafter-free fallback can take each one back off.
+                _sidecar_override_pairs: List[List[str]] = []
+                # Re-prices the reserve off a respawn's own argv (cache types, attention).
+                _sidecar_reserve_reprice: Optional[Callable[[List[str]], int]] = None
                 _sidecar_kind_for_fit = None
                 # The fit and launch must use the same Model Memory snapshot.
                 from utils.model_memory_settings import capture_model_memory_settings
@@ -28893,10 +28937,25 @@ class LlamaCppBackend:
                                 _apple_model_size_fit + _kv_bytes(_sc_ctx) + _cc_bytes(_sc_ctx)
                             ) / (1024 * 1024)
                             # _apple_model_size_fit carries the drafter's compute charge; the
-                            # target alone does not, while the combined bound keeps it.
-                            _sc_target_only_mib = _sc_target_mib - (
-                                self._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024)
+                            # target alone does not, while the combined bound keeps it. The
+                            # embedding discount was also decided with the drafter engaged
+                            # (excluded NextN blocks forfeit it), so the target alone is
+                            # priced with the discount it would get without one.
+                            _sc_host_embd_without_draft = self._metal_demand_paged_embedding_bytes(
+                                model_path,
+                                extra_args,
+                                binary = binary,
+                                requested_load_mode = load_mode,
+                                supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                                settings = _mem_settings,
+                                layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
+                                mtp_may_engage = False,
                             )
+                            _sc_target_only_mib = _sc_target_mib - (
+                                self._MTP_DRAFT_COMPUTE_BYTES
+                                + _sc_host_embd_without_draft
+                                - _apple_host_embd
+                            ) / (1024 * 1024)
                             if (
                                 _sc_target_only_mib
                                 <= _apple_budget_mib
@@ -28923,20 +28982,8 @@ class LlamaCppBackend:
                                 _apple_fit_budget_mib = _apple_budget_mib
                                 _soft_overhead -= self._MTP_DRAFT_COMPUTE_BYTES
                                 model_size_fit -= self._MTP_DRAFT_COMPUTE_BYTES
-                                # The embedding discount was decided with the drafter engaged
-                                # (excluded NextN blocks forfeit it); decide it again without.
-                                _apple_host_embd = self._metal_demand_paged_embedding_bytes(
-                                    model_path,
-                                    extra_args,
-                                    binary = binary,
-                                    requested_load_mode = load_mode,
-                                    supports_load_mode = bool(
-                                        server_caps.get("supports_load_mode")
-                                    ),
-                                    settings = _mem_settings,
-                                    layers_fixed = _caller_owns_budget or _paravirtual_cpu_forced,
-                                    mtp_may_engage = False,
-                                )
+                                # The discount without the drafter, priced above.
+                                _apple_host_embd = _sc_host_embd_without_draft
                                 _apple_model_size_fit = model_size_fit - _apple_host_embd
 
                         if self._can_estimate_kv():
@@ -29671,6 +29718,18 @@ class LlamaCppBackend:
                     _fit_device_count = len(
                         gpu_indices if gpu_indices is not None else _detected_gpus
                     )
+                    # Extras or LLAMA_ARG_DEVICE that survive the launch can widen a
+                    # planner-picked single device; the scalar margin would then land on
+                    # every card they name.
+                    if not _gpu_ids_own_device_flags:
+                        _reserve_devices = _extra_args_main_device(extra_args) or os.environ.get(
+                            "LLAMA_ARG_DEVICE"
+                        )
+                        if _reserve_devices:
+                            _fit_device_count = max(
+                                _fit_device_count,
+                                len([d for d in str(_reserve_devices).split(",") if d.strip()]),
+                            )
                     # A draft pinned to another device (--device-draft Vulkan1 next to
                     # Vulkan0) allocates there, so the scalar margin would only starve
                     # the target. Off Metal, keep the reserve only for a pin that names
@@ -29703,10 +29762,65 @@ class LlamaCppBackend:
                         and (_apple_budget_mib > 0 or _fit_device_count == 1)
                     ):
                         # Priced even under --fit off: a startup-OOM retry turns the
-                        # fitter on with the drafter still loaded.
-                        _sidecar_fit_reserve_eligible_mib = self._sidecar_fit_reserve_mib(
-                            _mtp_reserve_bytes, _mtp_draft_for_budget or mtp_draft_path
+                        # fitter on with the drafter still loaded. With -c omitted (Manual
+                        # + Auto) the child may pick the native context, so price that one;
+                        # the draft decode graph is charged beside _mtp_reserve_bytes
+                        # (_soft_overhead), so it rides on top here too.
+                        _sidecar_reserve_ctx = effective_ctx
+                        if (gpu_memory_mode == "manual" and gpu_layers < 0) or effective_ctx <= 0:
+                            _native_bound = self._context_length or 0
+                            if not planned_kv_unified:
+                                _native_bound *= max(1, n_parallel or 1)
+                            _sidecar_reserve_ctx = max(effective_ctx, _native_bound)
+                        _sidecar_compute_mib = math.ceil(
+                            self._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024)
                         )
+                        _sidecar_reserve_path = _mtp_draft_for_budget or mtp_draft_path
+                        _sidecar_fit_reserve_eligible_mib = (
+                            self._sidecar_fit_reserve_mib(
+                                _mtp_bytes(_sidecar_reserve_ctx, n_parallel, _effective_ubatch),
+                                _sidecar_reserve_path,
+                            )
+                            + _sidecar_compute_mib
+                        )
+
+                        def _sidecar_reserve_reprice(
+                            run_args: List[str],
+                            _ctx: int = _sidecar_reserve_ctx,
+                            _n: int = _mtp_eff_n_max,
+                            _dp: Optional[str] = _sidecar_reserve_path,
+                            _w: int = _mtp_draft_weights,
+                            _np: int = n_parallel,
+                            _mtp: bool = _engaged_is_mtp,
+                            _rollback: bool = _target_rollback,
+                            _swa_full: bool = swa_full,
+                            _kv_unified: bool = planned_kv_unified,
+                            _ub: Optional[int] = _effective_ubatch,
+                            _fa_default: bool = planned_flash_attn,
+                            _floor: int = _sidecar_compute_mib,
+                        ) -> int:
+                            # A --flash-attn off respawn pads the draft V (and an MLA K)
+                            # to f16, so the reserve priced for the first launch is short.
+                            _ck, _cv = _extra_args_draft_cache_types(run_args, env)
+                            _v = self._estimate_mtp_overhead_bytes(
+                                _ctx,
+                                spec_draft_n_max = _n,
+                                draft_cache_type_k = _ck,
+                                draft_cache_type_v = _cv,
+                                drafter_path = _dp,
+                                draft_weights_bytes = _w,
+                                n_parallel = _np,
+                                mtp_keeps_target_ctx = _mtp,
+                                target_rollback = _rollback,
+                                swa_full = _swa_full,
+                                kv_unified = _kv_unified,
+                                n_ubatch = _ub,
+                                flash_attn = _flash_attn_enabled_from_args(
+                                    run_args, default = _fa_default, env = env
+                                ),
+                            )
+                            return self._sidecar_fit_reserve_mib(_v or 0, _dp) + _floor
+
                         if use_fit:
                             _sidecar_fit_reserve_mib = _sidecar_fit_reserve_eligible_mib
                     if _mtp_will_engage:
@@ -31913,6 +32027,7 @@ class LlamaCppBackend:
                     )
                     if _sidecar_override_flags:
                         _sidecar_fit_reserve_mib = _sidecar_fit_reserve_eligible_mib
+                        _sidecar_override_pairs.append(list(_sidecar_override_flags))
                         cmd.extend(_sidecar_override_flags)
                 # Last so it wins: the drafter CPU pin on a virtualised Metal device
                 # is a correctness fix, not a preference, and llama.cpp is last-wins.
@@ -32966,7 +33081,7 @@ class LlamaCppBackend:
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
-                    nonlocal _sched_abort_seen
+                    nonlocal _sched_abort_seen, _sidecar_fit_reserve_mib
                     # One revocation point for the tensor-spill plan instead of a
                     # strip per retry site. `label` is empty ONLY on the first
                     # spawn, so a retry added later is covered automatically. The
@@ -33020,6 +33135,33 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        # Every launch, not just the first: a retry can turn the fitter on
+                        # (--fit off -> on, the --flash-attn off flip) next to a sidecar it
+                        # cannot size, and a --flash-attn off respawn (labelled) grows the
+                        # draft cache, so the margin is read off THIS argv.
+                        if _sidecar_fit_reserve_eligible_mib and server_caps.get(
+                            "supports_fit_target"
+                        ):
+                            _spawn_reserve = _sidecar_fit_reserve_eligible_mib
+                            if label and _sidecar_reserve_reprice is not None:
+                                _spawn_reserve = max(
+                                    _spawn_reserve, _sidecar_reserve_reprice(list(run_cmd))
+                                )
+                            _spawn_flags = _sidecar_reserve_margin_flags(
+                                run_cmd,
+                                extra_args,
+                                env,
+                                self._fit_target_margin_mib(
+                                    auto_fit = auto_fit,
+                                    fit_target_delta_mib = _fit_target_delta_mib,
+                                    floor_mib = _metal_fit_target_floor_mib,
+                                ),
+                                _spawn_reserve,
+                            )
+                            if _spawn_flags:
+                                run_cmd = [*run_cmd, *_spawn_flags]
+                                _sidecar_fit_reserve_mib = _spawn_reserve
+                                _sidecar_override_pairs.append(list(_spawn_flags))
                         _last_spawn_cmd = list(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.
@@ -33237,25 +33379,8 @@ class LlamaCppBackend:
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
                             # The fitter now runs next to a sidecar it cannot size; the
-                            # --fit off launch emitted no margin, so carry the reserve.
-                            if (
-                                _sidecar_fit_reserve_eligible_mib
-                                and not _sidecar_fit_reserve_mib
-                                and server_caps.get("supports_fit_target")
-                            ):
-                                _run.extend(
-                                    _sidecar_reserve_margin_flags(
-                                        _run,
-                                        extra_args,
-                                        env,
-                                        self._fit_target_margin_mib(
-                                            auto_fit = auto_fit,
-                                            fit_target_delta_mib = _fit_target_delta_mib,
-                                            floor_mib = _metal_fit_target_floor_mib,
-                                        ),
-                                        _sidecar_fit_reserve_eligible_mib,
-                                    )
-                                )
+                            # --fit off launch emitted no margin, and the next attempt's
+                            # spawn adds (and records) the reserve.
                             # Same reasoning as the page-lock below, one step
                             # earlier: the fit picked "none" because it had proved
                             # the load fits, and that proof is what just failed, so
@@ -34525,19 +34650,9 @@ class LlamaCppBackend:
                             fit_target_delta_mib = _fit_target_delta_mib,
                             fit_target_floor_mib = _metal_fit_target_floor_mib,
                         )
-                        _integrity_at = _subsequence_index(fallback_cmd, _integrity_flags, 0)
-                        if (
-                            fallback_cmd[_integrity_at : _integrity_at + len(_integrity_flags)]
-                            == _integrity_flags
-                        ):
-                            fallback_cmd[_integrity_at : _integrity_at + len(_integrity_flags)] = (
-                                _fb_integrity
-                            )
-                        if _sidecar_override_flags:
-                            # The user's own trailing margin is last again.
-                            fallback_cmd = _without_subsequence(
-                                fallback_cmd, _sidecar_override_flags
-                            )
+                        fallback_cmd = _drop_sidecar_margins(
+                            fallback_cmd, _integrity_flags, _fb_integrity, _sidecar_override_pairs
+                        )
                     # Restore the cut slots; if they fail (unified KV refused), retry as cut.
                     _fb_cut = (
                         (

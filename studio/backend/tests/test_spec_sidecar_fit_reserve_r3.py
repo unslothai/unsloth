@@ -123,7 +123,9 @@ def test_the_startup_retry_reads_the_child_not_a_literal_flag():
     src = inspect.getsource(LlamaCppBackend.load_model)
     retry = src[src.index("retrying once with --fit on so it can offload") :]
     retry = retry[: retry.index("_did_fit_retry = True")]
-    assert "_sidecar_reserve_margin_flags(" in retry
+    spawn = src[src.index("def _spawn_and_wait(") :]
+    spawn = spawn[: spawn.index("_last_spawn_cmd = list(run_cmd)")]
+    assert "_sidecar_reserve_margin_flags(" in spawn
     assert '"--model-draft" in _run' not in retry
     assert "fit_target_margin_in(extra_args, None)" not in retry
 

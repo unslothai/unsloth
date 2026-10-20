@@ -213,10 +213,12 @@ def test_the_fit_on_startup_retry_carries_the_reserve():
     the still-loaded drafter has to add it. Checked at the source: the retry only runs
     behind a real startup crash."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    retry = src[src.index("retrying once with --fit on so it can offload") :]
-    retry = retry[: retry.index("_did_fit_retry = True")]
-    assert "_sidecar_fit_reserve_eligible_mib" in retry
-    assert "_sidecar_reserve_margin_flags(" in retry
+    # Every attempt of _spawn_and_wait (the retry re-enters its loop) reconciles the
+    # reserve right before the child is spawned.
+    spawn = src[src.index("def _spawn_and_wait(") :]
+    spawn = spawn[: spawn.index("_last_spawn_cmd = list(run_cmd)")]
+    assert "_sidecar_fit_reserve_eligible_mib" in spawn
+    assert "_sidecar_reserve_margin_flags(" in spawn
 
 
 def test_echoed_marker_without_a_compute_failure_does_not_retire(harness):
