@@ -660,6 +660,8 @@ def _layer_kind(layer):
 
 def _wrap(cls, compile_options):
     original = cls.forward
+    # Unsloth layer forwards read packed lengths on the host (packing.py): packed calls stay stock.
+    unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
     try:
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
@@ -694,6 +696,7 @@ def _wrap(cls, compile_options):
             or not _enabled()
             or _forced_float32(self)
             or _zero3_partitioned(self)
+            or (unsloth_forward and kwargs.get("packed_seq_lengths") is not None)
         ):
             return original(self, hidden_states, *args, **kwargs)
         if not self.__dict__.get("_unsloth_block_moe_done", False):
