@@ -3,12 +3,9 @@
 
 """Encode a Wan clip while its VAE is still decoding.
 
-Wan's untiled decode runs the decoder once per latent frame (1 frame, then 4 per call) and concatenates. A forward
-hook on the decoder turns each finished chunk into uint8 on the GPU with the exact ops the pipeline applies to the
-whole clip (unpatchify, clamp, the processor's denormalize, then ``video_frames``' float32 ``(x * 255).round()``),
-copies it to pinned host memory on a side stream, and hands it to a libx264 thread through a bounded queue, as
-comfystreamerh3 does. The streamed mp4 is used only when the streamed frames equal the final frames bit for bit;
-otherwise the clip is encoded as before. ``UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0`` turns it off.
+A decoder forward hook converts each chunk to uint8 with the pipeline's exact ops, copies it to pinned memory on a
+side stream and feeds a libx264 thread. The streamed mp4 is used only when its frames equal the final frames bit for
+bit; otherwise the clip is encoded as before. ``UNSLOTH_STUDIO_VIDEO_STREAM_ENCODE=0`` turns it off.
 """
 
 from __future__ import annotations
@@ -79,8 +76,6 @@ class StreamEncode:
         if self.valid:
             self.valid = False
             self.reason = reason
-
-    # ---- render thread -------------------------------------------------------------------------------------------
 
     def _on_chunk(self, _module: Any, args: Any, kwargs: Any, output: Any) -> None:
         if not self.valid or not self._decoding:
@@ -199,8 +194,6 @@ class StreamEncode:
                 except Exception:  # noqa: BLE001 - cleanup is best-effort
                     pass
 
-    # ---- encoder thread ------------------------------------------------------------------------------------------
-
     def _encode(self) -> None:
         container = None
         try:
@@ -244,8 +237,6 @@ class StreamEncode:
             self._queue.put(_STOP)
             self._thread.join()
             self._thread = None
-
-    # ---- caller --------------------------------------------------------------------------------------------------
 
     def _matches(self, video_frames: Any) -> bool:
         torch = self._torch
