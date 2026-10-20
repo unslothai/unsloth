@@ -4,51 +4,22 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from playwright.sync_api import sync_playwright
 
 LEAF = (
     Path(__file__).resolve().parents[2] / "studio/frontend/src/features/browser/agent/page-agent.ts"
 )
 EXECUTOR = LEAF.with_name("executor.ts")
-
-FORM = """<!doctype html><form>
-<fieldset><legend>Pizza Size</legend>
-  <p><label><input type="radio" name="size" value="small"> Small </label></p>
-  <p><label><input type="radio" name="size" value="large"> Large </label></p>
-</fieldset>
-<fieldset><legend>Extra napkins</legend>
-  <p><label><input type="radio" name="napkins" value="yes"> Yes </label></p>
-  <p><label><input type="radio" name="napkins" value="no"> No </label></p>
-</fieldset>
-<fieldset><legend>Pizza Toppings</legend>
-  <p><label><input type="checkbox" name="topping" value="bacon"> Bacon </label></p>
-  <p><label><input type="checkbox" name="topping" value="mushroom"> Mushroom </label></p>
-  <p><label><input type="checkbox" name="topping" value="onion"> Onion </label></p>
-</fieldset>
-<fieldset><legend>Offers</legend>
-  <p><label><input type="checkbox" name="promo" value="false"> Promo emails </label></p>
-  <p><label><input type="checkbox" name="caps" value="cb-false"> FALSE </label></p>
-</fieldset>
-<fieldset><legend>Quiz</legend>
-  <p><label><input type="radio" name="tf" value="tf-true"> True </label></p>
-  <p><label><input type="radio" name="tf" value="tf-false"> False </label></p>
-</fieldset>
-<div role="radiogroup" aria-label="Lights">
-  <div role="radio" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">On</div>
-  <div role="radio" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Off</div>
-</div>
-</form>
-<div role="radiogroup group" aria-label="Fan">
-  <div role="radio option" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Checked</div>
-  <div role="radio option" aria-checked="false" tabindex="0" onclick="this.setAttribute('aria-checked', 'true')">Unchecked</div>
-</div>
-<form id="quiz"><label><input type="radio" name="quiz" value="zero"> 0 </label></form>
-<label><input type="radio" name="quiz" value="one" form="quiz"> 1 </label>"""
+LONG_LABEL = (
+    "I agree to receive information about upcoming events and promotional offers from our partners"
+)
 
 
 def panel_errors() -> list[re.Pattern[str]]:
@@ -64,124 +35,196 @@ def shipped() -> str:
     return json.loads(subprocess.run(cmd, check = True, capture_output = True, text = True).stdout)
 
 
-def main() -> None:
-    source = shipped()
+@pytest.fixture(scope = "module")
+def browser():
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless = True)
-        page = browser.new_page(viewport = {"width": 1280, "height": 2400})
-        page.set_content(FORM)
+        with getattr(p, os.environ.get("PW_BROWSER", "chromium")).launch(headless = True) as browser:
+            yield browser
+
+
+@pytest.fixture(scope = "module")
+def source():
+    return shipped()
+
+
+@pytest.fixture(scope = "module")
+def page(browser):
+    with browser.new_page(viewport = {"width": 1280, "height": 2400}) as page:
+        yield page
+
+
+@pytest.fixture
+def form(page, source):
+    def install(html):
+        page.set_content(html)
         page.evaluate(source)
 
-        errors: list[str] = []
+        def run(op, **args):
+            return page.evaluate(
+                "(c) => window[Symbol.for('unsloth.agent')].run(c)", {"op": op, **args}
+            )
 
-        def run(command: dict) -> dict:
-            answer = page.evaluate("(c) => window[Symbol.for('unsloth.agent')].run(c)", command)
-            if answer.get("error"):
-                errors.append(answer["error"])
-            return answer
+        text = run("snapshot")["text"]
+        refs = {name: ref for ref, name in re.findall(r'\[(r\d+)\] \w+ "([^\"]+)"', text)}
+        return page, run, refs
 
-        def checked(value: str) -> bool:
-            return page.is_checked(f"input[value={value}]")
+    return install
 
-        text = run({"op": "snapshot"})["text"]
-        refs = dict((name, ref) for ref, name in re.findall(r"\[(r\d+)\] \w+ \"([^\"]+)\"", text))
 
-        answer = run({"op": "select", "ref": refs["Large"], "value": "Large"})
-        assert answer["ok"] and checked(
-            "large"
-        ), f"a radio named by its own label stayed empty: {answer}"
+@pytest.mark.parametrize(
+    "html,name,value",
+    [
+        ('<label><input type="checkbox" value="bacon">Bacon</label>', "Bacon", "  BACON  "),
+        (
+            '<label for="box">Extra   napkins</label><input id="box" type="checkbox">',
+            "Extra napkins",
+            " EXTRA  \n NAPKINS ",
+        ),
+        (
+            '<label><input type="checkbox" aria-label="Accessible">Other</label>',
+            "Accessible",
+            "accessible",
+        ),
+        (
+            '<span id="a">Named</span><span id="b">option</span><input type="checkbox" aria-labelledby="a b">',
+            "Named option",
+            "named option",
+        ),
+        ('<label><input type="checkbox" value=" code-7 ">Option</label>', "Option", "CODE-7"),
+        (
+            '<div role="checkbox" aria-checked="false" onclick="this.setAttribute(\'aria-checked\', \'true\')">Custom</div>',
+            "Custom",
+            "custom",
+        ),
+        (f'<label><input type="checkbox">{LONG_LABEL}</label>', LONG_LABEL[:79] + "…", LONG_LABEL),
+        (
+            f'<label><input type="checkbox">{LONG_LABEL}</label>',
+            LONG_LABEL[:79] + "…",
+            LONG_LABEL[:79] + "…",
+        ),
+    ],
+)
+def test_own_label_or_value(form, html, name, value):
+    page, run, refs = form(html)
+    answer = run("select", ref = refs[name], value = value)
+    assert answer["ok"], answer
+    if page.locator("input").count():
+        assert page.locator("input").is_checked()
+    else:
+        assert page.locator("[role=checkbox]").get_attribute("aria-checked") == "true"
 
-        answer = run({"op": "select", "ref": refs["Mushroom"], "value": "mushroom"})
-        assert answer["ok"] and checked(
-            "mushroom"
-        ), f"a checkbox named by its label stayed empty: {answer}"
 
-        answer = run({"op": "select", "ref": refs["Bacon"], "value": "bacon"})
-        assert answer["ok"] and checked(
-            "bacon"
-        ), f"a checkbox named by its value stayed empty: {answer}"
-
-        answer = run({"op": "select", "ref": refs["Small"], "value": "Large"})
-        assert (
-            not answer["ok"] and checked("large") and not checked("small")
-        ), f"another option's label was taken as 'uncheck' and reported fine: {answer}"
-
-        answer = run({"op": "select", "ref": refs["Onion"], "value": "extra"})
-        assert not answer["ok"] and not checked(
-            "onion"
-        ), f"an unknown value was reported as done: {answer}"
-
-        answer = run({"op": "select", "ref": refs["Yes"], "value": "No"})
-        assert (
-            not answer["ok"] and not checked("yes") and not checked("no")
-        ), f"a sibling's label that is an off word was taken as 'uncheck': {answer}"
-
-        assert run({"op": "select", "ref": refs["No"], "value": "No"})["ok"] and checked("no")
-
-        answer = run({"op": "select", "ref": refs["No"], "value": "Yes"})
-        assert (
-            not answer["ok"] and checked("no") and not checked("yes")
-        ), f"a sibling's label that is an on word was taken as 'check': {answer}"
-
-        assert run({"op": "select", "ref": refs["Onion"], "value": "true"})["ok"] and checked(
-            "onion"
+@pytest.mark.parametrize(
+    "word",
+    [
+        "true",
+        "on",
+        "yes",
+        "checked",
+        "1",
+        "check",
+        "false",
+        "off",
+        "no",
+        "unchecked",
+        "0",
+        "uncheck",
+    ],
+)
+@pytest.mark.parametrize("role", ["checkbox", "radio", "switch"])
+def test_state_words_precede_labels_and_values(form, word, role):
+    html = (
+        f'<label><input type="{role}" value="{word}">{word}</label>'
+        if role != "switch"
+        else f"<div role=\"switch\" aria-checked=\"false\" onclick=\"this.setAttribute('aria-checked', String(this.getAttribute('aria-checked') !== 'true'))\">{word}</div>"
+    )
+    page, run, refs = form(html)
+    ref = refs[word]
+    expected = word in ("true", "on", "yes", "checked", "1", "check")
+    for initial in (False, True):
+        page.locator("input, [role=switch]").evaluate(
+            "(el, state) => { if (el.tagName === 'INPUT') el.checked = state; else el.setAttribute('aria-checked', String(state)); }",
+            initial,
         )
-        assert run({"op": "select", "ref": refs["Onion"], "value": "false"})["ok"] and not checked(
-            "onion"
+        answer = run("select", ref = ref, value = f" {word.upper()} ")
+        state = page.locator("input, [role=switch]").evaluate(
+            "el => el.tagName === 'INPUT' ? el.checked : el.getAttribute('aria-checked') === 'true'"
         )
-        assert run({"op": "select", "ref": refs["Promo emails"], "value": "true"})[
-            "ok"
-        ] and checked("false")
-        answer = run({"op": "select", "ref": refs["Promo emails"], "value": "false"})
-        assert answer["ok"] and not checked(
-            "false"
-        ), f"'false' on a box whose HTML value is 'false' did not uncheck it: {answer}"
+        if role == "radio" and initial and not expected:
+            assert not answer["ok"] and state is True, answer
+        else:
+            assert answer["ok"] and state is expected, answer
 
-        answer = run({"op": "select", "ref": refs["Off"], "value": "On"})
-        lights = [
-            page.locator("[role=radio]", has_text = name).get_attribute("aria-checked")
-            for name in ("On", "Off")
-        ]
-        assert not answer["ok"] and lights == [
-            "false",
-            "false",
-        ], f"an ARIA sibling's label that is an on word was taken as 'check': {answer}"
 
-        answer = run({"op": "select", "ref": refs["Unchecked"], "value": "Checked"})
-        fan = [
-            page.get_by_text(name, exact = True).get_attribute("aria-checked")
-            for name in ("Checked", "Unchecked")
-        ]
-        assert not answer["ok"] and fan == [
-            "false",
-            "false",
-        ], f"a fallback-role sibling's label that is an on word was taken as 'check': {answer}"
+@pytest.mark.parametrize("kind", ["native", "aria"])
+def test_radio_targets_and_sibling_state_words(form, kind):
+    labels = ["Small", "Large", "Yes", "No", "On", "Off", "Checked", "Unchecked", "0", "1"]
+    if kind == "native":
+        html = '<form id="size"></form>' + "".join(
+            f'<label><input type="radio" name="size" form="size" value="{label.lower()}">{label}</label>'
+            for label in labels
+        )
+    else:
+        html = (
+            '<div role="radiogroup group">'
+            + "".join(
+                f'<div role="radio option" aria-checked="false" onclick="for (const n of this.parentElement.children) n.setAttribute(\'aria-checked\', String(n === this))">{label}</div>'
+                for label in labels
+            )
+            + "</div>"
+        )
+    page, run, refs = form(html)
 
-        answer = run({"op": "select", "ref": refs["0"], "value": "1"})
-        assert (
-            not answer["ok"] and not checked("zero") and not checked("one")
-        ), f"a sibling outside the form was missed and its label taken as 'check': {answer}"
+    def selected():
+        return page.locator('input:checked, [role="radio option"][aria-checked=true]').evaluate_all(
+            "nodes => nodes.map(n => n.tagName === 'INPUT' ? n.value : n.textContent.toLowerCase())"
+        )
 
-        answer = run({"op": "select", "ref": refs["False"], "value": "false"})
-        assert answer["ok"] and not checked(
-            "tf-false"
-        ), f"'false' on a radio labelled False checked it: {answer}"
-        answer = run({"op": "select", "ref": refs["False"], "value": "true"})
-        assert (
-            answer["ok"] and checked("tf-false") and not checked("tf-true")
-        ), f"'true' on the False radio was not obeyed: {answer}"
+    for target, other in (("Large", "Small"), ("Small", "Large")):
+        assert run("select", ref = refs[target], value = target)["ok"]
+        assert selected() == [target.lower()]
+        answer = run("select", ref = refs[target], value = other)
+        assert not answer["ok"] and selected() == [target.lower()], answer
+        assert any(pattern.fullmatch(answer["error"]) for pattern in panel_errors()), answer
+        for word in ("yes", "on", "checked", "1", "check", "true"):
+            assert run("select", ref = refs[target], value = word)["ok"]
+            assert selected() == [target.lower()]
+    assert run("select", ref = refs["No"], value = "true")["ok"]
+    assert selected() == ["no"]
 
-        for value, state in (("false", False), ("true", True), ("false", False)):
-            answer = run({"op": "select", "ref": refs["FALSE"], "value": value})
-            assert (
-                answer["ok"] and checked("cb-false") is state
-            ), f"{value!r} on a checkbox labelled FALSE was not obeyed: {answer}"
 
-        unknown = [error for error in errors if not any(p.fullmatch(error) for p in panel_errors())]
-        assert not unknown, f"errors the panel would hide from the model: {unknown}"
-        browser.close()
-    print("[browser-agent-select] radios and checkboxes follow their own labels")
+@pytest.mark.parametrize("value", ["extra", "", "   ", "Other"])
+@pytest.mark.parametrize("role", ["checkbox", "radio", "switch"])
+def test_unknown_value_fails_without_changing_state(form, value, role):
+    html = (
+        f'<label><input type="{role}" value="" checked>Option</label>'
+        if role != "switch"
+        else '<div role="switch" aria-checked="true" onclick="this.setAttribute(\'aria-checked\', \'false\')">Option</div>'
+    )
+    page, run, refs = form(html)
+    answer = run("select", ref = refs["Option"], value = value)
+    state = page.locator("input, [role=switch]").evaluate(
+        "el => el.tagName === 'INPUT' ? el.checked : el.getAttribute('aria-checked') === 'true'"
+    )
+    assert answer["ok"] is False and state is True, answer
+    assert any(pattern.fullmatch(answer["error"]) for pattern in panel_errors()), answer
+    assert '"true", "false"' in answer["error"]
+
+
+def test_aria_name_takes_precedence_over_html_label(form):
+    page, run, refs = form('<label><input type="checkbox" aria-label="Accessible">Other</label>')
+    answer = run("select", ref = refs["Accessible"], value = "Other")
+    assert answer["ok"] is False and not page.locator("input").is_checked(), answer
+
+
+def test_dropdown_unchanged(form):
+    page, run, refs = form(
+        '<select aria-label="Size"><option value="s">Small</option><option value="l">Large</option></select>'
+    )
+    for value, expected in (("Large", "l"), ("s", "s")):
+        assert run("select", ref = refs["Size"], value = value)["ok"]
+        assert page.locator("select").input_value() == expected
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(pytest.main([__file__, "-q", "--confcutdir", str(Path(__file__).parent)]))

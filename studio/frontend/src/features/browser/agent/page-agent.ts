@@ -211,9 +211,9 @@ export function installPageAgent(): PageAgent {
     return words.join(" ");
   };
 
-  const nameOf = (el: Element): string => {
+  const nameOf = (el: Element, max = 80): string => {
     const aria = el.getAttribute("aria-label");
-    if (aria?.trim()) return clean(aria);
+    if (aria?.trim()) return clean(aria, max);
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
       // Read as the user sees it: a hidden or 1px element must not name the control.
@@ -226,25 +226,25 @@ export function installPageAgent(): PageAgent {
           return visibleText(label);
         })
         .join(" ");
-      if (text.trim()) return clean(text);
+      if (text.trim()) return clean(text, max);
     }
     const field = el as HTMLInputElement;
     if (field.labels?.length) {
       const text = Array.from(field.labels)
         .map((label) => visibleText(label))
         .join(" ");
-      if (text.trim()) return clean(text);
+      if (text.trim()) return clean(text, max);
     }
     const tag = el.tagName.toLowerCase();
-    if (tag === "input" && ["button", "submit", "reset"].includes(field.type) && field.value) return clean(field.value);
-    if (tag === "input" && field.type === "image" && el.getAttribute("alt")) return clean(el.getAttribute("alt"));
+    if (tag === "input" && ["button", "submit", "reset"].includes(field.type) && field.value) return clean(field.value, max);
+    if (tag === "input" && field.type === "image" && el.getAttribute("alt")) return clean(el.getAttribute("alt"), max);
     if (tag === "input" || tag === "textarea") {
       const hint = el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("name");
-      return clean(hint);
+      return clean(hint, max);
     }
-    if (tag === "select") return clean(el.getAttribute("title") || el.getAttribute("name"));
+    if (tag === "select") return clean(el.getAttribute("title") || el.getAttribute("name"), max);
     const text = visibleText(el);
-    if (text.trim()) return clean(text);
+    if (text.trim()) return clean(text, max);
     // An icon link: its picture's alt, or a title on it or inside it (an upvote arrow).
     const img = el.querySelector("img[alt]");
     const titled = el.querySelector("[title], [aria-label]");
@@ -253,6 +253,7 @@ export function installPageAgent(): PageAgent {
         el.getAttribute("title") ||
         titled?.getAttribute("aria-label") ||
         titled?.getAttribute("title"),
+      max,
     );
   };
 
@@ -1242,36 +1243,20 @@ export function installPageAgent(): PageAgent {
     }
     const role = roleOf(el);
     if (role === "checkbox" || role === "radio" || role === "switch") {
-      const wanted = value.trim().toLowerCase();
+      const wanted = clean(value, Infinity).toLowerCase();
       const onWords = ["true", "on", "yes", "checked", "1", "check"];
       const offWords = ["false", "off", "no", "unchecked", "0", "uncheck"];
-      // An on/off word never matches a box's HTML value: "false" on value="false" unchecks.
-      const owns = (node: Element) => {
-        // "true" and "false" are state commands even on a control labelled True or False.
-        if (wanted === "true" || wanted === "false") return false;
-        const label = nameOf(node).toLowerCase();
-        if (label && label === wanted) return true;
-        if (onWords.includes(wanted) || offWords.includes(wanted) || !(node instanceof HTMLInputElement)) return false;
-        return Boolean(node.value) && node.value.toLowerCase() === wanted;
-      };
-      const own = owns(el);
-      const on = own || onWords.includes(wanted);
-      const group = (): Element[] => {
-        if (!(el instanceof HTMLInputElement)) {
-          // First role token only, matching roleOf.
-          let box = el.parentElement;
-          while (box && box.getAttribute("role")?.trim().split(/\s+/)[0] !== "radiogroup") box = box.parentElement;
-          return box ? Array.from(box.querySelectorAll("[role]")).filter((node) => roleOf(node) === "radio") : [];
-        }
-        if (!el.name) return [];
-        const root = el.getRootNode() as Document | ShadowRoot;
-        return Array.from(root.querySelectorAll<HTMLInputElement>('input[type="radio"]')).filter(
-          (node) => node.name === el.name && node.form === el.form,
+      let on = onWords.includes(wanted);
+      // State commands keep their meaning even when a label or HTML value says "No".
+      if (!on && !offWords.includes(wanted)) {
+        const label = nameOf(el, Infinity).toLowerCase();
+        on = Boolean(wanted) && (
+          wanted === label || wanted === clean(label) ||
+          (el instanceof HTMLInputElement && wanted === clean(el.value, Infinity).toLowerCase())
         );
-      };
-      const sibling = !own && role === "radio" && group().some((node) => node !== el && owns(node));
-      if (sibling || !(on || offWords.includes(wanted))) {
-        return { ok: false, error: `${ref} is a ${role}; value must be "true", "false" or its own label. Pick the ref of the option to choose.` };
+        if (!on) {
+          return { ok: false, error: `${ref} is a ${role}; value must be "true", "false" or its own label. Pick the ref of the option to choose.` };
+        }
       }
       const current = el instanceof HTMLInputElement ? el.checked : el.getAttribute("aria-checked") === "true";
       if (current && !on && role === "radio") {

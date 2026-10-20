@@ -221,6 +221,11 @@ def test_errors_and_long_pages():
     assert browser_agent.format_result(
         "browser_click", {"ok": False, "error": "stale ref r9"}, None
     ) == ("Error: stale ref r9")
+    error = 'r4 is a radio; value must be "true", "false" or its own label. Pick the ref of the option to choose.'
+    assert (
+        browser_agent.format_result("browser_select", {"ok": False, "error": error}, None)
+        == f"Error: {error}"
+    )
     long = browser_agent.format_result(
         "browser_snapshot", {"ok": True, "url": "", "text": "x" * 50_000}, None
     )
