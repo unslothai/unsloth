@@ -190,7 +190,6 @@ def unsloth_default_ddp_find_unused_parameters(args, model):
     return args.ddp_find_unused_parameters
 
 
-
 _COMM_HOOKS = ("bf16", "fp16")
 _COMM_PRINTED = set()
 
@@ -208,7 +207,10 @@ def _plain_ddp(accelerator):
         return False
     state = getattr(accelerator, "state", None)
     for plugin in ("fsdp_plugin", "deepspeed_plugin", "megatron_lm_plugin"):
-        if getattr(state, plugin, None) is not None or getattr(accelerator, plugin, None) is not None:
+        if (
+            getattr(state, plugin, None) is not None
+            or getattr(accelerator, plugin, None) is not None
+        ):
             return False
     return True
 

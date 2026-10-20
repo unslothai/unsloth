@@ -5612,6 +5612,7 @@ def patch_gradient_accumulation_fix(Trainer):
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
+
             install_unsloth_ddp_comm_defaults(self)
             if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
                 from ..optimizers.state_offload import install_optimizer_state_offload

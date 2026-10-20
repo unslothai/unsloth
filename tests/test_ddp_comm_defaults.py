@@ -68,13 +68,21 @@ def _reference(kind):
     return grads, [p.detach().clone() for p in model.parameters()]
 
 
-def _assert_parity(case, kind, exact = True):
+def _assert_parity(
+    case,
+    kind,
+    exact = True,
+):
     ref_grads, ref_params = _reference(kind)
     tol = {} if exact else dict(rtol = 2e-2, atol = 2e-3)
     for g, r in zip(case["grads"], ref_grads):
-        torch.testing.assert_close(torch.tensor(g), r, **({"rtol": 1e-6, "atol": 1e-7} if exact else tol))
+        torch.testing.assert_close(
+            torch.tensor(g), r, **({"rtol": 1e-6, "atol": 1e-7} if exact else tol)
+        )
     for p, r in zip(case["params"], ref_params):
-        torch.testing.assert_close(torch.tensor(p), r, **({"rtol": 1e-6, "atol": 1e-7} if exact else tol))
+        torch.testing.assert_close(
+            torch.tensor(p), r, **({"rtol": 1e-6, "atol": 1e-7} if exact else tol)
+        )
 
 
 def test_full_finetune_gets_bucket_view(ranks):
@@ -113,7 +121,11 @@ def test_comm_hook_opt_in(ranks):
 
 def test_trainer_init_installs_the_defaults():
     tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
-    init = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_trainer_init"]
+    init = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_unsloth_trainer_init"
+    ]
     assert len(init) == 1
     calls = [ast.unparse(n.func) for n in ast.walk(init[0]) if isinstance(n, ast.Call)]
     assert "install_unsloth_ddp_comm_defaults" in calls

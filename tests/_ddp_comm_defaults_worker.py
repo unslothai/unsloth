@@ -28,7 +28,13 @@ def build(kind):
     import torch
 
     torch.manual_seed(0)
-    layers = [torch.nn.Linear(8, 16), torch.nn.GELU(), torch.nn.Linear(16, 16), torch.nn.GELU(), torch.nn.Linear(16, 5)]
+    layers = [
+        torch.nn.Linear(8, 16),
+        torch.nn.GELU(),
+        torch.nn.Linear(16, 16),
+        torch.nn.GELU(),
+        torch.nn.Linear(16, 5),
+    ]
     model = torch.nn.Sequential(*layers)
     # A constant buffer, like a rotary cache or an embedding scale.
     model.register_buffer("scale", torch.tensor(1.5), persistent = False)
@@ -39,14 +45,12 @@ def build(kind):
 
 def batch(rank, n = 6):
     import torch
-
     g = torch.Generator().manual_seed(1234 + rank)
     return torch.randn(n, 8, generator = g), torch.randint(0, 5, (n,), generator = g)
 
 
 def loss_fn(model, x, y):
     import torch
-
     return torch.nn.functional.cross_entropy(model(x) * 1.0, y)
 
 
@@ -114,7 +118,6 @@ def run_rank(rank, port, queue, cases):
         queue.put((rank, out))
     except BaseException:
         import traceback
-
         queue.put((rank, {"error": traceback.format_exc()}))
         raise
     finally:
