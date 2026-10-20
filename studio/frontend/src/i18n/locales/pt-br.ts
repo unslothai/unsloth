@@ -465,7 +465,7 @@ export const ptBR = {
       notMarked: "{name} foi salvo, mas não pôde ser marcado como baixado da internet, então seu sistema não avisará antes de abri-lo.",
       blocked: "Este endereço não pode ser aberto no painel do navegador. Ele só abre sites públicos.",
       blockedLocal: "Este endereço local não pode ser aberto aqui. Digite-o na barra de endereços para abri-lo.",
-      studioAddress: "Este é o endereço do próprio Unsloth Studio, por isso não pode ser aberto no painel do navegador.",
+      studioAddress: "Este é o endereço do próprio Unsloth, por isso não pode ser aberto no painel do navegador.",
       clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites.",
       clearDataDescription: "Isso limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites. Os arquivos baixados continuam no seu computador.",
       clearDataFailed: "Não foi possível limpar os dados de sites. Tente novamente.",

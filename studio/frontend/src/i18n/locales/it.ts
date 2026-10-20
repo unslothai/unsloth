@@ -464,7 +464,7 @@ export const it = {
       notMarked: "{name} è stato salvato ma non è stato possibile contrassegnarlo come scaricato da Internet, quindi il sistema non avviserà prima di aprirlo.",
       blocked: "Questo indirizzo non si può aprire nel pannello del browser. Apre solo siti web pubblici.",
       blockedLocal: "Questo indirizzo locale non si può aprire qui. Digitalo nella barra degli indirizzi per aprirlo.",
-      studioAddress: "Questo è l'indirizzo di Unsloth Studio stesso, quindi non si può aprire nel pannello del browser.",
+      studioAddress: "Questo è l'indirizzo di Unsloth stesso, quindi non si può aprire nel pannello del browser.",
       clearDataSettingDescription: "Cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti.",
       clearDataDescription: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",
       clearDataFailed: "Impossibile cancellare i dati dei siti. Riprova.",

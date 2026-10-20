@@ -313,7 +313,7 @@ pub(crate) fn navigation_allowed(url: &Url) -> bool {
 /// Start of the OS ephemeral range on Linux (49152 elsewhere), where Studio's own helpers listen.
 const ASSIGNED_PORTS: u16 = 32768;
 
-const STUDIO_ADDRESS: &str = "this address is Unsloth Studio's own";
+const STUDIO_ADDRESS: &str = "this address is Unsloth's own";
 
 fn loopback_origin(url: &Url) -> Option<url::Origin> {
     let loopback = match url.host()? {

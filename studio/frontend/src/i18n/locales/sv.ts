@@ -489,7 +489,7 @@ export const sv = {
       blocked:
         "Den här adressen kan inte öppnas i webbläsarpanelen. Den öppnar bara offentliga webbplatser.",
       blockedLocal: "Den här lokala adressen kan inte öppnas här. Skriv den i adressfältet för att öppna den.",
-      studioAddress: "Det här är Unsloth Studios egen adress, så den kan inte öppnas i webbläsarpanelen.",
+      studioAddress: "Det här är Unsloths egen adress, så den kan inte öppnas i webbläsarpanelen.",
       clearDataSettingDescription:
         "Rensa webbhistorik, hämtningshistorik, cachade sidor samt de cookies och webbplatsdata som sidor sparar, vilket loggar ut dig från webbplatser.",
       clearDataDescription:

@@ -100,7 +100,7 @@ function error(value: unknown): string {
 function nativeErrorText(message: string): string {
   if (/public web/i.test(message)) return t("browser.native.blocked");
   if (/local addresses/i.test(message)) return t("browser.native.blockedLocal");
-  if (/Studio's own/i.test(message)) return t("browser.native.studioAddress");
+  if (/Unsloth's own/i.test(message)) return t("browser.native.studioAddress");
   return message;
 }
 
