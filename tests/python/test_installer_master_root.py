@@ -153,6 +153,11 @@ def test_install_and_setup_root_precedence(
         ("", " \t ", "custom", False),
         ("portable", "{home}/.unsloth/studio", "ignored", True),
         ("~/.unsloth/", "", "", True),
+        (".unsloth", "", "", True),
+        ("./.unsloth", "", "", True),
+        ("missing/../.unsloth", "", "", True),
+        ("", ".unsloth/studio", "", True),
+        ("", "", "./.unsloth/studio", True),
     ],
 )
 def test_desktop_guard_uses_selected_root(tmp_path, env, master, studio, alias, accepted):

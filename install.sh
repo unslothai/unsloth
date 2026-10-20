@@ -95,6 +95,28 @@ fi
 
 # Custom Unsloth roots are unsupported with --tauri unless override == legacy default.
 if [ "$TAURI_MODE" = true ]; then
+    _tauri_canonical_root() (
+        _tcr_path=$1
+        case "$_tcr_path" in /*) ;; *) _tcr_path="$PWD/$_tcr_path" ;; esac
+        _tcr_tail=""
+        # Resolve the existing ancestor without creating a fresh install root.
+        while [ ! -d "$_tcr_path" ]; do
+            _tcr_tail="/${_tcr_path##*/}$_tcr_tail"
+            _tcr_path=${_tcr_path%/*}
+            [ -n "$_tcr_path" ] || _tcr_path=/
+        done
+        _tcr_path=$(CDPATH= cd -P -- "$_tcr_path" 2>/dev/null && pwd -P) || return 1
+        printf '%s\n' "$_tcr_path$_tcr_tail" | awk -F/ '{
+            for (i = 1; i <= NF; i++) {
+                if ($i == "" || $i == ".") continue
+                if ($i == "..") { if (n > 0) n-- }
+                else parts[++n] = $i
+            }
+            for (i = 1; i <= n; i++) printf "/%s", parts[i]
+            if (n == 0) printf "/"
+            printf "\n"
+        }'
+    )
     _tauri_override_var=""
     _tauri_override=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     if [ -n "$_tauri_override" ]; then
@@ -115,27 +137,10 @@ if [ "$TAURI_MODE" = true ]; then
             "~") _tauri_override="$HOME" ;;
             "~/"*) _tauri_override="$HOME/${_tauri_override#'~/'}" ;;
         esac
-        # Canonicalize both sides so CDPATH / a symlinked $HOME cannot break equality.
-        if [ -d "$_tauri_override" ]; then
-            _tauri_override_abs=$(CDPATH= cd -P -- "$_tauri_override" 2>/dev/null && pwd -P) \
-                || _tauri_override_abs="$_tauri_override"
-        else
-            _tauri_override_abs="$_tauri_override"
-        fi
-        # Strip trailing separators so ".../studio/" matches ".../studio".
-        while [ "$_tauri_override_abs" != "/" ] \
-            && [ "${_tauri_override_abs%/}" != "$_tauri_override_abs" ]; do
-            _tauri_override_abs=${_tauri_override_abs%/}
-        done
-        _tauri_legacy_root="$HOME/.unsloth/studio"
-        if [ -d "$_tauri_legacy_root" ]; then
-            _tauri_legacy_root=$(CDPATH= cd -P -- "$_tauri_legacy_root" 2>/dev/null && pwd -P) \
-                || _tauri_legacy_root="$HOME/.unsloth/studio"
-        fi
-        while [ "$_tauri_legacy_root" != "/" ] \
-            && [ "${_tauri_legacy_root%/}" != "$_tauri_legacy_root" ]; do
-            _tauri_legacy_root=${_tauri_legacy_root%/}
-        done
+        _tauri_override_abs=$(_tauri_canonical_root "$_tauri_override") \
+            || _tauri_override_abs="$_tauri_override"
+        _tauri_legacy_root=$(_tauri_canonical_root "$HOME/.unsloth/studio") \
+            || _tauri_legacy_root="$HOME/.unsloth/studio"
         if [ "$_tauri_override_abs" != "$_tauri_legacy_root" ]; then
             echo "ERROR: $_tauri_override_var is not supported with --tauri." >&2
             echo "       The desktop app still uses the legacy ~/.unsloth/studio root." >&2
