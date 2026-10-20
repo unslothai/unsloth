@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
 import { useChatRuntimeStore } from "@/features/chat";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import { hostOf } from "./address";
 import { forgetNativeDownloads } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -169,6 +170,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           forgetNativeDownloads(dropped);
           return { downloads: downloads.slice(0, MAX_DOWNLOADS) };
         });
+        historyStorage.flush();
         return id;
       },
       removeVisit: (id) => {
@@ -215,11 +217,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
     },
   ),
 );
-if (typeof window !== "undefined") {
-  window.addEventListener("storage", (event) => {
-    if (event.key === useBrowserHistoryStore.persist.getOptions().name) void useBrowserHistoryStore.persist.rehydrate();
-  });
-}
+syncAcrossWindows(useBrowserHistoryStore);
 
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 

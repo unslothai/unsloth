@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import { MAX_TITLE_CHARS, MAX_URL_CHARS } from "./history-store";
 
 export type BookmarkFolder = "toolbar" | "other";
@@ -118,11 +119,7 @@ export const useBrowserBookmarksStore = create<BrowserBookmarksState>()(
     },
   ),
 );
-if (typeof window !== "undefined") {
-  window.addEventListener("storage", (event) => {
-    if (event.key === useBrowserBookmarksStore.persist.getOptions().name) void useBrowserBookmarksStore.persist.rehydrate();
-  });
-}
+syncAcrossWindows(useBrowserBookmarksStore);
 
 export function useBookmarkFor(url: string | null): Bookmark | undefined {
   return useBrowserBookmarksStore((state) =>

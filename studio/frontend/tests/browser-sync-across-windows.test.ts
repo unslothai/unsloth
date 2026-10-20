@@ -124,3 +124,14 @@ test("clearing or removing history is saved at once, so another window's queued 
   useBrowserHistoryStore.getState().clearHistory();
   assert.deepEqual(urls(), []);
 });
+
+test("a finished download is saved at once, so another window's history write does not drop it", () => {
+  const key = "unsloth_browser_history:b1";
+  const id = useBrowserHistoryStore.getState().recordDownload(
+    { name: "report.pdf", url: "https://example.com/report.pdf", contentType: "application/pdf", size: 10 },
+    false,
+  );
+  otherWindowWrites(key, (state) => ({ ...state, history: [] }));
+  assert.ok(useBrowserHistoryStore.getState().downloads.some((item) => item.id === id));
+  assert.ok((stored(key).downloads as { id: string }[]).some((item) => item.id === id));
+});
