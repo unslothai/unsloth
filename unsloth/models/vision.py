@@ -3794,7 +3794,7 @@ class FastBaseModel:
 
         # Cannot be None, since HF now checks for the config.
         if load_in_4bit or load_in_8bit:
-            # Ignore load_in_4bit / load_in_8bit for MXFP4; better to get the config file. Unquantized gpt-oss still takes bnb 4-bit.
+            # Ignore load_in_4bit / load_in_8bit for MXFP4; better to get the config file.
             if gpt_oss_keeps_checkpoint_quantization(model_name, auto_config, load_in_4bit):
                 pass
             else:

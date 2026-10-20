@@ -2533,8 +2533,7 @@ class FastModel(FastBaseModel):
         except Exception:
             _bnb_compatible_quant = True
         string = model_types_all
-        # zoo's bnb split-expert classes on a fused BF16 gpt-oss checkpoint load random experts.
-        # A bnb 4-bit checkpoint config (or an explicit bnb 4-bit config) quantizes even with load_in_4bit = False.
+        # zoo's bnb split-expert classes load random experts on a fused gpt-oss checkpoint.
         _gpt_oss_bnb_4bit = (
             (load_in_4bit and _bnb_compatible_quant)
             or quantization_config_is_bnb_4bit(getattr(model_config, "quantization_config", None))
