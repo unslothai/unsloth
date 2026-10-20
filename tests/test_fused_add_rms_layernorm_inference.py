@@ -73,14 +73,15 @@ def test_decode_step_matches_unfused(dtype, hidden, rows, add):
     )
     assert _ulps(unit_new, unit_old) <= 1
 
-    # fp64 oracle from the same rounded h: the fused error is never more than 1 ulp worse.
+    # fp64 oracle from the same rounded h: the fused error is never more than one rounding worse, where
+    # the normed value's ulp is scaled by |w| before the output's own rounding.
     h = residual_old.double()
-    ref = (h * torch.rsqrt(h.square().mean(-1, keepdim = True) + 1e-5)).to(
-        dtype
-    ).double() * W.double()
+    eps = 2.0 ** -(10 if dtype == torch.float16 else 7)
+    normed = (h * torch.rsqrt(h.square().mean(-1, keepdim = True) + 1e-5)).to(dtype).double()
+    ref = normed * W.double()
     err_old = (out_old.double() - ref).abs()
     err_new = (out_new.double() - ref).abs()
-    ulp = ref.abs().to(dtype).double() * (2.0 ** -(10 if dtype == torch.float16 else 7))
+    ulp = normed.abs() * eps * W.double().abs() + ref.abs().to(dtype).double() * eps
     assert torch.all(err_new <= err_old + ulp + 1e-12)
     assert err_new.mean().item() <= err_old.mean().item() * 1.05 + 1e-9
 
