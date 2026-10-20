@@ -354,3 +354,21 @@ def test_compiled_graph_after_a_cached_rowwise_one_uses_the_dispatcher(tmp_path)
     assert runs["base"]["unit"] is False, runs
     # Without its own cache key the installed run reloads the base run's row-wise graph from the shared cache.
     assert runs["head"]["unit"] is True, runs
+
+
+def test_installed_dispatcher_keys_studio_compile_bundles(monkeypatch):
+    # A bundle saved without the dispatcher holds artifacts torch no longer looks up once the tag is set.
+    import torch.compiler.config as ccfg
+
+    from core.inference import diffusion_compile_cache as cc
+
+    monkeypatch.setattr(ccfg, "cache_key_tag", "")
+    plain = cc.environment_fingerprint()
+    assert "torch_cache_key_tag" not in plain
+    _caps(monkeypatch, {0: (8, 9)})
+    assert us.install() is True
+    tagged = cc.environment_fingerprint()
+    assert tagged["torch_cache_key_tag"] == f"{us._CACHE_TAG_PREFIX}{us._DEFAULT_MIN_ROWS}"
+    assert cc.cache_key(plain, {}) != cc.cache_key(tagged, {})
+    us.uninstall()
+    assert cc.environment_fingerprint() == plain

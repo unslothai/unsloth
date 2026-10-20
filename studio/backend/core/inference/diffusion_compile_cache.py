@@ -279,6 +279,13 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
+        # torch keys every artifact on this tag (diffusion_fp8_unit_scale sets it while its dispatcher is installed):
+        # a bundle saved under another tag would load, miss inside torch, recompile and never be rewritten. Only a set
+        # tag joins the key, so an untagged process keeps its existing bundles.
+        tag = getattr(getattr(torch, "compiler", None), "config", None)
+        tag = getattr(tag, "cache_key_tag", None)
+        if isinstance(tag, str) and tag:
+            fp["torch_cache_key_tag"] = tag
     except Exception:  # noqa: BLE001 - best-effort
         pass
     return fp
