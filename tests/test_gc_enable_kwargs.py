@@ -41,7 +41,6 @@ def _load():
 
 @pytest.fixture
 def patched():
-    """Install the _utils patch (absent on main: then the stock method runs) and restore everything after."""
     original = PreTrainedModel.__dict__["gradient_checkpointing_enable"]
     previous_checkpoint = hf_modeling_utils.checkpoint
     patch = _load().get("patch_gradient_checkpointing_enable_kwargs")
@@ -54,7 +53,6 @@ def patched():
 
 @pytest.fixture
 def smart_gc(monkeypatch):
-    """patch_unsloth_smart_gradient_checkpointing without buffers; MINIMUM_SIZE keeps offload off."""
     gc = pytest.importorskip("unsloth_zoo.gradient_checkpointing")
     for name, value in (
         ("FIRST_PASS", False),
@@ -140,7 +138,6 @@ def test_every_n_layers_survives_for_training_flag_rewrite(patched):
     else:
         model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"every_n_layers": 2})
     assert _flags(model) == [True, False, True, False]
-    # for_training / for_inference (GRPO, every generation step) write the flag on every module.
     for module in model.modules():
         if hasattr(module, "gradient_checkpointing"):
             module.gradient_checkpointing = False
@@ -311,7 +308,6 @@ class _RemoteLayer(torch.nn.Module):
 
 
 class _RemoteBackbone(torch.nn.Module):
-    # Remote modeling code: has the flag but its loop never calls a checkpoint function.
     def __init__(self, width, layers):
         super().__init__()
         self.gradient_checkpointing = False
@@ -376,7 +372,6 @@ def test_every_n_layers_reaches_manually_wrapped_remote_layers(patched, monkeypa
     for name in grads:
         torch.testing.assert_close(grads[name], ref_grads[name], rtol = 0, atol = 1e-6, msg = name)
 
-    # for_training rewrites the holder flag; the per-layer marks stay.
     model.model.gradient_checkpointing = False
     model.model.gradient_checkpointing = True
     calls.clear()

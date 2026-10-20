@@ -8439,7 +8439,6 @@ def _apply_every_n_layers(model, every_n_layers):
         from transformers.modeling_layers import GradientCheckpointingLayer
     except Exception:
         return []
-    # Remote-code layers wrapped by install_remote_gradient_checkpointing read the per-layer mark in their forward.
     layers = [
         m
         for m in model.modules()
@@ -8488,8 +8487,7 @@ def _gc_kwargs_note(key, message):
 
 
 def patch_gradient_checkpointing_enable_kwargs():
-    """Pop `every_n_layers` / `offload` out of gradient_checkpointing_kwargs (Unsloth's shims forwarded them
-    into every layer call). offload is dropped under Unsloth's offloading shim: it would double-offload."""
+    """Pop every_n_layers / offload from gradient_checkpointing_kwargs; offload under Unsloth's offloading shim would double-offload."""
     try:
         from transformers import PreTrainedModel
         import transformers.modeling_utils as hf_modeling_utils
