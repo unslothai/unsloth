@@ -73,6 +73,7 @@ def test_write_pid_file_records_port_and_pid(tmp_path):
 
 def test_write_pid_file_records_the_start_time(tmp_path):
     # Pins the record to this process, so a reused PID isn't mistaken for it.
+    pytest.importorskip("psutil")
     run._write_pid_file(8901)
 
     record = run._read_pid_record(tmp_path / f"studio-8901-{os.getpid()}.pid")
