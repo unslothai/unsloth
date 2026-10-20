@@ -36,7 +36,6 @@ test("a discrete card shows its full VRAM and is not marked integrated", () => {
 });
 
 test("an integrated GPU with no carve-out of its own keeps its whole total", () => {
-  // NVIDIA integrated (GB10, Jetson): the backend reports the whole total as host-backed.
   const gb10 = {
     vramTotalGb: 119.7,
     sharedMemory: true,

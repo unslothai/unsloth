@@ -113,8 +113,7 @@ export function deviceSharedMemorySplitGb(
   return totals.shared > 0 ? totals : null;
 }
 
-/** Memory to show for a `/api/system/hardware` row (About tab): an iGPU's own carve-out, not the system RAM it can
- *  borrow (every GPU can), or its whole total when it has no carve-out of its own. */
+/** About-tab memory for a hardware row: an iGPU's own carve-out, else its whole total (borrowable RAM is not VRAM). */
 export function hardwareGpuMemoryGb(gpu: {
   vramTotalGb: number | null;
   sharedMemory?: boolean;
