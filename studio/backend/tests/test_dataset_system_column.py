@@ -141,7 +141,6 @@ def test_alpaca_system_column_replaces_the_default_preamble():
 @pytest.mark.parametrize("system", [3, {"persona": "x"}], ids = ["number", "dict"])
 def test_alpaca_system_column_that_is_not_text_keeps_the_default_preamble(system):
     from utils.datasets import DEFAULT_ALPACA_TEMPLATE
-
     texts = _format([{"system": system, "instruction": "Say hi", "input": "", "output": "Salut"}])
 
     assert texts == [DEFAULT_ALPACA_TEMPLATE.format("Say hi", "", "Salut") + "</s>"]
