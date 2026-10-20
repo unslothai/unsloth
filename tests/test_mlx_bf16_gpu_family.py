@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""MLX is_bfloat16_supported() also reads the Metal GPU family (applegpu_g13 = M1, g14 = M2 lack
-native bf16), so a VM or renamed device on an M1/M2 host no longer claims bf16. The chip-name check
-still applies."""
+"""MLX is_bfloat16_supported() decides from the Metal GPU family (applegpu_g13 = M1, g14 = M2 lack
+native bf16) and falls back to the chip name only when no family is reported, so a VM or renamed
+device on an M1/M2 host no longer claims bf16. Same answer as unsloth_zoo's _apple_bf16_supported."""
 
 import ast
 import sys
@@ -37,9 +37,12 @@ CASES = [
     pytest.param({"device_name": "Apple M3"}, True, id = "name-only-m3"),
     pytest.param({"device_name": "Apple Paravirtual device"}, True, id = "name-only-vm"),
     pytest.param({}, True, id = "empty"),
-    # A newer family never overrides an M1/M2 name: the change only removes wrong bf16 claims.
+    # The family decides when present, as in unsloth_zoo.device_type._apple_bf16_supported.
     pytest.param(
-        {"device_name": "Apple M2", "architecture": "applegpu_g16g"}, False, id = "m2-name-wins"
+        {"device_name": "Apple M2", "architecture": "applegpu_g16g"}, True, id = "family-wins"
+    ),
+    pytest.param(
+        {"device_name": "Apple M1", "architecture": "applegpu_g13"}, False, id = "no-class-letter"
     ),
 ]
 
@@ -92,3 +95,12 @@ def test_probe_failure_keeps_true(monkeypatch):
     monkeypatch.setitem(sys.modules, "mlx", types.ModuleType("mlx"))
     monkeypatch.setitem(sys.modules, "mlx.core", core)
     assert _is_bfloat16_supported()() is True
+
+
+@pytest.mark.parametrize("info,_expected", CASES)
+def test_matches_zoo_answer(monkeypatch, info, _expected):
+    zoo_dt = pytest.importorskip("unsloth_zoo.device_type")
+    if not hasattr(zoo_dt, "_apple_bf16_supported"):
+        pytest.skip("installed unsloth_zoo predates _apple_bf16_supported")
+    _install_mlx(monkeypatch, info)
+    assert _is_bfloat16_supported()() is zoo_dt._apple_bf16_supported()

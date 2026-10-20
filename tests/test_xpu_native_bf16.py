@@ -2,9 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """Intel XPU bf16 must be native bf16 on every visible XPU. torch.xpu.is_bf16_supported() defaults to
-including_emulation=True and is then always True, and models/_utils.py hard-coded True. SYCL answers
-has_bfloat16_conversions through libocloc, absent from the torch-xpu wheels, and then every aspect is
-False on every device, so the probe only narrows once some aspect reads True."""
+including_emulation=True and is then always True, and models/_utils.py hard-coded True. Same answer
+as unsloth_zoo.device_type._xpu_bf16_supported, which the trainer reads."""
 
 import re
 import types
@@ -25,28 +24,22 @@ if not hasattr(dt, "torch"):
         "device_type stub or MLX host; the real probes are not loaded", allow_module_level = True
     )
 
-# Per device: a dict of aspect values, "old" (torch without the aspects) or None (unreadable).
-ARC = {"has_bfloat16_conversions": True, "has_subgroup_matrix_multiply_accumulate": True}
-OLD_IGPU = {"has_bfloat16_conversions": False, "has_subgroup_matrix_multiply_accumulate": False}
-NO_OCLOC = {"has_bfloat16_conversions": False, "has_subgroup_matrix_multiply_accumulate": False}
-BF16_ONLY = {"has_bfloat16_conversions": True, "has_subgroup_matrix_multiply_accumulate": False}
-NO_BF16_DPAS = {"has_bfloat16_conversions": False, "has_subgroup_matrix_multiply_accumulate": True}
+# Per device: a dict of aspect values, "old" (torch without the aspect) or None (unreadable).
+NATIVE = {"has_bfloat16_conversions": True}
+EMULATED = {"has_bfloat16_conversions": False}
 
 CASES = [
-    pytest.param([ARC], True, id = "1dev-arc"),
-    pytest.param([BF16_ONLY], True, id = "1dev-bf16-no-dpas"),
-    pytest.param([NO_OCLOC], True, id = "1dev-no-ocloc-unproven"),
-    pytest.param([NO_BF16_DPAS], False, id = "1dev-proven-no-bf16"),
+    pytest.param([NATIVE], True, id = "1dev-native"),
+    pytest.param([EMULATED], False, id = "1dev-emulated"),
     pytest.param(["old"], True, id = "1dev-old-torch"),
     pytest.param([None], True, id = "1dev-unreadable"),
-    pytest.param([ARC, ARC], True, id = "2dev-arc"),
-    pytest.param([ARC, OLD_IGPU], False, id = "2dev-arc+old-igpu"),
-    pytest.param([OLD_IGPU, ARC], False, id = "2dev-old-igpu+arc"),
-    pytest.param([BF16_ONLY, OLD_IGPU], False, id = "2dev-bf16+old-igpu"),
-    pytest.param([NO_OCLOC, NO_OCLOC], True, id = "2dev-no-ocloc-unproven"),
+    pytest.param([NATIVE, NATIVE], True, id = "2dev-native"),
+    pytest.param([NATIVE, EMULATED], False, id = "2dev-mixed"),
+    pytest.param([EMULATED, NATIVE], False, id = "2dev-mixed-rev"),
+    pytest.param([EMULATED, EMULATED], False, id = "2dev-emulated"),
     pytest.param(["old", "old"], True, id = "2dev-old-torch"),
-    pytest.param([None, ARC], True, id = "2dev-unreadable+arc"),
-    pytest.param([None, NO_BF16_DPAS], False, id = "2dev-unreadable+proven-no-bf16"),
+    pytest.param(["old", EMULATED], False, id = "2dev-old-attr+emulated"),
+    pytest.param([None, EMULATED], True, id = "2dev-unreadable+emulated"),
 ]
 
 
@@ -121,3 +114,16 @@ def test_xpu_unreadable_count_keeps_true(monkeypatch):
     fake = types.SimpleNamespace(xpu = types.SimpleNamespace(device_count = boom))
     monkeypatch.setattr(dt, "torch", fake)
     assert dt.xpu_supports_native_bf16() is True
+
+
+@pytest.mark.parametrize("devices,_bf16", CASES)
+def test_matches_zoo_answer(monkeypatch, devices, _bf16):
+    """The trainer asks zoo's device_is_bf16_supported(); a different answer here loads bf16 and
+    then trains in float16."""
+    zoo_dt = pytest.importorskip("unsloth_zoo.device_type")
+    if not hasattr(zoo_dt, "_xpu_bf16_supported"):
+        pytest.skip("installed unsloth_zoo predates _xpu_bf16_supported")
+    fake = _fake_torch(devices)
+    monkeypatch.setattr(dt, "torch", fake)
+    monkeypatch.setattr(zoo_dt, "torch", fake)
+    assert dt.xpu_supports_native_bf16() is zoo_dt._xpu_bf16_supported()
