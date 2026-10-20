@@ -1310,7 +1310,6 @@ class FastLanguageModel(FastLlamaModel):
                 revision = revision,
             )
         else:
-            # An exact name is never remapped, but an fp8 request still converts it.
             new_model_name = model_name
         # Unmapped names come back unchanged, not None; conflicting flags are left to the precision check below.
         if (
@@ -2235,7 +2234,6 @@ class FastModel(FastBaseModel):
                 revision = revision,
             )
         else:
-            # An exact name is never remapped, but an fp8 request still converts it.
             new_model_name = model_name
         # Unmapped names come back unchanged, not None; conflicting flags are left to the precision check below.
         if (

@@ -1748,7 +1748,7 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
-    # The basename alone lets org-a/model and org-b/model (or two local dirs) share one artifact.
+    # The basename alone would let org-a/model and org-b/model share one artifact.
     source = os.path.abspath(model_name) if os.path.isdir(model_name) else model_name
     cache_name += "-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
     if revision is not None:
@@ -1798,7 +1798,7 @@ def _offline_quantize_to_fp8(
             token = token,
             trust_remote_code = trust_remote_code,
         )
-        # Publish atomically: the isdir check above must never see a half-written artifact from another rank.
+        # Atomic publish: the isdir check above must never see another rank's half-written artifact.
         partial = tempfile.mkdtemp(prefix = cache_name + ".partial-", dir = temp_dir)
         try:
             model.save_pretrained(partial, safe_serialization = False)
