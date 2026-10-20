@@ -23,6 +23,8 @@ class Caller:
     # The outer Studio app, so forwarded calls never need to import main.
     studio_app: Any = field(repr = False)
     hf_token: Optional[str] = field(default = None, repr = False)
+    # The token ends with this tool call (the chat bridge's per-call key), so nothing may keep it for later work.
+    call_scoped: bool = False
 
 
 def caller_from_scope(scope: dict) -> Optional[Caller]:

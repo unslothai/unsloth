@@ -73,7 +73,10 @@ def tool_names() -> tuple[str, ...]:
 
 
 # Never offered to an Unsloth Studio chat: they would evict, restart, cancel or re-enter the chat that calls them.
-CHAT_DENYLIST = frozenset({"chat", "load_model", "unload_model", "cancel", "start_training"})
+# export_model also keeps working after the call returns, past the chat's per-call key, and loads a checkpoint.
+CHAT_DENYLIST = frozenset(
+    {"chat", "load_model", "unload_model", "cancel", "start_training", "export_model"}
+)
 
 
 def create_studio_mcp(exclude: frozenset = frozenset()) -> FastMCP:

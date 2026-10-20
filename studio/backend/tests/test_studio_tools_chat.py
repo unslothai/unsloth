@@ -170,7 +170,14 @@ def test_the_frontend_preset_uses_the_same_url():
 def test_the_chat_instance_drops_exactly_the_denylist_and_mcp_keeps_every_tool():
     everything = [tool.name for tool in asyncio.run(create_studio_mcp().list_tools())]
     chat = [tool.name for tool in asyncio.run(studio_tools_mcp.chat_tools_mcp().list_tools())]
-    assert CHAT_DENYLIST == {"chat", "load_model", "unload_model", "cancel", "start_training"}
+    assert CHAT_DENYLIST == {
+        "chat",
+        "load_model",
+        "unload_model",
+        "cancel",
+        "start_training",
+        "export_model",
+    }
     assert CHAT_DENYLIST <= set(everything)
     assert chat == [name for name in everything if name not in CHAT_DENYLIST]
     assert studio_tools_mcp.chat_tools_mcp() is studio_tools_mcp.chat_tools_mcp()

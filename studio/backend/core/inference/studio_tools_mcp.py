@@ -130,6 +130,7 @@ def call(
             public_base = f"http://127.0.0.1:{port}" if port else "http://127.0.0.1",
             studio_app = app,
             hf_token = None,
+            call_scoped = True,
         )
         # An empty context: the tool-loop thread may carry another request's fastmcp HTTP request, which would
         # outrank the bound caller.
