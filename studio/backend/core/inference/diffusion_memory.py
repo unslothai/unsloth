@@ -3409,6 +3409,31 @@ def release_resident_groups(
     blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
     A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
     the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them)."""
+    released: list = []
+    streamed: set = set()
+
+    def restore(strict: bool = False) -> None:
+        """Pin the released groups again. ``strict``: raise when any of them is still not resident afterwards (the
+        re-pin catches its own failures and leaves those groups streamed, which callers that must retry need to
+        know)."""
+        for module in released:
+            _keep_groups_resident(
+                module,
+                module._unsloth_resident_room,
+                module._unsloth_resident_device,
+                logger,
+                only = streamed,
+            )
+        if strict:
+            left = [
+                g
+                for module in released
+                for g in (_offload_groups(module) or [])
+                if id(g) in streamed and not getattr(g, "_unsloth_resident", False)
+            ]
+            if left:
+                raise RuntimeError(f"re-pinning resident offload groups left {len(left)} streamed")
+
     try:
         import torch
 
@@ -3422,8 +3447,6 @@ def release_resident_groups(
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
         left = int(need_mib) * 1024 * 1024
-        released: list = []
-        streamed: set = set()
         for module in modules:
             for group in reversed(_offload_groups(module) or []):
                 if left <= 0:
@@ -3434,15 +3457,16 @@ def release_resident_groups(
                 state = getattr(module, "_unsloth_stream_state", None)
                 if isinstance(state, dict):
                     state["streamed"] = 1
+                if module not in released:
+                    released.append(module)
                 # tied partners stream together (a resident partner would keep reading the host copy)
                 for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
                     if not getattr(member, "_unsloth_resident", False):
                         continue
-                    _release_group(member)
+                    # Recorded before demoting: a release that fails part way is still re-pinned by ``restore``.
                     streamed.add(id(member))
+                    _release_group(member)
                     left -= int(getattr(member, "_unsloth_resident_bytes", 0))
-                if module not in released:
-                    released.append(module)
         if not released:
             return None
         for module in released:
@@ -3459,21 +3483,12 @@ def release_resident_groups(
                 reason,
             )
 
-        def restore() -> None:
-            for module in released:
-                _keep_groups_resident(
-                    module,
-                    module._unsloth_resident_room,
-                    module._unsloth_resident_device,
-                    logger,
-                    only = streamed,
-                )
-
         return restore
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
         if logger is not None:
             logger.warning("diffusion.memory: releasing resident groups failed (%s)", exc)
-        return None
+        # groups released before the failure stay streamed until the caller re-pins them: hand back their restore
+        return restore if released else None
 
 
 def resident_group_mib(pipe: Any) -> int:
@@ -3492,10 +3507,14 @@ def hook_resident_denoiser(
     pipe: Any,
     device: Any,
     logger: Any = None,
+    resident: bool = True,
 ) -> bool:
     """Give a hookless resident torchao transformer block-level offload hooks, every group kept resident, so
     release_resident_groups can stream part of it. On demand, not at load: hooks at load recompile every load's second
-    render. True when installed."""
+    render. True when installed. ``resident=False``: every group streams (the load's flat plan), for a transformer
+    that cannot come back to the card whole. A failure whose own return to the card fails raises, the transformer
+    split between host and card with no hooks (return_torchao_denoiser / hook_resident_denoiser(resident=False) are
+    the ways out)."""
     transformer = getattr(pipe, "transformer", None)
     if (
         transformer is None
@@ -3546,19 +3565,17 @@ def hook_resident_denoiser(
             _skip_top_level_copy_back(transformer, logger)
         if gkwargs.get("record_stream"):
             install_group_prefetch(transformer, onload, logger)
-        kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
-        # the helper reports its own failure as 0 MiB kept: anything still streamed is a failed install
-        if not all(getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)):
-            raise RuntimeError("not every offload group stayed resident")
+        kept = 0
+        if resident:
+            kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
+            if not all(
+                getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)
+            ):
+                raise RuntimeError("not every offload group stayed resident")
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
-        # the apply already moved the weights to their host copies: back to the card, as before the call
-        _remove_group_offload_hooks(transformer)
-        _drop_module_forward_hooks_since(transformer, torch_hooks)
-        from .diffusion_offload_prefetch import PREFETCHER_ATTR
-
-        for attr in (PREFETCHER_ATTR, "_unsloth_stream_state"):
-            transformer.__dict__.pop(attr, None)
-        _return_module_tensors(transformer, onload)
+        # the apply already moved the weights to their host copies: back to the card, as before the call (a return
+        # that itself fails raises: the caller owns the way back)
+        _unhook_and_return(transformer, onload, torch_hooks)
         if logger is not None:
             logger.warning("diffusion.memory: resident transformer left without hooks (%s)", exc)
         return False
@@ -3582,6 +3599,44 @@ _FORWARD_HOOK_DICTS = (
 
 def _module_forward_hook_ids(module: Any) -> dict[str, set]:
     return {name: set(getattr(module, name, None) or ()) for name in _FORWARD_HOOK_DICTS}
+
+
+def _unhook_and_return(transformer: Any, onload: Any, torch_hooks: Optional[dict]) -> None:
+    _remove_group_offload_hooks(transformer)
+    if torch_hooks is not None:
+        _drop_module_forward_hooks_since(transformer, torch_hooks)
+    from .diffusion_offload_prefetch import PREFETCHER_ATTR
+
+    for attr in (PREFETCHER_ATTR, "_unsloth_stream_state"):
+        transformer.__dict__.pop(attr, None)
+    _return_module_tensors(transformer, onload)
+
+
+def return_torchao_denoiser(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+    torch_hooks: Optional[dict] = None,
+) -> None:
+    """The way back to where a hookless resident torchao transformer started, from wherever a failed
+    hook_resident_denoiser left it: streamed under offload hooks (settled) -> every group resident again, the state
+    a successful hook_resident_denoiser leaves; split with no hooks -> whole on the card. Raises if it is not there."""
+    import torch
+
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return
+    onload = torch.device(device)
+    if _offload_groups(transformer):
+        _keep_groups_resident(transformer, _module_host_mib(transformer) + 1, onload, logger)
+        if not all(getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)):
+            raise RuntimeError("the transformer's offload groups are not all resident again")
+        return
+    _unhook_and_return(transformer, onload, torch_hooks)
+
+
+def module_forward_hook_ids(module: Any) -> dict[str, set]:
+    return _module_forward_hook_ids(module)
 
 
 def _drop_module_forward_hooks_since(module: Any, before: dict[str, set]) -> None:

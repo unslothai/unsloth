@@ -9267,6 +9267,12 @@ class DiffusionBackend:
                     )
                     if vae_fp16:
                         speed_applied["vae_fp16_decode"] = True
+                    # After the speed layer, so it wraps the fused / single-frame _decode the layer installed.
+                    try:
+                        from .diffusion_vae_oom import install as install_vae_oom_retry
+                        install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
+                    except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+                        logger.warning("diffusion.vae_oom: not installed: %s", exc)
                     self._raise_if_load_cancelled(_load_token)
                     if (
                         transformer_quant_engaged is not None
@@ -11768,6 +11774,14 @@ class DiffusionBackend:
         if _denoiser_hooked(state.pipe):
             compile_pipe_below_offload_hooks(state.pipe, logger)
         arm_graphs_after_placement(state.pipe, speed_applied, logger)
+        # the speed layer just rewrapped vae.decode (a compiled decode guard): the OOM retry's scope goes back on top
+        try:
+            from .diffusion_vae_oom import ensure_outermost
+            ensure_outermost(getattr(state.pipe, "vae", None), logger)
+        except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+            logger.warning(
+                "diffusion.vae_oom: scope not restored after the deferred profile: %s", exc
+            )
         cuda_graph.arm_block_graphs(
             state.pipe,
             speed_applied,
