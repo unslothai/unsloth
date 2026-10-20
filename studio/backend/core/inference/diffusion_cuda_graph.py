@@ -66,6 +66,14 @@ def _length_varies(module: Any) -> bool:
         return False
 
 
+def _image_scope(args: tuple, kwargs: dict) -> tuple:
+    """The non-text part of a call's shape: the key of its first argument, the latents in every variable-length
+    family's denoiser call (``hidden_states`` for Qwen-Image, Qwen-Image-2.1's planned step, FLUX.1 and FLUX.3, the
+    latent list for Z-Image). Resolution, batch and reference images change it; the prompt length does not."""
+    first = args[0] if args else next(iter(kwargs.values()), None)
+    return graph_key(first)
+
+
 def _family_forced(family: Any) -> bool:
     raw = (os.environ.get(FORCE_FAMILIES_ENV) or "").strip().lower()
     if not raw:
@@ -731,13 +739,21 @@ class GraphedForward:
         }
         self.valid_token: Any = None
         # A denoiser whose text length follows the prompt keys a graph per prompt length, so every new prompt recorded
-        # one (warm-up forwards, a sync, the capture) on its render: Qwen-Image captured on generations 2 and 3. It
-        # records the lengths of its first render only: once a graph replayed (or that render ended, seal_lengths), a
-        # prompt length it never recorded runs the compiled step ungraphed (the same kernels, so the same image) and a
-        # recorded one replays.
+        # one (warm-up forwards, a sync, the capture) on its render: Qwen-Image captured on generations 2 and 3. Per
+        # image scope (resolution, batch, references: _image_scope) it records the lengths of that scope's first render
+        # only: once one of its graphs replayed (or that render ended, seal_lengths), a prompt length it never recorded
+        # runs the compiled step ungraphed (the same kernels, so the same image) and a recorded one replays. A scope
+        # seen for the first time opens its own window, so a new resolution still records as before.
         self.length_varies = _length_varies(module)
-        self.length_sealed = False
+        self._sealed_scopes: set = set()
+        self._scope_captures: dict = {}  # scope -> graphs recorded since the last reset
+        self._render_scopes: set = set()  # scopes this render called with (seal_lengths)
         _LIVE_WRAPPERS.add(self)
+
+    @property
+    def length_sealed(self) -> bool:
+        """Whether some image scope stopped recording new prompt lengths."""
+        return bool(getattr(self, "_sealed_scopes", None))
 
     def install(self) -> "GraphedForward":
         """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer."""
@@ -808,7 +824,10 @@ class GraphedForward:
         """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""
         self.cache.clear()
         self._recorded.clear()
-        self.length_sealed = False
+        # Nothing recorded is left to replay: every scope's first render starts over (captures counted afresh).
+        self._sealed_scopes.clear()
+        self._scope_captures.clear()
+        self._render_scopes.clear()
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -1113,6 +1132,7 @@ class GraphedForward:
                 # null-mask flag): a graph recorded on one branch must never replay for the other.
                 key = key + (("x", extra()),)
             entry = self.cache.get(key)
+            scope = _image_scope(args, kwargs) if getattr(self, "length_varies", False) else None
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
             return self._eager(eager_args, eager_kwargs)
@@ -1124,7 +1144,9 @@ class GraphedForward:
             if _has_float(key):
                 self.stats["refused_float"] += 1
                 return self._eager(eager_args, eager_kwargs)
-            if getattr(self, "length_sealed", False) and (
+            if scope is not None:
+                self._render_scopes.add(scope)
+            if scope in getattr(self, "_sealed_scopes", ()) and (
                 self.placement is None or key not in self._recorded
             ):
                 # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
@@ -1204,6 +1226,8 @@ class GraphedForward:
                 return self._eager(eager_args, eager_kwargs)
             entry = captured
             self.cache[key] = entry
+            if scope is not None:
+                self._scope_captures[scope] = self._scope_captures.get(scope, 0) + 1
             self._unsloth_capture_device = capture_device()
             note_capture(self._unsloth_capture_device)
             if self.logger is not None:
@@ -1216,9 +1240,10 @@ class GraphedForward:
                 )
 
         else:
-            if getattr(self, "length_varies", False):
-                # Every shape of this render was seen on its first step (cond and uncond alike): the window closes.
-                self.length_sealed = True
+            if scope is not None:
+                # Every text length of this scope's render was seen on its first step (cond and uncond alike).
+                self._render_scopes.add(scope)
+                self._sealed_scopes.add(scope)
             if self.plan is not None:
                 self.cache[key] = self.cache.pop(key)
 
@@ -2061,8 +2086,14 @@ def seal_lengths(handles: Any) -> None:
     (until ``reset``). Covers a first render that recorded but never replayed (an offloaded key still being timed)."""
     for handle in handles or ():
         try:
-            if getattr(handle, "length_varies", False) and int(handle.stats.get("captures", 0)) > 0:
-                handle.length_sealed = True
+            if not getattr(handle, "length_varies", False):
+                continue
+            # Only a scope that recorded since the last reset: a render that only warmed up (a planned step's first
+            # call at a new length) or recorded nothing keeps its window open.
+            for scope in handle._render_scopes:
+                if handle._scope_captures.get(scope, 0) > 0:
+                    handle._sealed_scopes.add(scope)
+            handle._render_scopes.clear()
         except Exception:  # noqa: BLE001 - optimisation only
             pass
 

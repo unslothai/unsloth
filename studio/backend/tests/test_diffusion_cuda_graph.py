@@ -1349,3 +1349,57 @@ def test_block_graphs_decline_a_variable_length_denoiser(stub_torch, monkeypatch
     family = types.SimpleNamespace(name = "qwen-image")
     monkeypatch.setenv(cg.FORCE_FAMILIES_ENV, "qwen-image")
     assert cg.prompt_length_reason(pipe, family) is None
+
+
+def _render_at(
+    handle,
+    width,
+    text_len,
+    steps = 2,
+    negative_len = 7,
+):
+    """A true-CFG render at latent width ``width`` (the image scope) with a ``text_len``-token prompt."""
+    for i in range(steps):
+        handle(
+            _t((1, width), value = float(i)),
+            encoder_hidden_states = _t((1, text_len)),
+            return_dict = False,
+        )
+        handle(
+            _t((1, width), value = float(i)),
+            encoder_hidden_states = _t((1, negative_len)),
+            return_dict = False,
+        )
+
+
+def test_a_new_resolution_still_records_after_the_seal(stub_torch, monkeypatch):
+    """The seal stops new TEXT lengths only: a later render at a new resolution (or batch) is a new image scope and
+    records its first render, as before; a further new prompt length at that resolution then runs ungraphed."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"), max_graphs = 8)
+    _render_at(handle, 64, 3)
+    assert handle.stats["captures"] == 2 and handle.length_sealed
+    _render_at(handle, 128, 15)  # new resolution, new prompt length
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
+    replays = handle.stats["replays"]
+    _render_at(handle, 128, 40)  # same resolution, another new prompt length: no capture
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 2
+    assert handle.stats["replays"] == replays + 2  # the negative prompt's graph at this resolution
+    _render_at(handle, 64, 40)  # back at the first resolution with that length: still sealed there
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 4
+
+
+def test_a_render_with_no_capture_after_reset_does_not_seal(stub_torch, monkeypatch):
+    """seal_lengths counts captures since the last reset: a first render after reset that recorded nothing (bypassed
+    here, or a planned step that only warmed up) must not seal an empty cache, or its key runs ungraphed forever."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3)
+    handle.reset()
+    handle.set_bypass(True)  # e.g. a step cache engaged for this render
+    _render(handle, 15)
+    handle.set_bypass(False)
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is False
+    _render(handle, 15)
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
