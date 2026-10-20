@@ -19,6 +19,18 @@ test("a self-hosted connection offers the models it lists; hosted chat providers
     ["kokoro"],
   );
   assert.deepEqual(
+    connectionSpeechModels({
+      providerType: "custom",
+      models: [
+        "speaches-ai/Kokoro-82M-v1.0-ONNX",
+        "Systran/faster-whisper-tiny",
+        "nvidia/parakeet-tdt-0.6b-v3",
+        "Qwen/Qwen3-ASR-0.6B",
+      ],
+    }),
+    ["speaches-ai/Kokoro-82M-v1.0-ONNX"],
+  );
+  assert.deepEqual(
     connectionSpeechModels({ providerType: "mistral", models: ["mistral-large"] }),
     [],
   );
