@@ -4610,6 +4610,7 @@ class _UnslothFusedLinearHead:
         final_logit_softcapping = None,
         logit_scale = 1.0,
         outputs = ("entropy", "log_sum_sq_probs", "mean_logits", "is_top1"),
+        support_ids = None,
     ):
         if self._legacy:
             args = (
@@ -4635,6 +4636,9 @@ class _UnslothFusedLinearHead:
                 logit_scale,
                 outputs,
             )
+        # TRL > 1.16 scores over a per-row kept set (support_ids); the zoo kernel scores the full vocabulary.
+        if support_ids is not None:
+            return self.function.apply(*args, support_ids)
         try:
             from unsloth_zoo.fused_losses.fused_linear import fused_linear_logprobs
         except Exception:

@@ -27,10 +27,12 @@ class _Kernel:
     """Stands in for TRL's ChunkedLogProbFunction and records every call it serves."""
 
     _calls = 0
+    _last = ()
 
     @classmethod
     def apply(cls, *args):
         cls._calls += 1
+        cls._last = args
         return ("trl",) * 5
 
 
@@ -107,6 +109,22 @@ def test_adapter_hands_unreproduced_calls_to_trl(case):
         hidden, weight, bias, targets, 1.0, 4096, None, scale, outputs
     )
     assert _Kernel._calls == before + 1 and got[0] == "trl"
+
+
+def test_adapter_hands_support_ids_calls_to_trl():
+    """TRL > 1.16 passes a 10th argument, ``support_ids`` (score over a per-row kept set): the zoo kernel scores the
+    full vocabulary, so those calls go to TRL's kernel with every argument; calls without it stay on the zoo kernel."""
+    hidden, weight, bias, targets = _inputs(3)
+    support = torch.zeros(hidden.shape[0], 4, dtype = torch.long)
+    before = _Kernel._calls
+    got = unsloth_rl._UnslothFusedLinearHead(_Kernel).apply(
+        hidden, weight, bias, targets, 1.0, 4096, None, 1.0, ("log_probs",), support
+    )
+    assert _Kernel._calls == before + 1 and got[0] == "trl" and _Kernel._last[-1] is support
+    got = unsloth_rl._UnslothFusedLinearHead(_Kernel).apply(
+        hidden, weight, bias, targets, 1.0, 4096, None, 1.0, ("log_probs",), None
+    )
+    assert _Kernel._calls == before + 1 and got[0] is not None and got[0] != "trl"
 
 
 def test_patch_is_idempotent(monkeypatch):
