@@ -638,6 +638,9 @@ def _layer_kind(layer):
 
 def _wrap(cls, compile_options):
     original = cls.forward
+    # FastLanguageModel's own layer forwards read packed lengths on the host (packing.py), which
+    # would break and recompile per batch: packed calls keep the stock forward there.
+    unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
     try:
         from unsloth_zoo.temporary_patches.utils import UNSLOTH_DECODE_COMPILE as inline_flag
@@ -671,6 +674,7 @@ def _wrap(cls, compile_options):
             or _has_cache(args, kwargs)
             or not _enabled()
             or _forced_float32(self)
+            or (unsloth_forward and kwargs.get("packed_seq_lengths") is not None)
         ):
             return original(self, hidden_states, *args, **kwargs)
         if not self.__dict__.get("_unsloth_block_moe_done", False):

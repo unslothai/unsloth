@@ -49,3 +49,45 @@ def test_legacy_gate(llama, monkeypatch, env, traceable, installed):
     model = object()
     assert mod._legacy_block_compile(model) == (["X"] if installed else [])
     assert calls == ([model] if installed else [])
+
+
+def test_packed_calls_keep_the_unsloth_layer_forward(monkeypatch):
+    # FastLanguageModel's layer forwards read packed lengths on the host: packed calls stay eager.
+    import importlib.util
+    import sys
+
+    import torch
+
+    path = _LLAMA.parent / "_block_compile.py"
+    spec = importlib.util.spec_from_file_location("_ublock_legacy", path)
+    M = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = M
+    spec.loader.exec_module(M)
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    def forward(self, hidden_states, packed_seq_lengths = None, **kwargs):
+        return self.proj(hidden_states)
+
+    forward.__module__ = "unsloth.models.llama"
+
+    def __init__(self):
+        torch.nn.Module.__init__(self)
+        self.proj = torch.nn.Linear(8, 8)
+
+    Legacy = type("LegacyToyDecoderLayer", (torch.nn.Module,), {"__init__": __init__, "forward": forward})
+    M._wrap(Legacy, {})
+    layer = Legacy()
+    x = torch.randn(1, 4, 8, requires_grad = True)
+    layer(x, packed_seq_lengths = torch.tensor([2, 2])).sum().backward()
+    assert calls == []
+    layer(x).sum().backward()
+    assert calls
