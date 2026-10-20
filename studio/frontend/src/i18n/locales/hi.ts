@@ -50,6 +50,11 @@ export const hi = {
     removeFromMessage: "मैसेज से हटाएँ",
   },
   browser: {
+    drafts: {
+      title: "दर्ज किए गए टेक्स्ट वाला पेज अनलोड करें?",
+      description: "चैट को तेज़ बनाए रखने के लिए दर्ज किए गए टेक्स्ट वाले केवल तीन छिपे पेज चलते रहते हैं। जारी रखने पर {pages} अनलोड होगा और बिना सहेजा टेक्स्ट खो सकता है। रद्द करने पर पिछले टैब पर लौटेंगे।",
+      confirm: "अनलोड करें और जारी रखें",
+    },
     agentSettings: {
       title: "ब्राउज़र उपयोग",
       enable: "मॉडल को ब्राउज़र इस्तेमाल करने दें",
@@ -3211,6 +3216,7 @@ export const hi = {
       audioCppVersion: "audio.cpp संस्करण",
       hardware: "हार्डवेयर",
       gpu: "GPU",
+      gpuIntegrated: "इंटीग्रेटेड",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

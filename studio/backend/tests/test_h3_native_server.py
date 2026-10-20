@@ -411,6 +411,7 @@ def test_slot_holds_the_managed_tree_while_its_server_lives(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -452,6 +453,7 @@ def test_slot_respawns_a_dead_server(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -490,6 +492,7 @@ class _LifeSrv:
         files,
         *,
         offload = None,
+        threads = None,
         env = None,
         extra_args = None,
     ):
@@ -867,6 +870,7 @@ def test_cancel_aborts_a_server_start_in_progress(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -941,6 +945,7 @@ def test_the_tree_stays_held_until_the_server_has_exited(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
