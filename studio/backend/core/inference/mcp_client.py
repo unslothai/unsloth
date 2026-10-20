@@ -143,7 +143,8 @@ def _public_http_client_factory(**kwargs):
 def _tool_http_client_factory(**kwargs):
     """httpx client for HTTP/SSE MCP sessions with no read cap. Each call's budget (the Max Tool Call Duration
     slider, up to unlimited) is enforced by _race_tool_call, and one cached session serves calls with different
-    budgets, so the SDK's default 300s read timeout would cut long tool calls short regardless of the slider."""
+    budgets, so the SDK's default 300s read timeout would cut long tool calls short regardless of the slider. A reply
+    abandoned by a timed-out or stopped call is bounded by _ABANDONED_REPLY_TIMEOUT instead (see _McpSession)."""
     if _managed_mcp_restricted():
         client = _public_http_client_factory(**kwargs)
     else:
@@ -671,6 +672,12 @@ _SESSION_CLOSE_TIMEOUT = 10.0
 _SESSION_WEDGE_MARGIN = 15.0
 _SESSION_LIVENESS_TIMEOUT = 5.0
 _CANCEL_UNWIND_TIMEOUT = 2.0
+# A tool call abandoned on a cached HTTP session (budget expired, or Stop) leaves its POST open in the SDK transport
+# until the server closes it, and _tool_http_client_factory lifted the read cap that used to end it. The session is
+# retired once an abandoned reply has outlived the cap the SDK would have applied, or once it holds too many of
+# them, so hung replies cannot pile up on the httpx pool.
+_ABANDONED_REPLY_TIMEOUT = 300.0
+_MAX_ABANDONED_REPLIES = 8
 # An HTTP session idle this long is re-proved with tools/list before the next dispatch: the server may have expired it
 # (MCP says a server MAY terminate a session at any time), and no HTTP transport exposes a liveness probe we can ask
 # instead -- see _transport_dead.
@@ -873,6 +880,10 @@ class _McpSession:
         self.closed = threading.Event()
         self.defunct = False  # discarded; close once in_flight drains (see _retire)
         self.dirty = False  # a call was abandoned on it; ping before reuse
+        # Abandoned HTTP replies presumed still open on the transport: when the oldest was abandoned, and how many.
+        # Only retirement clears them -- the SDK gives no way to see one finish.
+        self.abandoned_at: Optional[float] = None
+        self.abandoned = 0
         self._close_lock = threading.Lock()
         self.call_lock = threading.Lock()
         # One stdio subprocess is one ordered byte stream, so overlapping calls must not interleave on it. HTTP has no
@@ -893,6 +904,24 @@ class _McpSession:
             self.loop = asyncio.new_event_loop()
         self._thread = account_thread(target = self._run_loop, name = "mcp-session", daemon = True)
         self._thread.start()
+
+    def note_abandoned(self) -> None:
+        """Record a call abandoned mid-flight on an HTTP transport (stdio has no reply socket to leak)."""
+        if is_stdio(self.url):
+            return
+        if self.abandoned_at is None:
+            self.abandoned_at = time.monotonic()
+        self.abandoned += 1
+
+    def abandoned_overdue(self, now: Optional[float] = None) -> bool:
+        """Whether abandoned replies have outlived _ABANDONED_REPLY_TIMEOUT or exceeded _MAX_ABANDONED_REPLIES,
+        so the session must be closed to free them rather than probed and reused."""
+        if self.abandoned_at is None:
+            return False
+        if self.abandoned >= _MAX_ABANDONED_REPLIES:
+            return True
+        now = time.monotonic() if now is None else now
+        return now - self.abandoned_at >= _ABANDONED_REPLY_TIMEOUT
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self.loop)
@@ -1479,7 +1508,8 @@ def _reap_idle_sessions(now: Optional[float] = None) -> None:
         expired = [
             key
             for key, session in _mcp_sessions.items()
-            if session.in_flight == 0 and now - session.last_used >= _SESSION_IDLE_TTL
+            if session.in_flight == 0
+            and (now - session.last_used >= _SESSION_IDLE_TTL or session.abandoned_overdue(now))
         ]
         sessions = [_mcp_sessions.pop(key) for key in expired]
         for key in expired:
@@ -2069,6 +2099,14 @@ def _call_session_tool(
                     retry = True
                 else:
                     raise RuntimeError("MCP server connection is not available")
+            elif session.abandoned_overdue():
+                # Its abandoned replies are past the cleanup deadline: a live probe would only prove the server is
+                # up, not that those POSTs closed, so close the client to free them and move to a fresh session.
+                discard_session = True
+                if attempt == 0:
+                    retry = True
+                else:
+                    raise RuntimeError("MCP server session was retired during the call")
             elif (
                 session.dirty or _needs_idle_recheck(session, idle_for, _remaining())
             ) and not _session_responsive(
@@ -2101,8 +2139,11 @@ def _call_session_tool(
                 return out
         except (_MCPCancelled, asyncio.TimeoutError):
             # Keep the session so a Stop doesn't destroy the server's state; the SDK drops the abandoned reply, and
-            # reuse is gated on a live probe.
+            # reuse is gated on a live probe. The reply's POST stays open on the transport with no read cap, so note
+            # it: abandoned_overdue() retires the session once it has held one too long or holds too many.
             session.dirty = True
+            if not ephemeral:
+                session.note_abandoned()
             raise
         except _SessionWedged:
             discard_session = True
