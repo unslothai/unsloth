@@ -923,7 +923,9 @@ def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
 def _user_device_pick(binary: Optional[str] = None) -> bool:
     """LLAMA_ARG_DEVICE / LLAMA_ARG_MAIN_GPU / Vulkan mask set by the user; with ``binary``, a Vulkan mask counts
     only where Vulkan may load (CUDA and HIP ignore it)."""
-    if any(str(os.environ.get(var, "")).strip() for var in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU")):
+    if any(
+        str(os.environ.get(var, "")).strip() for var in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU")
+    ):
         return True
     if not str(os.environ.get("GGML_VK_VISIBLE_DEVICES", "")).strip():
         return False
