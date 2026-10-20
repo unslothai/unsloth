@@ -8560,7 +8560,11 @@ class _AutoCheckpointSkip:
     def plan(self, device):
         self.remove()
         allocated_start = self.started
-        peak = self.step_peak if self.step_peak is not None else torch.cuda.max_memory_allocated(device)
+        peak = (
+            self.step_peak
+            if self.step_peak is not None
+            else torch.cuda.max_memory_allocated(device)
+        )
         # A short first batch (dynamic padding) under-measures: size for max_seq_length rows.
         max_seq = getattr(self.model, "max_seq_length", None) or 0
         scale = max(1.0, max_seq / max(1, self.layer_rows)) if max_seq else 1.0
