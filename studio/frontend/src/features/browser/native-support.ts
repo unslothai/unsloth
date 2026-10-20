@@ -23,6 +23,7 @@ export async function grantLocalOrigin(tabId: string, url: string): Promise<void
     return;
   }
   localOrigins.set(tabId, new URL(url).origin);
+  watchLocalTabs();
 }
 
 export function localOriginGranted(tabId: string, url: string): boolean {
@@ -40,17 +41,24 @@ export function setLocalViewCloser(close: (tabId: string) => void): void {
   closeLocalView = close;
 }
 
-useBrowserStore.subscribe((state) => {
-  for (const tabId of localOrigins.keys()) {
-    const tab = state.tabs.find((tab) => tab.id === tabId);
-    const entry = tab && currentEntry(tab);
-    if (entry?.kind === "web" && localOriginGranted(tabId, entry.url)) continue;
-    localOrigins.delete(tabId);
-    if (!tab) void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
-    // A public page drops the local grant too.
-    else if (entry?.kind !== "web") closeLocalView(tabId);
-  }
-});
+let watching = false;
+
+// Subscribed on the first grant, not at module scope: the store is reached through the chat import cycle.
+function watchLocalTabs(): void {
+  if (watching) return;
+  watching = true;
+  useBrowserStore.subscribe((state) => {
+    for (const tabId of localOrigins.keys()) {
+      const tab = state.tabs.find((tab) => tab.id === tabId);
+      const entry = tab && currentEntry(tab);
+      if (entry?.kind === "web" && localOriginGranted(tabId, entry.url)) continue;
+      localOrigins.delete(tabId);
+      if (!tab) void callNative("browser_view_close", { tabId, forgetLocal: true }).catch(() => undefined);
+      // A public page drops the local grant too.
+      else if (entry?.kind !== "web") closeLocalView(tabId);
+    }
+  });
+}
 
 // Here rather than with the views, which load with the panel: navigation needs it before then.
 if (isTauri) {
