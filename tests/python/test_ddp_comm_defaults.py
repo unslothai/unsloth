@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Unsloth's DDP communication defaults on a real accelerate DDP (2 gloo ranks, fp32, CPU).
-
-Full finetuning gets gradient_as_bucket_view (one gradient copy), UNSLOTH_DDP_COMM_HOOK=bf16|fp16 compresses the
-all-reduce (off by default). The loss, gradients and update must match a single process on the concatenated batch.
-"""
+"""DDP comm defaults on a real 2-rank gloo accelerate DDP must match one process on the joined batch."""
 
 from __future__ import annotations
 
@@ -86,7 +82,6 @@ def test_full_finetune_gets_bucket_view(ranks):
         case = ranks[rank]["full"]
         assert case["installed"] and case["is_ddp"]
         assert case["view"] is True
-        # Every gradient lives in the one all-reduce bucket: no second copy.
         assert case["n_grad_storages"] == 1
         assert case["hooks"] == 0
         _assert_parity(case, "full")

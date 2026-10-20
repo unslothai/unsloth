@@ -220,7 +220,6 @@ def _is_full_finetune(model):
 
 
 def _prepare_ddp_handler(accelerator, model):
-    """Construction-time DDP kwargs, set on accelerate's handler right before it builds DDP."""
     from accelerate.utils import DDPCommunicationHookType, DistributedDataParallelKwargs
 
     handler = accelerator.ddp_handler
@@ -229,9 +228,7 @@ def _prepare_ddp_handler(accelerator, model):
     if not isinstance(handler, DistributedDataParallelKwargs):
         return
     changed = False
-    # Full finetuning: gradients become views into the all-reduce buckets, so DDP keeps one copy of
-    # every gradient instead of two (Qwen3-0.6B on 2x T4: 13.34 -> 11.12 GiB peak, same step time,
-    # same losses). LoRA gradients are tiny and stay as they are.
+    # Full finetuning only: gradients become bucket views, one copy instead of two.
     if (
         os.environ.get("UNSLOTH_DDP_GRADIENT_AS_BUCKET_VIEW", "1") != "0"
         and not handler.gradient_as_bucket_view
@@ -240,7 +237,7 @@ def _prepare_ddp_handler(accelerator, model):
         handler.gradient_as_bucket_view = True
         changed = True
         _note("view", "Unsloth: DDP gradient_as_bucket_view = True (full finetuning).")
-    # Opt-in: halves the all-reduce bytes for float32 gradients, but rounds them before the average.
+    # Opt-in: rounds gradients before the average.
     hook = os.environ.get("UNSLOTH_DDP_COMM_HOOK", "").strip().lower()
     if hook in _COMM_HOOKS and handler.comm_hook == DDPCommunicationHookType.NO:
         handler.comm_hook = (
@@ -255,11 +252,7 @@ def _prepare_ddp_handler(accelerator, model):
 
 
 def install_unsloth_ddp_comm_defaults(trainer):
-    """Wrap ``accelerator.prepare_model`` so plain DDP gets Unsloth's construction-time defaults.
-
-    Applied inside prepare_model since transformers 4.x replaces ``ddp_handler`` in ``_wrap_model``.
-    Returns True when the wrapper is installed.
-    """
+    """Wrap ``accelerator.prepare_model``: transformers 4.x replaces ``ddp_handler`` in ``_wrap_model``."""
     accelerator = getattr(trainer, "accelerator", None)
     try:
         if accelerator is None or not _plain_ddp(accelerator):
