@@ -269,8 +269,6 @@ _CLS, _SEP = 101, 102
 
 
 def _llama_overflow_server(ubatch, n_ctx):
-    """llama-server's /tokenize (one token per word, CLS/SEP as add_special) and an embeddings
-    endpoint refusing an input past ``ubatch`` (500) and then past ``n_ctx`` (400) (#14309)."""
     import httpx
 
     embedded, tokenized = [], []
@@ -294,7 +292,7 @@ def _llama_overflow_server(ubatch, n_ctx):
                 return httpx.Response(
                     200, json = {"tokens": tokens if json["add_special"] else tokens[1:-1]}
                 )
-            # A snapshot: httpx serializes the body at send time, and the route reuses the dict.
+            # The route reuses the dict.
             embedded.append(copy.deepcopy(json))
             items = [json["input"]] if isinstance(json["input"], str) else json["input"]
             for item in items:
@@ -327,7 +325,6 @@ def _llama_overflow_server(ubatch, n_ctx):
     return _Client, embedded, tokenized
 
 
-# (ubatch, n_ctx): the batch refuses first, the context refuses first.
 _OVERFLOW_LIMITS = [(4, 512), (512, 4)]
 
 
@@ -353,7 +350,6 @@ def test_resident_embedding_gguf_truncates_an_oversized_input(studio_embedder, u
     payload = _call({"input": ["aa bbb c dddd e", "x y"], "model": "org/E-GGUF"})
     assert len(payload["data"]) == 2
     assert len(embedded) == 2
-    # Cut to the reported limit, its CLS/SEP kept; the input that fit is forwarded untouched.
     assert embedded[1]["input"] == [[_CLS, 2, 3, _SEP], "x y"]
     assert "truncate" not in embedded[0]
 
@@ -1607,7 +1603,6 @@ def test_resident_embedding_gguf_recuts_for_a_context_below_the_batch(studio_emb
         [[_CLS, 2, 3, 1, 4, _SEP]],
         [[_CLS, 2, 3, _SEP]],
     ]
-    # Tokenized once with and once without special tokens, reused for the second cut.
     assert len(tokenized) == 2
 
 

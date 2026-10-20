@@ -40089,8 +40089,7 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
 
 
 def _embeddings_truncate(body: dict) -> bool:
-    """``truncate`` (Ollama / TEI spelling), default on: an input past the model's limit is cut to
-    its first tokens with a warning instead of failing the whole request (#14309)."""
+    """``truncate`` (Ollama / TEI spelling), default on (#14309)."""
     truncate = body.get("truncate", True)
     if not isinstance(truncate, bool):
         raise HTTPException(status_code = 400, detail = "'truncate' must be a boolean.")
@@ -40474,10 +40473,8 @@ def _llama_embedding_overflow_limit(resp) -> Optional[int]:
 async def _truncated_llama_embedding_inputs(
     client, base_url, headers, value, limit, cache: dict
 ) -> Optional[list]:
-    """``value`` with every string past ``limit`` tokens replaced by its first tokens, keeping the
-    special tokens llama-server adds around a string (it adds none to a token array). None when
-    nothing could be cut, so the caller returns llama-server's own error. ``cache`` keeps the
-    tokenizations across the batch-limit and context-limit retries."""
+    """Strings past ``limit`` cut to their first tokens, keeping the special tokens llama-server
+    adds around a string. None when nothing was cut. ``cache`` spans the retries."""
     items = [value] if isinstance(value, str) else value
     # A top-level array holding numbers is one prompt (tokens, or tokens mixed with strings).
     if not isinstance(items, list) or any(not isinstance(item, (str, list)) for item in items):
@@ -40679,7 +40676,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             resp = await _client.post(
                 target_url, json = body, headers = headers, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             )
-            # Retry with oversized inputs cut to the reported limit: ubatch, then n_ctx.
+            # Retry cut to the reported limit: ubatch, then n_ctx.
             original, cache, limit = body.get("input"), {}, None
             for _ in range(2):
                 reported = _llama_embedding_overflow_limit(resp) if truncate else None

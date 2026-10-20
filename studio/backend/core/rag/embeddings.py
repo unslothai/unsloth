@@ -1505,8 +1505,7 @@ def max_tokens(model_name: str | None = None) -> int | None:
 
 
 def clip_to_limit(text: str, count, limit: int | None) -> tuple[str, bool]:
-    """The longest prefix of ``text`` within ``limit`` tokens by ``count``, and whether it was cut.
-    llama-server refuses an input past its batch instead of truncating."""
+    """The longest prefix of ``text`` within ``limit`` tokens by ``count``, and whether it was cut."""
     if not limit or count(text) <= limit:
         return text, False
     lo, hi = 0, len(text)
