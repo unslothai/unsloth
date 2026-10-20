@@ -763,3 +763,23 @@ def test_silence_keeps_the_reconfigured_stdout_encoding(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr.decode(errors = "replace")
     assert "Evaluating gsm8k\u2026" in proc.stdout.decode("utf-8")
+
+
+@pytest.mark.parametrize("backend", ["unsloth", "hf"])
+def test_gpu_memory_utilization_says_it_only_applies_to_vllm(env, monkeypatch, tmp_path, backend):
+    """Only the vllm branch forwards it, so a user capping memory on another backend would
+    otherwise read the dropped cap as an OOM."""
+    result = _run(
+        "org/model",
+        "--tasks",
+        "gsm8k",
+        "--backend",
+        backend,
+        "--gpu-memory-utilization",
+        "0.5",
+        "-o",
+        str(tmp_path / "o"),
+    )
+    assert result.exit_code == 0, result.output
+    assert "--gpu-memory-utilization applies to --backend vllm" in result.output
+    assert "gpu_memory_utilization" not in (env["model_args"] or {})

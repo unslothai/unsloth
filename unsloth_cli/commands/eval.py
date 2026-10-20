@@ -555,6 +555,9 @@ def evaluate(
         if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
             typer.echo("Note: Apple Silicon (MLX) detected, falling back to --backend hf.")
             backend = "hf"
+    # only the vllm branch forwards it, and a silently dropped memory cap reads as an OOM
+    if backend != "vllm" and gpu_memory_utilization is not None:
+        typer.echo(f"Note: --gpu-memory-utilization applies to --backend vllm, not {backend}.")
     # a pre-loaded model makes lm-eval single-process, so every rank would run every task
     if backend in ("unsloth", "vllm") and os.environ.get("WORLD_SIZE", "1") not in ("", "1"):
         _fail(
