@@ -37,11 +37,15 @@ def _clean(monkeypatch):
 # diffusers SYSTEM_PROMPTS at d42ebf9c6e.
 _T2I_SHA = "8b235a421bce2213d11ada01f5a1244443dd72303ffbb4cc9e5a0d8b0de5ab6f"
 _I2I_SHA = "95cec384d5b6d341caa9fb3f2c7ca45ee80c2364b3a95d4044aebf976f6dd3bf"
+_T2I_BBOX_SHA = "5f513d8ce5838732919f9e645507aa20ff373e88bf93132c768e063c9db3151f"
+_I2I_BBOX_SHA = "9ad10f947e401337cf155cac0518cc428159ef16f2f029f48aae2aaab8380a5e"
 
 
 def test_system_prompts_are_bfls_verbatim():
     assert hashlib.sha256(pup.SYSTEM_PROMPTS["t2i"].encode()).hexdigest() == _T2I_SHA
     assert hashlib.sha256(pup.SYSTEM_PROMPTS["i2i"].encode()).hexdigest() == _I2I_SHA
+    assert hashlib.sha256(pup.SYSTEM_PROMPTS["t2i_bbox"].encode()).hexdigest() == _T2I_BBOX_SHA
+    assert hashlib.sha256(pup.SYSTEM_PROMPTS["i2i_bbox"].encode()).hexdigest() == _I2I_BBOX_SHA
 
 
 @pytest.mark.parametrize(
@@ -1713,3 +1717,73 @@ def test_release_route_cancels_a_warm_start_and_stops_an_idle_server(routes, mon
     assert r.status_code == 200 and r.json() == {"released": True, "cancelled_warm": True}
     # Non-blocking: a request still using the server keeps it.
     assert calls == ["cancel", ("unload", False)]
+
+
+# ── layout captions (bounding boxes) ────────────────────────────────────────────────────────────────────────────────
+# A finished caption: every box id is cited as <id> (BFL's generate.py sends it to the DiT as it is).
+_FINISHED = (
+    "A white canvas with a red circle <circle_1> upper left and a blue square <square_1> lower right. "
+    '[{"id": "circle_1", "bbox": [100, 100, 400, 400], "desc": "solid red circle"}, '
+    '{"id": "square_1", "bbox": [600, 600, 900, 900], "desc": "solid blue square"}]'
+)
+# A request with boxes (BFL examples/inputs/balloons_boxes.json on the 0-1000 canvas): no id is cited yet.
+_REQUEST = (
+    "hot-air balloons over a green valley at sunrise "
+    '[{"id": "obj_1", "bbox": [80, 60, 480, 380], "desc": "a red and yellow striped hot-air balloon"}]'
+)
+
+
+@pytest.mark.parametrize(
+    "prompt, finished, boxes",
+    [
+        (_FINISHED, True, True),
+        (_REQUEST, False, True),
+        ("A poster that reads [SALE]", False, False),
+        ('A list ["a", "b"]', False, False),
+        # 0-1 coordinates are not the 0-1000 canvas.
+        ('x <o_1> [{"id": "o_1", "bbox": [0.1, 0.1, 0.4, 0.4], "desc": "d"}]', False, False),
+    ],
+)
+def test_box_table_detection(prompt, finished, boxes):
+    assert pup.is_finished_layout_caption(prompt) is finished
+    assert (pup.detect_box_table(prompt) is not None) is boxes
+
+
+def test_a_finished_layout_caption_skips_the_upsampler(runnable):
+    assert pup.upsample(_FINISHED) == _FINISHED
+    out = pup.enhance_for_generation([_FINISHED], family_name = "flux.3-klein", enhance_prompt = None)
+    assert runnable.calls == []
+    # Used as it is, which is what enhancement off records, not a failed rewrite.
+    assert out.status == "off" and out.encoded(_FINISHED) == _FINISHED and out.caption_for(_FINISHED) is None
+
+
+def test_a_box_request_uses_the_layout_prompt_and_keeps_the_boxes(runnable):
+    def reply(payload):
+        # The upsampler re-plans obj_1 under its own id and adds a row; reconcile restores the locked box and id.
+        return (
+            "Full-color photograph with a balloon <balloon_1> and the sun <sun_1>. "
+            '[{"id": "balloon_1", "bbox": [82, 58, 478, 381], "desc": "A striped balloon."}, '
+            '{"id": "sun_1", "bbox": [470, 455, 535, 525], "desc": "A low sun."}]'
+        )
+
+    runnable.reply = reply
+    caption = pup.upsample(_REQUEST, variant = "base")
+    payload = runnable.calls[0]["payload"]
+    assert payload["messages"][0]["content"] == pup.SYSTEM_PROMPTS["t2i_bbox"]
+    text = payload["messages"][1]["content"][0]["text"]
+    assert text.startswith("ORIGINAL PROMPT:\nhot-air balloons over a green valley at sunrise\n\nLOCKED")
+    assert '"bbox": [80, 60, 480, 380]' in text
+    assert caption == (
+        "Full-color photograph with a balloon <obj_1> and the sun <sun_1>. "
+        '[{"id": "obj_1", "bbox": [80, 60, 480, 380], "desc": "A striped balloon."}, '
+        '{"id": "sun_1", "bbox": [470, 455, 535, 525], "desc": "A low sun."}]'
+    )
+
+
+def test_a_box_edit_uses_the_layout_edit_prompt(runnable):
+    pup.upsample(_REQUEST, reference_images = [_png_url()])
+    content = runnable.calls[0]["payload"]["messages"][1]["content"]
+    assert runnable.calls[0]["payload"]["messages"][0]["content"] == pup.SYSTEM_PROMPTS["i2i_bbox"]
+    assert content[0]["type"] == "image_url"
+    assert content[-1]["text"].startswith("Reference images follow in attachment order: ref_image_0")
+    assert "User editing instruction: ORIGINAL PROMPT:" in content[-1]["text"]
