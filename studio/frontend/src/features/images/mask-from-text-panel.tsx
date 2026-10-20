@@ -22,6 +22,7 @@ import {
   MASK_FROM_TEXT_PLACEHOLDER,
   parseMaskPrompt,
   segmenterDownloadFraction,
+  segmenterDownloadNotice,
   segmenterNeedsDownload,
   segmenterReady,
   segmentSummary,
@@ -81,12 +82,14 @@ function SegmenterDownloadNotice({
   const { download } = status;
   const fraction = segmenterDownloadFraction(download);
   const size = status.size_bytes ? formatBytes(status.size_bytes) : null;
+  const label = status.label;
+  const notice = segmenterDownloadNotice(status, size);
   const start = async () => {
     setBusy(true);
     try {
       await startSegmenterDownload(hfApiToken(getHfToken()));
     } catch (err) {
-      toast.error("Could not download SAM 3", {
+      toast.error(`Could not download ${label}`, {
         description: err instanceof Error ? err.message : undefined,
       });
     } finally {
@@ -113,8 +116,8 @@ function SegmenterDownloadNotice({
           <div className="flex items-center justify-between gap-2">
             <span className="text-muted-foreground">
               {download.bytes_total
-                ? `Downloading SAM 3: ${formatBytes(download.bytes_done ?? 0)} of ${formatBytes(download.bytes_total)}`
-                : "Downloading SAM 3..."}
+                ? `Downloading ${label}: ${formatBytes(download.bytes_done ?? 0)} of ${formatBytes(download.bytes_total)}`
+                : `Downloading ${label}...`}
             </span>
             <Button
               type="button"
@@ -136,8 +139,8 @@ function SegmenterDownloadNotice({
       ) : (
         <>
           <span className="text-muted-foreground">
-            {`Mask from text uses SAM 3${size ? ` (${size})` : ""}, which is not downloaded yet.`}
-            {status.gated ? (
+            {notice.text}
+            {notice.needsLicense ? (
               <>
                 {" Its license must be accepted on Hugging Face first"}
                 {status.license_url ? (

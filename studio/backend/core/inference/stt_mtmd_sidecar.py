@@ -507,7 +507,11 @@ class _MtmdDownloadState:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
             selected: list[_SelectedHubFile] = []
-            revision: Optional[str] = None
+            # A spec may pin a commit (the segmenter's variants); none, or a branch such as "main", resolves the newest.
+            pinned = getattr(spec, "revision", None)
+            revision: Optional[str] = (
+                pinned if isinstance(pinned, str) and _HF_COMMIT_SHA.fullmatch(pinned) else None
+            )
             for filename in getattr(spec, "files", None) or (spec.model_file, spec.mmproj_file):
                 meta = get_hf_file_metadata(
                     hf_hub_url(spec.repo, filename, revision = revision),

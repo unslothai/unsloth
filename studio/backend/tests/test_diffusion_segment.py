@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import io
+import re
 import threading
 import time
 import types
@@ -790,55 +791,209 @@ def test_sharded_override_needs_every_shard(tmp_path, monkeypatch):
 
 def test_status_shape(monkeypatch):
     monkeypatch.delenv(seg.ENV_PATH_OVERRIDE, raising = False)
+    monkeypatch.delenv(seg.ENV_VARIANT, raising = False)
     monkeypatch.setattr(seg, "_cached_snapshot", lambda *a, **k: None)
     body = seg.status()
-    assert body["repo"] == "facebook/sam3" and body["gated"] is True
+    assert body["variant"] == seg.DEFAULT_VARIANT == "sam3.1" and body["label"] == "SAM 3.1"
+    assert body["repo"] == seg.SAM31_REPO and body["gated"] is False
     assert body["downloaded"] is False and body["loaded"] is False
-    assert body["license_url"].startswith("https://huggingface.co/facebook/sam3")
-    assert body["size_bytes"] > 3_000_000_000
+    assert body["license_url"].startswith(f"https://huggingface.co/{seg.SAM31_REPO}")
+    assert 1_600_000_000 < body["size_bytes"] < 1_800_000_000
     assert {"downloading", "error", "bytes_total", "bytes_done"} <= set(body["download"])
 
 
-def test_the_download_names_only_what_sam3model_reads():
-    assert seg.SEGMENTER_SPEC.files == seg.SEGMENTER_FILES
-    assert "model.safetensors" in seg.SEGMENTER_FILES and "sam3.pt" not in seg.SEGMENTER_FILES
+# ── variants ────────────────────────────────────────────────────────────────────────────────────────────────────────
+_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def test_variant_table():
+    assert list(seg.SEGMENTER_VARIANTS) == ["sam3.1", "sam3"] and seg.DEFAULT_VARIANT == "sam3.1"
+    sam31, sam3 = seg.SEGMENTER_VARIANTS["sam3.1"], seg.SEGMENTER_VARIANTS["sam3"]
+    assert sam31.repo == seg.SAM31_REPO and re.fullmatch(r"[\w.-]+/[\w.-]+", sam31.repo)
+    assert sam31.gated is False and sam3.gated is True
+    assert sam3.repo == "facebook/sam3" and sam3.license_url == "https://huggingface.co/facebook/sam3"
+    # bf16 SAM 3.1 is half of the fp32 facebook/sam3 download.
+    assert 1_600_000_000 < sam31.size_bytes < 1_800_000_000 < 3_400_000_000 < sam3.size_bytes
+    for variant in seg.SEGMENTER_VARIANTS.values():
+        assert variant.id in seg.SEGMENTER_SPECS
+        spec = seg.SEGMENTER_SPECS[variant.id]
+        assert (spec.repo, spec.files, spec.revision) == (variant.repo, variant.files, variant.revision)
+        assert "model.safetensors" in variant.files and "sam3.pt" not in variant.files
+        assert not any(name.endswith(".pt") for name in variant.files)
+        assert variant.license_url.startswith(f"https://huggingface.co/{variant.repo}")
+
+
+def test_pinned_revision_constants():
+    """facebook/sam3 is pinned to a commit. The unsloth/sam3.1 pin is a placeholder until that repo is uploaded:
+    "main" (resolved and recorded at download time) or a full commit sha, never a short or partial one."""
+    assert _SHA.fullmatch(seg.SAM3_REVISION)
+    assert seg.SAM31_REVISION == "main" or _SHA.fullmatch(seg.SAM31_REVISION)
+    for variant in seg.SEGMENTER_VARIANTS.values():
+        assert variant.revision == "main" or _SHA.fullmatch(variant.revision)
+        assert seg.pinned_revision(variant) == (None if variant.revision == "main" else variant.revision)
+    assert seg.pinned_revision(seg.SEGMENTER_VARIANTS["sam3"]) == seg.SAM3_REVISION
+
+
+def test_variant_env_choice(monkeypatch):
+    for value, expected in (
+        ("sam3", "sam3"),
+        (" SAM3.1 ", "sam3.1"),
+        ("facebook/sam3", "sam3"),
+        (seg.SAM31_REPO.upper(), "sam3.1"),
+        ("sam2", None),
+        ("", None),
+    ):
+        monkeypatch.setenv(seg.ENV_VARIANT, value)
+        assert seg.requested_variant_id() == expected, value
+
+
+def _cached(*ids):
+    return lambda model_id = seg.DEFAULT_VARIANT, **_k: f"/cache/{model_id}" if model_id in ids else None
+
+
+def test_active_variant_prefers_the_default_and_keeps_an_existing_sam3(monkeypatch):
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE, raising = False)
+    monkeypatch.delenv(seg.ENV_VARIANT, raising = False)
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached())
+    assert seg.active_variant().id == "sam3.1" and seg.model_dir() is None
+    # An install that already fetched facebook/sam3 keeps using it rather than downloading again.
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3"))
+    assert seg.active_variant().id == "sam3" and seg.model_dir() == "/cache/sam3"
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3", "sam3.1"))
+    assert seg.active_variant().id == "sam3.1" and seg.model_dir() == "/cache/sam3.1"
+    # The env choice wins even when only the other variant is on disk.
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3")
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3.1"))
+    assert seg.active_variant().id == "sam3" and seg.model_dir() is None
+
+
+def test_status_reports_gated_and_ungated_variants(monkeypatch):
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE, raising = False)
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached())
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3")
+    body = seg.status()
+    assert (body["variant"], body["label"], body["repo"], body["gated"]) == ("sam3", "SAM 3", "facebook/sam3", True)
+    assert body["revision"] == seg.SAM3_REVISION and body["size_bytes"] == seg.SAM3_SIZE_BYTES
+    assert body["downloaded"] is False
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3.1")
+    body = seg.status()
+    assert (body["variant"], body["label"], body["repo"], body["gated"]) == ("sam3.1", "SAM 3.1", seg.SAM31_REPO, False)
+    assert body["size_bytes"] == seg.SAM31_SIZE_BYTES
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3.1"))
+    assert seg.status()["downloaded"] is True
+    # Unsupported installs still name the variant they would use, without touching the cache.
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: False)
+    monkeypatch.setattr(seg, "_cached_snapshot", lambda *a, **k: pytest.fail("cache read"))
+    body = seg.status()
+    assert body["variant"] == "sam3.1" and body["downloaded"] is False
+
+
+def test_override_still_wins_over_the_variant(tmp_path, monkeypatch):
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, str(tmp_path))
+    monkeypatch.setenv(seg.ENV_VARIANT, "sam3")
+    monkeypatch.setattr(seg, "_cached_snapshot", _cached("sam3", "sam3.1"))
+    for name in ("config.json", "model.safetensors", "tokenizer.json"):
+        (tmp_path / name).write_bytes(b"{}")
+    assert seg.model_dir() == str(tmp_path)
+    monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    body = seg.status()
+    assert body["override"] is True and body["downloaded"] is True and body["variant"] == "sam3"
+    # With the override the cache is not consulted: a cached facebook/sam3 never relabels the override as SAM 3.
+    monkeypatch.delenv(seg.ENV_VARIANT)
+    monkeypatch.setattr(seg, "_cached_snapshot", lambda *a, **k: pytest.fail("cache read"))
+    body = seg.status()
+    assert body["variant"] == seg.DEFAULT_VARIANT and body["gated"] is False and body["downloaded"] is True
+    assert seg.active_variant().id == seg.DEFAULT_VARIANT
+
+
+def test_cached_snapshot_reads_the_variant_repo_at_its_pin(tmp_path, monkeypatch):
+    from core.inference import stt_sidecar
+
+    monkeypatch.setattr(stt_sidecar, "_read_revision_record", lambda repo: None)
+    variant = seg.SEGMENTER_VARIANTS["sam3"]
+    snapshot = tmp_path / "models--facebook--sam3" / "snapshots" / variant.revision
+    snapshot.mkdir(parents = True)
+    for name in variant.files[:-1]:
+        (snapshot / name).write_text("{}")
+    assert seg._cached_snapshot("sam3", hub_cache = tmp_path) is None  # no weights yet
+    (snapshot / seg.SEGMENTER_WEIGHTS_FILE).write_bytes(b"")
+    assert seg._cached_snapshot("sam3", hub_cache = tmp_path) == str(snapshot)
+    # facebook/sam3's files are not unsloth/sam3.1's.
+    assert seg._cached_snapshot("sam3.1", hub_cache = tmp_path) is None
 
 
 def test_gated_download_error_names_the_license():
     class GatedRepoError(Exception):
         pass
 
+    sam3 = seg.SEGMENTER_VARIANTS["sam3"]
     message = seg.describe_download_error("sam3", GatedRepoError("403 Client Error"))
-    assert "license" in message and seg.SEGMENTER_LICENSE_URL in message
+    assert "license" in message and sam3.license_url in message and sam3.repo in message
     assert seg.describe_download_error("sam3", RuntimeError("disk full")) is None
+    # An ungated variant needs no token or license: a refusal there keeps the generic message.
+    assert seg.describe_download_error("sam3.1", GatedRepoError("401 Client Error")) is None
 
 
-def test_shared_download_state_uses_the_spec_file_list(monkeypatch, tmp_path):
-    """The pinned downloader fetches a spec's ``files`` when it has them (the dictation specs keep their pair)."""
+@pytest.mark.parametrize("variant_id", ["sam3.1", "sam3"])
+def test_download_fetches_the_variant_files_at_its_revision(monkeypatch, tmp_path, variant_id):
+    """The pinned downloader asks for exactly the variant's files, at its pinned commit (or main, recorded)."""
+    from huggingface_hub import hf_hub_url
+
     from core.inference import stt_mtmd_sidecar as mtmd
 
+    variant = seg.SEGMENTER_VARIANTS[variant_id]
+    resolved = seg.pinned_revision(variant) or "b" * 40
     seen = []
 
     class _Meta:
-        commit_hash = "a" * 40
+        commit_hash = resolved
         size = 10
         etag = "e"
 
     def _meta(url, token = None):
         seen.append(url)
-        raise RuntimeError("stop after the first lookup")
+        return _Meta()
+
+    def _stop(repo):
+        seen.append(("claim", repo))
+        raise RuntimeError("stop before the transfer")
 
     monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _meta)
+    monkeypatch.setattr(mtmd, "_claim_stt_repository", _stop)
     state = mtmd._MtmdDownloadState(
-        specs = {seg.SEGMENTER_ID: seg.SEGMENTER_SPEC},
+        specs = seg.SEGMENTER_SPECS,
         cached_paths = lambda *a, **k: None,
         resolve = seg._resolve_segmenter_id,
-        label = "SAM 3 segmenter",
-        describe_error = lambda model_id, error: "described",
+        label = "Mask segmenter",
+        describe_error = lambda model_id, error: f"described {model_id}",
     )
-    state._run(seg.SEGMENTER_ID, None, hub_cache = tmp_path)
-    assert seen and seen[0].endswith(seg.SEGMENTER_FILES[0])
-    assert state.status()["error"] == "described"
+    state._run(variant_id, None, hub_cache = tmp_path)
+    # The first lookup resolves the revision (the pin, else main), the rest are asked at that commit.
+    expected = [hf_hub_url(variant.repo, variant.files[0], revision = seg.pinned_revision(variant))]
+    expected += [hf_hub_url(variant.repo, name, revision = resolved) for name in variant.files[1:]]
+    if variant.revision == "main":
+        assert "/resolve/main/" in expected[0]
+    else:
+        assert all(f"/resolve/{variant.revision}/" in url for url in expected)
+    assert seen[:-1] == expected and seen[-1] == ("claim", variant.repo)
+    assert state.status()["error"] == f"described {variant_id}"
+
+
+def test_start_download_uses_the_active_variant(monkeypatch):
+    started = []
+
+    class _State:
+        def start(self, model_id, token):
+            started.append((model_id, token))
+            return "dl"
+
+    monkeypatch.setattr(seg, "_get_download_state", lambda: _State())
+    monkeypatch.setattr(seg, "active_variant", lambda: seg.SEGMENTER_VARIANTS["sam3"])
+    assert seg.start_download("hf_x") == "dl" and started[-1] == ("sam3", "hf_x")
+    assert seg.start_download(None, "sam3.1") == "dl" and started[-1] == ("sam3.1", None)
+    with pytest.raises(ValueError):
+        seg.start_download(None, "sam2")
 
 
 # ── GPU arbiter hooks ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -1370,13 +1525,25 @@ def test_status_download_cancel_release_routes(client, monkeypatch):
     )
     assert http.get("/api/inference/images/segment/status").json()["downloaded"] is False
     monkeypatch.setattr(seg, "transformers_supports_sam3", lambda: True)
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE, raising = False)
+    monkeypatch.setattr(seg, "active_variant", lambda: seg.SEGMENTER_VARIANTS["sam3.1"])
     started = {}
     monkeypatch.setattr(
-        seg, "start_download", lambda token: started.setdefault("token", token) and "dl-1"
+        seg,
+        "start_download",
+        lambda token, variant: started.update(token = token, variant = variant) or "dl-1",
     )
     monkeypatch.setattr(seg, "download_status", lambda: {"downloading": True})
     r = http.post("/api/inference/images/segment/download", json = {"hf_token": "hf_x"})
-    assert r.status_code == 200 and r.json()["download_id"] == "dl-1" and started["token"] == "hf_x"
+    assert r.status_code == 200 and r.json()["download_id"] == "dl-1"
+    assert started == {"token": "hf_x", "variant": "sam3.1"}
+    body = r.json()
+    assert (body["variant"], body["repo"], body["gated"]) == ("sam3.1", seg.SAM31_REPO, False)
+    assert body["size_bytes"] == seg.SAM31_SIZE_BYTES and body["downloading"] is True
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, "/somewhere")
+    r = http.post("/api/inference/images/segment/download")
+    assert r.status_code == 409 and seg.SAM31_REPO in r.json()["detail"]
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE)
     monkeypatch.setattr(seg, "cancel_download", lambda: True)
     r = http.post("/api/inference/images/segment/cancel")
     assert r.status_code == 200 and r.json()["cancelled"] is True

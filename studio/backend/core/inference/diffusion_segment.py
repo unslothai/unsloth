@@ -13,9 +13,12 @@ SAM 3 and transformers' post-processing (ComfyUI drops the presence term, and th
 picture, "elephant" in a living room, masks the sofa at 0.72; with it every absent concept scores below 0.02 and no
 present one changes), and ComfyUI's optional crop-and-refine pass through the tracker's SAM decoder is not run.
 
-Weights are the official transformers-format ``facebook/sam3`` checkpoint (gated: the license is accepted on Hugging
-Face). SAM 3.1 ships only an original-format multiplex checkpoint with no transformers integration, so it is not
-loaded here; ``UNSLOTH_SAM3_PATH`` points at any local transformers-format SAM 3 directory instead.
+Weights come from a small table of variants (SEGMENTER_VARIANTS). The default is SAM 3.1: Meta ships it only as an
+original-format multiplex checkpoint, so it is the SAM 3.1 detector converted with transformers' own SAM 3 converter
+into a BF16 ``Sam3Model`` repository (ungated, SAM License). The official transformers-format ``facebook/sam3``
+(gated: the license is accepted on Hugging Face) stays selectable with ``UNSLOTH_SAM3_VARIANT=sam3``, and is used
+when it is already downloaded and SAM 3.1 is not. ``UNSLOTH_SAM3_PATH`` points at any local transformers-format SAM 3
+directory instead.
 
 The model is auxiliary to the image model, like the FLUX.3 prompt upsampler: loaded on the first request, kept for
 a short keep-alive, unloaded right after a call when the accelerator is tight, and dropped whenever the GPU arbiter
@@ -44,11 +47,8 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 # ── weights ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-SEGMENTER_ID = "sam3"
-SEGMENTER_REPO = "facebook/sam3"
-SEGMENTER_LICENSE_URL = "https://huggingface.co/facebook/sam3"
 SEGMENTER_WEIGHTS_FILE = "model.safetensors"
-# Only what Sam3Model and its tokenizer read: the repo also holds sam3.pt, the same weights in the original format.
+# Only what Sam3Model and its tokenizer read: facebook/sam3 also holds sam3.pt, the same weights in the original format.
 SEGMENTER_FILES = (
     "config.json",
     "processor_config.json",
@@ -59,8 +59,58 @@ SEGMENTER_FILES = (
     "merges.txt",
     SEGMENTER_WEIGHTS_FILE,
 )
+
+
+@dataclass(frozen = True)
+class SegmenterVariant:
+    """One downloadable transformers-format SAM 3 checkpoint. ``revision`` is a full commit sha, or "main" for a repo
+    whose pin is not set yet (the download then records the commit it resolved)."""
+
+    id: str
+    label: str
+    repo: str
+    revision: str
+    size_bytes: int
+    gated: bool
+    license_url: str
+    files: tuple = SEGMENTER_FILES
+
+
+# SAM 3.1's detector in transformers' Sam3Model format, BF16 (converted from facebook/sam3.1's sam3.1_multiplex.pt).
+SAM31_REPO = "unsloth/sam3.1"
+# PLACEHOLDER: the unsloth/sam3.1 commit sha, filled in once the repo is uploaded. "main" until then.
+SAM31_REVISION = "main"
+# 1_680_935_372 bytes of bf16 safetensors plus the configs and tokenizer.
+SAM31_SIZE_BYTES = 1_680_935_372 + 5_037_537
+
+SAM3_REPO = "facebook/sam3"
+SAM3_REVISION = "3c879f39826c281e95690f02c7821c4de09afae7"
 # fp32 safetensors as published (half of it once loaded in bf16 / fp16), plus the tokenizer and configs.
-SEGMENTER_SIZE_BYTES = 3_439_938_512 + 5_060_000
+SAM3_SIZE_BYTES = 3_439_938_512 + 5_060_000
+
+SEGMENTER_VARIANTS: dict[str, SegmenterVariant] = {
+    "sam3.1": SegmenterVariant(
+        id = "sam3.1",
+        label = "SAM 3.1",
+        repo = SAM31_REPO,
+        revision = SAM31_REVISION,
+        size_bytes = SAM31_SIZE_BYTES,
+        gated = False,
+        license_url = f"https://huggingface.co/{SAM31_REPO}/blob/main/LICENSE",
+    ),
+    "sam3": SegmenterVariant(
+        id = "sam3",
+        label = "SAM 3",
+        repo = SAM3_REPO,
+        revision = SAM3_REVISION,
+        size_bytes = SAM3_SIZE_BYTES,
+        gated = True,
+        license_url = f"https://huggingface.co/{SAM3_REPO}",
+    ),
+}
+DEFAULT_VARIANT = "sam3.1"
+ENV_VARIANT = "UNSLOTH_SAM3_VARIANT"
+
 ENV_PATH_OVERRIDE = "UNSLOTH_SAM3_PATH"
 ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
 
@@ -180,13 +230,40 @@ def _shards_complete(index: Path) -> bool:
     return all(isinstance(name, str) and (index.parent / name).is_file() for name in shards)
 
 
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def pinned_revision(variant: SegmenterVariant) -> Optional[str]:
+    """The variant's commit pin, or None while it is a branch ("main"): the download then pins what it resolves."""
+    return variant.revision if _COMMIT_SHA.fullmatch(variant.revision or "") else None
+
+
+def requested_variant_id() -> Optional[str]:
+    """The variant UNSLOTH_SAM3_VARIANT names (its id or repo, any case), else None. An unknown name is logged and
+    ignored, so a typo falls back to the default instead of breaking the status route."""
+    value = (os.environ.get(ENV_VARIANT) or "").strip().lower()
+    if not value:
+        return None
+    for variant in SEGMENTER_VARIANTS.values():
+        if value in (variant.id, variant.repo.lower()):
+            return variant.id
+    logger.warning(
+        "images.segment: unknown %s=%r (choices: %s), using the default",
+        ENV_VARIANT,
+        value,
+        ", ".join(SEGMENTER_VARIANTS),
+    )
+    return None
+
+
 def _cached_snapshot(
-    model_id: str = SEGMENTER_ID,
+    model_id: str = DEFAULT_VARIANT,
     *,
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[str]:
-    """The snapshot directory holding every SEGMENTER_FILES at one revision (the recorded one first), else None."""
+    """The snapshot directory holding every file of variant ``model_id`` at one revision (the pin first, then the
+    recorded one, then any cached commit), else None."""
     try:
         from huggingface_hub import hf_hub_download
 
@@ -196,23 +273,21 @@ def _cached_snapshot(
             _read_revision_record,
         )
 
+        variant = SEGMENTER_VARIANTS[model_id]
         root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
         if revision is not None:
             revisions = [revision]
         else:
-            recorded = _read_revision_record(SEGMENTER_REPO)
-            revisions = ([recorded] if recorded else []) + [
-                rev
-                for rev in _fallback_revisions(SEGMENTER_REPO, hub_cache = root)
-                if rev != recorded
-            ]
+            candidates = [pinned_revision(variant), _read_revision_record(variant.repo)]
+            candidates += _fallback_revisions(variant.repo, hub_cache = root)
+            revisions = list(dict.fromkeys(rev for rev in candidates if rev))
         for rev in revisions:
             paths = []
-            for filename in SEGMENTER_FILES:
+            for filename in variant.files:
                 try:
                     paths.append(
                         hf_hub_download(
-                            repo_id = SEGMENTER_REPO,
+                            repo_id = variant.repo,
                             filename = filename,
                             revision = rev,
                             local_files_only = True,
@@ -229,11 +304,36 @@ def _cached_snapshot(
     return None
 
 
+def _resolve_active() -> tuple[SegmenterVariant, Optional[str]]:
+    """(the active variant, its cached snapshot or None). UNSLOTH_SAM3_VARIANT decides when set; else the default,
+    unless only another variant is already downloaded (an install that fetched facebook/sam3 keeps using it). With
+    UNSLOTH_SAM3_PATH set the cache is never read: the chosen (or default) variant is reported, with no snapshot."""
+    chosen = requested_variant_id()
+    if (os.environ.get(ENV_PATH_OVERRIDE) or "").strip():
+        return SEGMENTER_VARIANTS[chosen or DEFAULT_VARIANT], None
+    if chosen is not None:
+        return SEGMENTER_VARIANTS[chosen], _cached_snapshot(chosen)
+    default = SEGMENTER_VARIANTS[DEFAULT_VARIANT]
+    path = _cached_snapshot(default.id)
+    if path is None:
+        for variant in SEGMENTER_VARIANTS.values():
+            if variant.id != default.id:
+                other = _cached_snapshot(variant.id)
+                if other is not None:
+                    return variant, other
+    return default, path
+
+
+def active_variant() -> SegmenterVariant:
+    return _resolve_active()[0]
+
+
 def model_dir() -> Optional[str]:
-    """The env override when set (a typo'd override is not silently replaced by the cache), else the cached repo."""
+    """The env override when set (a typo'd override is not silently replaced by the cache), else the active
+    variant's cached snapshot."""
     if (os.environ.get(ENV_PATH_OVERRIDE) or "").strip():
         return _override_dir()
-    return _cached_snapshot()
+    return _resolve_active()[1]
 
 
 @dataclass(frozen = True)
@@ -241,21 +341,37 @@ class _SegmenterSpec:
     repo: str
     files: tuple
     label: str
+    # A commit sha pins the download; "main" resolves (and records) the newest commit.
+    revision: Optional[str] = None
     model_file: str = SEGMENTER_WEIGHTS_FILE
     mmproj_file: str = "config.json"
 
 
-SEGMENTER_SPEC = _SegmenterSpec(repo = SEGMENTER_REPO, files = SEGMENTER_FILES, label = "SAM 3 segmenter")
+SEGMENTER_SPECS = {
+    variant.id: _SegmenterSpec(
+        repo = variant.repo,
+        files = variant.files,
+        label = f"{variant.label} segmenter",
+        revision = variant.revision,
+    )
+    for variant in SEGMENTER_VARIANTS.values()
+}
 
 
 def _resolve_segmenter_id(model_id: Optional[str]) -> str:
-    if (model_id or SEGMENTER_ID) != SEGMENTER_ID:
+    if model_id is None:
+        return active_variant().id
+    if model_id not in SEGMENTER_VARIANTS:
         raise ValueError(f"Unknown segmenter '{model_id}'.")
-    return SEGMENTER_ID
+    return model_id
 
 
-def describe_download_error(_model_id: str, error: object) -> Optional[str]:
-    """A gated-repo refusal names the license to accept; anything else keeps the generic message."""
+def describe_download_error(model_id: str, error: object) -> Optional[str]:
+    """A gated variant's refusal names the license to accept; anything else (and any ungated variant, which needs no
+    token) keeps the generic message."""
+    variant = SEGMENTER_VARIANTS.get(model_id)
+    if variant is None or not variant.gated:
+        return None
     name = type(error).__name__
     text = str(error)
     if (
@@ -266,7 +382,7 @@ def describe_download_error(_model_id: str, error: object) -> Optional[str]:
         or "awaiting a review" in text
     ):
         return (
-            f"{SEGMENTER_REPO} is gated on Hugging Face. Accept the SAM 3 license at {SEGMENTER_LICENSE_URL} "
+            f"{variant.repo} is gated on Hugging Face. Accept the {variant.label} license at {variant.license_url} "
             "with your account, add a Hugging Face token in Settings, then download again."
         )
     return None
@@ -292,17 +408,18 @@ def _get_download_state():
         if _download_state is None:
             from core.inference.stt_mtmd_sidecar import _MtmdDownloadState
             _download_state = _MtmdDownloadState(
-                specs = {SEGMENTER_ID: SEGMENTER_SPEC},
+                specs = SEGMENTER_SPECS,
                 cached_paths = _cached_download_paths,
                 resolve = _resolve_segmenter_id,
-                label = "SAM 3 segmenter",
+                label = "Mask segmenter",
                 describe_error = describe_download_error,
             )
         return _download_state
 
 
-def start_download(hf_token: Optional[str] = None) -> str:
-    return _get_download_state().start(SEGMENTER_ID, hf_token)
+def start_download(hf_token: Optional[str] = None, variant: Optional[str] = None) -> str:
+    """Download ``variant`` (the active one when None) in the background."""
+    return _get_download_state().start(_resolve_segmenter_id(variant), hf_token)
 
 
 def download_status() -> dict:
@@ -310,13 +427,33 @@ def download_status() -> dict:
 
 
 def cancel_download(download_id: Optional[str] = None) -> bool:
-    return _get_download_state().cancel(SEGMENTER_ID, download_id)
+    return _get_download_state().cancel(None, download_id)
+
+
+def variant_summary(variant: SegmenterVariant) -> dict:
+    """What the status and download routes report about a variant."""
+    return {
+        "variant": variant.id,
+        "label": variant.label,
+        "repo": variant.repo,
+        "revision": variant.revision,
+        "gated": variant.gated,
+        "license_url": variant.license_url,
+        "size_bytes": variant.size_bytes,
+    }
 
 
 def status() -> dict:
-    """The status route body: can it run, is it downloaded, is it loaded (and where), and the download progress."""
+    """The status route body: can it run, which variant, is it downloaded, is it loaded (and where), and the download
+    progress."""
     supported = transformers_supports_sam3()
-    path = model_dir() if supported else None
+    override = bool((os.environ.get(ENV_PATH_OVERRIDE) or "").strip())
+    if supported:
+        variant, path = _resolve_active()
+        if override:
+            path = _override_dir()
+    else:
+        variant, path = SEGMENTER_VARIANTS[requested_variant_id() or DEFAULT_VARIANT], None
     segmenter = _segmenter
     return {
         "supported": supported,
@@ -326,11 +463,8 @@ def status() -> dict:
         "downloaded": path is not None,
         "loaded": bool(segmenter is not None and segmenter.loaded),
         "device": segmenter.device if segmenter is not None and segmenter.loaded else None,
-        "repo": SEGMENTER_REPO,
-        "gated": True,
-        "license_url": SEGMENTER_LICENSE_URL,
-        "size_bytes": SEGMENTER_SIZE_BYTES,
-        "override": bool((os.environ.get(ENV_PATH_OVERRIDE) or "").strip()),
+        **variant_summary(variant),
+        "override": override,
         "download": download_status(),
     }
 
@@ -748,8 +882,9 @@ class MaskSegmenter:
             )
         path = path or model_dir()
         if path is None:
+            variant = active_variant()
             raise SegmenterNotDownloadedError(
-                f"The SAM 3 segmenter is not downloaded. Download {SEGMENTER_REPO} first."
+                f"The {variant.label} segmenter is not downloaded. Download {variant.repo} first."
             )
         queued_at = self._handover_epoch
         with self._run_lock:
@@ -1016,12 +1151,15 @@ def segment_image(
 __all__ = [
     "Concept",
     "DEFAULT_THRESHOLD",
+    "DEFAULT_VARIANT",
     "MaskSegmenter",
-    "SEGMENTER_REPO",
+    "SEGMENTER_VARIANTS",
+    "SegmenterVariant",
     "SegmenterBusyError",
     "SegmenterNotDownloadedError",
     "SegmenterReleaseTimeoutError",
     "SegmenterUnavailableError",
+    "active_variant",
     "get_segmenter",
     "parse_prompt",
     "release_segmenter",

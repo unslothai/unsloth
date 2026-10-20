@@ -12,6 +12,7 @@ import {
   parseSegmenterStatus,
   parseSegmentResult,
   segmenterDownloadFraction,
+  segmenterDownloadNotice,
   segmenterNeedsDownload,
   segmenterReady,
   segmentSummary,
@@ -264,4 +265,48 @@ test("a Replace that found nothing leaves both painters holding no mask", () => 
   // ...so the logical value stays null and the page's !maskImage / !localizedLayer checks still refuse Generate.
   assert.match(page, /onMaskChange\(applyMask\.empty \? null : url\)/);
   assert.match(localized, /dirty\.current = !applyMask\.empty;\s*onLayerChange\(applyMask\.empty \? null : url\)/);
+});
+
+test("the status parse reads the active variant, and an older backend reads as SAM 3", () => {
+  const sam31 = parseSegmenterStatus({
+    supported: true,
+    downloaded: false,
+    variant: "sam3.1",
+    label: "SAM 3.1",
+    repo: "unsloth/sam3.1",
+    revision: "main",
+    gated: false,
+    license_url: "https://huggingface.co/unsloth/sam3.1/blob/main/LICENSE",
+    size_bytes: 1_685_972_909,
+    download: {},
+  });
+  assert.equal(sam31.variant, "sam3.1");
+  assert.equal(sam31.label, "SAM 3.1");
+  assert.equal(sam31.revision, "main");
+  assert.equal(sam31.gated, false);
+  const old = parseSegmenterStatus({ supported: true, repo: "facebook/sam3", gated: true });
+  assert.equal(old.variant, "");
+  assert.equal(old.label, "SAM 3");
+  assert.equal(old.revision, "");
+});
+
+test("the download notice names the variant and asks for a license only when it is gated", () => {
+  const ungated = segmenterDownloadNotice({ label: "SAM 3.1", gated: false }, "1.7 GB");
+  assert.equal(ungated.text, "Mask from text uses SAM 3.1 (1.7 GB), which is not downloaded yet.");
+  assert.equal(ungated.needsLicense, false);
+  const gated = segmenterDownloadNotice({ label: "SAM 3", gated: true }, "3.4 GB");
+  assert.equal(gated.text, "Mask from text uses SAM 3 (3.4 GB), which is not downloaded yet.");
+  assert.equal(gated.needsLicense, true);
+  assert.equal(
+    segmenterDownloadNotice({ label: "", gated: false }, null).text,
+    "Mask from text uses SAM 3, which is not downloaded yet.",
+  );
+});
+
+test("the panel takes the notice text and the license hint from the active variant", () => {
+  const src = readSrc("features/images/mask-from-text-panel.tsx");
+  assert.match(src, /segmenterDownloadNotice\(status, size\)/);
+  assert.match(src, /notice\.needsLicense \?/);
+  assert.doesNotMatch(src, /status\.gated \?/);
+  assert.doesNotMatch(src, /"Could not download SAM 3"|Downloading SAM 3/);
 });

@@ -5312,7 +5312,7 @@ class MaskSegmenterDownloadRequest(BaseModel):
     """Body of POST /images/segment/download (optional)."""
 
     hf_token: Optional[str] = Field(
-        None, description = "Hugging Face token for the gated facebook/sam3 download"
+        None, description = "Hugging Face token, needed only for a gated segmenter variant (facebook/sam3)"
     )
 
 

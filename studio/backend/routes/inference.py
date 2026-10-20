@@ -53147,13 +53147,13 @@ async def prompt_upsampler_preview(
     return PromptUpsamplerPreviewResponse(enhanced_prompt = caption)
 
 
-# ── Text-to-mask segmenter (SAM 3) ───────────────────────────────────────────────────────────────────────────────────
+# ── Text-to-mask segmenter (SAM 3.1 / SAM 3) ─────────────────────────────────────────────────────────────────────
 
 
 @studio_router.get("/images/segment/status")
 async def mask_segmenter_status(current_subject: str = Depends(get_current_subject)):
-    """Whether SAM 3 can run here, is downloaded (gated facebook/sam3), is loaded and where, and the download
-    progress (the dictation download's shape)."""
+    """Whether SAM 3 can run here, which variant is active (repo, size, gated or not), whether it is downloaded and
+    loaded (and where), and the download progress (the dictation download's shape)."""
     from core.inference import diffusion_segment
     return JSONResponse(content = await asyncio.to_thread(diffusion_segment.status))
 
@@ -53164,26 +53164,37 @@ async def mask_segmenter_download(
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
-    """Start the background download of facebook/sam3's transformers weights; progress on /status."""
+    """Start the background download of the active segmenter variant's transformers weights; progress on /status."""
     from core.inference import diffusion_segment
     from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
 
     account_access.require_installation_owner()
     if not diffusion_segment.transformers_supports_sam3():
         raise HTTPException(status_code = 501, detail = diffusion_segment.status()["reason"])
-    if diffusion_segment.status().get("override"):
+    variant = await asyncio.to_thread(diffusion_segment.active_variant)
+    if (os.environ.get(diffusion_segment.ENV_PATH_OVERRIDE) or "").strip():
         raise HTTPException(
             status_code = 409,
-            detail = "The segmenter weights come from UNSLOTH_SAM3_PATH; unset it to download facebook/sam3.",
+            detail = (
+                f"The segmenter weights come from {diffusion_segment.ENV_PATH_OVERRIDE}; "
+                f"unset it to download {variant.repo}."
+            ),
         )
+    # An ungated variant needs no token; one the user set is still sent.
     token = account_access.account_hf_token(
         (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
     )
     try:
-        download_id = await asyncio.to_thread(diffusion_segment.start_download, token)
+        download_id = await asyncio.to_thread(diffusion_segment.start_download, token, variant.id)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    return JSONResponse(content = {**diffusion_segment.download_status(), "download_id": download_id})
+    return JSONResponse(
+        content = {
+            **diffusion_segment.download_status(),
+            **diffusion_segment.variant_summary(variant),
+            "download_id": download_id,
+        }
+    )
 
 
 @studio_router.post("/images/segment/cancel")

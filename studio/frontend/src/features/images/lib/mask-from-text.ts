@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Mask from text": SAM 3 finds the objects a short text names and returns their union as a mask the inpaint and
-// localized-edit painters load, so it stays editable with the brush. Pure logic only (no "@/" imports) so node:test
-// can load it directly.
+// "Mask from text": SAM 3.1 (or SAM 3) finds the objects a short text names and returns their union as a mask the
+// inpaint and localized-edit painters load, so it stays editable with the brush. Pure logic only (no "@/" imports)
+// so node:test can load it directly.
 
 /** Every segmenter route, in one place. */
 export const MASK_SEGMENT_ROUTES = {
@@ -34,7 +34,11 @@ export interface SegmenterStatus {
   downloaded: boolean;
   loaded: boolean;
   device: string | null;
+  /** The active checkpoint variant ("sam3.1", "sam3") and its display name. */
+  variant: string;
+  label: string;
   repo: string;
+  revision: string;
   gated: boolean;
   license_url: string;
   size_bytes: number | null;
@@ -78,6 +82,9 @@ export interface AppliedMask {
   empty?: boolean;
 }
 
+/** Shown when an older backend reports no variant name. */
+export const DEFAULT_SEGMENTER_LABEL = "SAM 3";
+
 const IDLE_DOWNLOAD: SegmenterDownload = {
   downloading: false,
   download_id: null,
@@ -103,7 +110,10 @@ export function parseSegmenterStatus(raw: unknown): SegmenterStatus {
     downloaded: body.downloaded === true,
     loaded: body.loaded === true,
     device: str(body.device),
+    variant: str(body.variant) ?? "",
+    label: str(body.label) || DEFAULT_SEGMENTER_LABEL,
     repo: str(body.repo) ?? "",
+    revision: str(body.revision) ?? "",
     gated: body.gated === true,
     license_url: str(body.license_url) ?? "",
     size_bytes: num(body.size_bytes),
@@ -159,6 +169,19 @@ export function parseSegmentResult(raw: unknown): SegmentResult {
     prompts,
     device: str(body.device) ?? "",
     elapsed_ms: num(body.elapsed_ms) ?? 0,
+  };
+}
+
+/** What the download notice says before a download: the variant's name and size, and whether its license must be
+ *  accepted on Hugging Face first (a gated variant only; an ungated one needs no token). ``size`` is pre-formatted. */
+export function segmenterDownloadNotice(
+  status: Pick<SegmenterStatus, "label" | "gated">,
+  size: string | null,
+): { text: string; needsLicense: boolean } {
+  const label = status.label || DEFAULT_SEGMENTER_LABEL;
+  return {
+    text: `Mask from text uses ${label}${size ? ` (${size})` : ""}, which is not downloaded yet.`,
+    needsLicense: status.gated === true,
   };
 }
 
