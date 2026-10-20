@@ -7,6 +7,8 @@ import contextlib
 import importlib
 import inspect
 import io
+import json
+import threading
 import os
 import re
 import shutil
@@ -17,6 +19,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from packaging.version import Version
 
 
 def _shared_setup_1(installs, monkeypatch):
@@ -1104,6 +1107,51 @@ class TestProgressLineNotes:
         assert msg not in bar_lines[0], f"note glued onto the bar: {bar_lines[0]!r}"
         assert any(ln.strip() == msg for ln in out.split("\n")), out
 
+    def _heartbeat(self, *, tty: bool, beats: int) -> str:
+        seen = threading.Event()
+        count = [0]
+        real_draw, real_note = ips._draw_progress, ips._note
+
+        def counted(real):
+            def wrapper(*args, **kwargs):
+                real(*args, **kwargs)
+                if threading.current_thread().name == "flash-attn-heartbeat":
+                    count[0] += 1
+                    if count[0] >= beats:
+                        seen.set()
+
+            return wrapper
+
+        def emit():
+            ips._progress("flash-attn")
+            with ips._install_heartbeat("flash-attn"):
+                assert seen.wait(10), "the heartbeat never fired"
+
+        with (
+            mock.patch.object(ips, "_stdout_is_tty", return_value = tty),
+            mock.patch.object(ips, "_HEARTBEAT_TICK_SECONDS", 0.01),
+            mock.patch.object(ips, "_HEARTBEAT_NOTE_SECONDS", 0.01),
+            mock.patch.object(ips, "_draw_progress", counted(real_draw)),
+            mock.patch.object(ips, "_note", counted(real_note)),
+        ):
+            return self._render(emit)
+
+    def test_captured_install_gets_a_still_installing_note(self):
+        out = self._heartbeat(tty = False, beats = 2)
+        notes = [ln.strip() for ln in out.split("\n") if "still installing" in ln]
+        assert notes[:2] == ["still installing flash-attn (0 min)"] * 2, out
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert all("still installing" not in ln for ln in bar_lines), bar_lines
+
+    def test_terminal_install_redraws_elapsed_time_on_the_bar_line(self):
+        out = self._heartbeat(tty = True, beats = 2)
+        assert "\n" not in out, "the heartbeat must stay on the bar line"
+        frames = out.split("\r")[1:]
+        assert all(" 5/14  flash-attn" in frame for frame in frames), frames
+        assert "flash-attn 0:00" in frames[1]
+        assert frames[-1].rstrip().endswith("flash-attn")
+        assert len(frames[-1]) >= max(len(frame) for frame in frames[1:-1])
+
     def test_note_aligns_under_the_step_value_column(self):
         out = self._render(lambda: (ips._progress("dependency overrides"), ips._note("hello")))
         note_line = next(ln for ln in out.split("\n") if ln.strip() == "hello")
@@ -1186,7 +1234,7 @@ class TestProgressLineNotes:
         allowed = [
             (n.lineno, n.end_lineno)
             for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name in {"_progress", "_end_progress_line"}
+            if isinstance(n, ast.FunctionDef) and n.name in {"_draw_progress", "_end_progress_line"}
         ]
         offenders = [
             n.lineno
@@ -1201,7 +1249,7 @@ class TestProgressLineNotes:
         ]
         assert not offenders, (
             f"install_python_stack.py:{offenders} write to sys.stdout directly; "
-            "only _progress()/_end_progress_line() may, everything else uses _safe_print()"
+            "only _draw_progress()/_end_progress_line() may, everything else uses _safe_print()"
         )
 
     def test_no_message_starts_with_a_newline(self):
@@ -1235,7 +1283,7 @@ class TestProgressLineNotes:
         test makes it wrap: every message fits one line at COLUMNS=100."""
         msg = (
             "AMD GPU detected but ROCm PyTorch could not be auto-installed. Manual install "
-            "may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd"
+            "may be required. See: https://unsloth.ai/docs/get-started/install/amd"
         )
         out = self._render(lambda: ips._note(msg), columns = "60")
         lines = [ln for ln in out.split("\n") if ln.strip()]
@@ -1243,7 +1291,7 @@ class TestProgressLineNotes:
         for line in lines:
             assert len(line) - len(line.lstrip()) == ips._INDENT + ips._COL, repr(line)
         assert " ".join(ln.strip() for ln in lines) == msg
-        assert any("https://docs.unsloth.ai" in ln for ln in lines), out
+        assert any("https://unsloth.ai/docs" in ln for ln in lines), out
 
     def test_note_falls_back_to_the_flat_indent_in_verbose_mode(self):
         """Verbose prints no bar and no step line, so the value column would indent
@@ -2720,29 +2768,106 @@ class TestDuplicateCoreMetadataRepair:
 
 
 class TestDesktopBackendVersionConstraint:
-    """Verify that UNSLOTH_DESKTOP_BACKEND_VERSION adds the floor pin when upgrading unsloth."""
+    """UNSLOTH_DESKTOP_BACKEND_VERSION floors the unsloth upgrade, lowered only for a lagging index (#14031)."""
 
-    def test_spec_includes_floor_when_env_set(self):
-        with mock.patch.dict(os.environ, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}):
-            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-            package_name = "unsloth"
-            unsloth_spec = (
-                f"{package_name}>={desktop_min_ver}"
-                if (desktop_min_ver and package_name == "unsloth")
-                else package_name
-            )
-            assert unsloth_spec == "unsloth>=2026.8.15"
+    @staticmethod
+    def _fake_uv(have, zoo = None):
+        def run(
+            argv,
+            input = None,
+            **kwargs,
+        ):
+            assert argv[:3] == ["uv", "pip", "compile"] and "--no-deps" in argv
+            out = Path(argv[argv.index("--output-file") + 1])
+            floor = re.search(r">=(\S+)", input)
+            if floor and Version(floor.group(1)) > Version(have):
+                return subprocess.CompletedProcess(argv, 1)
+            if input.strip() == "unsloth-zoo":
+                out.write_text(f"unsloth-zoo=={zoo or have} \\\n", encoding = "utf-8")
+            else:
+                cap = re.search(r"<=(\S+)", input)
+                pick = min(have, cap.group(1), key = Version) if cap else have
+                out.write_text(f"unsloth=={pick}\n", encoding = "utf-8")
+            return subprocess.CompletedProcess(argv, 0)
 
-    def test_spec_bare_when_env_unset(self):
-        with mock.patch.dict(os.environ, {}, clear = True):
-            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-            package_name = "unsloth"
-            unsloth_spec = (
-                f"{package_name}>={desktop_min_ver}"
-                if (desktop_min_ver and package_name == "unsloth")
-                else package_name
-            )
-            assert unsloth_spec == "unsloth"
+        return run
+
+    def _spec(
+        self,
+        tmp_path,
+        env,
+        have = "2026.10.3",
+        package = "unsloth",
+        zoo = None,
+    ):
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.sys, "prefix", str(tmp_path)),
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(
+                ips,
+                "_uv_config_index_policy",
+                return_value = {
+                    "unreadable": False,
+                    "no_index": None,
+                    "extra_indexes": [],
+                    "default_index": None,
+                },
+            ),
+            mock.patch.object(ips.subprocess, "run", side_effect = self._fake_uv(have, zoo)) as run,
+        ):
+            return ips._desktop_unsloth_spec(package), run.call_count
+
+    def test_spec_includes_floor_when_env_set(self, tmp_path):
+        spec, calls = self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"})
+        assert spec == "unsloth>=2026.8.15"
+        assert calls == 1, "an index that has the release answers the one probe"
+
+    def test_spec_bare_when_env_unset(self, tmp_path):
+        assert self._spec(tmp_path, {})[0] == "unsloth"
+        assert (
+            self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}, package = "x")[0]
+            == "x"
+        )
+
+    def test_lagging_index_lowers_floor_and_writes_marker(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_DEFAULT_INDEX": "https://feed.example/simple",
+        }
+        spec, _ = self._spec(tmp_path, env)
+        assert spec == "unsloth==2026.10.3"
+        marker = json.loads((tmp_path / ips.FEED_CEILING_MARKER).read_text(encoding = "utf-8"))
+        assert marker == {"requested": "2026.10.6", "available": "2026.10.3"}
+
+        # Once the index has the release, the floor stays and the marker goes.
+        spec, _ = self._spec(tmp_path, env, have = "2026.10.6")
+        assert spec == "unsloth>=2026.10.6"
+        assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
+
+    def test_extra_index_beside_pypi_counts(self, tmp_path):
+        # first-index: a lagging UV_INDEX mirror shadows PyPI for the packages it carries.
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_EXCLUDE_NEWER_PACKAGE": "unsloth=2026-10-09",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+
+    def test_zoo_lagging_unsloth_caps_the_backend(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env, zoo = "2026.10.2")[0] == "unsloth==2026.10.2"
+
+    def test_upload_cutoff_alone_counts(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6", "UV_EXCLUDE_NEWER": "2026-10-09"}
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
 
 
 class TestRecordlessDistributionRecovery:

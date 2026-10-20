@@ -338,8 +338,9 @@ def resolve_selected_cuda_ordinal(
     order (``4,5`` -> torch 0,1; ``1,0`` reverses them), hence going through the hardware layer
     that owns the mask.
 
-    Neither engine shards a checkpoint, so several cards still resolve to one: most free VRAM
-    wins, as ``auto_select_gpu_ids`` already does for training, ties to the lowest ordinal. Taking
+    Neither engine shards a checkpoint, so several cards resolve to one PRIMARY card (the
+    multi-GPU layer, diffusion_multigpu, may place companions or a denoiser replica on the
+    others, see :func:`resolve_selected_cuda_ordinals`): most free VRAM wins, as ``auto_select_gpu_ids`` already does for training, ties to the lowest ordinal. Taking
     the FIRST id instead would land on ordinal 0 whenever everything is selected, i.e. the small
     card on the mixed boxes this exists for. Resolved ONCE per load and carried, never re-derived:
     free VRAM moves the moment the checkpoint lands.
@@ -352,9 +353,36 @@ def resolve_selected_cuda_ordinal(
     still run -- they read the mask and nvidia-smi -- so the single card the UI sends resolves and
     only a multi-card pick comes back None.
     """
+    ordinals = resolve_selected_cuda_ordinals(gpu_ids)
+    if not ordinals:
+        return None
+    if len(ordinals) == 1:
+        return ordinals[0]
+    if not allow_ranking:
+        return None
+    return rank_cuda_ordinals(ordinals)[0]
+
+
+def rank_cuda_ordinals(ordinals: list[int]) -> list[int]:
+    """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last)."""
+
+    def _free_vram(ordinal: int) -> int:
+        try:
+            import torch
+            return int(torch.cuda.mem_get_info(ordinal)[0])
+        except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
+            return -1
+
+    return sorted(ordinals, key = lambda ordinal: (-_free_vram(ordinal), ordinal))
+
+
+def resolve_selected_cuda_ordinals(gpu_ids: Optional[list[int]]) -> list[int]:
+    """Every torch ordinal of the selection, in ascending order (validated and translated through the mask exactly as
+    :func:`resolve_selected_cuda_ordinal` does). Empty for no selection; raises ValueError for one this host cannot
+    honour. The multi-GPU layer (diffusion_multigpu) uses the cards beyond the primary."""
     wanted = sorted({int(gpu_id) for gpu_id in gpu_ids or ()})
     if not wanted:
-        return None
+        return []
     try:
         from utils.hardware.hardware import (
             get_parent_visible_gpu_ids,
@@ -372,19 +400,7 @@ def resolve_selected_cuda_ordinal(
             f"Requested GPU {wanted} but none of them are visible to this process "
             f"(visible: {visible}). Clear the GPU selection to use the default device."
         )
-    if len(ordinals) == 1:
-        return ordinals[0]
-    if not allow_ranking:
-        return None
-
-    def _free_vram(ordinal: int) -> int:
-        try:
-            import torch
-            return int(torch.cuda.mem_get_info(ordinal)[0])
-        except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
-            return -1
-
-    return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
+    return sorted(dict.fromkeys(ordinals))
 
 
 _UNPLANNED = object()
@@ -395,6 +411,8 @@ _PLANNED_ORDINAL: ContextVar[Any] = ContextVar("media_planned_gpu_ordinal", defa
 
 # Free-VRAM readings this close are noise, so the lower ordinal keeps an idle uniform host on card 0.
 _AUTO_FREE_TIE_BYTES = 256 * 1024**2
+# Set once any thread was pinned to a card other than 0: pooled workers may then sit elsewhere.
+_PINNED_AWAY_FROM_ZERO = False
 
 
 def resolve_auto_cuda_ordinal() -> Optional[int]:
@@ -406,7 +424,8 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     single-GPU fit, ties to the lowest ordinal. Read from nvidia-smi alone (no CUDA context per card, so no
     torch fallback) and keyed through the parent-visible list, so a mask keeps deciding which cards exist.
 
-    None on one visible card (unchanged), a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
+    None when card 0 wins (ties included) on identical cards, on one visible card (unchanged),
+    a UUID/MIG mask (no physical ids), ROCm (an APU's free reading is the
     shared host pool, which would outrank a discrete card), a CUDA order other than nvidia-smi's (its rows are
     then not torch's ordinals), an integrated GPU (its rows are a carve-out or N/A, and its real budget is the
     shared host pool), missing nvidia-smi telemetry and any failure. Never raises. Only cards at least as
@@ -422,8 +441,12 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
         if hw.IS_ROCM:
             return None
         visible = hw.get_parent_visible_gpu_ids()
-        if len(visible) < 2 or not hw._cuda_order_matches_smi():
+        if len(visible) < 2:
             return None
+        if not hw._cuda_order_matches_smi():
+            # No ranking (rows are not ordinals), but on cards that are not provably identical keep the
+            # current card explicit, so a pooled thread left on another card cannot preflight against it.
+            return None if hw._cuda_cards_identical() is True else 0
         if hw._integrated_cuda_rows(visible)[0]:
             return None
         result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
@@ -456,7 +479,131 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     if not free_by_ordinal:
         return None
     best = max(free_by_ordinal.values())
-    return min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
+    winner = min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
+    if winner:
+        # Physical rows hide MIG slices: a MIG card's row is the whole card, and its CUDA
+        # ordinals are slices (or absent before R570), so a row-ranked winner is not a card
+        # CUDA hands out. Unknown MIG status or a MIG card in the set keeps card 0 explicit.
+        mig = hw._nvidia_mig_gpu_indices_or_none()
+        if mig is None or set(visible) & mig:
+            return 0
+        return winner
+    # Card 0 won. Identical cards (same capability and size) keep None, the unpinned path they always had,
+    # while no thread was ever pinned elsewhere. Mixed cards, or a process where a pooled thread may sit on
+    # another card, keep 0 explicit so preflight and load read the ranked card.
+    if _PINNED_AWAY_FROM_ZERO:
+        return 0
+    totals = {d.get("vram_total_gb") for d in devices if d.get("index") in visible}
+    if len({caps.get(i) for i in visible}) == 1 and len(totals) == 1:
+        # Physical rows hide MIG slice sizes, so a MIG card makes the set mixed.
+        mig = hw._nvidia_mig_gpu_indices_or_none()  # None (unknown) keeps card 0 explicit
+        if mig is not None and not set(visible) & mig:
+            return None
+    return 0
+
+
+def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
+    """(free, total) MiB of torch ordinal ``ordinal`` from nvidia-smi, so a card can be sized without a CUDA context
+    on it. (None, None) wherever ``resolve_auto_cuda_ordinal`` would not trust the rows (ROCm, a CUDA order other
+    than nvidia-smi's, a mask naming no card, an integrated or MIG card, missing telemetry). Never raises."""
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM or not hw._cuda_order_matches_smi():
+            return None, None
+        visible = hw.get_parent_visible_gpu_ids()
+        if not 0 <= int(ordinal) < len(visible):
+            return None, None
+        index = visible[int(ordinal)]
+        if hw._integrated_cuda_rows(visible)[0]:
+            return None, None
+        mig = hw._nvidia_mig_gpu_indices_or_none()
+        if mig is None or index in mig:
+            return None, None
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        for device in (result or {}).get("devices", []):
+            if device.get("index") != index:
+                continue
+            total, used = device.get("vram_total_gb"), device.get("vram_used_gb")
+            if total is None or used is None:
+                return None, None
+            return int(max(float(total) - float(used), 0.0) * 1024), int(float(total) * 1024)
+    except Exception:  # noqa: BLE001 -- an unreadable card is simply not used
+        pass
+    return None, None
+
+
+def auto_cuda_ranking_possible_cached() -> Optional[bool]:
+    """``auto_cuda_ranking_possible`` when it can be answered from state already in memory, else None.
+
+    For the event loop: a cold device detection, an uncounted unmasked host or a non-numeric mask may run
+    nvidia-smi, so those go to a worker thread instead.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.DEVICE is None:
+            return None
+        # From memory only: get_device() waits on _DETECT_LOCK, which a detection pass in flight
+        # holds, and this runs on the event loop.
+        if hw.IS_ROCM or hw.DEVICE != hw.DeviceType.CUDA:
+            return False
+        if not hw.DETECTION_COMPLETE.is_set():
+            return None
+        mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if mask is None:
+            # A stray HIP/ROCR mask is then read as the mask: leave that to the worker gate.
+            if hw._physical_gpu_count is None or {
+                "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES",
+            } & set(os.environ):
+                return None
+            # The count in memory: get_physical_gpu_count() may re-read nvidia-smi, the worker gate does.
+            return hw._physical_gpu_count >= 2
+        if not all(token.strip().isdigit() for token in mask.split(",") if token.strip()):
+            return None
+        # get_parent_visible_gpu_ids' CUDA rule, without its get_device(): an empty entry ends the
+        # list and a repeat empties it.
+        ids: list[int] = []
+        for token in (token.strip() for token in mask.split(",")):
+            if not token:
+                break
+            if int(token) in ids:
+                return False
+            ids.append(int(token))
+        return len(ids) >= 2
+    except Exception:  # noqa: BLE001 -- let the worker-thread gate decide
+        return None
+
+
+def auto_cuda_ranking_possible() -> bool:
+    """Whether an automatic load could pick another card: NVIDIA CUDA with 2+ parent-visible GPUs.
+
+    Read from the cached device and mask only (no torch, no capability or dtype probe), so zero / one GPU,
+    ROCm, XPU, MPS and CPU keep the pre-ranking fast path. Never raises.
+    """
+    try:
+        from utils.hardware import hardware as hw
+
+        # Resolve first: a cold get_device() is what sets IS_ROCM.
+        device = hw.get_device()
+        if hw.IS_ROCM or device != hw.DeviceType.CUDA:
+            return False
+        return len(hw.get_parent_visible_gpu_ids()) >= 2
+    except Exception:  # noqa: BLE001 -- unknown host keeps the current device
+        return False
+
+
+def auto_cuda_ordinal_for_load() -> Optional[int]:
+    """``resolve_auto_cuda_ordinal`` behind the cheap gate and the CUDA target check, for automatic loads."""
+    planned = _PLANNED_ORDINAL.get()
+    if planned is not _UNPLANNED:
+        return planned
+    if not auto_cuda_ranking_possible():
+        return None
+    if resolve_diffusion_device_target().device != "cuda":
+        return None
+    return resolve_auto_cuda_ordinal()
 
 
 @contextmanager
@@ -505,11 +652,14 @@ def apply_diffusion_device_ordinal(target: DiffusionDeviceTarget) -> None:
 
 def pin_cuda_ordinal(ordinal: Optional[int]) -> None:
     """``torch.cuda.set_device``, thread-local, never fatal. A no-op for None."""
+    global _PINNED_AWAY_FROM_ZERO
     if ordinal is None:
         return
     try:
         import torch
         torch.cuda.set_device(ordinal)
+        if ordinal != 0:
+            _PINNED_AWAY_FROM_ZERO = True
     except Exception:  # noqa: BLE001 -- placement still works off torch_device; never fail a load here
         pass
 

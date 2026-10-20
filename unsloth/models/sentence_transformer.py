@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import logging
+import copy
 
 from .loader import FastModel, DISABLE_SDPA_MODEL_NAMES
 from .loader_utils import (
@@ -181,6 +182,43 @@ def _normalize_save_method(save_method):
         # strip before replacing spaces so " lora " does not become "_lora_" and bypass the adapter guard.
         return save_method.strip().lower().replace(" ", "_")
     return save_method
+
+
+def _copy_sentence_encoder_for_merge(model, dtype):
+    """Merge an independent encoder; never unload the training model's adapters."""
+    from peft import PeftModel, get_peft_model, get_peft_model_state_dict, set_peft_model_state_dict
+
+    model = copy.deepcopy(getattr(model, "_orig_mod", model))
+    adapter_names = None
+    if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):
+        # bnb LoRA merges requantize; merge into a dequantized base instead.
+        adapters = []
+        if isinstance(model, PeftModel):
+            adapter_names = list(model.active_adapters)
+            adapters = [
+                (name, model.peft_config[name], get_peft_model_state_dict(model, adapter_name = name))
+                for name in adapter_names
+            ]
+            model = model.unload()
+        model = model.dequantize()
+        model.is_loaded_in_4bit = False
+        model.is_loaded_in_8bit = False
+        model.to(dtype = dtype)
+        devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+        # Fresh adapter layers draw from the global RNG; keep the live run's stream untouched.
+        with torch.random.fork_rng(devices = devices):
+            for name, config, state in adapters:
+                # Residual initializers (OLoRA, PiSSA, LoftQ) already rewrote the base; rerunning one subtracts it twice.
+                config = copy.deepcopy(config)
+                config.init_lora_weights = False
+                if isinstance(model, PeftModel):
+                    model.add_adapter(name, config)
+                else:
+                    model = get_peft_model(model, config, adapter_name = name)
+                set_peft_model_state_dict(model, state, adapter_name = name)
+    if hasattr(model, "merge_and_unload"):
+        model = model.merge_and_unload(safe_merge = True, adapter_names = adapter_names)
+    return model.to(dtype = dtype)
 
 
 def _save_pretrained_torchao(
@@ -2592,20 +2630,19 @@ class FastSentenceTransformer(FastModel):
                         f"supported for this SentenceTransformer; only "
                         f"'merged_16bit' is."
                     )
-                self.save_pretrained(save_directory)
+                # Keep the load dtype; quantized weights dequantize into it.
+                dtype = self._dtype if isinstance(self._dtype, torch.dtype) else torch.float16
+                merged = _copy_sentence_encoder_for_merge(self[0].auto_model, dtype)
+                exported = copy.deepcopy(self, {id(self[0].auto_model): merged})
+                transformer = exported[0]
+                # The adapter-save hook is bound to the live module; it would write its adapter config.
+                if getattr(transformer, "_unsloth_save_config_patched", False):
+                    del transformer.save
+                exported.save_pretrained(save_directory)
                 if tokenizer is None:
                     tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
                 else:
                     save_kwargs.pop("tokenizer", None)
-                if hasattr(self[0], "auto_model"):
-                    inner = self[0].auto_model
-                    if hasattr(inner, "_orig_mod"):
-                        inner = inner._orig_mod
-                    if hasattr(inner, "merge_and_unload"):
-                        merged = inner.merge_and_unload()
-                        merged.save_pretrained(save_directory)
-                    elif hasattr(inner, "save_pretrained"):
-                        inner.save_pretrained(save_directory)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
                 FastSentenceTransformer._add_unsloth_branding(save_directory)
@@ -3036,7 +3073,11 @@ class FastSentenceTransformer(FastModel):
                     target_modules = target_modules,
                     lora_dropout = lora_dropout,
                     bias = bias,
+                    layers_to_transform = layers_to_transform,
+                    layers_pattern = layers_pattern,
+                    use_rslora = use_rslora,
                     use_dora = use_dora,
+                    modules_to_save = modules_to_save,
                     init_lora_weights = init_lora_weights,
                     loftq_config = loftq_config or {},
                     task_type = kwargs.get("task_type", "FEATURE_EXTRACTION"),
@@ -3044,7 +3085,10 @@ class FastSentenceTransformer(FastModel):
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
                 from ._utils import _mark_unsloth_disable_data_parallel
+                from .llama import _unfreeze_modules_to_save
 
+                # float16 modules_to_save copies must train in float32 or GradScaler refuses to unscale them (#1200).
+                _unfreeze_modules_to_save(peft_model)
                 _mark_unsloth_disable_data_parallel(peft_model)
 
                 qat_scheme = kwargs.get("qat_scheme", None)

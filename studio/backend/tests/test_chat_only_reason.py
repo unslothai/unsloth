@@ -76,6 +76,24 @@ def _no_torch_apple_silicon(monkeypatch, *, mlx_on_disk: bool):
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
 
 
+def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypatch):
+    # A chat-only Windows / Linux install on a GPU host: "needs an NVIDIA or AMD GPU" is wrong.
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hw, "_installed_without_torch", lambda: True)
+    assert hw.detect_hardware() == hw.DeviceType.CPU
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.current_chat_only_verdict() == ("no_torch", None)
+
+
+def test_a_torch_install_off_mac_without_an_accelerator_stays_no_gpu(monkeypatch):
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
+    hw.detect_hardware()
+    assert hw.CHAT_ONLY_REASON == "no_gpu"
+
+
 def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatch):
     # GGUF-only by request: not a broken stack, so the UI must not send the user to
     # `unsloth studio update`, which keeps no-torch and cannot enable Train.
@@ -174,3 +192,50 @@ def test_cpu_only_non_mac_reason(monkeypatch):
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_gpu"
+
+
+@pytest.mark.parametrize("tegra, chosen", [(True, True), (False, False)])
+def test_an_automatic_cpu_record_counts_as_chosen_only_on_a_jetson(monkeypatch, tegra, chosen):
+    # A pre-CUDA-13 Jetson always resolves to cpu, so offering a GPU repair there loops back to cpu (#4856).
+    from utils import tegra as tegra_mod
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.setattr(hw, "_recorded_install_flavor", lambda: ("cpu", False))
+    monkeypatch.setattr(tegra_mod, "tegra_before_cuda13", lambda: tegra)
+    assert hw._expected_cpu_flavor_was_chosen() is chosen
+    # A pinned cpu record stays a choice everywhere.
+    monkeypatch.setattr(hw, "_recorded_install_flavor", lambda: ("cpu", True))
+    assert hw._expected_cpu_flavor_was_chosen() is True
+
+
+@pytest.mark.parametrize(
+    "release, compatible, expected",
+    [
+        ("# R36 (release), REVISION: 4.3\n", b"nvidia,tegra234\0", True),  # JetPack 6 Orin
+        ("# R35 (release), REVISION: 5.0\n", b"nvidia,tegra194\0", True),  # JetPack 5 Xavier
+        ("# R38 (release), REVISION: 2.0\n", b"nvidia,tegra264\0", False),  # JetPack 7 Thor
+        (None, b"nvidia,tegra264\0", False),
+        (None, b"nvidia,tegra234\0", True),
+        (None, b"nvidia,grace-hopper\0", False),  # not a Jetson
+    ],
+)
+def test_tegra_before_cuda13_reads_the_l4t_release(
+    tmp_path, monkeypatch, release, compatible, expected
+):
+    from utils import tegra as tegra_mod
+
+    rel = tmp_path / "nv_tegra_release"
+    if release is not None:
+        rel.write_text(release)
+    dt = tmp_path / "compatible"
+    dt.write_bytes(compatible)
+    monkeypatch.setattr(tegra_mod, "_TEGRA_RELEASE", str(rel))
+    monkeypatch.setattr(tegra_mod, "_DEVICE_TREE_COMPATIBLE", str(dt))
+    tegra_mod.is_tegra.cache_clear()
+    tegra_mod.tegra_before_cuda13.cache_clear()
+    try:
+        assert tegra_mod.tegra_before_cuda13() is expected
+    finally:
+        tegra_mod.is_tegra.cache_clear()
+        tegra_mod.tegra_before_cuda13.cache_clear()

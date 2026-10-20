@@ -207,7 +207,8 @@ BROWSER_SELECT_TOOL = {
         "name": "browser_select",
         "description": (
             "Choose an option in a dropdown, or set a checkbox or radio button, by ref. value is "
-            'the option text, or "true"/"false" for a checkbox.'
+            'the option text, or "true"/"false" for a checkbox or radio button, whose own ref '
+            "is the one to pass."
         ),
         "parameters": {
             "type": "object",
@@ -326,7 +327,16 @@ _HIDDEN_TAIL_RE = re.compile(r"(?:[ \t]*\r?\n){4,}|[ \t]{200,}")
 _MAX_POINT = 100_000
 _MAX_MODEL_CHARS = 24000
 _REF_RE = re.compile(r"^\[?r?(\d{1,9})\]?$", re.IGNORECASE)
-_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home", ".home.arpa", ".corp")
+_LOCAL_SUFFIXES = (
+    ".local",
+    ".localhost",
+    ".internal",
+    ".lan",
+    ".home",
+    ".home.arpa",
+    ".corp",
+    ".intranet",
+)
 _FENCE = "untrusted_web_content"
 
 
@@ -385,7 +395,7 @@ def _host_problem(hostname: str) -> Optional[str]:
         ip = None
     if ip is not None:
         return None if ip.is_global else f"{host} is not a public address"
-    if host == "localhost" or "." not in host or host.endswith(_LOCAL_SUFFIXES):
+    if host == "localhost" or "." not in host or f".{host}".endswith(_LOCAL_SUFFIXES):
         return f"{host} is a local name"
     return None
 
@@ -470,7 +480,10 @@ def _validated_request(name: str, arguments: dict, website_policy: Optional[dict
             request["text"] = text
             request["submit"] = arguments.get("submit") is True
         if name == "browser_select":
-            request["value"] = str(arguments.get("value") or "")[:500]
+            value = arguments.get("value")
+            if isinstance(value, bool):
+                value = "true" if value else "false"
+            request["value"] = ("" if value is None else str(value))[:500]
         return request
     if name == "browser_scroll":
         direction = str(arguments.get("direction") or "down").lower()

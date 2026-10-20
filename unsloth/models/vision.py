@@ -170,7 +170,7 @@ from .loader_utils import (
     sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
-from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
+from .fsdp2_qlora import packed_4bit_as_uint8, prepare_fsdp2_qlora, set_fsdp2_quant_storage
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
 # scope closes a cycle and a cold `import unsloth.save` fails on the half-built module.
 # `_gpu_init` hid that by importing `.models` first; the MLX branch never reaches it. So the
@@ -2523,6 +2523,72 @@ def _get_total_transformer_layers(model):
     return None
 
 
+def _in_layers(
+    name,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    # Lazy, so the first numbered segment wins (the layer, not the expert in "layers.31.mlp.experts.0"); PEFT < 0.20 matched greedily.
+    patterns = [layers_pattern] if isinstance(layers_pattern, str) else list(layers_pattern or [])
+    match = None
+    for pattern in [p for p in patterns if p] or [None]:
+        regex = r".*?\.[^.]*\.(\d+)\." if pattern is None else rf"(?:^|.*?\.){pattern}\.(\d+)\."
+        match = re.match(regex, name)
+        if match is not None:
+            break
+    if match is None:
+        return False
+    index = int(match.group(1))
+    if isinstance(layers_to_transform, int):
+        return index == layers_to_transform
+    return index in layers_to_transform
+
+
+def _regex_targets_as_names(
+    model,
+    target_modules,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """PEFT rejects layers_to_transform with a str target_modules, so a regex or "all-linear" becomes the module names it matches in those layers."""
+    if layers_to_transform is None or not isinstance(target_modules, str):
+        return target_modules
+    modules = [name for name, _ in model.named_modules() if name]
+    if target_modules.lower() == "all-linear":
+        from peft import LoraConfig
+        from peft.tuners.tuners_utils import _maybe_include_all_linear_layers
+
+        # Older PEFT expands to leaf names, newer to full names; heads carry no layer index and drop below.
+        linear = _maybe_include_all_linear_layers(
+            LoraConfig(target_modules = "all-linear"), model
+        ).target_modules
+        names = [name for name in modules if name in linear or name.rsplit(".", 1)[-1] in linear]
+    else:
+        names = [name for name in modules if re.fullmatch(target_modules, name)]
+    return [name for name in names if _in_layers(name, layers_to_transform, layers_pattern)]
+
+
+def _target_parameters_in_layers(
+    model,
+    target_parameters,
+    layers_to_transform,
+    layers_pattern = None,
+):
+    """PEFT applies layers_to_transform to target_modules only, so name each targeted parameter inside those layers."""
+    if layers_to_transform is None or not target_parameters:
+        return target_parameters
+    targets = set(target_parameters)
+    # On a wrapped model the tensor sits under PEFT's base_layer; name it as PEFT stored it.
+    keys = [
+        f"{module_name}.{param_name}".replace(".base_layer", "")
+        for module_name, module in model.named_modules()
+        if module_name
+        for param_name, _ in module.named_parameters(recurse = False)
+    ]
+    keys = [key for key in keys if key in targets or any(key.endswith("." + t) for t in targets)]
+    return [key for key in keys if _in_layers(key, layers_to_transform, layers_pattern)] or None
+
+
 def _architecture_skip_modules(model_types):
     """Extra modules kept out of bitsandbytes; shared by the device-map planner and the load."""
     model_types = model_types or []
@@ -3836,6 +3902,9 @@ class FastBaseModel:
                 _cfg_val = kwargs.pop("max_position_embeddings", None)
                 if _cfg_val is not None:
                     setattr(model_config, "max_position_embeddings", _cfg_val)
+                if "bailing_hybrid" in (model_types or ()):
+                    from ..import_fixes import fix_transformers_bailing_hybrid_low_rank_query
+                    fix_transformers_bailing_hybrid_low_rank_query()
                 with _tolerate_dtype_cast_on_quantized_model(
                     bool(trust_remote_code)
                     and (
@@ -4293,14 +4362,16 @@ class FastBaseModel:
                 patch_medias_processor = None
             if patch_medias_processor is not None:
                 patch_medias_processor(tokenizer)
-        model, tokenizer = patch_model_and_tokenizer(
-            model,
-            tokenizer,
-            downcast_rope = False,
-            fix_embeddings = False,
-            do_forced_float32 = do_forced_float32,
-            correct_dtype = correct_dtype,
-        )
+        # FSDP2 packs 4-bit weights in a float dtype, which the dtype passes in here would cast.
+        with packed_4bit_as_uint8(model, enabled = fsdp2_requested()):
+            model, tokenizer = patch_model_and_tokenizer(
+                model,
+                tokenizer,
+                downcast_rope = False,
+                fix_embeddings = False,
+                do_forced_float32 = do_forced_float32,
+                correct_dtype = correct_dtype,
+            )
 
         try:
             model, tokenizer = patch_tokenizer(model, tokenizer)
@@ -4836,6 +4907,16 @@ class FastBaseModel:
             if _total_layers is not None and _total_layers > 0:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
+        _expanded = isinstance(target_modules, str) and layers_to_transform is not None
+        target_modules = _regex_targets_as_names(
+            model, target_modules, layers_to_transform, layers_pattern
+        )
+        target_parameters = _target_parameters_in_layers(
+            model, target_parameters, layers_to_transform, layers_pattern
+        )
+        if _expanded:
+            # The names pin the layers; PEFT < 0.20 would re-filter them (or its compacted suffixes) by the expert index.
+            layers_to_transform = layers_pattern = None
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
 
@@ -4998,7 +5079,9 @@ class FastBaseModel:
                 float32_mixed_precision = False
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
-        use_reentrant = not is_distributed()
+        # FSDP2 has no DDP reducer to mark twice: each unit reduce-scatters in its own post-backward hook,
+        # recompute included, so it keeps Unsloth's offloaded checkpointing (and unsloth_stream) as 1 GPU does.
+        use_reentrant = not is_distributed() or fsdp2_requested()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
         _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)

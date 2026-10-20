@@ -49,6 +49,8 @@ from .loader_utils import (
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
+    _fp8_load_as_is,
+    _fp8_needs_offline_quantize,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
@@ -1307,29 +1309,40 @@ class FastLanguageModel(FastLlamaModel):
                 cache_dir = kwargs.get("cache_dir", None),
                 revision = revision,
             )
-            if new_model_name is None and load_in_fp8 != False:
-                fp8_mode = _get_fp8_mode_and_check_settings(
-                    load_in_fp8,
-                    fast_inference,
-                    full_finetuning,
-                    load_in_4bit,
-                    load_in_8bit,
-                    load_in_16bit,
-                )
-                # Still the caller's repo here, so their ref is the one to quantize from.
-                model_name = _offline_quantize_to_fp8(
-                    model_name,
-                    fp8_mode,
-                    text_only = text_only,
-                    revision = revision,
-                    token = token,
-                )
-            else:
-                assert new_model_name is not None
-                model_name = new_model_name
-                # If the mapper resolved to a pre-quantized FP8 model, disable on-the-fly quantization to avoid quantizing twice.
-                if load_in_fp8 != False and new_model_name != old_model_name:
-                    load_in_fp8 = False
+        else:
+            new_model_name = model_name
+        # Unmapped names come back unchanged, not None; conflicting flags are left to the precision check below.
+        if (
+            load_in_fp8 != False
+            and not _precision_flags_conflict(
+                load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+            )
+            and _fp8_needs_offline_quantize(new_model_name, old_model_name, fast_inference)
+            and not _fp8_load_as_is(model_name, revision, token, trust_remote_code)
+        ):
+            fp8_mode = _get_fp8_mode_and_check_settings(
+                load_in_fp8,
+                fast_inference,
+                full_finetuning,
+                load_in_4bit,
+                load_in_8bit,
+                load_in_16bit,
+            )
+            # Still the caller's repo here, so their ref is the one to quantize from.
+            model_name = _offline_quantize_to_fp8(
+                model_name,
+                fp8_mode,
+                text_only = text_only,
+                revision = revision,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        elif not use_exact_model_name:
+            assert new_model_name is not None
+            model_name = new_model_name
+            # If the mapper resolved to a pre-quantized FP8 model, disable on-the-fly quantization to avoid quantizing twice.
+            if load_in_fp8 != False and new_model_name != old_model_name:
+                load_in_fp8 = False
         # Only this block honours use_exact_model_name; the transforms below do not.
         mapper_moved_name = model_name != old_model_name
 
@@ -2220,29 +2233,40 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir", None),
                 revision = revision,
             )
-            if new_model_name is None and load_in_fp8 != False:
-                fp8_mode = _get_fp8_mode_and_check_settings(
-                    load_in_fp8,
-                    fast_inference,
-                    full_finetuning,
-                    load_in_4bit,
-                    load_in_8bit,
-                    load_in_16bit,
-                )
-                # Still the caller's repo here, so their ref is the one to quantize from.
-                model_name = _offline_quantize_to_fp8(
-                    model_name,
-                    fp8_mode,
-                    text_only = text_only,
-                    revision = revision,
-                    token = token,
-                )
-            else:
-                assert new_model_name is not None
-                model_name = new_model_name
-                # If the mapper resolved to a pre-quantized FP8 model, disable on-the-fly quantization to avoid quantizing twice.
-                if load_in_fp8 != False and new_model_name != old_model_name:
-                    load_in_fp8 = False
+        else:
+            new_model_name = model_name
+        # Unmapped names come back unchanged, not None; conflicting flags are left to the precision check below.
+        if (
+            load_in_fp8 != False
+            and not _precision_flags_conflict(
+                load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+            )
+            and _fp8_needs_offline_quantize(new_model_name, old_model_name, fast_inference)
+            and not _fp8_load_as_is(model_name, revision, token, trust_remote_code)
+        ):
+            fp8_mode = _get_fp8_mode_and_check_settings(
+                load_in_fp8,
+                fast_inference,
+                full_finetuning,
+                load_in_4bit,
+                load_in_8bit,
+                load_in_16bit,
+            )
+            # Still the caller's repo here, so their ref is the one to quantize from.
+            model_name = _offline_quantize_to_fp8(
+                model_name,
+                fp8_mode,
+                text_only = text_only,
+                revision = revision,
+                token = token,
+                trust_remote_code = trust_remote_code,
+            )
+        elif not use_exact_model_name:
+            assert new_model_name is not None
+            model_name = new_model_name
+            # If the mapper resolved to a pre-quantized FP8 model, disable on-the-fly quantization to avoid quantizing twice.
+            if load_in_fp8 != False and new_model_name != old_model_name:
+                load_in_fp8 = False
         # Only this block honours use_exact_model_name; the transforms below do not.
         mapper_moved_name = model_name != old_model_name
 
@@ -2595,7 +2619,24 @@ class FastModel(FastBaseModel):
         elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
             # Use the EFFECTIVE bnb state, not the raw flag: a native MXFP4 checkpoint loaded with the default load_in_4bit=True has bnb disabled later, so the raw flag picks the wrong dtype path.
-            if not (load_in_4bit and _bnb_compatible_quant):
+            if not (load_in_4bit and _bnb_compatible_quant) and transformers_version < Version(
+                "5.0.0"
+            ):
+                # Only upcast MoE biases for MXFP4, not BnB, nor experts transformers 4.x dequantized (dense forward).
+                register_custom_dtype(
+                    "all;None;None;"
+                    "x = 'gate_up_proj_bias'\n"
+                    "dense = type(getattr(module, 'gate_up_proj', None)) is torch.nn.Parameter and module.gate_up_proj.is_floating_point()\n"
+                    "if hasattr(module, x) and not dense: "
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    ""
+                    "x = 'down_proj_bias'\n"
+                    "if hasattr(module, x) and not dense: "
+                    "setattr(module, x, torch.nn.Parameter(getattr(module, x).to(torch.float32)) if isinstance(getattr(module, x), torch.nn.Parameter) else getattr(module, x).to(torch.float32))\n"
+                    ""
+                    ";"
+                )
+            elif not (load_in_4bit and _bnb_compatible_quant):
                 # Only upcast MoE biases for MXFP4, not BnB.
                 register_custom_dtype(
                     "all;None;None;"

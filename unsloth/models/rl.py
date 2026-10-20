@@ -35,7 +35,7 @@ from unsloth_zoo.compiler import create_new_function
 from unsloth_zoo.log import logger
 from unsloth_zoo.logging_utils import PatchRLStatistics
 from unsloth_zoo.rl_replacements import RL_REPLACEMENTS
-from ..device_type import DEVICE_TYPE
+from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
 from .rl_replacements import (
     _unsloth_get_model_config,
     _unsloth_text_configs,
@@ -141,7 +141,7 @@ def vLLMSamplingParams(**kwargs):
 
 
 def _maybe_prepare_vllm_for_resume(trainer):
-    if not torch.cuda.is_available():
+    if DEVICE_COUNT < 1:
         return
 
     llm = getattr(trainer, "llm", None)
@@ -167,7 +167,7 @@ def _maybe_prepare_vllm_for_resume(trainer):
 
     for _ in range(3):
         gc.collect()
-        torch.cuda.empty_cache()
+        clean_gpu_cache()
 
 
 def _patch_resume_from_checkpoint_memory(trainer_class):
@@ -986,17 +986,29 @@ def _wrap_grpo_generate_and_score(trainer_cls):
     def wrapped(self, *args, **kwargs):
         was_training = getattr(getattr(self, "model", None), "training", None)
         parked = None
-        if os.environ.get(
+        park = os.environ.get(
             "UNSLOTH_PARK_OPTIMIZER_DURING_ROLLOUT", "0"
-        ) == "1" and _park_optimizer_enabled(self):
-            parked = _park_optimizer_to_host(self)
+        ) == "1" and _park_optimizer_enabled(self)
+        # An outer torch.inference_mode() (eval between train calls) would make the pinned buffers and
+        # restored state inference tensors, which the next optimizer step cannot update in place.
+        inference_mode = getattr(torch, "inference_mode", None) if park else None
+        if park:
+            if inference_mode is not None:
+                with inference_mode(False), torch.no_grad():
+                    parked = _park_optimizer_to_host(self)
+            else:
+                parked = _park_optimizer_to_host(self)
             if parked is not None:
                 self._unsloth_park_count = getattr(self, "_unsloth_park_count", 0) + 1
         try:
             return original(self, *args, **kwargs)
         finally:
             if parked is not None:
-                _restore_optimizer_from_host(parked)
+                if inference_mode is not None:
+                    with inference_mode(False), torch.no_grad():
+                        _restore_optimizer_from_host(parked)
+                else:
+                    _restore_optimizer_from_host(parked)
             if (
                 was_training is False
                 and hasattr(self, "model")

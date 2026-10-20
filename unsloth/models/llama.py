@@ -224,6 +224,27 @@ def original_apply_qkv(self, X):
     return Q, K, V
 
 
+def fake_quantize_lm_head_inputs(lm_head_module, hidden_states, weight):
+    # Fused CE bypasses lm_head.forward(), where TorchAO QAT fake-quantizes both the input and the weight.
+    activation_fake_quantizer = getattr(lm_head_module, "activation_fake_quantizer", None)
+    if activation_fake_quantizer is not None:
+        # The unfused path feeds lm_head hidden_states.to(weight dtype): a trained fp32 head on fp16 differs.
+        hidden_states = activation_fake_quantizer(hidden_states.to(weight.dtype))
+    weight_fake_quantizer = getattr(lm_head_module, "weight_fake_quantizer", None)
+    if weight_fake_quantizer is not None:
+        weight = weight_fake_quantizer(weight)
+    return hidden_states, weight
+
+
+def lm_head_needs_forward(lm_head_module):
+    # NVFP4 / MX QAT linears fake-quantize inside forward() with no quantizer children: fused CE cannot mirror them.
+    # modules() also reaches the copy inside a PEFT modules_to_save wrapper, which isinstance alone misses.
+    forward_fake_quant_linears = _fast_lora._forward_fake_quant_linears()
+    return bool(forward_fake_quant_linears) and any(
+        isinstance(module, forward_fake_quant_linears) for module in lm_head_module.modules()
+    )
+
+
 def original_apply_o(self, X):
     O = self.o_proj(X)
     return O
@@ -1190,6 +1211,20 @@ def LlamaModel_fast_forward(
 
     seq_length_with_past = seq_length
 
+    # TRL padding-free DPO sends reset position_ids only: infer lengths before the overlength cut.
+    if (
+        kwargs.get("packed_seq_lengths") is None
+        and batch_size == 1
+        and attention_mask is None
+        and past_key_values is None
+        and position_ids is not None
+        # Context-parallel shards see shard-local positions; boundaries from them are wrong.
+        and get_cp_manager() is None
+    ):
+        seq_info = get_packed_info_from_kwargs(kwargs, position_ids.device, position_ids)
+        if seq_info is not None:
+            kwargs["packed_seq_lengths"] = seq_info[0]
+
     # Fix out of bounds tokenization unless we were given packed metadata
     allow_overlength = (
         getattr(self, "_unsloth_allow_packed_overlength", False)
@@ -1309,13 +1344,27 @@ def LlamaModel_fast_forward(
             ):
                 attention_mask = None
         else:
-            attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+            sliding_window = getattr(self.config, "sliding_window", None)
+            # transformers keeps k > q - sliding_window; the converter's window excludes the current key.
+            band = sliding_window
+            if isinstance(sliding_window, int) and sliding_window > 1:
+                band = sliding_window - 1
+            # Elide the mask against the real window, else a window - 1 long prompt builds a dense 4D mask.
+            if band != sliding_window and AttentionMaskConverter._ignore_causal_mask_sdpa(
                 attention_mask,
-                (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
-                sliding_window = getattr(self.config, "sliding_window", None),
-            )
+                sliding_window = sliding_window,
+            ):
+                attention_mask = None
+            else:
+                attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                    attention_mask,
+                    (batch_size, seq_length),
+                    inputs_embeds,
+                    past_key_values_length,
+                    sliding_window = band,
+                )
         # Must NOT convert to bool; that weirdly causes errors.
 
     hidden_states = inputs_embeds
@@ -1754,12 +1803,15 @@ def apply_logit_transforms(logits, logit_softcapping, logit_scaling):
 
 
 def _run_backbone(self, **kwargs):
-    # The CausalLM forward feeds the final norm's output to lm_head, the fused CE loss, or (with
-    # UNSLOTH_RETURN_HIDDEN_STATES, set only by Unsloth's GRPO / DPO / GKD trainers) their chunked
-    # lm_head loss; all return a fresh grad, so the norm may write dX over it. Returned
-    # hidden_states would let a caller own that grad, so they keep the norm's own buffer.
+    # The CausalLM forward feeds the final norm's output to lm_head or the fused CE loss, which
+    # return a fresh grad, so the norm may write dX over it. Hidden states handed back to the
+    # caller (output_hidden_states, or as .logits under UNSLOTH_RETURN_HIDDEN_STATES) let the
+    # caller own or share that grad, so they keep the norm's own buffer.
     model = self.model
-    model._unsloth_head_reads_final_norm = not kwargs.get("output_hidden_states")
+    model._unsloth_head_reads_final_norm = (
+        not kwargs.get("output_hidden_states")
+        and os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") != "1"
+    )
     try:
         return model(**kwargs)
     finally:
@@ -1875,7 +1927,9 @@ def CausalLM_fast_forward(fast_forward_inference):
         elif num_logits_to_keep != 0:
             logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(dtype))
         else:
-            RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
+            RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1" or (
+                lm_head_needs_forward(self.lm_head)
+            )
             # Below 1024 normal Unsloth uses less VRAM.
             if bsz * q_len <= 1024 and not RETURN_LOGITS:
                 # unsloth_fused_ce_loss calculates the best chunk size to reduce VRAM usage.
@@ -1889,6 +1943,10 @@ def CausalLM_fast_forward(fast_forward_inference):
                 # Without these the fused branch optimizes a different loss than the branch below.
                 logit_softcapping, logit_scale_multiply, logit_scale_divide = (
                     resolve_logit_transforms(self.config)
+                )
+
+                hidden_states, lm_head = fake_quantize_lm_head_inputs(
+                    self.lm_head, hidden_states, lm_head
                 )
 
                 if self.config.model_type == "falcon_h1" and logit_scale_multiply:
@@ -2189,6 +2247,25 @@ def _round_rope_size(seq_len):
     return ((seq_len // 8192) + ((seq_len % 8192) != 0)) * 8192
 
 
+def _decode_rotary_seq_len(rotary_emb, kv_seq_len, position_ids):
+    """RoPE rows one decode step reads, for decode loops that pass it to every layer.
+
+    Explicit positions can run past the KV length, and the lazy cache only builds the rows asked
+    for. Costs one host sync per step (as LlamaModel_fast_forward_inference), skipped when the
+    cache always holds every position the model supports."""
+    if position_ids is None:
+        return kv_seq_len
+    max_position_embeddings = getattr(rotary_emb, "max_position_embeddings", None)
+    floor = getattr(rotary_emb, "_rope_cache_floor", None)
+    if (
+        max_position_embeddings is not None
+        and floor is not None
+        and floor >= max_position_embeddings
+    ):
+        return kv_seq_len
+    return max(kv_seq_len, int(position_ids.max().item()) + 1)
+
+
 class _PerDeviceRopeCache:
     """cos/sin built lazily per device with only the rows asked for, so torchrun ranks do not
     allocate on their peers. A row depends only on its position, so a shorter cache matches the
@@ -2375,32 +2452,50 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         """Override to apply custom time scaling (e.g., linear scaling)."""
         return t
 
+    _rope_build_chunk_rows = 32768
+
     def _set_cos_sin_cache(self, seq_len, device, dtype):
         # Rebuild inv_freq instead of reading the buffer: transformers v5 refills it with uninitialized
         # memory on models _fix_rope_inv_freq never sees, e.g. a PPO value / reward model loaded after
         # Unsloth patched the classes, so extend_rope_embedding built NaN or garbage cos/sin (#884).
         inv_freq = self._unsloth_recompute_inv_freq()
         self.inv_freq = inv_freq.to(self.inv_freq.device)
-        # The first cache built (and every device's copy of that size) is computed on CPU like the eager
-        # __init__ build was, even when the first forward already grew the size, so the first forward's
-        # peak memory does not rise; later growth computes on inv_freq's device as before.
-        version = getattr(self, "_rope_cache_version", 0)
-        if getattr(self, "_rope_cache_cpu_version", None) is None:
-            self._rope_cache_cpu_version = version
-        if version != self._rope_cache_cpu_version:
+        # Same device as before lazy building: the starting size (every device's copy) is computed on
+        # CPU like the eager __init__ build, any grown size on inv_freq's device like the eager
+        # extend_rope_embedding. Computing a grown cache (e.g. 131072 rows when max_position_embeddings
+        # exceeds 4 * 8192) on CPU instead takes 100s of ms to seconds and changes cos/sin rounding.
+        if getattr(self, "_rope_cache_version", 0) != 0:
             inv_freq = self.inv_freq
         # The original Llama codebase creates these on the target device in FP32 and multiplies in FP32.
         self.current_rope_size = seq_len
         t = torch.arange(self.current_rope_size, device = inv_freq.device, dtype = torch.int64).float()
         t = self._apply_time_scaling(t)
 
-        freqs = torch.outer(t, inv_freq)
-        # Different from the paper, but it uses a different permutation to obtain the same calculation.
-        emb = torch.cat((freqs, freqs), dim = -1)
-        # Applied here so attention_scaling survives extend_rope_embedding rebuilds; the 1.0 default
-        # keeps unscaled paths bit-identical.
-        cos = (emb.cos() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
-        sin = (emb.sin() * self.attention_scaling).to(dtype = dtype, device = device, non_blocking = True)
+        # Rows are independent, so the build goes 32768 rows at a time into the output (bit-identical,
+        # the same elementwise ops): the fp32 temporaries no longer scale with the cache size (about
+        # 2 GiB at 1M rows in one shot).
+        rows = self._rope_build_chunk_rows
+        cos = sin = None
+        for start in range(0, max(seq_len, 1), rows):
+            freqs = torch.outer(t[start : start + rows], inv_freq)
+            # Different from the paper, but it uses a different permutation to obtain the same calculation.
+            emb = torch.cat((freqs, freqs), dim = -1)
+            # Applied here so attention_scaling survives extend_rope_embedding rebuilds; the 1.0 default
+            # keeps unscaled paths bit-identical.
+            cos_rows = (emb.cos() * self.attention_scaling).to(
+                dtype = dtype, device = device, non_blocking = True
+            )
+            sin_rows = (emb.sin() * self.attention_scaling).to(
+                dtype = dtype, device = device, non_blocking = True
+            )
+            if rows >= seq_len:
+                cos, sin = cos_rows, sin_rows
+                break
+            if cos is None:
+                cos = torch.empty((seq_len, emb.shape[-1]), dtype = dtype, device = device)
+                sin = torch.empty_like(cos)
+            cos[start : start + rows] = cos_rows
+            sin[start : start + rows] = sin_rows
         self.multi_gpu_cos_cached[device.index] = cos
         self.multi_gpu_sin_cached[device.index] = sin
         return cos, sin
@@ -2781,6 +2876,58 @@ def _fused_lora_skip_reason(
     return (
         f" The fused LoRA kernels were skipped because {' and '.join(reasons)}, "
         "which is why the counts are zero. Training is unaffected."
+    )
+
+
+def _layered_request_matches_adapter(
+    model,
+    target_modules,
+    layers_to_transform,
+    layers_pattern = None,
+    exclude_modules = None,
+    target_parameters = None,
+):
+    """Whether a str target with layers, which the first call stored as exact names without a layer filter, wraps exactly the modules and expert tensors wrapped now."""
+    from peft.tuners.tuners_utils import BaseTunerLayer
+    from .vision import _regex_targets_as_names, _target_parameters_in_layers
+
+    base = model.get_base_model()
+    adapters = {name for name, module in base.named_modules() if isinstance(module, BaseTunerLayer)}
+
+    def _inside_adapter(name):
+        parts = name.split(".")
+        return any(".".join(parts[:i]) in adapters for i in range(1, len(parts)))
+
+    wrapped = {
+        name
+        for name in adapters
+        if not _inside_adapter(name) and type(base.get_submodule(name)).__name__ != "ParamWrapper"
+    }
+    moe_targets = get_moe_target_modules(base, target_modules)
+    if moe_targets:
+        target_modules = add_moe_target_modules(target_modules, moe_targets)
+    names = _regex_targets_as_names(base, target_modules, layers_to_transform, layers_pattern)
+    requested = {name for name in names if not _inside_adapter(name)}
+    if isinstance(exclude_modules, str):
+        requested = {name for name in requested if not re.fullmatch(exclude_modules, name)}
+    elif exclude_modules:
+        requested = {
+            name
+            for name in requested
+            if name not in exclude_modules
+            and not any(name.endswith("." + key) for key in exclude_modules)
+        }
+    if target_parameters is None:
+        target_parameters = get_moe_target_parameters(base, target_modules)
+    stored_parameters = set(model.peft_config["default"].target_parameters or [])
+    requested_parameters = set(
+        _target_parameters_in_layers(base, target_parameters, layers_to_transform, layers_pattern)
+        or []
+    )
+    return (
+        bool(wrapped or stored_parameters)
+        and requested == wrapped
+        and requested_parameters == stored_parameters
     )
 
 
@@ -4195,7 +4342,30 @@ class FastLlamaModel:
         ):
             assert hasattr(model, "peft_config")
 
+            if finetune_last_n_layers is not None and layers_to_transform is None:
+                from .vision import _get_total_transformer_layers
+                _total_layers = _get_total_transformer_layers(model)
+                if _total_layers is not None and _total_layers > 0:
+                    _n = max(1, min(int(finetune_last_n_layers), _total_layers))
+                    layers_to_transform = list(range(_total_layers - _n, _total_layers))
+
             peft_config = model.peft_config["default"].to_dict()
+            _same_layered = (
+                isinstance(target_modules, str)
+                and layers_to_transform is not None
+                and peft_config["layers_to_transform"] is None
+                and _layered_request_matches_adapter(
+                    model,
+                    target_modules,
+                    layers_to_transform,
+                    layers_pattern,
+                    kwargs.get("exclude_modules"),
+                    target_parameters,
+                )
+            )
+            if _same_layered:
+                peft_config["layers_to_transform"] = layers_to_transform
+                peft_config["layers_pattern"] = layers_pattern
             check_parameters = [
                 "r",
                 "lora_alpha",
@@ -4234,7 +4404,9 @@ class FastLlamaModel:
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
             stored_targets = peft_config["target_modules"]
-            if isinstance(requested_targets, str) and requested_targets.lower() == "all-linear":
+            if _same_layered:
+                requested_targets = stored_targets
+            elif isinstance(requested_targets, str) and requested_targets.lower() == "all-linear":
                 # PEFT stores "all-linear" expanded and, past 20 modules, compacted: compare resolved vs wrapped.
                 resolved = _resolve_all_linear(
                     model, requested_targets, kwargs.get("exclude_modules")
@@ -4547,6 +4719,18 @@ class FastLlamaModel:
             if _total_layers is not None and _total_layers > 0:
                 _n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - _n, _total_layers))
+        from .vision import _regex_targets_as_names, _target_parameters_in_layers
+
+        _expanded = isinstance(final_modules, str) and layers_to_transform is not None
+        final_modules = _regex_targets_as_names(
+            model, final_modules, layers_to_transform, layers_pattern
+        )
+        target_parameters = _target_parameters_in_layers(
+            model, target_parameters, layers_to_transform, layers_pattern
+        )
+        if _expanded:
+            # The names pin the layers; PEFT < 0.20 would re-filter them (or its compacted suffixes) by the expert index.
+            layers_to_transform = layers_pattern = None
 
         validate_init_target_parameters(init_lora_weights, target_parameters)
 
