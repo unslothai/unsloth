@@ -266,5 +266,13 @@ def test_real_uv_still_honours_the_users_project_dir(
     installer, result = wheel_utils.install_wheel(url, python_executable = str(python), use_uv = True)[
         0
     ]
-    assert installer == "uv" and result.returncode != 0, result.stdout
-    assert "0.0.1" in result.stdout, result.stdout
+    assert installer == "uv" and "--project" not in result.args, result.args
+    # Older uv ignores UV_WORKING_DIR*; plain uv is the reference for what the user's config does.
+    plain = subprocess.run(
+        ["uv", "pip", "install", "--python", str(python), "--no-deps", url],
+        capture_output = True,
+        text = True,
+    )
+    assert (result.returncode == 0) == (plain.returncode == 0), (result.stdout, plain.stderr)
+    if variable == "UV_PROJECT":
+        assert result.returncode != 0 and "0.0.1" in result.stdout, result.stdout
