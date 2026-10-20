@@ -23,7 +23,12 @@ def pre_sm89(monkeypatch):
     fp8._fp8_device_lacks_kernel.cache_clear()
 
 
-def _weight(m, n, device, seed = 0):
+def _weight(
+    m,
+    n,
+    device,
+    seed = 0,
+):
     g = torch.Generator(device = "cpu").manual_seed(seed)
     # Every byte value, incl. subnormals, -0.0 and both NaNs, then a realistic spread.
     raw = torch.randint(0, 256, (m, n), generator = g, dtype = torch.uint8)
@@ -31,7 +36,14 @@ def _weight(m, n, device, seed = 0):
     return raw.view(torch.float8_e4m3fn).to(device)
 
 
-def _scale(m, n, block, dtype, device, seed = 1):
+def _scale(
+    m,
+    n,
+    block,
+    dtype,
+    device,
+    seed = 1,
+):
     g = torch.Generator(device = "cpu").manual_seed(seed)
     shape = (-(-m // block[0]), -(-n // block[1]))
     s = torch.rand(shape, generator = g, dtype = torch.float32) * 1e-2 + 1e-4
@@ -107,7 +119,6 @@ def test_transposed_and_strided(pre_sm89, shape):
         fp8._blockwise_weight_dequant_any_shape(wt, st, block, torch.float16),
         fp8._torch_blockwise_dequant(wt, st, block, torch.float16),
     )
-    # Column slice: non-unit row stride larger than n.
     wide = _weight(m, n + 128, "cuda")[:, :n]
     _same_bits(
         fp8._blockwise_weight_dequant_any_shape(wide, s, block, torch.bfloat16),
@@ -150,7 +161,11 @@ def test_routes_to_bytes_kernel_only_on_nvidia_pre_sm89(monkeypatch):
     w = _weight(256, 256, "cuda")
     s = _scale(256, 256, [128, 128], torch.float32, "cuda")
 
-    def route(capability, hip = None, weight = w):
+    def route(
+        capability,
+        hip = None,
+        weight = w,
+    ):
         calls.clear()
         with monkeypatch.context() as mp:
             mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
@@ -222,7 +237,11 @@ def test_past_int32_offsets(pre_sm89):
     m, n = (2**31) // 4096 + 128, 4096
     if torch.cuda.mem_get_info()[0] < 8 * 1024**3:
         pytest.skip("needs 8 GB free GPU memory")
-    w = torch.empty(m, n, dtype = torch.uint8, device = "cuda").random_(0, 126).view(torch.float8_e4m3fn)
+    w = (
+        torch.empty(m, n, dtype = torch.uint8, device = "cuda")
+        .random_(0, 126)
+        .view(torch.float8_e4m3fn)
+    )
     s = _scale(m, n, [128, 128], torch.float32, "cuda")
     out = fp8._blockwise_weight_dequant_any_shape(w, s, [128, 128], torch.float16)
     tail = slice(m - 256, m)

@@ -686,8 +686,7 @@ def _e4m3fn_bytes_dequant_kernel(
     c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
     mask = (r[:, None] < M) & (c[None, :] < N)
     b = tl.load(x_ptr + r[:, None] * stride_xm + c[None, :] * stride_xn, mask = mask, other = 0)
-    # A 512-wide tile spans several quant blocks, so gather each element's scale from the small grid
-    # (L1 hits); this also covers ragged and rectangular blocks.
+    # Per-element scale gather: a tile spans several quant blocks (also covers ragged / rectangular ones).
     s = tl.load(
         s_ptr + (r // BLOCK_M_Q)[:, None] * stride_sm + (c // BLOCK_N_Q)[None, :] * stride_sn,
         mask = mask,
@@ -698,8 +697,7 @@ def _e4m3fn_bytes_dequant_kernel(
     tl.store(y_ptr + r[:, None] * N + c[None, :], y.to(y_ptr.dtype.element_ty), mask = mask)
 
 
-# (rows, cols, num_warps) per program: wide rows won a tile sweep on T4 (torch 2.10 / 2.14) and
-# A100 (torch 2.14; within 3% of the best on 2.10).
+# (rows, cols, num_warps) per program, from a tile sweep on T4 and A100.
 _BYTES_DEQUANT_TILE = (8, 512, 4)
 
 
@@ -710,14 +708,9 @@ _BYTES_DEQUANT_TILE = (8, 512, 4)
     ),
 )
 def _e4m3fn_bytes_dequant(
-    weight: torch.Tensor,
-    weight_scale: torch.Tensor,
-    block_m: int,
-    block_n: int,
-    dtype: torch.dtype,
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_m: int, block_n: int, dtype: torch.dtype
 ) -> torch.Tensor:
-    # Reads the fp8 weight as raw bytes, so it runs where triton cannot compile fp8e4nv (sm75 / sm80 / sm86):
-    # one pass, no float32 scratch, bit-identical to _torch_blockwise_dequant. Any strides and ragged blocks.
+    # Raw bytes, as triton has no fp8e4nv below sm89; bit-identical to _torch_blockwise_dequant.
     m, n = weight.shape
     out = torch.empty((m, n), dtype = dtype, device = weight.device)
     if out.numel() == 0:
@@ -769,8 +762,7 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         # Uneven tiling, rectangular blocks, or an uncompilable fp8 dtype: the triton kernel uses one
         # BLOCK_SIZE for both axes, so it mis-indexes when block_size[0] != [1].
         if kernel_fp8_unsupported and torch.version.hip is None and weight_scale.ndim == 2:
-            # NVIDIA below sm89: decode the e4m3fn bytes in one triton pass, 7-10x faster than the
-            # chunked torch loop on T4 / A100 and bit-identical to it. ROCm keeps the torch path.
+            # NVIDIA below sm89: one triton pass over the e4m3fn bytes, bit-identical to the torch loop.
             return _e4m3fn_bytes_dequant(
                 weight, weight_scale, int(block_size[0]), int(block_size[1]), out_dtype
             )
