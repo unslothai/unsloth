@@ -6130,9 +6130,8 @@ get_torch_index_url() {
             _cuda_from_driver=1
         fi
     fi
-    # Jetson before CUDA 13 (JetPack 5/6): the aarch64 CUDA wheels on download.pytorch.org / PyPI are
-    # SBSA server builds that see no GPU on Tegra (#4856), so take the CPU index a GPU-less host gets.
-    # Thor (CUDA 13, JetPack 7) is SBSA and keeps the ladder. Inline: harnesses extract this function alone.
+    # Jetson before CUDA 13: aarch64 CUDA wheels are SBSA builds that see no GPU on Tegra (#4856); Thor (CUDA 13)
+    # is SBSA and keeps the ladder. Inline because test harnesses extract this function alone.
     if { [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; } && \
        { [ -z "$_cuda_ver" ] || [ "${_cuda_ver%%.*}" -lt 13 ]; }; then
         echo "[WARN] NVIDIA Jetson (Tegra) detected${_cuda_ver:+ with CUDA $_cuda_ver}: the generic aarch64 CUDA PyTorch wheels do not run on it -- installing CPU-only PyTorch." >&2
