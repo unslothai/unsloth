@@ -854,6 +854,12 @@ def _expected_cpu_flavor_was_chosen() -> bool:
         return True
     # A recorded cpu is not by itself a choice: setup.ps1 selects /cpu automatically on a GPU-less host and records it exactly as it records a pinned one.
     recorded, pinned = _recorded_install_flavor()
+    if recorded == "cpu" and not pinned:
+        # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
+        # repair would land on cpu again.
+        from utils.tegra import is_tegra
+
+        return is_tegra()
     return recorded == "cpu" and pinned
 
 

@@ -4318,9 +4318,9 @@ def _tegra_cuda_family(family: str, cuda_major: "int | None") -> str:
         _TEGRA_WARNED = True
         _safe_print(
             "   [WARN] NVIDIA Jetson (Tegra) detected: the generic aarch64 CUDA PyTorch wheels do "
-            "not run on it, so no CUDA torch is installed or repaired here. A JetPack torch "
-            "(https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/) "
-            "in this venv is kept."
+            "not run on it, so no CUDA torch is installed or repaired here and training runs on the CPU. "
+            "A JetPack torch built for this venv's Python is kept (NVIDIA's own wheels target JetPack's "
+            "system Python: https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/)."
         )
     return "cpu"
 

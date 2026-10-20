@@ -192,3 +192,18 @@ def test_cpu_only_non_mac_reason(monkeypatch):
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_gpu"
+
+
+@pytest.mark.parametrize("tegra, chosen", [(True, True), (False, False)])
+def test_an_automatic_cpu_record_counts_as_chosen_only_on_a_jetson(monkeypatch, tegra, chosen):
+    # A pre-CUDA-13 Jetson always resolves to cpu, so offering a GPU repair there loops back to cpu (#4856).
+    from utils import tegra as tegra_mod
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+    monkeypatch.setattr(hw, "_recorded_install_flavor", lambda: ("cpu", False))
+    monkeypatch.setattr(tegra_mod, "is_tegra", lambda: tegra)
+    assert hw._expected_cpu_flavor_was_chosen() is chosen
+    # A pinned cpu record stays a choice everywhere.
+    monkeypatch.setattr(hw, "_recorded_install_flavor", lambda: ("cpu", True))
+    assert hw._expected_cpu_flavor_was_chosen() is True

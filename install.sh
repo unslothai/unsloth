@@ -6134,8 +6134,8 @@ get_torch_index_url() {
     if { [ -e /etc/nv_tegra_release ] || grep -qa 'nvidia,tegra' /proc/device-tree/compatible 2>/dev/null; } && \
        { [ -z "$_cuda_ver" ] || [ "${_cuda_ver%%.*}" -lt 13 ]; }; then
         echo "[WARN] NVIDIA Jetson (Tegra) detected${_cuda_ver:+ with CUDA $_cuda_ver}: the generic aarch64 CUDA PyTorch wheels do not run on it -- installing CPU-only PyTorch." >&2
-        echo "[WARN] For GPU PyTorch, install NVIDIA's JetPack wheel into $VENV_DIR afterwards" >&2
-        echo "[WARN]   (https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/); Unsloth updates keep it." >&2
+        echo "[WARN] Training runs on the CPU. A JetPack PyTorch build for this venv's Python, if you install one, is kept by updates;" >&2
+        echo "[WARN]   NVIDIA's own wheels target JetPack's system Python (https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/)." >&2
         echo "$_base/cpu"; return
     fi
     if [ -z "$_cuda_ver" ]; then
@@ -7656,7 +7656,8 @@ case "$TORCH_INDEX_URL" in
                 # Re-detected: get_torch_index_url ran in a subshell. Thor (CUDA 13) is not on this route.
                 _tegra_cpu_route=true
                 substep "NVIDIA Jetson detected -- CPU-only PyTorch: the generic aarch64 CUDA wheels do not run on Tegra." "$C_WARN"
-                substep "For GPU PyTorch, install NVIDIA's JetPack wheel: https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/" "$C_WARN"
+                substep "Training runs on the CPU. A JetPack PyTorch build for this venv's Python is kept if you install one;" "$C_WARN"
+                substep "  NVIDIA's own wheels target JetPack's system Python: https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/" "$C_WARN"
             elif _has_amd_rocm_gpu; then
                 # A generation ROCm never covered is not a missing SDK (#8529). Unlike the arm in get_torch_index_url, this one runs even when the arch read fine, so it needs its own peer guard: an RX 5700 beside an RX 7900 lands here whenever the 7900's ROCm is too old, and blaming the 5700 would replace the upgrade advice with advice that is false for the card that caused the fallback. _infer_linux_amd_gfx_arch scans every display adapter, so a covered answer clears this one.
                 _covered_disp_gfx=$(_infer_linux_amd_gfx_arch 2>/dev/null) || _covered_disp_gfx=""
