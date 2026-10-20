@@ -827,7 +827,7 @@ def test_pinned_revision_constants():
     """facebook/sam3 is pinned to a commit. The unsloth/sam3.1 pin is a placeholder until that repo is uploaded:
     "main" (resolved and recorded at download time) or a full commit sha, never a short or partial one."""
     assert _SHA.fullmatch(seg.SAM3_REVISION)
-    assert seg.SAM31_REVISION == "main" or _SHA.fullmatch(seg.SAM31_REVISION)
+    assert _SHA.fullmatch(seg.SAM31_REVISION)
     for variant in seg.SEGMENTER_VARIANTS.values():
         assert variant.revision == "main" or _SHA.fullmatch(variant.revision)
         assert seg.pinned_revision(variant) == (None if variant.revision == "main" else variant.revision)

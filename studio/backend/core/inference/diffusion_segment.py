@@ -78,8 +78,8 @@ class SegmenterVariant:
 
 # SAM 3.1's detector in transformers' Sam3Model format, BF16 (converted from facebook/sam3.1's sam3.1_multiplex.pt).
 SAM31_REPO = "unsloth/sam3.1"
-# PLACEHOLDER: the unsloth/sam3.1 commit sha, filled in once the repo is uploaded. "main" until then.
-SAM31_REVISION = "main"
+# The unsloth/sam3.1 commit the files below were verified at.
+SAM31_REVISION = "b0f2e5dbd5f466ff0495c04ca29eaefb0a2421b5"
 # 1_680_935_372 bytes of bf16 safetensors plus the configs and tokenizer.
 SAM31_SIZE_BYTES = 1_680_935_372 + 5_037_537
 
