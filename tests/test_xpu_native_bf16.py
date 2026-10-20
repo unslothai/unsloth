@@ -2,8 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 """Intel XPU bf16 must be native bf16 on every visible XPU. torch.xpu.is_bf16_supported() defaults to
-including_emulation=True and is then always True, and models/_utils.py hard-coded True. Same answer
-as unsloth_zoo.device_type._xpu_bf16_supported, which the trainer reads."""
+including_emulation=True and is then always True, and models/_utils.py hard-coded True. A False aspect
+counts only when the aspect query is shown to work (libocloc). Same answer as
+unsloth_zoo.device_type._xpu_bf16_supported, which the trainer reads."""
 
 import re
 import types
@@ -26,20 +27,25 @@ if not hasattr(dt, "torch"):
 
 # Per device: a dict of aspect values, "old" (torch without the aspect) or None (unreadable).
 NATIVE = {"has_bfloat16_conversions": True}
-EMULATED = {"has_bfloat16_conversions": False}
+# bf16 False while another aspect reads True: the SYCL aspect query works, so the False is real.
+EMULATED = {"has_bfloat16_conversions": False, "has_subgroup_matrix_multiply_accumulate": True}
+# Without libocloc (torch-xpu wheels lack it) every aspect reads False: unproven, so bf16 stays on.
+NO_OCLOC = {"has_bfloat16_conversions": False}
 
 CASES = [
     pytest.param([NATIVE], True, id = "1dev-native"),
     pytest.param([EMULATED], False, id = "1dev-emulated"),
+    pytest.param([NO_OCLOC], True, id = "1dev-no-libocloc"),
     pytest.param(["old"], True, id = "1dev-old-torch"),
     pytest.param([None], True, id = "1dev-unreadable"),
     pytest.param([NATIVE, NATIVE], True, id = "2dev-native"),
     pytest.param([NATIVE, EMULATED], False, id = "2dev-mixed"),
     pytest.param([EMULATED, NATIVE], False, id = "2dev-mixed-rev"),
     pytest.param([EMULATED, EMULATED], False, id = "2dev-emulated"),
+    pytest.param([NO_OCLOC, NO_OCLOC], True, id = "2dev-no-libocloc"),
     pytest.param(["old", "old"], True, id = "2dev-old-torch"),
     pytest.param(["old", EMULATED], False, id = "2dev-old-attr+emulated"),
-    pytest.param([None, EMULATED], True, id = "2dev-unreadable+emulated"),
+    pytest.param([None, NO_OCLOC], True, id = "2dev-unreadable+no-libocloc"),
 ]
 
 
