@@ -214,7 +214,9 @@ def test_every_n_layers_zero_is_rejected(patched, via_dict):
         )
     else:
         if not NATIVE:
-            pytest.skip("every_n_layers is a gradient_checkpointing_enable argument from transformers 5.17")
+            pytest.skip(
+                "every_n_layers is a gradient_checkpointing_enable argument from transformers 5.17"
+            )
         call = lambda: model.gradient_checkpointing_enable(every_n_layers = 0)
     with pytest.raises(ValueError, match = "every_n_layers"):
         call()
