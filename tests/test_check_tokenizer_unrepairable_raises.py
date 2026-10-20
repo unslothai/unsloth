@@ -104,6 +104,34 @@ def test_post_processor_still_emitting_removed_id_raises(tmp_path):
         )
 
 
+def test_pair_template_still_emitting_removed_id_raises(tmp_path):
+    backend = Tokenizer(models.WordLevel(VOCAB, unk_token = "<unk>"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object = backend, unk_token = "<unk>")
+    tokenizer.add_special_tokens({"sep_token": "<sep>"})
+    tokenizer._tokenizer.post_processor = processors.TemplateProcessing(
+        single = "$A", pair = "$A <sep> $B:1", special_tokens = [("<sep>", len(VOCAB))]
+    )
+    tokenizer.save_pretrained(tmp_path)
+    with _no_slow_reload(), pytest.raises(RuntimeError, match = "out of bounds memory accesses"):
+        tu.check_tokenizer(
+            _model(len(VOCAB)), AutoTokenizer.from_pretrained(tmp_path), model_name = str(tmp_path)
+        )
+
+
+def test_bad_token_left_in_base_vocab_raises(tmp_path):
+    backend = Tokenizer(models.WordLevel({**VOCAB, "<sep>": len(VOCAB)}, unk_token = "<unk>"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object = backend, unk_token = "<unk>", sep_token = "<sep>"
+    )
+    tokenizer.save_pretrained(tmp_path)
+    with _no_slow_reload(), pytest.raises(RuntimeError, match = "out of bounds memory accesses"):
+        tu.check_tokenizer(
+            _model(len(VOCAB)), AutoTokenizer.from_pretrained(tmp_path), model_name = str(tmp_path)
+        )
+
+
 def test_removing_the_only_added_token_is_repaired(tmp_path):
     backend = Tokenizer(models.WordLevel({"hello": 0, "world": 1, "<unk>": 2}, unk_token = "<unk>"))
     backend.pre_tokenizer = pre_tokenizers.Whitespace()

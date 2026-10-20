@@ -1769,11 +1769,14 @@ def check_tokenizer(
                         if remove_generic and (try_removal[j] == bad_token):
                             setattr(tokenizer, try_mapper[j], None)
                             setattr(tokenizer, try_mapper[j] + "_id", None)
-                    # Probe an encode too: a post-processor (TemplateProcessing BOS) keeps emitting a removed id.
-                    if (
-                        max(tokenizer.added_tokens_decoder.keys(), default = -1) < max_embedding_size
-                        and max(tokenizer("a").input_ids, default = -1) < max_embedding_size
-                    ):
+                    # get_vocab covers ids left in the base vocab; the encodes cover a post-processor (TemplateProcessing single / pair) still emitting a removed id.
+                    probe_ids = [max(tokenizer.get_vocab().values(), default = -1)]
+                    probe_ids += tokenizer("a").input_ids
+                    try:
+                        probe_ids += tokenizer("a", "a").input_ids
+                    except Exception:
+                        pass
+                    if max(probe_ids, default = -1) < max_embedding_size:
                         logger.warning_once(
                             f"Unsloth loaded a broken tokenizer `{model_name}`, but managed to repair it!\n"
                             f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"
