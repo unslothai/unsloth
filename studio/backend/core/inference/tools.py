@@ -105,7 +105,12 @@ from core.inference.mcp_client import (
     tool_visible_to,
 )
 from storage import mcp_servers_db
-from utils.account_context import account_thread, current_account_id, is_owner_context
+from utils.account_context import (
+    account_thread,
+    current_account,
+    current_account_id,
+    is_owner_context,
+)
 from utils.current_date_prompt_settings import strip_current_date_update_note
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
@@ -14453,6 +14458,10 @@ async def get_enabled_mcp_tools(
         servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
+    from core.inference.studio_tools_mcp import keyless_caller
+
+    if keyless_caller(current_account()):
+        servers = [s for s in servers if not is_studio_tools(s["url"])]
     if not servers:
         return []
 

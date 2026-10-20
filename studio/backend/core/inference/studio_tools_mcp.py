@@ -61,6 +61,11 @@ def remember_studio_app(app: Any) -> None:
     _studio_app = app
 
 
+def keyless_caller(account: Any) -> bool:
+    # Keyless API access binds the owner with no credential; minting it the owner's key would widen its scope.
+    return account.via_api_key and account.credential_gen is None
+
+
 def chat_tools_mcp() -> Any:
     """The chat's own instance, separate from /mcp's, so the external server is untouched."""
     global _mcp
@@ -127,6 +132,8 @@ def call(
     from utils.account_context import arun_as, current_account
 
     account = current_account()
+    if keyless_caller(account):
+        return f"Error: MCP tool '{name}' failed: Unsloth Studio tools need an API key or a signed-in session."
     root_path = _root_path.get()
     app = _studio_app
     loop = server_loop()

@@ -27,7 +27,7 @@ from storage import mcp_servers_db
 from studio_mcp import caller as caller_mod
 from studio_mcp import forward as forward_mod
 from studio_mcp.inputs import PATH_REMOTE
-from utils.account_context import OWNER, AccountContext, current_account, run_as
+from utils.account_context import OWNER, AccountContext, as_api_caller, current_account, run_as
 from utils.mcp_access import set_mcp_enabled
 
 from .mcp_harness import (
@@ -369,6 +369,16 @@ def test_no_mint_means_no_call_and_never_the_owner(studio_home, accounts, server
         "Error: MCP tool 'list_training_runs' failed: Unsloth Studio could not authorize this call."
     )
     assert app.state.seen == [] and chat_keys() == []
+
+
+def test_a_keyless_caller_gets_no_studio_tools(studio_home, accounts, server_loop, monkeypatch):
+    app = studio(monkeypatch, RUN_PAYLOADS)
+    add_row(OWNER)
+    keyless = as_api_caller(OWNER)
+    assert listed(keyless) == []
+    assert bridge(keyless, "list_training_runs").startswith("Error: ")
+    assert app.state.seen == [] and chat_keys() == []
+    assert listed(OWNER) and "qwen-lora" in bridge(OWNER, "list_training_runs")
 
 
 def test_without_a_server_loop_or_app_nothing_is_minted(studio_home, accounts, monkeypatch):
