@@ -26,7 +26,7 @@ CASES = [
     ("bf16_hook", "full", {"UNSLOTH_DDP_COMM_HOOK": "bf16"}, {}),
     ("fp16_hook", "peft", {"UNSLOTH_DDP_COMM_HOOK": "fp16"}, {}),
 ]
-_UTILS = pathlib.Path(__file__).resolve().parents[2] / "unsloth" / "models" / "_utils.py"
+_UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
 
 def _free_port():
