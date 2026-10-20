@@ -12,7 +12,7 @@ _LLAMA = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "l
 
 
 def test_patch_peft_model_installs_block_compile():
-    tree = ast.parse(_LLAMA.read_text())
+    tree = ast.parse(_LLAMA.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
     fn = next(
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "patch_peft_model"
