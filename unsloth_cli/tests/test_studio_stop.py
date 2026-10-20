@@ -521,3 +521,20 @@ def test_windows_failed_liveness_probe_preserves_the_record(monkeypatch):
         subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout = "", returncode = 1)
     )
     assert studio_mod._pid_alive(8550) is True
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "needs /proc for the stable identity")
+def test_stop_drops_a_record_whose_stable_identity_proves_pid_reuse(monkeypatch, tmp_path):
+    import os
+
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {os.getpid()})
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding = "ascii").strip()
+    record = tmp_path / f"studio-8901-{os.getpid()}.pid"
+    record.write_text(f"{os.getpid()}\n111.5\n127.0.0.1\nlinux:{boot}:1\n", encoding = "utf-8")
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert killed == []
+    assert not record.exists()

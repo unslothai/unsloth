@@ -69,3 +69,17 @@ def test_proc_identity_handles_parentheses_and_spaces_in_comm(monkeypatch):
 def test_an_unverifiable_legacy_record_cannot_cancel_proven_pid_reuse(monkeypatch):
     monkeypatch.setattr(records, "linux_process_identity", lambda pid: "linux:boot:124")
     assert not records.pid_start_matches(4242, ["linux:boot:123", 1000.0, None], lambda pid: None)
+
+
+def test_only_a_stable_start_proves_pid_reuse(monkeypatch):
+    monkeypatch.setattr(records.sys, "platform", "linux")
+    monkeypatch.setattr(records, "linux_process_identity", lambda pid: "linux:boot:124")
+    drifted = lambda pid: 4600.0
+    assert records.pid_reuse_proven(42, ["linux:boot:123"], drifted)
+    assert not records.pid_reuse_proven(42, ["linux:boot:124"], drifted)
+    assert not records.pid_reuse_proven(42, [1000.0], drifted)
+    assert not records.pid_reuse_proven(42, [None], drifted)
+    monkeypatch.setattr(records, "linux_process_identity", lambda pid: None)
+    assert not records.pid_reuse_proven(42, ["linux:boot:123"], drifted)
+    monkeypatch.setattr(records.sys, "platform", "darwin")
+    assert records.pid_reuse_proven(42, [1000.0], drifted)

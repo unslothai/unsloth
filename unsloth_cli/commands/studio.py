@@ -32,7 +32,12 @@ from typer.core import TyperCommand
 from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
-from studio.backend.utils.pid_records import RecordedStart, recorded_start, pid_start_matches
+from studio.backend.utils.pid_records import (
+    RecordedStart,
+    pid_reuse_proven,
+    pid_start_matches,
+    recorded_start,
+)
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
@@ -3371,6 +3376,10 @@ def stop():
                 _unlink_quietly(path)
             continue
         if not _pid_is_studio_server(pid, created_times):
+            if pid_reuse_proven(pid, created_times):
+                for path in paths:
+                    _unlink_quietly(path)
+                continue
             unverified.append(pid)
             typer.echo(
                 f"Could not verify Unsloth server identity (PID {pid}); kept its PID files.",

@@ -75,3 +75,19 @@ def pid_start_matches(
             if abs(epoch - start) <= 1.0:
                 return True
     return not compared
+
+
+def pid_reuse_proven(
+    pid: int,
+    starts: Sequence[RecordedStart],
+    create_time: Callable[[int], float | None] = process_create_time,
+) -> bool:
+    """A mismatch proves reuse only with stable starts: Linux epoch times move with boot-time readjustments."""
+    known = [start for start in starts if start is not None]
+    if not known or pid_start_matches(pid, known, create_time):
+        return False
+    if sys.platform != "linux":
+        return True
+    return (
+        all(isinstance(start, str) for start in known) and linux_process_identity(pid) is not None
+    )
