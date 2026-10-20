@@ -495,7 +495,12 @@ def check_shard_units(
     return True
 
 
-def _refuse_units_sharing_params(model, units, ignored_params, names = None):
+def _refuse_units_sharing_params(
+    model,
+    units,
+    ignored_params,
+    names = None,
+):
     shared = _units_sharing_params(model, units, ignored_params)
     if not shared:
         return

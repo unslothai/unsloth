@@ -120,7 +120,13 @@ def test_explicit_units_splitting_a_shared_parameter_raise():
         native.check_shard_units(model, list(model.model.layers))
 
 
-def _worker(rank, world, port, out, frozen_explicit = False):
+def _worker(
+    rank,
+    world,
+    port,
+    out,
+    frozen_explicit = False,
+):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
@@ -206,8 +212,10 @@ def test_zamba2_shards_with_shared_transformer_tied(frozen_explicit):
     for r in results:
         assert "error" not in r, r["error"]
     r = results[0]
-    expected = [type(layer).__name__ for layer in _zamba2("meta").model.layers] if frozen_explicit else (
-        ["Zamba2MambaDecoderLayer"] * 3
+    expected = (
+        [type(layer).__name__ for layer in _zamba2("meta").model.layers]
+        if frozen_explicit
+        else (["Zamba2MambaDecoderLayer"] * 3)
     )
     assert r["units"] == expected, r
     assert r["tied"] is True, r
