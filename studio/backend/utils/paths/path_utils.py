@@ -494,8 +494,14 @@ def _prune_open_staging(root: Path, break_links: bool = False) -> None:
     import stat as stat_module
     import time
 
+    def real_dir(info: os.stat_result) -> bool:
+        return stat_module.S_ISDIR(info.st_mode) and not getattr(info, "st_reparse_tag", 0)
+
     cutoff = time.time() - _OPEN_STAGING_MAX_AGE_S
     try:
+        # Never through a symlink or junction, which would reach outside the cache.
+        if not real_dir(root.lstat()):
+            return
         entries = list(root.iterdir())
     except OSError:
         return
@@ -504,20 +510,16 @@ def _prune_open_staging(root: Path, break_links: bool = False) -> None:
             info = entry.lstat()
             if info.st_mtime < cutoff:
                 shutil.rmtree(entry, ignore_errors = True)
-            # Never through a symlink or junction, which would reach outside the cache.
-            elif (
-                break_links
-                and stat_module.S_ISDIR(info.st_mode)
-                and not getattr(info, "st_reparse_tag", 0)
-            ):
+            elif break_links and real_dir(info):
                 _break_hard_links(entry)
         except OSError:
             continue
 
 
-# Startup only, before any Open; sibling backends on the same home take turns, so no two swaps race.
+# At startup, and before a chat is refused for a staged link. Only under the lock, so sibling backends sharing the
+# home never swap at once; without it (busy, or a filesystem that cannot lock) the links wait for a later call.
 def prune_open_staging() -> None:
-    from utils.cache_cleanup import _CONTENTION_ERRNOS, _try_lock, _unlock
+    from utils.cache_cleanup import _try_lock, _unlock
     from utils.paths.storage_roots import cache_root
 
     try:
@@ -526,10 +528,9 @@ def prune_open_staging() -> None:
         return
     try:
         _try_lock(handle)
-    except OSError as exc:
-        if exc.errno in _CONTENTION_ERRNOS:
-            os.close(handle)
-            return
+    except OSError:
+        os.close(handle)
+        return
     try:
         _prune_open_staging(cache_root() / "open-staging", break_links = True)
     finally:

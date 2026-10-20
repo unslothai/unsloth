@@ -10,6 +10,7 @@ behind. Verified on Windows, macOS and Linux.
 """
 
 import asyncio
+import errno
 import functools
 import hashlib
 import io
@@ -6685,6 +6686,44 @@ def test_a_symlinked_staging_entry_is_not_walked(tmp_path, monkeypatch):
     path_utils.prune_open_staging()
     assert os.stat(outside / "a.txt").st_ino == os.stat(outside / "b.txt").st_ino
     assert sorted(os.listdir(outside)) == ["a.txt", "b.txt"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
+def test_a_symlinked_staging_root_is_left_alone(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    elsewhere = tmp_path / "elsewhere"
+    recent, old = elsewhere / "recent", elsewhere / "old"
+    for folder in (recent, old):
+        folder.mkdir(parents = True)
+    (recent / "a.txt").write_bytes(b"shared")
+    os.link(recent / "a.txt", recent / "b.txt")
+    day_ago = time.time() - 25 * 60 * 60
+    os.utime(old, (day_ago, day_ago))
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "open-staging").symlink_to(elsewhere, target_is_directory = True)
+    path_utils.prune_open_staging()
+    path_utils._prune_open_staging(tmp_path / "cache" / "open-staging")
+    assert sorted(os.listdir(recent)) == ["a.txt", "b.txt"]
+    assert old.exists()
+
+
+def test_legacy_links_wait_when_the_staging_lock_cannot_be_taken(tmp_path, monkeypatch):
+    from utils import cache_cleanup
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    _stage_like_an_older_build(tmp_path, sandbox)
+
+    def no_locks_here(fd):
+        raise OSError(errno.ENOSYS, "locking not supported")
+
+    monkeypatch.setattr(cache_cleanup, "_try_lock", no_locks_here)
+    path_utils.prune_open_staging()
+    assert os.stat(sandbox / "chart.png").st_nlink == 2
 
 
 def test_a_failed_copy_leaves_nothing_staged(tmp_path, monkeypatch):
