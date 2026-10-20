@@ -3699,7 +3699,6 @@ _FUSED_EXPERT_SUFFIX = ".experts.gate_up_proj"
 
 def _safetensors_dtypes(path, names = None):
     from safetensors import safe_open
-
     with safe_open(path, framework = "pt") as f:
         keys = f.keys() if names is None else names
         return {k: f.get_slice(k).get_dtype() for k in keys}
@@ -3757,7 +3756,9 @@ def _checkpoint_tensor_dtypes(
 
         hub = dict(revision = revision, subfolder = subfolder, cache_dir = cache_dir, token = token)
         try:
-            index_path = hf_hub_download(model_name, index_file, local_files_only = local_files_only, **hub)
+            index_path = hf_hub_download(
+                model_name, index_file, local_files_only = local_files_only, **hub
+            )
             with open(index_path, "r", encoding = "utf-8") as f:
                 return dict.fromkeys(json.load(f).get("weight_map", {}))
         except Exception:
@@ -3785,7 +3786,11 @@ def _gpt_oss_bnb_checkpoint_expert_layout(dtypes):
     return "fused"
 
 
-def gpt_oss_checkpoint_has_fused_experts(config, model_name = None, **hub_kwargs):
+def gpt_oss_checkpoint_has_fused_experts(
+    config,
+    model_name = None,
+    **hub_kwargs,
+):
     """True when a gpt-oss checkpoint stores fused experts, which zoo's bnb split classes cannot load; None if unknown.
 
     No quantization_config means fused. A bitsandbytes config is read from the checkpoint's tensor names when
