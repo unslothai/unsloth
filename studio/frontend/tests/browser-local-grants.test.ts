@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
+import { readSrc } from "./helpers/kit.ts";
 
 register("./helpers/browser-local-resolver.mjs", import.meta.url);
 const { grantLocalOrigin, localOriginGranted } = await import("../src/features/browser/native-support.ts");
@@ -86,4 +87,9 @@ test("a native tab keeps the page it leaves for a local origin, whose view start
   } finally {
     setNativeWebHistory(false);
   }
+});
+
+test("the Local badge follows the tab's granted entry, not a data: or about:blank page it shows", () => {
+  const panel = readSrc("features/browser/browser-panel.tsx");
+  assert.match(panel, /const local = entry\.kind === "web" && !tab\.nativeError && localOriginGranted\(tab\.id, entry\.url\);/);
 });

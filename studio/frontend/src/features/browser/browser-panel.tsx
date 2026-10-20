@@ -655,7 +655,7 @@ function TabStrip({
           const active = tab.id === activeTabId;
           const entry = currentEntry(tab);
           const title = tabTitle(tab, entry);
-          const local = entry.kind === "web" && !tab.nativeError && localOriginGranted(tab.id, tab.displayUrl ?? entry.url);
+          const local = entry.kind === "web" && !tab.nativeError && localOriginGranted(tab.id, entry.url);
           return (
             <TabContextMenu key={tab.id} tab={tab}>
               <div
