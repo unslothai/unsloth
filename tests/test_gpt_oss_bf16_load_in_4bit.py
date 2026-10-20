@@ -155,3 +155,50 @@ def test_bf16_checkpoint_loads_real_weights_in_4bit(tmp_path):
         if "experts" in n and "lora_B" in n and p.grad is not None
     ]
     assert expert_grads and any(float(g.abs().sum()) > 0 for g in expert_grads)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA GPU for bitsandbytes")
+def test_bf16_checkpoint_4bit_generate_matches_prefill(tmp_path):
+    """One-token decode on the fused Params4bit experts gives the prefill (module forward) logits."""
+    pytest.importorskip("bitsandbytes")
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    src = "trl-internal-testing/tiny-GptOssForCausalLM"
+    ckpt = str(tmp_path / "tiny_gpt_oss_bf16")
+    ref = AutoModelForCausalLM.from_pretrained(src, dtype = torch.bfloat16)
+    torch.manual_seed(0)
+    with torch.no_grad():
+        for name, param in ref.named_parameters():
+            if "experts" in name or "router" in name:
+                param.normal_(0.0, 0.05)
+    ref.save_pretrained(ckpt)
+    AutoTokenizer.from_pretrained(src).save_pretrained(ckpt)
+    del ref
+
+    from unsloth import FastLanguageModel
+
+    model, _ = FastLanguageModel.from_pretrained(
+        ckpt, max_seq_length = 64, load_in_4bit = True, dtype = torch.bfloat16
+    )
+    assert type(model.model.layers[0].mlp.experts.gate_up_proj).__name__ == "Params4bit"
+    FastLanguageModel.for_inference(model)
+    ids = torch.tensor([[1, 5, 9, 17, 33, 2, 40]], device = "cuda")
+    out = model.generate(
+        input_ids = ids,
+        max_new_tokens = 4,
+        do_sample = False,
+        output_logits = True,
+        return_dict_in_generate = True,
+    )
+    seq = out.sequences
+    assert seq.shape[1] == ids.shape[1] + 4
+    with torch.no_grad():
+        full = model(input_ids = seq, use_cache = False).logits.float()
+    n = ids.shape[1]
+    for step, step_logits in enumerate(out.logits):
+        expect = full[:, n - 1 + step]
+        got = step_logits.float()
+        assert torch.equal(got.argmax(-1), seq[:, n + step])
+        rel = float((got - expect).norm() / expect.norm())
+        assert rel < 2e-2, (step, rel)
+    assert torch.equal(full[:, n - 1 : -1].argmax(-1), seq[:, n:])
