@@ -504,10 +504,8 @@ def install_fbcache_length_guard() -> bool:
 def _split_mixed_stream_tail_residuals(tail_hidden: Any, head_output: Any) -> Optional[tuple]:
     """Tail residuals for a dual-stream head and a single-stream tail, or None when unmappable.
 
-    The head stored ``[hidden, encoder]``; the tail ran over the joint sequence the transformer
-    built between the two stacks, ``cat([encoder, hidden], dim=1)`` (FLUX.2, and the layout
-    ParaAttention's first-block cache splits back the same way). Splitting at the text length gives
-    residuals shaped like the head's own outputs, which is what the head's skip branch adds them to.
+    The tail ran over ``cat([encoder, hidden], dim=1)``; splitting at the text length gives
+    residuals shaped like the head's ``[hidden, encoder]`` outputs, which the skip branch adds to.
     """
     head_hidden, head_encoder = head_output[0], head_output[1]
     if head_encoder is None or getattr(tail_hidden, "ndim", 0) < 2:
@@ -562,16 +560,11 @@ def _rebind_fbcache_block_hooks(transformer: Any) -> None:
 def install_fbcache_mixed_stream_tail() -> bool:
     """Make First-Block-Cache work when the head block is dual-stream and the tail single-stream.
 
-    FLUX.2 (klein and dev) runs ``Flux2TransformerBlock`` (returns ``(encoder, hidden)``) and then
-    ``Flux2SingleTransformerBlock`` over the concatenated sequence (returns one tensor). diffusers'
-    tail hook picks its branch from the TAIL's output type, so it subtracts the head's stored
-    ``[hidden, encoder]`` list from a tensor and every cached FLUX.2 render dies on the first step
-    with "unsupported operand type(s) for -: 'Tensor' and 'list'". Only that combination (tail
-    registered without an encoder output, head output stored as a pair) takes the new path, and it
-    splits the joint tail output back into hidden / encoder residuals. Every other family calls the
-    original hook unchanged. A tail that cannot be mapped onto the head keeps the render correct by
-    dropping the head residual, so the next step computes in full. Process-wide and idempotent;
-    False when this diffusers has no FBCache block hook to patch."""
+    diffusers' tail hook picks its branch from the TAIL's output type, so on FLUX.2 (dual-stream
+    head, single-stream tail) it subtracts the head's ``[hidden, encoder]`` list from a tensor and
+    crashes on the first step. Only that combination takes the new path; every other family calls
+    the original hook unchanged. An unmappable tail drops the head residual so the next step
+    computes in full. Process-wide and idempotent; False when diffusers has no FBCache block hook."""
     try:
         from diffusers.hooks.first_block_cache import FBCBlockHook
     except Exception:  # noqa: BLE001 - no FBCache in this diffusers
