@@ -182,3 +182,35 @@ def test_repairs_legacy_unguarded_block(tmp_path, legacy_import):
         assert init.read_text() == EXECUTORCH_MODELS_INIT
     res = _run(PROBE.format(pre = ""), tmp_path)
     assert res["real"] is True and res["tune_to_meta"] == "ok"
+
+
+def test_legacy_stub_already_imported_is_dropped(tmp_path):
+    # An old patched executorch imported before Unsloth in the same process: the stub is already in sys.modules.
+    init = _make_executorch(tmp_path)
+    _make_real_torchtune(tmp_path)
+    s = __import__("importlib.util").util.spec_from_file_location("_uif_t2", IMPORT_FIXES)
+    m = __import__("importlib.util").util.module_from_spec(s)
+    s.loader.exec_module(m)
+    init.write_text(
+        EXECUTORCH_MODELS_INIT.replace(
+            "from enum import Enum\n\n",
+            "from enum import Enum\n\n" + m._LEGACY_EXECUTORCH_TORCHTUNE_SHIM,
+            1,
+        )
+    )
+    res = _run(
+        f"""
+        import importlib.util, json, sys
+        import executorch.examples.models
+        assert getattr(sys.modules["torchtune"], "REAL", False) is False
+        s = importlib.util.spec_from_file_location("_uif", {str(IMPORT_FIXES)!r})
+        m = importlib.util.module_from_spec(s)
+        s.loader.exec_module(m)
+        m.fix_executorch()
+        import torchtune
+        from torchtune.models import convert_weights
+        print(json.dumps({{"real": getattr(torchtune, "REAL", False), "hf_to_tune": hasattr(convert_weights, "hf_to_tune")}}))
+        """,
+        tmp_path,
+    )
+    assert res == {"real": True, "hf_to_tune": True}

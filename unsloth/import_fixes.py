@@ -7077,6 +7077,28 @@ def _executorch_needs_torchtune_get_mapped_key(models_dir):
 
 
 # Fix Executorch needing torchtune's get_mapped_key when torchtune is absent
+def _drop_loaded_legacy_torchtune_stub():
+    # An old patched executorch imported before Unsloth already put the legacy stub in sys.modules; it has no
+    # file and no hf_to_tune. Drop it when a real torchtune is installed so the next import finds the package.
+    stub = sys.modules.get("torchtune")
+    if stub is None or getattr(stub, "__file__", None) is not None or getattr(stub, "__spec__", None) is not None:
+        return
+    convert_weights = sys.modules.get("torchtune.models.convert_weights")
+    if convert_weights is None or not hasattr(convert_weights, "get_mapped_key"):
+        return
+    if hasattr(convert_weights, "hf_to_tune"):
+        return
+    try:
+        from importlib.machinery import PathFinder
+
+        if PathFinder.find_spec("torchtune") is None:
+            return
+    except (ImportError, ValueError):
+        return
+    for name in ("torchtune.models.convert_weights", "torchtune.models", "torchtune"):
+        sys.modules.pop(name, None)
+
+
 def fix_executorch():
     spec = importlib.util.find_spec("executorch")
     if spec is None:
@@ -7107,6 +7129,7 @@ def fix_executorch():
             with open(executorch, "w", encoding = "utf-8") as f:
                 f.write(text)
             logger.info("Unsloth: Patching Executorch to fix get_mapped_key")
+        _drop_loaded_legacy_torchtune_stub()
     except Exception as e:
         logger.info(f"Unsloth: Failed Executorch with error = {str(e)}")
 
