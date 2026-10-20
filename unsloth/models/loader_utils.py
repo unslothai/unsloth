@@ -314,6 +314,21 @@ def sync_deepspeed_mixed_precision(args):
             if bool(section.get("enabled", False)) != enabled:
                 section["enabled"] = enabled
                 changed.append(key)
+    hf_config = getattr(args, "hf_deepspeed_config", None)
+    if hf_config is not None and isinstance(getattr(hf_config, "config", None), dict):
+        # trainer_config_process already recorded the old flags: drop the precision mismatches it
+        # queued (the config now agrees) and recompute its cached dtype as it does.
+        mismatches = getattr(hf_config, "mismatches", None)
+        if isinstance(mismatches, list):
+            mismatches[:] = [
+                m for m in mismatches
+                if not m.startswith(("- ds fp16.enabled=", "- ds bf16.enabled="))
+            ]
+        if hasattr(hf_config, "_dtype"):
+            enabled = lambda key: hf_config.config.get(key, {}).get("enabled", False) is True
+            hf_config._dtype = (
+                torch.bfloat16 if enabled("bf16") else torch.float16 if enabled("fp16") else torch.float32
+            )
     return changed
 
 

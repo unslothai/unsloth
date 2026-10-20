@@ -233,6 +233,34 @@ def test_forced_float32_disables_the_filled_deepspeed_fp16():
     assert loader_utils.sync_deepspeed_mixed_precision(args) == []
 
 
+def test_resync_clears_queued_precision_mismatches_and_dtype():
+    import inspect
+    import types
+
+    import torch
+
+    from transformers.integrations import deepspeed as hf_ds
+
+    # The prefix we drop is the one transformers writes in fill_match.
+    assert 'self.mismatches.append(f"- ds {ds_key_long}={ds_val} vs hf {hf_key}={hf_val}")' in (
+        inspect.getsource(hf_ds)
+    )
+    args, config = _filled_args(fp16 = False, bf16 = False, ds_fp16 = True, ds_bf16 = False)
+    args.hf_deepspeed_config = types.SimpleNamespace(
+        config = config,
+        mismatches = [
+            "- ds fp16.enabled=True vs hf fp16|fp16_full_eval=False",
+            "- ds train_micro_batch_size_per_gpu=4 vs hf per_device_train_batch_size=2",
+        ],
+        _dtype = torch.float16,
+    )
+    assert loader_utils.sync_deepspeed_mixed_precision(args) == ["fp16"]
+    assert args.hf_deepspeed_config.mismatches == [
+        "- ds train_micro_batch_size_per_gpu=4 vs hf per_device_train_batch_size=2"
+    ]
+    assert args.hf_deepspeed_config._dtype is torch.float32
+
+
 def test_auto_and_absent_sections_are_left_to_transformers():
     import types
 
