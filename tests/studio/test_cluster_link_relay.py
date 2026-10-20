@@ -1212,6 +1212,7 @@ _SESSION_THREADS = (
     "unsloth-cluster-relay-conn",
     "unsloth-cluster-agent-revalidate",
     "unsloth-cluster-relay-revalidate",
+    "unsloth-cluster-splice",
 )
 
 
@@ -1238,9 +1239,10 @@ def test_sessions_take_the_path_the_kill_switch_selects(make_link, monkeypatch, 
     assert counters["to_worker"] == len(payload) and counters["from_worker"] == len(payload)
 
 
-def test_a_threaded_session_carries_a_bulk_reply_byte_exact_both_ways(make_link):
+def test_a_threaded_session_carries_a_bulk_reply_byte_exact_both_ways(make_link, monkeypatch):
     # Upload and download at once, each fragmented: the one thread per session must never stall a
     # direction behind the other or reorder bytes.
+    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
     link = make_link()
     payload = os.urandom(8 * MIB + 3)
     assert _echo(link, payload, fragment = True) == payload
@@ -1254,6 +1256,7 @@ def test_revocation_cuts_a_live_threaded_session(make_link, monkeypatch, side):
 
     monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)
     monkeypatch.setattr(agent_mod, "REVALIDATE_S", 0.2)
+    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
     trusted = {"ok": True}
     if side == "relay":
         link = make_link(relay_authorize = lambda pid: trusted["ok"] and pid.node_id == "w1")
@@ -1274,7 +1277,8 @@ def _fds() -> int:
     return len(os.listdir("/proc/self/fd"))
 
 
-def test_abrupt_disconnects_leave_no_session_threads_or_sockets(make_link):
+def test_abrupt_disconnects_leave_no_session_threads_or_sockets(make_link, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
     link = make_link()
     linux = sys.platform.startswith("linux")
     before = _fds() if linux else 0
