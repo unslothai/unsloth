@@ -3645,6 +3645,8 @@ def _fallback_checkpoint_extra_bytes(model, state_dict = None):
 
 
 _GGUF_LINKED_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".npz")
+# Larger than any tokenizer file, so a folder's other big artifacts (tf_model.h5, an old .gguf) are linked, not copied onto a tight disk.
+_GGUF_LINK_MIN_BYTES = 256 * 1024**2
 
 
 def _stage_reused_checkpoint(source, gguf_directory):
@@ -3666,7 +3668,10 @@ def _stage_reused_checkpoint(source, gguf_directory):
                     os.symlink(src, dst, target_is_directory = True)
                 except OSError:
                     shutil.copytree(src, dst)
-            elif name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES):
+            elif (
+                name.endswith(_GGUF_LINKED_WEIGHT_SUFFIXES)
+                or os.path.getsize(src) >= _GGUF_LINK_MIN_BYTES
+            ):
                 for link in (os.link, os.symlink):
                     try:
                         link(src, dst)
@@ -5087,11 +5092,12 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
             '[<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)\n'
         )
 
-        readme_path = os.path.join(actual_save_directory, "README.md")
-        with open(readme_path, "w", encoding = "utf-8") as f:
-            f.write(readme_content)
-
-        operations.append(CommitOperationAdd(path_in_repo = "README.md", path_or_fileobj = readme_path))
+        # Uploaded from memory: for a non-PEFT model the save directory is the user's own checkpoint, whose README this must not overwrite.
+        operations.append(
+            CommitOperationAdd(
+                path_in_repo = "README.md", path_or_fileobj = readme_content.encode("utf-8")
+            )
+        )
 
         commit = api.create_commit(
             repo_id = full_repo_id,

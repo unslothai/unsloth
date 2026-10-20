@@ -680,3 +680,28 @@ def test_non_peft_gguf_removes_the_staged_copy_when_export_fails_before_converti
     leftovers = os.listdir(gguf_directory) if os.path.isdir(gguf_directory) else []
     assert not [name for name in leftovers if name.startswith(".unsloth_gguf_source_")]
     assert os.listdir(checkpoint) == ["model.safetensors"]
+
+
+def test_staged_checkpoint_links_weights_and_big_files_but_copies_the_tokenizer(
+    monkeypatch, tmp_path
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"WEIGHTS")
+    (checkpoint / "tf_model.h5").write_bytes(b"x" * 64)
+    (checkpoint / "tokenizer_config.json").write_text("{}")
+    monkeypatch.setattr(save_mod, "_GGUF_LINK_MIN_BYTES", 32)
+
+    staged = save_mod._stage_reused_checkpoint(str(checkpoint), str(tmp_path / "out_gguf"))
+    try:
+        for name in ("model.safetensors", "tf_model.h5"):
+            assert os.path.samefile(os.path.join(staged, name), checkpoint / name)
+        assert not os.path.samefile(
+            os.path.join(staged, "tokenizer_config.json"), checkpoint / "tokenizer_config.json"
+        )
+        with open(os.path.join(staged, "tokenizer_config.json"), "w") as f:
+            f.write("rewritten")
+        assert (checkpoint / "tokenizer_config.json").read_text() == "{}"
+    finally:
+        save_mod._drop_staged_checkpoint(staged)
+    assert not os.path.exists(staged)
