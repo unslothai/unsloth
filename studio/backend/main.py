@@ -804,11 +804,18 @@ async def lifespan(app: FastAPI):
         start_sandbox_recovery()
     except Exception:  # noqa: BLE001
         pass
-    try:
-        from utils.paths.path_utils import prune_open_staging
-        prune_open_staging()
-    except Exception:  # noqa: BLE001
-        _lifespan_log.warning("could not prune open-staging", exc_info = True)
+
+    def _prune_open_staging_in_background() -> None:
+        try:
+            from utils.paths.path_utils import prune_open_staging
+            prune_open_staging()
+        except Exception:  # noqa: BLE001
+            _lifespan_log.warning("could not prune open-staging", exc_info = True)
+
+    # Off the startup path: the cache can sit on a slow mount, and a tool launched first runs the same cleanup.
+    threading.Thread(
+        target = _prune_open_staging_in_background, name = "open-staging-prune", daemon = True
+    ).start()
 
     # Warm the OS sandbox probe so the "off" gate has an answer.
     try:

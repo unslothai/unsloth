@@ -6611,7 +6611,10 @@ def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch,
 
     import main
 
-    assert "prune_open_staging()" in inspect.getsource(main.lifespan)
+    source = inspect.getsource(main.lifespan)
+    assert "prune_open_staging()" in source
+    # Run on a thread, so a slow cache mount cannot hold up startup.
+    assert "threading.Thread(" in source and "target = _prune_open_staging_in_background" in source
 
 
 def test_an_app_saving_while_a_legacy_link_is_replaced_keeps_its_save(tmp_path, monkeypatch):
