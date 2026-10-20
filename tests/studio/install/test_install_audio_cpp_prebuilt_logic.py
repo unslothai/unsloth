@@ -133,8 +133,6 @@ def _fake_nvidia_smi(
     returncode = 0,
     amd = False,
 ):
-    """nvidia-smi reporting CUDA 12.6, with ``caps`` answering the compute_cap query."""
-
     def run(cmd, *a, **k):
         if any("compute_cap" in part for part in cmd):
             if isinstance(caps, Exception):

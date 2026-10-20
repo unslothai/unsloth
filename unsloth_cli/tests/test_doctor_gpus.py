@@ -515,7 +515,6 @@ def test_doctor_on_mps_or_xpu_is_healthy(monkeypatch, mps, xpu, name):
     [("12.4", None), (None, "6.2")],
 )
 def test_cuda_or_rocm_build_without_a_device_still_fails_beside_xpu_or_mps(monkeypatch, cuda, hip):
-    # Even if a probe answered, a CUDA / ROCm build that sees no device is the failure it was.
     torch = _non_cuda_torch(mps = True, xpu = True, cuda = cuda, hip = hip)
     result, calls = _run_doctor(monkeypatch, torch, [])
     assert result.exit_code == 1 and calls == []
