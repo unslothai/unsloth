@@ -6,6 +6,7 @@ NVIDIA path unchanged; the CUDA flash-attn wheel is never pip installed onto ROC
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import types
@@ -918,7 +919,8 @@ def test_toolchain_key_names_the_flash_attn_build(monkeypatch):
         "|gfx1151|",
         "|hip7.1.0|",
         "|flash_attn2.8.3|",
-        "/flash_attn|ck|",
+        # the install folder comes through os.path.realpath, so native separators (a backslash on Windows)
+        os.sep + "flash_attn|ck|",
     ):
         assert part in ck, part
     fa.__version__ = "2.8.4"
