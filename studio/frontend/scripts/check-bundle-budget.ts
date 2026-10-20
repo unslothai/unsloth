@@ -301,12 +301,23 @@ export const BUDGET = {
   // Explicit browser download names retain the prior startup margin.
   // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
   // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
-  // Saving files from download links in browser panel pages adds 215 B raw / 47 B transfer (6,848,044 -> 6,848,259 B
-  // raw, 2,062,313 -> 2,062,360 B transfer against f7b147dd10, one machine and build, Node 22, 96 chunks). Raised by that.
-  // Also saving same-site download links, attachments, file navigations and the page's own frames adds 1,256 B raw /
-  // 288 B transfer (6,848,259 -> 6,849,515 B raw, 2,062,360 -> 2,062,648 B transfer against 22a0426b3a, same setup).
-  transferBytes: 2_062_856,
-  rawBytes: 6_849_675,
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
+  // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
+  // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Saving files from download links, attachments, file navigations and the page's own frames in browser panel
+  // pages adds 1,471 B raw / 335 B transfer (215 + 1,256 B raw, 47 + 288 B transfer, measured against f7b147dd10 and
+  // 22a0426b3a, one machine and build, Node 22, 96 chunks). Raised by that.
+  transferBytes: 2_066_918,
+  rawBytes: 6_864_255,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
