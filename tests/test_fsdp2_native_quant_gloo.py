@@ -13,7 +13,6 @@ plain Parameter with no quant_state. A 16-bit model is left untouched. The modul
 
 import importlib.util
 import os
-import socket
 import sys
 import types
 from pathlib import Path
@@ -56,9 +55,8 @@ def _load_models_package():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 N_BLOCKS = 3
