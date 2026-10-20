@@ -3228,6 +3228,7 @@ function Install-UnslothStudio {
             $envOverride = (Join-Path $env:USERPROFILE $envOverride.Substring(1).TrimStart('/','\'))
         }
         try {
+            $envOverride = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($envOverride)
             # BEFORE the create: this is the only moment anyone can still tell. The lock runs
             # thousands of lines below and asks whether the root existed, which by then is yes for
             # every env-mode root, so its ownership branch would never fire for the roots it was
@@ -4441,8 +4442,7 @@ function Install-UnslothStudio {
         return (Get-CanonicalDir -Path $value)
     }
 
-    # The System32 escape below can change the working directory. Keep a relative master
-    # root anchored where Studio was resolved, including in setup and the saved launcher.
+    # Anchor the master root before the System32 escape changes the working directory.
     $_installMasterRoot = Get-MasterRootOverride
     if ($_installMasterRoot) { $env:UNSLOTH_HOME = $_installMasterRoot }
 

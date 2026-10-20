@@ -4740,11 +4740,7 @@ _master_root_note_is_honoured() {
         echo "      you run Unsloth." >&2
         return 1
     fi
-    # A note must describe the tree it is written into: all four readers require the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
-    # aim a removal at the original install. Older installers could leave Studio at
-    # ~/.unsloth/studio with the runtimes at /mnt/portable. Explicit Studio overrides can
-    # still select that split layout: warn instead of writing a note every reader refuses.
+    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
     case "$STUDIO_HOME" in
         "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
     esac

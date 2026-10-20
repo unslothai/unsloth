@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Installer regressions for UNSLOTH_HOME and the launch paths it creates."""
-
 import os
 from pathlib import Path
 import subprocess
@@ -88,16 +86,25 @@ def _root_script(filename):
 
 
 @pytest.mark.parametrize(
-    "filename", ["install.sh", "studio/setup.sh", "install.ps1", "studio/setup.ps1"]
+    "filename", ["install.sh", "studio/setup.sh", "install.ps1", "studio/setup.ps1", "cli"]
 )
 @pytest.mark.parametrize(
     "studio, alias, master, expected",
     [
+        ("", "", "", ".unsloth/studio"),
+        ("chosen", "", "", "chosen"),
+        ("", "alias", "", "alias"),
+        ("chosen", "alias", "", "chosen"),
+        ("chosen", "", "portable", "chosen"),
+        ("", "alias", "portable", "alias"),
         ("", "", "{home}/portable [1]", "portable [1]/studio"),
         (" \t ", " ", " portable [1] ", "portable [1]/studio"),
         ("chosen", "ignored", "portable", "chosen"),
         (" \t ", "alias", "portable", "alias"),
         ("", "", "~/portable", "portable/studio"),
+        ("", "", "~", "studio"),
+        ("~/chosen space [1]", "", "", "chosen space [1]"),
+        ("", "~/alias space [1]", "", "alias space [1]"),
         ("", "", " \t ", ".unsloth/studio"),
     ],
 )
@@ -111,6 +118,23 @@ def test_install_and_setup_root_precedence(
     root = tmp_path / expected
     if filename.startswith("studio/"):
         root.mkdir(parents = True)
+    if filename == "cli":
+        env["PYTHONPATH"] = str(REPO)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from unsloth_cli.commands.studio import STUDIO_HOME; print(STUDIO_HOME)",
+            ],
+            env = env,
+            cwd = tmp_path,
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert Path(result.stdout.strip()).resolve() == root.resolve()
+        return
     output = _run(
         _root_script(filename), env, tmp_path, powershell = filename.endswith(".ps1")
     ).stdout.strip()
@@ -195,6 +219,17 @@ def test_windows_relative_master_survives_directory_change(tmp_path, env):
     assert (
         Path(_run(script, env, tmp_path, powershell = True).stdout.strip()) == tmp_path / "portable"
     )
+
+
+@WINDOWS
+def test_windows_install_root_uses_powershell_working_directory(tmp_path, env):
+    caller = tmp_path / "caller space [1]"
+    caller.mkdir()
+    env["UNSLOTH_HOME"] = "portable"
+    script = "Set-Location -LiteralPath 'caller space [1]'\n" + _root_script("install.ps1")
+    output = _run(script, env, tmp_path, powershell = True).stdout.strip()
+    assert Path(output.split("|")[0]) == caller / "portable" / "studio"
+    assert not (tmp_path / "portable").exists()
 
 
 @POSIX

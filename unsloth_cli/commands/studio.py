@@ -50,9 +50,10 @@ _CMD_SHIM_MAX_BYTES = 8192
 
 
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
-    """Sentinel (share/studio.conf, or our own bin/unsloth.cmd) so a dev venv named
-    unsloth_studio is not taken for a custom root. It must be OUR shim: the dir is on PATH."""
-    if (candidate / "share" / "studio.conf").is_file():
+    # Default POSIX installs keep studio.conf outside the install tree.
+    if (candidate / "share" / "studio.conf").is_file() or (
+        candidate / "share" / "studio_install_id"
+    ).is_file():
         return True
     if platform.system() != "Windows":
         return (candidate / "bin" / "unsloth").is_file()
@@ -91,9 +92,7 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
             legacy = Path.home() / ".unsloth" / "studio"
-        # Older installers left Studio at the legacy root while setup put the runtimes under
-        # the master root. Keep those installs usable until reinstalled at <master>/studio;
-        # the new installation wins as soon as its launcher or configuration exists.
+        # Preserve legacy installs until a managed install exists at the master root.
         if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
             if _looks_like_installer_managed_studio_home(legacy):
                 return legacy, False
