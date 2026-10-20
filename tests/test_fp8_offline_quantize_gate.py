@@ -165,3 +165,21 @@ def test_an_adapter_with_a_config_json_counts_as_an_adapter(tmp_path):
         json.dumps({"peft_type": "LORA", "base_model_name_or_path": "my-org/Base", "r": 8})
     )
     assert loader_utils._fp8_load_as_is(str(tmp_path)) is True
+
+
+@pytest.mark.parametrize("entry", ["FastLanguageModel", "FastModel"])
+def test_an_exact_model_name_still_reaches_the_fp8_quantizer(monkeypatch, entry):
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    def check(*_args, **_kwargs):
+        raise _Reached()
+
+    monkeypatch.setattr(loader, "_get_fp8_mode_and_check_settings", check)
+    with pytest.raises(_Reached):
+        getattr(loader, entry).from_pretrained(
+            "my-org/Some-Unmapped-8B",
+            load_in_4bit = False,
+            load_in_fp8 = True,
+            fast_inference = False,
+            use_exact_model_name = True,
+        )
