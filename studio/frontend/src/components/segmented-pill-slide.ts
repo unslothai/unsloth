@@ -12,9 +12,10 @@ import { prefersReducedMotion } from "@/features/settings";
 // - the slide is a transform-only Web Animation on both axes (tracks can wrap),
 //   which the compositor runs off the main thread. When the two segments differ
 //   in width, a fill inside the pill changes width through a round clip-path
-//   inset, so the ends stay round (a scaleX would squash them). Chromium runs
-//   that on the compositor too; other engines repaint it on the main thread,
-//   still with no script.
+//   inset, so the ends stay round (a scaleX would squash them). The clip can
+//   repaint on the main thread, still with no script, so a busy main thread
+//   can hold the width while the move goes on. The resize therefore sits on
+//   the end trailing the move, never the one landing on the new segment.
 // At rest the pill paints itself and the fill and its shadow are hidden.
 
 /** Spring the design system gives segmented controls (design.md, 2.5 Motion). */
@@ -144,15 +145,29 @@ function slide(
   dy: number,
   dw: number,
 ) {
-  const timing = { duration: SLIDE_MS, easing: EASING };
+  const [shadow, fill] = Array.from(root.children) as HTMLElement[];
+  const resize = fill && Math.abs(dw) >= 0.5;
+  // The resize happens on the trailing end, so the end leading the move is
+  // drawn by the transform alone and arrives as one piece: moving right, the
+  // pill is pinned to its right end, which then moves by the right ends' gap.
+  const pinRight = resize && dx < 0;
+  const side = pinRight ? "right" : "left";
+  // Held until the cleanup below, so the fill never shows unclipped between
+  // the end of the slide and the cleanup.
+  const timing = {
+    duration: SLIDE_MS,
+    easing: EASING,
+    fill: resize ? ("forwards" as const) : ("none" as const),
+  };
   const animations = [
     root.animate(
-      [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
+      [
+        { transform: `translate(${pinRight ? dx + dw : dx}px, ${dy}px)` },
+        { transform: "none" },
+      ],
       timing,
     ),
   ];
-  const [shadow, fill] = Array.from(root.children) as HTMLElement[];
-  const resize = fill && Math.abs(dw) >= 0.5;
   if (resize) {
     // The pill spans the wider of the two widths; the fill's clip shows the
     // current one. A clip also cuts the fill's shadow, so a shadow-only copy
@@ -161,13 +176,17 @@ function slide(
     // instead, but Chromium draws it from a stale clip and leaves a ghost.
     const span = Math.max(w, w + dw);
     const inset = (width: number) =>
-      `inset(0 ${span - width}px 0 0 round 9999px)`;
-    root.style.right = "auto";
+      pinRight
+        ? `inset(0 0 0 ${span - width}px round 9999px)`
+        : `inset(0 ${span - width}px 0 0 round 9999px)`;
+    root.style[pinRight ? "left" : "right"] = "auto";
     root.style.width = `${span}px`;
     root.style.setProperty("background-color", "transparent", "important");
     root.style.setProperty("box-shadow", "none", "important");
+    shadow.style.left = pinRight ? "auto" : "0";
+    shadow.style.right = pinRight ? "0" : "auto";
     shadow.style.width = `${w}px`;
-    shadow.style.transformOrigin = "left";
+    shadow.style.transformOrigin = side;
     shadow.style.setProperty("background-color", "transparent", "important");
     shadow.style.display = "block";
     fill.style.setProperty("box-shadow", "none", "important");
@@ -190,6 +209,7 @@ function slide(
   Promise.all(animations.map((animation) => animation.finished)).then(
     () => {
       for (const property of [
+        "left",
         "right",
         "width",
         "background-color",
@@ -199,6 +219,7 @@ function slide(
       }
       shadow.style.display = "none";
       fill.style.display = "none";
+      for (const animation of animations) animation.cancel();
     },
     () => {},
   );
