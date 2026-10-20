@@ -49,6 +49,7 @@ import {
   lazy,
   useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -366,6 +367,14 @@ export function SettingsDialog() {
     entry: string;
   } | null>(null);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // One scroller hosts every panel, so a new panel would open at the offset the last one was left at.
+  // panelTab, not activeTab: the old panel must not jump while the new one renders deferred. Runs
+  // before the search-jump effect below, which then scrolls from the top.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: panelTab is the trigger, not an input.
+  useLayoutEffect(() => {
+    mainScrollRef.current?.scrollTo({ top: 0, behavior: "instant" });
+  }, [panelTab]);
 
   const openResult = (tab: SettingsTab, entry?: string) => {
     setActiveTab(tab);
