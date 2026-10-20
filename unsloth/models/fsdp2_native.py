@@ -1125,9 +1125,15 @@ def _large_root_embeddings(model, units, fraction):
     for module in model.modules():
         for p in module.parameters(recurse = False):
             owners.setdefault(id(p), set()).add(id(module))
+    # Tables inside a decoder block (one kept in the root for sharing weights) would nest in it.
+    in_block = set()
+    for module in model.modules():
+        if isinstance(module, nn.ModuleList) and _is_block_list(module, ()):
+            for child in module.children():
+                in_block.update(id(m) for m in child.modules())
     extra = []
     for _, module in model.named_modules():
-        if not isinstance(module, nn.Embedding):
+        if not isinstance(module, nn.Embedding) or id(module) in in_block:
             continue
         params = list(module.parameters())
         if not params or any(id(p) in inside or id(p) in skip for p in params):

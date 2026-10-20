@@ -95,6 +95,15 @@ def test_reused_module_instance_counts_as_shared():
         native.check_shard_units(model, list(model.layers))
 
 
+def test_embedding_inside_a_dropped_block_is_not_an_extra_unit():
+    native = _load_native()
+    model = _reused_module_model()
+    model.layers[0].table = torch.nn.Embedding(512, 4)
+    units = native.find_shard_units(model)
+    assert model.layers[0] not in units
+    assert native._large_root_embeddings(model, units, 0.1) == []
+
+
 def test_explicitly_ignored_shared_params_pass_the_check():
     native = _load_native()
     model = _reused_module_model()
