@@ -7692,6 +7692,91 @@ def _build_launch_reasoning_args(
     return args
 
 
+_BACKEND_SAMPLING_FLAGS = frozenset({"-bs", "--backend-sampling"})
+_BACKEND_SAMPLING_OPT_OUT = "UNSLOTH_LLAMA_BACKEND_SAMPLING"
+_SPEC_DRAFT_MODEL_FLAGS = frozenset({"-md", "--model-draft", "--spec-draft-model"})
+_SPEC_DRAFT_MODEL_ENV = ("LLAMA_ARG_MODEL_DRAFT", "LLAMA_ARG_SPEC_DRAFT_MODEL")
+
+
+def _launch_speculates(argv: Sequence[str], env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether llama-server runs speculative decoding for this argv and env.
+
+    The last ``--spec-type`` / ``--spec-default`` wins, then ``LLAMA_ARG_SPEC_TYPE``;
+    ``none`` is the only spelling that turns it off. A draft model alone also drafts.
+    """
+    source_env = os.environ if env is None else env
+    args = [str(a) for a in argv]
+    value: Optional[str] = None
+    draft = False
+    for i, raw in enumerate(args):
+        name, eq, inline = raw.partition("=")
+        if name == "--spec-default":
+            value = "default"
+        elif name == "--spec-type":
+            value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        elif name in _SPEC_DRAFT_MODEL_FLAGS:
+            draft = True
+    if value is None:
+        value = source_env.get("LLAMA_ARG_SPEC_TYPE")
+    if value is not None:
+        return str(value).strip().lower() not in ("", "none")
+    return draft or any(source_env.get(name) for name in _SPEC_DRAFT_MODEL_ENV)
+
+
+def _backend_sampling_flags(
+    caps: Mapping[str, object],
+    argv: Sequence[str],
+    *,
+    gpus_detected: bool,
+    vulkan: bool,
+    platform: Optional[str] = None,
+    env: Optional[Mapping[str, str]] = None,
+    spec_env: Optional[Mapping[str, str]] = None,
+) -> list[str]:
+    """``--backend-sampling`` where llama.cpp's GPU sampler is measured to pay off.
+
+    With it, the per-slot sampler chain runs inside the decode graph, so a step no longer
+    copies every slot's full-vocabulary logits to the host and walks them on the CPU
+    (Colab L4, 4 slots, Studio's chains: Qwen3.5-0.8B 20.3 -> 7.0 ms per token, Qwen3-0.6B
+    7.3 -> 6.1 ms, Qwen3.5 flood throughput 2.2x; each new request pays ~20-25 ms more TTFT
+    for llama.cpp's per-request scheduler re-reserve). It is per request and falls back to the CPU by itself for what it
+    cannot run (grammar / tools, a reasoning budget, pre-sampling logprobs, DRY / XTC /
+    mirostat and anything after them in the chain), with the same tokens for the same
+    logits and seed. Off where it is not measured to help: no GPU, Vulkan, macOS, and any
+    speculative decoding (penalties cannot run on the GPU when a step verifies several
+    tokens per slot, and the drafts dominate there). A user's own flag or
+    ``UNSLOTH_LLAMA_BACKEND_SAMPLING=0`` wins; an older build without the flag gets none.
+    ``env`` is the child's environment; ``spec_env`` the spec variables it keeps (the
+    launch scrubs LLAMA_ARG_SPEC_* unless the extras own the spec block).
+    """
+    source_env = os.environ if env is None else env
+    opt_out = os.environ.get(_BACKEND_SAMPLING_OPT_OUT, source_env.get(_BACKEND_SAMPLING_OPT_OUT, ""))
+    if str(opt_out).strip().lower() in ("0", "false", "off", "no"):
+        return []
+    if not caps.get("supports_backend_sampling"):
+        return []
+    if _extra_args_set_any_flag(argv, _BACKEND_SAMPLING_FLAGS) or "LLAMA_ARG_BACKEND_SAMPLING" in source_env:
+        return []
+    if not gpus_detected or vulkan or (platform or sys.platform) == "darwin":
+        return []
+    if _device_selection_is_cpu(argv, source_env) or _argv_keeps_layers_on_cpu(argv):
+        return []
+    if _launch_speculates(argv, source_env if spec_env is None else spec_env):
+        return []
+    return ["--backend-sampling"]
+
+
+def _argv_keeps_layers_on_cpu(argv: Sequence[str]) -> bool:
+    """The last layer-count flag says 0: the output layer, and with it the sampler, is on the CPU."""
+    args = [str(a) for a in argv]
+    value: Optional[str] = None
+    for i, raw in enumerate(args):
+        name, eq, inline = raw.partition("=")
+        if _flag_name(name) in _GPU_LAYER_FLAGS:
+            value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+    return value is not None and value.strip() == "0"
+
+
 def _build_reasoning_budget_flags(
     caps: Mapping[str, object], reasoning_budget: int, reasoning_budget_message: str
 ) -> list[str]:
@@ -10520,6 +10605,7 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "spec_draft_n_max_default": None,
                 "supports_kv_unified": False,
+                "supports_backend_sampling": False,
                 # Fail OPEN, unlike every key above. These three are emitted on
                 # every launch today, so a failed probe must keep emitting them;
                 # only a build whose --help positively lacks one drops it.
@@ -10584,6 +10670,7 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         spec_draft_n_max_default: Optional[int] = None
         supports_kv_unified = False
+        supports_backend_sampling = False
         supports_trace_verbosity = False
         # See the fallback dict: these fail open.
         supports_no_context_shift = True
@@ -10809,6 +10896,8 @@ class LlamaCppBackend:
                     spec_draft_n_max_default = int(_n_max_default.group(1))
 
             supports_kv_unified = _is_real("--kv-unified")
+            # Fails closed: an unknown argument stops an older llama-server from starting.
+            supports_backend_sampling = _is_real("--backend-sampling")
             # Fails closed: an older build's level 4 may be per-token debug on the decode path.
             supports_trace_verbosity = bool(
                 probe_ok
@@ -10951,6 +11040,7 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "spec_draft_n_max_default": spec_draft_n_max_default,
             "supports_kv_unified": supports_kv_unified,
+            "supports_backend_sampling": supports_backend_sampling,
             "supports_no_context_shift": supports_no_context_shift,
             "supports_jinja": supports_jinja,
             "supports_api_key_file": supports_api_key_file,
@@ -30910,6 +31000,16 @@ class LlamaCppBackend:
                 # can be retried with these flags swapped out (see below).
                 _spec_start = len(cmd)
                 cmd.extend(spec_flags)
+                cmd.extend(
+                    _backend_sampling_flags(
+                        server_caps,
+                        [*cmd, *(extra_args or [])],
+                        gpus_detected = bool(_detected_gpus),
+                        vulkan = bool(is_vulkan_backend),
+                        env = env,
+                        spec_env = _child_spec_env(extra_args, env),
+                    )
+                )
 
                 # A *separate* drafter does not inherit the main --gpu-layers:
                 # common_base_params_to_speculative overwrites n_gpu_layers with
