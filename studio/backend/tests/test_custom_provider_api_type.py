@@ -327,3 +327,27 @@ def test_responses_follow_up_preserves_reasoning_metadata():
         messages, supports_vision = False, provider_type = "custom", api_type = "responses"
     )
     assert built[0]["extra_content"] == reasoning
+
+
+def test_native_openai_follow_up_keeps_only_its_reasoning_items():
+    # OpenAI wants a tool call's reasoning items back with its outputs (function-calling guide).
+    from routes.inference import _build_external_messages
+
+    reasoning = [{"type": "reasoning", "id": "rs_1", "encrypted_content": "enc_blob"}]
+    messages = [
+        ChatMessage(
+            role = "assistant",
+            content = None,
+            tool_calls = [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+            extra_content = {"openai_responses_reasoning": reasoning, "google": {"x": 1}},
+        ),
+        ChatMessage(role = "tool", tool_call_id = "call_1", content = "result"),
+    ]
+    built = _build_external_messages(messages, supports_vision = False, provider_type = "openai")
+    assert built[0]["extra_content"] == {"openai_responses_reasoning": reasoning}

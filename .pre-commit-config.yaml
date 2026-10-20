@@ -37,6 +37,12 @@ repos:
         exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$|^studio/backend/vendor/|^unsloth/_vendor/'
         additional_dependencies:
           - ruff==0.6.9
+        # Serial: pre-commit used to start a partition per CPU, each with its own
+        # multithreaded ruff, nproc x nproc threads on pre-commit.ci (#14174). A
+        # long file list is still split into calls that run one after another;
+        # each runs one ruff, and the script spreads the Python passes around it
+        # over a bounded pool.
+        require_serial: true
       # Re-pins allowScripts entries after dependency bumps. pre-commit.ci
       # pushes the fix to PR branches, Dependabot's included, so stale pins
       # heal without a human in the loop.

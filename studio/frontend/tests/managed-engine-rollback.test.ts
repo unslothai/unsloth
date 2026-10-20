@@ -28,6 +28,7 @@ const rollback = new Function(
   "rollbackNativePathLease",
   "hfToken",
   "rollbackMaxSeqLength",
+  "rollbackConfig",
   `return { ${runtime.slice(rollbackStart, rollbackEnd)} };`,
 ) as (state: Record<string, unknown>, ...rest: unknown[]) => Record<string, unknown>;
 
@@ -52,6 +53,13 @@ test("a default-backend resident still rolls back with 4-bit loading", () => {
   assert.equal(request.engine_precision, "auto");
   assert.equal(request.engine_parallelism, "tensor");
   assert.equal(request.load_in_4bit, true);
+});
+
+test("a default-backend resident loaded in 16-bit rolls back in 16-bit", () => {
+  const resident = hydrate("org/model", { load_in_4bit: false });
+  const request = rollback(resident, undefined, null, 4096, { loadIn4bit: false });
+  assert.equal(request.engine, "auto");
+  assert.equal(request.load_in_4bit, false);
 });
 
 test("a failed switch restores the managed resident's KV cache, seed and memory limit", () => {

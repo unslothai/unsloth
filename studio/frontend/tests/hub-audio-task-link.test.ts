@@ -31,10 +31,11 @@ test("the Hub link keeps only known audio tasks, and only with the Audio filter"
 test("an audio page's Search Hub link narrows the Audio filter to its tasks", () => {
   assert.match(hubPageSource, /urlCapability === "audio" && urlTaskKey/);
   assert.match(hubPageSource, /capability: undefined,\s*audioTask: undefined,/);
-  assert.match(hubPageSource, /if \(capabilityFilter !== "audio" && linkedAudioTask !== null\) \{\s*setLinkedAudioTask\(null\);/);
+  assert.match(hubPageSource, /if \(!capabilityFilters\.includes\("audio"\) && linkedAudioTask !== null\) \{\s*setLinkedAudioTask\(null\);/);
   assert.match(
     hubPageSource,
-    /task:\s*capabilityFilter === "audio" \? \(linkedAudioTask \?\? undefined\) : undefined,/,
+    // Only with Audio as the one filter: asking the Hub for audio tasks would drop the others' models.
+    /capabilityFilters\.length === 1 && capabilityFilters\[0\] === "audio"\s*\? \(linkedAudioTask \?\? undefined\)\s*: undefined,/,
   );
   assert.match(discoverSource, /channel,\s*filters,\s*task,\s*\}\);/);
 });
@@ -50,7 +51,7 @@ test("a typed Hub search still keeps only the linked audio tasks", () => {
   assert.equal(matchesHubAudioTask("text-to-speech", []), true);
   assert.match(
     hubPageSource,
-    /deferredCapabilityFilter !== "audio" \|\|\s*matchesHubAudioTask\(row\.result\.pipelineTag, linkedAudioTask\)/,
+    /key !== "audio" \|\|\s*matchesHubAudioTask\(row\.result\.pipelineTag, linkedAudioTask\)/,
   );
 });
 

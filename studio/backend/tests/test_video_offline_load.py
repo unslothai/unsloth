@@ -138,8 +138,12 @@ def test_a_user_initiated_load_still_calls_every_one_of_them(monkeypatch, tmp_pa
 
     assert backend._loading is None, getattr(backend._loading, "error", None)
     assert seen.get("local_files_only") in (False, None)
-    # The byte estimate probes the checkpoint repo and the base; the base prefetch probes it again.
-    assert WAN_GGUF in calls.model_info and WAN_BASE in calls.model_info
+    # The byte estimate probes the checkpoint repo and the base; the base prefetch probes it again. The base's sizes
+    # are read from its byte-identical unsloth mirror, so the listing never leaves unsloth/*.
+    from core.inference.diffusion_families import mirror_repo
+
+    assert WAN_GGUF in calls.model_info and mirror_repo(WAN_BASE) in calls.model_info
+    assert WAN_BASE not in calls.model_info
     # And the checkpoint is FETCHED, not looked up.
     assert calls.downloads == [(WAN_GGUF, WAN_FILE, False)]
 

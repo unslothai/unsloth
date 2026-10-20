@@ -158,7 +158,12 @@ function residentEngineParams(status: InferenceStatusResponse) {
     engineKvCacheDtype: status.engine_kv_cache_dtype ?? "auto",
     engineSeed: status.engine_seed ?? null,
     engineGpuMemoryUtilization: status.engine_gpu_memory_utilization ?? null,
-  } as const;
+    // As requested, so a model started with --no-load-in-4bit reloads in 16-bit too. vLLM / SGLang
+    // record false because they take engine_precision instead, so they leave the choice alone.
+    ...((status.engine ?? "auto") === "auto"
+      ? { loadIn4bit: status.load_in_4bit !== false }
+      : {}),
+  };
 }
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -238,6 +243,8 @@ export function applyActiveModelStatusToStore(
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
+  const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
+  const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
   const prevState = useChatRuntimeStore.getState();
   // The chat's own level when the model this replaces was running a per-model pin's: the clamp
   // narrows the chat's level to this model's ladder, and a pin is one model's, not the chat's.
@@ -566,22 +573,27 @@ export function applyActiveModelStatusToStore(
       status.vision_disabled_by_user !== undefined && {
         loadedVisionDisabledByUser: status.vision_disabled_by_user,
       }),
-    // Hydration only, so a steady poll never rewrites settings the store owns. Width, verdict
-    // and request move together; a late reply can overwrite a newer one.
+    // Like kvCacheDtype: baselines and verdict follow a same-model reload, each control only while clean.
     ...(seedLoadParams &&
-      hydratingExistingModel &&
       status.mlx_kv_quant_requested !== undefined &&
       (status.is_mlx === true
         ? {
-            mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-            loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
+            loadedMlxKvQuantRequested: incomingMlxKvQuant,
             mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-            mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
-            loadedMlxInt8PrefillRequested:
-              status.mlx_int8_prefill_requested === true,
+            loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
+            ...((hydratingExistingModel ||
+              (prevState.mlxKvQuant ?? null) ===
+                (prevState.loadedMlxKvQuantRequested ?? null)) && {
+              mlxKvQuant: incomingMlxKvQuant,
+            }),
+            ...((hydratingExistingModel ||
+              prevState.mlxInt8Prefill ===
+                prevState.loadedMlxInt8PrefillRequested) && {
+              mlxInt8Prefill: incomingMlxInt8Prefill,
+            }),
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
@@ -591,26 +603,6 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantNote: null,
             loadedMlxInt8PrefillRequested: false,
           })),
-    // Recovery for a hydration this tab never saw, and only when nothing is staged: re-seeding
-    // over an earlier edit would discard it.
-    ...(seedLoadParams &&
-      !hydratingExistingModel &&
-      status.is_mlx === true &&
-      status.mlx_kv_quant_requested !== undefined &&
-      prevState.mlxKvQuant === null &&
-      prevState.loadedMlxKvQuantRequested === null &&
-      prevState.mlxKvQuantReason === null &&
-      prevState.chatTemplateOverrideReason === null &&
-      !prevState.mlxInt8Prefill && {
-        mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-        loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
-        mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
-        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
-        mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
-        mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
-        loadedMlxInt8PrefillRequested:
-          status.mlx_int8_prefill_requested === true,
-      }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&
       status.requested_parallel_slots != null && {

@@ -2420,8 +2420,13 @@ def load_prequantized_transformer(
             apply_activation_rotation(transformer, metadata, logger = logger)
 
             if scheme == "nvfp4":
+                from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
                 from .diffusion_nvfp4_linear import convert_nvfp4_backend
+
+                # Layers left on torchao quantise activations through NVFP4Tensor.to_nvfp4 at run time.
+                install_nvfp4_act_quant_patch(logger)
                 from .diffusion_nvfp4_ops import select_nvfp4_backend
+
                 convert_nvfp4_backend(
                     transformer, metadata, select_nvfp4_backend(device), logger = logger
                 )
@@ -2702,12 +2707,14 @@ def _load_transformer_config(
     last: Optional[BaseException] = None
     for root in _config_cache_roots(checkpoint_path, cache_dir):
         try:
+            from .diffusion_families import pinned_revision_kwargs
             return transformer_cls.load_config(
                 base,
                 subfolder = subfolder,
                 token = hf_token,
                 cache_dir = root,
                 local_files_only = local_files_only,
+                **pinned_revision_kwargs(base),
             )
         except Exception as exc:  # noqa: BLE001 - try the other root before giving up
             last = exc

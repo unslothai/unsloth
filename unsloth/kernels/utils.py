@@ -327,6 +327,31 @@ def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
 
+# Only an FSDP2 all-gathered 4-bit weight loses quant_state, and its packed bytes are (N, 1): the getters
+# gate _base_quant_state on that shape, per weight. Never on a process-global flag: dynamo guards on a
+# global it reads, so preparing one FSDP2 QLoRA model recompiled every compiled dense LoRA forward (#13880).
+
+
+def _base_quant_state(base_layer, W):
+    """W's quant state, else its bitsandbytes Linear4bit's own copy of it. FSDP2 all-gathers the packed
+    bytes into a plain Parameter that drops `quant_state`; read without it, the packed (N, 1) buffer
+    would be taken for a dense weight."""
+    W_quant = getattr(W, "quant_state", None)
+    if W_quant is not None:
+        return W_quant
+    # Linear4bit keeps its copy as a plain attribute. getattr would go through nn.Module.__getattr__,
+    # which raises and catches for every dense weight: 10x this function's cost on each LoRA forward.
+    W_quant = base_layer.__dict__.get("quant_state", None)
+    if (
+        W_quant is None
+        or getattr(W, "ndim", 0) != 2
+        or W.shape[1] != 1
+        or not any(cls.__name__ == "Linear4bit" for cls in type(base_layer).__mro__)
+    ):
+        return None
+    return W_quant
+
+
 # fp8 weight dtypes: a weight_scale / weight_scale_inv is only a quant state while the weight
 # itself is still fp8. compressed-tensors layers expose an already-dequantized bf16 weight at
 # forward time while keeping a weight_scale, and reading that as a quant state routes it into
@@ -432,13 +457,16 @@ def get_lora_parameters(proj):
         if weight_fake_quantizer is not None:
             W = weight_fake_quantizer(W)
 
-    # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
-    # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
-        W_quant = getattr(base_layer, "weight_scale_inv", None)
-        if W_quant is None:
-            W_quant = getattr(base_layer, "weight_scale", None)
+    if W_quant is None:
+        if getattr(W, "ndim", 0) == 2 and W.shape[1] == 1:
+            W_quant = _base_quant_state(base_layer, W)
+        # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
+        # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
+        if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
+            W_quant = getattr(base_layer, "weight_scale_inv", None)
+            if W_quant is None:
+                W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
@@ -490,13 +518,16 @@ def get_lora_parameters_bias(proj):
     packed = _packed_base(base_layer)
     W = base_layer.weight if packed is None else packed[0]
 
-    # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
-    # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
-        W_quant = getattr(base_layer, "weight_scale_inv", None)
-        if W_quant is None:
-            W_quant = getattr(base_layer, "weight_scale", None)
+    if W_quant is None:
+        if getattr(W, "ndim", 0) == 2 and W.shape[1] == 1:
+            W_quant = _base_quant_state(base_layer, W)
+        # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
+        # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
+        if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
+            W_quant = getattr(base_layer, "weight_scale_inv", None)
+            if W_quant is None:
+                W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
@@ -1665,6 +1696,7 @@ def matmul_lora(
     B,
     s,
     out = None,
+    use_global_buffer = True,
 ):
     dtype = X.dtype
 
@@ -1691,7 +1723,7 @@ def matmul_lora(
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W

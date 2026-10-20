@@ -44,6 +44,7 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../src/features/audio/stt-artifacts.ts";
+import { transcribeLanguagesFor } from "../src/features/audio/transcribe-languages.ts";
 import {
   audioPickIsRoutable,
   audioPipelineTagFor,
@@ -158,7 +159,7 @@ test("recommended ids are unique and name their Hub repo or package folder", () 
 });
 
 test("folders of the shared repo the pickers leave out are never seeded and say why", () => {
-  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 28);
+  assert.equal(Object.keys(AUDIO_CPP_UNOFFERED_FOLDERS).length, 23);
   for (const [folder, reason] of Object.entries(AUDIO_CPP_UNOFFERED_FOLDERS)) {
     assert.equal(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`), null, folder);
     assert.match(folder, /-GGUF$/);
@@ -177,6 +178,7 @@ test("folders of the shared repo the pickers leave out are never seeded and say 
     ["Kroko-ASR-GGUF", ["en"]],
     ["Niagara-ASR-GGUF", ["en"]],
     ["Hviske-v5.3-GGUF", ["da"]],
+    ["Hviske-v6-GGUF", ["da"]],
     ["GigaAM-ASR-GGUF", ["ru", "en", "kk", "ky", "uz"]],
     [
       "Voxtral-Mini-4B-Realtime-2602-GGUF",
@@ -500,7 +502,7 @@ test("Settings > Voice lists every ASR model the Transcribe page offers", () => 
 });
 
 test("Transcribe's other ASR folders are listed by id, after the keyed models", () => {
-  assert.equal(AUDIO_CPP_STT_FOLDER_IDS.length, 12);
+  assert.equal(AUDIO_CPP_STT_FOLDER_IDS.length, 16);
   const keyedFolders = new Set(
     AUDIO_CPP_DICTATION_MODELS.map((model) => model.id),
   );
@@ -720,7 +722,6 @@ test("English-only and partial-language ASR models are gated by language", () =>
     "audiocpp-moonshine-tiny",
     "audiocpp-moonshine-small",
     "audiocpp-moonshine-medium",
-    "audiocpp-nemotron-3.5-asr-0.6b",
     `${AUDIO_CPP_REPO}/Citrinet-ASR-GGUF`,
     `${AUDIO_CPP_REPO}/Granite-Speech-5.0-470M-TurboCTC-GGUF`,
     `${AUDIO_CPP_REPO}/Higgs-Audio-v3-STT-GGUF`,
@@ -739,6 +740,20 @@ test("English-only and partial-language ASR models are gated by language", () =>
     assert.equal(isSttModelLanguageCompatible(canary, language), true, language);
   }
   assert.equal(isSttModelLanguageCompatible(canary, "ja-JP"), false);
+  // Nemotron lists its spec's 40 locales; the backend sends the one its prompt dictionary keys.
+  const nemotron = "audiocpp-nemotron-3.5-asr-0.6b";
+  assert.ok(!ENGLISH_ONLY_STT_MODELS.has(nemotron));
+  for (const language of ["en-US", "ja-JP", "zh-CN", "nb-NO", "pt-BR", "auto"]) {
+    assert.equal(isSttModelLanguageCompatible(nemotron, language), true, language);
+  }
+  assert.equal(isSttModelLanguageCompatible(nemotron, "id-ID"), false);
+  assert.deepEqual(
+    transcribeLanguagesFor(
+      audioCppModelFor(`${AUDIO_CPP_REPO}/Nemotron-3.5-ASR-Streaming-0.6B-GGUF`)?.languages,
+    ).map((language) => language.code),
+    ["", "en", "zh", "es", "fr", "de", "it", "pt", "ru", "ja", "ko", "ar", "hi", "nl", "pl",
+      "tr", "uk", "vi", "th", "sv", "da", "fi", "no", "cs", "el", "he", "hu", "ro"],
+  );
   const hviske = `${AUDIO_CPP_REPO}/Hviske-v5.3-GGUF`;
   assert.equal(isSttModelLanguageCompatible(hviske, "da-DK"), true);
   assert.equal(isSttModelLanguageCompatible(hviske, "auto"), true);
@@ -793,7 +808,7 @@ test("GGUF runtime speech trades sampling controls for the model's own options",
     /\{musicGeneration \|\|\s*samplingControls \|\|\s*audioOptionSpecs\.length > 0 \? \(\s*<AdvancedDisclosure/,
   );
   assert.match(page, /!musicGeneration && samplingControls && temperatureEdited/);
-  assert.match(page, /parseAudioOptions\(status\?\.audio_options\)/);
+  assert.match(page, /audioOptionSpecsFor\(status, workflow\)/);
   assert.match(page, /\{ audio_options: requestOptions \}/);
   assert.match(page, /"Voice or style description"/);
 });

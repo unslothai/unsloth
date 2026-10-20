@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The token recount must price the same system prompt the completion would send.
-
-``createOpenAIStreamAdapter`` appends a Canvas instruction to the outbound system prompt whenever
-the Canvas pill is on -- render_html wording when the model can call the tool, the fenced-HTML
-fallback otherwise. Neither is a tool schema, so the server cannot add it back from the flags
-``buildLocalTokenCountExtras`` sends. Same for reasoning: llama-server layers a request's
-``chat_template_kwargs`` over the load-time ``--chat-template-kwargs``, so a count sending none
-renders the template in whatever mode the model was LOADED in. Either way the count reads low.
-
-The builders, both instruction constants and the shared effort clamp are sliced verbatim out of
-the studio sources and run under ``node`` (see ``_node_harness``).
-"""
+"""Recount must price the Canvas prompt and reasoning kwargs the completion sends, or it reads low."""
 
 from __future__ import annotations
 
@@ -57,13 +46,7 @@ def _outbound_builder() -> str:
 
 
 def _extras_builder() -> str:
-    """buildLocalTokenCountExtras, the tool flags the count sends, and the Auto-inject
-    resolution it shares with the request build.
-
-    Joined on blank lines, not concatenated: a slice that starts on the previous slice's
-    closing brace is not a declaration _harness_bindings can see, so resolve_dependencies
-    pulls its own copy and node refuses the duplicate.
-    """
+    """Joined on blank lines, else a slice starting on the previous brace is not seen as a declaration."""
     parts = [
         read(MODEL_SIZE).split("\n", 2)[2],
         slice_between(
@@ -258,29 +241,24 @@ def test_no_canvas_instruction_is_left_in_the_request_path():
 @pytest.mark.parametrize(
     ("seed_patch", "expected"),
     [
-        # No reasoning support: send nothing, and llama-server keeps its own defaults.
         pytest.param("{ supportsReasoning: false }", {}, id = "no_reasoning_support"),
-        # Qwen3-style gate off: the template prefills an empty thinking block for this flag.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "enable_thinking", reasoningEnabled: false }',
             {"enable_thinking": False},
             id = "thinking_turned_off",
         ),
-        # gpt-oss-style: the effort level is rendered into the prompt.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "reasoning_effort", reasoningEnabled: true,'
             ' reasoningEffort: "low" }',
             {"reasoning_effort": "low"},
             id = "effort_level",
         ),
-        # GLM-style: gate plus a level, clamped to this template's levels as the request build is.
         pytest.param(
             '{ supportsReasoning: true, reasoningStyle: "enable_thinking_effort",'
             ' reasoningEnabled: true, reasoningEffort: "high", reasoningEffortLevels: ["max"] }',
             {"enable_thinking": True, "reasoning_effort": "max"},
             id = "effort_clamped_to_the_template_levels",
         ),
-        # Independent of the gate: decides whether past <think> blocks stay in the prompt.
         pytest.param(
             "{ supportsPreserveThinking: true, preserveThinking: true }",
             {"preserve_thinking": True},
@@ -379,18 +357,15 @@ def test_the_count_sends_every_setting_that_changes_the_rendered_prompt():
     assert on.get("permission_mode") == "ask", "the gate that holds the loop's retrieval"
     assert on.get("max_tool_calls_per_message") == 0, "Off suppresses the loop entirely"
     assert (on.get("rag_scope") or {}).get("autoinject") is True
-    # The values, not the keys: unknown size on, Auto off above the threshold.
     assert (out["large"].get("rag_scope") or {}).get("autoinject") is False
     off_scope = out["injectOff"].get("rag_scope") or {}
     assert (off_scope.get("autoinject"), off_scope.get("whole_doc")) == (False, False)
-    # Explicit, and with no budget beside it, as the send is: an omitted flag would let
-    # `unsloth studio run --enable-tools` answer for the count.
+    # An omitted flag would let `unsloth studio run --enable-tools` decide the count.
     assert off.get("enable_tools") is False
     assert "max_tool_calls_per_message" not in off
 
 
-# Tools on, RAG deliberately off: the archive tool is gated on the thread id alone, so a
-# scope-only id would leave it unpriced exactly when RAG is not in play.
+# The archive tool is gated on the thread id alone, so it must be priced with RAG off.
 TOOLS_ON_RAG_OFF = (
     "{ supportsTools: true, toolsEnabled: true, codeToolsEnabled: false, "
     "artifactsEnabled: false, mcpEnabledForChat: false, ragEnabled: false, "
@@ -405,12 +380,7 @@ TOOLS_ON_RAG_OFF = (
     ids = ["unpersisted_new_chat", "persisted_thread"],
 )
 def test_the_count_sends_the_thread_id_at_top_level_even_with_rag_off(thread_id, expected):
-    """`_select_request_tools` reads `payload.thread_id`, not the one inside `rag_scope`.
-
-    An archived thread puts `search_conversation` and its compaction nudge in the prompt,
-    so a count that only ever nests the id under a RAG scope under-reports every archived
-    conversation whose Docs pill is off, and the bar claims room the completion lacks.
-    """
+    """Thread id is read from top level, not the RAG scope, or archived threads are under-counted."""
     out = _run(
         textwrap.dedent(
             f"""

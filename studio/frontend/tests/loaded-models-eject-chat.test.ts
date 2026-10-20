@@ -21,8 +21,9 @@ function resident(checkpoint: string): ResidentChatModel {
 function backend(
   timeline: (ResidentChatModel | null)[],
   cachedRow = false,
-  /** What the runtime still holds after a cached row's unload. */
+  /** What the runtime still holds after a cached row's unload; before it, the row itself too. */
   cachedAfter: string[] | null = null,
+  cachedTarget = "unsloth/Qwen3-4B",
 ) {
   const unloaded: string[] = [];
   let read = 0;
@@ -35,7 +36,14 @@ function backend(
       },
       matches: modelIdsMatch,
       cachedRow,
-      ...(cachedAfter === null ? {} : { readCached: async () => cachedAfter }),
+      ...(cachedAfter === null
+        ? {}
+        : {
+            readCached: async () =>
+              cachedRow && unloaded.length === 0
+                ? [...cachedAfter, cachedTarget]
+                : cachedAfter,
+          }),
     },
   };
 }
@@ -130,7 +138,11 @@ test("a cached row the backend kept is reported still resident", async () => {
   const result = await ejectChatModel("unsloth/Qwen3-4B", deps);
   assert.deepEqual(unloaded, ["unsloth/Qwen3-4B"], "the unload was attempted");
   assert.equal(result.stillResident, "unsloth/Qwen3-4B");
-  assert.deepEqual(result.unloadedAliases, [], "nothing to clear the picker on");
+  assert.deepEqual(
+    result.unloadedAliases,
+    [],
+    "nothing to clear the picker on",
+  );
 });
 
 test("a cached row the backend released is reported ejected", async () => {

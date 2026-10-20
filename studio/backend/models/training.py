@@ -104,6 +104,15 @@ def _resolve_inventory_handles(values):
     return [_resolve_inventory_handle(item) if isinstance(item, str) else item for item in values]
 
 
+def _unquote_pasted_path(value):
+    """Windows "Copy as path" quotes the path; quoted, it never exists and reads as an untrusted repo id."""
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+            return text[1:-1]
+    return value
+
+
 def _resolve_inventory_handle(value: str) -> str:
     """Lazy: `models.inference` is large and the CLI imports this module without needing it."""
     try:
@@ -115,6 +124,25 @@ def _resolve_inventory_handle(value: str) -> str:
 
 # The strings trainer.normalize_gradient_checkpointing turns into False.
 _CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
+
+
+class DrafterTrainingConfig(BaseModel):
+    """Optional speculative-decoding drafter trained after the fine-tune (omitted or disabled = off)."""
+
+    enabled: bool = False
+    strategy: Literal["auto", "mtp", "eagle3"] = "auto"
+    data_source: Literal["dataset", "regenerate"] = "dataset"
+    max_examples: int = Field(2000, ge = 16, le = 100000)
+    epochs: float = Field(1.0, ge = 0.1, le = 20)
+    learning_rate: Optional[float] = Field(None, gt = 0, le = 1.0)
+    draft_steps: int = Field(3, ge = 1, le = 8)
+
+    @field_validator("max_examples", "draft_steps", "epochs", mode = "before")
+    @classmethod
+    def _reject_booleans(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("expected a number, not a boolean")
+        return value
 
 
 class TrainingStartRequest(BaseModel):
@@ -210,6 +238,10 @@ class TrainingStartRequest(BaseModel):
         ge = 0,
         le = 1000,
         description = "Stop after this many evaluations without a lower eval loss and keep the best weights. 0 = off",
+    )
+    drafter: Optional[DrafterTrainingConfig] = Field(
+        None,
+        description = "Train a speculative-decoding drafter (MTP head or EAGLE-3) after the fine-tune",
     )
     dataset_slice_start: Optional[int] = Field(
         None,
@@ -665,7 +697,7 @@ class TrainingStartRequest(BaseModel):
 
     s3_config: Optional[S3Config] = Field(
         None,
-        description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
+        description = 'S3 bucket configuration. Missing SDK installs on first use; preinstall offline support with: python -m pip install "unsloth[s3]"',
     )
 
     @field_validator("target_modules", mode = "before")
@@ -738,6 +770,17 @@ class TrainingStartRequest(BaseModel):
             )
         return self
 
+    @model_validator(mode = "after")
+    def _validate_drafter(self) -> "TrainingStartRequest":
+        drafter = getattr(self, "drafter", None)
+        if drafter is None or not drafter.enabled:
+            return self
+        if getattr(self, "is_embedding", False) or getattr(self, "is_decision", False):
+            raise ValueError("drafter training is only available for text generation models.")
+        if getattr(self, "training_type", None) == "Continued Pretraining":
+            raise ValueError("drafter training is not available for continued pretraining.")
+        return self
+
 
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
@@ -747,6 +790,32 @@ class TrainingJobResponse(BaseModel):
     message: str = Field(..., description = "Human-readable status message")
     error: Optional[str] = Field(None, description = "Error details if status is 'error'")
     error_code: Optional[str] = Field(None, description = "Stable error code if status is 'error'")
+
+
+class TokenPreviewRequest(BaseModel):
+    """How a training run would tokenize and mask a few dataset rows, or ``text`` when given. Only
+    the model's tokenizer is read, never its weights."""
+
+    model_name: str = Field(..., min_length = 1)
+    model_type: Optional[str] = None
+    load_in_4bit: bool = True
+    dataset_name: Optional[str] = None
+    subset: Optional[str] = None
+    train_split: Optional[str] = None
+    dataset_local_path: Optional[str] = None
+    dataset_known_cached: bool = False
+    format_type: str = "auto"
+    custom_format_mapping: Optional[Dict[str, Any]] = None
+    train_on_completions: bool = False
+    is_cpt: bool = False
+    max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
+    num_samples: int = Field(3, ge = 1, le = 8)
+    seed: int = 0
+    text: Optional[str] = Field(None, max_length = 200_000)
+    # The dataset's format from an earlier preview, so typed text gets the template and markers it would.
+    final_format: Optional[str] = None
+
+    _resolve_the_handles = field_validator("model_name", "dataset_name")(_resolve_inventory_handle)
 
 
 class TrainingStartRequestStatus(BaseModel):
@@ -774,6 +843,7 @@ class TrainingStatus(BaseModel):
         "loading_dataset",
         "configuring",
         "training",
+        "training_drafter",
         "finalizing",
         "completed",
         "error",
@@ -915,6 +985,7 @@ class DiffusionTrainingStartRequest(BaseModel):
 
     base_model: str = Field(..., description = "HF repo id or local path to a trainable base")
     # Unresolved, family detection and `_assert_trusted_base_model` read `ref:...` as a Hub id.
+    _unquote_the_base = field_validator("base_model", mode = "before")(_unquote_pasted_path)
     _resolve_the_base_handle = field_validator("base_model")(_resolve_inventory_handle)
     data_dir: str = Field(..., description = "Folder of training images (+ captions)")
     output_dir: str = Field(..., description = "Directory to write the LoRA .safetensors into")
