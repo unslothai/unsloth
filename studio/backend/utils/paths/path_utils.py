@@ -486,7 +486,10 @@ def _break_hard_links(entry: Path) -> None:
             os.replace(child, held)
             moved = held.lstat()
             try:
-                os.link(copy if (moved.st_dev, moved.st_ino) == (info.st_dev, info.st_ino) else held, child)
+                os.link(
+                    copy if (moved.st_dev, moved.st_ino) == (info.st_dev, info.st_ino) else held,
+                    child,
+                )
             except FileExistsError:
                 pass
         finally:

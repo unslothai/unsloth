@@ -6563,7 +6563,11 @@ def test_opening_a_sandbox_file_keeps_the_chat_able_to_run_tools(tmp_path, monke
     assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
 
 
-def _stage_like_an_older_build(tmp_path, sandbox, name = "chart.png"):
+def _stage_like_an_older_build(
+    tmp_path,
+    sandbox,
+    name = "chart.png",
+):
     linked = tmp_path / "cache" / "open-staging" / "linked"
     linked.mkdir(parents = True)
     (sandbox / name).write_bytes(b"\x89PNG")
