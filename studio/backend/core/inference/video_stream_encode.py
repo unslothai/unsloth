@@ -306,7 +306,7 @@ def _mp4_frame_count(data: bytes, size: Any) -> Optional[int]:
         import io
 
         import av
-        with av.open(io.BytesIO(data), mode = "r") as container:
+        with av.open(io.BytesIO(data), mode = "r", format = "mp4") as container:
             stream = container.streams.video[0]
             if (stream.codec_context.height, stream.codec_context.width) != tuple(
                 int(x) for x in size
