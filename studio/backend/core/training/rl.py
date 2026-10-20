@@ -334,6 +334,11 @@ def _drop_nulls(value: Any) -> Any:
     return value
 
 
+def _row_template_kwargs(row: dict) -> dict:
+    """Arrow fills a key only some rows set with None; a template would read it as given."""
+    return {k: v for k, v in (row.get("chat_template_kwargs") or {}).items() if v is not None}
+
+
 def _without_nulls(value: Any) -> Any:
     # Arrow gives every message every field another one has, as None; templates would render
     # those as real values. A message's own null content and its tool-call arguments stay.
@@ -354,7 +359,7 @@ def render_preference_rows(dataset, tokenizer):
     from trl.data_utils import maybe_apply_chat_template
 
     def render(row: dict) -> dict:
-        tools, kwargs = _row_tools(row), row.get("chat_template_kwargs") or {}
+        tools, kwargs = _row_tools(row), _row_template_kwargs(row)
         # Passed explicitly, never left in the row: TRL 0.25+ would expand it a second time.
         row = {
             k: _without_nulls(v) if k in ("prompt", "chosen", "rejected") else v
@@ -390,7 +395,7 @@ def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
         if not isinstance(prompt, str):
             # Rendered as TRL will: with the row's own template kwargs and tools.
             tools = _row_tools(row)
-            kwargs = dict(row.get("chat_template_kwargs") or {})
+            kwargs = _row_template_kwargs(row)
             if tools:
                 kwargs["tools"] = tools
             prompt = tokenizer.apply_chat_template(
