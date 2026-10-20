@@ -6386,6 +6386,26 @@ def _extra_args_mtp_draft_path(
     return _extra_args_mtp_draft_source(extra_args, env)[0]
 
 
+def _single_device_fit_margin(
+    args: Iterable[str], env: Optional[Mapping[str, str]]
+) -> Optional[float]:
+    """The margin the one launched device keeps: the FIRST entry of a ``--fit-target`` list.
+
+    ``fit_target_margin_in`` takes the largest entry because it prices every device it
+    credits; a single-device launch only ever uses device 0's entry (common/arg.cpp), so a
+    larger later entry must not be added under the sidecar reserve."""
+    raw = _last_flag_value(args, {"-fitt", "--fit-target"})
+    if raw is None and env:
+        raw = env.get("LLAMA_ARG_FIT_TARGET")
+    if raw is None:
+        return None
+    first = str(raw).replace("/", ",").split(",")[0].strip()
+    try:
+        return float(first)
+    except ValueError:
+        return None
+
+
 def _sidecar_reserve_margin_flags(
     child_args: Iterable[str],
     user_args: Optional[Iterable[str]],
@@ -6413,9 +6433,10 @@ def _sidecar_reserve_margin_flags(
     if devices and len([d for d in str(devices).split(",") if d.strip()]) > 1:
         return []
     want = math.ceil(
-        max(base_margin_mib, fit_target_margin_in(user_args or (), env) or 0.0) + reserve_mib
+        max(base_margin_mib, _single_device_fit_margin(user_args or (), env) or 0.0)
+        + reserve_mib
     )
-    have = fit_target_margin_in(args, None)
+    have = _single_device_fit_margin(args, None)
     if have is not None and have >= want:
         return []
     return ["--fit-target", str(want)]
@@ -29759,15 +29780,31 @@ class LlamaCppBackend:
                         and _mtp_reserves_gpu
                         and _sidecar_kind_for_fit is not None
                         and _draft_on_target_device
+                        # A positive -ngld below the drafter's depth keeps part of it on
+                        # the host; the card-resident share is unpriced, so charging the
+                        # whole file would starve the target (the fit abstains there too).
+                        and not (
+                            _mtp_draft_for_budget
+                            and _draft_is_split_across_host(
+                                extra_args,
+                                os.environ,
+                                n_draft_layers = getattr(
+                                    self._draft_backend_for(_mtp_draft_for_budget),
+                                    "_n_layers",
+                                    None,
+                                ),
+                            )
+                        )
                         and (_apple_budget_mib > 0 or _fit_device_count == 1)
                     ):
                         # Priced even under --fit off: a startup-OOM retry turns the
-                        # fitter on with the drafter still loaded. With -c omitted (Manual
-                        # + Auto) the child may pick the native context, so price that one;
+                        # fitter on with the drafter still loaded. A positive context is always
+                        # emitted as -c; only with -c omitted (Manual + Auto context) may the
+                        # child pick the native context, so price that one;
                         # the draft decode graph is charged beside _mtp_reserve_bytes
                         # (_soft_overhead), so it rides on top here too.
                         _sidecar_reserve_ctx = effective_ctx
-                        if (gpu_memory_mode == "manual" and gpu_layers < 0) or effective_ctx <= 0:
+                        if effective_ctx <= 0:
                             _native_bound = self._context_length or 0
                             if not planned_kv_unified:
                                 _native_bound *= max(1, n_parallel or 1)
@@ -29776,10 +29813,18 @@ class LlamaCppBackend:
                             self._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024)
                         )
                         _sidecar_reserve_path = _mtp_draft_for_budget or mtp_draft_path
+                        # The target's recurrent rollback copies live in the TARGET context,
+                        # which the fitter does measure; only the drafter's share is unsized.
+                        _sidecar_only_bytes = _mtp_bytes(
+                            _sidecar_reserve_ctx, n_parallel, _effective_ubatch
+                        )
+                        if _target_rollback and _mtp_eff_n_max:
+                            _sidecar_only_bytes -= (
+                                self._rollback_state_bytes(n_parallel) * _mtp_eff_n_max
+                            )
                         _sidecar_fit_reserve_eligible_mib = (
                             self._sidecar_fit_reserve_mib(
-                                _mtp_bytes(_sidecar_reserve_ctx, n_parallel, _effective_ubatch),
-                                _sidecar_reserve_path,
+                                max(0, _sidecar_only_bytes), _sidecar_reserve_path
                             )
                             + _sidecar_compute_mib
                         )
@@ -29792,7 +29837,6 @@ class LlamaCppBackend:
                             _w: int = _mtp_draft_weights,
                             _np: int = n_parallel,
                             _mtp: bool = _engaged_is_mtp,
-                            _rollback: bool = _target_rollback,
                             _swa_full: bool = swa_full,
                             _kv_unified: bool = planned_kv_unified,
                             _ub: Optional[int] = _effective_ubatch,
@@ -29811,7 +29855,8 @@ class LlamaCppBackend:
                                 draft_weights_bytes = _w,
                                 n_parallel = _np,
                                 mtp_keeps_target_ctx = _mtp,
-                                target_rollback = _rollback,
+                                # Target rollback copies are measured by the fitter (above).
+                                target_rollback = False,
                                 swa_full = _swa_full,
                                 kv_unified = _kv_unified,
                                 n_ubatch = _ub,
@@ -35163,6 +35208,11 @@ class LlamaCppBackend:
                 # watch this load for a mid-generation crash. The verified-cache hint is
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
                 # re-resolves the file instead of trusting a path this request verified.
+                if self._metal_oom_is_terminal(intent):
+                    # Automatic recovery refuses a terminal intent, so a load that got
+                    # here is the user's explicit retry: it starts a fresh OOM episode.
+                    self._metal_oom_strikes = None
+                    self._metal_oom_terminal_key = None
                 self._last_load_intent = replace(intent, verified_gguf = None)
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()

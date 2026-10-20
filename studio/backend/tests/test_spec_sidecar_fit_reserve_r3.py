@@ -74,7 +74,8 @@ def test_no_reserve_without_a_drafter():
     [
         ((), {"LLAMA_ARG_FIT_TARGET": "12000"}, 12000 + 8192),
         (("--fit-target", "16384"), {}, 16384 + 8192),
-        (("-fitt", "512/20000"), {}, 20000 + 8192),
+        # A single-device launch keeps device 0's entry, not the list maximum (round 5).
+        (("-fitt", "512/20000"), {}, 1024 + 8192),
     ],
     ids = ["env", "argv", "per-device-list"],
 )
