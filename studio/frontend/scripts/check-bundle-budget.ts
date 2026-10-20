@@ -298,10 +298,7 @@ export const BUDGET = {
   // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
-  // Showing an iGPU's own memory, marked integrated, on Settings > About adds 474 B raw / 97 B transfer (6,844,101 ->
-  // 6,844,575 B raw, 2,060,889 -> 2,060,986 B transfer against e326020e4b, one machine and build, Node 24, chunk
-  // count unchanged at 96): the About tab, gpu-vram and the English catalog are already in the startup chunks.
-  // Raised by that growth on top of main.
+  // The About tab's iGPU memory row (#14317) adds 474 B raw / 97 B transfer against e326020e4b (Node 24, 96 chunks).
   transferBytes: 2_061_583,
   rawBytes: 6_846_221,
 };
