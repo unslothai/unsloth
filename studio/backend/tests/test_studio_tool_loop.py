@@ -250,6 +250,26 @@ def test_structured_call_executes_and_continues(executed):
     assert follow_up[-1]["content"] == "RESULT<web_search>"
 
 
+@pytest.mark.parametrize(
+    "policy", [None, {"allowedDomains": ["docs.python.org"], "blockedDomains": []}]
+)
+def test_web_search_domain_limits_reach_execute_tool(executed, policy):
+    call = {
+        "index": 0,
+        "id": "call_a",
+        "function": {"name": "web_search", "arguments": '{"query":"asyncio"}'},
+    }
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, website_policy = policy)
+    [call] = executed
+    assert call.get("website_policy") == policy and ("website_policy" in call) == bool(policy)
+
+
 def test_provider_compaction_replaces_history_before_tool_follow_up(executed):
     transport = FakeTransport(
         [
@@ -1811,3 +1831,21 @@ def test_preserved_thinking_before_a_tool_call_reaches_the_next_turn(executed, f
         if message.get("role") == "assistant"
     ][-1]
     assert assistant["reasoning_content"] == "look it up"
+
+
+def test_a_trailing_image_turn_takes_the_notice_as_a_text_part():
+    from core.inference.studio_tool_loop import _append_user_turn
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    conversation = [{"role": "user", "content": [{"type": "text", "text": "Screenshot:"}, image]}]
+    _append_user_turn(conversation, "Stop now.")
+    assert conversation == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Screenshot:"},
+                image,
+                {"type": "text", "text": "\n\nStop now."},
+            ],
+        }
+    ]

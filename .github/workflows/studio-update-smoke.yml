@@ -28,8 +28,6 @@ on:
       - 'studio/prebuilt_core.py'
       # install_node_prebuilt.py reads the default version and archive digests from here.
       - 'studio/node_prebuilt_pins.json'
-      # install_audio_cpp_prebuilt.py checks every runtime archive against these digests.
-      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'
@@ -102,8 +100,6 @@ on:
       - 'studio/prebuilt_core.py'
       # install_node_prebuilt.py reads the default version and archive digests from here.
       - 'studio/node_prebuilt_pins.json'
-      # install_audio_cpp_prebuilt.py checks every runtime archive against these digests.
-      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'

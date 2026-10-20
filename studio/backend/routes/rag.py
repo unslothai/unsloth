@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject, request_admitted_without_credential
-from core.rag import config, folder_sync, ingestion, retrieval, store
+from core.rag import config, folder_sync, ingestion, reembed, retrieval, store
 from storage import rag_db
 from utils.account_context import (
     OWNER,
@@ -846,6 +846,52 @@ def delete_document(document_id: str, subject: str = Depends(get_current_subject
         return {"ok": True}
     finally:
         conn.close()
+
+
+def _reembed_view(job: dict | None) -> dict | None:
+    if job is None:
+        return None
+    return {
+        "id": job["id"],
+        "status": job["status"],
+        "done": job["done"],
+        "failed": job["failed"],
+        "remaining": job["remaining"],
+        "clippedChunks": job["clipped_chunks"],
+        "progress": job["progress"],
+        "error": job["error"],
+    }
+
+
+@router.get("/reembed")
+def reembed_status(subject: str = Depends(get_current_subject)) -> dict:
+    """Documents indexed under another embedder than the current one, and the re-embed job."""
+    _require_rag()
+    # Job first: one ending between the reads still says running, so the client polls for the counts.
+    job = _reembed_view(reembed.status())
+    with _rag_unavailable_as_503():
+        stale = reembed.stale_counts()
+    return {
+        "staleDocuments": stale["documents"],
+        "staleArchived": stale["archived"],
+        "job": job,
+    }
+
+
+@router.post("/reembed")
+def start_reembed(subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    with _rag_unavailable_as_503():
+        return {"job": _reembed_view(reembed.start())}
+
+
+@router.post("/reembed/cancel")
+def cancel_reembed(subject: str = Depends(get_current_subject)) -> dict:
+    _require_rag()
+    job = reembed.cancel()
+    if job is None:
+        raise HTTPException(status_code = 404, detail = "No re-embed job")
+    return {"job": _reembed_view(job)}
 
 
 @router.get("/jobs/{job_id}")

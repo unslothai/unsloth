@@ -255,7 +255,8 @@ jobs:
       - name: Backend tests
         if: matrix.scope == 'full'
         working-directory: studio/backend
-        # Deselections need a real GPU or a live llama.cpp process.
+        # The one deselection needs a live llama.cpp process. The GPU-selection, KV-cache and
+        # CUDA-util tests mock torch.cuda and the device probe, so they run here on CPU torch.
         #
         # -n 4 verified order-independent (same failure set as serial).
         #
@@ -267,7 +268,7 @@ jobs:
         # Shared selection lives here so every shard inherits one list; shards differ only in matrix.selection.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
-          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
@@ -282,7 +283,7 @@ jobs:
             --ignore=tests/test_profile_stats.py \
             --ignore=tests/test_media_auto_switch.py \
             --ignore=tests/test_pr5624_regressions.py \
-            -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
+            -k 'not llama_cpp_load_progress_live'
 
       - name: Backend tests that cannot share a worker
         # The twelve serial files, one process.
@@ -551,7 +552,7 @@ jobs:
         # Timeouts mirror the backend pytest job; the outer one must fire before the job cap.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q --tb=short -n 4 --dist loadgroup --timeout=330 \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)

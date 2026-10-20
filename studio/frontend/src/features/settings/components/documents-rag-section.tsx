@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes, listCachedGguf, listCachedModels } from "@/features/hub";
+import { toastEmbeddingModelSaved } from "@/features/rag";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,7 @@ import { useEmbeddingModelStore } from "../stores/embedding-model-store";
 import { useEmbeddingPinsStore } from "../stores/embedding-pins-store";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { EmbeddingModelPicker } from "./embedding-model-picker";
+import { ReembedDocumentsRow } from "./reembed-documents-row";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -173,9 +175,11 @@ export function DocumentsRagSection(): ReactElement {
       );
       if (!stood) return false;
       setForceCandidate(null);
-      toast.success(t("settings.general.rag.saved"), {
-        description: t("settings.general.rag.reindexWarning"),
-      });
+      // Unresolved or still to download: Re-embed would fail until the files are on disk.
+      void toastEmbeddingModelSaved(
+        t("settings.general.rag.saved"),
+        Boolean(plan && (plan.cached || !plan.downloadRepo)),
+      );
       return true;
     } catch (error) {
       // A hard security block cannot be forced; keep "Save anyway" hidden.
@@ -497,6 +501,7 @@ export function DocumentsRagSection(): ReactElement {
           </div>
         </div>
       </SettingsRow>
+      <ReembedDocumentsRow />
       <SettingsRow
         label={t("settings.general.rag.device")}
         description={

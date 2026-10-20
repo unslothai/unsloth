@@ -14,12 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""A 4-bit / 8-bit load that does not fit the GPU should say what to do in Unsloth (#1629).
-
-transformers' bitsandbytes quantizers refuse a map that spills to the CPU and suggest
-`llm_int8_enable_fp32_cpu_offload`, which is no route to training. Unsloth's
-`offload_layers = "auto"` is, so the error points there instead.
-"""
+"""Spill errors should point to offload_layers="auto", not llm_int8_enable_fp32_cpu_offload."""
 
 import inspect
 import sys

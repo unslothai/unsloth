@@ -1,15 +1,4 @@
-"""install_python_stack's git probe never runs Apple's Command Line Tools shim.
-
-Without the CLT, Apple Silicon's /usr/bin/git is a shim, and running it (even `git --version`)
-raises the "install the command line developer tools" dialog. install.sh's _has_working_git
-answers from the path there. The Python probe ran `git --version` unconditionally, which was
-harmless while only the triton step (skipped on macOS) asked. Since the pinned Diffusers main
-build became the default, every macOS install asks, so a Mac without the CLT got the dialog in
-the middle of the install.
-
-Every call the probe makes goes through a stand-in `subprocess.run` here, so each row records
-whether git itself would have been executed.
-"""
+"""Never run git on macOS without Command Line Tools: Apple's shim raises an install dialog."""
 
 from __future__ import annotations
 
@@ -136,7 +125,6 @@ def test_no_git_on_path_runs_nothing(monkeypatch):
 
 
 def test_the_shim_path_matches_install_sh():
-    # Both probes have to agree on which git is the dialog shim, or one of them regresses alone.
     install_sh = (REPO_ROOT / "install.sh").read_text(encoding = "utf-8")
     assert '"${_CLT_GIT_SHIM:-/usr/bin/git}"' in install_sh
     assert stack._CLT_GIT_SHIM == "/usr/bin/git"

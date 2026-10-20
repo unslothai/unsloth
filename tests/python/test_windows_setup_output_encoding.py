@@ -1,46 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The Windows desktop setup log must be UTF-8 and must print each step once.
-
-"Getting things ready..." used to produce::
-
-      ?? Unsloth Studio Setup
-      ????????????????????????????????????????????????????
-      gpu
-    none (chat-only / GGUF)
-      gpu            none (chat-only / GGUF)
-
-Encoding: 5.1 encodes redirected output with the OEM code page while the desktop
-app decodes the pipe as UTF-8 (``from_utf8_lossy``, src-tauri/src/install.rs).
-U+1F9A5 has no OEM form so PowerShell writes one ``?`` per UTF-16 surrogate;
-U+2500 has one, so it becomes a bare 0xC4 and arrives as U+FFFD.
-
-Duplication: ``step``/``substep`` wrote through Write-Host *and* a console-handle
-mirror, and the CLI spawns setup.ps1 as ``-Command "& '...' *>&1"``, which merges
-the Information stream into stdout.
-
-Splitting: ``step`` built one line from two Write-Host calls with -NoNewline,
-which a redirected consumer splits at the record boundary.
-
-Sink: fixing ``step``/``substep`` left every other line on Write-Host, which
-5.1's console host writes through its own console-attached writer rather than
-the UTF-8 one bound to ``[Console]::Out``. The banner and the footer are not
-steps, so they never entered the sink #8083 built. Both entry scripts now
-funnel through ``Write-StudioLine``, and Write-Host survives only inside
-helpers that have already ruled out the redirected sink.
-
-No console: the transcode above needs a console to transcode against. Where
-``CREATE_NO_WINDOW`` really leaves the child without one, which is the state
-install.rs's own comment assumes, Write-Host has no screen buffer to query and
-throws instead, taking the whole script down under ``-ErrorActionPreference
-Stop``. The banner is then not mangled, it is absent. That is what
-``test_banner_survives_a_console_less_spawn`` measures, and it is the only case
-here that separates this fix from what shipped before it.
-
-The byte-level tests assert on raw bytes; decoding first would hide the exact
-regression being guarded.
-"""
+"""Setup log must be UTF-8 and print each step once; redirected 5.1 output is OEM-encoded."""
 
 from __future__ import annotations
 
@@ -68,18 +29,13 @@ SLOTH = "\U0001f9a5"
 RULE_CHAR = "─"
 REPLACEMENT = "�"
 
-# The desktop app spawns Windows PowerShell 5.1; pwsh stands in elsewhere. The OEM-code-page bug only reproduces on 5.1,
-# which the Windows runner covers.
+# The OEM-code-page bug only reproduces on Windows PowerShell 5.1.
 _PWSH = shutil.which("powershell") if sys.platform == "win32" else shutil.which("pwsh")
 pwsh_only = pytest.mark.skipif(_PWSH is None, reason = "PowerShell is unavailable")
 
 
 def _harness(redirected_probe: bool) -> str:
-    """Emit a known banner + steps using the real helpers.
-
-    Extracted from setup.ps1 rather than restated, so a change in shape fails
-    here instead of drifting.
-    """
+    """Extracted from setup.ps1, not restated, so a change in shape fails here instead of drifting."""
     sink = "$true" if redirected_probe else "[Console]::IsOutputRedirected"
     return f"""
 $ErrorActionPreference = 'Stop'
@@ -113,12 +69,7 @@ substep "installing OXC validator runtime..."
 
 
 def _section(source: str, title: str) -> str:
-    """The statements under a ``# <title>`` box header, up to the blank line.
-
-    Sliced out of setup.ps1 rather than restated, so the banner and the footer
-    are exercised as written. A rewrite that drops them back onto Write-Host
-    fails here.
-    """
+    """Slices the box-header section out of setup.ps1 so a rewrite back onto Write-Host fails here."""
     match = re.search(rf"(?m)^# {re.escape(title)}\n#[^\n]*\n", source)
     assert match, f"no '{title}' section header in {SETUP_PS1.name}"
     body = source[match.end() :]
@@ -158,15 +109,8 @@ def _run_capturing_bytes(
     use_command_shape: bool,
     stem: str = "setup_output",
 ) -> bytes:
-    """Run through a real pipe, in both launch shapes the product uses.
-
-    ``-File`` is how the desktop app spawns the installer; ``-Command ... *>&1``
-    is how the CLI spawns setup for ``unsloth studio update``. Piped stdout is
-    required to reproduce, and is captured as bytes, never decoded here.
-    """
-    # Unique per call. The name used to be (stem, shape), which several tests share, so under pytest-xdist one case
-    # could unlink the script after another had written it and before its pwsh child opened it. pwsh is installed on
-    # ubuntu-latest, so these do not skip there and would race for real.
+    """Runs through a real pipe in both launch shapes (-File, -Command *>&1), returning undecoded bytes."""
+    # Unique per call so xdist workers cannot unlink each other's script.
     tmp = (
         REPO_ROOT
         / "tests"
@@ -181,9 +125,7 @@ def _run_capturing_bytes(
             argv = base + ["-Command", f"& '{literal}' *>&1"]
         else:
             argv = base + ["-File", str(tmp)]
-        # run_pwsh, not subprocess.run: the byte-level cases read this stdout as the setup log, and an interpreter that
-        # aborted leaves an empty or truncated stream, which reads as the banner being mangled or lost.
-        # See tests/_shared/unsloth_pwsh_runner.py.
+        # run_pwsh: an aborted interpreter would read as a mangled banner.
         proc = run_pwsh(argv, stdout = subprocess.PIPE, stderr = subprocess.PIPE, timeout = 180)
         assert proc.returncode == 0, proc.stderr.decode("utf-8", errors = "replace")
         return proc.stdout
@@ -232,8 +174,6 @@ def test_step_label_and_value_stay_on_one_line(use_command_shape: bool) -> None:
     assert matches[0] == "  gpu            none (chat-only / GGUF)"
 
 
-# The banner and the footer are the two blocks a user actually reads in the desktop setup log, and neither goes through
-# step/substep, so they need their own byte-level coverage.
 @pwsh_only
 @pytest.mark.parametrize("use_command_shape", [False, True], ids = ["-File", "-Command-merged"])
 def test_banner_and_footer_are_valid_utf8(use_command_shape: bool) -> None:
@@ -252,23 +192,15 @@ def test_banner_and_footer_print_once_each(use_command_shape: bool) -> None:
     assert text.count(SLOTH) == 1, "sloth emoji lost or duplicated"
     assert text.count(f"  {SLOTH} Unsloth Studio Setup") == 1
     assert text.count("  Unsloth Studio Setup Complete") == 1
-    # One rule under the banner, two around the footer.
     assert text.count("  " + RULE_CHAR * 52) == 3, "the 52-char rule did not survive intact"
 
 
-# Source contracts. These run everywhere, including the Linux backend CI job,
-# so a regression is caught without waiting for a Windows runner.
 def _strip_comments(source: str) -> str:
     return re.sub(r"(?m)#.*$", "", source)
 
 
 def _mask_literals(source: str) -> str:
-    """Blank comments and string literals, keeping every offset in place.
-
-    A regex over the raw text would trip over the launcher script install.ps1
-    builds in a here-string (it has its own Write-Host and no helper to call)
-    and over the commented-out block in setup.ps1.
-    """
+    """Blanks comments and strings so a regex cannot match inside a here-string or commented-out code."""
     out = list(source)
     index, size = 0, len(source)
 
@@ -334,8 +266,7 @@ def _function_match(masked: str, name: str) -> re.Match[str] | None:
     return re.search(r"(?im)^[ \t]*function\s+" + re.escape(name) + r"\b", masked)
 
 
-# Write-Host may only appear inside a helper that has already ruled out the redirected sink: Write-StudioLine itself,
-# and setup.ps1's step/substep, which return through the console mirror before reaching their interactive branch.
+# Write-Host is allowed only in helpers that already ruled out the redirected sink.
 WRITE_HOST_ALLOW_LIST = {
     SETUP_PS1: ("Write-StudioLine", "step", "substep"),
     INSTALL_PS1: ("Write-StudioLine",),
@@ -352,11 +283,7 @@ def test_entry_scripts_set_the_utf8_invariant(path: Path) -> None:
 
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
 def test_entry_scripts_have_no_bom(path: Path) -> None:
-    """5.1 parses BOM-less scripts as ANSI, so the fix stays ASCII-only.
-
-    A BOM would be a far wider packaging change: these get concatenated and
-    streamed through `irm | iex`.
-    """
+    """5.1 parses BOM-less scripts as ANSI, so the fix stays ASCII-only; a BOM would change packaging."""
     assert not path.read_bytes().startswith(b"\xef\xbb\xbf")
 
 
@@ -419,7 +346,7 @@ def test_the_sink_helper_writes_through_the_console_handle(path: Path) -> None:
     lo, hi = _function_span(masked, "Write-StudioLine")
     body = path.read_text(encoding = "utf-8")[lo:hi]
     assert "[Console]::Out.WriteLine($Message)" in body
-    # Tauri reads line by line, so a buffered line is a line the user never sees.
+    # Tauri reads line by line, so a buffered line is never seen.
     assert "[Console]::Out.Flush()" in body
 
 
@@ -430,42 +357,23 @@ def test_entry_scripts_resolve_the_redirect_sink_once(path: Path) -> None:
 
 
 def test_refresh_environment_cannot_clobber_the_python_encoding_vars() -> None:
-    """Refresh-Environment reloads the registry repeatedly through a long run.
-
-    Without the guard a registry PYTHONUTF8=0 reloads over ours and every later
-    Python child goes back to mojibake.
-    """
+    """A registry PYTHONUTF8=0 reloaded by Refresh-Environment would clobber ours and restore mojibake."""
     source = SETUP_PS1.read_text(encoding = "utf-8")
     assert "$key -eq 'PYTHONUTF8' -or $key -eq 'PYTHONIOENCODING'" in source
 
 
 @pytest.mark.parametrize("path", [SETUP_PS1, INSTALL_PS1], ids = ["setup.ps1", "install.ps1"])
 def test_entry_scripts_bind_a_utf8_writer_when_there_is_no_console(path: Path) -> None:
-    """The setter needs a console handle, and the desktop spawns us without one.
-
-    It drops the cached writer BEFORE throwing, assigning OutputEncoding only
-    after, so Console.Out would rebuild on the old code page and redirected
-    step/substep, whose only sink it is, would stay locale-encoded.
-    """
+    """The setter throws without a console, so the cached writer must be dropped before it, not after."""
     source = path.read_text(encoding = "utf-8")
     assert "[Console]::OpenStandardOutput()" in source
     assert "[Console]::SetOut(" in source
-    # stderr is decoded identically and the failure text is built from it.
     assert "[Console]::OpenStandardError()" in source
     assert "[Console]::SetError(" in source
 
 
 def test_managed_cli_command_uses_the_utf8_switch_not_just_env() -> None:
-    """The managed CLI children must force UTF-8 on the command line.
-
-    Every Windows spawn of the CLI now goes through build_managed_cli_command in
-    process.rs, so that is where the switch has to be; update.rs only calls it.
-    The env vars alone are not enough: a caller that already exports
-    PYTHONIOENCODING wins over the ones set beside the spawn, and the Rust
-    readers decode as UTF-8 regardless. -X utf8 is not overridable that way.
-
-    https://docs.python.org/3/using/cmdline.html#cmdoption-X
-    """
+    """The CLI child needs -X utf8 in its command line; env vars lose to an exported PYTHONIOENCODING."""
     source = (REPO_ROOT / "studio" / "src-tauri" / "src" / "process.rs").read_text(encoding = "utf-8")
     assert re.search(
         r'"-X"\s*,\s*"utf8"', source
@@ -485,38 +393,19 @@ def test_rust_windows_spawns_force_utf8(rust_file: str) -> None:
     ), f"{rust_file} does not force PYTHONIOENCODING"
 
 
-# The console-less spawn. Windows only, and last in the file because it reuses the literal masking above to
-# brace-match the blocks it lifts.
-#
-# A GitHub runner hands a CREATE_NO_WINDOW child a console anyway (GetConsoleOutputCP 437, GetConsoleWindow 0), so the
-# UTF-8 setter in the preamble succeeds there and every version of these scripts emits a clean banner. The cases above
-# therefore cannot tell this fix from what preceded it. Calling FreeConsole() in the child first puts it in the state
-# install.rs's own comment assumes CREATE_NO_WINDOW produces, and there the two diverge hard: without the sink,
-# Write-Host throws `HostException: GetConsoleScreenBufferInfo, The Win32 internal error "The handle is invalid" 0x6`,
-# the script dies with exit 1 and 2 bytes of stdout, and the user's setup log holds a PowerShell stack trace where the
-# banner should be.
-#
-# DETACHED_PROCESS would reach that state from the spawn, but Windows PowerShell 5.1 started that way exits 0 without
-# running a line (checked on windows-latest and windows-11-arm, whatever stdin, -File or -Command), so the detach has to
-# happen inside the child. The FreeConsole prologue that does it is an Add-Type/DllImport of kernel32, which
-# Bitdefender quarantines on real machines (CMD:Heur.BZC.PZQ.Boxter.542), so these runs are opt-in off CI: they run
-# under GitHub Actions, or locally with UNSLOTH_TEST_CONSOLE_LESS=1.
-#
-# Everything the probe prints is sliced out of the script under test; only the FreeConsole prologue and the stderr
-# diagnostics are harness.
+# Windows only, opt-in off CI. Runners give CREATE_NO_WINDOW children a console anyway, so the
+# child calls FreeConsole() itself (Add-Type of kernel32 trips AV, hence the opt-in).
+# Not DETACHED_PROCESS: Windows PowerShell 5.1 spawned that way exits 0 without running a line.
 CREATE_NO_WINDOW = 0x08000000
 
 _CONSOLE_LESS_OPTED_IN = (
     os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("UNSLOTH_TEST_CONSOLE_LESS") == "1"
 )
 
-# studio/src-tauri/src/install.rs::powershell_launch_args, minus the -File the runner appends. Not Bypass:
-# RemoteSigned is what the shipped spawn uses.
+# install.rs::powershell_launch_args minus -File; RemoteSigned as the shipped spawn uses.
 TAURI_FLAGS = ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned"]
 
-# install.rs::powershell_exe.
-# Resolved absolutely for the same reason it is there, and not fallen back to a bare `powershell.exe`: pwsh 7 is UTF-8
-# by default and would pass this without exercising anything.
+# Absolute path, no fallback: pwsh 7 is UTF-8 by default and would pass vacuously.
 _WINDOWS_POWERSHELL = (
     Path(os.environ.get("SystemRoot", r"C:\Windows"))
     / r"System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -532,8 +421,6 @@ powershell_51_only = pytest.mark.skipif(
     reason = "Windows PowerShell 5.1 is unavailable",
 )
 
-# Documented kernel32 calls and nothing else, so the probe reaches the target state without the scripts under test
-# knowing they are being tested.
 _FREE_CONSOLE = """Add-Type -Namespace Force -Name Native -MemberDefinition @'
 [DllImport("kernel32.dll")] public static extern bool FreeConsole();
 '@
@@ -563,10 +450,7 @@ def _slice_optional(source: str, pattern: str) -> str | None:
 
 
 def _slice_if_chain(source: str, masked: str, start: int) -> str:
-    """A whole `if {} else {}`; brace-matching alone drops the non-ANSI branch.
-
-    The redirected run is exactly the one that takes that branch.
-    """
+    """Brace matching alone drops the non-ANSI else branch; the redirected run is the one that takes it."""
     end = _close_brace(masked, masked.index("{", start))
     chained = r"[ \t\r\n]*(?:elseif[ \t]*\(.*?\)|else)[ \t\r\n]*\{"
     while True:
@@ -594,8 +478,6 @@ def _console_less_probe(path: Path) -> str:
     """Assemble a probe out of the script's own preamble, helpers and banner."""
     source = path.read_text(encoding = "utf-8")
     masked = _mask_literals(source)
-    # Sliced too: it is what turns the Write-Host throw into a dead script rather than a skipped line, so restating it
-    # would be assuming the result.
     eap = _slice_optional(source, r'(?m)^[ \t]*\$ErrorActionPreference = "Stop"')
     assert eap, f"{path.name} no longer stops on error before the banner"
     parts = [eap, _FREE_CONSOLE, "", _slice_preamble(source), ""]
@@ -618,14 +500,10 @@ def _console_less_probe(path: Path) -> str:
         r"(?m)^[ \t]*\$Rule = \[string\]::new\(\[char\]0x2500, 52\)",
         r"(?m)^[ \t]*\$Sloth = \[char\]::ConvertFromUtf32\(0x1F9A5\)",
     ):
-        # setup.ps1 inlines the sloth in the banner;
-        # install.ps1 binds it first.
         assignment = _slice_optional(source, pattern)
         if assignment:
             parts.append(assignment)
     parts += ["", _slice_banner(source, masked), ""]
-    # On stderr, which the app reads on a separate reader, so stdout stays exactly the byte stream the log panel is
-    # built from.
     parts += [
         '[Console]::Error.WriteLine("psversion=" + $PSVersionTable.PSVersion.ToString())',
         '[Console]::Error.WriteLine("console_outputencoding_codepage=" + [Console]::OutputEncoding.CodePage)',
@@ -641,11 +519,7 @@ def _console_less_probe(path: Path) -> str:
 
 @lru_cache(maxsize = None)
 def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes, str]:
-    """Spawn the probe the way install.rs spawns the installer, and read bytes.
-
-    `source` is for the VT parity case, which runs this file's own function beside the one it
-    replaced. A str keeps the lru_cache above workable; a dict would not hash.
-    """
+    """Spawns the probe as install.rs does and returns raw bytes; a str source keeps lru_cache usable."""
     if not _CONSOLE_LESS_OPTED_IN:
         pytest.skip(
             "the FreeConsole probe trips AV heuristics; set UNSLOTH_TEST_CONSOLE_LESS=1 to run it"
@@ -655,9 +529,6 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
         probe = Path(workdir) / f"{path.stem}_console_less_probe.ps1"
         text = _console_less_probe(path) if source is None else source
         probe.write_bytes(text.replace("\n", "\r\n").encode("ascii"))
-        # run_pwsh, not subprocess.run: the console-less cases are phrased as "this run exited non-zero having printed
-        # almost nothing", which is also what an aborted interpreter looks like, so the two must not be confused.
-        # See tests/_shared/unsloth_pwsh_runner.py.
         proc = run_pwsh(
             [str(_WINDOWS_POWERSHELL), *TAURI_FLAGS, "-File", str(probe)],
             stdout = subprocess.PIPE,
@@ -669,12 +540,7 @@ def _run_console_less(path: Path, source: str | None = None) -> tuple[int, bytes
 
 
 def _decode_like_install_rs(raw: bytes) -> str:
-    """install.rs: read_until(b'\\n') -> trim_line_endings -> from_utf8_lossy.
-
-    One record per `install-progress` event, so this is what the log panel
-    renders. Python's 'replace' emits one U+FFFD per maximal subpart, the rule
-    Rust's from_utf8_lossy uses.
-    """
+    """Decodes as install.rs does; Python's 'replace' emits U+FFFD per maximal subpart, as Rust does."""
     records = raw.split(b"\n")
     if records and records[-1] == b"":
         records.pop()  # read_until returning Ok(0) at EOF, not an empty line
@@ -689,22 +555,12 @@ def _explain(path: Path, code: int, raw: bytes, err: str) -> str:
     )
 
 
-# A floor, not the 191 and 207 bytes these banners currently produce. The point
-# is only to outrun a dead script: without the sink the run aborts having
-# written 2 bytes, and every "nothing is wrong with this stream" assertion below
-# holds trivially over 2 bytes. Two of the three cases here are phrased that way
-# because that is the regression they guard, so they need this floor underneath
-# them or they pass on the very code they exist to reject. Pinning the exact
-# count instead would make editing the banner wording a test failure.
+# A floor so a dead script (2 bytes) cannot pass the stream checks; not exact, to allow rewording.
 _MIN_BANNER_BYTES = 64
 
 
 def _banner_or_explain(path: Path) -> tuple[str, str]:
-    """Run the probe, insist the banner actually arrived, and decode it.
-
-    Every console-less case starts here. `raw` being truthy is not enough: the
-    aborted run is truthy too.
-    """
+    """Requires the banner itself: a truthy raw output is not enough, since an aborted run is truthy too."""
     code, raw, err = _run_console_less(path)
     detail = _explain(path, code, raw, err)
     assert code == 0, (
@@ -741,8 +597,6 @@ def test_console_less_banner_is_valid_utf8(path: Path) -> None:
         "log shows U+FFFD. With no console the UTF-8 setter throws, and only the "
         "writers bound in its catch branch keep the stream UTF-8." + detail
     )
-    # Strict on purpose; UnicodeDecodeError is the failure. Reruns the cached bytes rather than trusting the lossy
-    # pass above to have caught everything.
     _run_console_less(path)[1].decode("utf-8")
 
 
@@ -758,18 +612,8 @@ def test_console_less_banner_keeps_its_glyphs(path: Path) -> None:
     )
 
 
-# Sliced back out to prove the guard is load-bearing rather than decorative. This used to rebuild the
-# predecessor for a parity comparison, which worked while the predecessor was still in the file:
-# removing the fast path left the native GetConsoleMode path behind, and the two had to agree.
-#
-# That is no longer what removing it leaves. The native path is gone, so the remainder is a bare
-# `$Host.UI.SupportsVirtualTerminal` read, and that property answers True on a redirected stream --
-# which is exactly why the early return exists and is checked BEFORE it. Comparing the two variants
-# therefore compares the shipped answer against a known-wrong one and fails by construction.
-#
-# So the contract is asserted directly on the code that ships, where it is stronger anyway: a
-# redirected stream is answered False and no escape byte reaches the pipe. Deleting the fast path
-# still fails this test, which is the regression the parity comparison existed to catch.
+# Removing the fast path leaves a bare SupportsVirtualTerminal read, which answers True when
+# redirected; assert directly that the shipped code answers False.
 _VT_FAST_PATH = re.compile(
     r"(?m)^[ \t]*# A redirected stdout is not a console.*?\n"
     r"(?:^[ \t]*#.*\n)*"
@@ -822,9 +666,6 @@ def test_a_redirected_stream_is_answered_false_and_gets_no_escape_bytes(path: Pa
         + _explain(path, code, raw, err)
     )
 
-    # The guard is load-bearing, and this is what says so. Without it the property alone decides,
-    # and on a redirected stream it says True. If this ever stops differing, the early return has
-    # become redundant and the comment above it is wrong.
     bare_code, _, bare_err = _run_console_less(path, source = _probe_without_the_vt_fast_path(path))
     assert bare_code == 0, f"the fast-path-less probe exited {bare_code}:\n{bare_err}"
     assert _vt_verdict(bare_err) == "True", (

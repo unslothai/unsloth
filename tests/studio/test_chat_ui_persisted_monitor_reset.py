@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The "persisted monitor: reset" step of playwright_chat_ui.py must not run script in
-the page it is about to discard.
-
-That page is CPU-throttled and its auth was revoked by the CLI rotation just before, so
-the app can be busy retrying; page.evaluate waits for its event loop with no timeout of
-its own. The step wedged for its whole watchdog budget on Windows and on the Kaggle T4
-runner with nothing printed. The storage writes now go through the fresh page."""
+"""Storage writes use the fresh page: page.evaluate on the discarded, throttled page can hang."""
 
 import re
 from pathlib import Path
@@ -66,12 +60,10 @@ def test_every_blocking_call_announces_itself_first():
         "ctx.clear_cookies()": body.index("ctx.clear_cookies()"),
         "new_throttled_page(ctx)": body.index("new_throttled_page(ctx)"),
         "page.goto(": body.index("page.goto("),
-        # The storage write is a timeout-free page.evaluate under the wrapper.
         "robust_evaluate(": body.index("robust_evaluate(", handoff),
     }
     for call, at in calls.items():
-        # The statement directly before the call (a try: line in between is allowed),
-        # not a nearby one: two calls in a row must each name themselves.
+        # The statement directly before the call (a try: line between is allowed).
         preceding = [
             line.strip()
             for line in body[: body.rfind("\n", 0, at)].splitlines()

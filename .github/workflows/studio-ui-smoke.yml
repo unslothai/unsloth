@@ -204,6 +204,12 @@ jobs:
       GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18892'
       HF_HOME: ${{ github.workspace }}/hf-cache
+      # A llama.cpp, whisper.cpp or audio.cpp release published while this job runs leaves the prebuilt it
+      # just installed one behind, and Studio then puts an update card in the bottom-right overlay rail, over
+      # the composer the scripts click. Seen on main eb0617b6: audio.cpp v0.9.2 was published six minutes
+      # after the job installed v0.9.1, and the IME script timed out on a click the card intercepted. These
+      # scripts test chat, not live update checks; the update banner scripts stub the update routes.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

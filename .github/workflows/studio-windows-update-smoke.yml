@@ -45,7 +45,6 @@ on:
       - 'studio/backend/utils/**'
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
-      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'unsloth_cli/**'
       # frontend-dist-restore keys its cache on exactly these three globs, and a miss
       # makes the checked-out setup.ps1 run npm run build (setup.ps1:5060), so a
@@ -76,7 +75,6 @@ on:
       - 'studio/backend/utils/**'
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
-      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'unsloth_cli/**'
       - 'studio/frontend/*'
       - 'studio/frontend/src/**'

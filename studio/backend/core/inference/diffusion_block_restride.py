@@ -70,7 +70,6 @@ def wrap(compiled: Any) -> Any:
         return compiled(*args, **kwargs)
 
     setattr(restride, _MARK, True)
-    restride.__wrapped__ = compiled
     return restride
 
 
