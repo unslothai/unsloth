@@ -87,7 +87,11 @@ def available_folders() -> list[dict[str, str]]:
         if normalized not in resolved.values():
             resolved[folder_id] = normalized
     labels = _labels(list(resolved.values()))
-    return [{"id": folder_id, "displayName": label} for folder_id, label in zip(resolved, labels)]
+    # A non-UTF-8 name decodes to lone surrogates, which the JSON response cannot encode.
+    return [
+        {"id": folder_id, "displayName": label.encode("utf-8", "replace").decode("utf-8")}
+        for folder_id, label in zip(resolved, labels)
+    ]
 
 
 def display_name(folder_id: str) -> str | None:

@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import os
+import sys
 from contextlib import closing
 from pathlib import Path
 
@@ -60,6 +62,16 @@ def test_an_undecodable_path_does_not_break_the_listing(source, monkeypatch):
         server_folders.ENV_NAME, json.dumps([str(source.parent / "\udcff"), str(source)])
     )
     assert [f["displayName"] for f in server_folders.available_folders()] == ["documents"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "only Linux filesystems accept non-UTF-8 names")
+def test_a_non_utf8_folder_name_still_serializes(rag_home, monkeypatch):
+    raw = os.fsencode(rag_home) + b"/caf\xe9"
+    os.mkdir(raw)
+    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps([os.fsdecode(raw)]))
+    choices = server_folders.available_folders()
+    assert [c["displayName"] for c in choices] == ["caf?"]
+    json.dumps(choices, ensure_ascii = False).encode("utf-8")
 
 
 def test_only_configured_folder_ids_resolve(source):
