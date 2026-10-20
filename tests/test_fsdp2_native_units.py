@@ -926,9 +926,7 @@ def _recompute_cast_worker(rank, world, init_file, out, patched):
     from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
 
     # A file store, not a TCP port: parallel test workers cannot race for the same port.
-    dist.init_process_group(
-        "gloo", init_method = f"file://{init_file}", rank = rank, world_size = world
-    )
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = world)
     try:
         native = _load_native()
         current = FSDPState._pre_forward
