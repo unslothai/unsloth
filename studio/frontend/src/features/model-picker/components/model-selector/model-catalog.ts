@@ -41,6 +41,9 @@ export interface ModelArtifact {
   repoId: string;
   /** Vendor repo this unsloth mirror copies byte for byte; its id (a cached copy) resolves here too. */
   upstreamRepoId?: string;
+  /** The open repo the backend downloads this vendor id from (diffusion_families._GATED_MIRROR_PAIRS),
+   *  so a gate on repoId never reaches the user. The network check judges this repo instead. */
+  fetchedFrom?: string;
   format: ArtifactFormat;
   loadKind: LoadKind;
   /** single_file loads name their exact checkpoint inside the repo. */
@@ -260,6 +263,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("black-forest-labs/flux-3-image-klein", 18.92, {
         totalParams: 5548681984,
         prequantRepo: "unsloth/flux-3-image-klein-FP8",
+        fetchedFrom: "unsloth/flux-3-image-klein-FP8",
         prequantSizeGb: { fp8: 6.0, int8: 6.0 },
       }),
       gguf("unsloth/flux-3-image-klein-GGUF"),
@@ -277,6 +281,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
       bf16Pipeline("black-forest-labs/flux-3-image-klein-base", 18.9, {
         totalParams: 5538458368,
         prequantRepo: "unsloth/flux-3-image-klein-base-FP8",
+        fetchedFrom: "unsloth/flux-3-image-klein-base-FP8",
         // The INT8 file is BFL's own int8_convrot denoiser, smaller than the FP8.
         prequantSizeGb: { fp8: 5.98, int8: 5.41 },
       }),

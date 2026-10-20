@@ -120,6 +120,13 @@ class ReleaseCompatibilityError(PrebuiltFallback):
     """A valid slim release cannot pair with this host's installed runtime."""
 
 
+class LlamaPairingGapError(ReleaseCompatibilityError):
+    """The release's slim bundles pair with no llama.cpp build tree the host has installed."""
+
+
+_PAIRING_GAP_PREFIX = "slim bundle requires llama.cpp "
+
+
 def log(message: str) -> None:
     print(f"[whisper-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
@@ -630,8 +637,38 @@ def select_artifact_with_cpu_fallback(
     except PrebuiltFallback as exc:
         reason = _slim_release_incompatibility(manifest, host)
         if reason is not None:
-            raise ReleaseCompatibilityError(reason) from exc
+            gap = reason.startswith(_PAIRING_GAP_PREFIX)
+            raise (LlamaPairingGapError if gap else ReleaseCompatibilityError)(reason) from exc
         raise
+
+
+_LLAMA_BUILD = re.compile(r"^b(\d+)(?:-|$)")
+
+
+def _llama_build(tag: Any) -> int | None:
+    match = _LLAMA_BUILD.match(tag) if isinstance(tag, str) else None
+    return int(match.group(1)) if match else None
+
+
+def _installed_llama_is_ahead(manifest: dict[str, Any], host: HostInfo) -> bool:
+    """Whether every slim bundle this host can run needs an older llama.cpp build than the installed one."""
+    os_token, arch_token = host_platform_tokens(host)
+    required = [
+        _llama_build(artifact.get("requires_llama_tag"))
+        for artifact in manifest.get("artifacts", [])
+        if artifact.get("os") == os_token
+        and artifact.get("arch") == arch_token
+        and artifact.get("backend") == "slim"
+        and artifact.get("install_kind") == "slim"
+        and (not host.is_macos or _macos_min_os_ok(host, artifact.get("min_os")))
+    ]
+    runtime = installed_llama_runtime()
+    installed = _llama_build(runtime[1]) if runtime is not None else None
+    return (
+        bool(required)
+        and installed is not None
+        and all(build is not None and build < installed for build in required)
+    )
 
 
 def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> str | None:
@@ -690,9 +727,7 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
         for tag, tree in required_pairs
     ):
         required_tag = sorted(required_tags)[0]
-        return (
-            f"slim bundle requires llama.cpp {required_tag}; installed llama.cpp is {installed_tag}"
-        )
+        return f"{_PAIRING_GAP_PREFIX}{required_tag}; installed llama.cpp is {installed_tag}"
     return None
 
 
@@ -1708,6 +1743,21 @@ def _release_plan_for_host(
         raise first_error
 
     if not requested_specific_tag and not host.is_macos:
+        assert first_error is not None
+        raise first_error
+
+    if (
+        not requested_specific_tag
+        and isinstance(first_error, LlamaPairingGapError)
+        # Our releases track llama.cpp builds in order; a custom repo's need not, on either side.
+        and published_repo == DEFAULT_PUBLISHED_REPO
+        and installed_llama_tree_repo() == llama.DEFAULT_PUBLISHED_REPO
+        and first_bundle is not None
+        and _installed_llama_is_ahead(first_bundle.manifest, host)
+    ):
+        # llama.cpp is published before its paired whisper.cpp release. Until that lands, the newest
+        # release pairs with an older llama.cpp and older ones with older still, so a walk finds
+        # nothing and costs a release listing plus two fetches per release on every update.
         assert first_error is not None
         raise first_error
 

@@ -307,6 +307,14 @@ export const BUDGET = {
   // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
   // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
   // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
+  // FLUX.3 workflows, controls and LoRAs (#14312) add 426 B raw / 138 B transfer (6,844,101 -> 6,844,527 B raw,
+  // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
+  // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
+  // to that build plus the same 160 B raw / 189 B transfer margin.
+  // The modern toggles (#14322) add 449 B raw / 86 B transfer (6,844,459 -> 6,844,908 B raw, 2,061,006 ->
+  // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
+  // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
+  // same 160 B raw / 189 B transfer margin.
   // Merging main at b6f21fd28a into the voice branch (#14084) brings both sides' growth together: the combined build
   // measures 6,881,971 B raw / 2,071,673 B transfer (one machine and build, chunk count 103). Raised to that build
   // plus the same 160 B raw / 189 B transfer margin.
@@ -322,8 +330,11 @@ export const BUDGET = {
   // (one machine and build, chunk count 103; CI measured 2028.2 KB transfer at 646e55616b). The transfer
   // figure above was summed from per-commit deltas and fell ~4 KB short of a whole build. Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_077_165,
-  rawBytes: 6_885_274,
+  // Merging main at d9aded3801 (FLUX.3 controls #14312, modern toggles #14322) into the voice branch (#14084)
+  // brings both sides' growth together: the combined build measures 6,886,020 B raw / 2,077,103 B transfer (one
+  // machine and build, chunk count 103). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_077_292,
+  rawBytes: 6_886_180,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

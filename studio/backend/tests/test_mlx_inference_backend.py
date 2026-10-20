@@ -2855,6 +2855,172 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
     assert list(backend.generate_completion([5, 6], max_new_tokens = 3))[-1] == " Paris!"
 
 
+def _numpy_mx(monkeypatch):
+    np = pytest.importorskip("numpy")
+
+    class _At:
+        def __init__(self, array):
+            self.array = array
+
+        def __getitem__(self, idx):
+            def add(values):
+                out = np.array(self.array)
+                np.add.at(out, np.asarray(idx), np.asarray(values))
+                return out
+
+            return SimpleNamespace(add = add)
+
+    class _Arr(np.ndarray):
+        @property
+        def at(self):
+            return _At(self)
+
+    def _logsumexp(
+        a,
+        axis = -1,
+        keepdims = False,
+    ):
+        peak = a.max(axis = axis, keepdims = True)
+        out = np.log(np.exp(a - peak).sum(axis = axis, keepdims = True)) + peak
+        return out if keepdims else out.squeeze(axis)
+
+    core = sys.modules["mlx.core"]
+    monkeypatch.setattr(core, "float32", np.float32, raising = False)
+    monkeypatch.setattr(core, "int32", np.int32, raising = False)
+    monkeypatch.setattr(
+        core, "array", lambda v, dtype = None: np.array(v, dtype = dtype), raising = False
+    )
+    monkeypatch.setattr(
+        core,
+        "zeros",
+        lambda shape, dtype = None: np.zeros(shape, dtype = dtype).view(_Arr),
+        raising = False,
+    )
+    monkeypatch.setattr(core, "logsumexp", _logsumexp, raising = False)
+    monkeypatch.setattr(core, "argpartition", lambda a, kth: np.argpartition(a, kth), raising = False)
+    monkeypatch.setattr(core, "argsort", np.argsort, raising = False)
+    return np
+
+
+# Probabilities the fake model gives every step: token 0 is the argmax, token 3 unlikely.
+_STEP_PROBS = [0.6, 0.3, 0.05, 0.04, 0.01]
+
+
+def _processed_steps(np, processors, prompt, steps):
+    """(token, response) per step as mlx_lm / mlx_vlm run processors: once per step, never
+    during prefill, step n + 1 computed before token n is yielded."""
+    raw = np.log(np.array([_STEP_PROBS], dtype = np.float32))
+    tokens = np.array(prompt)
+
+    def step(tokens):
+        logits = raw.copy()
+        for processor in processors or ():
+            logits = processor(tokens, logits)
+        return int(np.argmax(logits))
+
+    y = step(tokens)
+    for n in range(steps):
+        tokens = np.append(tokens, y)
+        upcoming = step(tokens) if n + 1 < steps else None
+        yield y, n + 1
+        y = upcoming
+
+
+def test_mlx_completion_logprobs_read_the_logits_before_logit_bias(monkeypatch):
+    import math
+
+    _install_fake_prompt_cache_api(monkeypatch)
+    captured = []
+    backend = _install_fake_text_stack(monkeypatch, {"generated": []}, captured)
+    np = _numpy_mx(monkeypatch)
+
+    def _stream_generate(_model, _tokenizer, **kw):
+        captured.append(kw)
+        steps = _processed_steps(np, kw.get("logits_processors"), kw["prompt"], kw["max_tokens"])
+        for token, n in steps:
+            yield SimpleNamespace(
+                token = token,
+                text = "",
+                prompt_tokens = len(kw["prompt"]),
+                prompt_tps = 1.0,
+                generation_tokens = n,
+                generation_tps = 1.0,
+                finish_reason = None,
+            )
+
+    monkeypatch.setattr(sys.modules["mlx_lm"], "stream_generate", _stream_generate)
+    sampling = dict(max_new_tokens = 2, temperature = 0.0, logit_bias = {3: 100.0})
+    out = list(backend.generate_completion([1, 2], n_probs = 2, **sampling))
+    entries = backend.last_generation_stats["token_logprobs"]
+    assert out[-1] == "33" and [e["id"] for e in entries] == [3, 3]
+    first = entries[0]
+    assert first["logprob"] == pytest.approx(math.log(0.04), abs = 1e-5)
+    assert first["token"] == "3" and first["bytes"] == [51]
+    assert [(t["id"], t["token"], t["bytes"]) for t in first["top_logprobs"]] == [
+        (0, "0", [48]),
+        (1, "1", [49]),
+    ]
+    assert first["top_logprobs"][0]["logprob"] == pytest.approx(math.log(0.6), abs = 1e-5)
+    list(backend.generate_completion([1, 2], max_new_tokens = 2))
+    assert "logits_processors" not in captured[-1]
+    assert "token_logprobs" not in backend.last_generation_stats
+
+
+def test_mlx_logprob_tokens_keep_a_sentencepiece_word_space(monkeypatch):
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    pieces = {7: "\u2581the", 8: "Hand"}
+    tokenizer = SimpleNamespace(
+        decode = lambda ids, **_kw: "".join(pieces[i] for i in ids)
+        .replace("\u2581", " ")
+        .removeprefix(" ")
+    )
+    assert mlx_inference._token_bytes_text(tokenizer, 7) == (" the", [32, 116, 104, 101])
+    assert mlx_inference._token_bytes_text(tokenizer, 8) == ("Hand", [72, 97, 110, 100])
+
+
+def test_mlx_vlm_completion_logprobs_skip_the_draft_and_repeated_responses(monkeypatch):
+    from core.inference import mlx_inference
+
+    _install_fake_mlx(monkeypatch)
+    np = _numpy_mx(monkeypatch)
+    seen = {}
+
+    def _vlm_stream(*_a, **kw):
+        seen.update(kw)
+        steps = list(_processed_steps(np, kw["logits_processors"], kw["input_ids"][0], 2))
+        for token, n in steps:
+            yield SimpleNamespace(text = "", token = token, generation_tokens = n, prompt_tokens = 2)
+        # mlx-vlm repeats the last token in its closing response.
+        yield SimpleNamespace(text = "", token = token, generation_tokens = n, prompt_tokens = 2)
+
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.stream_generate = _vlm_stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a: contextlib.nullcontext()
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._is_vlm = SimpleNamespace(), True
+    backend._processor = SimpleNamespace()
+    backend._tokenizer = SimpleNamespace(
+        decode = lambda ids, skip_special_tokens, clean_up_tokenization_spaces: "".join(
+            str(i) for i in ids
+        )
+    )
+    monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *_a, **_k: None)
+    backend._speculative_draft = SimpleNamespace(drafter = None, draft_kind = "mtp")
+
+    out = list(backend.generate_completion([5, 6], max_new_tokens = 2, n_probs = 1))
+    entries = backend.last_generation_stats["token_logprobs"]
+    assert out[-1] == "00" and [e["id"] for e in entries] == [0, 0]
+    assert [t["id"] for t in entries[0]["top_logprobs"]] == [0]
+    assert "draft_model" not in seen
+    assert mlx_inference._request_batch_gap({"n_probs": 2})
+    assert mlx_inference._request_batch_gap({"n_probs": 0}) is None
+
+
 def test_a_raw_vision_prompt_decodes_on_its_own_even_when_zoo_could_batch_it(monkeypatch):
     from core.inference import mlx_inference
 

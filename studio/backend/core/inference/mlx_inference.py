@@ -3289,6 +3289,71 @@ def _raw_prompt_constraint(grammar, tokenizer):
     return GrammarConstraint(grammar, tokenizer, strips_special_tokens = True)
 
 
+class LogprobsUnsupported(ValueError):
+    """``n_probs`` asked of a model that does not sample one token per step."""
+
+    public = True
+    openai_param = "logprobs"
+
+
+def _make_mlx_raw_logprob_recorder():
+    """A first logits processor queueing each step's log-softmax of the model's own logits, and
+    the queue. llama-server reports ``n_probs`` from the logits before any sampler, so a token
+    forced by ``logit_bias`` keeps its real logprob; mlx_lm and mlx_vlm compute theirs after the
+    processors. Neither runtime calls processors during prefill, so entry i is generated token i."""
+    from collections import deque
+
+    import mlx.core as mx
+
+    recorded = deque()
+
+    def _processor(tokens, logits):
+        raw = logits.astype(mx.float32)
+        recorded.append(raw - mx.logsumexp(raw, axis = -1, keepdims = True))
+        return logits
+
+    return _processor, recorded
+
+
+def _token_bytes_text(tokenizer, token_id):
+    kw = dict(skip_special_tokens = False, clean_up_tokenization_spaces = False)
+    # SentencePiece decoders strip a sequence's leading space, so "▁the" alone decodes to
+    # "the"; after a copy of itself it keeps the " the" llama-server reports.
+    alone = tokenizer.decode([token_id], **kw)
+    twice = tokenizer.decode([token_id, token_id], **kw)
+    text = twice[len(alone) :] if twice.startswith(alone) else alone
+    return text, list(text.encode("utf-8"))
+
+
+def _mlx_token_logprob(raw, token_id, n_probs, tokenizer) -> dict:
+    """One llama-server ``logprobs.content`` entry: the sampled token's logprob and the
+    ``n_probs`` most likely tokens, all read from the unprocessed logits."""
+    import mlx.core as mx
+
+    raw = raw.reshape(-1)
+    n = min(int(n_probs), raw.shape[0])
+    top = mx.argpartition(-raw, kth = n - 1)[:n]
+    values = raw[top]
+    order = mx.argsort(-values)
+    # llama-server writes the lowest float for -inf, which JSON cannot carry.
+    floor = -3.4028234663852886e38
+    entry_ids, entry_values = top[order].tolist(), values[order].tolist()
+    text, data = _token_bytes_text(tokenizer, int(token_id))
+    top_logprobs = []
+    for tid, value in zip(entry_ids, entry_values):
+        tid_text, tid_bytes = _token_bytes_text(tokenizer, int(tid))
+        top_logprobs.append(
+            {"id": int(tid), "token": tid_text, "bytes": tid_bytes, "logprob": max(value, floor)}
+        )
+    return {
+        "id": int(token_id),
+        "token": text,
+        "bytes": data,
+        "logprob": max(raw[int(token_id)].item(), floor),
+        "top_logprobs": top_logprobs,
+    }
+
+
 def _with_prompt_history(processor, prompt, window):
     """*processor* also scoring the prompt tokens the runtime withholds: mlx_lm and mlx_vlm hand
     processors only what is left of the prompt after prefill and prompt-cache reuse."""
@@ -3577,6 +3642,8 @@ def _request_batch_gap(request):
         return "a reply runs the tool protocol"
     if request.get("response_format") is not None or request.get("grammar") is not None:
         return "a reply is constrained to a response format"
+    if request.get("n_probs"):
+        return "a reply reports token probabilities"
     return None
 
 
@@ -5613,9 +5680,11 @@ class MLXInferenceBackend:
         stop = None,
         penalty_window = None,
         grammar = None,
+        n_probs = 0,
     ) -> Generator[str, None, None]:
         """Cumulative text sampled after ``prompt_ids`` with no chat template.
-        ``penalty_window`` is llama-server's ``repeat_last_n``."""
+        ``penalty_window`` is llama-server's ``repeat_last_n``; ``n_probs`` > 0 adds each
+        token's ``logprobs.content`` entry to the stats as ``token_logprobs``."""
         if self._model is None:
             raise RuntimeError("No model loaded")
         self.last_generation_stats = None
@@ -5629,6 +5698,8 @@ class MLXInferenceBackend:
             penalty_window = penalty_window,
             grammar = grammar,
         )
+        if n_probs:
+            sampling["n_probs"] = int(n_probs)
         args = (temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty, cancel_event)
         if self._is_vlm:
             yield from self._generate_vlm(None, None, *args, **sampling)
@@ -5668,6 +5739,7 @@ class MLXInferenceBackend:
         prompt_ids = None,
         penalty_window = None,
         grammar = None,
+        n_probs = 0,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
@@ -5744,6 +5816,11 @@ class MLXInferenceBackend:
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
         )
+        recorded = token_logprobs = None
+        if n_probs:
+            recorder, recorded = _make_mlx_raw_logprob_recorder()
+            logits_processors = [recorder, *(logits_processors or ())]
+            token_logprobs = []
 
         native_token_decoder = (
             NativeToolTokenDecoder(
@@ -5840,6 +5917,12 @@ class MLXInferenceBackend:
                 ):
                     final_response = response
                     token_ids.append(response.token)
+                    if recorded:
+                        token_logprobs.append(
+                            _mlx_token_logprob(
+                                recorded.popleft(), response.token, n_probs, self._tokenizer
+                            )
+                        )
                     if preserve_native_channels:
                         sampled += streamed_text.feed(response)
                         if sequences:
@@ -5929,6 +6012,8 @@ class MLXInferenceBackend:
                             max_new_tokens,
                         ),
                     )
+                    if token_logprobs is not None:
+                        self.last_generation_stats["token_logprobs"] = token_logprobs
         # The turn's settled text: delivered once for the plain path, as the tail for the native-channel one. Every
         # snapshot was matched as it arrived, so a turn no sequence ended owes all of its text, held-back partial
         # included.
@@ -6391,6 +6476,7 @@ class MLXInferenceBackend:
         prompt_ids = None,
         penalty_window = None,
         grammar = None,
+        n_probs = 0,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -6505,6 +6591,15 @@ class MLXInferenceBackend:
                 "constrain the next token. Load an autoregressive model to use "
                 "guided decoding."
             )
+        recorded = token_logprobs = None
+        if n_probs:
+            if _vlm_generation_is_diffusion(self._model):
+                raise LogprobsUnsupported(
+                    "logprobs is not supported on this model: it generates by diffusion rather "
+                    "than one token at a time."
+                )
+            recorder, recorded = _make_mlx_raw_logprob_recorder()
+            token_logprobs = []
         draft = self._speculative_draft
         if (
             presence_penalty
@@ -6513,6 +6608,7 @@ class MLXInferenceBackend:
             or constraint is not None
             or (_rep_active and draft is not None)
             or penalty_window is not None
+            or recorded is not None
         ):
             # These need custom processors: pass the full list (repetition + the rest) instead of the
             # repetition_penalty shortcut so all apply.
@@ -6525,6 +6621,12 @@ class MLXInferenceBackend:
                 penalty_window = penalty_window,
                 penalty_prompt = prompt_ids,
             )
+            if recorded is not None:
+                # Not history_only, so no draft runs: its verify pass would record rejected tokens.
+                vlm_kwargs["logits_processors"] = [
+                    recorder,
+                    *(vlm_kwargs["logits_processors"] or ()),
+                ]
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
@@ -6678,6 +6780,15 @@ class MLXInferenceBackend:
                             ):
                                 # The streaming detokenizer trims the first leading space; decode the ids.
                                 raw_ids.append(int(raw_id))
+                                if recorded:
+                                    token_logprobs.append(
+                                        _mlx_token_logprob(
+                                            recorded.popleft(),
+                                            int(raw_id),
+                                            n_probs,
+                                            self._tokenizer,
+                                        )
+                                    )
                                 decoded = self._tokenizer.decode(
                                     raw_ids,
                                     skip_special_tokens = True,
@@ -6769,6 +6880,8 @@ class MLXInferenceBackend:
                             if draft is None
                             else (draft.draft_n, draft.draft_n_accepted),
                         )
+                        if token_logprobs is not None:
+                            self.last_generation_stats["token_logprobs"] = token_logprobs
 
         if document_only or prompt_ids is not None:
             # The normalizer would rewrite marker text inside the document.
