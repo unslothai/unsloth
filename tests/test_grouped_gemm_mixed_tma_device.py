@@ -267,3 +267,21 @@ def test_autotune_cache_reads_the_per_card_tuners_config():
         isinstance(n.value, ast.Call) and getattr(n.value.func, "id", None) == "_autotuner_for"
         for n in reads
     )
+
+
+def test_benchmark_postprocesses_the_per_card_tuner():
+    # postprocess_autotune_results reads .cache; on several GPUs only the per-card copy has it.
+    import ast
+
+    tree = ast.parse((GG_DIR.parent / "benchmark" / "utils.py").read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "get_autotuner")
+    kernels = [
+        n for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id.startswith("_autotuned_grouped_gemm_")
+    ]
+    wrapped = {
+        id(a)
+        for c in ast.walk(fn)
+        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "_autotuner_for"
+        for a in c.args[:1]
+    }
+    assert kernels and all(id(n) in wrapped for n in kernels)
