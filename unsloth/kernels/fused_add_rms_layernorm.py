@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Inference only residual add + RMSNorm in one launch, rounding as `X += residual` followed by
-# fast_rms_layernorm_inference: fp32 add rounded to X's dtype, fp32 variance + eps, rsqrt,
-# round to X's dtype, then the weight multiply rounded to X's dtype.
+# Decode residual add + RMSNorm in one launch, rounding exactly as `X += residual` + fast_rms_layernorm_inference.
 
 import os
 import torch
@@ -55,8 +53,7 @@ def _add_rms_layernorm_inference(
 
 
 def _rows(X):
-    # (rows, n_cols) view with unit column stride, else None. The decode MLP output for
-    # batch > 1 is a strided slice of a wider buffer.
+    # Unit-stride (rows, n_cols) view or None: the batch > 1 decode MLP output is a strided slice.
     if X.stride(-1) != 1:
         return None
     try:

@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Fused residual add + RMSNorm (decode) against the unfused torch path it replaces.
-
 import pytest
 import torch
 
@@ -17,7 +15,6 @@ class _Norm(torch.nn.Module):
 
 
 def _ulps(a, b):
-    # Distance in units of the last place for same-sign floats of a's dtype.
     bits = {torch.float16: torch.int16, torch.bfloat16: torch.int16, torch.float32: torch.int32}
     a_i = a.view(bits[a.dtype]).to(torch.int64)
     b_i = b.view(bits[b.dtype]).to(torch.int64)
@@ -69,7 +66,6 @@ def test_decode_step_matches_unfused(dtype, hidden, rows, add):
     assert _ulps(out_new, out_old) <= 2
     assert (out_new != out_old).float().mean().item() < 0.01
 
-    # Unit weight: the normed row itself, within 1 ulp.
     ones = torch.ones_like(W)
     unit_old = fast_rms_layernorm_inference(_Norm(ones, 1e-5), residual_old.to(dtype))
     unit_new = fast_add_rms_layernorm_inference(
