@@ -27,8 +27,8 @@ FONTSIZE_STYLE_ALLOWLIST = {
 # Sizes a container query's em breakpoint, not text (--ui-space-scale derives
 # from --ui-font-scale); children reset to the 1rem they would inherit.
 CSS_FONTSIZE_LAYOUT_RULES = {
-    (".browser-panel", "font-size: calc(1rem * var(--ui-space-scale, 1));"),
-    (".browser-panel > *", "font-size: 1rem;"),
+    (".browser-panel-body", "font-size: calc(1rem * var(--ui-space-scale, 1));"),
+    (".browser-panel-body > *", "font-size: 1rem;"),
 }
 
 
