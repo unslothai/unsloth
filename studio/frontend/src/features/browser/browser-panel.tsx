@@ -2469,8 +2469,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
       )}
     >
       <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
-      {/* The query container sits below the tab strip: WebKit before Safari 18.5 gives container-type layout
-          containment, a stacking context that would put the strip under the macOS titlebar's drag strip. */}
+      {/* Not on the section: before Safari 18.5 container-type makes a stacking context, sinking the strip under the macOS drag strip. */}
       <div className="browser-panel-body @container/browser relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
         <div
           className={cn(
