@@ -8416,16 +8416,9 @@ def _gc_keep_layers_env():
 
 
 class _AutoCheckpointSkip:
-    """checkpoint_skip_layers = "auto": after the first training step, keep as many decoder layers
-    un-checkpointed as that step's memory leaves room for, then never change the choice again.
-
-    One layer's cost is measured, not estimated: the allocation its reentrant checkpoint recompute
-    leaves behind (saved activations plus output) in the first backward, scaled to max_seq_length
-    when the first batch was shorter. The next training forward plans: the first step's activation
-    peak on top of what is allocated now, AdamW state for every trainable parameter (it may not exist
-    yet under gradient accumulation) against the card's free memory, and only 3/4 of what is left
-    minus 1 GiB is spent on layers.
-    Single process only: under torchrun each rank would choose its own K."""
+    """checkpoint_skip_layers = "auto": once, after step 1, un-checkpoint as many layers as fit.
+    Per-layer cost = allocation left by its reentrant recompute in the first backward; AdamW state is
+    counted even if not yet allocated. Single process only: under torchrun each rank would pick its own K."""
 
     MARGIN = 1 << 30
     FRACTION = 0.75
@@ -8435,7 +8428,7 @@ class _AutoCheckpointSkip:
         self.layers = layers
         self.probe = probe
         self.handles = []
-        self.started = None  # (allocated, max_allocated) at the first training forward
+        self.started = None
         self.no_grad_forward = False
         self.before = None
         self.layer_bytes = None
@@ -8515,7 +8508,6 @@ class _AutoCheckpointSkip:
             self.no_grad_forward = True
             return
         if not self.no_grad_forward:
-            # A grad-mode forward first: not reentrant checkpointing, nothing to measure.
             print('Unsloth: checkpoint_skip_layers = "auto" needs reentrant gradient checkpointing; unchanged.')
             self.remove()
             return
@@ -8540,7 +8532,6 @@ class _AutoCheckpointSkip:
         scale = max(1.0, max_seq / max(1, self.layer_rows)) if max_seq else 1.0
         activation_peak = max(0, peak - allocated_start) * scale
         optimizer = sum(p.numel() * 8 for p in self.model.parameters() if p.requires_grad)
-        # Free card memory (other processes included) plus this process's unused cached blocks.
         headroom = usable_cuda_bytes(device) - activation_peak - optimizer
         budget = headroom * self.FRACTION - self.MARGIN
         per_layer = self.layer_bytes * scale
@@ -8567,9 +8558,8 @@ class _AutoCheckpointSkip:
 def skip_checkpointing(model, layers = 0):
     """get_peft_model(checkpoint_skip_layers = K | "max"): K decoder layers (evenly spaced; "max" =
     all) keep their activations instead of recomputing them in backward. Faster, at the cost of
-    each layer's activations on the card. Block-swapped layers keep checkpointing.
-    "auto" (or UNSLOTH_GC_KEEP_LAYERS = K | max | auto when the argument is 0) picks K after the
-    first training step from that step's measured memory, see _AutoCheckpointSkip."""
+    each layer's activations on the card. Block-swapped layers keep checkpointing. "auto" (or
+    UNSLOTH_GC_KEEP_LAYERS when 0): _AutoCheckpointSkip."""
     if not layers:
         layers = _gc_keep_layers_env()
     if not layers:

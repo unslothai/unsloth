@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""checkpoint_skip_layers = "auto" / UNSLOTH_GC_KEEP_LAYERS, extracted from _utils.py with ast.
-
-CPU: the switch-off and env parsing. CUDA: a tiny random fp32 Qwen3 under reentrant checkpointing measures one
-layer in the first backward, plans at the next forward, and keeps gradients identical to full checkpointing."""
+"""checkpoint_skip_layers = "auto" / UNSLOTH_GC_KEEP_LAYERS, extracted from _utils.py with ast."""
 
 import ast, logging, os
 import pytest
@@ -102,7 +99,6 @@ def test_auto_plans_after_first_step_and_keeps_gradients():
     assert ns["skip_checkpointing"](model, "auto") == []
     planner = model._unsloth_auto_skip
     first = _step(model, ids)
-    # Step 1 stays fully checkpointed and measures one layer's recompute.
     assert _checkpointed(model) == [True] * 6
     assert planner.layer_bytes and planner.layer_bytes > 0
     second = _step(model, ids)
