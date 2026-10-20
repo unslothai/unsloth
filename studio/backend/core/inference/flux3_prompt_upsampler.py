@@ -907,7 +907,11 @@ def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
     except OSError:
         key = (binary, None)
     hit = _vulkan_rows_memo.get(key)
-    if hit is not None and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S and (hit[0] or not retry_empty):
+    if (
+        hit is not None
+        and time.monotonic() - hit[1] < _VULKAN_ROWS_TTL_S
+        and (hit[0] or not retry_empty)
+    ):
         return hit[0]
     rows = list(LlamaCppBackend._run_vulkan_probe(binary) or [])
     _vulkan_rows_memo.clear()
@@ -917,20 +921,26 @@ def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
 
 def _user_device_pick() -> bool:
     """LLAMA_ARG_DEVICE or a Vulkan mask: the user's own device choice, which the memory probe never read."""
-    return any(str(os.environ.get(var, "")).strip() for var in ("LLAMA_ARG_DEVICE", "GGML_VK_VISIBLE_DEVICES"))
+    return any(
+        str(os.environ.get(var, "")).strip()
+        for var in ("LLAMA_ARG_DEVICE", "GGML_VK_VISIBLE_DEVICES")
+    )
 
 
 def _prefetch_vulkan_rows(binary: str) -> None:
     try:
         from core.inference.llama_cpp import LlamaCppBackend
-
         if not _user_device_pick() and LlamaCppBackend._is_vulkan_backend(binary):
             _vulkan_rows(binary)
     except Exception:  # noqa: BLE001
         pass
 
 
-def _vulkan_device_args(binary: str, ordinal: Optional[int], retry_empty: bool = False) -> Optional[list]:
+def _vulkan_device_args(
+    binary: str,
+    ordinal: Optional[int],
+    retry_empty: bool = False,
+) -> Optional[list]:
     """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] if not pinned this way,
     None if the card's Vulkan device is unknown."""
     if ordinal is None:

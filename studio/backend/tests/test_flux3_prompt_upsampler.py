@@ -2081,7 +2081,9 @@ def test_the_launch_reprobes_a_cached_empty_vulkan_answer(monkeypatch):
     assert pup._vulkan_rows("/x/llama-server", retry_empty = True) == _VULKAN_ROWS
 
 
-@pytest.mark.parametrize("var, value", [("LLAMA_ARG_DEVICE", "CUDA1"), ("GGML_VK_VISIBLE_DEVICES", "1")])
+@pytest.mark.parametrize(
+    "var, value", [("LLAMA_ARG_DEVICE", "CUDA1"), ("GGML_VK_VISIBLE_DEVICES", "1")]
+)
 @pytest.mark.parametrize("count, expected", [(2, "placement"), (1, "started")])
 def test_a_user_device_pick_declines_the_warm_start_beside_other_cards(
     warmable, monkeypatch, var, value, count, expected
@@ -2099,11 +2101,15 @@ def test_a_user_device_pick_declines_the_warm_start_beside_other_cards(
 
 
 @pytest.mark.parametrize("count, expected", [(2, None), (1, [])])
-def test_an_external_backend_path_is_unknown_placement_beside_other_cards(monkeypatch, count, expected):
+def test_an_external_backend_path_is_unknown_placement_beside_other_cards(
+    monkeypatch, count, expected
+):
     import torch
     from core.inference import llama_cpp
 
-    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: False))
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: False)
+    )
     monkeypatch.setattr(torch.cuda, "device_count", lambda: count)
     monkeypatch.setenv("GGML_BACKEND_PATH", "/opt/ggml/libggml-vulkan.so")
     assert pup._vulkan_device_args("b", 0) == expected
@@ -2119,8 +2125,12 @@ def test_the_vulkan_probe_runs_before_the_render_slot(warmable, monkeypatch):
     order = []
     take = pup._take_render_slot
     monkeypatch.setattr(pup, "_take_render_slot", lambda: order.append("slot") or take())
-    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True))
-    monkeypatch.setattr(pup, "_vulkan_rows", lambda b, retry_empty = False: order.append("probe") or [])
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
+    )
+    monkeypatch.setattr(
+        pup, "_vulkan_rows", lambda b, retry_empty = False: order.append("probe") or []
+    )
     sidecar.warm(binary = "b", model = model, mmproj = None)
     assert order[:2] == ["probe", "slot"]
     sidecar._cancel_idle_locked()
