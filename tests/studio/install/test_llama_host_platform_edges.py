@@ -87,8 +87,6 @@ def _single_name(names, host, monkeypatch):
     return ILP.resolve_upstream_asset_choice(host, TAG).name
 
 
-
-
 @pytest.mark.parametrize(
     "names, direct, single",
     [
@@ -150,7 +148,6 @@ def test_windows_non_rocm_hosts_unchanged(flags, expected, monkeypatch):
     names = [ROCM, HIP_RADEON, VULKAN, CPU]
     assert _direct_names(names, host) == expected
     assert _single_name(names, host, monkeypatch) == expected[0]
-
 
 
 MAC_ARM = f"llama-{TAG}-bin-macos-arm64.tar.gz"
@@ -219,8 +216,6 @@ def test_sysctl_is_not_run_off_macos(monkeypatch):
     monkeypatch.setattr(ILP.platform, "system", lambda: "Linux")
     assert ILP.platform_only_host().machine == "x86_64"
     assert calls == []
-
-
 
 
 def _fake_tegra(
