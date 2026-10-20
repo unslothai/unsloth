@@ -16,6 +16,8 @@ lazily.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import os
 import sys
@@ -1670,37 +1672,109 @@ def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
 
 
 # Opt-in escape hatch for the unified-memory refusal below: the shortfall check is an estimate, so an operator who
-# believes it is wrong can still attempt the load.
+# believes it is wrong can still attempt the load. Desktop / API callers send ``allow_oversized_load`` per load instead.
 UNIFIED_OVERSIZE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD"
+UNIFIED_OVERSIZE_REQUEST_FIELD = "allow_oversized_load"
+# Must match the Settings switch label and location in frontend unified-memory-load-refusal.ts.
+UNIFIED_OVERSIZE_SETTING_LABEL = "Allow oversized model loads"
+UNIFIED_OVERSIZE_SETTING_LOCATION = "Settings > System > Model memory"
+UNIFIED_OVERSIZE_REFUSAL_CODE = "unified-memory-load"
+
+# Unlike the env var, the per-load flag does NOT lift the MPS allocator cap: that cap is process-wide and set once,
+# and keeping it turns an over-commit into an MPS OOM rather than the OS killing the process.
+_UNIFIED_OVERSIZE_REQUESTED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "unsloth_diffusion_allow_oversized_load", default = False
+)
 
 
-def _unified_oversize_override() -> bool:
+class UnifiedMemoryShortfallError(RuntimeError):
+    """A RuntimeError so existing handlers still catch it."""
+
+    code = UNIFIED_OVERSIZE_REFUSAL_CODE
+
+
+def unified_memory_refusal_code(exc: Optional[BaseException]) -> Optional[str]:
+    """``UNIFIED_OVERSIZE_REFUSAL_CODE`` when ``exc`` is, or was raised from, the unified-memory refusal."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, UnifiedMemoryShortfallError):
+            return UNIFIED_OVERSIZE_REFUSAL_CODE
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+@contextlib.contextmanager
+def unified_oversize_requested(allowed: Any):
+    """Per-load ``UNIFIED_OVERSIZE_ENV``; a ContextVar so concurrent loads / plans on other threads are unaffected."""
+    token = _UNIFIED_OVERSIZE_REQUESTED.set(bool(allowed))
+    try:
+        yield
+    finally:
+        _UNIFIED_OVERSIZE_REQUESTED.reset(token)
+
+
+def unified_oversize_scoped(allowed: Any, fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def _scoped(*args: Any, **kwargs: Any) -> Any:
+        with unified_oversize_requested(allowed):
+            return fn(*args, **kwargs)
+
+    return _scoped
+
+
+def scoped_allow_oversized_load(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Kwarg is read, not popped, so ``fn`` keeps it in its signature; nested calls keep an outer True."""
+
+    @functools.wraps(fn)
+    def _wrapper(*args: Any, **kwargs: Any) -> Any:
+        allowed = (
+            bool(kwargs.get(UNIFIED_OVERSIZE_REQUEST_FIELD)) or _UNIFIED_OVERSIZE_REQUESTED.get()
+        )
+        with unified_oversize_requested(allowed):
+            return fn(*args, **kwargs)
+
+    return _wrapper
+
+
+def _unified_oversize_env() -> bool:
     return os.environ.get(UNIFIED_OVERSIZE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None) -> Optional[str]:
-    """On UNIFIED device memory, a user-facing refusal when the WEIGHTS alone cannot fit the safe
-    budget (else None).
+def _unified_oversize_override() -> bool:
+    return _UNIFIED_OVERSIZE_REQUESTED.get() or _unified_oversize_env()
 
-    Unified memory is the one placement with no fallback left. On discrete VRAM an oversized model
-    still loads, degrading to group / whole-module CPU offload and streaming from host RAM. On Apple
-    Silicon (and integrated CUDA) the CPU and GPU share one pool, so offload moves bytes within that
-    pool and frees nothing: ``plan_diffusion_memory`` correctly returns ``none`` and the load then
-    allocates past physical memory. ``apply_mps_memory_cap`` bounds MPS allocations just below RAM,
-    but that only turns the overrun into a late OOM after minutes of loading (and integrated CUDA has
-    no such cap), so refusing up front is still the better failure.
 
-    Weights only (``model_dense_mib`` plus the flat base overhead): the per-call runtime headroom is
-    a coarse activation / VAE-decode estimate and the mps path already turns on VAE tiling and
-    slicing, so counting it would refuse marginal loads that would in fact complete. The weights are
-    unavoidable resident bytes, and if they alone do not fit then nothing at generation time can
-    rescue the load. Same reasoning as the llama.cpp APU guard.
+def _unified_oversize_source() -> str:
+    if _UNIFIED_OVERSIZE_REQUESTED.get():
+        return UNIFIED_OVERSIZE_REQUEST_FIELD
+    return f"{UNIFIED_OVERSIZE_ENV}=1"
 
-    Fail-open on anything unknown (no budget, no size), matching the planner's own "budget or model
-    size unknown; staying resident".
-    """
-    if _unified_oversize_override():
-        return None
+
+def unified_capacity_memory(memory: DeviceMemory) -> DeviceMemory:
+    """``memory`` at CAPACITY (free = total), so the verdict does not depend on what is loaded right now.
+
+    On mps the snapshot picks the RAM or working-set view from the CURRENT free reading; re-read RAM here so the
+    same pick is not judged against the smaller working set just because something is resident."""
+    capacity = replace(memory, free_mib = memory.total_mib)
+    if getattr(memory, "device", None) != "mps" or memory.metal_working_set_mib is None:
+        return capacity
+    try:
+        total, _free = _system_memory_mib()
+    except Exception:  # noqa: BLE001 - no RAM reading: keep the working-set view
+        return capacity
+    if total is None:
+        return capacity
+    ram = DeviceMemory(memory.backend, memory.device, "unified_memory", int(total), int(total))
+    ram_budget = _safe_device_budget_mib(ram)
+    capacity_budget = _safe_device_budget_mib(capacity)
+    if ram_budget is not None and (capacity_budget is None or ram_budget > capacity_budget):
+        return ram
+    return capacity
+
+
+def _unified_memory_shortfall_text(plan: Any, family: Optional[str]) -> Optional[str]:
+    """Ignores the overrides."""
     try:
         memory = plan.device_memory
         # ``system_memory`` (plain CPU) is deliberately excluded: it is an opt-in fringe path, it has swap, and it is
@@ -1741,6 +1815,14 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
             "the main model will not fit either. Use a smaller model, or free memory by closing "
             "other applications."
         )
+    elif companions and int(companions) < int(weights) and int(budget) - floor >= 1024:
+        room = int(budget) - floor
+        advice = (
+            f"Its text encoders and VAE need about {floor / 1024:.0f} GB, which leaves room for a "
+            f"main model of up to about {room / 1024:.0f} GB: use a lower GGUF quant (or another "
+            "quantized build) of this model at or below that size, or free memory by closing "
+            "other applications."
+        )
     else:
         advice = (
             "Use a smaller or more quantized model (for example a lower GGUF quant), or free memory "
@@ -1753,10 +1835,40 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
         f"about {int(budget) / 1024:.{digits}f} GB is usable on this device ({free_note}). This device "
         "has unified memory, so the CPU and GPU share one pool: offloading weights to the CPU "
         "frees nothing, and the operating system stops an oversized load outright instead of "
-        f"reporting an out-of-memory error. {advice} (Server "
-        f"installs that know this estimate is wrong can set {UNIFIED_OVERSIZE_ENV}=1 to attempt "
-        "the load anyway.)"
+        f"reporting an out-of-memory error. {advice} The size is an estimate. To try anyway, "
+        f"choose Load anyway, or turn on '{UNIFIED_OVERSIZE_SETTING_LABEL}' in "
+        f"{UNIFIED_OVERSIZE_SETTING_LOCATION} (API callers can send {UNIFIED_OVERSIZE_REQUEST_FIELD}; "
+        f"server installs can set {UNIFIED_OVERSIZE_ENV}=1). An oversized load can exhaust memory, "
+        "swap heavily, stop Studio or make the computer unresponsive."
     )
+
+
+def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None) -> Optional[str]:
+    """On UNIFIED device memory, a user-facing refusal when the WEIGHTS alone cannot fit the safe
+    budget (else None).
+
+    Unified memory is the one placement with no fallback left. On discrete VRAM an oversized model
+    still loads, degrading to group / whole-module CPU offload and streaming from host RAM. On Apple
+    Silicon (and integrated CUDA) the CPU and GPU share one pool, so offload moves bytes within that
+    pool and frees nothing: ``plan_diffusion_memory`` correctly returns ``none`` and the load then
+    allocates past physical memory. ``apply_mps_memory_cap`` bounds MPS allocations just below RAM,
+    but that only turns the overrun into a late OOM after minutes of loading (and integrated CUDA has
+    no such cap), so refusing up front is still the better failure.
+
+    Weights only (``model_dense_mib`` plus the flat base overhead): the per-call runtime headroom is
+    a coarse activation / VAE-decode estimate and the mps path already turns on VAE tiling and
+    slicing, so counting it would refuse marginal loads that would in fact complete. The weights are
+    unavoidable resident bytes, and if they alone do not fit then nothing at generation time can
+    rescue the load. Same reasoning as the llama.cpp APU guard.
+
+    None under the env var or a per-load ``allow_oversized_load``, as the loaders' speculative probes also see.
+
+    Fail-open on anything unknown (no budget, no size), matching the planner's own "budget or model
+    size unknown; staying resident".
+    """
+    if _unified_oversize_override():
+        return None
+    return _unified_memory_shortfall_text(plan, family)
 
 
 def raise_on_unified_memory_shortfall(
@@ -1773,13 +1885,22 @@ def raise_on_unified_memory_shortfall(
     both re-plan against a settled snapshot), and a planner that raised would turn those probes
     into load failures instead of letting a smaller candidate win. Call this once, on the plan
     the loader has committed to, after the previous pipeline has been evicted so the free
-    reading is the memory the load actually gets."""
-    message = unified_memory_shortfall_message(plan, family = family)
+    reading is the memory the load actually gets. Under an override the
+    load proceeds with a warning."""
+    message = _unified_memory_shortfall_text(plan, family)
     if message is None:
+        return
+    if _unified_oversize_override():
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: loading past the unified-memory estimate (%s): %s",
+                _unified_oversize_source(),
+                message,
+            )
         return
     if logger is not None:
         logger.error("diffusion.memory: refusing oversized unified-memory load: %s", message)
-    raise RuntimeError(message)
+    raise UnifiedMemoryShortfallError(message)
 
 
 def _sum_required(*values: Optional[int]) -> Optional[int]:

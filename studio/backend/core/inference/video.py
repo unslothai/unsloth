@@ -136,6 +136,8 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_keeps_transformer_resident,
     raise_on_unified_memory_shortfall,
+    scoped_allow_oversized_load,
+    unified_memory_refusal_code,
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
@@ -1472,6 +1474,7 @@ class _VideoLoadingState:
     base_repo: str
     expected_bytes: Optional[int] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
     # Companion repos this load is ALSO pulling from, beyond repo_id / base_repo (the native H3 GGUF and component
     # repos). Mirrors the image backend's _SdLoading.asset_repos.
     asset_repos: tuple[str, ...] = ()
@@ -4283,6 +4286,7 @@ class VideoBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
+        allow_oversized_load: bool = False,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
@@ -4406,6 +4410,7 @@ class VideoBackend:
                 model_kind = model_kind,
                 h3_task = h3_task,
                 gpu_ordinal = gpu_ordinal,
+                allow_oversized_load = bool(allow_oversized_load),
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
@@ -4414,6 +4419,7 @@ class VideoBackend:
         ).start()
         return self.status()
 
+    @scoped_allow_oversized_load
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
     @scoped_local_files_only
@@ -4906,6 +4912,7 @@ class VideoBackend:
             with self._lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = modelscope_missing(exc) or redact_native_paths(str(exc))
+                    self._loading.error_code = unified_memory_refusal_code(exc)
 
     def _run_load_h3_native(
         self,
@@ -7641,7 +7648,7 @@ class VideoBackend:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
         loading = self._loading
         if loading is not None and loading.error:
-            return _progress("error", error = loading.error)
+            return _progress("error", error = loading.error, error_code = loading.error_code)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
         # The load's own plan, settled once at estimate time by the worker that owns this state: the repo + revision
@@ -7721,6 +7728,7 @@ class VideoBackend:
             raise RuntimeError("Video load was cancelled or superseded.")
 
     @_invalidates_gpu_memory("video load")
+    @scoped_allow_oversized_load
     @rocm_probe_load_scoped
     @scoped_local_files_only
     def load_pipeline(
@@ -7743,6 +7751,8 @@ class VideoBackend:
         model_kind: Optional[str] = None,
         h3_task: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        # Read by ``scoped_allow_oversized_load``.
+        allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         _base_fetch_repo: Optional[str] = None,
