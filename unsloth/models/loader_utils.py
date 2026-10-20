@@ -3694,11 +3694,32 @@ def quantization_config_selects_bnb_4bit(quantization_config):
     return bool(get("load_in_4bit", False)) and not bool(get("load_in_8bit", False))
 
 
-def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit):
-    """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb state (after get_model_name remap + check_and_disable). The per-load env is built from the pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss."""
+def gpt_oss_checkpoint_has_fused_experts(config):
+    """True when a gpt-oss config describes an unquantized checkpoint (BF16 / F16 / F32), whose experts are fused `experts.gate_up_proj` / `down_proj` Parameters. unsloth_zoo's bnb 4-bit gpt-oss classes expect the per-expert split layout of a bnb pre-quantized checkpoint (`gate_up_projs.<i>`, `router.linear`), so loading a fused checkpoint through them leaves every expert and router randomly initialised. None when the config is unknown."""
+    if config is None:
+        return None
+    quantization_config = getattr(config, "quantization_config", None)
+    if not quantization_config:
+        return True
+    return False
+
+
+def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit, config = None):
+    """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb state (after get_model_name remap + check_and_disable). The per-load env is built from the pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss. For gpt-oss `_load_in_4bit_` selects the bnb split-expert classes, so it is kept off for a fused unquantized checkpoint (`config`), which then takes the fused-layout 4-bit path."""
     name = os.environ.get("UNSLOTH_MODEL_NAME", "")
     if "gpt_oss" not in name.replace("-", "_"):
         return
+    if load_in_4bit and gpt_oss_checkpoint_has_fused_experts(config):
+        if os.environ.get("UNSLOTH_GPT_OSS_BNB4BIT_PATCHED", "0") == "1":
+            # The bnb split classes were installed before the base config was known (adapter-only repo).
+            raise RuntimeError(
+                "Unsloth: this gpt-oss checkpoint is not quantized (fused experts), but the 4-bit gpt-oss "
+                "classes for pre-quantized checkpoints were already installed, so its experts and router "
+                "would load randomly initialised. Load the base model directly, use "
+                "`load_in_4bit = False`, or use a pre-quantized checkpoint such as "
+                "unsloth/gpt-oss-20b-unsloth-bnb-4bit."
+            )
+        load_in_4bit = False
     for flag, present in (
         ("_load_in_4bit_", bool(load_in_4bit)),
         ("_load_in_8bit_", bool(load_in_8bit)),

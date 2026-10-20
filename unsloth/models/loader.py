@@ -54,6 +54,7 @@ from .loader_utils import (
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
     get_model_name,
+    gpt_oss_checkpoint_has_fused_experts,
     _prefer_legacy_lowercase_cache,
     is_distributed,
     is_automatic_device_map,
@@ -2529,8 +2530,18 @@ class FastModel(FastBaseModel):
         except Exception:
             _bnb_compatible_quant = True
         string = model_types_all
-        if load_in_4bit and _bnb_compatible_quant:
+        # gpt-oss: `_load_in_4bit_` installs zoo's bnb split-expert classes, which only match a pre-quantized checkpoint; a fused BF16 one would load random experts and router.
+        _gpt_oss_fused = "gpt_oss" in model_types_all and bool(
+            gpt_oss_checkpoint_has_fused_experts(model_config)
+        )
+        if load_in_4bit and _bnb_compatible_quant and not _gpt_oss_fused:
             string += "_load_in_4bit_"
+        elif load_in_4bit and _bnb_compatible_quant:
+            print(
+                "Unsloth: this gpt-oss checkpoint is not pre-quantized, so it loads with its own "
+                "fused expert layout. A pre-quantized checkpoint such as "
+                "unsloth/gpt-oss-20b-unsloth-bnb-4bit loads faster and uses less memory."
+            )
         if load_in_8bit and _bnb_compatible_quant:
             string += "_load_in_8bit_"
         if load_in_16bit:
