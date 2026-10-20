@@ -943,7 +943,10 @@ def _one_group_per_type(data: bytes, logger: Any) -> bytes:
             _serialize_single_cache,
         )
         from torch.utils._appending_byte_serializer import AppendingByteSerializer  # noqa: PLC0415
-
+    except ImportError:
+        # torch 2.7 writes one flat artifact list and loads it without dict(), so there is nothing to merge
+        return data
+    try:
         CacheArtifactManager._ensure_cache_artifacts_registered()
         groups = AppendingByteSerializer.to_list(data, deserialize_fn = _deserialize_single_cache)
         # Dedupe on (key, content) only: Inductor / AOT entries sharing a key are distinct guarded candidates
