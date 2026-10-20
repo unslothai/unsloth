@@ -888,6 +888,9 @@ def _child_device_mask(ordinal: Optional[int]) -> dict:
             return {var: str(ordinal)}
         # Torch indexes inside the parent's mask, so the child keeps that entry (an index or a UUID).
         entries = [entry.strip() for entry in parent.split(",") if entry.strip()]
+        if var == "HIP_VISIBLE_DEVICES":
+            # clr keeps the first of a repeated HIP entry (utils/hardware/amd.py), so 0,0,1 exposes two devices.
+            entries = list(dict.fromkeys(entries))
         return {var: entries[ordinal]} if 0 <= ordinal < len(entries) else {}
     except Exception:  # noqa: BLE001 -- no mask: llama.cpp's own device choice
         return {}
@@ -919,12 +922,21 @@ def _vulkan_rows(binary: str, retry_empty: bool = False) -> list:
     return rows
 
 
-def _user_device_pick() -> bool:
-    """LLAMA_ARG_DEVICE or a Vulkan mask: the user's own device choice, which the memory probe never read."""
-    return any(
-        str(os.environ.get(var, "")).strip()
-        for var in ("LLAMA_ARG_DEVICE", "GGML_VK_VISIBLE_DEVICES")
-    )
+def _user_device_pick(binary: Optional[str] = None) -> bool:
+    """LLAMA_ARG_DEVICE or a Vulkan mask: the user's own device choice, which the memory probe never read. With
+    ``binary``, a Vulkan mask counts only where Vulkan may load (CUDA and HIP ignore it)."""
+    if str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip():
+        return True
+    if not str(os.environ.get("GGML_VK_VISIBLE_DEVICES", "")).strip():
+        return False
+    if binary is None or str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
+        return True
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        return bool(LlamaCppBackend._is_vulkan_backend(binary))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _prefetch_vulkan_rows(binary: str) -> None:
@@ -1483,7 +1495,7 @@ class PromptUpsamplerSidecar:
             if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
                 return "gpu"
             # A user-picked device is not the card the memory probe reads; its first enhanced run starts it.
-            if _user_device_pick() and _cuda_device_count() > 1:
+            if _user_device_pick(binary) and _cuda_device_count() > 1:
                 return "placement"
             # The Vulkan probe can take its full timeout, so it runs before the slot that renders queue behind.
             _prefetch_vulkan_rows(binary)

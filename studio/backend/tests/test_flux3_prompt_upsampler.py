@@ -2082,7 +2082,7 @@ def test_the_launch_reprobes_a_cached_empty_vulkan_answer(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "var, value", [("LLAMA_ARG_DEVICE", "CUDA1"), ("GGML_VK_VISIBLE_DEVICES", "1")]
+    "var, value", [("LLAMA_ARG_DEVICE", "CUDA1"), ("LLAMA_ARG_DEVICE", "ROCm1")]
 )
 @pytest.mark.parametrize("count, expected", [(2, "placement"), (1, "started")])
 def test_a_user_device_pick_declines_the_warm_start_beside_other_cards(
@@ -2133,4 +2133,35 @@ def test_the_vulkan_probe_runs_before_the_render_slot(warmable, monkeypatch):
     )
     sidecar.warm(binary = "b", model = model, mmproj = None)
     assert order[:2] == ["probe", "slot"]
+    sidecar._cancel_idle_locked()
+
+
+def test_repeated_hip_entries_do_not_shift_the_pin(monkeypatch):
+    # clr keeps the first of a repeated HIP entry, so HIP=0,0,1 exposes GPUs 0 and 1.
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.version, "hip", "6.2", raising = False)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,0,1")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+    assert pup._child_device_mask(1) == {"HIP_VISIBLE_DEVICES": "1"}
+    # CUDA masks are indexed as before.
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+    assert pup._child_device_mask(1) == {"CUDA_VISIBLE_DEVICES": "5"}
+
+
+@pytest.mark.parametrize("vulkan, expected", [(False, "started"), (True, "placement")])
+def test_a_vulkan_mask_declines_the_warm_start_only_for_a_vulkan_build(warmable, monkeypatch, vulkan, expected):
+    # CUDA and HIP builds ignore GGML_VK_VISIBLE_DEVICES; their launch is pinned by the visibility mask.
+    from core.inference import llama_cpp
+
+    sidecar, _launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: 0)
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 2)
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: vulkan))
+    monkeypatch.setattr(pup, "_vulkan_rows", lambda b, retry_empty = False: [])
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == expected
     sidecar._cancel_idle_locked()
