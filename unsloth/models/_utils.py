@@ -8648,8 +8648,11 @@ class _AutoCheckpointSkip:
         )
         # A short or small first batch (dynamic padding, packing, token-budget batches) under-measures:
         # size for the trainer's batch x max length tokens, else the measured batch at max_seq_length.
-        max_seq = self.target_seq or getattr(self.model, "max_seq_length", None) or self.layer_rows
         rows = max(1, self.layer_rows)
+        # Never below the measured length (multimodal collators can expand past max_seq_length).
+        max_seq = max(
+            rows, self.target_seq or getattr(self.model, "max_seq_length", None) or rows
+        )
         batch = max(self.target_batch or 0, self.layer_batch)
         tokens = max(1.0, batch * max_seq / (self.layer_batch * rows))
         # Eager attention keeps a seq x seq matrix per layer: one more length factor (over-estimates the rest).
@@ -8660,15 +8663,17 @@ class _AutoCheckpointSkip:
             self.grad_bytes if self.grad_bytes is not None else self._fresh_grad_bytes(device)
         )
         grad_bytes = min(step_bytes, grad_bytes)
-        activation_peak = (step_bytes - grad_bytes) * scale + grad_bytes
+        # Grads still resident (gradient accumulation) are already outside usable_cuda_bytes.
+        resident = self._fresh_grad_bytes(device) if self.fresh_grads else 0
+        activation_peak = (step_bytes - grad_bytes) * scale + max(0, grad_bytes - resident)
         self.fresh_grads = None
         # State an optimizer step already allocated is excluded by usable_cuda_bytes; reserve the rest
         # (sparse MoE experts, unused towers and gradient accumulation have none yet).
-        optimizer = sum(
-            p.numel() * 8
-            for p in self.model.parameters()
-            if p.requires_grad and not self._has_optimizer_state(p)
-        )
+        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        optimizer = sum(p.numel() * 8 for p in trainable if not self._has_optimizer_state(p))
+        # foreach AdamW allocates about one fp32 copy of the params (sqrt of exp_avg_sq) every step,
+        # on each param's own card.
+        optimizer += sum(p.numel() * 4 for p in trainable if p.device == device)
         self.optimizers = []
         headroom = usable_cuda_bytes(device) - activation_peak - optimizer
         budget = headroom * self.FRACTION - self.MARGIN
@@ -8699,6 +8704,11 @@ def skip_checkpointing(model, layers = 0):
     UNSLOTH_GC_KEEP_LAYERS when 0): _AutoCheckpointSkip."""
     if not layers:
         layers = _gc_keep_layers_env()
+    if layers != "auto":
+        # An explicit value replaces an earlier "auto" planner on the same model.
+        planner = getattr(model, "_unsloth_auto_skip", None)
+        if planner is not None:
+            planner.remove()
     if not layers:
         return []
     if layers == "auto":

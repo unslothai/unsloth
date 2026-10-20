@@ -220,8 +220,9 @@ def test_auto_reserves_optimizer_state_only_when_not_allocated(optimizer_stepped
     ns["skip_checkpointing"](model, "auto")
     planner = model._unsloth_auto_skip
     optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-5)
-    # Usable memory after step 1 (state already excluded when it exists): grads + 1.6 GiB.
-    ns["usable_cuda_bytes"] = lambda device: numel * 4 + int(1.6 * (1 << 30))
+    # Usable memory after step 1 (state already excluded when it exists): grads + foreach AdamW
+    # workspace + 1.6 GiB.
+    ns["usable_cuda_bytes"] = lambda device: numel * 8 + int(1.6 * (1 << 30))
     model(input_ids = ids, labels = ids).loss.backward()
     if optimizer_stepped:
         optimizer.step()
@@ -495,4 +496,89 @@ def test_auto_still_plans_when_the_probe_layer_moves_to_host(monkeypatch):
     _fake_step(model, rows = 16)
     model(torch.zeros(1, 16, 4))
     assert planner.kept is not None and len(planner.kept) > 0
+    monkeypatch.undo()
+
+
+def test_auto_never_scales_below_the_measured_length(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib)
+    model = _FakeModel([gib // 16] * 8, memory)  # max_seq_length 16
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    planner.target_batch = 4
+    _fake_step(model, rows = 64)  # a collator expanded the batch past max_seq_length
+    model(torch.zeros(1, 64, 4))
+    # 4 rows x 64 measured tokens: scale 4, not 4 x 16 / 64 = 1.
+    # (4 GiB - 2 GiB) * 0.75 - 1 GiB = 0.5 GiB, two 0.25 GiB layers (before: all 8).
+    assert len(planner.kept) == 2
+    monkeypatch.undo()
+
+
+def _trainable_head(model, numel):
+    # Expanded: numel elements of bookkeeping without allocating them.
+    model.head = torch.nn.Parameter(torch.zeros(1).expand(numel))
+    return model.head
+
+
+@pytest.mark.parametrize("accumulating", [True, False])
+def test_auto_counts_resident_accumulated_grads_once(monkeypatch, accumulating):
+    ns, found = _load()
+    gib = 1 << 30
+    numel = gib // 8  # fp32 grad 0.5 GiB, AdamW state + foreach workspace 1.5 GiB
+    # Resident grads are allocated, so the card has that much less usable memory.
+    memory = _fake_cuda(monkeypatch, ns, usable = 4 * gib - (gib // 2 if accumulating else 0))
+    model = _FakeModel([gib // 16] * 8, memory)
+    head = _trainable_head(model, numel)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    _fake_step(model, rows = 16)
+    head.grad = torch.zeros(1).expand(numel)
+    memory["allocated"] += gib // 2
+    if not accumulating:
+        planner._optimizer_pre_hook(torch.optim.SGD([head], lr = 0.1), (), {})
+        head.grad = None
+        memory["allocated"] -= gib // 2
+    model(torch.zeros(1, 16, 4))
+    # Both: (4 GiB - 0.5 GiB activations - 0.5 GiB grads - 1.5 GiB) * 0.75 - 1 GiB = 0.125 GiB.
+    assert len(planner.kept) == 2
+    monkeypatch.undo()
+
+
+def test_auto_reserves_the_foreach_optimizer_workspace(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    numel = gib // 8
+    memory = _fake_cuda(monkeypatch, ns, usable = 3 * gib)
+    model = _FakeModel([gib // 16] * 8, memory)
+    head = _trainable_head(model, numel)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    _fake_step(model, rows = 16)
+    head.grad = torch.zeros(1).expand(numel)
+    memory["allocated"] += gib // 2
+    optimizer = torch.optim.AdamW([head])
+    planner._optimizer_pre_hook(optimizer, (), {})
+    optimizer.state[head] = {"step": torch.tensor(1.0)}  # state allocated by the first step
+    head.grad = None
+    memory["allocated"] -= gib // 2
+    model(torch.zeros(1, 16, 4))
+    # 0.5 GiB foreach workspace still reserved: (3 - 1 - 0.5) * 0.75 - 1 = 0.125 GiB, two layers.
+    assert len(planner.kept) == 2
+    monkeypatch.undo()
+
+
+def test_explicit_value_removes_an_earlier_auto_planner(monkeypatch):
+    ns, found = _load()
+    gib = 1 << 30
+    memory = _fake_cuda(monkeypatch, ns, usable = 10 * gib)
+    model = _FakeModel([gib // 16] * 8, memory)
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    monkeypatch.delenv("UNSLOTH_GC_KEEP_LAYERS", raising = False)
+    ns["skip_checkpointing"](model, 0)
+    assert not hasattr(model, "_unsloth_auto_skip") and planner.handles == []
+    _fake_step(model, rows = 16)
+    model(torch.zeros(1, 16, 4))
+    assert planner.kept is None
     monkeypatch.undo()
