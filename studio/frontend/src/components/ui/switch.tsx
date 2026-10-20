@@ -18,9 +18,9 @@ function Switch({
       data-slot="switch"
       data-size={size}
       className={cn(
-        // A 2px inset ring of track around the thumb; the thumb's travel below is width - thumb - 2 * inset.
-        "peer group/switch relative inline-flex shrink-0 items-center rounded-full p-[calc(2px*var(--ui-space-scale,1))] outline-none transition-[background-color,box-shadow] duration-200 ease-out after:absolute after:-inset-x-3 after:-inset-y-2",
-        "data-[size=default]:h-[calc(20px*var(--ui-space-scale,1))] data-[size=default]:w-[calc(36px*var(--ui-space-scale,1))] data-[size=sm]:h-[calc(16px*var(--ui-space-scale,1))] data-[size=sm]:w-[calc(26px*var(--ui-space-scale,1))]",
+        // Thumb travel below is width - thumb - 2 * inset.
+        "peer group/switch relative inline-flex shrink-0 items-center rounded-full data-[size=default]:p-[calc(3px*var(--ui-space-scale,1))] data-[size=sm]:p-[calc(2px*var(--ui-space-scale,1))] outline-none transition-[background-color,box-shadow] duration-200 ease-out after:absolute after:-inset-x-3 after:-inset-y-2",
+        "data-[size=default]:h-[calc(26px*var(--ui-space-scale,1))] data-[size=default]:w-[calc(42px*var(--ui-space-scale,1))] data-[size=sm]:h-[calc(16px*var(--ui-space-scale,1))] data-[size=sm]:w-[calc(26px*var(--ui-space-scale,1))]",
         "data-checked:bg-control-accent data-unchecked:bg-[color-mix(in_oklab,var(--foreground)_13%,transparent)] dark:data-unchecked:bg-[color-mix(in_oklab,var(--foreground)_22%,transparent)] hover:data-unchecked:bg-[color-mix(in_oklab,var(--foreground)_18%,transparent)] dark:hover:data-unchecked:bg-[color-mix(in_oklab,var(--foreground)_28%,transparent)] hover:data-checked:bg-[color-mix(in_oklab,var(--control-accent),black_6%)]",
         "focus-visible:ring-[3px] focus-visible:ring-ring/40 aria-invalid:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 data-disabled:cursor-not-allowed data-disabled:opacity-50",
         className,
@@ -29,7 +29,7 @@ function Switch({
     >
       <SwitchPrimitive.Thumb
         data-slot="switch-thumb"
-        className="pointer-events-none block rounded-full bg-white shadow-[0_1px_2px_rgb(0_0_0/0.18),0_1px_1px_rgb(0_0_0/0.06),0_0_0_0.5px_rgb(0_0_0/0.04)] transition-transform duration-200 ease-[cubic-bezier(0.3,1.3,0.5,1)] group-data-[size=default]/switch:size-[calc(16px*var(--ui-space-scale,1))] group-data-[size=sm]/switch:size-[calc(12px*var(--ui-space-scale,1))] data-unchecked:translate-x-0 group-data-[size=default]/switch:data-checked:translate-x-[calc(16px*var(--ui-space-scale,1))] group-data-[size=sm]/switch:data-checked:translate-x-[calc(10px*var(--ui-space-scale,1))] data-checked:bg-control-accent-foreground motion-reduce:transition-none"
+        className="pointer-events-none block rounded-full bg-white transition-transform duration-200 ease-out group-data-[size=default]/switch:size-[calc(20px*var(--ui-space-scale,1))] group-data-[size=sm]/switch:size-[calc(12px*var(--ui-space-scale,1))] data-unchecked:translate-x-0 group-data-[size=default]/switch:data-checked:translate-x-[calc(16px*var(--ui-space-scale,1))] group-data-[size=sm]/switch:data-checked:translate-x-[calc(10px*var(--ui-space-scale,1))] data-checked:bg-control-accent-foreground motion-reduce:transition-none"
       />
     </SwitchPrimitive.Root>
   );
