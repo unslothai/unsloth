@@ -135,6 +135,17 @@ def module_bytes(module: Any) -> int:
     return total
 
 
+def _block_list_name(qual: str) -> str:
+    """The block list a repeated block belongs to: the module path before its last list index. A list entry that
+    wraps the block (HiDream's ``double_stream_blocks.3.block``) belongs to ``double_stream_blocks``, not to a group
+    of its own, so consecutive entries route lazily and record as one segment."""
+    parts = qual.split(".")
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].isdigit():
+            return ".".join(parts[:i])
+    return qual.rpartition(".")[0]
+
+
 def find_blocks(transformer: Any) -> list[tuple[str, str, Any]]:
     """(qualified name, list name, block) for every repeated block, in forward order (registration order unless
     :data:`FORWARD_ORDER` names the lists). Nested repeated blocks are part of their outer block."""
@@ -159,7 +170,7 @@ def find_blocks(transformer: Any) -> list[tuple[str, str, Any]]:
         inside = None
         base = getattr(type(module), "_unsloth_layer_split_base", type(module))
         if base.__name__ in wanted:
-            out.append((qual, qual.rpartition(".")[0], module))
+            out.append((qual, _block_list_name(qual), module))
             inside = qual
     order = FORWARD_ORDER.get(type(transformer).__name__)
     if order:

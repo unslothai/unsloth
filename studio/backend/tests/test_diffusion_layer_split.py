@@ -163,6 +163,31 @@ def test_flux3_forward_order_names_its_real_lists():
         assert f"self.{head}" in src
 
 
+def test_a_wrapped_list_entry_groups_with_its_list():
+    # HiDream's list entries wrap the repeated block (double_stream_blocks.3.block): grouped by the immediate parent,
+    # every block was a group of its own, so no hop routed lazily and no per-card segment formed
+    assert ls._block_list_name("double_stream_blocks.3.block") == "double_stream_blocks"
+    assert ls._block_list_name("transformer_blocks.7") == "transformer_blocks"
+    assert ls._block_list_name("mode_blocks.image.2") == "mode_blocks.image"
+    assert ls._block_list_name("stages.1.blocks.0") == "stages.1.blocks"
+
+    class Wrap(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = FakeBlock(8)
+
+    class Wrapped(nn.Module):
+        _repeated_blocks = ["FakeBlock"]
+
+        def __init__(self):
+            super().__init__()
+            self.double = nn.ModuleList([Wrap() for _ in range(3)])
+            self.single = nn.ModuleList([Wrap() for _ in range(2)])
+
+    groups = [g for _q, g, _b in ls.find_blocks(Wrapped())]
+    assert groups == ["double"] * 3 + ["single"] * 2
+
+
 def test_module_bytes_counts_parameters_and_buffers_once():
     lin = nn.Linear(4, 4)
     lin.register_buffer("scale", torch.ones(3, dtype = torch.float16))

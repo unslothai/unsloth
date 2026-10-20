@@ -83,3 +83,42 @@ def test_a_lazy_hidream_split_matches_one_card_bitwise():
         assert torch.equal(out, reference)
     finally:
         ls.undo_layer_split(pipe)
+
+
+def test_a_hidream_split_hops_once_per_card_boundary_and_records_per_card_segments(monkeypatch):
+    # Several blocks per stream per card. Each list entry wraps its block (double_stream_blocks.N.block): grouped by
+    # the immediate parent every off-primary block sent its output back to the primary and no segment formed.
+    from core.inference import diffusion_block_graph as bg
+
+    monkeypatch.setitem(globals(), "_NL", 4)
+    monkeypatch.setitem(globals(), "_NS", 6)
+    reference = _run(_hidream().to("cuda:0"))
+    pipe = _Pipe()
+    pipe.transformer = _hidream().to("cuda:0")
+    on_second = {"double_stream_blocks.2.block", "double_stream_blocks.3.block"} | {
+        f"single_stream_blocks.{i}.block" for i in (3, 4, 5)
+    }
+    blocks = [qual for qual, _, _ in ls.find_blocks(pipe.transformer)]
+    assert on_second <= set(blocks) and len(blocks) == 10
+    ls.place_layer_split(
+        pipe, primary = 0, assignment = {q: "cuda:1" if q in on_second else "cuda:0" for q in blocks}
+    )
+    hops = []
+    real = ls.cross_outputs
+    monkeypatch.setattr(ls, "cross_outputs", lambda out, device: hops.append(str(device)) or real(out, device))
+    try:
+        out = _run(pipe.transformer)
+        stats = ls.layer_split_stats(pipe.transformer)
+        # four card boundaries: double 1 -> 2 onto cuda:1, the double list's end back, single 2 -> 3, the end back
+        assert hops == ["cuda:1", "cuda:0", "cuda:1", "cuda:0"]
+        # the root's own tensors (temb, rotary embedding) cross once each, memoised for every later block
+        assert stats["input_copies"] == 2 and stats["lazy_calls"] == 1
+        assert torch.equal(out, reference)
+        handle, why = bg.install_block_graphs(pipe.transformer, slots = False)
+        assert handle is not None, why
+        try:
+            assert [len(seg.graphs) for seg in handle.segments] == [2, 2, 3, 3]
+        finally:
+            handle.free()
+    finally:
+        ls.undo_layer_split(pipe)
