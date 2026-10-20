@@ -95,10 +95,10 @@ def pin_libdevice_enabled() -> bool:
 
 
 def pin_triton_libdevice(logger: Any = None) -> Any:
-    """Resolve Triton's libdevice now, exactly as torch would at the first kernel compile. Returns the pinned path, or
-    None when disabled or when this torch / Triton build has nothing to pin (no extern_libs cache check, no lazy
-    resolver, no CUDA). Never raises. Call only when emulate_precision_casts (or use_pytorch_libdevice) is on: that is
-    the condition under which torch makes the switch."""
+    """Resolve Triton's libdevice now, exactly as torch would at the first kernel compile (torch's own gated resolver,
+    so each build keeps its policy). Returns the libdevice path in effect, or None when disabled or when this torch /
+    Triton build has nothing to pin (no extern_libs cache check, no lazy resolver, no CUDA). Never raises. Call after
+    emulate_precision_casts is set on this thread: that is the condition under which torch 2.13+ makes the switch."""
     if not pin_libdevice_enabled():
         return None
     try:
@@ -119,7 +119,10 @@ def pin_triton_libdevice(logger: Any = None) -> Any:
             return None
         from torch._inductor.runtime import compile_tasks
 
-        resolve = getattr(compile_tasks, "_set_triton_libdevice_path_impl", None)
+        # The GATED resolver, never ``_set_triton_libdevice_path_impl``: it applies this build's own policy. torch 2.13+
+        # switches under emulate_precision_casts; 2.12 only under eager_numerics.use_pytorch_libdevice, so calling the
+        # impl directly there would move a build onto the toolkit file torch itself never selects.
+        resolve = getattr(compile_tasks, "_set_triton_libdevice_path", None)
         if not callable(resolve):
             return None
         from triton import knobs
