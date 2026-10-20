@@ -404,6 +404,17 @@ def test_pinning_a_model_memoizes_what_was_resolved_for_it(settings_store, monke
     assert ems.get_stored_backend("org/embedder-a") == "llama-server"
 
 
+def test_a_fresh_read_sees_a_save_from_another_process(settings_store, monkeypatch):
+    ems.set_rag_embedding_model("org/first")
+    assert ems.get_rag_embedding_model() == "org/first"
+    settings_store[ems.EMBEDDING_MODEL_SETTING_KEY] = "org/second"  # no invalidation here
+    assert ems.get_rag_embedding_model() == "org/first"
+    assert rag_config.effective_embedding_model(fresh = True) == "org/second"
+    monkeypatch.setattr("storage.studio_db.get_app_settings", lambda keys: 1 / 0)
+    with pytest.raises(ZeroDivisionError):  # an unconfirmed model never passes a fresh check
+        rag_config.effective_embedding_model(fresh = True)
+
+
 def test_the_per_identity_cache_is_bounded(settings_store, monkeypatch):
     ems._cached.clear()
     ems._generation.clear()

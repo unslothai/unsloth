@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  MONITOR_DETAIL_METRICS,
+  formatPower,
+  formatTemperature,
+  gpuTelemetryRows,
+  selectedDetailMetrics,
+} from "@/components/monitor-details";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
@@ -17,6 +25,7 @@ import {
   sharedMemoryAvailableGb,
 } from "@/hooks/gpu-memory-display";
 import {
+  deviceSharedMemorySplitGb,
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
   resolveGpuVramUsedGb,
@@ -236,6 +245,10 @@ interface GpuTorchMismatch {
   reason?: string;
   torch_version?: string | null;
   physical_count?: number;
+  /** An AMD device node this account cannot open, and the command that opens it. */
+  permission_hint?: string | null;
+  /** The closed node fully explains a ROCm wheel, so the reinstall advice is wrong. */
+  permission_hint_only?: boolean;
 }
 
 /** /api/system's `gpu.driver_warning`: a Windows AMD driver with the idle-eviction bug
@@ -264,13 +277,22 @@ export function ResourcesTab() {
   const dismissDriverWarning = useSettingsPanelPrefsStore(
     (s) => s.dismissDriverWarning,
   );
-  const { isOpen, setIsOpen } = useMonitorOverlayStore();
+  const {
+    isOpen,
+    setIsOpen,
+    showDetails,
+    setShowDetails,
+    detailMetrics: storedDetailMetrics,
+    setDetailMetric,
+  } = useMonitorOverlayStore();
+  const detailMetrics = selectedDetailMetrics(storedDetailMetrics);
   // always fetch once: the switch is persisted now, so gating the hook on it
   // would leave a session that opens with it off reading zeros forever.
   const systemInfo = useSystemInfo({
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const storageSectionRef = useRef<HTMLElement | null>(null);
+  const modelMemoryRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
     (s) => s.consumeScrollTarget,
@@ -294,6 +316,10 @@ export function ResourcesTab() {
   const inferenceVramTotal = separateInferenceGpu
     ? aggregateGpuMemoryTotalGb(inferenceDisplay.usageDevices)
     : 0;
+  const telemetryRows =
+    showDetails && displayedGpu?.available
+      ? gpuTelemetryRows(displayedGpu.devices, detailMetrics)
+      : [];
 
   useEffect(() => {
     let cancelled = false;
@@ -313,13 +339,20 @@ export function ResourcesTab() {
   }, []);
 
   useEffect(() => {
-    if (scrollTarget !== "resources-caches") return;
+    const target = scrollTarget;
+    const sectionRef =
+      target === "resources-caches"
+        ? storageSectionRef
+        : target === "resources-model-memory"
+          ? modelMemoryRef
+          : null;
+    if (!target || !sectionRef) return;
     const frame = window.requestAnimationFrame(() => {
-      storageSectionRef.current?.scrollIntoView({
+      sectionRef.current?.scrollIntoView({
         block: "start",
         behavior: "smooth",
       });
-      consumeScrollTarget("resources-caches");
+      consumeScrollTarget(target);
     });
     return () => window.cancelAnimationFrame(frame);
   }, [consumeScrollTarget, scrollTarget]);
@@ -517,14 +550,16 @@ export function ResourcesTab() {
       ? rawDriverWarning
       : null;
   // A CPU-only wheel is fixed by reinstalling torch, a dead runtime by the driver.
-  const gpuMismatchMessage = gpuMismatch
-    ? t(
-        gpuMismatch.reason === "torch_cpu_build"
-          ? "settings.resources.gpu.mismatchCpuBuild"
-          : "settings.resources.gpu.mismatchUnavailable",
-        { version: gpuMismatch.torch_version ?? unknownLabel },
-      )
-    : null;
+  const gpuPermissionHint = gpuMismatch?.permission_hint ?? null;
+  const gpuMismatchMessage =
+    gpuMismatch && !(gpuPermissionHint && gpuMismatch.permission_hint_only)
+      ? t(
+          gpuMismatch.reason === "torch_cpu_build"
+            ? "settings.resources.gpu.mismatchCpuBuild"
+            : "settings.resources.gpu.mismatchUnavailable",
+          { version: gpuMismatch.torch_version ?? unknownLabel },
+        )
+      : null;
 
   return (
     <div className="settings-page">
@@ -575,6 +610,7 @@ export function ResourcesTab() {
                   : t("settings.resources.liveMonitor.currentLoad")
             }
             percent={hostUnread ? null : (systemInfo.cpu?.usage_percent ?? 0)}
+            showUsage={!showDetails || detailMetrics.has("cpuLoad")}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.ram")}
@@ -668,7 +704,73 @@ export function ResourcesTab() {
             }
             percent={metrics.vramUsageKnown ? metrics.vramPercent : null}
           />
+          {telemetryRows.map((row) => (
+            <MetricTile
+              key={row.key}
+              label={row.name}
+              value={
+                [
+                  row.temperatureC !== null
+                    ? formatTemperature(row.temperatureC)
+                    : null,
+                  row.powerDrawW !== null
+                    ? formatPower(row.powerDrawW, row.powerLimitW)
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") ||
+                (row.loadPct !== null ? `${Math.round(row.loadPct)}%` : "--")
+              }
+              detail={[
+                row.temperatureC !== null &&
+                  t("settings.resources.liveMonitor.temperature"),
+                row.powerDrawW !== null &&
+                  t("settings.resources.liveMonitor.power"),
+                row.loadPct !== null &&
+                  t("settings.resources.liveMonitor.gpuLoad"),
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              showUsage={row.loadPct !== null}
+              percent={hostUnread ? null : row.loadPct}
+            />
+          ))}
         </div>
+        <SettingsRow
+          label={t("settings.resources.liveMonitor.detailedView")}
+          description={t(
+            "settings.resources.liveMonitor.detailedViewDescription",
+          )}
+          className="border-t border-border/60"
+        >
+          <Switch
+            aria-label={t("settings.resources.liveMonitor.detailedView")}
+            checked={showDetails}
+            onCheckedChange={setShowDetails}
+          />
+        </SettingsRow>
+        {showDetails && (
+          <div className="flex flex-wrap gap-x-5 gap-y-2 pb-3">
+            {MONITOR_DETAIL_METRICS.map((metric) => {
+              const label = t(`settings.resources.liveMonitor.${metric}`);
+              return (
+                <label
+                  key={metric}
+                  className="flex cursor-pointer items-center gap-2 text-xs font-medium text-foreground"
+                >
+                  <Checkbox
+                    checked={detailMetrics.has(metric)}
+                    onCheckedChange={(checked) =>
+                      setDetailMetric(metric, checked === true)
+                    }
+                    aria-label={label}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
+        )}
       </SettingsSection>
 
       <SettingsSection title={t("settings.resources.gpu.title")}>
@@ -719,9 +821,16 @@ export function ResourcesTab() {
             selectable: the rows below are what a model can be loaded onto. */}
         {gpuMismatch ? (
           <div className="flex flex-col gap-2 border-b border-border/60 py-3">
-            <p className="text-sm text-amber-600 dark:text-amber-400">
-              {gpuMismatchMessage}
-            </p>
+            {gpuMismatchMessage && (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                {gpuMismatchMessage}
+              </p>
+            )}
+            {gpuPermissionHint && (
+              <p className="select-text text-sm text-amber-600 dark:text-amber-400">
+                {gpuPermissionHint}
+              </p>
+            )}
             {physicalDevices.map((device, index) => (
               <div
                 key={`${device.vendor ?? "gpu"}-${device.index ?? index}-${device.name ?? ""}`}
@@ -822,6 +931,8 @@ export function ResourcesTab() {
             const percentText = isFiniteNumber(percent)
               ? formatPercent(safePercent)
               : unknownLabel;
+            // Its total is mostly system RAM, so "VRAM" beside it overstates the card (#8942).
+            const sharedSplit = deviceSharedMemorySplitGb(device);
             return (
               // Name over backend on the left, figures over the meter on the
               // right. The meter tracks the figures' width rather than the
@@ -848,6 +959,10 @@ export function ResourcesTab() {
                       <span className="text-xs text-muted-foreground">
                         {t("settings.resources.gpu.sharedWithSystemRam")}
                       </span>
+                    ) : sharedSplit ? (
+                      <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
+                        {percentText}
+                      </span>
                     ) : (
                       <span className="shrink-0 rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold tabular-nums text-control-accent">
                         {percentText}{" "}
@@ -855,6 +970,17 @@ export function ResourcesTab() {
                       </span>
                     )}
                   </div>
+                  {/* Own line: beside the pill it truncates the backend label first. */}
+                  {sharedSplit && !hasSharedMemoryHeadroom(device) ? (
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {sharedSplit.dedicated > 0
+                        ? t("settings.resources.environment.vramWithShared", {
+                            vram: formatGiB(sharedSplit.dedicated),
+                            shared: formatGiB(sharedSplit.shared),
+                          })
+                        : t("settings.resources.gpu.sharedWithSystemRam")}
+                    </div>
+                  ) : null}
                 </div>
                 {/* Meter under the figures, so it spans their width instead of
                     being squeezed into the gap beside them. Same 392px as the
@@ -927,7 +1053,7 @@ export function ResourcesTab() {
       <LlamaBackendSection />
       <InferenceEnginesSection />
 
-      <ModelMemorySection />
+      <ModelMemorySection ref={modelMemoryRef} />
 
       <SettingsSection
         ref={storageSectionRef}

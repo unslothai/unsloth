@@ -25,6 +25,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
+import { AgentBar } from "./agent/agent-bar";
 import {
   Tooltip,
   TooltipContent,
@@ -51,6 +52,7 @@ import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipb
 import { openExternalLink } from "@/lib/open-link";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
+import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -67,7 +69,6 @@ import {
   Copy01Icon,
   Folder01Icon,
   Link01Icon,
-  CursorRectangleSelection02Icon,
   Download01Icon,
   InternetIcon,
   MinusSignIcon,
@@ -123,7 +124,7 @@ import { SiteFavicon } from "./site-favicon";
 import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { BookmarkStar, BookmarksBar } from "./bookmarks";
 import { useBookmarkFor } from "./bookmarks-store";
-import { browserTabType, mediaKind, textFileKind } from "./file-kind";
+import { browserTabType, fileBarKind, mediaKind } from "./file-kind";
 import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
@@ -137,6 +138,7 @@ import {
 import {
   hasNativeView,
   nativeAction,
+  nativePageHasKeys,
   returnToNativePage,
   startNativeViews,
   useNativeBrowser,
@@ -151,6 +153,7 @@ import {
   type FileViewState,
   browserFile,
   cachedPage,
+  chatTabs,
   currentEntry,
   entryKey,
   pageDownload,
@@ -158,6 +161,7 @@ import {
 } from "./store";
 import { TabView } from "./tab-view";
 import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
+import { useShallow } from "zustand/shallow";
 
 function tabAddress(tab: BrowserTab | undefined): string {
   if (!tab) return "";
@@ -225,8 +229,9 @@ const NAV_BUTTON =
   "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
 const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-full p-0 text-foreground";
-// The dashed box sits up-left of the glyph's centre, so nudge it to look centred.
-const ANNOTATE_GLYPH = "size-4.5 translate-x-[4%] translate-y-[4%]";
+// Half a pixel right and down: the frame's whole top-left corner and the pointer aimed back at it
+// read as up and left of centre, though the strokes are centred.
+const ANNOTATE_GLYPH = "size-4.5 translate-x-[0.5px] translate-y-[0.5px]";
 const NAV_STROKE = 2;
 const URLBAR =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
@@ -632,7 +637,7 @@ function TabStrip({
     // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
     <div
       data-tauri-drag-region={true}
-      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]"
+      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]"
     >
       <div
         ref={listRef}
@@ -1410,7 +1415,7 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
           "bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
       )}
     >
-      <HugeiconsIcon icon={CursorRectangleSelection02Icon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
+      <HugeiconsIcon icon={SquareDashedMousePointerIcon} strokeWidth={1.75} className={ANNOTATE_GLYPH} />
     </IconButton>
   );
 }
@@ -1484,7 +1489,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
 
 /** HTML and code use the browser chrome; other files keep the floating controls. */
 function usesBrowserChrome(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   return kind === "html" || kind === "code";
 }
 
@@ -1503,7 +1508,7 @@ function BrowserFileToolbar({
   const { goBack, goForward } = useBrowserStore.getState();
   const download = tabDownload(tab);
   const blob = download?.blob;
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const hasSource = kind === "html" || kind === "markdown";
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
@@ -1643,7 +1648,7 @@ function BrowserFileToolbar({
           )}
         >
           <HugeiconsIcon
-            icon={CursorRectangleSelection02Icon}
+            icon={SquareDashedMousePointerIcon}
             strokeWidth={1.75}
             className={ANNOTATE_GLYPH}
           />
@@ -1766,7 +1771,7 @@ function FloatingFileToolbar({
   const [copied, setCopied] = useState(false);
   const download = tabDownload(tab);
   const blob = download?.blob;
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const hasSource = kind === "html" || kind === "markdown";
   const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
   const timed = media === "video" || media === "audio";
@@ -1968,7 +1973,7 @@ function FloatingFileToolbar({
           )}
         >
           <HugeiconsIcon
-            icon={CursorRectangleSelection02Icon}
+            icon={SquareDashedMousePointerIcon}
             strokeWidth={1.75}
             className={ANNOTATE_GLYPH}
           />
@@ -2115,7 +2120,7 @@ function CopySplit({
   onCopyContents: () => void;
 }) {
   const t = useT();
-  const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
+  const kind = fileBarKind(entry.name, entry.contentType, entry.plainText);
   const media = entry.plainText ? null : mediaKind(entry.name, entry.contentType);
   // The desktop app's clipboard takes no images (video-registry.ts), so it copies the path instead.
   const images = canCopyVideoFrame();
@@ -2389,7 +2394,7 @@ function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId:
 /** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
 export const BrowserPanel = memo(function BrowserPanel({ active = true }: { active?: boolean }) {
   const t = useT();
-  const tabs = useBrowserStore((state) => state.tabs);
+  const tabs = useBrowserStore(useShallow(chatTabs));
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
@@ -2405,6 +2410,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         const tabId = useBrowserStore.getState().activeTabId;
         if (tabId) zoomTab(tabId, direction);
       },
+      holdsKeys: nativePageHasKeys,
     });
   }, [active]);
   // Studio's find bar searches the page while focus is in here, or when switched to it.
@@ -2456,7 +2462,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         }
       }}
       className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
+        "browser-panel @container/browser relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
         documentShown
           ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"
           : "[--browser-surface:var(--card)]",
@@ -2467,6 +2473,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         <div
           className={cn(
             "browser-chrome @container flex shrink-0 items-center gap-2 px-2.5",
+            (!activeEntry || activeEntry.kind !== "file") && "browser-web-toolbar flex-wrap",
             floatingFileControls
               ? "browser-file-toolbar pointer-events-none absolute inset-x-0 top-0 z-20 py-2 *:pointer-events-auto"
               : // 1px less at the bottom for the page's top border.
@@ -2487,6 +2494,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           <BookmarksBar tab={activeTab} />
         )}
         {deviceWidth ? <DeviceBar /> : null}
+        <AgentBar activeTabId={activeTabId} />
         <div
           ref={setPageElement}
           data-browser-page=""

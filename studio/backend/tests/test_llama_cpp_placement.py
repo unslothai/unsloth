@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import struct
 import subprocess
@@ -1107,6 +1108,369 @@ def test_auto_drops_the_drafter_when_only_the_target_fits(tmp_path):
     # keeps the resolved path so a repeat Apply dedupes instead of relaunching.
     assert backend.spec_drafter_kind == "dspark"
     assert backend.mtp_draft_path == str(sidecar)
+
+
+def _per_slot_mtp_backend(tmp_path: Path, *, gb_per_slot: float):
+    """The tight card with an embedded head whose reserve is all per-slot state."""
+    gb = 1024**3
+    backend, gguf, _sidecar = _tight_vram_backend(tmp_path, drafter_gb = 0.0)
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 8192
+
+    backend._read_gguf_metadata = read_metadata
+    backend._estimate_mtp_overhead_bytes = (
+        lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: int(
+            gb_per_slot * gb * int(_np or n_parallel or 1)
+        )
+    )
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+        "supports_kv_unified": True,
+    }
+    return backend, gguf
+
+
+def _launch_default_slots(
+    backend,
+    gguf,
+    *,
+    n_parallel = 4,
+    **kwargs,
+):
+    return _launch_auto_8k(
+        backend, gguf, n_ctx = 0, n_parallel = n_parallel, n_parallel_from_default = True, **kwargs
+    )
+
+
+def _launched(result, flag: str) -> Optional[str]:
+    cmd = result["cmd"]
+    return cmd[cmd.index(flag) + 1] if flag in cmd else None
+
+
+@pytest.mark.parametrize("gb_per_slot, slots", [(1.5, "3"), (2.0, "2"), (5.0, "1")])
+def test_auto_drops_serving_slots_before_the_drafter(tmp_path, gb_per_slot, slots):
+    """#8872: the largest slot count that holds the drafter at the same context."""
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = gb_per_slot)
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") == "draft-mtp"
+    assert _launched(result, "--parallel") == slots
+    assert _launched(result, "-c") == "8192"
+    assert backend.spec_fallback_reason is None
+
+
+@pytest.mark.parametrize("n_parallel", [4, 1])
+def test_auto_drops_the_drafter_when_one_slot_cannot_hold_it(tmp_path, n_parallel):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 7.0)
+
+    result = _launch_default_slots(backend, gguf, n_parallel = n_parallel)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == str(n_parallel)
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_chosen_slot_count_is_kept_and_the_drafter_dropped(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_auto_8k(backend, gguf, n_ctx = 0, n_parallel = 4)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_wider_subset_holding_the_drafter_does_not_justify_the_cut(tmp_path):
+    """Fewer slots fit the drafter at full context only across both cards, but the walk
+    takes the first card that holds it at any context, here a few hundred tokens."""
+    gb, mib = 1024**3, 1024 * 1024
+    backend, gguf = _backend(
+        tmp_path, vulkan = False, memory = [(0, 24_576, 24_576), (1, 24_576, 24_576)]
+    )
+
+    def read_metadata(_path):
+        backend._nextn_predict_layers = 1
+        backend._context_length = 8192
+
+    def fit(
+        requested,
+        budget_mib,
+        base,
+        *args,
+        mtp_engaged = False,
+        mtp_overhead_fn = None,
+        **kw,
+    ):
+        ctx = requested
+        while ctx > 0:
+            drafter = mtp_overhead_fn(ctx) if mtp_engaged and mtp_overhead_fn else 0
+            if (base + gb + drafter) / mib <= budget_mib:
+                return ctx
+            ctx -= 256
+        return 0
+
+    backend._read_gguf_metadata = read_metadata
+    backend._get_gguf_size_bytes = lambda _path: 16 * gb
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *args, **kwargs: gb
+    backend._compute_buffer_ctx_bytes = lambda *args, **kwargs: 0
+    backend._estimate_compute_buffer_bytes = lambda **kwargs: 1
+    backend._mtp_draft_kv_bytes = lambda *args, **kwargs: 0
+    backend._estimate_mtp_overhead_bytes = (
+        lambda n_ctx, *args, _np = None, n_parallel = None, **kwargs: int(
+            1.5 * gb * int(_np or n_parallel or 1) + 24 * gb * n_ctx / 8192
+        )
+    )
+    backend._fit_context_to_vram = fit
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+        "supports_kv_unified": True,
+    }
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert _launched(result, "-c") == "8192"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+@pytest.mark.parametrize("extras", [["--parallel", "4"], ["-np=4"]])
+def test_a_slot_count_in_the_extras_is_kept(tmp_path, extras):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_default_slots(backend, gguf, extra_args = extras)
+
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert _launched(result, "--parallel") == "4"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def _launch_with_failing_drafter(
+    backend,
+    gguf,
+    *,
+    refuses_unified_kv = False,
+    n_ctx = 0,
+):
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        backend._stdout_lines = []
+        if "draft-mtp" in cmds[-1]:
+            return False
+        return not (refuses_unified_kv and "--kv-unified" in cmds[-1])
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                n_ctx = n_ctx,
+                n_parallel = 4,
+                n_parallel_from_default = True,
+                speculative_type = "auto",
+            )
+        )
+    return cmds
+
+
+def test_a_drafterless_retry_that_fails_at_the_restored_slots_runs_as_cut(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 5.0)
+
+    cmds = _launch_with_failing_drafter(backend, gguf, refuses_unified_kv = True)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["1", "4", "1"]
+    assert "--kv-unified" not in cmds[-1] and "draft-mtp" not in cmds[-1]
+    assert backend.effective_parallel_slots == 1
+
+
+@pytest.mark.parametrize(
+    "refuses_unified_kv, ctxs", [(False, ["7424", "8192"]), (True, ["7424", "8192", "7424"])]
+)
+def test_the_restored_slots_relaunch_at_their_own_context(tmp_path, refuses_unified_kv, ctxs):
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 0.0)
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: int(
+        6.2 * gb * n_ctx / 8192
+    )
+    backend._fit_context_to_vram = lambda requested, *args, mtp_engaged = False, **kwargs: (
+        min(requested, 7424) if mtp_engaged else requested
+    )
+
+    cmds = _launch_with_failing_drafter(backend, gguf, refuses_unified_kv = refuses_unified_kv)
+
+    assert [c[c.index("-c") + 1] for c in cmds] == ctxs
+    assert backend._effective_context_length == int(ctxs[-1])
+    if not refuses_unified_kv:
+        assert backend._max_context_length == 8192
+
+
+def test_the_restored_slots_reprice_the_published_plan(tmp_path):
+    """Other loads place against this plan, so it is the restored count's, not the cut's."""
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    backend._estimate_kv_cache_bytes = lambda *args, n_parallel = 1, **kwargs: (
+        gb // 4 * int(n_parallel or 1)
+    )
+
+    cmds = _launch_with_failing_drafter(backend, gguf)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["2", "4"]
+    assert sum(backend._planned_vram_mib.values()) == (16 * gb + gb) // (1024 * 1024)
+
+
+def test_an_explicit_context_restores_its_ceiling(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    cmds = _launch_with_failing_drafter(backend, gguf, n_ctx = 8192)
+
+    assert [c[c.index("--parallel") + 1] for c in cmds] == ["2", "4"]
+    assert [c[c.index("-c") + 1] for c in cmds] == ["8192", "8192"]
+    assert backend._max_context_length == backend._effective_context_length == 8192
+
+
+def test_an_env_slot_count_does_not_block_the_cut(tmp_path, monkeypatch):
+    """The launch scrubs LLAMA_ARG_N_PARALLEL, so it never reaches the server."""
+    monkeypatch.setenv("LLAMA_ARG_N_PARALLEL", "4")
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--spec-type") == "draft-mtp"
+    assert _launched(result, "--parallel") == "2"
+
+
+def test_a_drafter_that_fails_to_start_gives_its_slots_back(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    cmds = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        cmds.append(list(cmd))
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 123,
+                "stdout": (),
+                "poll": lambda self: None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    def fake_health(timeout = None, **_kw):
+        backend._stdout_lines = []
+        return "draft-mtp" not in cmds[-1]
+
+    backend._wait_for_health = fake_health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        assert backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf),
+                model_identifier = "test",
+                n_ctx = 0,
+                n_parallel = 4,
+                n_parallel_from_default = True,
+                speculative_type = "auto",
+            )
+        )
+
+    first, retry = cmds[0], cmds[-1]
+    assert first[first.index("--parallel") + 1] == "2"
+    assert "draft-mtp" not in retry and "--spec-default" in retry
+    assert retry[retry.index("--parallel") + 1] == "4"
+    assert "--kv-unified" in retry
+    assert backend.effective_parallel_slots == 4
+
+
+def test_a_placement_abandoned_after_the_cut_gives_the_slots_back(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("placement bug")
+
+    backend._fit_derived_load_mode = boom
+    result = _launch_default_slots(backend, gguf)
+
+    assert _launched(result, "--fit") == "on"
+    assert _launched(result, "--parallel") == "4"
+    assert _launched(result, "--spec-type") != "draft-mtp"
+    assert backend.spec_fallback_reason == "drafter_no_vram"
+
+
+def test_a_chosen_count_does_not_dedupe_against_slots_cut_for_the_drafter(tmp_path):
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 2.0)
+    result = _launch_default_slots(backend, gguf)
+    assert _launched(result, "--parallel") == "2"
+
+    chosen = GgufLoadIntent(
+        gguf_path = str(gguf),
+        model_identifier = "test",
+        n_ctx = 0,
+        n_parallel = 4,
+        speculative_type = "auto",
+    )
+    default = dataclasses.replace(chosen, n_parallel_from_default = True)
+    assert backend._runtime_matches_intent(default, None)
+    assert not backend._runtime_matches_intent(chosen, None)
+    # A diffusion runtime that replaced it ignores slot counts altogether.
+    backend._is_diffusion = True
+    assert backend._runtime_matches_intent(chosen, None) == backend._runtime_matches_intent(
+        default, None
+    )
+
+
+@pytest.mark.parametrize("ctx_with_drafter, keeps", [(7424, True), (6144, False)])
+def test_one_slot_may_trim_a_little_auto_context(tmp_path, ctx_with_drafter, keeps):
+    """Draft KV grows with context, so one slot can still need a few percent of it."""
+    gb = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 0.0)
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, *args, **kwargs: int(
+        6.2 * gb * n_ctx / 8192
+    )
+    backend._fit_context_to_vram = lambda requested, *args, mtp_engaged = False, **kwargs: (
+        min(requested, ctx_with_drafter) if mtp_engaged else requested
+    )
+
+    result = _launch_default_slots(backend, gguf)
+
+    if keeps:
+        assert _launched(result, "--spec-type") == "draft-mtp"
+        assert _launched(result, "--parallel") == "1"
+        assert _launched(result, "-c") == str(ctx_with_drafter)
+    else:
+        assert _launched(result, "--spec-type") != "draft-mtp"
+        assert _launched(result, "--parallel") == "4"
+        assert _launched(result, "-c") == "8192"
 
 
 def test_auto_keeps_a_drafter_that_fits(tmp_path):
@@ -3975,11 +4339,21 @@ def _batch_values(cmd):
 @pytest.fixture
 def _discrete_linux_host(monkeypatch):
     monkeypatch.setattr(llama_cpp_module, "_metal_capable_host", lambda: False)
-    for name in ("LLAMA_ARG_BATCH", "LLAMA_ARG_UBATCH", "LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_CPU_MOE"):
+    for name in (
+        "LLAMA_ARG_BATCH",
+        "LLAMA_ARG_UBATCH",
+        "LLAMA_ARG_N_CPU_MOE",
+        "LLAMA_ARG_CPU_MOE",
+        "UNSLOTH_MOE_CACHE",
+        "UNSLOTH_MOE_SPILL_UBATCH",
+    ):
         monkeypatch.delenv(name, raising = False)
 
 
 _SPILLED = dict(size_gib = 20, memory = [(0, 8_000, 16_000)])
+_EIGHT_GIB_CARD = [(0, 8_000, 16_000)]
+# 20 GiB with 15 GiB of experts keeps ~53% of the experts resident here: inside the band.
+_IN_BAND_CARD = [(0, 20_000, 32_000)]
 _RESIDENT = dict(size_gib = 1, memory = [(0, 40_000, 48_000)])
 
 
@@ -4416,11 +4790,13 @@ def _cache_launch(
     **load_kwargs,
 ):
     """One launch of an MoE (or dense) model, priced so the fit can answer
-    "none". 20 GiB on an 8 GiB card spills; 1 GiB on a 40 GiB card does not.
+    "none". 20 GiB with 15 GiB of experts on a card with 20,000 MiB free spills and
+    keeps ~53% of the experts resident (inside the cache band); 1 GiB on a 40 GiB card
+    does not spill.
     ``host_guard`` puts the real host-RAM preflight back."""
     if memory is None:
         memory = (
-            [(i, 8_000, 16_000) for i in range(gpus)]
+            [(i, _IN_BAND_CARD[0][1], _IN_BAND_CARD[0][2]) for i in range(gpus)]
             if spilled
             else [(i, 40_000, 48_000) for i in range(gpus)]
         )
@@ -4558,6 +4934,346 @@ def test_an_inherited_placement_keeps_the_moe_cache_off(
     assert not _has_moe_cache(cmd), cmd
 
 
+def test_the_resident_expert_share():
+    share = llama_cpp_module._moe_resident_expert_share
+
+    assert share(None, 15 * _GIB) is None
+    assert share(3 * _GIB, 0) is None
+    assert share(3 * _GIB, None) is None
+    assert share(3 * _GIB, 15 * _GIB) == pytest.approx(0.8)
+    assert share(-_GIB, 15 * _GIB) == 1.0
+    assert share(30 * _GIB, 15 * _GIB) == 0.0
+
+
+@pytest.mark.parametrize(
+    "resident_share, admitted",
+    [
+        # L4, gemma-4-26B-A4B UD-Q4_K_XL under the --fit split at 8 / 12 / 16 GB.
+        (0.197, False),
+        (0.23, False),
+        (0.35, True),
+        (0.494, True),
+        (0.527, True),
+        (0.745, True),
+        (0.75, True),
+        (0.791, False),
+        (0.824, False),
+        (1.0, False),
+        (None, False),
+    ],
+)
+def test_the_cache_band(resident_share, admitted):
+    admits = llama_cpp_module._moe_cache_share_admits
+
+    assert admits(resident_share, drafter = False) is admitted
+    assert admits(resident_share, drafter = True) is admitted
+    # The switch overrides the band both ways, unknown share included.
+    assert admits(resident_share, drafter = False, switch = "on") is True
+    assert admits(resident_share, drafter = True, switch = "off") is False
+
+
+def test_the_drafter_gate_is_one_constant(monkeypatch):
+    admits = llama_cpp_module._moe_cache_share_admits
+    monkeypatch.setattr(llama_cpp_module, "_MOE_CACHE_WITH_DRAFTER", False)
+
+    assert admits(0.5, drafter = False) is True
+    assert admits(0.5, drafter = True) is False
+    assert admits(0.5, drafter = True, switch = "on") is True
+
+
+@pytest.mark.parametrize(
+    "before, after, kept",
+    [
+        # L4 gemma-4: the 2048 compute buffer cost 14% of the resident experts at 8 GB,
+        # 6% at 12 GB and 4% at 16 GB.
+        (0.23, 0.197, False),
+        (0.527, 0.494, True),
+        (0.824, 0.791, True),
+        # Nothing spills at the default micro-batch: the raise would only push experts off.
+        (1.0, 0.95, False),
+        (1.0, 1.0, False),
+        # Unpriceable keeps today's raise.
+        (None, None, True),
+        (0.5, None, True),
+        (0.0, 0.0, True),
+    ],
+)
+def test_the_spill_raise_keeps_the_resident_experts(before, after, kept):
+    keeps = llama_cpp_module._moe_spill_raise_keeps_experts
+
+    assert keeps(before, after) is kept
+    assert keeps(before, after, switch = "on") is True
+    assert keeps(before, after, switch = "off") is False
+
+
+@pytest.mark.parametrize(
+    "raw, switch",
+    [
+        (None, "auto"),
+        ("", "auto"),
+        ("auto", "auto"),
+        ("bogus", "auto"),
+        ("1", "on"),
+        (" ON ", "on"),
+        ("force", "on"),
+        ("0", "off"),
+        ("Off", "off"),
+        ("never", "off"),
+    ],
+)
+def test_the_moe_switches(raw, switch):
+    env = {} if raw is None else {"UNSLOTH_MOE_CACHE": raw}
+
+    assert llama_cpp_module._moe_switch("UNSLOTH_MOE_CACHE", env) == switch
+
+
+@pytest.mark.parametrize(
+    "free_mib, cached",
+    # 20 GiB model, 15 GiB of experts, 32 GiB card: the share of experts the --fit split
+    # would keep resident is ~14% / ~53% / ~79%.
+    [(14_000, False), (20_000, True), (24_000, False)],
+    ids = ["below_band_split", "in_band_cache", "above_band_split"],
+)
+def test_the_resident_share_picks_cache_or_split(tmp_path, _moe_cache_host, free_mib, cached):
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _load_mode(cmd) == "none", cmd
+    assert _has_moe_cache(cmd) is cached, cmd
+    assert backend._moe_cache_flags == (_MOE_CACHE if cached else [])
+    # The flat compute-buffer estimate here costs the raise nothing, so it stays.
+    assert _ubatch_values(cmd) == ["2048"], cmd
+
+
+def test_an_unpriceable_share_keeps_the_split(tmp_path, _moe_cache_host):
+    # A larger pass-through --parallel was never priced, so the share is unknown.
+    backend, cmd = _cache_launch(tmp_path, extra_args = ["--parallel", "4"])
+
+    assert not _has_moe_cache(cmd), cmd
+    assert backend._moe_cache_flags == []
+
+
+def test_a_smaller_pass_through_parallel_keeps_the_split(tmp_path, _moe_cache_host):
+    # Priced at 4 slots, launched with 1: the share would be understated, so it is unknown.
+    caps = dict(_CACHE_CAPS_ON, supports_kv_unified = True)
+    backend, cmd = _cache_launch(tmp_path, caps = caps, n_parallel = 4)
+    assert cmd[cmd.index("--parallel") + 1] == "4", cmd
+    assert _has_moe_cache(cmd), cmd
+
+    backend, cmd = _cache_launch(tmp_path, caps = caps, n_parallel = 4, extra_args = ["--parallel", "1"])
+    assert not _has_moe_cache(cmd), cmd
+    assert backend._moe_cache_flags == []
+    # The same value as Studio's is still priced.
+    backend, cmd = _cache_launch(tmp_path, caps = caps, n_parallel = 4, extra_args = ["-np", "4"])
+    assert _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--fit-ctx", "4096"], {}),
+        (["-fitc=65536"], {}),
+        ([], {"LLAMA_ARG_FIT_CTX": "4096"}),
+    ],
+    ids = ["argv", "short_equals", "env"],
+)
+def test_a_pass_through_fit_ctx_keeps_the_split(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, cmd = _cache_launch(tmp_path, extra_args = extra_args)
+
+    assert not _has_moe_cache(cmd), cmd
+    assert backend._moe_cache_flags == []
+
+
+def test_a_fit_ctx_equal_to_studios_still_prices_the_share(tmp_path, _moe_cache_host, monkeypatch):
+    caps = dict(_CACHE_CAPS_ON, supports_fit_ctx = True)
+    _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192)
+    assert cmd[cmd.index("--fit-ctx") + 1] == "8192", cmd
+    assert _has_moe_cache(cmd), cmd
+
+    _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192, extra_args = ["--fit-ctx", "8192"])
+    assert _has_moe_cache(cmd), cmd
+    # Studio's emitted --fit-ctx beats an inherited one.
+    monkeypatch.setenv("LLAMA_ARG_FIT_CTX", "4096")
+    _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192)
+    assert _has_moe_cache(cmd), cmd
+    _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192, extra_args = ["--fit-ctx", "4096"])
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "switch, free_mib, cached",
+    [
+        ("on", 24_000, True),
+        ("on", 14_000, True),
+        ("off", 20_000, False),
+        ("auto", 20_000, True),
+        ("bogus", 24_000, False),
+    ],
+)
+def test_the_cache_switch_overrides_the_band(
+    tmp_path, _moe_cache_host, monkeypatch, switch, free_mib, cached
+):
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", switch)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+
+    assert _has_moe_cache(cmd) is cached, cmd
+    assert backend._moe_cache_flags == (_MOE_CACHE if cached else [])
+
+
+def test_the_cache_switch_on_still_needs_an_eligible_launch(tmp_path, _moe_cache_host, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+
+    _backend, cmd = _cache_launch(tmp_path, gpus = 2)
+    assert not _has_moe_cache(cmd), cmd
+    _backend, cmd = _cache_launch(tmp_path, ram_gib = 24)
+    assert not _has_moe_cache(cmd), cmd
+    _backend, cmd = _cache_launch(tmp_path, extra_args = ["--moe-cache-mib", "0"])
+    assert cmd.count("--moe-cache-mib") == 1 and cmd[cmd.index("--moe-cache-mib") + 1] == "0"
+
+
+def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
+    """A compute buffer that grows by ``raise_cost_gib`` from the default micro-batch
+    to the expert-spill one, like gemma-4's 364 -> 616 MiB (plus host share)."""
+
+    def estimate(
+        self,
+        *,
+        n_ubatch = None,
+        n_parallel = 1,
+        per_device_tensor = False,
+        **_kw,
+    ):
+        base = _GIB // 2
+        if n_ubatch is not None and int(n_ubatch) >= 2048:
+            return base + int(raise_cost_gib * _GIB)
+        return base
+
+    monkeypatch.setattr(LlamaCppBackend, "_estimate_compute_buffer_bytes", estimate)
+
+
+@pytest.mark.parametrize(
+    "free_mib, raised, cached",
+    [
+        # ~25% resident, raise costs ~27%: default micro-batch, split.
+        (11_000, False, False),
+        # ~44% resident, the raise would cost ~15%: the cache at the default micro-batch.
+        (14_000, False, True),
+        # ~70% resident, the raise costs ~10% or less: raised, and 63% is in the band.
+        (18_000, True, True),
+        # ~83% resident, the raise costs ~8%: raised, 77% is above the band, so split.
+        (20_000, True, False),
+    ],
+    ids = ["tight_split", "tight_cache", "roomy_cache", "roomy_split"],
+)
+def test_the_spill_raise_is_priced_against_the_resident_experts(
+    tmp_path, _moe_cache_host, monkeypatch, free_mib, raised, cached
+):
+    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+
+    assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
+    assert (backend._moe_spill_batch_restore is not None) is raised
+    assert _has_moe_cache(cmd) is cached, cmd
+
+
+@pytest.mark.parametrize(
+    "cache_switch, cached",
+    # ~51% resident, and the raise costs ~5% of those experts (under the 10% rule): the
+    # raise stays whether or not the cache follows it.
+    [("auto", True), ("off", False)],
+    ids = ["cache_takes_the_raise", "split_takes_the_raise"],
+)
+def test_a_cache_launch_keeps_a_raise_the_resident_rule_allows(
+    tmp_path, _moe_cache_host, monkeypatch, cache_switch, cached
+):
+    _ubatch_sized_compute_buffer(monkeypatch, 0.4)
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", cache_switch)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, 15_000, 32_000)])
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert backend._moe_spill_batch_restore is not None
+    assert _has_moe_cache(cmd) is cached, cmd
+
+
+@pytest.mark.parametrize(
+    "free_mib, ubatch",
+    [(11_000, ["1120"]), (14_000, ["1120"]), (18_000, ["2048"])],
+    ids = ["tight_split", "tight_cache", "roomy"],
+)
+def test_a_skipped_raise_keeps_the_projector_micro_batch(
+    tmp_path, _moe_cache_host, monkeypatch, free_mib, ubatch
+):
+    """gemma-4's vision projector needs -ub 1120; a skipped 2048 raise must hand it back."""
+    monkeypatch.setattr(llama_cpp_module, "_launch_required_ubatch", lambda *a, **k: 1120)
+    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
+    _backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+
+    assert _ubatch_values(cmd) == ubatch, cmd
+
+
+def test_the_v0_1_905_workaround_args_are_honoured(tmp_path, _moe_cache_host):
+    """``--moe-cache-mib 0 -ub 512``, the workaround users ran on v0.1.906."""
+    backend, cmd = _cache_launch(tmp_path, extra_args = ["--moe-cache-mib", "0", "-ub", "512"])
+
+    assert backend._moe_cache_flags == []
+    assert cmd.count("--moe-cache-mib") == 1 and cmd[cmd.index("--moe-cache-mib") + 1] == "0"
+    assert _ubatch_values(cmd) == ["512"], cmd
+
+
+def test_the_spill_ubatch_switch(tmp_path, _moe_cache_host, monkeypatch):
+    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
+
+    # Auto skips the raise at 11,000 MiB free and keeps it at 18,000 (see above).
+    monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "on")
+    _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
+    assert _ubatch_values(cmd) == ["2048"], cmd
+
+    monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "off")
+    _backend, cmd = _cache_launch(tmp_path, memory = [(0, 18_000, 32_000)])
+    assert _ubatch_values(cmd) == [], cmd
+
+
+def test_both_switches_on_restore_the_ungated_launch(tmp_path, _moe_cache_host, monkeypatch):
+    """v0.1.906: the cache and the 2048 micro-batch on any eligible spill."""
+    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "on")
+    # Auto launches neither here (25% resident, a costly raise).
+    _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
+
+    assert _has_moe_cache(cmd) and _ubatch_values(cmd) == ["2048"], cmd
+
+
+def test_both_switches_off_restore_the_v0_1_905_launch(tmp_path, _moe_cache_host, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "off")
+    monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "off")
+    _backend, cmd = _cache_launch(tmp_path)
+
+    assert not _has_moe_cache(cmd) and _ubatch_values(cmd) == [], cmd
+    assert _batch_values(cmd) in ([], ["2048"]), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, ubatch",
+    [(["-ub", "1024"], ["1024"]), (["-b", "4096"], [])],
+    ids = ["user_ubatch", "user_batch"],
+)
+def test_a_user_batch_pair_wins_and_the_band_still_decides(
+    tmp_path, _moe_cache_host, extra_args, ubatch
+):
+    backend, cmd = _cache_launch(tmp_path, extra_args = extra_args)
+
+    assert _ubatch_values(cmd) == ubatch, cmd
+    assert backend._moe_spill_batch_restore is None
+    assert _has_moe_cache(cmd), cmd
+    _backend, cmd = _cache_launch(tmp_path, extra_args = extra_args, memory = [(0, 24_000, 32_000)])
+    assert not _has_moe_cache(cmd), cmd
+
+
 def test_an_unsized_inherited_projector_skips_the_cache_not_the_placement(
     tmp_path, _moe_cache_host, monkeypatch
 ):
@@ -4672,7 +5388,7 @@ def test_a_cache_crash_retries_once_without_the_cache(
             },
         )()
 
-    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    backend, gguf = _moe_backend(tmp_path, size_gib = 20, memory = _IN_BAND_CARD)
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
     backend._available_system_memory_mib = lambda: 256 * 1024
@@ -4861,30 +5577,44 @@ def test_the_launch_discounts_the_lazy_table(tmp_path, _moe_cache_host):
     """The same predicate through the launch: a 20 GiB MoE whose 12 GiB n-gram table
     is lazy fits 8 GiB of VRAM plus 12 GiB of RAM only without the table."""
     plain = _cache_launch(
-        tmp_path, ram_gib = 12, caps = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+        tmp_path,
+        ram_gib = 12,
+        caps = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False),
+        memory = _EIGHT_GIB_CARD,
     )[1]
     assert _load_mode(plain) is None, plain
 
     lazy = {"per_layer_token_embd.weight": 12 * _GIB}
     no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
-    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, caps = no_auto)
+    card = dict(memory = _EIGHT_GIB_CARD)
+    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, caps = no_auto, **card)
     assert _load_mode(cmd) is None, "qwen3moe does not mark the table lazy"
 
-    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto)
+    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, **card)
     assert _load_mode(cmd) == "none", cmd
     # And "-lzm off" makes it an ordinary tensor again.
     _b, cmd = _cache_launch(
-        tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, extra_args = ["-lzm", "off"]
+        tmp_path,
+        ram_gib = 12,
+        lazy = lazy,
+        arch = "qwen4exp",
+        caps = no_auto,
+        extra_args = ["-lzm", "off"],
+        **card,
     )
     assert _load_mode(cmd) is None, cmd
 
 
 @pytest.mark.parametrize("ram_gib, cached", [(60, True), (40, False)])
-def test_the_cache_admission_counts_the_experts_once(tmp_path, _moe_cache_host, ram_gib, cached):
+def test_the_cache_admission_counts_the_experts_once(
+    tmp_path, _moe_cache_host, monkeypatch, ram_gib, cached
+):
     """Qwen3.8-Flash-Next IQ1_S on one 24 GiB card. With the lazy table on disk the
     load is ~41 GiB; the cache needs the 37.11 GiB of experts plus the 8 GiB prompt
     cache pinned in RAM, which 60 GiB holds and 40 GiB does not. Charging the experts
-    to RAM on top of model_size, as well as in it, refused the 60 GiB host."""
+    to RAM on top of model_size, as well as in it, refused the 60 GiB host. Forced on,
+    so the RAM admission is what decides, not the resident-share band."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
     backend, cmd = _cache_launch(
         tmp_path,
         size_gib = _QWEN38_TOTAL / _GIB,
@@ -4903,12 +5633,14 @@ def test_the_cache_admission_counts_the_experts_once(tmp_path, _moe_cache_host, 
 
 @pytest.mark.parametrize("ram_gib, cached", [(45, False), (60, True)])
 def test_qwen38_on_a_16gib_card_launches_pinned_past_the_host_guard(
-    tmp_path, _moe_cache_host, ram_gib, cached
+    tmp_path, _moe_cache_host, monkeypatch, ram_gib, cached
 ):
     """Qwen3.8-Flash-Next IQ1_S on one 16 GiB card, end to end with the real host-RAM
     preflight. The fit leaves the 26.82 GiB lazy table out and picks "none"; the
     preflight charged the whole 67.55 GiB file, read a shortfall, and the pageable
-    rewrite took the pinned mode (and with it the cache) back out."""
+    rewrite took the pinned mode (and with it the cache) back out. Forced on: ~13% of
+    the experts stay resident, below the band, so auto keeps the split here."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
     backend, cmd = _cache_launch(
         tmp_path,
         size_gib = _QWEN38_TOTAL / _GIB,
@@ -4949,11 +5681,18 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
     lazy = {"per_layer_token_embd.weight": 12 * _GIB}
     no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
 
-    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto)
+    card = dict(memory = _EIGHT_GIB_CARD)
+    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, **card)
     assert _load_mode(cmd) is None, cmd
     # An explicit "on" is read lazily on any device.
     _b, cmd = _cache_launch(
-        tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, extra_args = ["-lzm", "on"]
+        tmp_path,
+        ram_gib = 12,
+        lazy = lazy,
+        arch = "qwen4exp",
+        caps = no_auto,
+        extra_args = ["-lzm", "on"],
+        **card,
     )
     assert _load_mode(cmd) == "none", cmd
 

@@ -15,6 +15,7 @@ from auth.authentication import get_current_subject
 from models.auth import (
     AccountActiveRequest,
     AccountListResponse,
+    AccountModelAccessRequest,
     AccountResponse,
     AccountSetupResponse,
     CreateAccountRequest,
@@ -82,6 +83,9 @@ def retire_account_roots(account: AccountContext):
     from storage.studio_db import close_wal_keeper_for
 
     close_wal_keeper_for(run_as(account, storage_roots.workspace_root) / "studio.db")
+    from core.inference import file_history
+
+    file_history.close_store(run_as(account, storage_roots.account_path, "file_history"))
     roots = {root.absolute() for root in run_as(account, storage_roots.managed_account_roots)}
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     moved: list[tuple[Path, Path]] = []
@@ -161,6 +165,15 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             retire_account_loads(account_id)
             account_access.retire_resident_shares(account_id)
         return result
+
+
+@router.put("/{account_id}/model-access", response_model = AccountResponse)
+def set_account_model_access(account_id: str, payload: AccountModelAccessRequest):
+    with _account_errors():
+        result = storage.set_account_model_allowlist(account_id, payload.model_allowlist)
+    # A shared resident it may no longer use needs a fresh, gated load to join again.
+    account_access.retire_resident_shares(account_id)
+    return result
 
 
 @router.delete("/{account_id}", status_code = status.HTTP_204_NO_CONTENT)

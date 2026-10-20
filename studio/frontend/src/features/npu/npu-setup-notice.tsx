@@ -3,10 +3,8 @@
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
 import { AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { NpuStatus } from "./api";
 import type { NpuCatalog } from "./use-npu-catalog";
 
 export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
@@ -15,8 +13,8 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
   return (
     <div className="flex flex-col gap-2 px-2.5 pb-2 text-xs">
       <p className="text-muted-foreground">
-        {status.hardware.name ?? "AMD NPU"}: FastFlowLM's own NPU builds, run
-        through Lemonade. GGUF models run on the GPU.
+        {status.hardware.name ?? "AMD NPU"} found. These models run on the NPU,
+        separately from the GPU models listed below.
       </p>
       {status.error || problems.length > 0 ? (
         <div className="flex gap-2 rounded-lg bg-destructive/10 p-2.5 text-destructive">
@@ -63,45 +61,6 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
           <Spinner className="size-3.5 text-muted-foreground" />
         </div>
       ) : null}
-      <NpuPoweredBy status={status} />
     </div>
-  );
-}
-
-const version = (value: string | null | undefined) =>
-  value ? ` v${value}` : "";
-
-export function NpuPoweredBy({
-  status,
-  className,
-}: {
-  status: NpuStatus;
-  className?: string;
-}) {
-  return (
-    <p
-      data-testid="npu-powered-by"
-      className={cn("text-ui-11 text-muted-foreground", className)}
-    >
-      Powered by{" "}
-      <a
-        href="https://github.com/ROCm/FastFlowLM"
-        target="_blank"
-        rel="noreferrer"
-        className="underline underline-offset-2"
-      >
-        FastFlowLM
-      </a>
-      {version(status.versions?.fastflowlm)} and{" "}
-      <a
-        href="https://github.com/lemonade-sdk/lemonade"
-        target="_blank"
-        rel="noreferrer"
-        className="underline underline-offset-2"
-      >
-        Lemonade
-      </a>
-      {version(status.versions?.lemonade)}.
-    </p>
   );
 }

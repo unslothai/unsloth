@@ -85,6 +85,13 @@ def _sources(project: Optional[dict]) -> list[tuple[tuple[Path, ...], Optional[P
     root = Path(project["rootPath"])
     sources.append(((root / "AGENTS.md", root / "CLAUDE.md"), None))
     # Where the chat's tools run, so the model can keep notes there; after the user's file, which it refines.
+    from storage.studio_db import available_project_working_folder
+
+    working = available_project_working_folder(project)
+    if working:
+        folder = Path(working)
+        sources.append(((folder / "AGENTS.md", folder / "CLAUDE.md"), folder))
+        return sources
     sandbox_path = project.get("sandboxPath")
     # Same containment tools._get_project_workdir requires before running anything there.
     if sandbox_path and os.path.realpath(sandbox_path).startswith(os.path.realpath(root) + os.sep):

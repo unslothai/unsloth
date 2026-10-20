@@ -655,8 +655,11 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and node.func.id == "_ubatch_for_slots"
     ]
     # sizing pass, embedding slot clamp, candidate split pricing, fit-time reduction, the
-    # MoE expert-spill raise, then the post-launch record
-    assert len(calls) == 6, f"expected six re-derivations, found {len(calls)}"
+    # MoE expert-spill raise, the post-launch record, the drafter probe's four
+    # (per-slot compute buffer, candidate footprint, one-slot trim, slot commit; #8872)
+    # the slot restore when GPU selection abandons that cut, and the plan repriced when a
+    # drafterless retry restores it
+    assert len(calls) == 12, f"expected twelve re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact

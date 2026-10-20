@@ -11,9 +11,10 @@ const source = readAudioWorkspaceSource();
 const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
 
 test("Audio exposes the shared picker eject action only while idle", () => {
+  // The selector keeps showing the last Transcribe model once it is unloaded; Eject there did nothing.
   assert.match(
     source,
-    /onEject=\{\s*busy === null && selectorValue && !showLastPageModel\s*\? handleEject\s*: undefined\s*\}/,
+    /onEject=\{\s*audioEjectAvailable\(\{\s*mode,\s*busy,\s*hasValue: Boolean\(selectorValue\),\s*showLastPageModel,\s*sttReady,\s*\}\)\s*\? handleEject\s*: undefined\s*\}/,
   );
   assert.match(source, /const handleEject = useCallback\(\(\) => \{\s*if \(busy !== null\) \{/);
   assert.match(
@@ -25,7 +26,7 @@ test("Audio exposes the shared picker eject action only while idle", () => {
 test("Speak eject unloads the live main model and cancels stale auto-load", () => {
   assert.match(
     source,
-    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{\s*model_path: activeModel,\s*force_cancel_active: stopDecision\.forceCancelActive,\s*\}\)/,
+    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{\s*model_path: (?:slotModel \?\? )?activeModel,\s*force_cancel_active: stopDecision\.forceCancelActive,\s*\}\)/,
   );
   assert.match(
     source,
@@ -38,7 +39,7 @@ test("Speak eject asks about running chats before tearing anything down", () => 
   // Unforced, the backend refused with a 409 the page could only print as a toast.
   assert.match(
     source,
-    /const activeModel = status\?\.active_model;[\s\S]*confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*\)/,
+    /const activeModel = status\?\.active_model;[\s\S]*confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",?\s*\)/,
   );
   // Declining leaves the page as it was: the staged download dies only past the check.
   assert.match(
@@ -48,19 +49,24 @@ test("Speak eject asks about running chats before tearing anything down", () => 
   // Queues would otherwise start a fresh run on the model this eject removes.
   assert.match(
     source,
-    /cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*await unloadModel/,
+    /if \(!slotEject\) \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*await unloadModel/,
   );
 });
 
 test("a Speak load asks the same question and forces from the answer", () => {
   assert.match(
     source,
-    /const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+    /const stopDecision = keepsChat\s*\? \{[\s\S]*?\}\s*: await confirmStopRunningChatsIfNeeded\(\);/,
+  );
+  // Only a load kept beside the chat model skips the question: its chats keep running.
+  assert.match(
+    source,
+    /const keepsChat = useChatRuntimeStore\.getState\(\)\.keepModelsLoaded;/,
   );
   // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
   assert.match(
     source,
-    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*isGguf,\s*\};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
+    /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*isGguf,\s*deviceOverride,\s*\};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
   );
   // Declining releases the slot and drops the queued pick, which would else re-ask.
   assert.match(
@@ -80,7 +86,7 @@ test("a Speak load stops local queues only once /load is going out", () => {
   // happened, leaving the old model resident and the work gone.
   assert.match(
     source,
-    /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\},/,
+    /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*\},/,
   );
   assert.doesNotMatch(
     source,
@@ -94,7 +100,7 @@ test("a model swap holds Chat's lifecycle gate across the question", () => {
   // work nobody confirmed stopping, and a load started in that window 409s again.
   assert.match(
     source,
-    /ttsLoadInFlight\.current = true;[\s\S]{0,400}?const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);\s*if \(lifecycleLease === null\) \{[\s\S]*?return;\s*\}[\s\S]{0,200}?const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+    /ttsLoadInFlight\.current = true;[\s\S]{0,400}?const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);\s*if \(lifecycleLease === null\) \{[\s\S]*?return;\s*\}[\s\S]{0,500}?const stopDecision = keepsChat[\s\S]{0,300}?: await confirmStopRunningChatsIfNeeded\(\);/,
   );
   // Released before the queued replay, which needs the gate for its own attempt.
   assert.match(
@@ -104,7 +110,7 @@ test("a model swap holds Chat's lifecycle gate across the question", () => {
   // Eject takes it before it goes busy, so it is held across its own question too.
   assert.match(
     source,
-    /const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);[\s\S]{0,300}?setBusy\("unloading"\);[\s\S]{0,400}?confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",/,
+    /const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);[\s\S]{0,300}?setBusy\("unloading"\);[\s\S]{0,800}?confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",/,
   );
   assert.match(
     source,
@@ -126,24 +132,19 @@ test("a load confirmed after Audio is hidden is deferred, not sent", () => {
   );
 });
 
-test("Transcribe eject only unloads a sidecar owned by the current selection", () => {
+test("the Generate-mode release only unloads a sidecar owned by the current selection", () => {
   assert.match(
     source,
     /const handleEject[\s\S]*?if \(mode === "transcribe"\)/,
   );
-  // One release path, shared with the Generate-mode transition, so both stay owned.
   // The selection is forgotten only after the unload lands, so a 500 leaves Eject usable.
   assert.match(
     source,
-    /const releaseTranscribeSelection = useCallback\([\s\S]*await unloadSttModel\(sttEngineForRepoId\(selected\), claim\);\s*forget\(\);\s*await refreshSttStatus\(\)/,
+    /const releaseTranscribeSelection = useCallback\([\s\S]*?await unloadSttModel\(sttEngineFor\(selected\), claim\);\s*forgetSttSelection\(\);\s*await refreshSttStatus\(\)/,
   );
   assert.match(
     source,
-    /const forget = \(\) => \{[\s\S]*setSelectedSttRepo\(null\);\s*\};[\s\S]*if \(!owned\) \{\s*forget\(\);/,
-  );
-  assert.match(
-    source,
-    /if \(mode === "transcribe"\)[\s\S]*await releaseTranscribeSelection\(\)/,
+    /const forgetSttSelection = useCallback\(\(\) => \{[\s\S]*?setSelectedSttRepo\(null\);\s*\}, \[\]\);[\s\S]*?if \(!owned\) \{\s*forgetSttSelection\(\);/,
   );
   assert.match(
     adapterSource,
@@ -153,6 +154,42 @@ test("Transcribe eject only unloads a sidecar owned by the current selection", (
     source,
     /if \(!sttReady\) \{[\s\S]*sttStatusRefreshGeneration\.current \+= 1;[\s\S]*void releaseTranscribeSelection\(\)/,
   );
+});
+
+test("an explicit Transcribe eject unloads what is resident, claimed or not", () => {
+  // A reload, Settings > Voice or dictation leave no page claim; the claim-gated release then
+  // skipped the unload while the page still toasted success.
+  const eject = source.match(
+    /const ejectTranscribeModel = useCallback\([\s\S]*?\n {2}\}, \[/,
+  )?.[0];
+  assert.ok(eject);
+  assert.match(
+    eject,
+    /const \{ released \} = await unloadSttModel\(\s*sttLoadedEngine \?\? undefined,\s*sttLoadedModel,\s*\);\s*forgetSttSelection\(\);\s*await refreshSttStatus\(\);\s*return sttEjectSucceeded\(released\) \? "unloaded" : "kept";/,
+  );
+  assert.doesNotMatch(eject, /sttLoadedByThisPage|claim/);
+  assert.match(
+    source,
+    /if \(mode === "transcribe"\)[\s\S]*?const outcome = await ejectTranscribeModel\(\);\s*if \(outcome === "unloaded"\) \{\s*toast\.success\("Transcription model unloaded"/,
+  );
+  // Only the Generate-mode transition keeps the ownership-gated release.
+  assert.doesNotMatch(
+    source,
+    /const handleEject[\s\S]*?await releaseTranscribeSelection\(\)[\s\S]*?const activeModel = status\?\.active_model;/,
+  );
+  assert.match(
+    adapterSource,
+    /const body = \(await response\.json\(\)\.catch\(\(\) => null\)\) as \{\s*released\?: boolean;\s*\} \| null;\s*return \{ released: body\?\.released \};/,
+  );
+});
+
+test("Transcribe re-reads STT status while a model shows as loaded", () => {
+  // The sidecar unloads after its idle keep-alive without telling the page.
+  assert.match(
+    source,
+    /if \(!active \|\| mode !== "transcribe" \|\| busy !== null \|\| !sttLoadedModel\)\s*return;[\s\S]*?window\.setInterval\(refresh, STT_STATUS_POLL_MS\);[\s\S]*?return \(\) => \{\s*window\.clearInterval\(interval\);\s*window\.removeEventListener\("focus", refresh\);\s*document\.removeEventListener\("visibilitychange", refresh\);/,
+  );
+  assert.match(source, /if \(!document\.hidden\) void refreshSttStatus\(\);/);
 });
 
 test("leaving Transcribe releases the sidecar it loaded", () => {
@@ -207,7 +244,7 @@ test("the eject unload names the model this page claimed", () => {
   // request lands; an unscoped unload then tore down a model this page never owned.
   assert.match(
     source,
-    /await unloadSttModel\(sttEngineForRepoId\(selected\), claim\);/,
+    /await unloadSttModel\(sttEngineFor\(selected\), claim\);/,
   );
 });
 
@@ -215,4 +252,60 @@ test("the unload request carries the claimed model to the backend", () => {
   const adapter = adapterSource;
   assert.match(adapter, /export function unloadSttModel\(\s*engine\?: SttEngine,\s*model\?: string,/);
   assert.match(adapter, /if \(model\) params\.set\("model", model\);/);
+});
+
+test("the engine picked for a Transcribe model is remembered and reused", () => {
+  // Re-deriving it from the id drops the GGUF flag, so a suffix-less GGUF repo read as Transformers.
+  assert.match(
+    source,
+    /const engine = sttEngineForRepoId\(id, meta\.isGguf\);\s*sttEngines\.current\.set\(id\.toLowerCase\(\), engine\);/,
+  );
+  assert.match(source, /usePersistedChoice\("unsloth:audio:last-stt-engine", ""\)/);
+  assert.match(
+    source,
+    /setLastSttEngine\(sttEngines\.current\.get\(repo\.toLowerCase\(\)\) \?\? ""\);/,
+  );
+  assert.match(source, /engineForRepo: sttEngineFor,/);
+  assert.match(source, /selectedSttRepo \? sttEngineFor\(selectedSttRepo\) : null,/);
+  assert.match(source, /const engine = sttEngineFor\(repo\);[\s\S]{0,400}?await readSttResidency\(engine\)/);
+});
+
+test("Transcribe reuses a resident model that a legacy key or other casing names", () => {
+  // An exact compare reloaded it on every run and took over dictation's model.
+  assert.match(
+    source,
+    /const resident = await readSttResidency\(engine\)[\s\S]*?if \(\s*!resident \|\|\s*resident\.engine !== engine \|\|\s*!sttSameModel\(\s*repo,\s*resident\.model,\s*sttSidecarKeyFor,\s*engine,\s*sttRepoIdForSidecarKey,\s*\)\s*\) \{\s*if \(!\(await ensureSttLoaded\(repo, model, engine\)\)\) return null;/,
+  );
+});
+
+test("a status read never overwrites a pick made while it was in flight", () => {
+  // The poll widened the window in which a stale read reverted the selection and dropped the pick.
+  assert.match(
+    source,
+    /if \(selectedSttRepoRef\.current !== selectedRepo\) return;[\s\S]{0,400}?selectedSttRepoRef\.current = reconciled;\s*setSelectedSttRepo\(reconciled\);/,
+  );
+});
+
+test("the resident engine is adopted even when the repo id is unchanged", () => {
+  // Reconcile returns the same id when only the engine moved, so a guard on a changed id
+  // left a stale Transformers engine and the row never showed ready.
+  assert.match(
+    source,
+    /if \(reconciled && residency\) \{\s*sttEngines\.current\.set\(reconciled\.toLowerCase\(\), residency\.engine\);\s*\}/,
+  );
+});
+
+test("a pick made while Transcribe reads residency is not overridden by the old run", () => {
+  assert.match(
+    source,
+    /const generation = sttLoadGeneration\.current;[\s\S]*?await readSttResidency\(engine\)[\s\S]*?if \(sttLoadGeneration\.current !== generation \|\| !activeRef\.current\) return null;\s*const current = selectedSttRepoRef\.current;\s*if \(current !== null && current !== repo\) return null;\s*if \(current === null\) \{\s*selectedSttRepoRef\.current = repo;\s*setSelectedSttRepo\(repo\);\s*\}/,
+  );
+});
+
+test("leaving Audio during the residency read skips the transcription load", () => {
+  // The hidden page has no load to abort yet, so ensureSttLoaded would still post /stt/load.
+  assert.match(
+    source,
+    /await readSttResidency\(engine\)[\s\S]{0,400}?\|\| !activeRef\.current\) return null;[\s\S]*?await ensureSttLoaded\(repo, model, engine\)/,
+  );
 });

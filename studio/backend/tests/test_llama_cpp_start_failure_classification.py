@@ -72,6 +72,16 @@ class TestDiffusionArchitectures:
         assert "Images page" in msg
         assert arch in msg
 
+    def test_an_image_arch_this_host_cannot_build_promises_no_page(self, monkeypatch):
+        import core.inference.diffusion_engine_router as router
+
+        monkeypatch.setattr(router, "family_buildable_here", lambda fam, *, model_kind: False)
+        out = "error loading model: unknown model architecture: 'qwen_image21'"
+        msg = _classify(out, "/models/qwen-image-2.1-Q4_K_M.gguf", "unsloth/Qwen-Image-2.1-GGUF")
+        assert "qwen_image21" in msg
+        assert "Use Unsloth's Images page to generate" not in msg
+        assert "does not list it either" in msg
+
     # A video arch must name the VIDEO page: Images cannot run it either.
     @pytest.mark.parametrize("arch", sorted(LlamaCppBackend._VIDEO_ARCHES))
     def test_every_video_arch_routes_to_the_video_page(self, arch):
@@ -219,6 +229,13 @@ class TestOllamaAndFallback:
                 "gguf_init_from_reader: failed to read tensor info\n",
                 "quantization type 142",
             ),
+            # #13908, KittenML/kitten-tts-2 TQ2_1 on b11696-mix: an id below the bundled count.
+            (
+                "gguf_init_from_reader: tensor 'blk.0.ffn_down.weight' of type 43 ((null)) has "
+                "6144 elements per row, not a multiple of block size (0)\n"
+                "gguf_init_from_reader: failed to read tensor info\n",
+                "quantization type 43",
+            ),
             # #11259 report: a group-128 Q2_0 tensor where the build defines group-64 Q2_0.
             (
                 "gguf_init_from_reader: tensor 'dspark.fc.weight' has offset 337718592, "
@@ -250,6 +267,17 @@ class TestOllamaAndFallback:
             "llama_model_load: error loading model: tensor 'output.weight' data is not "
             "within the file bounds, model is corrupted or incomplete\n"
             "llama_model_load_from_file_impl: failed to load model\n"
+        )
+        msg = _classify(out, "/models/m.gguf", "local/m", 1)
+        assert "GGUF file is valid" in msg
+        assert "cannot read this GGUF" not in msg
+
+    def test_known_type_with_ragged_rows_keeps_the_generic_message(self):
+        # A type this build has, with a row length its blocks do not divide: a damaged file.
+        out = (
+            "gguf_init_from_reader: tensor 'blk.0.ffn_down.weight' of type 12 (q4_K) has "
+            "6100 elements per row, not a multiple of block size (256)\n"
+            "gguf_init_from_reader: failed to read tensor info\n"
         )
         msg = _classify(out, "/models/m.gguf", "local/m", 1)
         assert "GGUF file is valid" in msg

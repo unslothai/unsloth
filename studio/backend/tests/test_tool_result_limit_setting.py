@@ -34,7 +34,10 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", limit.DEFAULT_MAX_CHARS)
     monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: None)
     token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
+    # `execute_tool` sets the room for the rest of the thread.
+    room = tools._REQUEST_RESULT_BUDGET.set(None)
     yield
+    tools._REQUEST_RESULT_BUDGET.reset(room)
     tools._REQUEST_CONTEXT_TOKENS.reset(token)
 
 
@@ -190,10 +193,80 @@ def test_route_refuses_a_save_the_environment_decides(monkeypatch):
 
 
 @pytest.mark.parametrize("saved", [4000, 64000])
-def test_non_code_tools_keep_the_install_cap(monkeypatch, saved):
-    """MCP, web and edit results have no spill file, and the row names Python and Terminal only."""
+def test_built_in_non_code_tools_keep_the_install_cap(monkeypatch, saved):
     limit.set_max_chars(saved)
     tools._REQUEST_CONTEXT_TOKENS.set(131072)
     monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
-    out = tools._fit_result_to_room(FILE_50K, "mcp__server__tool")
+    out = tools._fit_result_to_room(FILE_50K, "edit_file")
     assert "truncated to 16000 chars for the model" in out
+
+
+# The reporter's case (#13576): Settings at 32,000, a third-party MCP tool returning 23,098 characters.
+MCP_23K = ("y" * 99 + "\n") * 230 + "z" * 98
+
+
+@pytest.mark.parametrize("saved, cut", [(32000, None), (64000, None), (4000, 4000)])
+def test_mcp_results_follow_the_setting(monkeypatch, saved, cut):
+    limit.set_max_chars(saved)
+    tools._REQUEST_CONTEXT_TOKENS.set(131072)
+    monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    if cut is None:
+        assert out == MCP_23K
+    else:
+        assert f"truncated to {cut} chars for the model; 23098 chars total" in out
+
+
+def test_mcp_results_keep_the_default_where_the_window_is_unknown(monkeypatch):
+    limit.set_max_chars(32000)
+    tools._REQUEST_CONTEXT_TOKENS.set(None)
+    monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    assert "truncated to 16000 chars for the model" in out
+
+
+def test_a_small_window_still_lowers_a_raised_mcp_cap(monkeypatch):
+    limit.set_max_chars(32000)
+    tools._REQUEST_CONTEXT_TOKENS.set(8192)
+    monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    # 8192 tokens * 4 chars * 0.35 share = 11,468 before the notice is priced in.
+    assert "chars for the model; 23098 chars total" in out and len(out) < 11468 + 200
+
+
+def test_an_mcp_call_through_execute_tool_gets_the_saved_cap(monkeypatch):
+    from core.inference import mcp_client
+    from storage import mcp_servers_db
+
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a.example/mcp")
+    mcp_client.cache_tools("srv1", [{"name": "dump", "inputSchema": {"type": "object"}}])
+    monkeypatch.setattr(tools, "call_tool_sync", lambda **kwargs: MCP_23K)
+    limit.set_max_chars(32000)
+    call = dict(context_tokens = 131072, result_budget_tokens = 100_000)
+    assert tools.execute_tool("mcp__srv1__dump", {}, **call) == MCP_23K
+    limit.set_max_chars(4000)
+    assert "truncated to 4000 chars" in tools.execute_tool("mcp__srv1__dump", {}, **call)
+
+
+@pytest.mark.parametrize("saved, cut", [(4000, 4000), (32000, None), (None, None)])
+def test_an_api_model_mcp_result_honours_only_a_lowered_setting(saved, cut):
+    """External providers price no room (`context_tokens=0`)."""
+    if saved:
+        limit.set_max_chars(saved)
+    tools._REQUEST_CONTEXT_TOKENS.set(0)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    if cut is None:
+        assert out == MCP_23K
+    else:
+        assert f"truncated to {cut} chars for the model; 23098 chars total" in out
+    assert tools._fit_result_to_room(FILE_50K, "edit_file") == FILE_50K
+
+
+def test_an_api_model_mcp_result_honours_a_lowered_environment_cap(monkeypatch):
+    monkeypatch.setenv(limit.MAX_CHARS_ENV, "4000")
+    monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 4000)
+    tools._REQUEST_CONTEXT_TOKENS.set(0)
+    out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
+    assert "truncated to 4000 chars for the model; 23098 chars total" in out

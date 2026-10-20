@@ -1139,6 +1139,8 @@ def install_environment() -> dict[str, str]:
             "https_proxy",
             "http_proxy",
             "no_proxy",
+            # Where uv puts a managed Python; a custom Studio home keeps it inside the home.
+            "UV_PYTHON_INSTALL_DIR",
         }
     }
     from utils.paths.storage_roots import cache_root

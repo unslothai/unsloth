@@ -931,11 +931,15 @@ class TestNudgeRetryOpenai:
                     cancel_event = cancel_event,
                 )
             )
-            await asyncio.wait_for(hanging.started.wait(), 0.2)
+            # Both waits only bound a hang, so they are generous: reaching the retry is a whole
+            # upstream round trip plus the nudge decision, 30-60 ms idle but past 1 s on a
+            # saturated CI runner, which a 0.2 s cap turned into a TimeoutError. An absorbed
+            # cancel still fails: the task then waits on the hanging client and never raises.
+            await asyncio.wait_for(hanging.started.wait(), 10)
             cancel_event.set()
 
             with pytest.raises(inf_mod._NonStreamingRequestCancelled):
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, 10)
 
             assert hanging.closed.is_set()
 
@@ -1697,12 +1701,25 @@ def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
     from pathlib import Path
 
     names = ("heal_gate", "nudge_enabled")
-    forwards = ('body.get("response_format")', "_extract_response_format(payload)")
+    forwards = (
+        'body.get("response_format")',
+        "_extract_response_format(payload)",
+        "_sf_response_format",
+    )
     source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(
         encoding = "utf-8"
     )
+    tree = ast.parse(source)
+    # The MLX name may hold None only where _response_format_beside_tools sets the contract aside.
+    sources = [
+        ast.get_source_segment(source, getattr(node.value, "func", node.value))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "_sf_response_format" for t in node.targets)
+    ]
+    assert sources == ["_response_format_beside_tools"], sources
     calls, missing = [], []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) not in names:

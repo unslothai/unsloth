@@ -10,7 +10,13 @@ import {
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
 import { AttachmentBrowserOpenContext } from "@/components/assistant-ui/attachment-browser-open-context";
 import { filesOpenInBrowser } from "@/features/browser";
-import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
+import {
+  DocumentView,
+  MAX_DOCUMENT_PREVIEW_BYTES,
+  type PageTarget,
+  documentKind,
+  isMarkdown,
+} from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import {
   type MediaViewerActions,
@@ -39,6 +45,7 @@ import {
   type ReactNode,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -153,12 +160,13 @@ export const AttachmentViewer: FC<{
 
 type Loaded = { blob?: Blob; text?: string; plain?: string; truncated?: boolean; error?: boolean };
 
-const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; scale: number }> = ({
-  name,
-  contentType,
-  loaded,
-  scale,
-}) => {
+const DocumentBody: FC<{
+  name: string;
+  contentType?: string;
+  loaded: Loaded;
+  scale: number;
+  pageTarget?: PageTarget;
+}> = ({ name, contentType, loaded, scale, pageTarget }) => {
   const t = useT();
   if (loaded.error) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
@@ -185,7 +193,20 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   }
   const kind = documentKind(name, contentType);
   if (!loaded.blob || !kind) return <Spinner className="m-auto size-6" />;
-  return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
+  // The Library's ceiling: a larger file was read on the server, and parsing it here blocks the main thread.
+  if (loaded.blob.size > MAX_DOCUMENT_PREVIEW_BYTES) {
+    return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
+  }
+  return (
+    <DocumentView
+      file={loaded.blob}
+      kind={kind}
+      name={name}
+      contentType={contentType}
+      scale={scale}
+      pageTarget={pageTarget}
+    />
+  );
 };
 
 const DocumentDialog: FC<
@@ -194,9 +215,11 @@ const DocumentDialog: FC<
     load: () => Promise<Blob>;
     redactFromReload: boolean;
     textFallback?: boolean;
+    page?: number;
   }>
-> = ({ children, source, load, redactFromReload, textFallback = false }) => {
+> = ({ children, source, load, redactFromReload, textFallback = false, page }) => {
   const [open, setOpen] = useState(false);
+  const pageTarget = useMemo(() => (page ? { page } : undefined), [page]);
   const [scale, setScale] = useState(1);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const markdown = isMarkdown(source.name, source.contentType ?? "");
@@ -265,7 +288,13 @@ const DocumentDialog: FC<
         />
       }
     >
-      <DocumentBody name={source.name} contentType={source.contentType} loaded={loaded ?? {}} scale={scale} />
+      <DocumentBody
+        name={source.name}
+        contentType={source.contentType}
+        loaded={loaded ?? {}}
+        scale={scale}
+        pageTarget={pageTarget}
+      />
     </AttachmentViewer>
   );
 };
@@ -288,12 +317,10 @@ const SentOriginalDialog: FC<
 };
 
 /** A file outside any message, such as a chat with files source, read on open: pages, markdown or
- *  text (a text/* blob). */
-export const LocalFileDialog: FC<PropsWithChildren<{ name: string; load: () => Promise<Blob> }>> = ({
-  children,
-  name,
-  load,
-}) => (
+ *  text (a text/* blob); a PDF opens at `page` (1-based). */
+export const LocalFileDialog: FC<
+  PropsWithChildren<{ name: string; load: () => Promise<Blob>; page?: number }>
+> = ({ children, name, load, page }) => (
   <DocumentDialog
     source={{
       kind: "document",
@@ -309,6 +336,7 @@ export const LocalFileDialog: FC<PropsWithChildren<{ name: string; load: () => P
     load={load}
     redactFromReload={false}
     textFallback={true}
+    page={page}
   >
     {children}
   </DocumentDialog>

@@ -45,7 +45,7 @@ MAX_IMAGE_PIXELS = 40_000_000
 
 
 def is_image_tool(name: str) -> bool:
-    return name == "view_image" or name.startswith(MCP_TOOL_PREFIX)
+    return name in ("view_image", "browser_screenshot") or name.startswith(MCP_TOOL_PREFIX)
 
 
 # The tool loop's own notes, which results saved before #11367 carry after the array (#11358).
@@ -356,8 +356,8 @@ def flattened_rgb(image, background = None):
     """
     from PIL import Image, ImageChops, ImageStat
 
-    # Match routes/inference.py's _image_bytes_to_png_b64: scale declared I;16
-    # values to 8-bit before RGB conversion clips them. I;16B/I;16L must pass
+    # Scale declared I;16 values to 8-bit before RGB conversion clips them; plain
+    # "I" and "F" declare no range, so they convert as-is. I;16B/I;16L must pass
     # through "I" because they reject point().
     if image.mode.startswith("I;16"):
         if image.mode != "I;16":

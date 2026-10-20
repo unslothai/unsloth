@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { FileEmpty02Icon, Folder02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
+import type { ReactElement, ReactNode } from "react";
 import type { DocumentStatus } from "../types/rag";
 
 export const STAGE_LABELS: Record<string, string> = {
@@ -25,6 +26,9 @@ export function DocumentStatusChip({
   stage,
   error,
   onRemove,
+  onOpen,
+  openTrigger,
+  onRetry,
   shared = false,
 }: {
   filename: string;
@@ -33,11 +37,27 @@ export function DocumentStatusChip({
   stage?: string | null;
   error?: string | null;
   onRemove?: () => void;
+  /** Makes the name a button that opens the source. */
+  onOpen?: () => void;
+  /** Hands that button to a viewer that owns its own open state (e.g. a dialog trigger). */
+  openTrigger?: (trigger: ReactElement) => ReactNode;
+  onRetry?: () => void;
   /** Indexed for the whole project rather than this one chat: swap the file
    * glyph for a folder so the two scopes are told apart at a glance. */
   shared?: boolean;
 }) {
   const processing = status === "pending" || status === "running";
+  const openable = status === "completed" && (onOpen || openTrigger);
+  const nameButton = openable ? (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`Preview ${filename}`}
+      className="truncate rounded-sm text-left underline-offset-2 hover:underline focus-visible:underline focus-visible:outline-none"
+    >
+      {filename}
+    </button>
+  ) : null;
   return (
     <Badge
       variant="outline"
@@ -61,7 +81,25 @@ export function DocumentStatusChip({
         strokeWidth={2}
         className="size-3 shrink-0"
       />
-      <span className="truncate">{filename}</span>
+      {nameButton ? (
+        openTrigger ? (
+          openTrigger(nameButton)
+        ) : (
+          nameButton
+        )
+      ) : (
+        <span className="truncate">{filename}</span>
+      )}
+      {status === "failed" && onRetry ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          aria-label={`Retry ${filename}`}
+          className="shrink-0 text-ui-10 font-medium underline-offset-2 hover:underline"
+        >
+          Retry
+        </button>
+      ) : null}
       {/* spinner while indexing, else close button */}
       {processing ? (
         <span className="flex shrink-0 items-center gap-1 text-ui-10 text-muted-foreground">

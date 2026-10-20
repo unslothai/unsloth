@@ -7,13 +7,18 @@
 // block in its text. No render_html tool call, no extra message. Defers to the
 // other paths to avoid duplicates: skips the message when a render_html tool
 // already rendered it, and skips full documents the in-place collapse handles.
+// React components (```jsx / ```tsx) get a card after the HTML ones; their code
+// stays in place, and nothing else renders them.
 
 import {
   memoOnArray,
   partsHaveRenderableRenderHtmlTool,
 } from "@/components/assistant-ui/message-derived";
 import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
-import { extractHtmlFences } from "@/features/chat/artifacts/html-fences";
+import {
+  extractHtmlFences,
+  extractReactFences,
+} from "@/features/chat/artifacts/html-fences";
 import { useAuiState } from "@assistant-ui/react";
 import { type FC, useMemo } from "react";
 
@@ -67,7 +72,15 @@ export const MessageHtmlArtifacts: FC = () => {
       );
   }, [isRunning, hasRenderHtmlTool, textBlob, collapsesFullDocs]);
 
-  if (fences.length === 0) {
+  const reactFences = useMemo(
+    () =>
+      isRunning
+        ? []
+        : textBlob.split(PART_SEPARATOR).flatMap((part) => extractReactFences(part)),
+    [isRunning, textBlob],
+  );
+
+  if (fences.length === 0 && reactFences.length === 0) {
     return null;
   }
 
@@ -78,6 +91,16 @@ export const MessageHtmlArtifacts: FC = () => {
           key={i}
           code={fence.source}
           title={i === 0 ? "HTML preview" : `HTML preview ${i + 1}`}
+          source="fence"
+        />
+      ))}
+      {reactFences.map((fence, i) => (
+        <ArtifactCard
+          key={`react-${i}`}
+          kind="react"
+          lang={fence.lang}
+          code={fence.source}
+          title={i === 0 ? "React preview" : `React preview ${i + 1}`}
           source="fence"
         />
       ))}

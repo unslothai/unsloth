@@ -55,7 +55,14 @@ def _route(
         ("2.14.0", ("torch==2.14.0", "torchvision==0.29.*", "torchaudio==2.11.*")),
     ],
 )
-@pytest.mark.parametrize("host", [{"platform": "linux"}, {"platform": "win32", "machine": "AMD64"}])
+@pytest.mark.parametrize(
+    "host",
+    [
+        {"platform": "linux"},
+        {"platform": "linux", "machine": "aarch64"},
+        {"platform": "win32", "machine": "AMD64"},
+    ],
+)
 def test_a_resident_release_is_kept(monkeypatch, mod, resident, expected, host):
     _route(monkeypatch, mod, torch = resident, **host)
     assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == expected
@@ -71,6 +78,23 @@ def test_no_keepable_release_repairs_to_the_default_range(monkeypatch, mod, resi
         assert mod._cuda_repair_torch_specs(CU130, default) is default
 
 
+@pytest.mark.parametrize("machine", ["aarch64", "arm64"])
+def test_aarch64_torch_2_9_repairs_to_the_default_range(monkeypatch, mod, machine):
+    # cu130 serves aarch64 torch 2.9 but no torchvision 0.24 / torchaudio 2.9 for it.
+    _route(monkeypatch, mod, torch = "2.9.1", machine = machine)
+    for default in (mod._CUDA_TORCH_PKG_SPEC, mod._TORCH_FLAVOR_REPAIR_PKG_SPEC):
+        assert mod._cuda_repair_torch_specs(CU130, default) is default
+
+
+def test_x86_64_torch_2_9_is_kept(monkeypatch, mod):
+    _route(monkeypatch, mod, torch = "2.9.1")
+    assert mod._cuda_repair_torch_specs(CU130, mod._CUDA_TORCH_PKG_SPEC) == (
+        "torch==2.9.1",
+        "torchvision==0.24.*",
+        "torchaudio==2.9.*",
+    )
+
+
 @pytest.mark.parametrize(
     "index_url, kwargs",
     [
@@ -83,7 +107,8 @@ def test_no_keepable_release_repairs_to_the_default_range(monkeypatch, mod, resi
         (CU130, {"platform": "win32", "machine": "AMD64", "woa": True}),
         (CU130, {"platform": "win32", "machine": "AMD64", "py": (3, 12)}),
         (CU130, {"platform": "darwin"}),
-        (CU130, {"machine": "aarch64"}),
+        (CU130, {"machine": "armv7l"}),
+        (CU130, {"platform": "darwin", "machine": "arm64"}),
         (CU130, {"py": (3, 12)}),
         (CU130, {"py": (3, 11)}),
         (None, {}),

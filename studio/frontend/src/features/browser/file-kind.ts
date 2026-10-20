@@ -4,6 +4,7 @@
 import { documentKind, isMarkdown } from "@/components/file-viewer";
 import { attachmentTextLanguage } from "@/features/chat";
 import { mediaKind } from "./media-kind";
+import { REACT_PREVIEW_TYPE } from "./react-preview-type";
 
 export const HTML_NAME = /\.(html?|xhtml)$/i;
 const HTML_TYPE = /^(text\/html|application\/xhtml\+xml)\b/i;
@@ -13,7 +14,7 @@ export const TEXT_NAME =
 
 export { type Media, mediaKind } from "./media-kind";
 
-export type TextFileKind = "html" | "markdown" | "code" | "text";
+export type TextFileKind = "html" | "react" | "markdown" | "code" | "text";
 
 export function isHtml(name: string, contentType: string): boolean {
   return HTML_NAME.test(name) || HTML_TYPE.test(contentType);
@@ -22,11 +23,18 @@ export function isHtml(name: string, contentType: string): boolean {
 /** How a text file shows, or null for documents, media and files that don't show as text. */
 export function textFileKind(name: string, contentType: string, plainText = false): TextFileKind | null {
   if (plainText) return "text";
+  if (contentType === REACT_PREVIEW_TYPE) return "react";
   if (mediaKind(name, contentType) || documentKind(name, contentType)) return null;
   if (!(TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType)) return null;
   if (isHtml(name, contentType)) return "html";
   if (isMarkdown(name, contentType)) return "markdown";
   return attachmentTextLanguage(name, null) ? "code" : "text";
+}
+
+/** The kind the file bar follows: a React preview gets the HTML page's controls. */
+export function fileBarKind(name: string, contentType: string, plainText = false): TextFileKind | null {
+  const kind = textFileKind(name, contentType, plainText);
+  return kind === "react" ? "html" : kind;
 }
 
 // Types a blob URL shows without running anything. Anchored, so SVG or smuggled params fail.

@@ -1178,6 +1178,9 @@ class TestLoadHubDownloadExclusion:
             "engine",
             "engine_parallelism",
             "engine_precision",
+            "engine_kv_cache_dtype",
+            "engine_seed",
+            "engine_gpu_memory_utilization",
             "requires_trust_remote_code",
             "speculative_type",
             "requested_parallel_slots",
@@ -1212,6 +1215,8 @@ class TestLoadHubDownloadExclusion:
             "audio_workflows",
             "audio_reference_text",
             "audio_required_inputs",
+            "audio_request_inputs",
+            "audio_device_fallback",
             # Constant None: nor converts one.
             "audio_options_by_workflow",
             "audio_workflow_tasks",

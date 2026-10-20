@@ -8,6 +8,7 @@ import * as jsxRuntime from "react/jsx-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type * as BarModule from "../src/features/rag/components/thread-documents-bar.tsx";
+import type * as FolderGroupsModule from "../src/features/rag/components/linked-folder-groups.ts";
 import type * as GateModule from "../src/features/chat/hooks/use-rag-tool-disabled.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -40,6 +41,25 @@ const Nothing = () => null;
 const Passthrough = ({ children }: { children?: React.ReactNode }) =>
   React.createElement(React.Fragment, null, children);
 
+const chatStub = {
+  isThreadIncognito: () => false,
+  chatHistoryClearBoundary: { capture: () => 0 },
+  attachmentFileKind: (name: string) =>
+    name.endsWith(".pdf") ? "pdf" : "word",
+  isTextAttachment: (name: string) => name.endsWith(".txt"),
+};
+const fileViewerStub = {
+  MAX_DOCUMENT_PREVIEW_BYTES: 50,
+  documentKind: (name: string) =>
+    name.endsWith(".pdf") ? "pdf" : name.endsWith(".docx") ? "docx" : null,
+  isMarkdown: () => false,
+};
+
+const folderGroups = loadWithStubs<typeof FolderGroupsModule>(
+  new URL("../src/features/rag/components/linked-folder-groups.ts", import.meta.url),
+  { react: React, "../api/rag-api": { listLinkedFolders: async () => [] } },
+);
+
 const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
   new URL("../src/features/rag/components/thread-documents-bar.tsx", import.meta.url),
   {
@@ -68,11 +88,12 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       TooltipTrigger: Passthrough,
     },
     "@/components/ui/spinner": { Spinner: Nothing },
-    "./preview-store": {
-      useDocumentPreviewStore: selectorStore({ openPreview: () => undefined }),
-    },
     "@/lib/chevron-icons": {},
-    "@assistant-ui/react": { useAui: () => ({}) },
+    "@assistant-ui/react": {
+      useAui: () => ({}),
+      useAuiState: (select: (s: { threadListItem: { id: string } }) => unknown) =>
+        select({ threadListItem: { id: "local-1" } }),
+    },
     "@/lib/utils": {
       cn: (...classes: unknown[]) => classes.filter(Boolean).join(" "),
     },
@@ -81,20 +102,14 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       readPendingAttachmentTargetClaim: () => null,
       useChatRuntimeStore,
     },
+    "@/features/chat/stores/chat-preferences-store": {
+      useChatPreferencesStore: (
+        select: (s: { filesPanelCollapsed: boolean; setFilesPanelCollapsed: () => void }) => unknown,
+      ) => select({ filesPanelCollapsed: false, setFilesPanelCollapsed: () => {} }),
+    },
     "@/features/chat/hooks/use-rag-tool-disabled": gate,
-    "@/features/chat": {
-      isThreadIncognito: () => false,
-      chatHistoryClearBoundary: { capture: () => 0 },
-      attachmentFileKind: (name: string) =>
-        name.endsWith(".pdf") ? "pdf" : "word",
-      isTextAttachment: (name: string) => name.endsWith(".txt"),
-    },
-    "@/components/file-viewer": {
-      MAX_DOCUMENT_PREVIEW_BYTES: 50,
-      documentKind: (name: string) =>
-        name.endsWith(".pdf") ? "pdf" : name.endsWith(".docx") ? "docx" : null,
-      isMarkdown: () => false,
-    },
+    "@/features/chat": chatStub,
+    "@/components/file-viewer": fileViewerStub,
     "@/features/native-intents": {
       useNativeAttachmentTargetKey: () => null,
       useNativeIntentStore: selectorStore({ pendingAttachments: {} }),
@@ -124,9 +139,25 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
         nativeDropTarget: () => undefined,
       }),
     },
+    "./use-upload-queue": {
+      useUploadQueue: (run: (items: unknown[]) => void) => ({
+        enqueue: run,
+        queued: 0,
+      }),
+    },
+    "./linked-folder-groups": folderGroups,
     "@/components/ui/alert-dialog": new Proxy({}, { get: () => Passthrough }),
     "./document-status-chip": { STAGE_LABELS: {} },
     "./knowledge-base-dialog": { KnowledgeBaseDialog: Nothing },
+    "./rag-document-trigger": { RagDocumentTrigger: Passthrough },
+    "./source-file": loadWithStubs(
+      new URL("../src/features/rag/components/source-file.ts", import.meta.url),
+      {
+        "@/components/file-viewer": fileViewerStub,
+        "@/features/chat": chatStub,
+        "../api/rag-api": { getDocumentFileUrl: async () => "" },
+      },
+    ),
     "./staged-source": { EXPIRY_GRACE_MS: 0 },
     "./use-rag-documents": {
       uploadItemFromIntent: () => null,
@@ -138,6 +169,8 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
         loading: false,
         upload: async () => undefined,
         remove: async () => undefined,
+        retry: async () => undefined,
+        canRetry: () => false,
       }),
     },
   },
@@ -225,9 +258,8 @@ test("a linked folder's files collapse into one folder card", () => {
   }
 });
 
-// The source preview has text only for PDFs when opened without a chunk; other files open in the
-// attachment viewer, whatever their size, and a type it cannot draw is not offered at all.
-test("non-PDF cards open only when the attachment viewer can show them", () => {
+// Every indexed card opens: the browser, the attachment viewer or a new tab.
+test("indexed cards of any format open", () => {
   extraProjectDocs = [
     { id: "doc-2", filename: "notes.docx", status: "completed" },
     { id: "doc-3", filename: "book.epub", status: "completed" },
@@ -237,10 +269,10 @@ test("non-PDF cards open only when the attachment viewer can show them", () => {
       { checkpoint: "unsloth/Qwen3-4B-GGUF", supportsTools: true },
       true,
     );
-    assert.match(html, /aria-label="Preview handbook\.pdf/);
-    assert.match(html, /aria-label="Preview notes\.docx/);
-    assert.doesNotMatch(html, /aria-label="Preview book\.epub/);
-    assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="book\.epub/);
+    for (const name of ["handbook\\.pdf", "notes\\.docx", "book\\.epub"]) {
+      assert.match(html, new RegExp(`aria-label="Preview ${name}`));
+    }
+    assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*aria-label="book\.epub/);
   } finally {
     extraProjectDocs = [];
   }

@@ -110,7 +110,6 @@ def test_make_relocatable_never_shrinks_a_script_below_its_recorded_size(tmp_pat
 
     for name, original in originals.items():
         assert (venv / "bin" / name).stat().st_size >= original, name
-    # Padded, not truncated: the script still ends in what the installer wrote.
     text = (venv / "bin" / "unsloth").read_text(encoding = "utf-8")
     assert text.startswith(_studio_stage.RELOCATABLE_SHEBANG)
     assert text.endswith("print('cli')\n")
@@ -128,7 +127,6 @@ def test_a_finalised_stage_under_a_long_path_passes_the_record_size_check(tmp_pa
     python.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
     python.chmod(0o755)
     (venv / "bin" / "unsloth").chmod(0o755)
-    # What RECORD holds for the console scripts, as sizes rather than a real wheel.
     recorded = {name: (venv / "bin" / name).stat().st_size for name in ("unsloth", "pip")}
     assert len(str(venv)) > 68
 
@@ -281,7 +279,6 @@ def test_a_refusal_records_the_shell_version_or_nothing(
 
 
 def test_a_refusal_that_cannot_write_the_marker_still_reports_the_error(monkeypatch, tmp_path):
-    # An unwritable home is the one case where the refusal matters more than the marker.
     blocker = tmp_path / "studio"
     blocker.parent.mkdir(parents = True, exist_ok = True)
     blocker.write_text("not a directory", encoding = "utf-8")

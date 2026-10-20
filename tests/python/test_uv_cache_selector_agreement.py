@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""studio/setup.sh and unsloth_cli must answer the same question the same way.
-
-The contract this branch adds is that `unsloth studio update` reuses the cache the install
-recorded, and it is implemented twice: once in POSIX shell for a standalone `bash
-studio/setup.sh`, once in Python for the CLI and the desktop updater. Whenever the two
-disagree about one cache directory, one of them picks a cache the other would have rejected,
-which is the divergence the branch exists to remove.
-
-tests/python/test_cross_platform_parity.py pins the SOURCE of the installers against each
-other. This pins BEHAVIOUR: it runs both real implementations over the same fixtures and
-fails on any disagreement. Every rule here was added to one side and missed on the other at
-least once during review, which is why the check is a test rather than a convention.
-"""
+"""`studio/setup.sh` and `unsloth_cli` must pick the same uv cache, so both run over the same fixtures."""
 
 from __future__ import annotations
 
@@ -34,14 +22,10 @@ pytestmark = pytest.mark.skipif(
     os.name != "posix", reason = "studio/setup.sh only ever runs on POSIX; install.ps1 is Windows"
 )
 
-# Windows has no os.geteuid, and a skipif DECORATOR is evaluated at collection, before the
-# module-level skip above can spare it. Reading it through getattr keeps the file importable
-# there; a non-root default is the right answer on a platform with no euid.
+# Windows lacks os.geteuid and skipif decorators run at collection.
 _IS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
 
-# The helpers the two scans are built from. Sliced out by name because setup.sh does work at
-# load and cannot be sourced whole; a missing one would make every shell answer read as false,
-# so the extraction is asserted rather than assumed.
+# Sliced by name since setup.sh cannot be sourced; extraction is asserted.
 _HELPERS = (
     "_uv_is_bucket_name",
     "_uv_cache_probe_writable",
@@ -71,7 +55,6 @@ def _shell_helpers() -> str:
 
 def _ask_shell(func: str, cache: Path) -> bool:
     script = _shell_helpers() + f'\nif {func} "$1"; then exit 0; else exit 1; fi\n'
-    # No inherited UV_* : a developer's own cache settings must not decide the answer.
     env = {k: v for k, v in os.environ.items() if not k.startswith("UV_")}
     return (
         subprocess.run(
@@ -186,12 +169,11 @@ def test_both_implementations_agree_on_usability(tmp_path, shape):
 @pytest.mark.parametrize(
     "store, usable",
     [
-        # Probed, because `uv pip install` writes them: a read-only one aborts uv.
+        # Probed: `uv pip install` writes these, so a read-only one aborts uv.
         ("archive-v0", False),
         ("sdists-v9", False),
         ("git-v0", False),
-        # Not probed: measured on uv 0.10.7, `uv pip install` succeeds with these at 0555, so
-        # rejecting for them would throw away the warm cache the branch exists to find.
+        # Measured on uv 0.10.7: install succeeds with these at 0555.
         ("osv-v0", True),
         ("binaries-v0", True),
         ("environments-v2", True),
@@ -216,18 +198,16 @@ def test_both_implementations_agree_on_which_stores_are_probed(tmp_path, store, 
 @pytest.mark.parametrize(
     "shard, usable",
     [
-        # uv REWRITES index metadata on every resolve, so a shard it cannot write aborts it.
+        # uv rewrites index metadata on every resolve, so a read-only shard aborts it.
         ("simple-v20/pypi", False),
         ("wheels-v6/pypi", False),
-        # Content-addressed stores are only added to; measured, uv installs fine with these
-        # at 0555, and rejecting would discard the warm cache over a shard uv never rewrites.
+        # Content-addressed stores are only added to; uv works with them at 0555.
         ("interpreter-v4/abcd", True),
         ("archive-v0/pkg", True),
-        # `index/<hash>` is where uv puts metadata for a CUSTOM --index-url, which Studio uses
-        # for the torch wheels. Measured on the pinned uv 0.12.1, a 0555 one aborts.
+        # index/<hash> holds custom --index-url metadata; a 0555 one aborts uv 0.12.1.
         ("simple-v20/index/e1d141a6ca947dff", False),
         ("wheels-v6/index/e1d141a6ca947dff", False),
-        # Bounded on purpose: the level below the hash is one per package and is measured fine.
+        # Bounded: the per-package level below the hash was measured fine.
         ("wheels-v6/index/e1d141a6ca947dff/idna", True),
         ("simple-v20/pypi/deeper", True),
     ],

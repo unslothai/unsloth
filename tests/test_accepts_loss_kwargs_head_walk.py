@@ -1061,3 +1061,19 @@ def test_a_compiled_wrapper_keeps_the_value_and_its_marker_together(ns, mods):
     inner = compiled._orig_mod.__dict__
     assert inner["accepts_loss_kwargs"] is True and ns["_is_guess"](inner)
     assert compiled.__dict__["accepts_loss_kwargs"] is True and ns["_is_guess"](compiled.__dict__)
+
+
+def test_each_forward_is_parsed_once_across_steps(ns, mods, monkeypatch):
+    import inspect
+
+    # _get_batch_samples walks this chain every step; re-reading and re-parsing the source each time
+    # cost milliseconds of host time per step.
+    head = mods.NativeForConditionalGeneration()
+    peft = mods.PeftModelForCausalLM(head)
+    first = [type(m).__name__ for m in ns["_loss_kwargs_chain"](peft)]
+    calls = []
+    original = inspect.getsource
+    monkeypatch.setattr(inspect, "getsource", lambda obj: calls.append(obj) or original(obj))
+    for _ in range(3):
+        assert [type(m).__name__ for m in ns["_loss_kwargs_chain"](peft)] == first
+    assert calls == []
