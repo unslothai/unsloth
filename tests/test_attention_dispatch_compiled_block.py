@@ -12,7 +12,9 @@ ad = pytest.importorskip("unsloth.utils.attention_dispatch")
 def _run(backend, causal_mask = None):
     def attend(Q, K, V):
         bsz, n_heads, q_len, head_dim = Q.shape
-        config = ad.AttentionConfig(backend = backend, n_kv_heads = K.shape[1], n_groups = n_heads // K.shape[1])
+        config = ad.AttentionConfig(
+            backend = backend, n_kv_heads = K.shape[1], n_groups = n_heads // K.shape[1]
+        )
         context = ad.AttentionContext(
             bsz = bsz,
             q_len = q_len,
@@ -57,7 +59,9 @@ def test_plain_causal_attention_traces_with_a_dynamic_length(backend):
 def test_xformers_eager_choice_is_unchanged(monkeypatch):
     # Outside a trace the backend is the caller's: the SDPA route is only taken while compiling.
     seen = []
-    monkeypatch.setattr(ad, "build_xformers_block_causal_mask", lambda *a, **k: seen.append(1) or None)
+    monkeypatch.setattr(
+        ad, "build_xformers_block_causal_mask", lambda *a, **k: seen.append(1) or None
+    )
     monkeypatch.setattr(ad, "move_xformers_attention_bias", lambda bias, device: bias)
     monkeypatch.setattr(ad, "xformers_attention", lambda Q, K, V, attn_bias = None, **kw: Q)
     Q, K, V = _qkv(8)
@@ -74,4 +78,6 @@ def test_rerouted_xformers_keeps_the_fp32_downcast(monkeypatch):
     Q, K, V = _qkv(8)
     out = compiled(Q, K, V)
     assert out.dtype == torch.bfloat16
-    torch.testing.assert_close(out.float().reshape(1, 8, 4, 16), _reference(Q, K, V), atol = 3e-2, rtol = 3e-2)
+    torch.testing.assert_close(
+        out.float().reshape(1, 8, 4, 16), _reference(Q, K, V), atol = 3e-2, rtol = 3e-2
+    )

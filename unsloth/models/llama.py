@@ -3131,7 +3131,6 @@ def _decline_fused_lora_for_fsdp(model, reason = None) -> int:
     return n
 
 
-
 def _legacy_block_compile(model):
     """Per-block compile for FastLanguageModel LoRA. Off before torch 2.11 unless =1: untraced
     fused LoRA (fast_lora.TRACE_LORA_FUNCTIONS) splits each block."""
@@ -3148,6 +3147,7 @@ def _legacy_block_compile(model):
     except Exception as e:
         logger.warning(f"Unsloth: per-block compile not installed: {e}")
         return []
+
 
 class FastLlamaModel:
     @staticmethod

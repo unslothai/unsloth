@@ -14,7 +14,9 @@ _LLAMA = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "l
 def test_patch_peft_model_installs_block_compile():
     tree = ast.parse(_LLAMA.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastLlamaModel")
-    fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "patch_peft_model")
+    fn = next(
+        n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "patch_peft_model"
+    )
     final = [n for n in fn.body if isinstance(n, ast.Return)][-1]
     before = fn.body[fn.body.index(final) - 1]
     assert isinstance(before, ast.Expr) and ast.unparse(before) == "_legacy_block_compile(model)"
@@ -24,8 +26,11 @@ def test_patch_peft_model_installs_block_compile():
 def llama(monkeypatch):
     mod = pytest.importorskip("unsloth.models.llama")
     from unsloth.models import _block_compile
+
     calls = []
-    monkeypatch.setattr(_block_compile, "patch_block_compile", lambda model: calls.append(model) or ["X"])
+    monkeypatch.setattr(
+        _block_compile, "patch_block_compile", lambda model: calls.append(model) or ["X"]
+    )
     monkeypatch.delenv("UNSLOTH_BLOCK_COMPILE_LEGACY", raising = False)
     return mod, calls
 
@@ -42,6 +47,7 @@ def llama(monkeypatch):
 def test_legacy_gate(llama, monkeypatch, env, traceable, installed):
     mod, calls = llama
     from unsloth.kernels import fast_lora
+
     monkeypatch.setattr(fast_lora, "TRACE_LORA_FUNCTIONS", traceable)
     if env is not None:
         monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE_LEGACY", env)
@@ -73,7 +79,12 @@ def test_packed_calls_keep_the_unsloth_layer_forward(monkeypatch):
 
     monkeypatch.setattr(torch, "compile", fake_compile)
 
-    def forward(self, hidden_states, packed_seq_lengths = None, **kwargs):
+    def forward(
+        self,
+        hidden_states,
+        packed_seq_lengths = None,
+        **kwargs,
+    ):
         return self.proj(hidden_states)
 
     forward.__module__ = "unsloth.models.llama"
@@ -82,7 +93,9 @@ def test_packed_calls_keep_the_unsloth_layer_forward(monkeypatch):
         torch.nn.Module.__init__(self)
         self.proj = torch.nn.Linear(8, 8)
 
-    Legacy = type("LegacyToyDecoderLayer", (torch.nn.Module,), {"__init__": __init__, "forward": forward})
+    Legacy = type(
+        "LegacyToyDecoderLayer", (torch.nn.Module,), {"__init__": __init__, "forward": forward}
+    )
     M._wrap(Legacy, {})
     layer = Legacy()
     x = torch.randn(1, 4, 8, requires_grad = True)
