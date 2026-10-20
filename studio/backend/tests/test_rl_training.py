@@ -839,6 +839,57 @@ def test_preference_rows_render_with_their_own_template_kwargs():
     assert rendered[0]["prompt"].startswith("S") and rendered[1]["prompt"].startswith("L")
 
 
+def test_template_keys_only_some_rows_set_are_not_passed_as_null():
+    pytest.importorskip("trl")
+    from core.training.rl import drop_long_prompts, render_preference_rows
+
+    class _Tok:
+        def __call__(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return {"input_ids": text.split()}
+
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            **kw,
+        ):
+            if "reasoning_effort" in kw:
+                # GPT-OSS concatenates the value into the system turn.
+                return "effort " + kw["reasoning_effort"]
+            return "plain"
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": "a",
+                "chosen": "b",
+                "rejected": "c",
+                "chat_template_kwargs": {"reasoning_effort": "low"},
+            },
+            {"prompt": "a", "chosen": "b", "rejected": "c"},
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert out[1]["chat_template_kwargs"] == {"reasoning_effort": None}  # Arrow's struct fill
+    rendered = render_preference_rows(out, _Tok())
+    assert rendered[0]["prompt"] == "effort low" and rendered[1]["prompt"] == "plain"
+    prompts = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "a"}],
+                "chat_template_kwargs": {"reasoning_effort": "low"},
+            },
+            {"prompt": [{"role": "user", "content": "a"}], "chat_template_kwargs": {}},
+        ]
+    )
+    assert len(drop_long_prompts(prompts, _Tok(), 16)) == 2
+
+
 def test_null_message_fields_from_arrow_are_dropped():
     from core.training.rl import _as_messages
     msgs = _as_messages(
