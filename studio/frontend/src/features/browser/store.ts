@@ -698,7 +698,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
           const rebuilt = nativeWebHistory && current.kind === "web" && localOriginOf(current.url) !== localOriginOf(request.url);
           const replace = options?.replace ?? (nativeWebHistory && current.kind === "web" && !rebuilt);
           // So the page it leaves is kept as reached (after redirects and router moves), not as requested.
-          if (rebuilt && !replace && current.kind === "web" && current.method !== "POST" && tab.displayUrl && tab.displayUrl !== current.url) {
+          if (rebuilt && !replace && current.kind === "web" && current.method !== "POST" && tab.displayUrl && isWeb(tab.displayUrl) && tab.displayUrl !== current.url) {
             const reached = webEntry(tab.displayUrl, "GET", undefined, undefined, current.temporary);
             tab = { ...tab, history: tab.history.map((item) => (item === current ? reached : item)) };
             current = reached;

@@ -93,3 +93,21 @@ test("the Local badge follows the tab's granted entry, not a data: or about:blan
   const panel = readSrc("features/browser/browser-panel.tsx");
   assert.match(panel, /const local = entry\.kind === "web" && !tab\.nativeError && localOriginGranted\(tab\.id, entry\.url\);/);
 });
+
+test("a generated page a native tab showed is not kept as its history across a local boundary", () => {
+  setNativeWebHistory(true);
+  try {
+    const store = useBrowserStore.getState();
+    const tab = store.openTabIn(store.chat, "https://example.com/")!;
+    store.updateTab(tab, { displayUrl: "about:blank" });
+    store.navigate(tab, { url: "http://localhost:7860/" });
+    const { history } = useBrowserStore.getState().tabs.find((item) => item.id === tab)!;
+    assert.deepEqual(history.map((entry) => (entry.kind === "web" ? entry.url : entry.kind)), [
+      "https://example.com/",
+      "http://localhost:7860/",
+    ]);
+    store.closeTab(tab);
+  } finally {
+    setNativeWebHistory(false);
+  }
+});
