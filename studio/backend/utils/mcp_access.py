@@ -24,6 +24,7 @@ _Record = tuple[bool, Optional[frozenset[str]]]
 
 # The gate asks on every /mcp request; each read opens its own sqlite connection.
 _CACHE_TTL_S = 1.0
+_RACE_RETRIES = 3
 _cached: Optional[tuple[float, _Record]] = None
 # Bumped by every write, so a read that started before it is never published.
 _generation = 0
@@ -66,22 +67,30 @@ def _read_from_db() -> _Record:
 
 
 def _record() -> Optional[_Record]:
-    """The cached owner record, or None when the read failed or raced a write."""
+    """The cached owner record, or None when the read failed or kept racing writes."""
     global _cached
-    with _cache_lock:
-        cached = _cached
-        if cached is not None and time.monotonic() - cached[0] < _CACHE_TTL_S:
-            return cached[1]
-        generation = _generation
-    try:
-        record = _read_from_db()
-    except Exception:
-        return None
-    with _cache_lock:
-        if generation != _generation:
+    # A read that overlaps a write is retried rather than reported as off: the owner
+    # saving one switch must not hide every tool from agents for that moment.
+    for _ in range(_RACE_RETRIES):
+        with _cache_lock:
+            cached = _cached
+            if cached is not None and time.monotonic() - cached[0] < _CACHE_TTL_S:
+                return cached[1]
+            generation = _generation
+        try:
+            record = _read_from_db()
+        except Exception:
             return None
-        _cached = (time.monotonic(), record)
-    return record
+        with _cache_lock:
+            if generation == _generation:
+                _cached = (time.monotonic(), record)
+                return record
+    return None
+
+
+def owner_record() -> Optional[tuple[bool, Optional[frozenset[str]]]]:
+    """One snapshot of (stored switch, turned-off tools), or None when it could not be read."""
+    return _record()
 
 
 def get_mcp_enabled() -> bool:

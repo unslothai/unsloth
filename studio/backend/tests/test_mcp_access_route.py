@@ -214,3 +214,18 @@ def test_tools_can_be_chosen_while_forced_by_env(client, monkeypatch):
         assert response.status_code == 409
         assert response.json()["detail"] == "Set by UNSLOTH_STUDIO_ENABLE_MCP."
         assert _stored() == {MCP_DISABLED_TOOLS_SETTING_KEY: ["cancel"]}
+
+
+def test_an_unreadable_snapshot_sends_no_tool_list(client, monkeypatch):
+    from utils import mcp_access
+
+    mcp_access._reset_cache()
+
+    def broken():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(mcp_access, "_read_from_db", broken)
+    body = client.get(URL, headers = _owner_session()).json()
+    # null, never 23 tools that only look turned off: a toggle built on that view would save it.
+    assert body["tools"] is None
+    assert body["enabled"] is False

@@ -177,7 +177,8 @@ test("the Agents row shows the status as text and opens the MCP tab", () => {
   assert.match(ROW, /t\("settings\.mcp\.agentsRow\.open"\)/);
   assert.match(
     AGENTS_TAB,
-    /\{t\("settings\.agents\.intro"\)\}\s*<\/p>\s*<UnslothStudioMcpRow \/>/,
+    // Last on the page, after the dry-run section.
+    /<CommandBlock command=\{shellCommands\.dryRun\} \/>\s*<\/div>\s*<\/SettingsSection>\s*<UnslothStudioMcpRow \/>\s*<\/div>\s*\);\s*\}\s*$/,
   );
   assert.doesNotMatch(AGENTS_TAB, /tabs\/mcp-tab/);
 });

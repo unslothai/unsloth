@@ -9,6 +9,7 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 /** Unsloth Studio's own MCP server: agent access and the tools it serves. */
 export function McpTab() {
   const t = useT();
+  const newApiKey = useSettingsDialogStore((s) => s.newApiKey);
 
   return (
     <div className="settings-page">
@@ -26,7 +27,7 @@ export function McpTab() {
       </header>
 
       <div className="flex flex-col gap-2">
-        <McpAccessSection />
+        <McpAccessSection apiKey={newApiKey} />
         <p className="text-xs leading-snug text-muted-foreground">
           {t("settings.mcp.keyHint")}{" "}
           <button
