@@ -263,3 +263,211 @@ async def splice(
             on_done()
         # A clean EOF: flush what is buffered, then close. Errors and cancellation abort.
         await asyncio.gather(_close(a, not clean), _close(b, not clean), return_exceptions = True)
+
+
+# Threaded sessions (the default): once an RPC session is admitted its bytes move in one plain thread
+# over two non-blocking sockets, with no event loop, protocol callbacks or MemoryBIO copies between
+# them. asyncio's TLS layer roughly doubled the cost of the TLS link on ggml-rpc's round trips.
+# UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE=1 restores the asyncio path above.
+ASYNC_SPLICE_ENV = "UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE"
+WRITE_MAX = 256 * 1024
+OUT_LIMIT = 4 * 1024 * 1024
+SELECT_TIMEOUT_S = 1.0
+
+
+def threaded_sessions() -> bool:
+    return os.environ.get(ASYNC_SPLICE_ENV, "").strip().lower() not in ("1", "true", "yes", "on")
+
+
+def tune_raw_socket(sock: socket.socket) -> None:
+    class _W:  # tune_socket reads the socket from a StreamWriter
+        def get_extra_info(
+            self,
+            name,
+            default = None,
+        ):
+            return sock if name == "socket" else default
+
+    tune_socket(_W())
+
+
+class SpliceSession:
+    """One session's two sockets; ``abort`` may be called from any thread (revocation, stop)."""
+
+    def __init__(self) -> None:
+        self._r, self._w = socket.socketpair()
+        self._r.setblocking(False)
+        self._w.setblocking(False)
+        self.aborted = False
+        self.sockets: List[socket.socket] = []
+
+    def abort(self) -> None:
+        self.aborted = True
+        try:
+            self._w.send(b"x")
+        except OSError:
+            pass
+
+    def close(self) -> None:
+        for s in (self._r, self._w):
+            try:
+                s.close()
+            except OSError:
+                pass
+
+
+class _Dir:
+    __slots__ = ("src", "dst", "key", "out", "inflight", "eof")
+
+    def __init__(self, src, dst, key) -> None:
+        self.src, self.dst, self.key = src, dst, key
+        self.out = bytearray()
+        self.inflight = 0
+        self.eof = False
+
+
+def _send_some(d: _Dir) -> bool:
+    """Push d.out into d.dst until it would block; True if it blocked with bytes still queued."""
+    while d.out:
+        # An SSL write that wanted to wait must be retried with the same length.
+        n_try = d.inflight or min(len(d.out), WRITE_MAX)
+        mv = memoryview(d.out)
+        part = mv[:n_try]
+        try:
+            n = d.dst.send(part)
+        except (BlockingIOError, InterruptedError, ssl.SSLWantWriteError, ssl.SSLWantReadError):
+            d.inflight = n_try if isinstance(d.dst, ssl.SSLSocket) else 0
+            return True
+        finally:
+            part.release()
+            mv.release()
+        d.inflight = 0
+        del d.out[:n]
+    return False
+
+
+def _recv_some(d: _Dir, view: memoryview, counters, trace) -> None:
+    while len(d.out) < OUT_LIMIT:
+        try:
+            n = d.src.recv_into(view)
+        except (BlockingIOError, InterruptedError, ssl.SSLWantReadError, ssl.SSLWantWriteError):
+            return
+        if n == 0:
+            d.eof = True
+            return
+        d.out += view[:n]
+        if counters is not None:
+            counters[d.key] = counters.get(d.key, 0) + n
+        if trace is not None:
+            trace.chunk(d.key, n)
+
+
+def _shut(sock: socket.socket, clean: bool) -> None:
+    try:
+        if clean:
+            sock.settimeout(CLOSE_TIMEOUT_S)
+            if isinstance(sock, ssl.SSLSocket):
+                try:
+                    sock.unwrap()  # close_notify; a peer that never answers costs CLOSE_TIMEOUT_S at most
+                except (OSError, ValueError, ssl.SSLError):
+                    pass
+            else:
+                try:
+                    sock.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def socket_splice(
+    a: socket.socket,
+    b: socket.socket,
+    counters: Optional[Dict[str, int]] = None,
+    a_to_b: str = "a_to_b",
+    b_to_a: str = "b_to_a",
+    on_done: Optional[Callable[[], None]] = None,
+    session: Optional[SpliceSession] = None,
+    pending_a: bytes = b"",
+) -> bool:
+    """splice() for the threaded path: copy both ways in the calling thread until either side ends or
+    ``session.abort()`` is called, then close both. One thread drives both sockets, so an SSL object is
+    never read and written concurrently (OpenSSL forbids it). Returns True on a clean EOF."""
+    import selectors
+
+    session = session or SpliceSession()
+    session.sockets = [a, b]
+    for s in (a, b):
+        tune_raw_socket(s)
+        s.setblocking(False)
+    trace_path = os.environ.get(TRACE_ENV)
+    trace = _Trace(trace_path, (a_to_b, b_to_a)) if trace_path else None
+    da, db = _Dir(a, b, a_to_b), _Dir(b, a, b_to_a)
+    if pending_a:
+        da.out += pending_a
+    buf = bytearray(CHUNK)
+    view = memoryview(buf)
+    sel = selectors.DefaultSelector()
+    sel.register(session._r, selectors.EVENT_READ, None)
+    masks = {a: 0, b: 0}
+    clean = False
+    try:
+        while not session.aborted:
+            for d in (da, db):
+                if not d.eof:
+                    _recv_some(d, view, counters, trace)
+            blocked = {da.dst: _send_some(da), db.dst: _send_some(db)}
+            ended = [d for d in (da, db) if d.eof]
+            if ended and not any(d.out for d in ended):
+                # The first EOF ends the session (TLS has no half-close); what it queued is delivered.
+                clean = True
+                break
+            # SSL may already hold decrypted bytes the fd will never signal: read those without waiting.
+            if any(
+                isinstance(d.src, ssl.SSLSocket)
+                and not d.eof
+                and len(d.out) < OUT_LIMIT
+                and d.src.pending()
+                for d in (da, db)
+            ):
+                continue
+            for d in (da, db):
+                want = 0
+                if not d.eof and len(d.out) < OUT_LIMIT:
+                    want |= selectors.EVENT_READ
+                want_w = (
+                    selectors.EVENT_WRITE if blocked[d.src] else 0
+                )  # d.src is the other dir's dst
+                mask = want | want_w
+                if mask != masks[d.src]:
+                    if masks[d.src] and mask:
+                        sel.modify(d.src, mask)
+                    elif mask:
+                        sel.register(d.src, mask)
+                    else:
+                        sel.unregister(d.src)
+                    masks[d.src] = mask
+            sel.select(SELECT_TIMEOUT_S)
+    except (OSError, ssl.SSLError, ValueError):
+        clean = False
+    finally:
+        sel.close()
+        if trace is not None:
+            trace.write(clean)
+        if on_done is not None:
+            on_done()
+        if clean and not session.aborted:
+            for d in (da, db):
+                if d.out:
+                    try:
+                        d.dst.settimeout(CLOSE_TIMEOUT_S)
+                        d.dst.sendall(bytes(d.out))
+                    except (OSError, ssl.SSLError):
+                        clean = False
+        for s in (a, b):
+            _shut(s, clean and not session.aborted)
+        session.close()
+    return clean and not session.aborted

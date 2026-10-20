@@ -55,6 +55,36 @@ async def write_frame(writer: asyncio.StreamWriter, obj: Dict[str, Any]) -> None
     await writer.drain()
 
 
+def _recv_exact(sock, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        part = sock.recv(n - len(buf))
+        if not part:
+            raise FrameError("connection closed mid-frame")
+        buf += part
+    return bytes(buf)
+
+
+def recv_frame(sock, timeout: float = 10.0) -> Dict[str, Any]:
+    """read_frame for a blocking socket (the threaded session path)."""
+    previous = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+        (length,) = _HEADER.unpack(_recv_exact(sock, _HEADER.size))
+        if length > MAX_FRAME:
+            raise FrameError(f"frame of {length} bytes exceeds {MAX_FRAME}")
+        body = _recv_exact(sock, length)
+    except TimeoutError:
+        raise FrameError("timed out waiting for a frame") from None
+    finally:
+        sock.settimeout(previous)
+    return decode(body)
+
+
+def send_frame(sock, obj: Dict[str, Any]) -> None:
+    sock.sendall(encode(obj))
+
+
 def expect(obj: Dict[str, Any], kind: str, **fields: type) -> Dict[str, Any]:
     """``obj`` if it is a ``kind`` frame whose listed fields have the listed types, else FrameError."""
     if obj.get("type") != kind:

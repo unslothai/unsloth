@@ -633,6 +633,8 @@ def test_concurrent_ensure_for_one_worker_makes_one_relay(tmp_path, monkeypatch)
         return server
 
     monkeypatch.setattr(relay_mod.asyncio, "start_server", counting_start)
+    # The asyncio listener is what two creators raced on; the threaded one binds synchronously.
+    monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", "1")
     pki = Pki(tmp_path / "pki")
     relays = RelayManager(pki.leaf("m1", "master"), lambda pid: True)
     try:
@@ -1201,3 +1203,129 @@ def test_the_link_trace_records_both_hops_only_when_asked(make_link, tmp_path, m
             <= 2 * sum(range(1, 21))
         )
         assert all(v["n"] >= 1 for v in row["turnaround_us"].values())
+
+
+# Threaded sessions: the default byte path once a session is admitted (splice.socket_splice).
+
+_SESSION_THREADS = (
+    "unsloth-cluster-agent-conn",
+    "unsloth-cluster-relay-conn",
+    "unsloth-cluster-agent-revalidate",
+    "unsloth-cluster-relay-revalidate",
+)
+
+
+def _session_threads():
+    return [t for t in threading.enumerate() if t.name in _SESSION_THREADS and t.is_alive()]
+
+
+@pytest.mark.parametrize("mode", ["threaded", "async"])
+def test_sessions_take_the_path_the_kill_switch_selects(make_link, monkeypatch, mode):
+    if mode == "async":
+        monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
+    link = make_link()
+    payload = os.urandom(MIB + 5)
+    assert _echo(link, payload, fragment = True) == payload
+    want = 1 if mode == "threaded" else 0
+    assert link.agent.threaded is (mode == "threaded") and link.relay.threaded is (
+        mode == "threaded"
+    )
+    assert link.agent.stats.get("threaded_streams", 0) == want
+    assert link.relay.counters("w1").get("threaded_streams", 0) == want
+    counters = link.relay.counters("w1")
+    assert counters["to_worker"] == len(payload) and counters["from_worker"] == len(payload)
+
+
+def test_a_threaded_session_carries_a_bulk_reply_byte_exact_both_ways(make_link):
+    # Upload and download at once, each fragmented: the one thread per session must never stall a
+    # direction behind the other or reorder bytes.
+    link = make_link()
+    payload = os.urandom(8 * MIB + 3)
+    assert _echo(link, payload, fragment = True) == payload
+    assert link.agent.stats["threaded_streams"] == 1
+
+
+@pytest.mark.parametrize("side", ["relay", "agent"])
+def test_revocation_cuts_a_live_threaded_session(make_link, monkeypatch, side):
+    import studio.cluster_link.agent as agent_mod
+    import studio.cluster_link.relay as relay_mod
+
+    monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)
+    monkeypatch.setattr(agent_mod, "REVALIDATE_S", 0.2)
+    trusted = {"ok": True}
+    if side == "relay":
+        link = make_link(relay_authorize = lambda pid: trusted["ok"] and pid.node_id == "w1")
+    else:
+        link = make_link(agent_authorize = lambda pid: trusted["ok"] and pid.node_id == "m1")
+    sock = link.connect()
+    sock.sendall(b"ping")
+    assert _recv_exact(sock, 4) == b"ping"
+    assert link.agent.stats["threaded_streams"] == 1
+    trusted["ok"] = False
+    assert _closed(sock, 5.0), f"the {side} kept a revoked session open"
+    assert _wait(lambda: link.target.open == 0)
+    assert _wait(lambda: not link.agent.busy and not link.relay._relays["w1"].active)
+    assert _wait(lambda: not _session_threads())
+
+
+def _fds() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def test_abrupt_disconnects_leave_no_session_threads_or_sockets(make_link):
+    link = make_link()
+    linux = sys.platform.startswith("linux")
+    before = _fds() if linux else 0
+    for _ in range(5):
+        sock = link.connect()
+        sock.sendall(b"abc")
+        assert _recv_exact(sock, 3) == b"abc"
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.close()  # RST from the client mid-session
+        assert _wait(lambda: link.target.open == 0)
+        assert _wait(lambda: not link.agent.busy and not link.relay._relays["w1"].active)
+    dropper = make_link(target_mode = "drop", drop_after = 4)
+    sock = dropper.connect()
+    sock.sendall(b"abcd")
+    assert _closed(sock)  # the rpc-server end vanishes mid-session
+    sock.close()
+    assert _wait(lambda: not _session_threads(), 10.0), [t.name for t in _session_threads()]
+    for lk in (link, dropper):
+        assert not lk.agent._sessions and not lk.agent._raw
+        relay = lk.relay._relays["w1"]
+        assert not relay.sessions and not relay.raw
+    if linux:
+        # The second link's own listeners and loop sockets are the only growth allowed.
+        assert _wait(lambda: _fds() <= before + 12), (before, _fds())
+
+
+def test_concurrent_ensure_makes_one_threaded_listener(tmp_path, monkeypatch):
+    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
+    pki = Pki(tmp_path / "pki")
+    relays = RelayManager(pki.leaf("m1", "master"), lambda pid: True)
+    try:
+        endpoints, gate = [], threading.Barrier(8)
+
+        def ensure():
+            gate.wait()
+            endpoints.append(relays.ensure("w1", "127.0.0.1", 50070))
+
+        threads = [threading.Thread(target = ensure) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        assert len(endpoints) == 8 and set(endpoints) == {relays.endpoints()["w1"]}
+        accept = [
+            t
+            for t in threading.enumerate()
+            if t.name == "unsloth-cluster-relay-accept" and t.is_alive()
+        ]
+        assert len(accept) == 1
+    finally:
+        relays.stop()
+    assert _wait(
+        lambda: not [t for t in threading.enumerate() if t.name == "unsloth-cluster-relay-accept"]
+    )

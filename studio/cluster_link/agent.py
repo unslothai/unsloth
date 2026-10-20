@@ -24,7 +24,17 @@ from typing import Any, Callable, Deque, Dict, List, Mapping, Optional, Sequence
 from . import AGENT_PORT_DEFAULT, PROTOCOL_VERSION, RPC_PORT_DEFAULT, SECURE_RPC_ENV, framing, tls
 from .model import LocalIdentity
 from .paths import run_dir, state_dir
-from .splice import STREAM_LIMIT, close_writer, is_private_address, splice
+import socket
+
+from .splice import (
+    STREAM_LIMIT,
+    SpliceSession,
+    close_writer,
+    is_private_address,
+    socket_splice,
+    splice,
+    threaded_sessions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +145,32 @@ def _unlock(fd: Optional[int]) -> None:
     os.close(fd)
 
 
+def _listen(host: str, port: int) -> socket.socket:
+    """The agent's listening socket for threaded sessions (asyncio.start_server's bind, minus asyncio)."""
+    infos = socket.getaddrinfo(host or None, port, type = socket.SOCK_STREAM, flags = socket.AI_PASSIVE)
+    family, socktype, proto, _, addr = infos[0]
+    sock = socket.socket(family, socktype, proto)
+    try:
+        if os.name != "nt":  # on Windows SO_REUSEADDR lets another process take the port
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(addr)
+        sock.listen(16)
+        # A short timeout lets the accept thread notice a stop on every platform.
+        sock.settimeout(0.5)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+def _drop(sock: socket.socket) -> None:
+    for step in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
+        try:
+            step()
+        except (OSError, ValueError):
+            pass
+
+
 class Agent:
     def __init__(
         self,
@@ -185,6 +221,15 @@ class Agent:
         self.counters: Dict[str, int] = {}
         self._rpc_ready: Optional[asyncio.Event] = None
         self._port_lock: Optional[int] = None
+        # Threaded sessions (default): an accept thread and one thread per connection, see splice.py.
+        self.threaded = False
+        self._listener: Optional[socket.socket] = None
+        self._accept_thread: Optional[threading.Thread] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._closed: Optional[asyncio.Event] = None
+        self._slot_lock = threading.Lock()
+        self._raw: set = set()
+        self._sessions: set = set()
 
     @property
     def rpc_endpoint(self) -> str:
@@ -230,18 +275,30 @@ class Agent:
             keyfile = self.identity.keyfile,
             rootfile = self.identity.rootfile,
         )
-        self._server = await asyncio.start_server(
-            self._handle,
-            self.host,
-            self.port,
-            ssl = ctx,
-            ssl_handshake_timeout = HANDSHAKE_TIMEOUT_S,
-            limit = STREAM_LIMIT,
-            reuse_address = True,
-        )
-        sockets = self._server.sockets or []
-        if sockets:
-            self.port = sockets[0].getsockname()[1]
+        self._loop = asyncio.get_running_loop()
+        self._closed = asyncio.Event()
+        self.threaded = threaded_sessions()
+        if self.threaded:
+            self._ctx = ctx
+            self._listener = _listen(self.host, self.port)
+            self.port = self._listener.getsockname()[1]
+            self._accept_thread = threading.Thread(
+                target = self._accept_loop, name = "unsloth-cluster-agent-accept", daemon = True
+            )
+            self._accept_thread.start()
+        else:
+            self._server = await asyncio.start_server(
+                self._handle,
+                self.host,
+                self.port,
+                ssl = ctx,
+                ssl_handshake_timeout = HANDSHAKE_TIMEOUT_S,
+                limit = STREAM_LIMIT,
+                reuse_address = True,
+            )
+            sockets = self._server.sockets or []
+            if sockets:
+                self.port = sockets[0].getsockname()[1]
         # Only once the port is ours: a failed bind must not leave an rpc-server running.
         if self.rpc_binary is not None:
             try:
@@ -250,19 +307,24 @@ class Agent:
                 self._port_lock = _lock_rpc_port(self.rpc_port)
                 self._reap_stale_rpc()
             except RuntimeError:
-                self._server.close()
-                self._server = None
+                if self._server is not None:
+                    self._server.close()
+                    self._server = None
+                self._close_listener()
                 _unlock(self._port_lock)
                 self._port_lock = None
                 raise
             self._supervisor = asyncio.ensure_future(self._supervise())
 
     async def serve_forever(self) -> None:
-        if self._server is None:
+        if self._server is None and self._listener is None:
             await self.start()
-        assert self._server is not None
         try:
-            await self._server.serve_forever()
+            if self._server is not None:
+                await self._server.serve_forever()
+            else:
+                assert self._closed is not None
+                await self._closed.wait()
         except asyncio.CancelledError:
             pass
 
@@ -284,6 +346,17 @@ class Agent:
             self._server = None
         for writer in list(self._conns):
             await close_writer(writer, abort = True)
+        if self._listener is not None:
+            self._close_listener()
+            for session in list(self._sessions):
+                session.abort()
+            for sock in list(self._raw):
+                _drop(sock)
+            if self._accept_thread is not None:
+                await asyncio.to_thread(self._accept_thread.join, 2.0)
+                self._accept_thread = None
+        if self._closed is not None:
+            self._closed.set()
         if self._supervisor is not None:
             self._supervisor.cancel()
             await asyncio.gather(self._supervisor, return_exceptions = True)
@@ -464,11 +537,13 @@ class Agent:
 
     def _admit(self, writer: asyncio.StreamWriter) -> bool:
         peer = writer.get_extra_info("peername")
-        source = str(peer[0]) if peer else ""
+        return self._admit_peer(str(peer[0]) if peer else "", writer.get_extra_info("ssl_object"))
+
+    def _admit_peer(self, source: str, ssl_object: Any) -> bool:
         if not self._source_allowed(source):
             logger.warning("cluster agent: refused %s (not a private address)", source)
             return False
-        pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
+        pid = tls.peer_identity(ssl_object)
         if pid is None or pid.role != "master":
             return False
         try:
@@ -476,6 +551,153 @@ class Agent:
         except Exception:
             logger.exception("cluster agent: authorization check failed")
             return False
+
+    # Threaded sessions -------------------------------------------------------------------------
+
+    def _close_listener(self) -> None:
+        listener, self._listener = self._listener, None
+        if listener is not None:
+            try:
+                listener.close()
+            except OSError:
+                pass
+
+    def _accept_loop(self) -> None:
+        listener = self._listener
+        while listener is not None and not self._stopping:
+            try:
+                conn, addr = listener.accept()
+            except socket.timeout:
+                listener = self._listener
+                continue
+            except OSError:
+                if self._stopping or self._listener is None:
+                    return
+                time.sleep(0.05)  # EMFILE and the like: do not spin
+                continue
+            threading.Thread(
+                target = self._serve_conn,
+                args = (conn, addr),
+                name = "unsloth-cluster-agent-conn",
+                daemon = True,
+            ).start()
+
+    def _serve_conn(self, conn: socket.socket, addr: Any) -> None:
+        self._raw.add(conn)
+        sock: Any = conn
+        try:
+            conn.settimeout(HANDSHAKE_TIMEOUT_S)
+            try:
+                sock = self._ctx.wrap_socket(conn, server_side = True)
+            except (OSError, ssl.SSLError, ValueError):
+                return  # like asyncio: a failed handshake never reaches the handler
+            self._raw.add(sock)
+            self.stats["connections"] += 1
+            if not self._admit_peer(str(addr[0]) if addr else "", sock):
+                self.stats["rejected"] += 1
+                return
+            msg = framing.recv_frame(sock, timeout = HANDSHAKE_TIMEOUT_S)
+            kind = msg.get("type")
+            if kind == "ping":
+                framing.send_frame(sock, {"type": "pong", "version": PROTOCOL_VERSION})
+            elif kind == "status":
+                framing.send_frame(sock, self.status())
+            elif kind == "open_rpc":
+                self._open_rpc_threaded(sock)
+            else:
+                framing.send_frame(sock, {"type": "error", "error": "unknown request"})
+        except (framing.FrameError, OSError, ssl.SSLError, ValueError):
+            pass
+        finally:
+            self._raw.discard(conn)
+            self._raw.discard(sock)
+            for s in {sock, conn}:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+    def _claim_slot(self) -> bool:
+        deadline = time.monotonic() + BUSY_GRACE_S
+        while True:
+            with self._slot_lock:
+                if not self._active:
+                    self._active += 1
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+
+    def _open_rpc_threaded(self, sock: Any) -> None:
+        if not self._claim_slot():
+            framing.send_frame(sock, {"type": "busy"})
+            return
+        released = False
+
+        def release() -> None:
+            nonlocal released
+            with self._slot_lock:
+                if not released:
+                    released = True
+                    self._active -= 1
+
+        try:
+            # Right after start (or a restart) rpc-server may not have bound yet: wait, do not fail the load.
+            loop = self._loop
+            if self.rpc_binary is not None and loop is not None and not loop.is_closed():
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self.wait_rpc_ready(RPC_CONNECT_TIMEOUT_S * 3), loop
+                    ).result(RPC_CONNECT_TIMEOUT_S * 3 + 5)
+                except Exception:
+                    pass
+            try:
+                up = socket.create_connection(self._rpc_target, timeout = RPC_CONNECT_TIMEOUT_S)
+            except OSError as exc:
+                framing.send_frame(
+                    sock, {"type": "error", "error": f"rpc-server unreachable: {exc}"}
+                )
+                return
+            self.stats["rpc_streams"] += 1
+            self.stats["threaded_streams"] = self.stats.get("threaded_streams", 0) + 1
+            framing.send_frame(sock, {"type": "rpc_ok"})
+            pid = tls.peer_identity(sock)
+            session = SpliceSession()
+            self._sessions.add(session)
+            ended = threading.Event()
+
+            def watch() -> None:
+                while not ended.wait(REVALIDATE_S):
+                    try:
+                        ok = pid is not None and bool(self._authorize(pid))
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        logger.warning(
+                            "cluster agent: the master is no longer paired; closing its session"
+                        )
+                        session.abort()
+                        return
+
+            watcher = threading.Thread(
+                target = watch, name = "unsloth-cluster-agent-revalidate", daemon = True
+            )
+            watcher.start()
+            try:
+                socket_splice(
+                    sock,
+                    up,
+                    self.counters,
+                    "from_master",
+                    "to_master",
+                    on_done = release,
+                    session = session,
+                )
+            finally:
+                ended.set()
+                self._sessions.discard(session)
+        finally:
+            release()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self._conns.add(writer)

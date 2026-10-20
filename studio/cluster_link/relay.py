@@ -16,7 +16,19 @@ from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 from . import framing, tls
 from .model import LocalIdentity
-from .splice import STREAM_LIMIT, close_writer, tune_socket, splice
+import socket
+import time
+
+from .splice import (
+    STREAM_LIMIT,
+    SpliceSession,
+    close_writer,
+    socket_splice,
+    splice,
+    threaded_sessions,
+    tune_raw_socket,
+    tune_socket,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +41,14 @@ BUSY_GRACE_S = 0.25
 # A live session re-checks its worker's authorization this often: `unsloth cluster remove` in another
 # process only edits the registry, and authorization is otherwise checked at connect time only.
 REVALIDATE_S = 2.0
+
+
+def _drop(sock: Any) -> None:
+    for step in (lambda: sock.shutdown(socket.SHUT_RDWR), sock.close):
+        try:
+            step()
+        except (OSError, ValueError):
+            pass
 
 
 class RelayError(RuntimeError):
@@ -48,6 +68,10 @@ class _Relay:
     counters: Dict[str, int] = field(default_factory = dict)
     conns: Set[asyncio.StreamWriter] = field(default_factory = set)
     idle: Optional[asyncio.Event] = None
+    # Threaded sessions: the local listener and what is live on it.
+    listener: Optional[socket.socket] = None
+    raw: Set[socket.socket] = field(default_factory = set)
+    sessions: Set[SpliceSession] = field(default_factory = set)
 
     @property
     def endpoint(self) -> str:
@@ -68,6 +92,8 @@ class RelayManager:
         )
         self._relays: Dict[str, _Relay] = {}
         self._ensure_lock: Optional[asyncio.Lock] = None
+        self.threaded = threaded_sessions()
+        self._slot_lock = threading.Lock()
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target = self._run, name = "unsloth-cluster-relay", daemon = True)
         self._thread.start()
@@ -152,13 +178,31 @@ class RelayManager:
             return relay.endpoint
         relay = _Relay(node_id = node_id, host = host, agent_port = agent_port, idle = asyncio.Event())
         relay.idle.set()
-        relay.server = await asyncio.start_server(
-            lambda r, w: self._on_local(relay, r, w),
-            "127.0.0.1",
-            0,
-            limit = STREAM_LIMIT,
-        )
-        relay.local_port = relay.server.sockets[0].getsockname()[1]
+        if self.threaded:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(8)
+                listener.settimeout(0.5)
+            except OSError:
+                listener.close()
+                raise
+            relay.listener = listener
+            relay.local_port = listener.getsockname()[1]
+            threading.Thread(
+                target = self._accept_loop,
+                args = (relay, listener),
+                name = "unsloth-cluster-relay-accept",
+                daemon = True,
+            ).start()
+        else:
+            relay.server = await asyncio.start_server(
+                lambda r, w: self._on_local(relay, r, w),
+                "127.0.0.1",
+                0,
+                limit = STREAM_LIMIT,
+            )
+            relay.local_port = relay.server.sockets[0].getsockname()[1]
         self._relays[node_id] = relay
         return relay.endpoint
 
@@ -170,6 +214,16 @@ class RelayManager:
             relay.server.close()
         for writer in list(relay.conns):
             await close_writer(writer, abort = True)
+        if relay.listener is not None:
+            listener, relay.listener = relay.listener, None
+            try:
+                listener.close()
+            except OSError:
+                pass
+        for session in list(relay.sessions):
+            session.abort()
+        for sock in list(relay.raw):
+            _drop(sock)
 
     async def _stop_all(self) -> None:
         servers = [r.server for r in self._relays.values() if r.server is not None]
@@ -265,6 +319,176 @@ class RelayManager:
             return await framing.read_frame(reader, timeout = timeout)
         finally:
             await close_writer(writer)
+
+    # Threaded sessions -------------------------------------------------------------------------
+
+    def _accept_loop(self, relay: _Relay, listener: socket.socket) -> None:
+        while relay.listener is listener:
+            try:
+                conn, _ = listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                if relay.listener is not listener:
+                    return
+                time.sleep(0.05)
+                continue
+            threading.Thread(
+                target = self._on_local_threaded,
+                args = (relay, conn),
+                name = "unsloth-cluster-relay-conn",
+                daemon = True,
+            ).start()
+
+    def _wait_idle_threaded(self, relay: _Relay) -> bool:
+        deadline = time.monotonic() + BUSY_GRACE_S
+        while relay.active:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
+        return True
+
+    def _claim(self, relay: _Relay) -> bool:
+        with self._slot_lock:
+            if relay.active:
+                return False
+            relay.active = True
+        try:
+            self._loop.call_soon_threadsafe(relay.idle.clear)
+        except RuntimeError:
+            pass  # the manager is stopping
+        return True
+
+    def _unclaim(self, relay: _Relay) -> None:
+        with self._slot_lock:
+            relay.active = False
+        try:
+            self._loop.call_soon_threadsafe(relay.idle.set)
+        except RuntimeError:
+            pass  # the manager is stopping
+
+    def _connect_blocking(self, relay: _Relay) -> Any:
+        try:
+            raw = socket.create_connection(
+                (relay.host, relay.agent_port), timeout = CONNECT_TIMEOUT_S
+            )
+        except OSError as exc:
+            raise RelayError(
+                f"cannot reach {relay.node_id} at {relay.host}:{relay.agent_port}: {exc}"
+            ) from None
+        try:
+            sock = self._ctx.wrap_socket(raw)
+        except (OSError, ssl.SSLError, ValueError) as exc:
+            raw.close()
+            raise RelayError(
+                f"cannot reach {relay.node_id} at {relay.host}:{relay.agent_port}: {exc}"
+            ) from None
+        pid = tls.peer_identity(sock)
+        ok = pid is not None and pid.role == "worker" and pid.node_id == relay.node_id
+        if ok:
+            try:
+                ok = bool(self._authorize(pid))
+            except Exception:
+                logger.exception("cluster relay: authorization check failed")
+                ok = False
+        if not ok:
+            _drop(sock)
+            raise RelayError(
+                f"{relay.host}:{relay.agent_port} is not the paired worker {relay.node_id}"
+            )
+        tune_raw_socket(sock)
+        return sock
+
+    def _on_local_threaded(self, relay: _Relay, conn: socket.socket) -> None:
+        tune_raw_socket(conn)
+        if not self._wait_idle_threaded(relay):
+            # A probe of a held worker: fail it now rather than make it wait out a timeout.
+            _drop(conn)
+            return
+        relay.raw.add(conn)
+        claimed = False
+        upstream: Any = None
+        try:
+            conn.settimeout(FIRST_BYTE_TIMEOUT_S)
+            try:
+                first = conn.recv(STREAM_LIMIT)
+            except OSError:
+                first = b""
+            if not first:
+                return  # a port check, or a client that left: the worker never hears of it
+            if not self._wait_idle_threaded(relay) or not self._claim(relay):
+                return
+            claimed = True
+            try:
+                upstream = self._connect_blocking(relay)
+                relay.raw.add(upstream)
+                framing.send_frame(upstream, {"type": "open_rpc"})
+                reply = framing.recv_frame(upstream, timeout = REPLY_TIMEOUT_S)
+            except (RelayError, framing.FrameError, OSError, ssl.SSLError) as exc:
+                relay.last_error = str(exc)
+                logger.warning("cluster relay %s: %s", relay.node_id, exc)
+                return
+            if reply.get("type") != "rpc_ok":
+                relay.last_error = str(reply.get("error") or reply.get("type"))
+                logger.warning("cluster relay %s: worker said %s", relay.node_id, relay.last_error)
+                return
+            relay.streams += 1
+            relay.last_error = ""
+            relay.counters["threaded_streams"] = relay.counters.get("threaded_streams", 0) + 1
+            relay.counters["to_worker"] = relay.counters.get("to_worker", 0) + len(first)
+
+            def release() -> None:
+                nonlocal claimed
+                if claimed:
+                    claimed = False
+                    self._unclaim(relay)
+
+            pid = tls.peer_identity(upstream)
+            session = SpliceSession()
+            relay.sessions.add(session)
+            ended = threading.Event()
+
+            def watch() -> None:
+                while not ended.wait(REVALIDATE_S):
+                    try:
+                        ok = pid is not None and bool(self._authorize(pid))
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        relay.last_error = f"{relay.node_id} is no longer paired; session closed"
+                        logger.warning("cluster relay: %s", relay.last_error)
+                        session.abort()
+                        return
+
+            threading.Thread(
+                target = watch, name = "unsloth-cluster-relay-revalidate", daemon = True
+            ).start()
+            stream, upstream = upstream, None
+            try:
+                socket_splice(
+                    conn,
+                    stream,
+                    relay.counters,
+                    "to_worker",
+                    "from_worker",
+                    on_done = release,
+                    session = session,
+                    pending_a = first,
+                )
+            finally:
+                ended.set()
+                relay.sessions.discard(session)
+                relay.raw.discard(stream)
+        except (OSError, ssl.SSLError) as exc:
+            relay.last_error = str(exc)
+        finally:
+            relay.raw.discard(conn)
+            if claimed:
+                self._unclaim(relay)
+            if upstream is not None:
+                relay.raw.discard(upstream)
+                _drop(upstream)
+            _drop(conn)
 
     async def _on_local(
         self, relay: _Relay, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
