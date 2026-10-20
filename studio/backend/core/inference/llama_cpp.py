@@ -248,6 +248,14 @@ def _archive_is_degraded() -> bool:
         return False
 
 
+def _archive_write_failed() -> bool:
+    try:
+        from core.rag import conversation_archive
+        return bool(conversation_archive.degraded())
+    except Exception:  # noqa: BLE001 -- an unreadable flag is "healthy", never an error
+        return False
+
+
 def _compaction_fit_kwargs(
     context_policy: Optional[str] = None, compaction_headroom_ratio: Optional[float] = None
 ) -> dict:
@@ -298,6 +306,9 @@ def _fit_context(messages, **kwargs):
     # /compact: only a checkpoint reset can honour it, since only its turns are archived.
     force_reset = bool(kwargs.pop("force_reset", False))
     sticky_manual = bool(kwargs.pop("sticky_manual", False))
+    replay_only = bool(kwargs.pop("replay_only", False))
+    if replay_only and int(kwargs.get("sticky_dropped") or 0) <= 0:
+        return messages, None
     if kwargs.get("count_tokens") is not None:
         try:
             messages = fit_oversized_attachments(
@@ -308,6 +319,23 @@ def _fit_context(messages, **kwargs):
             )
         except Exception:  # noqa: BLE001 -- the fit below still refuses what cannot fit
             logger.debug("attachment fit failed", exc_info = True)
+    if replay_only:
+        if sticky_is_checkpoint:
+            from core.inference import checkpoint
+
+            # Generation's wording: unsearchable without a reset, else the last write's verdict
+            # (not the live probe, which runs an embedding forward per count).
+            return checkpoint.fit_checkpoint_context(
+                messages,
+                can_reset = False,
+                searchable = (lambda: recall_offered and not _archive_write_failed())
+                if can_reset
+                else False,
+                sticky_manual = sticky_manual,
+                replay_only = True,
+                **kwargs,
+            )
+        return fit_rolling_context(messages, replay_only = True, **kwargs)
     try:
         from core.inference import checkpoint
 
@@ -449,7 +477,8 @@ def _fit_with_instruction_pins(
     # prompt WITH the standing instruction for one without, the very thing this seam
     # prevents. `dropped_messages` separates them.
     if (
-        pins
+        not kwargs.get("replay_only")
+        and pins
         and truncation
         and not truncation.get("fits")
         and not int(truncation.get("dropped_messages") or 0)

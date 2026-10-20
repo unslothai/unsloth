@@ -35,12 +35,18 @@ def test_the_shell_is_isolated():
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 
-def test_the_shells_page_may_go_fullscreen_and_nothing_more():
+def test_the_shells_page_may_go_fullscreen_without_leaving_its_sandbox():
     shell = browser_mod._FRAME_HTML
     assert 'page.setAttribute("sandbox", "allow-scripts allow-forms");' in shell
     assert 'page.setAttribute("allowfullscreen", "");' in shell
     assert "allow-same-origin" not in shell
-    assert 'setAttribute("allow",' not in shell and "page.allow" not in shell
+
+
+def test_the_shells_page_may_copy_to_the_clipboard_but_not_read_it():
+    shell = browser_mod._FRAME_HTML
+    assert 'page.setAttribute("allow", "clipboard-write");' in shell
+    assert shell.count('setAttribute("allow",') == 1 and "page.allow" not in shell
+    assert "clipboard-read" not in shell
 
 
 def test_the_print_shell_runs_only_its_own_script():
@@ -93,6 +99,15 @@ def test_the_shell_guards():
     # Links and forms go through the proxy only when the page's own handlers leave them alone.
     assert shell.count("unlessCancelled(event, ") == 2
     assert "requestSubmit = " not in shell
+
+
+def test_trusted_input_uses_a_private_channel():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "if (event.isTrusted && (!scriptedEdit || editingKey)) edited(true);" in boot
+    assert "inputChannel.port1.postMessage.bind(inputChannel.port1)" in boot
+    assert "if (!samePage(next)) edited(false);" in boot
+    assert 'removeEventListener("input"' not in boot
 
 
 def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
