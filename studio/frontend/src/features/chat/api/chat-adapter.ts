@@ -132,6 +132,8 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
+import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context-usage";
+import { contextUsageReasoningKey } from "../utils/context-usage-reasoning";
 import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
@@ -2240,7 +2242,9 @@ export async function buildLocalTokenCountHistory(
 
 /** The reasoning fields a completion would send: llama-server falls back to load-time
  *  --chat-template-kwargs only for omitted keys, so sending none misreports the mode. */
-export function buildLocalTokenCountReasoning(): Record<string, unknown> {
+export function buildLocalTokenCountReasoning(
+  state = useChatRuntimeStore.getState(),
+): Record<string, unknown> {
   const {
     supportsReasoning,
     reasoningStyle,
@@ -2249,7 +2253,7 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
     reasoningEffortLevels,
     supportsPreserveThinking,
     preserveThinking,
-  } = useChatRuntimeStore.getState();
+  } = state;
   // Same clamp the request build applies: a level the loaded template does not offer is dropped by the backend.
   const localReasoningEffort = clampReasoningEffortToLevels(
     reasoningEffort,
@@ -2303,7 +2307,21 @@ export async function buildLocalTokenCountExtras(
   // No budget, because the completion sends none either, so a policy that injects tools
   // past this false gets the server default on both sides.
   // The completion always sends thread_id; the server dates a thread's prompt from it.
-  const threadField = threadId ? { thread_id: threadId } : {};
+  const threadField = {
+    ...(threadId ? { thread_id: threadId } : {}),
+    max_tokens: state.params.maxTokens,
+    ...ggufCompactionRequestFields({
+      isGguf: isServedByLlamaCpp({
+        loadedIsGguf: state.loadedIsGguf,
+        activeGgufVariant: state.activeGgufVariant,
+        activeNativePathToken: state.activeNativePathToken,
+        checkpoint: state.params.checkpoint,
+      }),
+      isMlx: state.loadedIsMlx === true,
+      isManagedEngine: state.loadedEngine === "vllm",
+      autoCompactEnabled: state.autoCompactEnabled,
+    }),
+  };
   if (!supportsTools) {
     return {
       enable_tools: false,
@@ -6471,6 +6489,14 @@ export function createOpenAIStreamAdapter(
               : {}
             : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
         : {};
+      const contextReasoningKey = isExternalRequest
+        ? undefined
+        : contextUsageReasoningKey({
+            ...localReasoningFields,
+            ...(runtime.supportsPreserveThinking
+              ? { preserve_thinking: runtime.preserveThinking }
+              : {}),
+          });
       // Decided before the continuation yield below, which an abort during load saves as is.
       // A carried thought is reasoning whatever this request's thinking setting says.
       setParseThink(
@@ -6547,10 +6573,15 @@ export function createOpenAIStreamAdapter(
       // the bar after a switch to B. A first turn is adopted onto an id mid-run and autosave moves
       // activeThreadId with it, so read the adopted key, or the bar stays blank for life.
       const publishContextUsage = (
-        usage: NonNullable<
+        reported: NonNullable<
           ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"]
         >,
       ) => {
+        const usage = {
+          ...reported,
+          modelId: params.checkpoint,
+          ...(contextReasoningKey ? { reasoningKey: contextReasoningKey } : {}),
+        };
         const usageKey = liveThreadKey(serverCancel);
         const usageThreadKey = usageKey === "__default" ? null : usageKey;
         const store = useChatRuntimeStore.getState();
@@ -9020,6 +9051,11 @@ export function createOpenAIStreamAdapter(
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,
+                    ...(contextReasoningKey ? { reasoningKey: contextReasoningKey } : {}),
+                    ...contextUsageMarkers([
+                      ...threadBranchRecords(rawMessages),
+                      { id: "", role: "assistant", content: finalContent },
+                    ]),
                   }
                 : undefined,
               responseDetails: buildResponseDetails(finishedAt),

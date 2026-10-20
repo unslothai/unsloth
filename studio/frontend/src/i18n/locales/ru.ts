@@ -3268,6 +3268,7 @@ export const ru = {
       audioCppVersion: "Версия audio.cpp",
       hardware: "Оборудование",
       gpu: "GPU",
+      gpuIntegrated: "встроенная",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

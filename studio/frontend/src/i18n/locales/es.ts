@@ -3292,6 +3292,7 @@ export const es = {
       audioCppVersion: "Versión de audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrada",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

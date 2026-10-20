@@ -3197,6 +3197,7 @@ export const zhCN = {
       audioCppVersion: "audio.cpp 版本",
       hardware: "硬件",
       gpu: "GPU",
+      gpuIntegrated: "集成",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

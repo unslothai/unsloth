@@ -3879,7 +3879,9 @@ class ExternalProviderClient:
                                 )
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
-                                last_usage.update(delta_usage)
+                                last_usage.update(
+                                    {k: v for k, v in delta_usage.items() if v is not None}
+                                )
                                 # Compaction iterations are not in top-level input/output_tokens; fold them into
                                 # compaction_{input,output}_tokens for billing.
                                 iterations = delta_usage.get("iterations")
@@ -8225,6 +8227,27 @@ def _build_usage_chunk(
         # OpenAI-shaped totals so monitors and cost consumers do not undercount the turn.
         compaction_input = last_usage.get("compaction_input_tokens") or 0
         compaction_output = last_usage.get("compaction_output_tokens") or 0
+        context_tokens = uncached_input + cache_creation + cache_read + completion_tokens
+        # Top-level counts sum every sampling iteration (server tools add some); the last one is the context.
+        iterations = last_usage.get("iterations")
+        final = next(
+            (
+                it
+                for it in reversed(iterations if isinstance(iterations, list) else [])
+                if isinstance(it, dict) and it.get("type") in ("message", "fallback_message")
+            ),
+            None,
+        )
+        if final is not None:
+            context_tokens = sum(
+                int(final.get(field) or 0)
+                for field in (
+                    "input_tokens",
+                    "cache_creation_input_tokens",
+                    "cache_read_input_tokens",
+                    "output_tokens",
+                )
+            )
         prompt_tokens = uncached_input + cache_creation + cache_read + compaction_input
         completion_tokens += compaction_output
         if not (prompt_tokens or completion_tokens):
@@ -8233,6 +8256,7 @@ def _build_usage_chunk(
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+            "context_tokens": context_tokens,
             "prompt_tokens_details": {"cached_tokens": cache_read},
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,
