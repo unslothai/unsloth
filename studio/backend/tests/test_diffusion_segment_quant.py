@@ -23,6 +23,7 @@ from core.inference import diffusion_segment_quant as sq
 def _clean_env(monkeypatch):
     for name in (sq.ENV_PRECISION, sq.ENV_INT8_CONVROT, seg.ENV_PATH_OVERRIDE, seg.ENV_VARIANT):
         monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(seg, "_BROKEN_PREQUANT", set())
 
 
 def _cuda(monkeypatch, capability):
@@ -736,6 +737,33 @@ def test_a_broken_file_falls_back_to_bf16(tmp_path, monkeypatch):
         Image.new("RGB", (32, 32)), "sofa", threshold = 0.0, allow_gpu = True, path = path
     )
     assert result.precision == "bf16" and segmenter.last_prequant_failure
+
+
+def test_a_broken_file_with_no_bf16_beside_it_stops_counting(tmp_path, monkeypatch):
+    """Only a pre-quantized file on disk and it does not load, even dequantized: the request fails with a clear
+    error once, then the file no longer counts as downloaded and the bf16 download is offered."""
+    import torch
+    from PIL import Image
+
+    path, _quant = _tiny_dir(tmp_path, monkeypatch, "fp8", keep_dense = False)
+    monkeypatch.setenv(sq.ENV_PRECISION, "fp8")
+    _cuda(monkeypatch, (9, 0))
+    sam31 = _published(monkeypatch, "d" * 40)
+    artifact = seg.variant_artifact(sam31, "fp8")
+    (Path(path) / artifact.filename).write_bytes(b"not a safetensors file")
+    monkeypatch.setattr(seg, "choose_device", lambda allow_gpu: ("cpu", torch.float32))
+    segmenter = seg.MaskSegmenter(keep_alive_seconds = 0)
+    with pytest.raises(Exception, match = "BF16 weights"):
+        segmenter.segment(Image.new("RGB", (32, 32)), "sofa", threshold = 0.0, path = path)
+    plan = seg.plan_weights(path, "cpu", variant = sam31, use_cache = False)
+    assert (plan.weights, plan.dequantize) == (None, False)
+    monkeypatch.setenv(seg.ENV_PATH_OVERRIDE, path)
+    assert seg.model_dir() is None
+    monkeypatch.delenv(seg.ENV_PATH_OVERRIDE)
+    # The same file as the cached copy: the download route offers bf16, not that file again.
+    monkeypatch.setattr(seg, "_cached_snapshot", lambda model_id, **k: path if "@" in model_id else None)
+    assert seg._variant_snapshot("sam3.1") is None
+    assert seg.download_plan(sam31, "cuda:0")["precision"] == "bf16"
 
 
 @pytest.mark.skipif(

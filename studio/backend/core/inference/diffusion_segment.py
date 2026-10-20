@@ -254,7 +254,10 @@ def _override_dir() -> Optional[str]:
             or _shards_complete(path / (SEGMENTER_WEIGHTS_FILE + ".index.json"))
             # or only a pre-quantized detector file the precision setting may load (dequantized where it cannot
             # run quantized); one the setting rejects (fp8 under auto, any under bf16) is not a loadable model
-            or any(_loadable(variant, a) and has(a.filename) for a in variant.prequant)
+            or any(
+                _loadable(variant, a) and has(a.filename) and not _broken(str(path), a)
+                for a in variant.prequant
+            )
         )
         # AutoTokenizer (CLIPTokenizer for sam3) loads tokenizer.json, else needs vocab.json and merges.txt together.
         and (has("tokenizer.json") or (has("vocab.json") and has("merges.txt")))
@@ -384,6 +387,19 @@ def _cached_snapshot(
     return None
 
 
+# Pre-quantized files that failed to load even dequantized (corrupt, truncated, built for another rule) in this
+# process. They stop counting as downloaded, so status and the download route offer the bf16 file instead.
+_BROKEN_PREQUANT: set[str] = set()
+
+
+def _prequant_key(folder: str, artifact: SegmenterPrequant) -> str:
+    return os.path.realpath(os.path.join(folder, artifact.filename))
+
+
+def _broken(folder: Optional[str], artifact: SegmenterPrequant) -> bool:
+    return folder is not None and _prequant_key(folder, artifact) in _BROKEN_PREQUANT
+
+
 def _variant_snapshot(variant_id: str) -> Optional[str]:
     """A cached snapshot of variant ``variant_id`` that Sam3Model can load: its bf16 files, else a pre-quantized file
     with the configs and tokenizer."""
@@ -395,7 +411,7 @@ def _variant_snapshot(variant_id: str) -> Optional[str]:
         if not _loadable(variant, artifact):
             continue
         path = _cached_snapshot(prequant_spec_id(variant, artifact))
-        if path is not None:
+        if path is not None and not _broken(path, artifact):
             return path
     return None
 
@@ -606,10 +622,11 @@ def _local_artifacts(
     found = []
     for artifact in variant.prequant:
         if path and (Path(path) / artifact.filename).is_file():
-            found.append((artifact, path))
+            if not _broken(path, artifact):
+                found.append((artifact, path))
         elif use_cache:
             snapshot = _cached_snapshot(prequant_spec_id(variant, artifact))
-            if snapshot is not None:
+            if snapshot is not None and not _broken(snapshot, artifact):
                 found.append((artifact, snapshot))
     return found
 
@@ -673,7 +690,10 @@ def download_plan(variant: SegmenterVariant, device: Optional[str] = None) -> di
     offered = {}
     if variant.prequant_revision:
         for artifact in variant.prequant:
-            if _loadable(variant, artifact):
+            # A cached copy that already failed to load would only be "downloaded" again: offer bf16 instead.
+            if _loadable(variant, artifact) and not _broken(
+                _cached_snapshot(prequant_spec_id(variant, artifact)), artifact
+            ):
                 offered.setdefault(artifact.precision, artifact)
     precision, why = resolve_precision(device or _host_device(), available = tuple(offered))
     if precision == PRECISION_BF16:
@@ -1133,16 +1153,26 @@ class MaskSegmenter:
                         dequantize = True,
                     )
         if plan.weights is not None:
-            model, _info = load_prequantized_segmenter(
-                plan.model_dir,
-                plan.weights,
-                scheme = plan.artifact.precision,
-                rotated = plan.artifact.rotated,
-                device = device,
-                dtype = dtype,
-                base_model_id = base,
-                dequantize = True,
-            )
+            try:
+                model, _info = load_prequantized_segmenter(
+                    plan.model_dir,
+                    plan.weights,
+                    scheme = plan.artifact.precision,
+                    rotated = plan.artifact.rotated,
+                    device = device,
+                    dtype = dtype,
+                    base_model_id = base,
+                    dequantize = True,
+                )
+            except Exception as exc:
+                # Not a quantized-kernel problem: the file itself does not load. Stop counting it as downloaded so
+                # the next status offers the bf16 download rather than failing every request on the same file.
+                _BROKEN_PREQUANT.add(_prequant_key(plan.model_dir, plan.artifact))
+                _free_device_cache(device)
+                raise RuntimeError(
+                    f"{plan.artifact.filename} could not be loaded ({type(exc).__name__}: {str(exc)[:200]}); "
+                    f"download the {variant.label} BF16 weights from the Mask from text panel"
+                ) from exc
             return model, plan
         if device.startswith("cuda"):
             # Straight onto the card: about a third faster than loading on the CPU and moving it.
