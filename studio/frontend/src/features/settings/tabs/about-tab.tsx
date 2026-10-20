@@ -99,10 +99,11 @@ function aboutGpuMemoryText(
 ): string {
   const memory = hardwareGpuMemoryGb(gpu);
   if (!memory) return "";
-  const gb = memory.gb < 1 ? memory.gb.toFixed(1) : Math.round(memory.gb);
+  const gpuMemoryGb =
+    memory.gb < 1 ? memory.gb.toFixed(1) : Math.round(memory.gb);
   return memory.integrated
-    ? ` · ${gb} GiB (${t("settings.about.gpuIntegrated")})`
-    : ` · ${gb} GiB`;
+    ? ` · ${gpuMemoryGb} GiB (${t("settings.about.gpuIntegrated")})`
+    : ` · ${gpuMemoryGb} GiB`;
 }
 
 export function AboutTab() {
