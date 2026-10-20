@@ -291,9 +291,16 @@ export const BUDGET = {
   // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
   // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
   // to that build plus the same 160 B raw / 189 B transfer margin.
-  // Explicit browser download names add 1,787 B raw / 711 B transfer; the prior margin is retained.
-  transferBytes: 2_061_940,
-  rawBytes: 6_846_569,
+  // The modern toggles (#14322) add 449 B raw / 86 B transfer (6,844,459 -> 6,844,908 B raw, 2,061,006 ->
+  // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
+  // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
+  // same 160 B raw / 189 B transfer margin.
+  // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
+  // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
+  // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Explicit browser download names retain the prior startup margin.
+  transferBytes: 2_062_201,
+  rawBytes: 6_847_534,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

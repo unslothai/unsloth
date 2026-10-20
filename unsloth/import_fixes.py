@@ -9081,6 +9081,7 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_next": "qwen2_moe",
     "qwen3_omni_moe": "qwen2_moe",
     "qwen3_omni_moe_thinker": "qwen2_moe",
+    "qwen3_omni_moe_text": "qwen2_moe",
     "solar_open": "qwen2_moe",
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
@@ -9089,13 +9090,17 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
 # _convert_peft_config_moe finds no mapping entry and returns without a rewrite. The substring
-# hint below raised for all three on the name alone. Checked before the hint, never instead of
+# hint below raised for these on the name alone. Checked before the hint, never instead of
 # the snapshot above.
 _PEFT_MOE_NAMED_NOT_FUSED = frozenset(
     (
         "granitemoehybrid",
         "granitemoeshared",
         "qwen3_5_moe_text",
+        # Keyed by class name: transformers (main, October 2026) aliases the Qwen3-Omni MoE
+        # thinker classes to the dense Qwen2.5-Omni thinker, which peft does not rewrite.
+        "Qwen3OmniMoeThinkerForConditionalGeneration",
+        "Qwen3OmniMoeThinkerModel",
     )
 )
 
@@ -9189,7 +9194,9 @@ class _UnavailableConversionPatternMap(dict):
         # Both spellings: model types are lowercase, the class-name aliases are not.
         if key in _PEFT_MOE_CONVERSION_PATTERNS or name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
-        if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
+        if key in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_FUSED:
+            return False
+        if name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False
         return any(hint in name for hint in self._MOE_HINTS)
 
