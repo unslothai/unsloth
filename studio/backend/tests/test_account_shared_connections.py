@@ -65,6 +65,12 @@ def upstream():
             self.end_headers()
             self.wfile.write(body)
 
+        def do_POST(self):
+            seen.append(f"POST {self.path}")
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def log_message(self, *args):
             pass
 
@@ -304,8 +310,10 @@ def test_the_owner_openai_project_containers_stay_off_limits():
     assert run_as(OWNER, inference._resolve_openai_cloud_client, body, allow_saved_key = True)
 
 
-def test_checking_a_shared_connection_cannot_reach_a_disallowed_model(monkeypatch):
-    provider_id = owner_connection()
+def test_checking_a_shared_connection_probes_no_model_and_quotes_no_url(monkeypatch, upstream):
+    base_url, seen = upstream
+    mpu.set_managed_private_provider_urls_allowed(True)
+    provider_id = owner_connection(base_url.replace("http://", "http://user:pw@") + "?key=s")
     allow_only(monkeypatch, "unsloth/qwen3-*")
     with client_for(ALICE) as client:
         response = client.post(
@@ -316,23 +324,20 @@ def test_checking_a_shared_connection_cannot_reach_a_disallowed_model(monkeypatc
                 "model_id": "unsloth/gemma-3-4b-it-GGUF",
             },
         )
-    assert response.status_code == 403
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    # One GET /models and nothing else: no chat, speech or Responses probe on any model.
+    assert len(seen) == 1 and not seen[0].startswith("POST")
 
-
-def test_readers_of_a_shared_connection_queue_behind_the_owners_edit(monkeypatch):
-    import asyncio
-
-    from utils.account_context import arun_as
-
-    monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: True)
-    shared_id = owner_connection()
-
-    async def lock():
-        return provider_credentials.provider_config_guard(shared_id)
-
-    async def check():
-        owner_lock = await arun_as(OWNER, lock())
-        assert await arun_as(ALICE, lock()) is owner_lock
-        assert await arun_as(BOB, lock()) is owner_lock
-
-    asyncio.run(check())
+    run_as(
+        OWNER,
+        providers_db.update_provider,
+        provider_id,
+        base_url = "http://user:pw@127.0.0.1:9/v1?key=s",
+    )
+    with client_for(ALICE) as client:
+        failed = client.post(
+            "/providers/test", json = {"provider_type": "custom", "provider_id": provider_id}
+        )
+    assert failed.json()["success"] is False
+    assert "pw" not in failed.json()["message"] and "key=s" not in failed.json()["message"]

@@ -656,6 +656,14 @@ async def delete_provider_config(
             openai_codex_client.forget_subscription_models(provider_id)
 
 
+def _is_shared_saved_target(payload) -> bool:
+    return bool(
+        payload.provider_id
+        and not payload.encrypted_api_key
+        and providers_db.is_owner_shared_provider(payload.provider_id)
+    )
+
+
 def _bind_saved_provider_target(payload):
     """Use the saved provider's endpoint whenever its saved credential may be used."""
     if not payload.provider_id or payload.encrypted_api_key:
@@ -877,10 +885,7 @@ async def test_provider(
     saved provider key.
     """
 
-    if payload.model_id and payload.provider_id and not payload.encrypted_api_key:
-        account_access.require_connection_model_allowed(
-            providers_db.get_provider(payload.provider_id), payload.model_id
-        )
+    shared = _is_shared_saved_target(payload)
     payload = _bind_saved_provider_target(payload)
     info = get_connectable_provider_info(payload.provider_type)
     if info is None:
@@ -919,6 +924,23 @@ async def test_provider(
         api_type = payload.api_type,
         timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
     )
+
+    if shared:
+        # Another account learns only whether the owner's connection answers: no model probe, and
+        # no upstream error text, which can quote the saved URL.
+        try:
+            await client.list_models()
+        except Exception:
+            return ProviderTestResult(
+                success = False,
+                message = "Connection failed. Ask the owner to check this connection.",
+                models_count = None,
+            )
+        finally:
+            await client.close()
+        return ProviderTestResult(
+            success = True, message = "Connected successfully.", models_count = None
+        )
 
     try:
         if answers_decisions_only(payload.provider_type, payload.api_type):
@@ -1040,6 +1062,18 @@ async def list_provider_model_capabilities(
     _current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
+    shared = _is_shared_saved_target(payload)
+    capabilities = await _list_model_capabilities(payload, via_api_key)
+    if shared:
+        capabilities = [
+            entry
+            for entry in capabilities
+            if account_access.connection_model_allowed(entry.get("id", ""))
+        ]
+    return capabilities
+
+
+async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: bool):
     payload = _bind_saved_provider_target(payload)
     info = get_connectable_provider_info(payload.provider_type)
     if info is None:
@@ -1114,11 +1148,7 @@ async def list_provider_models(
     """
 
     # A shared connection lists only what the owner allowed this account.
-    shared = bool(
-        payload.provider_id
-        and not payload.encrypted_api_key
-        and providers_db.is_owner_shared_provider(payload.provider_id)
-    )
+    shared = _is_shared_saved_target(payload)
     payload = _bind_saved_provider_target(payload)
     info = get_connectable_provider_info(payload.provider_type)
     if info is None:
