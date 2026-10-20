@@ -2008,9 +2008,12 @@ class H3NativeServerSlot:
                     target = abort_on_cancel, daemon = True, name = "h3-sd-server-start-cancel"
                 ).start()
             try:
+                from .sd_cpp_backend import _default_threads
+
                 server.start(
                     self.files,
                     offload = list(flag_tuple),
+                    threads = _default_threads(),
                     env = dict(env_pairs) or None,
                     # A context flag on sd-server (per-run on sd-cli); same RNG keeps seeds identical across paths.
                     extra_args = ["--rng", "cpu"],
