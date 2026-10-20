@@ -11,6 +11,8 @@ import sys
 import types as _types
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -247,15 +249,66 @@ def test_a_row_or_tensor_split_mode_leaves_the_split_to_llama_cpp():
 
     def call(args, env):
         return backend._mixed_pin_split(
-            [DGPU, IGPU], inputs, SHARED, args, env,
-            layer_min_gpus = 1, tensor_parallel = False, pin_owns_devices = True,
+            [DGPU, IGPU],
+            inputs,
+            SHARED,
+            args,
+            env,
+            layer_min_gpus = 1,
+            tensor_parallel = False,
+            pin_owns_devices = True,
         )
 
-    for args in (["-sm", "row"], ["--split-mode=tensor"], ["--rpc", "10.0.0.2:50052"], ["--fit", "on"], ["--fit=on"]):
+    for args in (
+        ["-sm", "row"],
+        ["--split-mode=tensor"],
+        ["--rpc", "10.0.0.2:50052"],
+        ["--fit", "on"],
+        ["--fit=on"],
+    ):
         assert call(args, {}) is None, args
     assert call([], {"LLAMA_ARG_RPC": "10.0.0.2:50052"}) is None
     # The launch pops an inherited non-layer mode, so the child runs layer split.
-    import pytest
-
     with pytest.raises(Priced):
         call([], {"LLAMA_ARG_SPLIT_MODE": "row"})
+
+
+def test_an_unpriced_uneven_kv_cache_leaves_the_split_to_llama_cpp():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    block = _types.SimpleNamespace(spillable_bytes = 1, resident_bytes = 1)
+    layout = _types.SimpleNamespace(
+        complete = True,
+        blocks = [block] * 4,
+        has_excluded_blocks = False,
+        lm_head_bytes = 0,
+        other_resident_bytes = 0,
+    )
+    backend._tensor_spill_layout = lambda _path: layout
+    # No compute_buffer_flat: a load that passes the KV gate stops on the KeyError.
+    inputs = {
+        "separate_draft_on_gpu": False,
+        "model_path": "m.gguf",
+        "kv_cache_bytes": 4 * MIB,
+        "kv_layer_weights": [],
+    }
+
+    def call():
+        return backend._mixed_pin_split(
+            [DGPU, IGPU],
+            inputs,
+            SHARED,
+            [],
+            {},
+            layer_min_gpus = 1,
+            tensor_parallel = False,
+            pin_owns_devices = True,
+        )
+
+    for mla, ssm, pattern in ((512, None, None), (None, 1024, None), (None, None, [1, 0, 1, 0])):
+        backend._kv_lora_rank, backend._ssm_inner_size = mla, ssm
+        backend._sliding_window_pattern = pattern
+        assert call() is None, (mla, ssm, pattern)
+    # A plain cache is uniform, so it is priced.
+    backend._kv_lora_rank = backend._ssm_inner_size = backend._sliding_window_pattern = None
+    with pytest.raises(KeyError):
+        call()

@@ -10208,6 +10208,14 @@ class LlamaCppBackend:
         kv_total = int(spill_inputs["kv_cache_bytes"] or 0)
         kv_weights = list(spill_inputs.get("kv_layer_weights") or ())
         if len(kv_weights) != n_blocks or sum(kv_weights) <= 0:
+            # Uniform is only right for a plain cache; MLA, hybrid recurrent and an
+            # unpriced sliding window put it on some layers only (_kv_layer_weights).
+            if kv_total and (
+                self._kv_lora_rank is not None
+                or self._ssm_inner_size is not None
+                or self._sliding_window_pattern
+            ):
+                return None
             kv_weights = [1] * n_blocks
         kv_scale = kv_total / sum(kv_weights)
         layer_bytes = [
