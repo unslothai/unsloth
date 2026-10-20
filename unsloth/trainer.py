@@ -1713,8 +1713,7 @@ def _route_unknown_trainer_kwargs(
 
 
 def _config_family(config_class):
-    # The Unsloth subclass plus the TRL config it displaced: an instance of the pristine class (made
-    # before the patch) is already a full config, and rebuilding a GRPOConfig re-raises its post-init checks.
+    # Plus the pristine TRL config it displaced: rebuilding one re-raises GRPOConfig's post-init checks.
     family = [config_class]
     cls = config_class
     while (
@@ -1791,9 +1790,7 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             if not isinstance(training_args, TrainingArguments):
                 config = config_class(**config_dict)
             elif not isinstance(training_args, _config_family(config_class)):
-                # A plain TrainingArguments (the old notebook shape): trl rebuilds its config from
-                # to_dict(), which drops anything set as an attribute, so build it here the way trl
-                # would, moved kwargs included. to_dict() masks hub_token.
+                # Plain TrainingArguments: trl rebuilds via to_dict(), dropping setattr'd kwargs, so rebuild here as trl does.
                 dict_args = training_args.to_dict()
                 dict_args["hub_token"] = training_args.hub_token
                 dict_args.pop("push_to_hub_token", None)
