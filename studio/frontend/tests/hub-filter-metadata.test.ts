@@ -59,7 +59,10 @@ function searchHarness(request: typeof fetch) {
         },
       },
       "../lib/hf-cache": {},
-      "../lib/hf-model-meta": { EMBEDDING_TAGS: new Set() },
+      "../lib/hf-model-meta": {
+        EMBEDDING_TAGS: new Set(),
+        estimateSizeFromDtypes: () => undefined,
+      },
       "../lib/merge-task-iterators": {
         mergeTaskIterators: (
           _tasks: unknown,
@@ -70,13 +73,15 @@ function searchHarness(request: typeof fetch) {
           signal?: AbortSignal,
         ) => create(undefined, signal),
       },
-      "../lib/model-capabilities": {},
-      "../lib/model-identifiers": {},
+      "../lib/model-capabilities": { detectBaseModel: () => undefined },
+      "../lib/model-identifiers": { isGgufLike: () => false },
       "../lib/fresh-ranking": {},
       "../lib/provider-logos": {},
       "../lib/provider-search": {},
       "../lib/network": { fetchWithTimeout: request },
-      "../lib/unsloth-support": {},
+      "../lib/unsloth-support": {
+        classifyUnslothSupport: () => ({ status: "supported" }),
+      },
       "../lib/model-search-filters": filters,
       "../lib/lru-map": { LruMap },
       "./use-hub-paginated-search": {
@@ -221,4 +226,25 @@ test("an aborted search cannot cache metadata that arrives after cancellation", 
   await first;
   assert.deepEqual(await hook.search({ minContext: 8192 }), hook.rows);
   assert.equal(requests, 4);
+});
+
+test("rows the list hides cost no metadata request", async () => {
+  const requested: string[] = [];
+  const hook = searchHarness(async (url) => {
+    requested.push(String(url));
+    return Response.json({ max_position_embeddings: 32768 });
+  });
+  const keepResult = (result: { id: string }) => result.id !== "unsloth/small";
+  assert.deepEqual(await hook.search({ minContext: 2048 }, { keepResult }), [
+    hook.rows[1],
+  ]);
+  assert.deepEqual(requested, [
+    "https://huggingface.co/unsloth/large/resolve/main/config.json",
+  ]);
+  // Without a per-row lookup nothing is skipped: the list keeps filtering as before.
+  assert.deepEqual(
+    await hook.search({ maxParams: 9e9 }, { keepResult: () => false }),
+    hook.rows,
+  );
+  assert.equal(requested.length, 1);
 });

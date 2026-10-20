@@ -117,6 +117,7 @@ import {
 } from "./lib/model-run-selection";
 import { inventoryRowFormat } from "./catalog/inventory-sort";
 import { matchesInventoryCapabilities } from "./lib/model-type-filter";
+import { ownerOf, repoOf } from "./lib/format";
 import { resolveOwnerProviderLogo } from "./lib/provider-logos";
 import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
 import {
@@ -165,6 +166,27 @@ const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 
 // Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
 const MIN_ICONLESS_MODEL_LIKES = 30;
+
+// Recommended curates browsing to logo'd models plus well-liked iconless ones, and to well-liked
+// checkpoints; a typed search and every other format show all matches.
+function matchesDiscoverFormat(
+  result: HfModelResult,
+  format: ModelFormatFilter,
+  browsing: boolean,
+  quantFormats: readonly string[],
+): boolean {
+  if (format !== "recommended") {
+    return matchesFormat(detectResultFormat(result), format);
+  }
+  return (
+    (!browsing ||
+      ((resolveOwnerProviderLogo(ownerOf(result.id), repoOf(result.id)) !==
+        null ||
+        (result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
+        hasRecommendedCheckpointLikes(result))) &&
+    matchesRecommended(result, quantFormats)
+  );
+}
 
 function withoutGgufTag(
   tags: readonly string[] | undefined,
@@ -944,6 +966,20 @@ export function ModelsPage() {
     };
   }, [liveListChannel, widenRecommendedChannel]);
 
+  // The list's format test, so a row it hides costs no per-row filter lookup. checkpointQuantFormats
+  // holds every diffusion format too, so this never skips a row the list shows.
+  const searchBrowsing = debouncedQuery.trim() === "";
+  const keepSearchResult = useCallback(
+    (result: HfModelResult) =>
+      matchesDiscoverFormat(
+        result,
+        effectiveDiscoverFormat,
+        searchBrowsing,
+        checkpointQuantFormats,
+      ),
+    [effectiveDiscoverFormat, searchBrowsing, checkpointQuantFormats],
+  );
+
   const {
     results,
     datasetResults,
@@ -966,6 +1002,7 @@ export function ModelsPage() {
     channel: listChannel,
     ownerScope,
     filters: searchFilters,
+    keepResult: keepSearchResult,
     task:
       // Asked of the Hub only when Audio is the one filter: with others it would drop their models.
       capabilityFilters.length === 1 && capabilityFilters[0] === "audio"
@@ -1102,26 +1139,14 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Recommended curates browsing to logo'd models plus well-liked iconless ones, and to
-        // well-liked checkpoints; a typed search and every other format show all matches.
-        (effectiveDiscoverFormat !== "recommended" ||
-          hasQuery ||
-          resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
-          (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
-        (effectiveDiscoverFormat !== "recommended" ||
-          hasQuery ||
-          hasRecommendedCheckpointLikes(row.result)) &&
-        (effectiveDiscoverFormat === "recommended"
-          ? matchesRecommended(
-              row.result,
-              row.capabilities.some((c) => c.key === "diffusion")
-                ? diffusionQuantFormats
-                : checkpointQuantFormats,
-            )
-          : matchesFormat(
-              detectResultFormat(row.result),
-              effectiveDiscoverFormat,
-            )) &&
+        matchesDiscoverFormat(
+          row.result,
+          effectiveDiscoverFormat,
+          !hasQuery,
+          row.capabilities.some((c) => c.key === "diffusion")
+            ? diffusionQuantFormats
+            : checkpointQuantFormats,
+        ) &&
         (deferredCapabilityFilters.length === 0 ||
           deferredCapabilityFilters.some(
             (key) =>

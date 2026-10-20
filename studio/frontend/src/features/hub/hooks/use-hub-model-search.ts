@@ -38,6 +38,7 @@ import {
 import {
   filterModelListing,
   hasModelSearchFilters,
+  needsModelMetadata,
   parameterRange,
   type ModelSearchFilters,
 } from "../lib/model-search-filters";
@@ -863,6 +864,8 @@ export function useHubModelSearch(
     keepUnsupportedTags?: boolean;
     channel?: HfModelSearchChannel | null;
     filters?: ModelSearchFilters;
+    /** False for a result the caller hides anyway; such rows skip per-row filter lookups. */
+    keepResult?: (result: HfModelResult) => boolean;
   },
 ) {
   const {
@@ -878,6 +881,7 @@ export function useHubModelSearch(
     keepUnsupportedTags = false,
     channel = null,
     filters,
+    keepResult,
   } = options ?? {};
   const unslothOnly = ownerScope === "unsloth";
 
@@ -1108,6 +1112,35 @@ export function useHubModelSearch(
     ],
   );
 
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const mapModel = useMemo(
+    () =>
+      makeMapModel(
+        excludeGguf,
+        keepUnsupportedTags,
+        channelIdSuffix,
+        deviceType,
+      ),
+    [
+      excludeGguf,
+      keepUnsupportedTags,
+      channelIdSuffix,
+      deviceType,
+    ],
+  );
+  const needsMetadata = !!filters && needsModelMetadata(filters);
+  // Only a row the list can show is worth a per-row Hub request; Recommended hides most Hub rows.
+  const keepRow = useMemo(
+    () =>
+      needsMetadata
+        ? (raw: unknown) => {
+            const result = mapModel(raw);
+            return result !== null && (keepResult?.(result) ?? true);
+          }
+        : undefined,
+    [needsMetadata, mapModel, keepResult],
+  );
+
   const createIter = useCallback(
     (signal: AbortSignal) => {
       if (!filters || !hasFilters) return createListing(signal);
@@ -1156,7 +1189,7 @@ export function useHubModelSearch(
         return request;
       };
       const filterPriority: ModelListingTransform = (iterator) =>
-        filterModelListing(iterator, filters, fetchJson);
+        filterModelListing(iterator, filters, fetchJson, undefined, keepRow);
       const iterator = createListing(signal, filterPriority);
       const pinnedPromise =
         pinnedId &&
@@ -1172,7 +1205,13 @@ export function useHubModelSearch(
               ...(accessToken ? { credentials: { accessToken } } : {}),
             }).catch(() => null)
           : undefined;
-      return filterModelListing(iterator, filters, fetchJson, pinnedPromise);
+      return filterModelListing(
+        iterator,
+        filters,
+        fetchJson,
+        pinnedPromise,
+        keepRow,
+      );
     },
     [
       createListing,
@@ -1186,25 +1225,10 @@ export function useHubModelSearch(
       hfEndpoint,
       accessToken,
       filterMetadata,
+      keepRow,
     ],
   );
 
-  const deviceType = usePlatformStore((s) => s.deviceType);
-  const mapModel = useMemo(
-    () =>
-      makeMapModel(
-        excludeGguf,
-        keepUnsupportedTags,
-        channelIdSuffix,
-        deviceType,
-      ),
-    [
-      excludeGguf,
-      keepUnsupportedTags,
-      channelIdSuffix,
-      deviceType,
-    ],
-  );
   const search = useHubPaginatedSearch(createIter, mapModel, { enabled });
 
   // Secondary sort only with no user query (the merged iterator already floats unsloth results) and

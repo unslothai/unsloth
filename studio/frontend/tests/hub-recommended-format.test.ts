@@ -90,7 +90,7 @@ test("Recommended browsing lists checkpoints only past 30 likes", async () => {
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*hasRecommendedCheckpointLikes\(row\.result\)/,
+    /\(!browsing \|\|[\s\S]{0,240}hasRecommendedCheckpointLikes\(result\)\)\) &&\s*matchesRecommended\(result, quantFormats\)/,
   );
   assert.match(
     page,
@@ -108,7 +108,12 @@ test("the likes threshold only curates Recommended, and Recommended is the defau
   const page = await readSrcAsync("features/hub/hub-page.tsx");
   assert.match(
     page,
-    /effectiveDiscoverFormat !== "recommended" \|\|\s*hasQuery \|\|\s*resolveOwnerProviderLogo/,
+    /if \(format !== "recommended"\) \{\s*return matchesFormat\(detectResultFormat\(result\), format\);\s*\}\s*return \(\s*\(!browsing \|\|\s*\(\(resolveOwnerProviderLogo/,
+  );
+  // Browsing means no typed search, for the list and for the search's own skip test.
+  assert.match(
+    page,
+    /matchesDiscoverFormat\(\s*row\.result,\s*effectiveDiscoverFormat,\s*!hasQuery,/,
   );
   assert.doesNotMatch(page, /preset\?\.format \?\? "gguf"/);
   const channels = await readSrcAsync("features/hub/lib/channels.ts");
