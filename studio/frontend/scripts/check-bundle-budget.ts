@@ -310,12 +310,15 @@ export const BUDGET = {
   // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
   // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
   // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  // Local addresses in the desktop browser panel (#14290) add 1,838 B raw / 477 B transfer (6,859,478 -> 6,861,316 B
-  // raw, 2,065,456 -> 2,065,933 B transfer against b098d77e81, one machine and build, Node 22, 96 chunks): the grant,
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Local addresses in the desktop browser panel (#14290) add 1,830 B raw / 510 B transfer (6,862,610 -> 6,864,440 B
+  // raw, 2,066,395 -> 2,066,905 B transfer against 731cb16c2d, one machine and build, Node 22, 96 chunks): the grant,
   // per-tab bookkeeping and agent check live in the eager browser store, executor and panel. Raised to that build
   // plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_066_122,
-  rawBytes: 6_861_476,
+  transferBytes: 2_067_094,
+  rawBytes: 6_864_600,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
