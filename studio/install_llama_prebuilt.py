@@ -4356,9 +4356,9 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
         # tooling took windows-cpu, where the same silicon takes Vulkan on Linux. ROCm
         # hosts reach here only without a HIP bundle.
         if (
-            host.has_intel_gpu
-            or host.has_amd_gpu_without_rocm
-            or (host.has_rocm and _windows_rocm_vulkan_fallback_allowed(host))
+            _windows_rocm_vulkan_fallback_allowed(host)
+            if host.has_rocm
+            else host.has_intel_gpu or host.has_amd_gpu_without_rocm
         ) and not host.has_physical_nvidia:
             vendor = (
                 "AMD ROCm"

@@ -154,6 +154,26 @@ def test_windows_rocm_hip_mask_never_falls_back_to_vulkan(var, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "var", ["HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", None]
+)
+@pytest.mark.parametrize("other", ["has_intel_gpu", "has_amd_gpu_without_rocm"])
+def test_windows_rocm_beside_another_gpu_keeps_the_vulkan_guard(var, other, monkeypatch):
+    # An Intel iGPU or a non-ROCm AMD card must not bypass the ROCm mask / NVIDIA guard.
+    if var:
+        monkeypatch.setenv(var, "1")
+        host = _host(has_rocm = True, **{other: True})
+    else:
+        host = _host(has_rocm = True, nvidia_smi = "C:/nvidia-smi.exe", **{other: True})
+    assert _direct_names([VULKAN, CPU], host) == [CPU]
+    assert _single_name([VULKAN, CPU], host, monkeypatch) == CPU
+
+
+def test_windows_rocm_beside_an_intel_igpu_still_takes_vulkan_unmasked(monkeypatch):
+    host = _host(has_rocm = True, has_intel_gpu = True)
+    assert _single_name([VULKAN, CPU], host, monkeypatch) == VULKAN
+
+
+@pytest.mark.parametrize(
     "flags, expected",
     [
         (dict(has_amd_gpu_without_rocm = True), [VULKAN, CPU]),
