@@ -18,16 +18,14 @@ import {
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
- * before parsing it, and Unsloth runs it on every settled body that was CUT (stopped, cut at max
- * tokens, errored): `markdown-text.tsx` passes `parseIncompleteMarkdown={repairSettled}`. So this
- * dependency decides what a stopped message LOOKS like, not only what a half-written one looks
- * like, and a version bump is a rendering change.
+ * before parsing it, and Unsloth runs it on every settled CUT body (`repairSettled`), so a
+ * version bump is a rendering change.
  *
  * These are RUN, not scraped. Every assertion below is either a call into the resolved package or
  * a render through Streamdown, so the file fails if the dependency is downgraded, if the override
  * that forces one copy of it is dropped, or if the settled branch stops asking for the repair.
  * That last one is checked by EVALUATING the `parseIncompleteMarkdown` expression that
- * `markdown-text.tsx` writes, for a settled cut or finished part, and handing the result to a real
+ * `markdown-text.tsx` writes and handing the result to a real
  * `<Streamdown>` -- not by asserting on the package in isolation and hoping the wiring agrees.
  *
  * WHAT THIS FILE DOES NOT COVER, so that the paragraph above is not read as wider than it is: the
@@ -110,11 +108,7 @@ const MARKDOWN_TEXT = new URL(
   import.meta.url,
 );
 
-/**
- * The `parseIncompleteMarkdown` a SETTLED body is rendered with, taken from the source and
- * evaluated rather than restated, with `incrementalRender` null as it is whenever the message is
- * not streaming.
- */
+/** The settled `parseIncompleteMarkdown`, evaluated from the source rather than restated. */
 function settledParseIncompleteMarkdown(cut: boolean): boolean {
   const source = readFileSync(MARKDOWN_TEXT, "utf8");
   const opened = source.indexOf("<Streamdown");
@@ -179,9 +173,6 @@ test("the settled render path runs the repair, not just the package", () => {
   // `markdown-text.tsx` left this file green until this test existed. The only way to see the
   // difference is to render, and the only documents where the repair is VISIBLE are truncated
   // ones -- a complete document is by construction unchanged either way.
-  //
-  // A truncated body does reach the settled path: a stopped, length-cut or errored response
-  // settles mid-construct and is then rendered with `repairSettled` true.
   for (const [truncated, repaired] of [
     ["this is **bol", 'data-streamdown="strong"'],
     ["call `foo(", 'data-streamdown="inline-code"'],
