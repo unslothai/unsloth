@@ -911,6 +911,8 @@ def test_toolchain_key_names_the_flash_attn_build(monkeypatch):
     fa.__version__ = "2.8.3"
     fa.__file__ = "/x/site-packages/flash_attn/__init__.py"
     monkeypatch.setitem(sys.modules, "flash_attn", fa)
+    # A real flash_attn build already imported (a ROCm host) would answer the backend through its USE_TRITON_ROCM.
+    monkeypatch.delitem(sys.modules, "flash_attn.flash_attn_interface", raising = False)
     monkeypatch.delenv("FLASH_ATTENTION_TRITON_AMD_ENABLE", raising = False)
     ck = _REAL_TOOLCHAIN_KEY("cuda:0")
     assert ck is not None and ck.startswith(f"v{att.ROCM_FLASH_PROBE_VERSION}|")
