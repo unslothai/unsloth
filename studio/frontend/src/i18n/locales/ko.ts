@@ -50,6 +50,11 @@ export const ko = {
     removeFromMessage: "메시지에서 제거",
   },
   browser: {
+    drafts: {
+      title: "입력한 텍스트가 있는 페이지를 종료할까요?",
+      description: "채팅의 응답성을 유지하기 위해 입력한 텍스트가 있는 숨겨진 페이지는 세 개까지만 계속 실행됩니다. 계속하면 {pages} 페이지가 종료되며 저장하지 않은 텍스트가 사라질 수 있습니다. 취소하면 이전 탭으로 돌아갑니다.",
+      confirm: "종료하고 계속",
+    },
     agentSettings: {
       title: "브라우저 사용",
       enable: "모델이 브라우저를 사용하도록 허용",
@@ -3187,6 +3192,7 @@ export const ko = {
       audioCppVersion: "audio.cpp 버전",
       hardware: "하드웨어",
       gpu: "GPU",
+      gpuIntegrated: "내장",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

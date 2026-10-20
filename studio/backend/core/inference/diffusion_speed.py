@@ -1163,6 +1163,12 @@ def _compile_repeated_blocks(
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             compile_config.set_knob(_INDUCTOR_MODULE, "emulate_precision_casts", True)
+            # Before the first compiled forward: otherwise every restart misses the FX graph cache on libdevice.
+            try:
+                from . import diffusion_aot_cache
+                diffusion_aot_cache.pin_triton_libdevice(logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "libdevice pin", exc)
         # One R0_BLOCK per reduction: see diffusion_compile_config.DYNAMIC_SCALE_RBLOCK_ENV.
         if (
             inductor_cfg is not None
@@ -1414,7 +1420,6 @@ def is_compile_failure(exc: BaseException) -> bool:
 
 def _drop_tracebacks(exc: BaseException) -> None:
     from .diffusion_vae_oom import drop_tracebacks  # noqa: PLC0415
-
     drop_tracebacks(exc)
 
 

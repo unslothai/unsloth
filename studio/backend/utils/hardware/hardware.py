@@ -854,6 +854,11 @@ def _expected_cpu_flavor_was_chosen() -> bool:
         return True
     # A recorded cpu is not by itself a choice: setup.ps1 selects /cpu automatically on a GPU-less host and records it exactly as it records a pinned one.
     recorded, pinned = _recorded_install_flavor()
+    if recorded == "cpu" and not pinned:
+        # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
+        from utils.tegra import tegra_before_cuda13
+        return tegra_before_cuda13()
     return recorded == "cpu" and pinned
 
 
@@ -4929,8 +4934,18 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
-def get_visible_gpu_utilization() -> Dict[str, Any]:
+def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
+    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
+    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
     device = get_device()
+    if no_context and IS_ROCM and device == DeviceType.CUDA:
+        return {
+            "available": False,
+            "backend": _backend_label(device),
+            "parent_visible_gpu_ids": [],
+            "devices": [],
+            "index_kind": "relative",
+        }
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -5034,7 +5049,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "index_kind": index_kind,
                 }
 
-        torch_devices = _torch_get_per_device_info(torch_indices)
+        torch_devices = [] if no_context else _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = []
             for td in torch_devices:

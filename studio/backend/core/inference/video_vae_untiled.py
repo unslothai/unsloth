@@ -96,6 +96,23 @@ def _in_chain(fn: Any, target: Any) -> bool:
     return False
 
 
+def _decode_device(vae: Any, z: Any) -> Any:
+    """Where the decode allocates: the latent's card, unless a multi-GPU split put the VAE on another CUDA card (its
+    boundary moves the latent there inside this wrapper). An offloaded VAE (weights on the host) keeps the latent's."""
+    device = getattr(z, "device", None)
+    try:
+        vae_device = next(vae.parameters()).device
+    except Exception:  # noqa: BLE001
+        return device
+    if (
+        getattr(vae_device, "type", None) == "cuda"
+        and getattr(device, "type", None) == "cuda"
+        and vae_device != device
+    ):
+        return vae_device
+    return device
+
+
 def install_untiled_decode(
     pipe: Any,
     family: str,
@@ -123,7 +140,7 @@ def install_untiled_decode(
         need = untiled_decode_bytes(
             family, tuple(getattr(z, "shape", ())), itemsize = _decoder_itemsize(vae)
         )
-        free = _free_bytes(getattr(z, "device", None))
+        free = _free_bytes(_decode_device(vae, z))
         fits = (
             need is not None
             and free is not None
@@ -159,7 +176,9 @@ def install_untiled_decode(
         oom_need[:] = [min([need, *oom_need])]
         from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
 
-        clear_partial_decode(vae, z)  # the untiled attempt's causal state goes before the tiled decode
+        clear_partial_decode(
+            vae, z
+        )  # the untiled attempt's causal state goes before the tiled decode
         torch.cuda.empty_cache()
         if logger is not None:
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")

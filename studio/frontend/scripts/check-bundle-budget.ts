@@ -298,8 +298,14 @@ export const BUDGET = {
   // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
-  transferBytes: 2_061_486,
-  rawBytes: 6_845_747,
+  // Explicit browser download names retain the prior startup margin.
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_064_889,
+  rawBytes: 6_857_482,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -7189,6 +7189,7 @@ def test_the_width_probe_judges_the_tower_the_sizing_would_price(monkeypatch):
                 _probe_models = lambda *_a: iter(
                     [(lambda t = t: t, lambda tower: list(tower.entries), None) for t in towers]
                 ),
+                weightless_forward = contextlib.nullcontext,
             ),
         )
         marks = len(rewound)
@@ -9676,7 +9677,7 @@ def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
 ):
     """A model's declared rate must not depend on which mlx-vlm is installed.
 
-    Studio pins ``mlx-vlm>=0.4.4,<=0.7.8``, which spans both shapes: releases with no resolver
+    Studio pins ``mlx-vlm>=0.4.4,<=0.7.9``, which spans both shapes: releases with no resolver
     and, from 0.7.0, releases that have one. Reading the rate only through the resolver left
     every install on the older shape sampling at the library default instead of the rate the
     checkpoint asked for.

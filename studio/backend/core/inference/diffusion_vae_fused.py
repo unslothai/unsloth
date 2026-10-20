@@ -2348,7 +2348,7 @@ def _load_pairing(key: Optional[str], n_norms: int) -> Optional[dict]:
     if key is None or root is None or structural_cache_disabled():
         return None
     try:
-        data = json.loads((root / f"{key}.json").read_text())
+        data = json.loads((root / f"{key}.json").read_text(encoding = "utf-8"))
     except Exception:  # noqa: BLE001 - absent or unreadable: calibrate
         return None
     paired = data.get("paired")
@@ -2378,7 +2378,7 @@ def _save_pairing(key: Optional[str], record: dict) -> None:
     try:
         root.mkdir(parents = True, exist_ok = True)
         tmp = root / f".{key}.{os.getpid()}.tmp"
-        tmp.write_text(json.dumps({**record, "key": key}, default = str))
+        tmp.write_text(json.dumps({**record, "key": key}, default = str), encoding = "utf-8")
         os.replace(tmp, root / f"{key}.json")
     except Exception:  # noqa: BLE001 - a cache that cannot be written only costs the next process a calibration
         pass

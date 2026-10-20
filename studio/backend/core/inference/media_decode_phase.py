@@ -34,7 +34,9 @@ def decode_phase(
                 on_decode()
             return original(*args, **kwargs)
 
-        _decode.__wrapped__ = original  # the decode stack stays walkable (diffusion_vae_oom checks its scope)
+        _decode.__wrapped__ = (
+            original  # the decode stack stays walkable (diffusion_vae_oom checks its scope)
+        )
         return _decode
 
     for name in attrs:
