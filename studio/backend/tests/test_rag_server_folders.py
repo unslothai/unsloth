@@ -68,6 +68,16 @@ def test_only_configured_folder_ids_resolve(source):
             server_folders.resolve_folder(unconfigured)
 
 
+def test_same_named_folders_are_told_apart(rag_home, monkeypatch):
+    paths = [rag_home / "team-a" / "docs", rag_home / "team-b" / "docs", rag_home / "notes"]
+    for path in paths:
+        path.mkdir(parents = True)
+    spellings = [str(p) for p in paths] + [str(paths[0]) + "/"]
+    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps(spellings))
+    names = [f["displayName"] for f in server_folders.available_folders()]
+    assert names == [str(Path("team-a", "docs")), str(Path("team-b", "docs")), "notes"]
+
+
 def test_removed_configuration_invalidates_selection(source, monkeypatch):
     choice = server_folders.available_folders()[0]
     monkeypatch.delenv(server_folders.ENV_NAME)

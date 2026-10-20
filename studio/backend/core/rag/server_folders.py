@@ -51,13 +51,32 @@ def resolve_folder(folder_id: str) -> tuple[str, tuple[int, int]]:
     return _resolve(path)
 
 
+def _labels(paths: list[str]) -> list[str]:
+    """Shortest trailing path that tells the folders apart: /a/docs and /b/docs read a/docs, b/docs."""
+    parts = [Path(path).parts for path in paths]
+    depth = [1] * len(paths)
+    while True:
+        labels = [str(Path(*p[-d:])) for p, d in zip(parts, depth)]
+        clashing = [
+            i
+            for i, label in enumerate(labels)
+            if labels.count(label) > 1 and depth[i] < len(parts[i])
+        ]
+        if not clashing:
+            return labels
+        for i in clashing:
+            depth[i] += 1
+
+
 def available_folders() -> list[dict[str, str]]:
-    folders = []
+    resolved: dict[str, str] = {}
     for folder_id, path in configured_folders().items():
         try:
             normalized, _ = _resolve(path)
         except (ValueError, RuntimeError) as exc:
             _warn_once(f"{ENV_NAME}: skipping {path}: {exc}")
             continue
-        folders.append({"id": folder_id, "displayName": Path(normalized).name})
-    return folders
+        if normalized not in resolved.values():
+            resolved[folder_id] = normalized
+    labels = _labels(list(resolved.values()))
+    return [{"id": folder_id, "displayName": label} for folder_id, label in zip(resolved, labels)]
