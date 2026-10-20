@@ -254,11 +254,15 @@ def deepspeed_zero_stage():
     if config is None:
         try:
             from accelerate.state import AcceleratorState
+
             plugins = AcceleratorState._shared_state.get("deepspeed_plugins", None) or {}
             if not isinstance(plugins, dict):
                 plugins = {"": plugins}
             for plugin in plugins.values():
-                if getattr(plugin, "selected", True) and getattr(plugin, "zero_stage", None) is not None:
+                if (
+                    getattr(plugin, "selected", True)
+                    and getattr(plugin, "zero_stage", None) is not None
+                ):
                     return int(plugin.zero_stage)
         except Exception:
             pass

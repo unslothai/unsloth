@@ -69,7 +69,6 @@ def no_ds_env(monkeypatch):
     monkeypatch.setattr(hf_ds, "_hf_deepspeed_config_weak_ref", None, raising = False)
     try:
         from accelerate.state import AcceleratorState
-
         monkeypatch.setitem(AcceleratorState._shared_state, "deepspeed_plugins", None)
     except Exception:
         pass
@@ -140,7 +139,11 @@ def fake_set_z3_leaf(monkeypatch):
 
     calls = []
 
-    def set_z3_leaf_modules(model, classes, raise_if_not_found = True):
+    def set_z3_leaf_modules(
+        model,
+        classes,
+        raise_if_not_found = True,
+    ):
         calls.append(list(classes))
         out = []
         for module in model.modules():
@@ -196,10 +199,20 @@ def test_dense_model_has_no_moe_leaf(no_ds_env, fake_set_z3_leaf):
     assert fake_set_z3_leaf == []
 
 
-def _filled_args(fp16, bf16, ds_fp16, ds_bf16, shared = True):
+def _filled_args(
+    fp16,
+    bf16,
+    ds_fp16,
+    ds_bf16,
+    shared = True,
+):
     import types
 
-    config = {"fp16": {"enabled": ds_fp16}, "bf16": {"enabled": ds_bf16}, "zero_optimization": {"stage": 3}}
+    config = {
+        "fp16": {"enabled": ds_fp16},
+        "bf16": {"enabled": ds_bf16},
+        "zero_optimization": {"stage": 3},
+    }
     plugin = types.SimpleNamespace(deepspeed_config = config)
     hf = types.SimpleNamespace(config = config if shared else dict(config))
     return types.SimpleNamespace(
@@ -236,7 +249,6 @@ def test_auto_and_absent_sections_are_left_to_transformers():
 
 def test_no_deepspeed_config_is_a_no_op():
     import types
-
     args = types.SimpleNamespace(fp16 = True, bf16 = False)
     assert loader_utils.sync_deepspeed_mixed_precision(args) == []
 
