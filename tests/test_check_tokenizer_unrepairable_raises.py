@@ -8,7 +8,7 @@ import types
 from unittest.mock import patch
 
 import pytest
-from tokenizers import Tokenizer, models, pre_tokenizers
+from tokenizers import Tokenizer, models, pre_tokenizers, processors
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
 import unsloth.tokenizer_utils as tu
@@ -85,6 +85,36 @@ def test_failed_slow_reload_still_raises_when_unrepairable(tmp_path):
     original = AutoTokenizer.from_pretrained(path)
     with _no_slow_reload(), pytest.raises(RuntimeError, match = "out of bounds memory accesses"):
         tu.check_tokenizer(_model(len(VOCAB)), original, model_name = path)
+
+
+def test_post_processor_still_emitting_removed_id_raises(tmp_path):
+    backend = Tokenizer(models.WordLevel(VOCAB, unk_token = "<unk>"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object = backend, unk_token = "<unk>", eos_token = "</s>"
+    )
+    tokenizer.add_special_tokens({"bos_token": "<bos>"})
+    tokenizer._tokenizer.post_processor = processors.TemplateProcessing(
+        single = "<bos> $A", special_tokens = [("<bos>", len(VOCAB))]
+    )
+    tokenizer.save_pretrained(tmp_path)
+    with _no_slow_reload(), pytest.raises(RuntimeError, match = "out of bounds memory accesses"):
+        tu.check_tokenizer(
+            _model(len(VOCAB)), AutoTokenizer.from_pretrained(tmp_path), model_name = str(tmp_path)
+        )
+
+
+def test_removing_the_only_added_token_is_repaired(tmp_path):
+    backend = Tokenizer(models.WordLevel({"hello": 0, "world": 1, "<unk>": 2}, unk_token = "<unk>"))
+    backend.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer = PreTrainedTokenizerFast(tokenizer_object = backend)
+    tokenizer.add_tokens(["<x>"])
+    tokenizer.save_pretrained(tmp_path)
+    with _no_slow_reload():
+        tokenizer = tu.check_tokenizer(
+            _model(3), AutoTokenizer.from_pretrained(tmp_path), model_name = str(tmp_path)
+        )
+    assert len(tokenizer.added_tokens_decoder) == 0
 
 
 @pytest.fixture(scope = "module")
