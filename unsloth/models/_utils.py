@@ -142,7 +142,7 @@ __all__ = [
 
 
 import torch
-from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
+from typing import Union, Optional, List, Any, Callable, Dict, Tuple, Iterator
 from platform import system as platform_system
 
 platform_system = platform_system()
@@ -169,6 +169,8 @@ from ..device_type import (
     apply_gfx101x_triton_workaround,
     cuda_gate_capabilities,
     gfx101x_triton_workaround_applied,
+    xpu_supports_native_bf16,
+    zoo_shares_xpu_bf16,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
 from unsloth_zoo.log import logger
@@ -3996,7 +3998,7 @@ elif DEVICE_TYPE == "hip":
 
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
-    SUPPORTS_BFLOAT16 = True
+    SUPPORTS_BFLOAT16 = xpu_supports_native_bf16() if zoo_shares_xpu_bf16() else True
 elif DEVICE_TYPE == "npu":
     # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
@@ -7524,7 +7526,9 @@ class TorchAOConfig:
         default_factory = lambda: [
             (
                 Int4WeightOnlyConfig(group_size = 128),
-                lambda m, _: isinstance(m, torch.nn.Linear) and getattr(m, "in_features", 0) >= 128,
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and getattr(m, "in_features", 0) >= 128
+                and m.in_features % 128 == 0,
             ),
         ]
     )
@@ -7560,6 +7564,104 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     model.tie_weights = _no_tie.__get__(model, model.__class__)
 
     assert out_proj.weight.data_ptr() != in_emb.weight.data_ptr(), "Embeddings still tied!"
+
+
+def _embedding_subclasses(model: torch.nn.Module) -> Dict[str, torch.nn.Module]:
+    """nn.Embedding subclasses with their own forward (Gemma3TextScaledWordEmbedding scales by embed_scale)."""
+    try:
+        from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+    except ImportError:
+        return {}
+    return {
+        fqn: module
+        for fqn, module in model.named_modules()
+        if isinstance(module, torch.nn.Embedding)
+        and type(module) is not torch.nn.Embedding
+        and not isinstance(module, FakeQuantizedEmbedding)
+    }
+
+
+def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -> None:
+    """Copy the parameters, submodules, buffers and plain attributes an Embedding subclass adds (e.g.
+    Gemma3's embed_scale, T5Gemma2's eoi_embedding) onto dst."""
+    for name, param in src._parameters.items():
+        if name not in dst._parameters:
+            dst.register_parameter(name, param)
+    for name, module in src._modules.items():
+        if name not in dst._modules:
+            dst.add_module(name, module)
+    for name, buffer in src._buffers.items():
+        if name not in dst._buffers:
+            dst.register_buffer(
+                name, buffer, persistent = name not in src._non_persistent_buffers_set
+            )
+    for name, value in vars(src).items():
+        if name.startswith("_") or name in vars(dst) or isinstance(value, torch.nn.Module):
+            continue
+        setattr(dst, name, value)
+
+
+_FAKE_QUANTIZED_EMBEDDING_CLASSES = {}
+
+
+def _fake_quantized_embedding_class(original_cls):
+    """FakeQuantizedEmbedding that keeps original_cls.forward: its super().forward() is the fake-quantized lookup."""
+    from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+
+    cls = _FAKE_QUANTIZED_EMBEDDING_CLASSES.get(original_cls)
+    if cls is not None:
+        return cls
+
+    def to_embedding(self):
+        # QATConfig(step = "convert") swaps back to a plain nn.Embedding; restore the subclass and its scale.
+        embedding = FakeQuantizedEmbedding.to_embedding(self)
+        embedding.__class__ = original_cls
+        _copy_embedding_subclass_state(embedding, self)
+        return embedding
+
+    def __reduce_ex__(self, protocol):
+        # Pickle by the original class, so a fresh process (torch.load, spawn workers) rebuilds this one.
+        return (_rebuild_fake_quantized_embedding, (original_cls,), self.__getstate__())
+
+    name = "_FakeQuantized_" + re.sub(
+        r"\W", "_", f"{original_cls.__module__}.{original_cls.__qualname__}"
+    )
+    cls = type(
+        name,
+        (original_cls, FakeQuantizedEmbedding),
+        {
+            "to_embedding": to_embedding,
+            "__reduce_ex__": __reduce_ex__,
+            "__module__": __name__,
+            "__qualname__": name,
+        },
+    )
+    _FAKE_QUANTIZED_EMBEDDING_CLASSES[original_cls] = cls
+    return cls
+
+
+def _rebuild_fake_quantized_embedding(original_cls):
+    cls = _fake_quantized_embedding_class(original_cls)
+    return cls.__new__(cls)
+
+
+def _restore_fake_quantized_embedding_subclasses(
+    model: torch.nn.Module, originals: Dict[str, torch.nn.Module]
+) -> None:
+    """QAT prepare swaps in a plain FakeQuantizedEmbedding, dropping e.g. Gemma3's embed_scale; restore it."""
+    if not originals:
+        return
+    from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+
+    for fqn, original in originals.items():
+        try:
+            module = model.get_submodule(fqn)
+        except AttributeError:
+            continue
+        if type(module) is not FakeQuantizedEmbedding:
+            continue
+        module.__class__ = _fake_quantized_embedding_class(type(original))
+        _copy_embedding_subclass_state(module, original)
 
 
 def _filter_fn_to_fqns(
@@ -7730,6 +7832,54 @@ def _convert_torchao_model(model):
     model.config.quantization_config = quantization_config
 
 
+def _group_size_linear_filter(model, group_size, qat_scheme):
+    """PerGroup filter: in_features not divisible by group_size breaks the fake quantizer's reshape."""
+    filter_fn = lambda m, _: (
+        isinstance(m, torch.nn.Linear)
+        and m.in_features >= group_size
+        and m.in_features % group_size == 0
+    )
+    skipped = [
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Linear)
+        and module.in_features >= group_size
+        and module.in_features % group_size != 0
+        and not _is_lora_adapter_name(name)
+    ]
+    if skipped:
+        warnings.warn(
+            f"Unsloth: qat_scheme='{qat_scheme}' uses group_size {group_size}; these Linear layers have "
+            f"in_features not divisible by {group_size} and stay in full precision: "
+            + ", ".join(skipped[:8])
+            + (f", ... ({len(skipped) - 8} more)" if len(skipped) > 8 else ""),
+            stacklevel = 3,
+        )
+    return filter_fn
+
+
+def _is_lora_adapter_name(fqn: str) -> bool:
+    return any(part.startswith("lora_") for part in fqn.split("."))
+
+
+def _exclude_lora_adapters_from_qat(model, torchao_config) -> None:
+    """Adapters are merged before quantization, so only base weights are fake-quantized."""
+    if os.environ.get("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "0") == "1":
+        return
+    if not any(_is_lora_adapter_name(name) for name, _ in model.named_modules()):
+        return
+    from torchao.quantization.quant_api import _is_linear
+
+    def _skip_lora(filter_fn):
+        filter_fn = filter_fn or _is_linear
+        return lambda m, fqn: not _is_lora_adapter_name(fqn) and filter_fn(m, fqn)
+
+    torchao_config.base_config_and_filter_fns = [
+        (base_config, _skip_lora(filter_fn))
+        for base_config, filter_fn in torchao_config.base_config_and_filter_fns
+    ]
+
+
 def _prepare_model_for_qat(
     model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]
 ) -> torch.nn.Module:
@@ -7741,16 +7891,9 @@ def _prepare_model_for_qat(
     except ImportError:
         raise ImportError(TORCHAO_MSG)
 
-    # Gemma3 int8 embedding quantization struggles with its 262144-token vocabulary, so auto-switch to int4 weight-only.
-    if qat_scheme == "int8-int4":
-        model_types = get_transformers_model_type(model.config)
-        is_gemma3 = any("gemma3" in mt or "gemma_3" in mt for mt in model_types)
-        if is_gemma3:
-            print(
-                "Unsloth: Gemma3 has a large vocabulary causing int8 embedding issues. "
-                "Switching to int4 weight-only QAT for training stability."
-            )
-            qat_scheme = "int4"
+    # get_peft_model passes the scheme straight here, unaliased.
+    if qat_scheme == "phone-deployment":
+        qat_scheme = "int8-int4"
 
     if not isinstance(qat_scheme, TorchAOConfig):
         torchao_config: Optional[TorchAOConfig] = None
@@ -7761,7 +7904,7 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+            filter_fn = _group_size_linear_filter(model, group_size, qat_scheme)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -7828,7 +7971,7 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+            filter_fn = _group_size_linear_filter(model, group_size, qat_scheme)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -7892,6 +8035,9 @@ def _prepare_model_for_qat(
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
         assert torchao_config is not None, f"TorchAOConfig was not set for {qat_scheme}"
+        # Built here from the scheme name, so save-time export hints may assume its exact recipe.
+        torchao_config._unsloth_builtin_recipe = True
+        _exclude_lora_adapters_from_qat(model, torchao_config)
     else:
         torchao_config = qat_scheme
 
@@ -7903,8 +8049,10 @@ def _prepare_model_for_qat(
 
     if torchao_config.prequantization_transform is not None:
         torchao_config.prequantization_transform(model)
+    embedding_subclasses = _embedding_subclasses(model)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
+    _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)
 
     return model
 

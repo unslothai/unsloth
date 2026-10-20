@@ -280,6 +280,12 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
+        # torch keys artifacts on this tag (set by diffusion_fp8_unit_scale); a bundle from another tag would load,
+        # miss, recompile and never be rewritten. Only a set tag joins the key, so untagged bundles stay valid.
+        tag = getattr(getattr(torch, "compiler", None), "config", None)
+        tag = getattr(tag, "cache_key_tag", None)
+        if isinstance(tag, str) and tag:
+            fp["torch_cache_key_tag"] = tag
     except Exception:  # noqa: BLE001 - best-effort
         pass
     return fp
@@ -304,6 +310,8 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_STATIC_STREAM_MERGE_DETECT": "off",
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
+    "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
+    "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
     # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
     "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
 }
@@ -316,6 +324,13 @@ def _switch_value(name: str, default: str) -> Optional[str]:
     raw = (os.environ.get(name) or "").strip().lower()
     if not raw:
         return None
+    if default.startswith("rows:"):
+        # A row threshold keys on the value the reader uses (max(1, int)); junk falls back to the default there.
+        try:
+            rows = str(max(1, int(raw)))
+        except ValueError:
+            return None
+        return None if rows == default.partition(":")[2] else rows
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None

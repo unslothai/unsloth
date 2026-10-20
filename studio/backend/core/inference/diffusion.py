@@ -183,6 +183,11 @@ from .diffusion_memory import (
     prequant_seed_device,
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
+    scoped_allow_oversized_load,
+    UNIFIED_OVERSIZE_REFUSAL_CODE,
+    UnifiedMemoryShortfallError,
+    unified_capacity_memory,
+    unified_memory_refusal_code,
     reclaimable_snapshot_device_memory,
     reclaim_host_memory,
     reclaim_offload_host_memory,
@@ -245,10 +250,14 @@ from .diffusion_vae_fp16 import enable_fp16_vae_decode
 from .diffusion_vae_tiling import install as install_wide_vae_tiles
 from .diffusion_attention import (
     apply_attention_backend,
+    attention_status_reason,
     auto_attention_reason,
     normalize_attention_backend,
     sdpa_math_only,
     sdpa_subquadratic_confirmed,
+    attention_may_run_native,
+    begin_attention_run,
+    report_attention_run,
     select_attention_backend,
     _ensure_attention_backend_installed,
 )
@@ -378,6 +387,7 @@ from .diffusion_auto_policy import (
     family_bf16_components_gb,
     precision_fallback_allowed,
     precision_refusal_message,
+    companion_bytes_from_declared,
     resident_bytes_from_declared,
     resolve_dense_quant_candidate,
 )
@@ -1413,6 +1423,7 @@ class _LoadingState:
     base_repo: str
     expected_bytes: int = 0
     error: Optional[str] = None
+    error_code: Optional[str] = None
     # Where the companion BYTES land: ``base_repo``, or its mirror when one was swapped in. Never surfaced
     # (``base_repo`` stays the id status() reports), but the cache scan and the delete guard must look here.
     fetch_repo: Optional[str] = None
@@ -2288,9 +2299,14 @@ def _quadratic_attention(
     pipe: Any = None,
 ) -> bool:
     """Whether attention can only run on SDPA math (quadratic memory); False when unknown.
-    Any engaged non-native backend is a fused kernel, so the SDPA probe only speaks for native."""
+    An engaged non-native backend is a fused kernel, so the SDPA probe only speaks for native, unless that backend can
+    hand calls to native SDPA (ROCm flash: masked calls, lengths it does not serve): then budget as native."""
     if engaged_backend is not None and str(engaged_backend) != "native":
-        return False
+        try:
+            if pipe is None or not attention_may_run_native(pipe):
+                return False
+        except Exception:  # noqa: BLE001
+            return False
     try:
         if not sdpa_math_only(target):
             return False
@@ -4280,6 +4296,7 @@ class DiffusionBackend:
         gpu_ordinal: Optional[int] = None,
         text_encoder_files: Optional[Sequence[str]] = None,
         vae_file: Optional[str] = None,
+        allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
@@ -4393,6 +4410,7 @@ class DiffusionBackend:
                 gpu_ordinal = gpu_ordinal,
                 text_encoder_files = list(text_encoder_files or ()) or None,
                 vae_file = vae_file,
+                allow_oversized_load = bool(allow_oversized_load),
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
@@ -4401,6 +4419,7 @@ class DiffusionBackend:
         ).start()
         return self.status()
 
+    @scoped_allow_oversized_load
     # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
     @with_load_selection
     @scoped_local_files_only
@@ -4682,7 +4701,7 @@ class DiffusionBackend:
                     "diffusion.memory: refusing oversized unified-memory load before download: %s",
                     shortfall,
                 )
-                raise RuntimeError(shortfall)
+                raise UnifiedMemoryShortfallError(shortfall)
             # Outside the lock: a disk scan, and nothing of ours has written to the artifact repo yet.
             asset_baseline = self._cache_bytes(dit_prequant[0]) if skip_transformer_weights else 0
             planned_files = _planned_progress_files(
@@ -4809,6 +4828,7 @@ class DiffusionBackend:
             with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(text)
+                    self._loading.error_code = unified_memory_refusal_code(exc)
         finally:
             # Nothing else knows when the prefetch returned, so this is the drain's only owner.
             with self._load_cancel_lock:
@@ -4818,7 +4838,7 @@ class DiffusionBackend:
         """Phase + downloaded/total bytes for the in-flight load (cache-scan based)."""
         loading = self._loading
         if loading is not None and loading.error:
-            return _progress("error", error = loading.error)
+            return _progress("error", error = loading.error, error_code = loading.error_code)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
         finalized = loading.finalized_scan
@@ -6097,6 +6117,7 @@ class DiffusionBackend:
             ref_size = _hub_file_size(ref.repo_id, ref.filename, hf_token)
             required_total += ref_size
             add_missing_entry(ref.repo_id, [ref.filename], {ref.filename: ref_size})
+        incompatible_code: Optional[str] = None
         if incompatible is None and allow_device_probe and memory_verdict:
             incompatible = self.declared_footprint_shortfall(
                 fam,
@@ -6116,12 +6137,15 @@ class DiffusionBackend:
                 memory_mode = load_kwargs.get("memory_mode"),
                 cpu_offload = bool(load_kwargs.get("cpu_offload")),
             )
+            if incompatible is not None:
+                incompatible_code = UNIFIED_OVERSIZE_REFUSAL_CODE
         return {
             "entries": entries,
             "total_bytes": sum(entry["bytes"] for entry in entries),
             "required_bytes": int(required_total),
             "checkpoint_bytes": checkpoint_bytes,
             "incompatible_reason": incompatible,
+            "incompatible_code": incompatible_code,
             # Companion discovery failed, so the file list above is partial. The UI stages what it can and the loader
             # pulls the rest inline; a caller that must not download at all has to treat this plan as unverified
             # rather than as nothing missing.
@@ -6995,6 +7019,7 @@ class DiffusionBackend:
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
     @_invalidates_gpu_memory("diffusion load")
+    @scoped_allow_oversized_load
     @rocm_probe_load_scoped
     @_account_owned_load
     @_plans_at_requested_speed
@@ -7023,6 +7048,8 @@ class DiffusionBackend:
         model_kind: Optional[str] = None,
         loras: Optional[list[tuple[str, float]]] = None,
         gpu_ordinal: Optional[int] = None,
+        # Read by ``scoped_allow_oversized_load``.
+        allow_oversized_load: bool = False,
         _load_token: Optional[int] = None,
         _base_local_dir: Optional[str] = None,
         # True when the prefetch staged the base repo's ``transformer/`` shards, the only condition under which the
@@ -9249,6 +9276,12 @@ class DiffusionBackend:
                     )
                     if vae_fp16:
                         speed_applied["vae_fp16_decode"] = True
+                    # After the speed layer, so it wraps the fused / single-frame _decode the layer installed.
+                    try:
+                        from .diffusion_vae_oom import install as install_vae_oom_retry
+                        install_vae_oom_retry(getattr(pipe, "vae", None), logger, pipe = pipe)
+                    except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+                        logger.warning("diffusion.vae_oom: not installed: %s", exc)
                     self._raise_if_load_cancelled(_load_token)
                     if (
                         transformer_quant_engaged is not None
@@ -9564,11 +9597,7 @@ class DiffusionBackend:
                             "attention_backend": (
                                 attention_backend,
                                 attention_engaged or "native",
-                                auto_attention_reason(attention_engaged)
-                                if attention_engaged and attention_backend is None
-                                else "diffusers default"
-                                if attention_engaged is None
-                                else "requested",
+                                attention_status_reason(attention_backend, attention_engaged),
                             ),
                             "memory_mode": (
                                 memory_mode,
@@ -10692,13 +10721,22 @@ class DiffusionBackend:
             )
             if not resident_bytes:
                 return None
-            capacity = replace(device_memory, free_mib = device_memory.total_mib)
+            capacity = unified_capacity_memory(device_memory)
             resident_mib = int(resident_bytes) // (1024 * 1024)
+            # Plain pipelines only: pre-cast or separately hosted parts are not split by file here.
+            companion_bytes = (
+                companion_bytes_from_declared(base, declared_files, dtype_scale = dtype_scale)
+                if not prequant_bytes and not extra_bf16_bytes
+                else None
+            )
             variant_hint = _image_variant_hint(fam.name, gguf_filename, repo_id, base)
             plan = plan_diffusion_memory(
                 target = target,
                 device_memory = capacity,
                 model_dense_mib = resident_mib,
+                companion_dense_mib = (
+                    None if companion_bytes is None else int(companion_bytes) // (1024 * 1024)
+                ),
                 runtime_headroom_mib = estimate_image_runtime_mib(
                     width = None, height = None, family = variant_hint
                 ),
@@ -11741,6 +11779,14 @@ class DiffusionBackend:
         if _denoiser_hooked(state.pipe):
             compile_pipe_below_offload_hooks(state.pipe, logger)
         arm_graphs_after_placement(state.pipe, speed_applied, logger)
+        # the speed layer just rewrapped vae.decode (a compiled decode guard): the OOM retry's scope goes back on top
+        try:
+            from .diffusion_vae_oom import ensure_outermost
+            ensure_outermost(getattr(state.pipe, "vae", None), logger)
+        except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
+            logger.warning(
+                "diffusion.vae_oom: scope not restored after the deferred profile: %s", exc
+            )
         cuda_graph.arm_block_graphs(
             state.pipe,
             speed_applied,
@@ -11883,6 +11929,7 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
+                begin_attention_run(state)
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None
@@ -12671,6 +12718,8 @@ class DiffusionBackend:
                     raise
                 if previewer is not None:
                     previewer.finish()
+                # A denoiser whose text length follows the prompt records no new prompt length after this render.
+                cuda_graph.seal_lengths(state.cuda_graphs)
                 _record_peak_probe(
                     state,
                     peak_probe,
@@ -12716,6 +12765,9 @@ class DiffusionBackend:
                         compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                     except Exception:  # noqa: BLE001 - cache persistence is best-effort
                         pass
+                # The status badge reports the attention routes this run took (report only: the recipe keeps the
+                # engaged backend).
+                report_attention_run(state)
                 # Last word on cancellation, AFTER the post-denoise work: the event stays registered through the
                 # compile-cache bookkeeping and the page still shows Stop for as long as progress reads active, so a Stop
                 # landing there was answered cancelled = true and then contradicted by the image the route persisted.
@@ -13456,6 +13508,7 @@ def _progress(
     fraction: float = 0.0,
     *,
     error: Optional[str] = None,
+    error_code: Optional[str] = None,
 ) -> dict[str, Any]:
     return {
         "phase": phase,
@@ -13463,6 +13516,7 @@ def _progress(
         "bytes_total": bytes_total,
         "fraction": fraction,
         "error": error,
+        "error_code": error_code,
     }
 
 
