@@ -857,3 +857,29 @@ def test_image_guard_checks_every_other_card_running_blocks(monkeypatch, engine)
     free["mib"] = 10
     with pytest.raises(ValueError, match = "cuda:1"):
         D._guard_layer_cards(pipe, object(), kw)
+
+
+def test_two_denoisers_that_fit_only_jointly_are_cut_jointly():
+    # cut in turn by proportion, the first expert takes 1/1 and leaves 2/2, where (1, 2, 1) has no contiguous cut;
+    # searched jointly the experts fit 3/3, each keeping a block off the primary (the engine places each on its own)
+    kw = dict(
+        companions = {},
+        primary = 0,
+        card_limits = {0: 3, 1: 3},
+        headroom_mib = 0,
+        overhead_mib = 0,
+        working_set_mib = 0,
+        secondary_overhead_mib = 0,
+    )
+    denoisers = {"transformer": L(0, (1, 1)), "transformer_2": L(0, (1, 2, 1))}
+    split, reason = lsp.plan_layer_split(denoisers = denoisers, **kw)
+    assert split is not None, reason
+    per_card = {}
+    for r in split.ranges:
+        per_card[r.card] = per_card.get(r.card, 0) + r.mib
+    assert per_card[0] <= 3 and per_card[1] <= 3
+    for name, layout in denoisers.items():
+        mine = sorted((r.start, r.stop) for r in split.ranges if r.denoiser == name)
+        assert mine[0][0] == 0 and mine[-1][1] == len(layout.block_mib)  # every block placed once
+        assert any(r.card != 0 for r in split.ranges if r.denoiser == name)
+    assert lsp._search_cuts([(1, 1), (1, 2, 1)], [2, 2]) is None  # truly infeasible stays declined

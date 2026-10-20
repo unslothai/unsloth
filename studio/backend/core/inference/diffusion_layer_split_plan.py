@@ -171,6 +171,59 @@ def _partition(blocks: Sequence[int], capacities: Sequence[int]) -> Optional[lis
     return cuts
 
 
+_SEARCH_BUDGET = 200_000
+
+
+def _search_cuts(layouts: Sequence[Sequence[int]], capacities: Sequence[int]) -> Optional[list[list[int]]]:
+    """Cut points for several denoisers sharing the cards, by backtracking: each denoiser contiguous over the cards in
+    order, every one keeping a block off the primary (the engine places each denoiser on its own), each card's parts
+    within its capacity. The fallback when cutting each denoiser in turn by proportion leaves a later one no fit.
+    None when nothing fits within the search budget."""
+    k = len(capacities)
+    prefixes = []
+    for blocks in layouts:
+        prefix = [0]
+        for b in blocks:
+            prefix.append(prefix[-1] + int(b))
+        prefixes.append(prefix)
+    visited = [0]
+
+    def options(d: int, remaining: list[int]):
+        prefix = prefixes[d]
+        n = len(prefix) - 1
+
+        def rec(i: int, start: int, cuts: list[int]):
+            if i == k - 1:
+                if prefix[n] - prefix[start] <= remaining[i]:
+                    yield [*cuts, n]
+                return
+            for j in range(start, n + 1):
+                if prefix[j] - prefix[start] > remaining[i]:
+                    break
+                yield from rec(i + 1, j, [*cuts, j])
+
+        yield from rec(0, 0, [0])
+
+    def dfs(d: int, remaining: list[int]) -> Optional[list[list[int]]]:
+        if d == len(layouts):
+            return []
+        prefix = prefixes[d]
+        n = len(prefix) - 1
+        for cuts in options(d, remaining):
+            visited[0] += 1
+            if visited[0] > _SEARCH_BUDGET:
+                return None
+            if n > 1 and cuts[1] == n:
+                continue  # every block on the primary: the engine refuses that denoiser
+            left = [remaining[i] - (prefix[cuts[i + 1]] - prefix[cuts[i]]) for i in range(k)]
+            rest = dfs(d + 1, left)
+            if rest is not None:
+                return [cuts, *rest]
+        return None
+
+    return dfs(0, [int(c) for c in capacities])
+
+
 def plan_layer_split(
     *,
     denoisers: Mapping[str, DenoiserLayout],
@@ -277,6 +330,19 @@ def plan_layer_split(
                         mib = sum(layout.block_mib[lo:hi])
                         ranges.append(BlockRange(name, lo, hi, card, mib))
                         remaining[i] -= mib
+            if not ok and len(names) > 1:
+                # cut in turn, an earlier denoiser can take the room a later one needed: search the cuts jointly
+                joint = _search_cuts([denoisers[n].block_mib for n in names], caps)
+                if joint is not None:
+                    ok, ranges, remaining = True, [], list(caps)
+                    for name, cuts in zip(names, joint):
+                        blocks = denoisers[name].block_mib
+                        for i, card in enumerate(cards):
+                            lo, hi = cuts[i], cuts[i + 1]
+                            if hi > lo:
+                                mib = sum(blocks[lo:hi])
+                                ranges.append(BlockRange(name, lo, hi, card, mib))
+                                remaining[i] -= mib
             if not ok:
                 continue
             used = {r.card for r in ranges} | {primary}
