@@ -1518,7 +1518,10 @@ def test_a_resave_keeps_the_newest_bytes_of_a_repeated_key(tmp_path, monkeypatch
         assert cc._write_bundle(ctx, None)
         manifest = json.loads(ctx.manifest_path.read_text())
         restored = M.deserialize((ctx.dir / manifest["bundle"]).read_bytes())
-        assert {a.key: bytes(a.content) for a in restored["inductor"]} == {"kept": b"one", "tuned": b"new"}
+        assert {a.key: bytes(a.content) for a in restored["inductor"]} == {
+            "kept": b"one",
+            "tuned": b"new",
+        }
     finally:
         M.clear()
 
