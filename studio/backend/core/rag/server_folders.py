@@ -54,15 +54,15 @@ def resolve_folder(folder_id: str) -> tuple[str, tuple[int, int]]:
 
 
 def _labels(paths: list[str]) -> list[str]:
-    """Shortest trailing path that tells the folders apart: /a/docs and /b/docs read a/docs, b/docs."""
+    """Shortest trailing path that tells the folders apart: /a/docs and /b/docs read a/docs, b/docs.
+    Never the anchor, which would put a whole absolute path in the browser."""
     parts = [Path(path).parts for path in paths]
+    limit = [max(1, len(p) - 1) if Path(path).anchor else len(p) for p, path in zip(parts, paths)]
     depth = [1] * len(paths)
     while True:
         labels = [str(Path(*p[-d:])) for p, d in zip(parts, depth)]
         clashing = [
-            i
-            for i, label in enumerate(labels)
-            if labels.count(label) > 1 and depth[i] < len(parts[i])
+            i for i, label in enumerate(labels) if labels.count(label) > 1 and depth[i] < limit[i]
         ]
         if not clashing:
             return labels
@@ -82,3 +82,7 @@ def available_folders() -> list[dict[str, str]]:
             resolved[folder_id] = normalized
     labels = _labels(list(resolved.values()))
     return [{"id": folder_id, "displayName": label} for folder_id, label in zip(resolved, labels)]
+
+
+def display_name(folder_id: str) -> str | None:
+    return next((f["displayName"] for f in available_folders() if f["id"] == folder_id), None)

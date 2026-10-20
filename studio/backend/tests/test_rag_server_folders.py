@@ -83,6 +83,13 @@ def test_same_named_folders_are_told_apart(rag_home, monkeypatch):
     assert names == [str(Path("team-a", "docs")), str(Path("team-b", "docs")), "notes"]
 
 
+def test_a_suffix_of_another_folder_is_not_labelled_by_its_absolute_path(rag_home, monkeypatch):
+    monkeypatch.setattr(server_folders, "_resolve", lambda path: (path, (0, 0)))
+    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps(["/srv/docs", "/archive/srv/docs"]))
+    names = [f["displayName"] for f in server_folders.available_folders()]
+    assert names == [str(Path("srv", "docs")), str(Path("archive", "srv", "docs"))]
+
+
 def test_removed_configuration_invalidates_selection(source, monkeypatch):
     choice = server_folders.available_folders()[0]
     monkeypatch.delenv(server_folders.ENV_NAME)
@@ -158,7 +165,9 @@ def test_server_link_reuses_indexing_with_resolved_identity(source, monkeypatch,
     payload = rag.ServerLinkFolderRequest(serverFolderId = choice["id"])
     assert rag._link_server_source_folder(scope_type, "scope", payload, False) == {"ok": True}
     assert scopes == [(scope_type, "scope")]
-    assert calls[0][:3] == (scope_type, "scope", payload)
+    assert calls[0][:2] == (scope_type, "scope")
+    assert calls[0][2].server_folder_id == choice["id"]
+    assert calls[0][2].name == choice["displayName"]
     assert calls[0][3:] == server_folders.resolve_folder(choice["id"])
 
 
@@ -188,6 +197,32 @@ def test_http_link_creates_a_real_folder_and_sync_job(source, rag_home, client):
     assert result["job"]["linkedFolderId"] == folder["id"]
     assert result["job"]["status"] == "pending"
     assert "path" not in result["linkedFolder"]
+
+
+def test_same_named_folders_stay_apart_once_linked(rag_home, client, monkeypatch):
+    from core.rag import store
+    from storage import rag_db
+
+    if not rag_db.rag_available():
+        pytest.skip(
+            reason = "sqlite-vec cannot load here (a Python built without SQLite extension loading)"
+        )
+    paths = [rag_home / "team-a" / "docs", rag_home / "team-b" / "docs"]
+    for path in paths:
+        path.mkdir(parents = True)
+    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps([str(p) for p in paths]))
+    http, _ = client
+    with closing(rag_db.get_connection()) as conn:
+        store.create_kb(conn, name = "Knowledge", kb_id = "knowledge")
+    names = []
+    for choice in http.get("/api/rag/server-source-folders").json()["folders"]:
+        response = http.post(
+            "/api/rag/knowledge-bases/knowledge/server-linked-folders",
+            json = {"serverFolderId": choice["id"]},
+        )
+        assert response.status_code == 200, response.text
+        names.append(response.json()["linkedFolder"]["displayName"])
+    assert names == [str(Path("team-a", "docs")), str(Path("team-b", "docs"))]
 
 
 @pytest.mark.parametrize("api_key,managed", [(True, False), (False, True)])
