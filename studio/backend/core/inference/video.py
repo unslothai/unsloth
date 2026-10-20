@@ -7532,8 +7532,8 @@ class VideoBackend:
         if token is not None and token != self._load_token:
             raise RuntimeError("Video load was cancelled or superseded.")
 
-    @scoped_allow_oversized_load
     @_invalidates_gpu_memory("video load")
+    @scoped_allow_oversized_load
     @rocm_probe_load_scoped
     @scoped_local_files_only
     def load_pipeline(

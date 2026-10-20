@@ -188,7 +188,6 @@ from .diffusion_memory import (
     UnifiedMemoryShortfallError,
     unified_capacity_memory,
     unified_memory_refusal_code,
-    unified_oversize_requested,
     reclaimable_snapshot_device_memory,
     reclaim_host_memory,
     reclaim_offload_host_memory,
@@ -7010,8 +7009,8 @@ class DiffusionBackend:
 
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
-    @scoped_allow_oversized_load
     @_invalidates_gpu_memory("diffusion load")
+    @scoped_allow_oversized_load
     @rocm_probe_load_scoped
     @_account_owned_load
     @_plans_at_requested_speed
