@@ -7590,7 +7590,11 @@ backend:
 _EXPORT_LLM_MODEL_TYPES = {"llama", "qwen2", "qwen3", "qwen3_5", "qwen3_5_text", "phi3", "lfm2"}
 
 
-def _write_executorch_export_config(qat_scheme, directory, model_type = None):
+def _write_executorch_export_config(
+    qat_scheme,
+    directory,
+    model_type = None,
+):
     """Write and print the ExecuTorch export settings matching a phone-deployment QAT model."""
     if qat_scheme != "int8-int4":
         return None
