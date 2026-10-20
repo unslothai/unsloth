@@ -321,13 +321,18 @@ def sync_deepspeed_mixed_precision(args):
         mismatches = getattr(hf_config, "mismatches", None)
         if isinstance(mismatches, list):
             mismatches[:] = [
-                m for m in mismatches
+                m
+                for m in mismatches
                 if not m.startswith(("- ds fp16.enabled=", "- ds bf16.enabled="))
             ]
         if hasattr(hf_config, "_dtype"):
             enabled = lambda key: hf_config.config.get(key, {}).get("enabled", False) is True
             hf_config._dtype = (
-                torch.bfloat16 if enabled("bf16") else torch.float16 if enabled("fp16") else torch.float32
+                torch.bfloat16
+                if enabled("bf16")
+                else torch.float16
+                if enabled("fp16")
+                else torch.float32
             )
     return changed
 
