@@ -195,8 +195,7 @@ def test_the_libc_handle_is_looked_up_once_and_typed(monkeypatch):
 
 
 def test_minimax_h3_video_cli_and_server_get_the_default_thread_count(monkeypatch, tmp_path):
-    """sd.cpp's own default reads perflevel0 only and ignores UNSLOTH_CPU_THREADS; H3 runs its text encoder on the CPU
-    on a Mac, so both native video paths pass Studio's count, as the image paths do."""
+    """H3 runs its text encoder on the Mac CPU, so both native video paths pass Studio's count."""
     from core.inference import sd_cpp_engine as eng
     from core.inference import sd_cpp_server as srv
     from core.inference import video_minimax_h3 as h3

@@ -300,7 +300,7 @@ def _cgroup_cpu_limit(
 
 @functools.lru_cache(maxsize = 1)
 def _libc() -> Any:
-    """The C library with ``sysctlbyname`` typed (looked up once; ``find_library`` walks the filesystem)."""
+    """Cached: ``find_library`` walks the filesystem."""
     import ctypes
     import ctypes.util
 
@@ -317,7 +317,6 @@ def _libc() -> Any:
 
 
 def _sysctl(name: str, as_str: bool = False) -> Any:
-    """``sysctlbyname`` on macOS: an int (or str with ``as_str``), None when it cannot answer."""
     try:
         import ctypes
 
@@ -335,14 +334,13 @@ def _sysctl(name: str, as_str: bool = False) -> Any:
         return None
 
 
-# Lower performance levels counted as fast cores, by name (M5 Pro / Max: perflevel0 "Super", perflevel1 "Performance").
+# M5 Pro / Max: perflevel0 "Super", perflevel1 "Performance".
 _FAST_PERF_LEVELS = ("super", "performance")
 
 
 def _apple_performance_cores() -> Optional[int]:
-    """macOS fast physical cores: perflevel0 (the fastest tier by definition) plus every lower tier named Super or
-    Performance, so M5 Pro / Max count both of their fast tiers (sd.cpp's own default reads perflevel0 only). Efficiency
-    and unnamed or unknown lower tiers are left out. No SMT, so ``cpu_count() // 2`` undercounts."""
+    """macOS fast cores: perflevel0 plus lower tiers named Super/Performance (sd.cpp reads perflevel0 only).
+    No SMT, so ``cpu_count() // 2`` undercounts."""
     if sys.platform != "darwin":
         return None
     levels = _sysctl("hw.nperflevels") or 0
@@ -374,9 +372,8 @@ def _default_threads() -> int:
 
 
 def _explicit_threads() -> Optional[int]:
-    """A thread count Studio knows better than sd.cpp's own default (its physical core count): ``UNSLOTH_CPU_THREADS``,
-    the macOS fast cores, or a Linux cgroup quota below the default. None keeps sd.cpp's default, so the native H3
-    video launch on every other host is unchanged."""
+    """``UNSLOTH_CPU_THREADS``, the macOS fast cores, or a cgroup quota below sd.cpp's physical-core default; None
+    keeps that default."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:

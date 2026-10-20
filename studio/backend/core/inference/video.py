@@ -12363,8 +12363,7 @@ class VideoBackend:
                                 video_params,
                                 output_path = str(output_path),
                                 offload = render_flags,
-                                # sd.cpp's own default counts perflevel0 only (M5 Pro / Max undercount) and ignores
-                                # UNSLOTH_CPU_THREADS and the cgroup quota; elsewhere its default is kept
+                                # sd.cpp's default undercounts M5 Pro / Max and ignores env / cgroup quota
                                 threads = _explicit_threads(),
                                 env = dict(runtime.env) or None,
                                 on_log = on_log,
