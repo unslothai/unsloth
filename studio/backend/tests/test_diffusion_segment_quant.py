@@ -688,7 +688,7 @@ def test_tiny_dequantized_weights_match_the_quantized_values(tmp_path, monkeypat
 
 
 def test_skeleton_buffers_match_from_pretrained(tmp_path):
-    """The quantized load builds the model around the file; its buffers must be from_pretrained's. At SAM 3's real
+    """The quantized load builds the model around the file; its buffers must be a float32 load's. At SAM 3's real
     1008 px input the ViT's global-attention RoPE tables are exact only when built in float32 (a bf16 default moved
     them by up to 0.04 and every mask with them), so the skeleton is built in float32 whatever the caller's default."""
     transformers = pytest.importorskip("transformers")
@@ -700,8 +700,10 @@ def test_skeleton_buffers_match_from_pretrained(tmp_path):
     config = _tiny_config()
     config.vision_config.backbone_config.image_size = 1008
     transformers.Sam3Model(config).to(torch.bfloat16).save_pretrained(tmp_path)
+    # The float32 load is the reference: some 5.x releases (5.18 here) cast the global-attention position_ids to
+    # bf16 under from_pretrained(dtype = bfloat16), moving the tables; others keep them in float32.
     dense = dict(
-        transformers.Sam3Model.from_pretrained(tmp_path, dtype = torch.bfloat16).named_buffers()
+        transformers.Sam3Model.from_pretrained(tmp_path, dtype = torch.float32).named_buffers()
     )
     previous = torch.get_default_dtype()
     torch.set_default_dtype(torch.bfloat16)
@@ -709,7 +711,11 @@ def test_skeleton_buffers_match_from_pretrained(tmp_path):
         built = dict(sq._build_skeleton(str(tmp_path)).named_buffers())
     finally:
         torch.set_default_dtype(previous)
-    assert dense.keys() == built.keys() and any("rope" in name for name in dense)
+    # The RoPE tables: `rotary_emb.inv_freq` and `position_ids` in transformers 5.x, "rope" in other spellings.
+    rope = [
+        name for name in dense if any(key in name for key in ("rope", "rotary", "position_ids"))
+    ]
+    assert dense.keys() == built.keys() and rope, sorted(dense)
     for name, value in dense.items():
         assert built[name].dtype == value.dtype and torch.equal(built[name], value), name
 
