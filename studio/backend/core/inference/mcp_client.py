@@ -2264,7 +2264,12 @@ def call_tool_sync(
             return f"Error: MCP tool '{name}' failed: MCP server was updated or removed"
         from core.inference import studio_tools_mcp
         return studio_tools_mcp.call(
-            name, args, timeout = timeout, cancel_event = cancel_event, ui_resource_uri = ui_resource_uri
+            name,
+            args,
+            timeout = timeout,
+            cancel_event = cancel_event,
+            ui_resource_uri = ui_resource_uri,
+            config_check = config_check,
         )
 
     async def _one_shot() -> Any:

@@ -124,6 +124,7 @@ def call(
     timeout: Optional[float],
     cancel_event: Any = None,
     ui_resource_uri: Optional[str] = None,
+    config_check: Any = None,
 ) -> str:
     """Run one tool as the current account on the server loop. Never raises: failures are "Error: ..." text."""
     from core.inference.mcp_client import _flatten_result
@@ -149,6 +150,9 @@ def call(
         logger.warning("Could not mint an Unsloth Studio chat tools key: %s", exc)
         return f"Error: MCP tool '{name}' failed: Unsloth Studio could not authorize this call."
     try:
+        # Minting can outlast an edit or delete of the row.
+        if config_check is not None and not config_check():
+            return f"Error: MCP tool '{name}' failed: MCP server was updated or removed"
         caller = Caller(
             token = key,
             account_id = account.account_id,

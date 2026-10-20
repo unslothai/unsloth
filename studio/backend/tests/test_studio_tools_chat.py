@@ -555,6 +555,26 @@ def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(
     assert stale.startswith("Error: ") and len(minted) == 1 and chat_keys() == []
 
 
+def test_a_row_edited_while_the_key_is_minted_never_dispatches(
+    studio_home, accounts, server_loop, monkeypatch
+):
+    app = studio(monkeypatch, RUN_PAYLOADS)
+    minted = minted_keys(monkeypatch)
+    checks = iter([True, False])
+    result = run_as(
+        OWNER,
+        mcp_client.call_tool_sync,
+        URL,
+        None,
+        "list_training_runs",
+        {},
+        timeout = 30.0,
+        config_check = lambda: next(checks),
+    )
+    assert result.startswith("Error: ") and app.state.seen == []
+    assert len(minted) == 1 and chat_keys() == []
+
+
 def test_a_structured_call_outside_the_bridge_has_no_caller(studio_home, accounts):
     result = mcp_client.call_tool_structured_sync(URL, None, "studio_status", {}, timeout = 30.0)
     assert result["is_error"] is True
