@@ -3037,6 +3037,8 @@ export function ChatPage({
   // Bumped whenever voice mode lets go, so a load still in flight knows it is no longer wanted.
   const voiceEpochRef = useRef(0);
   const ensureVoiceSlotLoaded = useCallback((): Promise<boolean> => {
+    // A clip still queued when voice mode let go retries through here: nothing to load then.
+    if (useChatRuntimeStore.getState().voiceMode !== "active") return Promise.resolve(false);
     if (voiceLoadRef.current) return voiceLoadRef.current;
     const run = (async () => {
       const store = useChatRuntimeStore.getState();
