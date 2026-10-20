@@ -8507,7 +8507,7 @@ def patch_gradient_checkpointing_enable_kwargs():
             offload = dict_offload if offload is None else offload
             if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
                 gradient_checkpointing_kwargs = gc_kwargs or None
-        every = int(every or 1)
+        every = 1 if every is None else int(every)
         if every < 1:
             raise ValueError(f"Unsloth: every_n_layers must be >= 1, got {every}.")
         if offload:

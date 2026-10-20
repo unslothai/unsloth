@@ -203,3 +203,18 @@ def test_plain_enable_unchanged(patched):
     assert _flags(model) == [True, True, True, True]
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
     assert _flags(model) == [True, True, True, True]
+
+
+@pytest.mark.parametrize("via_dict", [False, True])
+def test_every_n_layers_zero_is_rejected(patched, via_dict):
+    model = _model()
+    if via_dict:
+        call = lambda: model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs = {"every_n_layers": 0}
+        )
+    else:
+        if not NATIVE:
+            pytest.skip("every_n_layers is a gradient_checkpointing_enable argument from transformers 5.17")
+        call = lambda: model.gradient_checkpointing_enable(every_n_layers = 0)
+    with pytest.raises(ValueError, match = "every_n_layers"):
+        call()
