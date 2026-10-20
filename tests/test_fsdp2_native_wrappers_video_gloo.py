@@ -188,8 +188,9 @@ def _case_bnb_instance(native, tmp):
             res[f"{name}.trainer"] = ""
         except Exception as exc:
             res[f"{name}.trainer"] = f"{type(exc).__name__}: {str(exc)[:200]}"
-    # Custom loop: accelerator.prepare_optimizer with the sharded model registered.
+    # A Trainer's accelerator (marked) with the sharded model registered.
     fake_accelerator = types.SimpleNamespace(_models = [model])
+    setattr(fake_accelerator, native._TRAINER_ACCELERATOR, True)
     try:
         Accelerator.prepare_optimizer(fake_accelerator, AdamW8bitLike(trainable, lr = 1e-3))
         res["prepare"] = ""

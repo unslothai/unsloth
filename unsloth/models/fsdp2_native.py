@@ -1466,6 +1466,59 @@ def _native_models(accelerator):
     return [m for m in getattr(accelerator, "_models", []) if is_native_fsdp2(m)]
 
 
+# Set by Trainer.create_accelerator_and_postprocess on the accelerator a Trainer owns.
+_TRAINER_ACCELERATOR = "_unsloth_fsdp2_trainer_accelerator"
+
+_CUSTOM_LOOP_REFUSAL = (
+    "Unsloth: native FSDP2 (UNSLOTH_FSDP2=1 / shard_model) supports the Hugging Face / TRL Trainer, "
+    "and plain PyTorch loops over shard_model(model) with the native helpers "
+    "(unsloth.models.fsdp2_native: native_clip_grad_norm_, native_full_state_dict, "
+    "native_save_optimizer, native_load_model_checkpoint, native_load_optimizer). "
+    "accelerator.prepare() of a natively sharded model or its optimizer outside a Trainer is not "
+    "supported: accelerate would treat the sharded model as unsharded (FP8 conversion, save_state / "
+    "load_state, device placement). Drop accelerator.prepare for the model and optimizer, or use "
+    "UNSLOTH_FSDP2_BACKEND=accelerate for an accelerate-managed FSDP2 loop."
+)
+
+
+def _native_object(obj):
+    """A natively sharded model (or a wrapper of one), an optimizer over its parameters, or an LR
+    scheduler over such an optimizer."""
+    if isinstance(obj, nn.Module):
+        return is_native_fsdp2(obj)
+    if isinstance(obj, torch.optim.Optimizer) or hasattr(obj, "param_groups"):
+        return _native_optimizer(obj)
+    inner = getattr(obj, "optimizer", None)
+    return inner is not None and hasattr(inner, "param_groups") and _native_optimizer(inner)
+
+
+def _accelerator_fp8(accelerator):
+    """accelerate converts Linear layers to FP8 (Transformer Engine / torchao / MS-AMP) inside
+    Accelerator.prepare, before prepare_model."""
+    if str(getattr(accelerator, "mixed_precision", "no") or "no").lower() == "fp8":
+        return True
+    try:
+        backend = accelerator.fp8_backend
+    except Exception:
+        return False
+    backend = getattr(backend, "value", backend)
+    return backend is not None and str(backend).strip().upper() not in ("", "NO", "NONE")
+
+
+def _refuse_untrusted_accelerator(accelerator, objects):
+    """Native objects are prepared only by a Trainer's accelerator, never with FP8 conversion."""
+    if not any(_native_object(obj) for obj in objects):
+        return
+    if not getattr(accelerator, _TRAINER_ACCELERATOR, False):
+        raise RuntimeError(_CUSTOM_LOOP_REFUSAL)
+    if _accelerator_fp8(accelerator):
+        raise RuntimeError(
+            "Unsloth: native FSDP2 cannot train with accelerate's FP8 (mixed_precision = 'fp8' or "
+            "ACCELERATE_FP8_BACKEND): accelerate converts the layers after Unsloth sharded them. Use "
+            "bf16 / fp16, or UNSLOTH_FSDP2_BACKEND=accelerate."
+        )
+
+
 def split_param_groups(params_or_groups):
     """Optimizer parameter groups for a natively sharded model: foreach / fused optimizer kernels cannot
     take DTensor (sharded) and plain (replicated) tensors in one list, so each group comes back as one
@@ -1525,6 +1578,14 @@ def _install_accelerate_hooks():
     if getattr(Accelerator, _PATCHED, False):
         return True
 
+    original_prepare = Accelerator.prepare
+
+    @functools.wraps(original_prepare)
+    def prepare(self, *args, **kwargs):
+        # Before accelerate's FP8 conversion, which runs here ahead of prepare_model.
+        _refuse_untrusted_accelerator(self, args)
+        return original_prepare(self, *args, **kwargs)
+
     original_prepare_model = Accelerator.prepare_model
 
     @functools.wraps(original_prepare_model)
@@ -1538,6 +1599,7 @@ def _install_accelerate_hooks():
             return original_prepare_model(
                 self, model, device_placement = device_placement, evaluation_mode = evaluation_mode
             )
+        _refuse_untrusted_accelerator(self, [model])
         # Already sharded by Unsloth: keep accelerate's autocast wrap of forward (as one GPU gets),
         # skip device placement and the DDP / FSDP wrap (evaluation_mode skips exactly those).
         if getattr(model, "_is_accelerate_prepared", False):
@@ -1586,6 +1648,7 @@ def _install_accelerate_hooks():
         # given, so the native model may not be registered in `_models` yet.
         native = bool(_native_models(self)) or _native_optimizer(optimizer)
         if native:
+            _refuse_untrusted_accelerator(self, [optimizer] if _native_optimizer(optimizer) else [])
             _refuse_bnb_optimizer_instance(optimizer)
         if native and _mixed_param_groups(optimizer):
             if getattr(_inner_optimizer(optimizer), "state", None):
@@ -1616,7 +1679,9 @@ def _install_accelerate_hooks():
     def _refuse_state(name, original):
         @functools.wraps(original)
         def wrapped(self, *args, **kwargs):
-            if _native_models(self):
+            if _native_models(self) or any(
+                _native_optimizer(o) for o in getattr(self, "_optimizers", [])
+            ):
                 raise RuntimeError(
                     f"Unsloth: accelerator.{name}() would save / load each natively sharded model and "
                     "optimizer as this rank's DTensor shards (accelerate treats the model as unsharded). "
@@ -1631,6 +1696,7 @@ def _install_accelerate_hooks():
     Accelerator.get_state_dict = get_state_dict
     Accelerator.save_state = _refuse_state("save_state", Accelerator.save_state)
     Accelerator.load_state = _refuse_state("load_state", Accelerator.load_state)
+    Accelerator.prepare = prepare
     Accelerator.prepare_model = prepare_model
     Accelerator.prepare_optimizer = prepare_optimizer
     Accelerator.no_sync = no_sync
@@ -2039,6 +2105,19 @@ def _install_trainer_hooks():
 
         Trainer._load_best_model = _load_best_model
 
+    original_create_accelerator = getattr(Trainer, "create_accelerator_and_postprocess", None)
+    if original_create_accelerator is not None:
+
+        @functools.wraps(original_create_accelerator)
+        def create_accelerator_and_postprocess(self, *args, **kwargs):
+            out = original_create_accelerator(self, *args, **kwargs)
+            accelerator = getattr(self, "accelerator", None)
+            if accelerator is not None:
+                # The Trainer owns this accelerator: its prepare / save paths are the supported ones.
+                setattr(accelerator, _TRAINER_ACCELERATOR, True)
+            return out
+
+        Trainer.create_accelerator_and_postprocess = create_accelerator_and_postprocess
     Trainer.save_model = save_model
     Trainer.create_optimizer = create_optimizer
     Trainer._save_optimizer_and_scheduler = _save_optimizer_and_scheduler
