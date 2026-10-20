@@ -418,6 +418,18 @@ def _negative_prompt_guidance_threshold(family: DiffusionFamily) -> Optional[flo
     return None
 
 
+def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
+    """A block-streamed denoiser graph records its weight copies, and recapturing it after a LoRA weight change fails;
+    the eager fallback then cannot swap the streamed tensors back and every later generate fails. Such a load keeps
+    its baked weights until a reload, refused as a clean 400 before anything changes."""
+    handles = getattr(state, "cuda_graphs", ()) or ()
+    if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
+        raise ValueError(
+            "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
+            "model is reloaded. Reload the model with the new adapter weights."
+        )
+
+
 def _live_preview_available(state: Any) -> bool:
     """Whether a generate on this load can stream denoise previews (diffusion_preview.LatentPreviewer.create)."""
     from .diffusion_preview import preview_available
@@ -11249,6 +11261,7 @@ class DiffusionBackend:
             # Disable every baked adapter: scale 0 reproduces the quantized base exactly.
             names = [n for (n, _p, _w) in current]
             if any(w != 0 for (_n, _p, w) in current):
+                _refuse_weight_change_on_streamed_graph(state)
                 pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
                 pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in current)
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
@@ -11277,6 +11290,7 @@ class DiffusionBackend:
             )
         if updated == current:
             return
+        _refuse_weight_change_on_streamed_graph(state)
         pipe.set_adapters(
             [n for (n, _p, _w) in updated],
             adapter_weights = [w for (_n, _p, w) in updated],
