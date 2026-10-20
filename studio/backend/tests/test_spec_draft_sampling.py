@@ -123,13 +123,27 @@ def test_mtp_emits_probabilistic_after_spec_type(monkeypatch, mode, gpus):
     assert flags.count("--spec-draft-sampling") == 1
 
 
-def test_separate_mtp_drafter_emits_it_too(monkeypatch, tmp_path):
+def test_gemma_assistant_keeps_greedy(monkeypatch, tmp_path):
     drafter = tmp_path / "mtp-gemma-4-26B-A4B-it-Q8_0.gguf"
     drafter.write_bytes(b"GGUF")
     flags = _flags(
         _backend(monkeypatch),
         "mtp",
         model = "unsloth/gemma-4-26B-A4B-it-GGUF",
+        mtp_draft_path = str(drafter),
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--model-draft") == str(drafter)
+    assert "--spec-draft-sampling" not in flags
+
+
+def test_separate_qwen_drafter_emits_it(monkeypatch, tmp_path):
+    drafter = tmp_path / "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"
+    drafter.write_bytes(b"GGUF")
+    flags = _flags(
+        _backend(monkeypatch),
+        "mtp",
+        model = "unsloth/Qwen3.8-Flash-Next-GGUF",
         mtp_draft_path = str(drafter),
     )
     parsed = _flags_dict(flags)

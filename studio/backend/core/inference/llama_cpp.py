@@ -4773,7 +4773,7 @@ _SPEC_DRAFT_SAMPLING_ENV = "UNSLOTH_SPEC_DRAFT_SAMPLING"
 def _spec_draft_sampling_flags(
     caps: Optional[dict], extra_args: Optional[Iterable[str]]
 ) -> list[str]:
-    """``--spec-draft-sampling probabilistic`` for an MTP drafter (built-in head or a separate one).
+    """``--spec-draft-sampling probabilistic`` for an MTP drafter (built-in head or a separate one, except Gemma 4's).
 
     llama-server's default drafts the argmax and accepts a drafted token only when the
     target samples exactly that token, so at Studio's T > 0 chat defaults most drafts are
@@ -35504,7 +35504,10 @@ class LlamaCppBackend:
                     )
             flags.extend(["--spec-type", spec_value, n_max_flag, str(draft_n_max)])
             flags.extend(ngram_knobs)
-            flags.extend(_spec_draft_sampling_flags(caps, extra_args))
+            # Not for the Gemma 4 assistant: at Gemma's defaults (T 1.0, top-k 64) its
+            # sampled drafts were accepted less often than its argmax.
+            if not _is_gemma_mtp_name(model_identifier, model_path):
+                flags.extend(_spec_draft_sampling_flags(caps, extra_args))
             self._speculative_type = "draft-mtp"
             chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
             logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
