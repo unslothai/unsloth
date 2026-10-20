@@ -582,6 +582,12 @@ async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<
   };
 }
 
+// By its entry, not the page shown: a granted page can show a data: or about:blank document.
+function onGrantedOrigin(tab: BrowserTab): boolean {
+  const entry = currentEntry(tab);
+  return entry.kind === "web" && localOriginGranted(tab.id, entry.url);
+}
+
 function grantedLocalTab(url: string, chat: string): BrowserTab | undefined {
   return useBrowserStore.getState().tabs.find((tab) => tab.chat === chat && localOriginGranted(tab.id, url));
 }
@@ -600,7 +606,7 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
   const agent = agentTab(context);
   const existing = isLoopbackUrl(url)
     ? grantedLocalTab(url, context.session.chat)
-    : agent && !localOriginGranted(agent.id, tabUrl(agent)) ? agent : undefined;
+    : agent && !onGrantedOrigin(agent) ? agent : undefined;
   if (existing) {
     if (agentChat(context.session.chat).tabId !== existing.id) moveRun(context, existing.id);
     store.navigate(existing.id, { url }, { replace: false });

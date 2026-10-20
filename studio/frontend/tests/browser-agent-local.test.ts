@@ -63,6 +63,8 @@ test("the agent opens a local address only once the user has typed it in the add
   assert.deepEqual(commands, []);
 
   globals.__released = [];
+  // the granted page showing an about:blank document is still the user's local tab
+  useBrowserStore.getState().updateTab(userTab, { displayUrl: "about:blank" });
   const publicPage = await navigate("a6", "https://example.com/");
   assert.equal(publicPage.ok, true);
   // leaving the user's tab for its own public one, the run lets the user's go
