@@ -291,6 +291,7 @@ export function PageFrame({
       title={title}
       src={browserFrameUrl(loadId)}
       sandbox="allow-scripts allow-forms"
+      allow="clipboard-write"
       allowFullScreen
       referrerPolicy="no-referrer"
       className="size-full border-0 bg-white"
