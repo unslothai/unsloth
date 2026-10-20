@@ -474,8 +474,19 @@ def _shard_device(model, requested = None):
     Trainer's use_cpu) keeps the CPU mesh."""
     if requested is not None and torch.device(requested).type == "cpu":
         return torch.device("cpu")
+    if requested is not None and torch.device(requested).type != "cuda":
+        _refuse_non_cuda(torch.device(requested).type)
     if str(os.environ.get("ACCELERATE_USE_CPU", "")).strip().lower() in ("1", "true", "yes", "on"):
         return torch.device("cpu")
+    elsewhere = sorted(
+        {
+            t.device.type
+            for t in list(model.parameters()) + list(model.buffers())
+            if t.device.type not in ("cpu", "cuda", "meta")
+        }
+    )
+    if elsewhere:
+        _refuse_non_cuda(elsewhere[0])
     offloaded = _offloaded_device_map(model)
     if offloaded:
         raise RuntimeError(
@@ -484,8 +495,14 @@ def _shard_device(model, requested = None):
             "CPU / disk offload (device_map = None or each rank's GPU)."
         )
     device = _device_of(model)
-    if not torch.cuda.is_available() or device.type not in ("cpu", "cuda"):
+    if not torch.cuda.is_available():
+        accelerator = _non_cuda_accelerator()
+        if accelerator is not None:
+            # The Trainer / accelerate would run the batches on it while the mesh stays on the CPU.
+            _refuse_non_cuda(accelerator)
         return device
+    if device.type not in ("cpu", "cuda"):
+        return device  # meta
     # Only an explicit CPU request keeps the CPU (above). A gloo process group alone does not: CUDA
     # builds without NCCL (Windows) and _ensure_process_group's fallback run gloo over CUDA tensors.
     tensors = [
@@ -506,6 +523,39 @@ def _shard_device(model, requested = None):
         "(cuda:LOCAL_RANK)."
     )
     return torch.device("cuda", index)
+
+
+def _non_cuda_accelerator():
+    """The device type of an available accelerator other than CUDA / ROCm (xpu, mps, npu, hpu, ...),
+    else None."""
+    accelerator = getattr(torch, "accelerator", None)
+    if accelerator is not None and hasattr(accelerator, "current_accelerator"):  # torch 2.6+
+        try:
+            device = accelerator.current_accelerator(check_available = True)
+        except Exception:
+            device = None
+        return None if device is None or device.type == "cuda" else device.type
+    for name in ("xpu", "npu", "hpu", "mlu", "musa"):
+        try:
+            if getattr(torch, name).is_available():
+                return name
+        except Exception:
+            pass
+    try:
+        if torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return None
+
+
+def _refuse_non_cuda(device_type):
+    raise RuntimeError(
+        f"Unsloth: native FSDP2 (UNSLOTH_FSDP2=1) supports NVIDIA / AMD GPUs (CUDA / ROCm) and the CPU "
+        f"only; this model or host uses {device_type}, which Unsloth's sharding, process group and "
+        "memory planning do not handle. Unset UNSLOTH_FSDP2, or train on the CPU with "
+        "TrainingArguments(use_cpu = True)."
+    )
 
 
 def _local_cuda_index():
