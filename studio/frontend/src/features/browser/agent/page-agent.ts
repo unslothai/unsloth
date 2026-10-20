@@ -1249,9 +1249,9 @@ export function installPageAgent(): PageAgent {
       let on = onWords.includes(wanted);
       // State commands keep their meaning even when a label or HTML value says "No".
       if (!on && !offWords.includes(wanted)) {
-        const label = nameOf(el, Infinity).toLowerCase();
+        const label = nameOf(el, Infinity);
         on = Boolean(wanted) && (
-          wanted === label || wanted === clean(label) ||
+          wanted === label.toLowerCase() || wanted === clean(label).toLowerCase() ||
           (el instanceof HTMLInputElement && wanted === clean(el.value, Infinity).toLowerCase())
         );
         if (!on) {

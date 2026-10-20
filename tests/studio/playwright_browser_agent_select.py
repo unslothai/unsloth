@@ -20,6 +20,7 @@ EXECUTOR = LEAF.with_name("executor.ts")
 LONG_LABEL = (
     "I agree to receive information about upcoming events and promotional offers from our partners"
 )
+UNICODE_LABEL = "İletişim bilgilerimin yaklaşan etkinlikler ve iş ortaklarımızın teklifleri hakkında bilgi almak için kullanılmasını kabul ediyorum."
 
 
 def panel_errors() -> list[re.Pattern[str]]:
@@ -101,6 +102,16 @@ def form(page, source):
             f'<label><input type="checkbox">{LONG_LABEL}</label>',
             LONG_LABEL[:79] + "…",
             LONG_LABEL[:79] + "…",
+        ),
+        (
+            f'<label><input type="checkbox">{UNICODE_LABEL}</label>',
+            UNICODE_LABEL[:79] + "…",
+            UNICODE_LABEL,
+        ),
+        (
+            f'<label><input type="checkbox">{UNICODE_LABEL}</label>',
+            UNICODE_LABEL[:79] + "…",
+            UNICODE_LABEL[:79] + "…",
         ),
     ],
 )
