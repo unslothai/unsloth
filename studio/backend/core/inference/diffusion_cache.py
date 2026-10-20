@@ -432,6 +432,7 @@ def _transformer_blocks_registered(transformer: Any, logger: Any = None) -> bool
     if not callable(named_children):
         return True
     register_unregistered_transformer_blocks(logger)
+    _register_layer_split_blocks(transformer)
     blocks = [
         getattr(block, "_orig_mod", block)
         for name, child in named_children()
@@ -458,7 +459,9 @@ def step_cache_supported(pipe: Any, *, logger: Any = None) -> bool:
         return False
     if _reuses_prefix_kv(pipe, transformer):
         return False
-    return _transformer_blocks_registered(transformer, logger)
+    if not _transformer_blocks_registered(transformer, logger):
+        return False
+    return not _head_tail_mismatch(transformer)
 
 
 def install_fbcache_length_guard() -> bool:
@@ -498,6 +501,136 @@ def install_fbcache_length_guard() -> bool:
 
     _should_compute_remaining_blocks._unsloth_length_guard = True
     FBCHeadBlockHook._should_compute_remaining_blocks = _should_compute_remaining_blocks
+    return True
+
+
+def _head_tail_mismatch(transformer: Any) -> bool:
+    """FBCache measures its residual at the first block and replays the tail's residual on that block's output, which
+    only holds when both return the same streams. FLUX.2's double blocks return (text, image) and its single blocks one
+    tensor over the joined sequence, so the tail's residual would subtract a list (and a different sequence): refuse it
+    there instead of failing the render. False when the registry cannot say."""
+    try:
+        import torch
+        from diffusers.hooks._common import _ALL_TRANSFORMER_BLOCK_IDENTIFIERS
+        from diffusers.hooks._helpers import TransformerBlockRegistry
+    except Exception:  # noqa: BLE001
+        return False
+    named_children = getattr(transformer, "named_children", None)
+    if not callable(named_children):
+        return False
+    try:
+        blocks = [
+            block
+            for name, child in named_children()
+            if name in _ALL_TRANSFORMER_BLOCK_IDENTIFIERS and isinstance(child, torch.nn.ModuleList)
+            for block in child
+        ]
+    except Exception:  # noqa: BLE001
+        return False
+    if len(blocks) < 2:
+        return False
+    try:
+        head = TransformerBlockRegistry.get(type(getattr(blocks[0], "_orig_mod", blocks[0])))
+        tail = TransformerBlockRegistry.get(type(getattr(blocks[-1], "_orig_mod", blocks[-1])))
+    except Exception:  # noqa: BLE001 - unregistered: enable_cache decides
+        return False
+    return (head.return_encoder_hidden_states_index is None) != (tail.return_encoder_hidden_states_index is None)
+
+
+def _register_layer_split_blocks(transformer: Any) -> bool:
+    """Register a layer split's block classes (same-named subclasses of the real blocks) with their base's metadata,
+    so the cache finds them. A copy, never the base's own object: ``register`` writes ``_cls`` into it. True when
+    every split block class is registered."""
+    try:
+        import dataclasses
+
+        from diffusers.hooks._helpers import TransformerBlockRegistry
+    except Exception:  # noqa: BLE001 - no registry: enable_cache decides
+        return True
+    ok = True
+    for cls in {type(m) for m in transformer.modules()}:
+        base = cls.__dict__.get("_unsloth_layer_split_base")
+        if base is None:
+            continue
+        try:
+            TransformerBlockRegistry.get(cls)
+            continue
+        except Exception:  # noqa: BLE001 - not registered yet
+            pass
+        try:
+            meta = TransformerBlockRegistry.get(base)
+        except Exception:  # noqa: BLE001 - the base is not a cacheable block either
+            continue
+        try:
+            TransformerBlockRegistry.register(
+                model_class = cls,
+                metadata = dataclasses.replace(meta, _cls = None, _cached_parameter_indices = None),
+            )
+        except Exception:  # noqa: BLE001
+            ok = False
+    return ok
+
+
+def _tensors_to(obj: Any, device: Any) -> Any:
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_tensors_to(x, device) for x in obj)
+    to = getattr(obj, "to", None)
+    return to(device) if callable(to) else obj
+
+
+def _first_device(obj: Any) -> Any:
+    if isinstance(obj, (list, tuple)):
+        for x in obj:
+            dev = _first_device(x)
+            if dev is not None:
+                return dev
+        return None
+    return getattr(obj, "device", None)
+
+
+def install_fbcache_split_guard() -> bool:
+    """Make First-Block-Cache's tail hook work when the tail block runs on another card than the head block (a layer
+    split): the head block's output is copied to the tail's card for the residual, and the residual goes back to the
+    head's card, where the head hook adds it on a cached step. Copies are exact, so the cache decides and renders as
+    on one card. Calls whose tensors share a card take the original path unchanged. Process-wide and idempotent;
+    must run before ``enable_cache`` (diffusers binds ``new_forward`` when it registers the hook). False when this
+    diffusers has no FBCache block hook."""
+    try:
+        from diffusers.hooks.first_block_cache import FBCBlockHook
+    except Exception:  # noqa: BLE001 - no FBCache in this diffusers
+        return False
+    original = getattr(FBCBlockHook, "new_forward", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_split_guard", False):
+        return True
+
+    def new_forward(self, module, *args, **kwargs):
+        if not getattr(self, "is_tail", False):
+            return original(self, module, *args, **kwargs)
+        state = self.state_manager.get_state()
+        head = state.head_block_output
+        home = _first_device(head)
+        try:
+            here = self._metadata._get_parameter_from_args_kwargs("hidden_states", args, kwargs).device
+        except Exception:  # noqa: BLE001 - the original raises the same way
+            here = None
+        if not state.should_compute or home is None or here is None or here == home:
+            return original(self, module, *args, **kwargs)
+        state.head_block_output = _tensors_to(head, here)
+        try:
+            out = original(self, module, *args, **kwargs)
+        finally:
+            state.head_block_output = head
+        residuals = state.tail_block_residuals
+        if residuals is not None:
+            state.tail_block_residuals = tuple(
+                r.to(home) if r is not None else None for r in residuals
+            )
+        return out
+
+    new_forward._unsloth_split_guard = True
+    FBCBlockHook.new_forward = new_forward
     return True
 
 
@@ -571,6 +704,14 @@ def apply_step_cache(
     transformer = getattr(pipe, "transformer", None)
     if transformer is None:
         return None
+    from .diffusion_layer_split import is_layer_split
+
+    if is_layer_split(transformer) and not (
+        install_fbcache_split_guard() and _register_layer_split_blocks(transformer)
+    ):
+        # without the guard the tail hook subtracts the head block's output (primary) from its own (another card)
+        _warn(logger, mode, RuntimeError("denoiser is split across cards; running uncached"))
+        return None
     # Before enable_cache, which is what raises on a block class the registry has never seen.
     register_unregistered_transformer_blocks(logger)
     thr = (
@@ -578,6 +719,16 @@ def apply_step_cache(
         if threshold is not None
         else (QUANT_FBCACHE_THRESHOLD if quant_active else DEFAULT_FBCACHE_THRESHOLD)
     )
+    if _head_tail_mismatch(transformer):
+        _warn(
+            logger,
+            mode,
+            RuntimeError(
+                "the first and last transformer blocks return different streams (FLUX.2's single blocks run the "
+                "joined text and image sequence); running uncached"
+            ),
+        )
+        return None
     # Engage only via the native enable_cache (CacheMixin path): the lower-level apply_first_block_cache hook would
     # also install on a non-CacheMixin transformer whose pipeline opens no cache_context, and crash generation.
     enable_cache = getattr(transformer, "enable_cache", None)

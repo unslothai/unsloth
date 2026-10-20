@@ -288,6 +288,8 @@ class _Shared:
         self.warmed: set = set()
         self.pool_bytes = 0
         self.static_bytes = 0
+        # a layer split's card: record / replay only while that card is current (the split's boundary sets it)
+        self.strict_device = False
         _LIVE.add(self)
 
     def capture_stream(self) -> Any:
@@ -411,6 +413,9 @@ class BlockGraph:
         self.unreplayed_placements = 0
         self.churned = False
         self.protect: Any = None  # None until resolved, then False or the NVFP4 step controller
+        # a layer split's run of blocks on one card, recorded as one graph (``SegmentGraph``), and this block's index
+        self.segment: Any = None
+        self.seg_index = 0
         self.placements: set = set()
         self.refusals: dict = {}
         self.stats = {
@@ -464,6 +469,11 @@ class BlockGraph:
             return self.compute(*args, **kwargs)
         if not self.enabled or self.bypassed or self.poisoned or self.churned or _bg_eager_forced():
             return self._eager(args, kwargs)
+        segment = self.segment
+        if segment is not None:
+            out = segment.call(self.seg_index, args, kwargs)
+            if out is not _NOT_HANDLED:
+                return out
         torch = _torch()
         if torch.is_grad_enabled():
             self.stats["refused_grad"] += 1
@@ -488,6 +498,13 @@ class BlockGraph:
             return self._eager(args, kwargs)
         if any(t.device.type != "cuda" for t in live):
             # A capture never records a host read, so a replay would keep the recorded value.
+            self.stats["refused_host_input"] += 1
+            return self._eager(args, kwargs)
+        if self.shared.strict_device and (
+            torch.cuda.current_device() != self.shared.device_index
+            or any(t.device.index != self.shared.device_index for t in live)
+        ):
+            # a split block called outside its card's scope: the capture stream and pool belong to its card
             self.stats["refused_host_input"] += 1
             return self._eager(args, kwargs)
         if self.protect is None:
@@ -656,6 +673,363 @@ class BlockGraph:
             )
         exc.__traceback__ = None
 
+SEGMENT_GRAPHS_ENV = "UNSLOTH_DIFFUSION_SEGMENT_GRAPHS"
+_NOT_HANDLED = object()
+
+
+def segment_graphs_disabled() -> bool:
+    return (os.environ.get(SEGMENT_GRAPHS_ENV) or "").strip().lower() in _OFF
+
+
+class _SegRecord:
+    """One eager pass over a segment: each block's call layout, where each of its input tensors came from (an earlier
+    block's output, or one of the first block's inputs), and its output layout."""
+
+    __slots__ = ("keys", "prov", "out_specs")
+
+    def __init__(self) -> None:
+        self.keys: list = []
+        self.prov: list = []
+        self.out_specs: list = []
+
+
+class _SegEntry:
+    __slots__ = ("graph", "static_in", "outputs", "record", "slots", "replays")
+
+
+class SegmentGraph:
+    """One CUDA graph over a run of blocks a layer split keeps on one card, back to back in one block list: the first
+    block's call replays the whole run, and each later block's call checks that it got exactly the tensors the run
+    handed on (the previous block's outputs, the first block's other inputs) and returns its recorded outputs. Any
+    other call (an op between blocks rewrote a tensor, an eager boundary copied it) leaves the segment to the per-block
+    path for the rest of that forward, which computes the block itself.
+
+    Lifecycle per (layout of the first block's inputs, weight placement): the first forward records the run eagerly,
+    the second warms it up once and captures it, every later one replays. All on the card's own stream and pool."""
+
+    def __init__(self, graphs: list, shared: _Shared, max_graphs: int = MAX_GRAPHS_PER_BLOCK) -> None:
+        self.graphs = list(graphs)
+        self.shared = shared
+        self.max_graphs = int(max_graphs)
+        self.cache: "OrderedDict[tuple, _SegEntry]" = OrderedDict()
+        self.seen: "OrderedDict[tuple, _SegRecord]" = OrderedDict()
+        self.refused: set = set()
+        self.poisoned = False
+        self.enabled = True  # off: every block takes its own graph's path; recordings are kept
+        self.capture_error: Optional[dict] = None
+        self._reset_forward()
+        self.stats = {
+            "segment_records": 0,
+            "segment_captures": 0,
+            "segment_replays": 0,
+            "segment_warmups": 0,
+            "segment_breaks": 0,
+            "segment_refusals": 0,
+            "segment_fallbacks": 0,
+        }
+        for i, g in enumerate(self.graphs):
+            g.segment = self
+            g.seg_index = i
+        _LIVE_BLOCKS.add(self)
+
+    def _reset_forward(self) -> None:
+        self.pos: Optional[int] = None
+        self.mode: Optional[str] = None
+        self.cur: Any = None
+        self.ext: list = []
+        self.returned: list = []
+
+    def reset(self) -> None:
+        for entry in self.cache.values():
+            self._forget(entry)
+        self.cache.clear()
+        self.seen.clear()
+        self.refused.clear()
+        self._reset_forward()
+
+    def detach(self) -> None:
+        self.reset()
+        for g in self.graphs:
+            if g.segment is self:
+                g.segment = None
+
+    def _forget(self, entry: _SegEntry) -> None:
+        entry.graph = None
+        entry.outputs = None
+        self.shared.drop(getattr(entry, "slots", ()))
+
+    def _placement(self) -> Optional[tuple]:
+        out = []
+        for g in self.graphs:
+            p = g.weights.placement(self.shared.device_index)
+            if p is None:
+                return None
+            out.append(p)
+        return tuple(out)
+
+    # -- per call -----------------------------------------------------------------------------------------------
+
+    def call(self, i: int, args: tuple, kwargs: dict) -> Any:
+        if self.poisoned or not self.enabled:
+            return _NOT_HANDLED
+        if i == 0:
+            return self._start(args, kwargs)
+        if self.pos != i:
+            return _NOT_HANDLED
+        return self._next(i, args, kwargs)
+
+    def _start(self, args: tuple, kwargs: dict) -> Any:
+        self._reset_forward()
+        torch = _torch()
+        if torch.is_grad_enabled():
+            return _NOT_HANDLED
+        live: list = []
+        try:
+            key = _walk((args, kwargs), live)
+        except Exception:  # noqa: BLE001
+            return _NOT_HANDLED
+        if _refusal(key, kwargs) or any(t.device.type != "cuda" for t in live):
+            return _NOT_HANDLED
+        if torch.cuda.current_device() != self.shared.device_index or any(
+            t.device.index != self.shared.device_index for t in live
+        ):
+            return _NOT_HANDLED
+        for g in self.graphs:
+            if g.protect is None:
+                g.protect = g._protect_controller()
+            if g.poisoned or g.churned or g.bypassed or g.protect:
+                return _NOT_HANDLED
+        placement = self._placement()
+        if placement is None:
+            return _NOT_HANDLED
+        full = (key, placement)
+        if full in self.refused:
+            return _NOT_HANDLED
+        entry = self.cache.get(full)
+        if entry is None and full in self.seen:
+            entry = self._capture(full, live)
+            if entry is None:
+                return _NOT_HANDLED
+        if entry is not None:
+            self.cache.move_to_end(full)
+            for dst, src in zip(entry.static_in, live):
+                if dst.data_ptr() != src.data_ptr():
+                    dst.copy_(src)
+            entry.graph.replay()
+            entry.replays += 1
+            self.stats["segment_replays"] += 1
+            self.mode, self.cur, self.ext = "replay", entry, live
+            return self._hand_out(0, entry)
+        # first sighting of this layout: run the block for real and record where the next ones take their inputs from
+        rec = _SegRecord()
+        out = self.graphs[0].compute(*args, **kwargs)
+        flat: list = []
+        try:
+            spec = _flatten(out, flat)
+        except Exception:  # noqa: BLE001
+            self.refused.add(full)
+            self.stats["segment_refusals"] += 1
+            return out
+        rec.keys.append(key)
+        rec.prov.append(tuple(("e", e) for e in range(len(live))))
+        rec.out_specs.append(spec)
+        self.mode, self.cur, self.ext = "record", (full, rec), live
+        self.returned = [flat]
+        self.pos = 1
+        self.graphs[0].stats["eager_calls"] += 1
+        return out
+
+    def _provenance(self, live: list) -> Optional[tuple]:
+        out = []
+        for t in live:
+            found = None
+            for j in range(len(self.returned) - 1, -1, -1):
+                for m, r in enumerate(self.returned[j]):
+                    if t is r:
+                        found = ("o", j, m)
+                        break
+                if found is not None:
+                    break
+            if found is None:
+                for e, x in enumerate(self.ext):
+                    if t is x:
+                        found = ("e", e)
+                        break
+            if found is None:
+                return None
+            out.append(found)
+        return tuple(out)
+
+    def _next(self, i: int, args: tuple, kwargs: dict) -> Any:
+        live: list = []
+        try:
+            key = _walk((args, kwargs), live)
+        except Exception:  # noqa: BLE001
+            self._abandon()
+            return _NOT_HANDLED
+        prov = self._provenance(live)
+        last = i == len(self.graphs) - 1
+        if self.mode == "record":
+            full, rec = self.cur
+            if prov is None or _refusal(key, kwargs):
+                # an input from outside the run: this layout stays per block
+                self.refused.add(full)
+                self.stats["segment_refusals"] += 1
+                self._abandon()
+                return _NOT_HANDLED
+            out = self.graphs[i].compute(*args, **kwargs)
+            flat: list = []
+            try:
+                spec = _flatten(out, flat)
+            except Exception:  # noqa: BLE001
+                self.refused.add(full)
+                self.stats["segment_refusals"] += 1
+                self._abandon()
+                return out
+            rec.keys.append(key)
+            rec.prov.append(prov)
+            rec.out_specs.append(spec)
+            self.returned.append(flat)
+            self.graphs[i].stats["eager_calls"] += 1
+            if last:
+                self.seen[full] = rec
+                while len(self.seen) > 4:
+                    self.seen.popitem(last = False)
+                self.stats["segment_records"] += 1
+                self._reset_forward()
+            else:
+                self.pos = i + 1
+            return out
+        entry = self.cur
+        if key != entry.record.keys[i] or prov != entry.record.prov[i]:
+            # the denoiser changed something between blocks: the recorded outputs from here on do not apply
+            self.stats["segment_breaks"] += 1
+            self._abandon()
+            return _NOT_HANDLED
+        return self._hand_out(i, entry)
+
+    def _hand_out(self, i: int, entry: _SegEntry) -> Any:
+        tensors = entry.outputs[i]
+        last = i == len(self.graphs) - 1
+        if last:
+            # what leaves the run must survive the next replay
+            tensors = [t.clone() for t in tensors]
+            self._reset_forward()
+        else:
+            if i == 0:
+                self.returned = [tensors]
+            else:
+                self.returned.append(tensors)
+            self.pos = i + 1
+        self.graphs[i].stats["segment_hits"] = self.graphs[i].stats.get("segment_hits", 0) + 1
+        return _rebuild(entry.record.out_specs[i], tensors)
+
+    def _abandon(self) -> None:
+        self._reset_forward()
+
+    # -- capture ------------------------------------------------------------------------------------------------
+
+    def _chain(self, rec: _SegRecord, ext: list) -> list:
+        results: list = []
+        for i, g in enumerate(self.graphs):
+            tensors = [ext[p[1]] if p[0] == "e" else results[p[1]][p[2]] for p in rec.prov[i]]
+            call_args, call_kwargs = _unwalk(rec.keys[i], iter(tensors))
+            out = g.compute(*call_args, **call_kwargs)
+            flat: list = []
+            if _flatten(out, flat) != rec.out_specs[i]:
+                raise RuntimeError("segment block output layout changed between calls")
+            results.append(flat)
+        return results
+
+    def _capture(self, full: tuple, live: list) -> Optional[_SegEntry]:
+        from .diffusion_cuda_graph import _capturing, capture_device, note_capture, refuse_if_exhausted, retire_failed_capture
+
+        torch = _torch()
+        rec = self.seen.pop(full)
+        entry = _SegEntry()
+        slot = ("segment", id(self), full[0])
+        try:
+            entry.static_in = self.shared.statics_for(slot, live)
+            for dst, src in zip(entry.static_in, live):
+                dst.copy_(src)
+            # once, on the compute stream: a guard the static buffers trip recompiles here, never inside the capture
+            self._chain(rec, entry.static_in)
+            self.stats["segment_warmups"] += 1
+            current = torch.cuda.current_stream()
+            stream = self.shared.capture_stream()
+            stream.wait_stream(current)
+            refuse_if_exhausted(self.shared.logger)
+            graph = torch.cuda.CUDAGraph()
+            pool = self.shared.graph_pool()
+            with torch.cuda.stream(stream):
+                before = torch.cuda.memory_reserved()
+                with _capturing():
+                    try:
+                        graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
+                        try:
+                            outputs = self._chain(rec, entry.static_in)
+                        finally:
+                            graph.capture_end()
+                    except BaseException as exc:
+                        retire_failed_capture(graph, pool, exc)
+                        if self.shared.pool == pool:
+                            self.shared.pool = None
+                        raise
+            current.wait_stream(stream)
+            self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
+        except Exception as exc:  # noqa: BLE001 - this layout stays per block for the load's life
+            self.capture_error = {"type": type(exc).__name__, "msg": str(exc)[:4000]}
+            self.refused.add(full)
+            self.stats["segment_fallbacks"] += 1
+            if self.shared.logger is not None:
+                self.shared.logger.warning(
+                    "diffusion.block_graph: recording a %d-block segment failed (%s: %s); its blocks record one by one",
+                    len(self.graphs),
+                    type(exc).__name__,
+                    exc,
+                )
+            return None
+        entry.graph = graph
+        entry.outputs = outputs
+        entry.record = rec
+        entry.slots = (slot,)
+        entry.replays = 0
+        self.shared.hold(entry.slots)
+        self.cache[full] = entry
+        self.stats["segment_captures"] += 1
+        self._unsloth_capture_device = capture_device()
+        note_capture(self._unsloth_capture_device)
+        while len(self.cache) > self.max_graphs:
+            _, evicted = self.cache.popitem(last = False)
+            self._forget(evicted)
+        return entry
+
+
+def _segments(transformer: Any, graphs: list) -> list:
+    """Runs of at least two armed blocks a layer split keeps on one card, back to back in one block list (forward
+    order), as (graphs, shared) pairs."""
+    try:
+        from .diffusion_layer_split import find_blocks
+    except Exception:  # noqa: BLE001
+        return []
+    by_block = {id(g.block): g for g in graphs}
+    runs: list = []
+    current: list = []
+    current_key = None
+    for _qual, group, block in find_blocks(transformer):
+        g = by_block.get(id(block))
+        key = (group, g.shared.device_index, id(g.shared)) if g is not None else None
+        if g is not None and key == current_key:
+            current.append(g)
+            continue
+        if len(current) > 1:
+            runs.append(current)
+        current = [g] if g is not None else []
+        current_key = key
+    if len(current) > 1:
+        runs.append(current)
+    return [(run, run[0].shared) for run in runs]
+
 
 def _group_offload_hook(module: Any) -> Any:
     try:
@@ -708,6 +1082,10 @@ class BlockGraphSet:
     ) -> None:
         self.module = transformer
         self.shared = shared
+        # a layer split's other cards: ordinal -> that card's pool, stream and static buffers
+        self.card_shared: dict = {}
+        # a layer split's per-card runs of blocks, each recorded as one graph
+        self.segments: list = []
         self.logger = logger
         self.graphs: list = []
         self.restores: list = []
@@ -717,6 +1095,27 @@ class BlockGraphSet:
         self._prefetcher = None
         self.mode = "blocks"
         self.max_graphs = MAX_GRAPHS_PER_BLOCK
+
+    def shared_for(self, index: int) -> _Shared:
+        """The pool, stream and static buffers of card ``index``: the primary's own, else one per other card."""
+        if self.shared.device_index is None:
+            self.shared.device_index = index
+        if self.shared.device_index == index:
+            self.shared.strict_device = True
+            return self.shared
+        state = self.card_shared.get(index)
+        if state is None:
+            state = _Shared(index, self.logger)
+            state.root = self.shared.root
+            state.strict_device = True
+            self.card_shared[index] = state
+        return state
+
+    def cards(self) -> set:
+        return {s.device_index for s in self._all_shared()}
+
+    def _all_shared(self) -> list:
+        return [self.shared, *self.card_shared.values()]
 
     @property
     def cache(self) -> dict:
@@ -732,6 +1131,13 @@ class BlockGraphSet:
         for g in self.graphs:
             for k, v in g.stats.items():
                 total[k] = total.get(k, 0) + int(v)
+        for seg in self.segments:
+            for k, v in seg.stats.items():
+                total[k] = total.get(k, 0) + int(v)
+        # a segment's capture / warm-up / replay is the graph layer's too (one per run instead of one per block)
+        total["captures"] = total.get("captures", 0) + total.get("segment_captures", 0)
+        total["warmups"] = total.get("warmups", 0) + total.get("segment_warmups", 0)
+        total["replays"] = total.get("replays", 0) + total.get("segment_replays", 0)
         # The whole-forward wrapper's names, so diffusion_cuda_graph.stats aggregates both kinds alike.
         total["refused_host_tensor"] = total.get("refused_host_weight", 0)
         total["cap_skips"] = total.get("evictions", 0)
@@ -755,13 +1161,19 @@ class BlockGraphSet:
         return self
 
     def reset(self) -> "BlockGraphSet":
+        for seg in self.segments:
+            seg.reset()
         for g in self.graphs:
             g.reset()
-        self.shared.release()
+        for state in self._all_shared():
+            state.release()
         _release_cached()
         return self
 
     def free(self) -> "BlockGraphSet":
+        for seg in self.segments:
+            seg.detach()
+        self.segments.clear()
         for g in self.graphs:
             g.reset()
             g.enabled = False
@@ -772,7 +1184,8 @@ class BlockGraphSet:
                 pass
         self.restores.clear()
         self.graphs.clear()
-        self.shared.release()
+        for state in self._all_shared():
+            state.release()
         self.enabled = False
         try:
             from .diffusion_offload_prefetch import module_prefetcher
@@ -801,8 +1214,18 @@ class BlockGraphSet:
                 getattr(getattr(self, "_prefetcher", None), "slot_bytes", 0) or 0
             )
             >> 20,
-            "pool_mib": int(self.shared.pool_bytes >> 20),
-            "static_mib": int(self.shared.static_bytes >> 20),
+            "pool_mib": int(sum(st.pool_bytes for st in self._all_shared()) >> 20),
+            "static_mib": int(sum(st.static_bytes for st in self._all_shared()) >> 20),
+            **({"cards": sorted(self.cards())} if self.card_shared else {}),
+            **(
+                {
+                    "segments": len(self.segments),
+                    "segment_blocks": sum(len(seg.graphs) for seg in self.segments),
+                    "segment_graphs": sum(len(seg.cache) for seg in self.segments),
+                }
+                if self.segments
+                else {}
+            ),
             "capture_error": None
             if not self.capture_error
             else {
@@ -840,7 +1263,7 @@ class BlockGraphSet:
         """Device memory this layer holds that the caching allocator cannot hand to anything else."""
         pf = getattr(self, "_prefetcher", None)
         slots = int(getattr(pf, "slot_bytes", 0) or 0) if pf is not None else 0
-        return int(self.shared.pool_bytes + self.shared.static_bytes + slots)
+        return int(sum(st.pool_bytes + st.static_bytes for st in self._all_shared()) + slots)
 
 
 def _release_cached() -> None:
@@ -869,6 +1292,21 @@ def _device_index(transformer: Any, fallback: Any = None) -> Optional[int]:
     return None
 
 
+def _block_card(block: Any) -> Optional[int]:
+    """The CUDA ordinal every weight of ``block`` sits on (a layer split places each block whole), else None."""
+    index: Any = _UNSEEN
+    for t in _WeightView(block).tensors:
+        for leaf in _leaves(t):
+            dev = leaf.device
+            if dev.type != "cuda" or dev.index is None:
+                return None
+            if index is _UNSEEN:
+                index = dev.index
+            elif dev.index != index:
+                return None
+    return None if index is _UNSEEN else int(index)
+
+
 def install_block_graphs(
     transformer: Any,
     *,
@@ -882,7 +1320,10 @@ def install_block_graphs(
     blocks = repeated_blocks(transformer)
     if not blocks:
         return None, "no repeated blocks to record"
+    from .diffusion_layer_split import is_layer_split
+
     torch = _torch()
+    split = is_layer_split(transformer)
     shared = _Shared(_device_index(transformer, device), logger)
     shared.root = transformer
     handle = BlockGraphSet(transformer, shared, logger)
@@ -895,6 +1336,15 @@ def install_block_graphs(
             continue
         compiled = getattr(block, "_compiled_call_impl", None)
         hook = _group_offload_hook(block)
+        block_shared = shared
+        if split:
+            # Each block runs whole on its own card (the split's boundary sets that card current around the call):
+            # it records and replays on that card's stream and pool, with that card's static buffers.
+            index = _block_card(block)
+            if index is None:
+                refused["weights off the GPU"] = refused.get("weights off the GPU", 0) + 1
+                continue
+            block_shared = handle.shared_for(index)
         if hook is not None and compiled is not None:
             # compiled through its hooks (UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS=0): the compute is inside a dynamo frame
             why = "compiled through its offload hooks"
@@ -919,14 +1369,14 @@ def install_block_graphs(
                     refused["a stacked hook chain"] = refused.get("a stacked hook chain", 0) + 1
                     continue
                 compute = target.forward
-                graph = BlockGraph(block, compute, shared)
+                graph = BlockGraph(block, compute, block_shared)
                 target.forward = graph
 
                 def restore(ref: Any = target, fn: Any = compute) -> None:
                     if ref.forward is not fn:
                         ref.forward = fn
             elif compiled is not None:
-                graph = BlockGraph(block, compiled, shared)
+                graph = BlockGraph(block, compiled, block_shared)
                 block._compiled_call_impl = graph
 
                 def restore(
@@ -939,7 +1389,7 @@ def install_block_graphs(
             else:
                 slot = block.__dict__.get("forward")
                 fwd = slot if slot is not None else type(block).forward.__get__(block)
-                graph = BlockGraph(block, fwd, shared)
+                graph = BlockGraph(block, fwd, block_shared)
                 block.__dict__["forward"] = graph
 
                 def restore(
@@ -964,6 +1414,10 @@ def install_block_graphs(
             ", ".join(f"{n} block(s): {w}" for w, n in refused.items()) or "no block could be armed"
         )
         return None, reason
+    if split and not segment_graphs_disabled():
+        # each card's run of blocks replays as one graph; a call the run cannot vouch for falls to its block's graph
+        handle.segments = [SegmentGraph(run, run_shared) for run, run_shared in _segments(transformer, handle.graphs)]
+        handle.mode = "segments" if handle.segments else handle.mode
     if slots and torch.cuda.is_available():
         try:
             from .diffusion_offload_prefetch import module_prefetcher
@@ -977,10 +1431,20 @@ def install_block_graphs(
                 logger.warning("diffusion.block_graph: slot ring unavailable (%s)", exc)
     if logger is not None:
         logger.info(
-            "diffusion.block_graph: armed %d of %d %s block(s)%s%s",
+            "diffusion.block_graph: armed %d of %d %s block(s)%s%s%s",
             len(handle.graphs),
             len(blocks),
             type(transformer).__name__,
+            (
+                f" over cards {sorted(handle.cards())}"
+                + (
+                    f" as {len(handle.segments)} per-card segment graph(s)"
+                    if handle.segments
+                    else ""
+                )
+            )
+            if split
+            else "",
             f"; streamed blocks read a {handle.slots_mib} MiB slot ring"
             if handle.slots_mib
             else "",

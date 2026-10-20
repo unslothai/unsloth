@@ -91,6 +91,8 @@ def _qkv_intact(attn: Any) -> Any:
     lin, q, k, v = rec
     if attn.to_q is not q or attn.to_k is not k or attn.to_v is not v:
         return None
+    if lin.weight.device != q.weight.device:
+        return None  # a layer split moved the parts after the fusion; the stale fused copy is on another card
     return lin
 
 

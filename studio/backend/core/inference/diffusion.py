@@ -163,6 +163,7 @@ from .diffusion_memory import (
     MEMORY_MODE_LOW_VRAM,
     ACTIVATION_TILE,
     DeviceMemory,
+    ImageActivationShortfallError,
     OFFLOAD_MODEL,
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
@@ -273,6 +274,7 @@ from .diffusion_batched import (
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
+    TC_FBCACHE,
     TC_STATIC,
     apply_step_cache,
     auto_static_skip_plan,
@@ -2191,6 +2193,77 @@ def _guard_vae_card(
             restore()
         raise
     return restore, tiled
+
+
+def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
+    """The generate-time check on every other card a layer split runs blocks on. Such a card holds only blocks: no
+    text encode, no VAE decode, and one block's activations at a time, so the whole-request estimate the primary is
+    checked against does not apply. It needs what the plan reserved there at the default resolution, scaled by how
+    much this request's activations grow past that default. ``pipe`` is the LOADED pipeline (a from_pipe workflow
+    pipeline carries no split record). Raises the guard's refusal (a ValueError); returns the number of cards
+    checked. Fails open on anything unknown."""
+    from .diffusion_layer_split_plan import applied_layer_split, secondary_block_cards
+    from .diffusion_memory import _oversized_generate_override
+
+    split = applied_layer_split(pipe)
+    if split is None or guard_kwargs.get("allow_oversized") or _oversized_generate_override():
+        return 0
+    try:
+        sized = dict(
+            batch_size = guard_kwargs.get("batch_size") or 1, family = guard_kwargs.get("family")
+        )
+        needed = estimate_image_runtime_mib(
+            width = guard_kwargs.get("width"),
+            height = guard_kwargs.get("height"),
+            condition_pixels = int(guard_kwargs.get("condition_pixels") or 0),
+            **sized,
+        )
+        planned = estimate_image_runtime_mib(width = None, height = None, **{**sized, "batch_size": 1})
+        scale = max(1.0, float(needed) / float(planned)) if planned else 1.0
+    except Exception:  # noqa: BLE001 - a broken estimate never blocks a generation
+        return 0
+    required = dict(split.card_required_mib)
+    weights = dict(split.card_weights_mib)
+    checked = 0
+    for ordinal in secondary_block_cards(pipe):
+        reserved = int(required.get(ordinal, 0)) - int(weights.get(ordinal, 0))
+        if reserved <= 0:
+            continue
+        with diffusion_device_scope(int(ordinal)):
+            free = reclaimable_snapshot_device_memory(guard_target).free_mib
+        if free is None:
+            continue
+        checked += 1
+        need = int(reserved * scale)
+        if need > int(free):
+            raise ImageActivationShortfallError(
+                f"Generating at {guard_kwargs.get('width')}x{guard_kwargs.get('height')} needs about "
+                f"{need / 1024:.2f} GB of working memory on cuda:{int(ordinal)}, which runs part of the model split "
+                f"across GPUs, but only about {int(free) / 1024:.2f} GB is free there. Generate at a smaller "
+                "resolution, or free GPU memory on that GPU. To try anyway, turn on 'Allow oversized generations' "
+                "under Advanced on the Images page."
+            )
+    return checked
+
+
+def _step_cache_dropped_by_layer_split(pipe: Any) -> bool:
+    """Whether the layer split placement took the load-time First-Block-Cache off ``pipe.transformer``
+    (``diffusion_layer_split._drop_step_cache``): the marker is gone, so the load's cache locals are stale."""
+    transformer = getattr(pipe, "transformer", None)
+    return transformer is not None and not getattr(transformer, "_unsloth_step_cache", None)
+
+
+def _drop_measured_reserve_for_layer_split(pipe: Any, plan: Any) -> bool:
+    """A layer split replaced the one-card plan whose partial residency the measured reserve priced. Left in place, a
+    conditioned request past it would give the split denoiser on-demand offload hooks onto the primary
+    (``hook_resident_denoiser``), pulling every block off its card. True when dropped."""
+    if getattr(plan, "layer_split", None) is None or not getattr(pipe, "_unsloth_measured_reserve", None):
+        return False
+    try:
+        pipe._unsloth_measured_reserve = None
+    except Exception:  # noqa: BLE001
+        return False
+    return True
 
 
 def _tile_for_verdict(
@@ -9441,6 +9514,7 @@ class DiffusionBackend:
                     )
                     # a transient OOM during setup may have re-planned to lower residency
                     plan = applied_plan(pipe, plan)
+                    _drop_measured_reserve_for_layer_split(pipe, plan)
                     identity = getattr(pipe, "_unsloth_peak_identity", None)
                     if isinstance(identity, tuple) and len(identity) == 3:
                         # a saver the plan asked for may not have engaged: key the renders by what did
@@ -9449,6 +9523,26 @@ class DiffusionBackend:
                             pipe._unsloth_peak_identity = (identity[0], live_vae, identity[2])
                             # placed from the planned saver's peak: requests size from the flat estimate instead
                             pipe._unsloth_peak_static = True
+                    if cache_engaged == TC_FBCACHE and _step_cache_dropped_by_layer_split(pipe):
+                        if getattr(plan, "layer_split", None) is not None:
+                            # the split took the cache off (it keeps residuals on one card): status must say so
+                            cache_engaged = None
+                            cache_graph_break = False
+                            cache_may_toggle = False
+                            cache_reason = (
+                                "off: the denoiser is split across cards (a step cache keeps its residuals on one card)"
+                            )
+                        else:
+                            # the split failed after removing it: the one-card fallback gets the cache back
+                            cache_engaged = apply_step_cache(
+                                pipe,
+                                mode = TC_FBCACHE,
+                                threshold = transformer_cache_threshold,
+                                quant_active = cache_quant_active,
+                                length_changes_ok = not cache_auto,
+                                logger = logger,
+                            )
+                            cache_graph_break = cache_breaks_graph(cache_engaged)
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
@@ -12345,6 +12439,7 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
+                    _guard_layer_cards(state.pipe, guard_target, guard_kwargs)
                     restore_vae = _tile_for_verdict(
                         pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
                     )
