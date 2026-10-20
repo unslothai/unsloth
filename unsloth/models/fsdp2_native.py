@@ -2125,6 +2125,33 @@ def _install_trainer_hooks():
             _split_mixed_param_groups(getattr(optimizer, "optimizer", optimizer))
         return optimizer
 
+    original_create_scheduler = Trainer.create_scheduler
+
+    @functools.wraps(original_create_scheduler)
+    def create_scheduler(
+        self,
+        num_training_steps,
+        optimizer = None,
+        *args,
+        **kwargs,
+    ):
+        # A subclass create_optimizer that builds its own optimizer (UnslothTrainer with
+        # embedding_learning_rate / loraplus_lr_ratio, DecisionTrainer) never reaches the base hook
+        # above, and transformers 4.x builds the scheduler before Accelerator.prepare splits the
+        # groups. Split here, before the scheduler records one base LR (and lambda) per group.
+        target = optimizer if optimizer is not None else getattr(self, "optimizer", None)
+        if (
+            target is not None
+            and getattr(self, "lr_scheduler", None) is None
+            and is_native_fsdp2(getattr(self, "model", None))
+            and _split_mixed_param_groups(_inner_optimizer(target))
+        ):
+            _print_rank0(
+                "Unsloth: native FSDP2 split optimizer groups mixing sharded and replicated "
+                "parameters (each kind needs its own foreach / fused group) before the LR scheduler."
+            )
+        return original_create_scheduler(self, num_training_steps, optimizer, *args, **kwargs)
+
     original_save_optimizer = Trainer._save_optimizer_and_scheduler
 
     @functools.wraps(original_save_optimizer)
@@ -2204,6 +2231,7 @@ def _install_trainer_hooks():
         Trainer.create_accelerator_and_postprocess = create_accelerator_and_postprocess
     Trainer.save_model = save_model
     Trainer.create_optimizer = create_optimizer
+    Trainer.create_scheduler = create_scheduler
     Trainer._save_optimizer_and_scheduler = _save_optimizer_and_scheduler
     Trainer._load_optimizer_and_scheduler = _load_optimizer_and_scheduler
     Trainer._load_from_checkpoint = _load_from_checkpoint
