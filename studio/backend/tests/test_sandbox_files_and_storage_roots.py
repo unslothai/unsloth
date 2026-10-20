@@ -6603,10 +6603,8 @@ def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch,
     sandbox.mkdir(parents = True)
     linked = _stage_like_an_older_build(tmp_path, sandbox, name)
     path_utils.prune_open_staging()
-    # The name an app may still have open stays, as its own copy.
-    assert (linked / name).read_bytes() == b"\x89PNG"
-    assert os.stat(linked / name).st_ino != os.stat(sandbox / name).st_ino
-    assert os.listdir(linked) == [name]
+    assert os.listdir(linked) == []
+    assert os.stat(sandbox / name).st_nlink == 1
     assert (sandbox / name).read_bytes() == b"\x89PNG"
     assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
 
@@ -6623,16 +6621,15 @@ def test_an_app_saving_while_a_legacy_link_is_replaced_keeps_its_save(tmp_path, 
     sandbox = tmp_path / "sandbox" / "thread-1"
     sandbox.mkdir(parents = True)
     linked = _stage_like_an_older_build(tmp_path, sandbox)
-    real_copyfile = shutil.copyfile
+    real_mkstemp = tempfile.mkstemp
 
-    def copy_then_app_saves(source, target, **kwargs):
-        result = real_copyfile(source, target, **kwargs)
+    def app_saves_meanwhile(*args, **kwargs):
         saved = linked / "chart.png.saving"
         saved.write_bytes(b"edited in the app")
         os.replace(saved, linked / "chart.png")
-        return result
+        return real_mkstemp(*args, **kwargs)
 
-    monkeypatch.setattr(shutil, "copyfile", copy_then_app_saves)
+    monkeypatch.setattr(tempfile, "mkstemp", app_saves_meanwhile)
     path_utils.prune_open_staging()
     assert (linked / "chart.png").read_bytes() == b"edited in the app"
     assert os.listdir(linked) == ["chart.png"]
@@ -6646,14 +6643,14 @@ def test_a_sibling_backend_breaking_legacy_links_is_not_raced(tmp_path, monkeypa
     monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
     sandbox = tmp_path / "sandbox" / "thread-1"
     sandbox.mkdir(parents = True)
-    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    _stage_like_an_older_build(tmp_path, sandbox)
     sibling = os.open(tmp_path / "cache" / "open-staging.lock", os.O_CREAT | os.O_RDWR, 0o600)
     _try_lock(sibling)
     path_utils.prune_open_staging()
-    assert os.stat(linked / "chart.png").st_nlink == 2
+    assert os.stat(sandbox / "chart.png").st_nlink == 2
     _unlock(sibling)
     path_utils.prune_open_staging()
-    assert os.stat(linked / "chart.png").st_nlink == 1
+    assert os.stat(sandbox / "chart.png").st_nlink == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
