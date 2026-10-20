@@ -4670,6 +4670,14 @@ class UnslothTrainer:
                 processor = self.tokenizer
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
+                response_masker = None
+                if training_args.get("train_on_completions", False) and not training_args.get(
+                    "is_cpt", False
+                ):
+                    from unsloth.chat_templates import train_on_responses_only
+                    response_masker = train_on_responses_only(
+                        None, tokenizer = processor, return_function = True
+                    )
 
                 def audio_vlm_collate_fn(examples):
                     texts = []
@@ -4697,6 +4705,8 @@ class UnslothTrainer:
                         if token_id is not None:
                             labels[labels == token_id] = -100
                     batch["labels"] = labels
+                    if response_masker is not None:
+                        batch["labels"] = response_masker(batch)["labels"]
                     return batch
 
                 data_collator = audio_vlm_collate_fn
