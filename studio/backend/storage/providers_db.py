@@ -350,6 +350,15 @@ def _own_rows(where: str = "", params: tuple = ()) -> list[dict]:
         conn.close()
 
 
+def base_url_carries_credential(base_url: Optional[str]) -> bool:
+    """Userinfo or a query string, either of which can hold a secret; unparsable counts as one."""
+    try:
+        parts = urlparse(base_url or "")
+        return bool(parts.username or parts.password or parts.query)
+    except ValueError:
+        return True
+
+
 def _owner_shared_rows(provider_id: Optional[str] = None) -> list[dict]:
     """The owner's shared connections as a managed account sees them; [] for the owner.
 
@@ -378,6 +387,8 @@ def _owner_shared_rows(provider_id: Optional[str] = None) -> list[dict]:
         return []
     from hub.services.models.account_access import shared_connection_view
 
+    # Re-checked on read: an older build can edit the URL of a row it does not know is shared.
+    rows = [row for row in rows if not base_url_carries_credential(row.get("base_url"))]
     return [view for view in (shared_connection_view(row) for row in rows) if view is not None]
 
 

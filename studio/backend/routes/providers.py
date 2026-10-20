@@ -125,12 +125,7 @@ def _validate_share_request(
         raise HTTPException(
             status_code = 400, detail = "A ChatGPT subscription connection cannot be shared."
         )
-    try:
-        parts = urlsplit(base_url or "")
-        carries_credential = bool(parts.username or parts.password or parts.query)
-    except ValueError:
-        carries_credential = True
-    if carries_credential:
+    if providers_db.base_url_carries_credential(base_url):
         # Other accounts are shown the base URL, so a credential inside it would be shared too.
         raise HTTPException(
             status_code = 400,
@@ -1263,6 +1258,8 @@ async def list_provider_models(
                 models = [m for m in models if not denylist.search(m.get("id", ""))]
         # Optional cap after filtering to keep large catalogs picker-sized. Unsorted, so "first N matches"; pair with
         # default_models for flagships.
+        if shared:
+            models = [m for m in models if account_access.connection_model_allowed(m.get("id", ""))]
         limit = info.get("model_id_limit")
         if isinstance(limit, int) and limit > 0:
             models = models[:limit]
@@ -1275,7 +1272,6 @@ async def list_provider_models(
                 capabilities = _model_capability_names(m),
             )
             for m in models
-            if not shared or account_access.connection_model_allowed(m.get("id", ""))
         ]
     except Exception as exc:
         raise log_and_http_error(

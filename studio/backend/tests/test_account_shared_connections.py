@@ -254,16 +254,36 @@ def test_model_access_limits_the_models_of_a_shared_connection(monkeypatch):
     [row] = listed(ALICE)
     assert row["models"] == ["unsloth/Qwen3-8B-GGUF"]
     config = run_as(ALICE, providers_db.get_provider, provider_id)
-    run_as(ALICE, access.require_connection_model_allowed, config, "unsloth/Qwen3-8B-GGUF:Q4_K_M")
-    allow_only(monkeypatch, "unsloth/qwen3-*", "google/*")
-    run_as(ALICE, access.require_connection_model_allowed, config, "~google/gemini-pro-latest")
-    allow_only(monkeypatch, "unsloth/qwen3-*")
+    run_as(ALICE, access.require_connection_model_allowed, config, "unsloth/Qwen3-8B-GGUF")
     with pytest.raises(HTTPException) as refused:
         run_as(ALICE, access.require_connection_model_allowed, config, "unsloth/gemma-3-4b-it-GGUF")
     assert refused.value.status_code == 403
     # The owner and the account's own connections are not limited by it.
-    run_as(OWNER, access.require_connection_model_allowed, config, "other/private-model")
+    owner_config = run_as(OWNER, providers_db.get_provider, provider_id)
+    run_as(OWNER, access.require_connection_model_allowed, owner_config, "other/private-model")
     run_as(ALICE, access.require_connection_model_allowed, {"id": "own"}, "other/private-model")
+    allow_only(monkeypatch, "google/*")
+    assert run_as(ALICE, access.connection_model_allowed, "~google/gemini-pro-latest")
+    assert run_as(ALICE, access.connection_model_allowed, "google/gemma-3:latest")
+
+
+def test_only_the_models_the_owner_enabled_are_shared():
+    provider_id = owner_connection(models = UPSTREAM_MODELS[:1])
+    config = run_as(ALICE, providers_db.get_provider, provider_id)
+    run_as(ALICE, access.require_connection_model_allowed, config, UPSTREAM_MODELS[0])
+    with pytest.raises(HTTPException) as refused:
+        run_as(ALICE, access.require_connection_model_allowed, config, "other/private-model")
+    assert refused.value.status_code == 403
+
+
+def test_a_shared_row_whose_url_gained_a_credential_elsewhere_is_withdrawn():
+    provider_id = owner_connection()
+    # What an older build, which cannot see the column, is free to write.
+    run_as(
+        OWNER, providers_db.update_provider, provider_id, base_url = "https://gw.example.com/v1?key=s"
+    )
+    assert listed(ALICE) == []
+    assert run_as(ALICE, credential_secrets.get_provider_api_key, provider_id) is None
 
 
 def test_a_shared_connection_with_no_allowed_model_is_hidden(monkeypatch):
