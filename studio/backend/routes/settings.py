@@ -4097,6 +4097,8 @@ class McpToolSetting(BaseModel):
     name: str
     area: str
     enabled: bool
+    # False for the tools an Unsloth Studio chat never gets, whatever the switch says.
+    chat: bool
 
 
 class McpAccessResponse(BaseModel):
@@ -4533,14 +4535,18 @@ def _require_ui_session_for_mcp(via_api_key: bool = Depends(authenticated_via_ap
 
 
 def _mcp_access_response(request: Request) -> McpAccessResponse:
-    from mcp_server import tool_catalog
+    from mcp_server import CHAT_DENYLIST, tool_catalog
     disabled = mcp_disabled_tools()
     return McpAccessResponse(
         enabled = is_mcp_enabled(),
         forced_by_env = forced_by_env(),
         url = str(request.base_url).rstrip("/") + "/mcp/",
         tools = [
-            McpToolSetting(**entry, enabled = disabled is not None and entry["name"] not in disabled)
+            McpToolSetting(
+                **entry,
+                enabled = disabled is not None and entry["name"] not in disabled,
+                chat = entry["name"] not in CHAT_DENYLIST,
+            )
             for entry in tool_catalog()
         ],
     )

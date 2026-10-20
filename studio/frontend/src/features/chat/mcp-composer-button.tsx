@@ -46,7 +46,10 @@ import {
 } from "./api/mcp-servers-api";
 import { BlenderMcpSetup } from "./blender-mcp-setup";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
-import { normalizeMcpUrl } from "./mcp-server-url";
+import {
+  UNSLOTH_STUDIO_TOOLS_MCP_URL,
+  normalizeMcpUrl,
+} from "./mcp-server-url";
 import { useChatActive } from "./runtime-provider";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import { useMcpServersDialogStore } from "./stores/mcp-servers-dialog-store";
@@ -61,9 +64,14 @@ type McpPreset = {
   disablesWebSearch?: boolean; // turn the built-in Search pill off when enabled
 };
 
-// Keyless remote MCP presets (rate-limited free tiers, no API key). Hugging Face runs
-// anonymously; add a token via "Manage MCP servers".
+// Unsloth Studio's own tools, then keyless remote MCP presets (rate-limited free tiers, no API
+// key). Hugging Face runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
+  {
+    id: "unsloth-studio",
+    displayName: "Unsloth Studio",
+    url: UNSLOTH_STUDIO_TOOLS_MCP_URL,
+  },
   {
     id: "unsloth-docs",
     displayName: "Unsloth Docs",
@@ -221,6 +229,7 @@ export function McpComposerButton({
     (s) =>
       !s.builtin_id &&
       normalizeMcpUrl(s.url) !== "studio:decisions" &&
+      normalizeMcpUrl(s.url) !== "studio:tools" &&
       !presets.some((p) => normalizeMcpUrl(p.url) === normalizeMcpUrl(s.url)),
   );
   const blenderEnabled = servers.some(

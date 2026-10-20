@@ -3094,6 +3094,7 @@ export const es = {
         description: "Los agentes nunca ven una herramienta que desactives, y se rechazan las llamadas a ella. Los agentes ya conectados ven el cambio cuando se reconectan.",
         loadError: "No se pudieron cargar las herramientas de Unsloth Studio MCP.",
         saveError: "No se pudo guardar la configuración de la herramienta de Unsloth Studio MCP.",
+        notInChat: "No disponible en el chat",
       },
       status: {
         on: "Activado",

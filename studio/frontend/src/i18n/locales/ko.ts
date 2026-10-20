@@ -3043,6 +3043,7 @@ export const ko = {
         description: "끈 도구는 에이전트에게 보이지 않으며 해당 도구 호출은 거부됩니다. 이미 연결된 에이전트는 다시 연결할 때 변경 사항이 반영됩니다.",
         loadError: "Unsloth Studio MCP 도구를 불러오지 못했습니다.",
         saveError: "Unsloth Studio MCP 도구 설정을 저장하지 못했습니다.",
+        notInChat: "채팅에서는 사용할 수 없음",
       },
       status: {
         on: "켜짐",

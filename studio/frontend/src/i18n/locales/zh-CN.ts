@@ -3001,6 +3001,7 @@ export const zhCN = {
         description: "智能体看不到你关闭的工具，对它的调用也会被拒绝。已连接的智能体会在重新连接后看到变化。",
         loadError: "无法加载 Unsloth Studio MCP 工具。",
         saveError: "无法保存 Unsloth Studio MCP 工具设置。",
+        notInChat: "聊天中不可用",
       },
       status: {
         on: "开",

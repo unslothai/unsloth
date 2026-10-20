@@ -135,6 +135,13 @@ def test_the_reserved_url_is_port_agnostic_and_distinct_from_decisions():
         assert not mcp_client.is_studio_tools(url), url
 
 
+def test_the_frontend_preset_uses_the_same_url():
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[2] / "frontend/src/features/chat/mcp-server-url.ts"
+    assert f'export const UNSLOTH_STUDIO_TOOLS_MCP_URL = "{URL}";' in source.read_text("utf-8")
+
+
 def test_the_chat_instance_drops_exactly_the_denylist_and_mcp_keeps_every_tool():
     everything = [tool.name for tool in asyncio.run(create_studio_mcp().list_tools())]
     chat = [tool.name for tool in asyncio.run(studio_tools_mcp.chat_tools_mcp().list_tools())]
@@ -183,23 +190,23 @@ def test_the_row_is_relisted_every_send_so_a_tool_turned_off_drops_out_without_e
     assert len(second) == len(first) - 1
 
 
-def _owner_toggles():
-    from utils import mcp_access
-
-    return getattr(mcp_access, "set_mcp_settings", None)
-
-
-@pytest.mark.skipif(_owner_toggles() is None, reason = "needs PR A's per-tool toggles (set_mcp_settings)")
 def test_an_owner_disabled_tool_is_unlisted_and_refused(studio_home, accounts, server_loop, monkeypatch):
-    studio(monkeypatch, {})
-    add_row(OWNER)
-    _owner_toggles()(disabled_tools = ["list_models"])
     from utils import mcp_access
 
-    mcp_access._reset_cache()
+    app = studio(monkeypatch, RUN_PAYLOADS)
+    add_row(accounts.alice)
+    mcp_access.set_mcp_settings(disabled_tools = ["list_training_runs"])
     names = [tool["function"]["name"] for tool in listed(accounts.alice)]
-    assert names and not any(name.endswith("__list_models") for name in names)
-    assert "[tool_disabled]" in bridge(accounts.alice, "list_models")
+    assert names and not any(name.endswith("__list_training_runs") for name in names)
+    refused = bridge(accounts.alice, "list_training_runs")
+    assert refused.startswith("Error: ") and "[tool_disabled]" in refused, refused
+    assert app.state.seen == []
+    # Back on: the very next send lists it and the call runs, with no cache eviction.
+    mcp_access.set_mcp_settings(disabled_tools = [])
+    assert any(name.endswith("__list_training_runs") for name in (
+        tool["function"]["name"] for tool in listed(accounts.alice)
+    ))
+    assert "qwen-lora" in bridge(accounts.alice, "list_training_runs")
 
 
 # -- calls ------------------------------------------------------------------------------------------------------

@@ -3102,6 +3102,7 @@ export const fr = {
         description: "Les agents ne voient jamais un outil que vous désactivez, et les appels vers cet outil sont refusés. Les agents déjà connectés voient le changement lorsqu’ils se reconnectent.",
         loadError: "Impossible de charger les outils d’Unsloth Studio MCP.",
         saveError: "Impossible d’enregistrer le paramètre de l’outil d’Unsloth Studio MCP.",
+        notInChat: "Pas dans le chat",
       },
       status: {
         on: "Activé",

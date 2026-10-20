@@ -3073,6 +3073,7 @@ export const ptBR = {
         description: "Os agentes nunca veem uma ferramenta que você desativa, e as chamadas a ela são recusadas. Agentes já conectados veem a mudança quando se reconectam.",
         loadError: "Não foi possível carregar as ferramentas do Unsloth Studio MCP.",
         saveError: "Não foi possível salvar a configuração da ferramenta do Unsloth Studio MCP.",
+        notInChat: "Não disponível no chat",
       },
       status: {
         on: "Ativado",

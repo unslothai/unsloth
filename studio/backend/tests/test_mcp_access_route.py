@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 import storage.studio_db as studio_db
 from auth import policy, storage
 from auth.authentication import create_access_token
-from mcp_server import tool_catalog
+from mcp_server import CHAT_DENYLIST, tool_catalog
 from routes import settings
 from utils.keyless_api_access import set_keyless_api_access
 from utils.mcp_access import (
@@ -65,8 +65,12 @@ def test_the_owner_session_reads_and_turns_it_on(client):
         "enabled": False,
         "forced_by_env": False,
         "url": "http://127.0.0.1:8888/mcp/",
-        "tools": [{**entry, "enabled": True} for entry in tool_catalog()],
+        "tools": [
+            {**entry, "enabled": True, "chat": entry["name"] not in CHAT_DENYLIST}
+            for entry in tool_catalog()
+        ],
     }
+    assert {t["name"] for t in got.json()["tools"] if not t["chat"]} == CHAT_DENYLIST
 
     put = client.put(URL, json = {"enabled": True}, headers = _owner_session())
     assert put.status_code == 200, put.text

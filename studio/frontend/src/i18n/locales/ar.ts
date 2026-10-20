@@ -3055,6 +3055,7 @@ export const ar = {
         description: "لا يرى الوكلاء أي أداة تعطّلها، ويُرفض أي استدعاء لها. الوكلاء المتصلون بالفعل يرون التغيير عند إعادة الاتصال.",
         loadError: "تعذّر تحميل أدوات Unsloth Studio MCP.",
         saveError: "تعذّر حفظ إعداد أداة Unsloth Studio MCP.",
+        notInChat: "غير متاح في الدردشة",
       },
       status: {
         on: "مفعّل",

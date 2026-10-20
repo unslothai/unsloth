@@ -3173,6 +3173,7 @@ export const he = {
         description: "סוכנים אף פעם לא רואים כלי שכיבית, וקריאות אליו נדחות. סוכנים שכבר מחוברים רואים את השינוי כשהם מתחברים מחדש.",
         loadError: "לא ניתן לטעון את הכלים של Unsloth Studio MCP.",
         saveError: "לא ניתן לשמור את הגדרת הכלי של Unsloth Studio MCP.",
+        notInChat: "לא זמין בצ'אט",
       },
       status: {
         on: "פועל",

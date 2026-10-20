@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// The chat's Unsloth Studio tools row. Answered in process by the backend
+// (core/inference/studio_tools_mcp.py), so the port never matters.
+export const UNSLOTH_STUDIO_TOOLS_MCP_URL = "http://127.0.0.1/mcp/studio-tools";
+
 const HTTP_AUTHORITY =
   /^[hH][tT][tT][pP]:\/\/(?:[^/?#]*@)?(\[[^\]]+\]|[^/:?#]+)(?::[^/?#]*)?(?=\/|[?#]|$)/;
 
@@ -33,7 +37,7 @@ function isStudioLoopbackHost(host: string): boolean {
   }
 }
 
-// mcp_servers has no UNIQUE(url); normalize Studio's in-process Decisions endpoint so a preset
+// mcp_servers has no UNIQUE(url); normalize Studio's in-process Decisions and tools endpoints so a preset
 // toggle reuses rows saved under older ports and every backend-accepted loopback spelling.
 export function normalizeMcpUrl(url: string): string {
   const trimmed = (url || "").trim().replace(/\/+$/, "");
@@ -46,6 +50,9 @@ export function normalizeMcpUrl(url: string): string {
       .replace(/\/+$/, "");
     if (rawPath === "/mcp/decisions") {
       return "studio:decisions";
+    }
+    if (rawPath === "/mcp/studio-tools") {
+      return "studio:tools";
     }
   }
   return trimmed.toLowerCase();

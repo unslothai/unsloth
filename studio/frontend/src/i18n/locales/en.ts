@@ -3256,6 +3256,7 @@ export const en = {
         description: "Agents never see a tool you turn off, and calls to it are refused. Agents already connected see the change when they reconnect.",
         loadError: "Couldn't load the Unsloth Studio MCP tools.",
         saveError: "Couldn't save the Unsloth Studio MCP tool setting.",
+        notInChat: "Not in chat",
       },
       status: {
         on: "On",

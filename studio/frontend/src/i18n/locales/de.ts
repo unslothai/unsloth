@@ -3101,6 +3101,7 @@ export const de = {
         description: "Agenten sehen ein deaktiviertes Tool nie, und Aufrufe dafür werden abgelehnt. Bereits verbundene Agenten sehen die Änderung, sobald sie sich neu verbinden.",
         loadError: "Die Unsloth Studio MCP-Tools konnten nicht geladen werden.",
         saveError: "Die Einstellung für das Unsloth Studio MCP-Tool konnte nicht gespeichert werden.",
+        notInChat: "Nicht im Chat",
       },
       status: {
         on: "An",

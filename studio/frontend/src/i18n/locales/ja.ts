@@ -3027,6 +3027,7 @@ export const ja = {
         description: "オフにしたツールはエージェントに表示されず、呼び出しも拒否されます。すでに接続中のエージェントには、再接続したときに変更が反映されます。",
         loadError: "Unsloth Studio MCP のツールを読み込めませんでした。",
         saveError: "Unsloth Studio MCP のツール設定を保存できませんでした。",
+        notInChat: "チャットでは使えません",
       },
       status: {
         on: "オン",

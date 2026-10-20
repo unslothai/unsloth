@@ -95,9 +95,14 @@ function ToolRow({
       </span>
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="text-ui-13 text-foreground break-words">{label}</span>
-        {labelKey ? (
-          <span className="text-ui-11 text-muted-foreground font-mono break-all">
-            {tool.name}
+        {labelKey || tool.chat === false ? (
+          <span className="flex flex-wrap gap-x-2 text-ui-11 text-muted-foreground">
+            {labelKey ? (
+              <span className="font-mono break-all">{tool.name}</span>
+            ) : null}
+            {tool.chat === false ? (
+              <span>{t("settings.mcp.tools.notInChat")}</span>
+            ) : null}
           </span>
         ) : null}
       </span>

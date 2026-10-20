@@ -3273,6 +3273,7 @@ export const sv = {
         description: "Agenter ser aldrig ett verktyg som du stänger av, och anrop till det nekas. Agenter som redan är anslutna ser ändringen när de ansluter igen.",
         loadError: "Det gick inte att läsa in verktygen för Unsloth Studio MCP.",
         saveError: "Det gick inte att spara inställningen för verktyget i Unsloth Studio MCP.",
+        notInChat: "Inte i chatten",
       },
       status: {
         on: "På",

@@ -302,8 +302,11 @@ export const BUDGET = {
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
   // eager providers-api chunk, not new code. Raised by that.
-  transferBytes: 2_062_224,
-  rawBytes: 6_847_713,
+  // The chat's Unsloth Studio tools preset and the "Not in chat" note add 233 B raw / 15 B transfer (measured
+  // against the MCP tab build, one machine and build, Node 24, 97 chunks), in the eager chat chunk and English
+  // catalog. Raised by that.
+  transferBytes: 2_062_239,
+  rawBytes: 6_847_946,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

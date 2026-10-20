@@ -3005,6 +3005,7 @@ export const it = {
         description: "Gli agenti non vedono mai uno strumento che disattivi, e le chiamate a quello strumento vengono rifiutate. Gli agenti già connessi vedono la modifica quando si riconnettono.",
         loadError: "Impossibile caricare gli strumenti di Unsloth Studio MCP.",
         saveError: "Impossibile salvare l’impostazione dello strumento di Unsloth Studio MCP.",
+        notInChat: "Non disponibile nella chat",
       },
       status: {
         on: "Attivo",
