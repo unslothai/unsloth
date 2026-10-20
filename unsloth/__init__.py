@@ -187,6 +187,13 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same for torchao 0.17+ on torch 2.6 (`register_constant`).
+        from .import_fixes import fix_torchao_pytree_register_constant as _fix_pytree
+        _fix_pytree()
+        del _fix_pytree
+    except Exception:
+        pass
+    try:
         # Same reason: MLX audio reaches xcodec2 -> torchtune -> the old torchao.dtypes.nf4tensor path.
         from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
         _fix_nf4()
