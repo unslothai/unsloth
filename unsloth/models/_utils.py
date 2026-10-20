@@ -8650,9 +8650,7 @@ class _AutoCheckpointSkip:
         # size for the trainer's batch x max length tokens, else the measured batch at max_seq_length.
         rows = max(1, self.layer_rows)
         # Never below the measured length (multimodal collators can expand past max_seq_length).
-        max_seq = max(
-            rows, self.target_seq or getattr(self.model, "max_seq_length", None) or rows
-        )
+        max_seq = max(rows, self.target_seq or getattr(self.model, "max_seq_length", None) or rows)
         batch = max(self.target_batch or 0, self.layer_batch)
         tokens = max(1.0, batch * max_seq / (self.layer_batch * rows))
         # Eager attention keeps a seq x seq matrix per layer: one more length factor (over-estimates the rest).
