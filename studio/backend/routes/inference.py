@@ -6484,14 +6484,14 @@ _ROSTER_COUNT_SQL = (
 
 
 def _roster_scopes(rag_scope: dict) -> list[str]:
-    """KB is exclusive, matching retrieval. Thread precedes project so a file just
-    attached to this chat survives truncation."""
+    """Matches _resolve_scope. The pick precedes project so a just-attached file survives
+    truncation."""
     from core.rag.store import kb_scope, project_scope, thread_scope
 
-    if rag_scope.get("kb_id"):
-        return [kb_scope(rag_scope["kb_id"])]
     scopes = []
-    if rag_scope.get("thread_id"):
+    if rag_scope.get("kb_id"):
+        scopes.append(kb_scope(rag_scope["kb_id"]))
+    elif rag_scope.get("thread_id"):
         scopes.append(thread_scope(rag_scope["thread_id"]))
     if rag_scope.get("project_id"):
         scopes.append(project_scope(rag_scope["project_id"]))

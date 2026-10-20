@@ -890,6 +890,7 @@ pub async fn start_install(
     update_state: tauri::State<'_, update::UpdateState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
     skip_long_paths: Option<bool>,
+    chat_only: Option<bool>,
 ) -> Result<(), String> {
     if has_owned_backend(&backend_state)? {
         return Err(
@@ -906,8 +907,9 @@ pub async fn start_install(
     let state = state.inner().clone();
     let diagnostics_state = diagnostics.inner().clone();
     let skip_long_paths = skip_long_paths.unwrap_or(false);
+    let no_torch = chat_only.unwrap_or(false);
     tokio::task::spawn_blocking(move || {
-        install::run_install(app, state, diagnostics_state, skip_long_paths)
+        install::run_install(app, state, diagnostics_state, skip_long_paths, no_torch)
     })
     .await
     .map_err(|e| format!("Install task panicked: {e}"))?

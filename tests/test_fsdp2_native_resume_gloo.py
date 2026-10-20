@@ -8,7 +8,6 @@ native_load_optimizer, then 2 more steps on both: losses and parameters must be 
 control: rank 0's plain `optimizer.state_dict()` (the Trainer's own save) holds only rank 0's shards."""
 
 import os
-import socket
 import sys
 
 import pytest
@@ -26,9 +25,8 @@ REPO_ID = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _model(lora, seed):

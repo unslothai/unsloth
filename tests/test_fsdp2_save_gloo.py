@@ -16,7 +16,6 @@ The modules are loaded from their files (importing unsloth needs a GPU).
 
 import importlib.util
 import os
-import socket
 import sys
 from pathlib import Path
 
@@ -48,9 +47,8 @@ N_LAYERS = 3
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 class _Block(torch.nn.Module):
