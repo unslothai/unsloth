@@ -1494,7 +1494,10 @@ def test_a_resave_after_a_recompile_restores_every_graph(tmp_path, monkeypatch):
         manifest = json.loads(ctx.manifest_path.read_text())
         data = (ctx.dir / manifest["bundle"]).read_bytes()
         restored = M.deserialize(data)
-        assert sorted(a.key for a in restored["inductor"]) == ["first-resolution", "second-resolution"]
+        assert sorted(a.key for a in restored["inductor"]) == [
+            "first-resolution",
+            "second-resolution",
+        ]
     finally:
         M.clear()
 

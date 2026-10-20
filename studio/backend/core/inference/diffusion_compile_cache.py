@@ -962,7 +962,10 @@ def _one_group_per_type(data: bytes, logger: Any) -> bytes:
         out.extend(merged.items())
         return out.to_bytes()
     except Exception as exc:  # noqa: BLE001 - keep torch's own bytes
-        _warn(logger, f"compile-cache: could not merge artifact groups ({exc}); saving torch's bundle as is")
+        _warn(
+            logger,
+            f"compile-cache: could not merge artifact groups ({exc}); saving torch's bundle as is",
+        )
         return data
 
 
@@ -977,6 +980,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         shapes = sorted(list(s) for s in ctx.shapes)
     try:
         import torch  # noqa: PLC0415
+
         # Under torch's compile lock: an artifact recorded while torch serialises is dropped from the pending list but
         # stays "seen", so it never reaches a later bundle either. Renders and background compiles record under it.
         with _compile_lock():
