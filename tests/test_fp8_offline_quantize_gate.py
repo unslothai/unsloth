@@ -94,3 +94,62 @@ def test_an_already_quantized_checkpoint_skips_the_fp8_gate(monkeypatch, tmp_pat
         pytest.fail("an already quantized checkpoint was sent to the fp8 quantizer")
     except Exception:
         pass  # No weights here: the load fails later, past the gate.
+
+
+@pytest.mark.parametrize("entry", ["FastLanguageModel", "FastModel"])
+def test_an_adapter_skips_the_fp8_gate(monkeypatch, tmp_path, entry):
+    # Its base is resolved later; converting the adapter dir itself fails on its missing config.json.
+    import json
+
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"peft_type": "LORA", "base_model_name_or_path": "my-org/Base", "r": 8})
+    )
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(loader, "get_model_name", lambda name, **_kwargs: name)
+
+    def check(*_args, **_kwargs):
+        raise _Reached()
+
+    monkeypatch.setattr(loader, "_get_fp8_mode_and_check_settings", check)
+    monkeypatch.setattr(loader, "_offline_quantize_to_fp8", check)
+    try:
+        getattr(loader, entry).from_pretrained(
+            str(tmp_path), load_in_4bit = False, load_in_fp8 = True, fast_inference = False
+        )
+    except _Reached:
+        pytest.fail("an adapter was sent to the fp8 quantizer")
+    except Exception:
+        pass
+
+
+def test_quantization_config_on_text_config_counts(tmp_path):
+    import json
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "llava",
+                "text_config": {
+                    "model_type": "llama",
+                    "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]},
+                },
+                "vision_config": {"model_type": "clip_vision_model"},
+            }
+        )
+    )
+    assert loader_utils._fp8_load_as_is(str(tmp_path)) is True
+
+
+def test_fp8_artifacts_of_same_named_repos_do_not_collide(monkeypatch, tmp_path):
+    import transformers
+
+    monkeypatch.setattr(
+        transformers.AutoConfig,
+        "from_pretrained",
+        classmethod(lambda cls, *a, **k: types.SimpleNamespace(architectures = ["LlamaForCausalLM"])),
+    )
+    monkeypatch.setattr(loader_utils.tempfile, "gettempdir", lambda: str(tmp_path))
+    # Pretend both artifacts exist so nothing is converted.
+    monkeypatch.setattr(loader_utils.os.path, "isdir", lambda p: str(p).startswith(str(tmp_path)))
+    a = loader_utils._offline_quantize_to_fp8("org-a/model", "row")
+    b = loader_utils._offline_quantize_to_fp8("org-b/model", "row")
+    assert a != b

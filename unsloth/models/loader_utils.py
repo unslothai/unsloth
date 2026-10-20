@@ -17,6 +17,7 @@ import os
 import torch
 import re
 import tempfile
+import shutil
 import contextlib
 import threading as _threading
 import functools
@@ -1705,6 +1706,7 @@ def _offline_quantize_to_fp8(
     text_only: bool = False,
     revision: str = None,
     token = None,
+    trust_remote_code: bool = False,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1716,7 +1718,9 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
+    config = AutoConfig.from_pretrained(
+        model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+    )
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1743,6 +1747,9 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    # The basename alone lets org-a/model and org-b/model (or two local dirs) share one artifact.
+    source = os.path.abspath(model_name) if os.path.isdir(model_name) else model_name
+    cache_name += "-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
     if revision is not None:
         # Sanitizing is lossy (release/v1 and release.v1 collapse), so a digest of the raw ref rides along and two refs never share an artifact.
         digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
@@ -1758,7 +1765,19 @@ def _offline_quantize_to_fp8(
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        # Under torchrun every rank converts: keep each on its own GPU, not all of them on "auto".
+        local_rank = os.environ.get("LOCAL_RANK")
+        device_map = (
+            {"": int(local_rank)}
+            if local_rank is not None and int(os.environ.get("WORLD_SIZE", "1")) > 1
+            else "auto"
+        )
+        load_kwargs = dict(
+            torch_dtype = "auto",
+            device_map = device_map,
+            quantization_config = qconfig,
+            trust_remote_code = trust_remote_code,
+        )
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
@@ -1776,13 +1795,24 @@ def _offline_quantize_to_fp8(
             model_name,
             revision = revision,
             token = token,
+            trust_remote_code = trust_remote_code,
         )
-        model.save_pretrained(new_model_name, safe_serialization = False)
-        del model
-        for _ in range(2):
-            clean_gpu_cache()
-            gc.collect()
-        tokenizer.save_pretrained(new_model_name)
+        # Publish atomically: the isdir check above must never see a half-written artifact from another rank.
+        partial = tempfile.mkdtemp(prefix = cache_name + ".partial-", dir = temp_dir)
+        try:
+            model.save_pretrained(partial, safe_serialization = False)
+            del model
+            for _ in range(2):
+                clean_gpu_cache()
+                gc.collect()
+            tokenizer.save_pretrained(partial)
+            try:
+                os.rename(partial, new_model_name)
+            except OSError:
+                if not os.path.isdir(new_model_name):
+                    raise
+        finally:
+            shutil.rmtree(partial, ignore_errors = True)
     return new_model_name
 
 
@@ -1797,18 +1827,31 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
     return Version(vllm.__version__) < Version("0.12.0")
 
 
-def _checkpoint_is_quantized(
+def _fp8_load_as_is(
     model_name,
     revision = None,
     token = None,
+    trust_remote_code = False,
 ):
-    """An already quantized checkpoint (a local or unmapped FP8 repo) loads as it is, so it skips the H100 gate too."""
+    """An already quantized checkpoint, or an adapter (resolved to its base later), skips the offline fp8 path and its H100 gate."""
+    from transformers import AutoConfig
+
     try:
-        from transformers import AutoConfig
-        config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
+        config = AutoConfig.from_pretrained(
+            model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+        )
     except Exception:
-        return False
-    return bool(getattr(config, "quantization_config", None))
+        try:
+            from peft import PeftConfig
+            PeftConfig.from_pretrained(model_name, revision = revision, token = token)
+            return True
+        except Exception:
+            return False
+    text_config = getattr(config, "text_config", None)
+    return bool(
+        getattr(config, "quantization_config", None)
+        or getattr(text_config, "quantization_config", None)
+    )
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
