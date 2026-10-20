@@ -129,7 +129,7 @@ def _validate_share_request(
         parts = urlsplit(base_url or "")
         carries_credential = bool(parts.username or parts.password or parts.query)
     except ValueError:
-        carries_credential = False
+        carries_credential = True
     if carries_credential:
         # Other accounts are shown the base URL, so a credential inside it would be shared too.
         raise HTTPException(

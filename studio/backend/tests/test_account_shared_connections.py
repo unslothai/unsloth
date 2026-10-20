@@ -168,6 +168,10 @@ def test_an_unshared_connection_stays_private_and_unsharing_revokes():
 
 
 def test_a_base_url_carrying_a_credential_cannot_be_shared():
+    provider_id = owner_connection(shared = False)
+    run_as(OWNER, providers_db.update_provider, provider_id, base_url = "https://user:pass@[bad/v1")
+    with client_for(OWNER) as client:
+        assert client.put(f"/providers/{provider_id}", json = {"shared": True}).status_code == 400
     for base_url in ("https://user:pass@gateway.example.com/v1", "https://gw.example.com/v1?key=s"):
         with client_for(OWNER) as client:
             refused = client.post(
