@@ -15686,8 +15686,7 @@ class LlamaCppBackend:
                 continue
             try:
                 free_b, total_b = int(parts[1]), int(parts[3])
-                # Intel's Windows driver can report a heap budget above the heap size;
-                # ggml clamps it the same way (ggml-org/llama.cpp#29277).
+                # Intel's Windows driver can report budget > heap size (ggml-org/llama.cpp#29277).
                 if 0 < total_b < free_b:
                     free_b = total_b
                 rows.append(
@@ -17705,8 +17704,7 @@ class LlamaCppBackend:
         ``shared``: GPUs another loaded model runs on. A model that fits one card alone
         takes a card outside it when one fits, so two models don't share compute.
 
-        ``integrated``: unified-memory GPUs (APU, SoC). When the discrete GPUs alone
-        hold the model they are chosen, same order as below; else every GPU counts.
+        ``integrated``: unified-memory GPUs; discrete GPUs win when they alone hold the model.
 
         ``min_gpus`` (default 1, capped at ``len(gpus)``) keeps a downgraded
         tensor/multi-GPU request spread instead of collapsing to one card.
@@ -17730,9 +17728,7 @@ class LlamaCppBackend:
             return None, True
 
         min_gpus = max(1, min(min_gpus, len(gpus)))
-        # Discrete first, as llama.cpp and Ollama do: an APU's "free" is system RAM and
-        # outranked a dGPU that holds the model (#7624). A tier that cannot keep a
-        # spread request spread falls through to every GPU.
+        # Discrete first (#7624): an APU's "free" is system RAM. Falls through if it can't meet min_gpus.
         discrete = [g for g in gpus if g[0] not in integrated] if integrated else gpus
         if min_gpus <= len(discrete) < len(gpus):
             picked, use_fit = LlamaCppBackend._select_gpus(
@@ -26908,10 +26904,8 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
-                    # Unified-memory candidates, ranked after discrete GPUs by automatic
-                    # placement only. Vulkan auto already dropped its iGPUs above.
+                    # Auto placement only; Vulkan auto already dropped its iGPUs above.
                     if not gpu_ids and not is_vulkan_backend and len(gpus) > 1:
-                        # CUDA from the cache _get_gpu_memory filled, as the RAM guard reads it.
                         _unified = self._rocm_unified_memory_gpu_ids() | set(
                             LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
                                 LlamaCppBackend._integrated_cuda_mask_key(), ()
@@ -28581,8 +28575,7 @@ class LlamaCppBackend:
                                 if _unshared is not None:
                                     ranked.remove(_unshared)
                                     ranked.insert(0, _unshared)
-                            # Discrete prefixes first, as in _select_gpus: an APU's system-RAM
-                            # "free" outranked a dGPU that holds the model (#7624).
+                            # Discrete prefixes first, as in _select_gpus (#7624).
                             _discrete_ranked = [g for g in ranked if g[0] not in _integrated_gpus]
                             _subsets = [
                                 (n, tier[:n])

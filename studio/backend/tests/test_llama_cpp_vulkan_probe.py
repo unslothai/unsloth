@@ -237,7 +237,6 @@ def test_large_discrete_gpu_is_untouched(tmp_path):
         # Intel's Windows driver reports a heap budget above the heap size.
         (18 * 1024, 16 * 1024, 0, 16 * 1024),
         (40 * 1024, 32 * 1024, 1, 32 * 1024),
-        # free <= total and an unreported total pass through unchanged.
         (6 * 1024, 24 * 1024, 0, 6 * 1024),
         (24 * 1024, 24 * 1024, 0, 24 * 1024),
         (8 * 1024, 0, 1, 8 * 1024),

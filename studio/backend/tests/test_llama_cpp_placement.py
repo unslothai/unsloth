@@ -5956,9 +5956,8 @@ def test_auto_placement_prefers_a_discrete_gpu_that_holds_the_model(
         # Homogeneous hosts: most usable VRAM wins, as before.
         ([(0, 10_000, 16_384), (1, 16_000, 16_384)], (), 8, None, "1"),
         ([_APU, (1, 30_000, 0)], {0, 1}, 8, None, "0"),
-        # Only the APU holds it.
         ([_APU, _DGPU], {0}, 20, None, "0"),
-        # The user's pick and a mask that leaves only the APU.
+        # User pick / mask leaving only the APU.
         ([_APU, _DGPU], {0}, 8, [0], "0"),
         ([_APU, _DGPU], {0}, 8, [0, 1], "0"),
         ([_APU], {0}, 8, None, "0"),
@@ -5979,7 +5978,7 @@ def test_select_gpus_discrete_tier_keeps_a_spread_request_spread():
     gib = 1024**3
     gpus = [(0, 60_000), (1, 16_000)]
     total = {0: 0, 1: 16_384}
-    # Two devices requested but one is discrete: the tier cannot honor it, so both count.
+    # min_gpus=2 but one discrete GPU: both count.
     assert LlamaCppBackend._select_gpus(
         8 * gib, gpus, total_by_idx = total, min_gpus = 2, integrated = frozenset({0})
     ) == ([0, 1], False)
