@@ -505,13 +505,12 @@ def _is_cuda_rocm(target: Any) -> bool:
     return getattr(target, "device", None) == "cuda" and not _is_cuda_nvidia(target)
 
 
-# Timed per geometry, not a family/arch table: the win depends on the flash_attn build (CK or Triton), card and shape.
 ROCM_FLASH_CANDIDATE = "_rocm_flash_candidate"
 ROCM_FLASH_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH"  # auto (timed) | 0 (auto never picks flash) | 1 (verified is enough)
 ROCM_FLASH_MIN_GAIN = 0.03
 # Accuracy is judged on the raw attention output (flash vs native SDPA, same inputs), not the block: the residual and
 # FFN would dilute a wrong attention. Rel L1 over the output, and the largest abs error over the largest abs output.
-ROCM_FLASH_BLOCK_TOL = 2e-2  # attention output rel L1 (bf16 rounding ~1e-3)
+ROCM_FLASH_BLOCK_TOL = 2e-2  # attention output rel L1
 ROCM_FLASH_MAX_TOL = 5e-2  # attention max abs error / max abs output
 ROCM_FLASH_PROBE_TOKENS = 4096  # the load-time bucket: a 1024^2 image DiT sequence
 # Calls are gated per (query, key) length bucket pair (powers of two from 256 up, open ended): a pair is timed at its
@@ -521,7 +520,6 @@ ROCM_FLASH_MIN_BUCKET = 256
 ROCM_FLASH_LONG_PROBE = (
     16384  # from here the probe times fewer runs (one native SDPA call is seconds at 64k tokens)
 )
-# (device, dtype, geometry, query tokens, key tokens, batch) -> admission record.
 ROCM_FLASH_ADMISSIONS: dict[tuple, dict] = {}
 # Bump when the block probe changes what it measures: every stored verdict is then re-timed.
 # 2: the flash arm runs through diffusers' dispatch (the generation path), not flash_attn_func directly.
@@ -586,7 +584,6 @@ def _dit_attention_geometries(pipe: Any) -> tuple[tuple[int, ...], ...]:
             for module in modules():
                 heads = getattr(module, "heads", None)
                 if not isinstance(heads, int) or isinstance(heads, bool):
-                    # Krea 2 (and other newer diffusers attention classes) name it num_heads.
                     heads = getattr(module, "num_heads", None)
                 to_q = getattr(module, "to_q", None)
                 fin = getattr(to_q, "in_features", None)
@@ -720,7 +717,7 @@ def _time_rocm_flash_block(
             del bref, bgot
     times: dict[str, list] = {name: [] for name in arms}
     long = tokens >= ROCM_FLASH_LONG_PROBE
-    for _ in range(1 if long else 2):  # warm both (Triton builds autotune on the first call)
+    for _ in range(1 if long else 2):
         for fn in arms.values():
             block(fn)
     torch.cuda.synchronize(device)
@@ -769,9 +766,7 @@ def _rocm_flash_block_admitted(
     # diffusers' flash backend raises on attn_mask: masked calls (e.g. mixed-padding batches) must run native
     if not _install_rocm_flash_dispatch_guard():
         return False
-    gate: dict[
-        tuple, frozenset
-    ] = {}  # (device, dtype, heads, head_dim) -> the full geometries sharing it
+    gate: dict[tuple, frozenset] = {}
     for geometry in geometries:
         shape = (device, str(dtype), geometry[1], geometry[2])
         gate[shape] = gate.get(shape, frozenset()) | {tuple(geometry)}
@@ -930,12 +925,7 @@ def _rocm_flash_traced_reason(
 
 
 def _rocm_flash_bucket_reason(
-    device: str,
-    dtype: Any,
-    geometries: tuple,
-    q_bucket: int,
-    kv_bucket: int,
-    b_bucket: int,
+    device: str, dtype: Any, geometries: tuple, q_bucket: int, kv_bucket: int, b_bucket: int
 ) -> Optional[str]:
     _sync_rocm_flash_baseline()
     keys = [(device, str(dtype), *g, q_bucket, kv_bucket, b_bucket) for g in geometries]
@@ -1305,7 +1295,7 @@ def _flash_attn_build_fingerprint() -> str:
     gpu_file = getattr(gpu, "__file__", None)
     if isinstance(gpu_file, str) and gpu_file:
         files.add(gpu_file)
-        if gpu_file.endswith(".py"):  # Triton: the kernels are the Python sources beside it
+        if gpu_file.endswith(".py"):
             folder = os.path.dirname(gpu_file)
             files.update(os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".py"))
     elif "flash_attn_2_cuda" not in sys.modules:
@@ -1904,7 +1894,6 @@ def _rocm_flash_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any)
 def _install_rocm_flash_dispatch_guard() -> bool:
     try:
         import torch
-
         torch.compiler.assume_constant_result(_rocm_flash_traced_reason)
     except Exception:  # noqa: BLE001 - torch without it: a traced call graph-breaks into the helper, still correct
         pass
@@ -1969,9 +1958,7 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
             registry = getattr(pipe, _ROCM_FLASH_DITS_ATTR, None)
             if not isinstance(registry, list):
                 registry = []
-                setattr(
-                    pipe, _ROCM_FLASH_DITS_ATTR, registry
-                )  # a named view writes through to the real pipe
+                setattr(pipe, _ROCM_FLASH_DITS_ATTR, registry)
             if not any(dit is d for d in registry):
                 registry.append(dit)
         except Exception:  # noqa: BLE001

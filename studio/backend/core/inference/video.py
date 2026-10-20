@@ -10996,7 +10996,6 @@ class VideoBackend:
                 if _resolved_inputs is not None and _resolved_inputs.state is not state:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
-                # ROCm flash: a generation boundary, this run's attention route tally starts at zero.
                 begin_attention_run(state)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.

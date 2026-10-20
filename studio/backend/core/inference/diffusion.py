@@ -11631,7 +11631,6 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
-                # ROCm flash: a generation boundary, this run's attention route tally starts at zero.
                 begin_attention_run(state)
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
