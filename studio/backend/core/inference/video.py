@@ -2466,7 +2466,7 @@ def _h3_card_memory_bytes(
         from utils.hardware import get_visible_gpu_utilization, gpu_query
 
         with gpu_query.fresh_reads():
-            devices = get_visible_gpu_utilization().get("devices", [])
+            devices = get_visible_gpu_utilization(no_context = True).get("devices", [])
         want = 0 if ordinal is None else int(ordinal)
         for entry in devices:
             if entry.get("visible_ordinal") != want:
@@ -2503,7 +2503,7 @@ def _h3_visible_card_count(device: Optional[str]) -> Optional[int]:
     try:
         from utils.hardware import get_visible_gpu_utilization, gpu_query
         with gpu_query.fresh_reads():
-            return len(get_visible_gpu_utilization().get("devices", []))
+            return len(get_visible_gpu_utilization(no_context = True).get("devices", []))
     except Exception:  # noqa: BLE001 -- unknown count reads as not single
         return None
 

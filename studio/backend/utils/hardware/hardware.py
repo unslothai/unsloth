@@ -4926,7 +4926,9 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
-def get_visible_gpu_utilization() -> Dict[str, Any]:
+def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
+    """``no_context``: never fall back to torch's per-device reading, which creates a driver context that stays
+    resident in this process; the devices then come back empty when the CLI / sysfs sources cannot answer."""
     device = get_device()
 
     if device == DeviceType.CUDA:
@@ -5031,7 +5033,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "index_kind": index_kind,
                 }
 
-        torch_devices = _torch_get_per_device_info(torch_indices)
+        torch_devices = [] if no_context else _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = []
             for td in torch_devices:

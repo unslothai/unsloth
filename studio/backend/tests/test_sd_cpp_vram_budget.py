@@ -732,3 +732,19 @@ def test_torch_cc_helper_is_none_off_cuda(monkeypatch):
     monkeypatch.setattr(torch.version, "cuda", "13.0", raising = False)
     monkeypatch.setattr(torch.version, "hip", "7.0", raising = False)
     assert sd_cpp_backend.torch_cuda_compute_capability(0) is None
+
+
+def test_h3_card_probes_never_fall_back_to_a_torch_context(monkeypatch):
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
+    monkeypatch.setattr(hardware, "_smi_visible_utilization", lambda spec: None)
+    monkeypatch.setattr(hardware, "IS_ROCM", False)
+    monkeypatch.setattr(hardware, "get_parent_visible_gpu_ids", lambda: [0])
+    touched = []
+    monkeypatch.setattr(
+        hardware, "_torch_get_per_device_info", lambda idx: touched.append(idx) or []
+    )
+    assert video_mod._h3_visible_card_count("cuda") == 0
+    assert video_mod._h3_card_memory_bytes("cuda", 0) == (None, None)
+    assert touched == []
