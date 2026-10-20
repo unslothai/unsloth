@@ -462,6 +462,8 @@ async def load_video_model_gated(
                 # The winner this route already ranked and preflighted, so the load cannot pick a
                 # different card from free VRAM that has moved since.
                 gpu_ordinal = gpu_ordinal,
+                # Lifts the unified-memory refusal for this load only, like the server env var.
+                allow_oversized_load = request.allow_oversized_load,
             )
 
         def _begin_load():
