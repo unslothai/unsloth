@@ -883,7 +883,7 @@ LLAMA_CHANGELOG_GEOMETRY = """
   const list = q('[data-testid="llama-update-changelog-list"]');
   const toggle = q('[data-testid="llama-update-changelog-toggle"]');
   const update = q('[data-testid="llama-update-button"]');
-  const footer = update ? update.closest('div').parentElement : null;
+  const footer = update ? update.closest('div') : null;
   return {
     surface: rect(surface), list: rect(list), toggle: rect(toggle),
     update: rect(update), footer: rect(footer),
@@ -1118,24 +1118,23 @@ def main() -> int:
             llama_payload[0] = WHISPER_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat whisper")
-            rows = page.locator('[data-testid="llama-update-version-line"]').count()
             check(
                 f"{width}x{height}: whisper.cpp reuses the one runtime card",
                 page.locator('[data-testid="llama-update-banner"]').count() <= 1
-                and "whisper.cpp" in facts["llamaText"]
-                and rows == 1,
-                f"rows={rows} text={facts['llamaText']!r}",
+                and "whisper.cpp" in facts["llamaText"],
+                f"text={facts['llamaText']!r}",
             )
 
-            # pending runtimes add rows without adding cards.
+            # pending runtimes share one card and one summary line.
             llama_payload[0] = BUNDLE_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat bundle")
-            rows = page.locator('[data-testid="llama-update-version-line"]').count()
+            summary = page.locator('[data-testid="llama-update-summary"]').text_content() or ""
             check(
-                f"{width}x{height}: three pending runtimes share the one card, a row each",
-                page.locator('[data-testid="llama-update-banner"]').count() == 1 and rows == 3,
-                f"rows={rows} text={facts['llamaText']!r}",
+                f"{width}x{height}: three pending runtimes share the one card",
+                page.locator('[data-testid="llama-update-banner"]').count() == 1
+                and "llama.cpp, whisper.cpp and audio.cpp" in summary,
+                f"summary={summary!r}",
             )
             exercise_llama_changelog(page, f"{width}x{height} bundle")
             llama_payload[0] = LLAMA_STATUS

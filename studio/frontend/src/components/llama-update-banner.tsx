@@ -332,8 +332,8 @@ export function LlamaUpdateBanner({
     backendOnly &&
     status?.from_backend === "rocm" &&
     status?.to_backend === "vulkan"
-      ? "Vulkan is >10% faster than ROCM. No restart needed after update"
-      : "No restart needed after update";
+      ? "Vulkan is >10% faster than ROCM. No restart needed"
+      : "No restart needed";
   const changelogTags =
     llamaRow?.versionChanged && llamaRow.installedTag && llamaRow.latestTag
       ? { installedTag: llamaRow.installedTag, latestTag: llamaRow.latestTag }
