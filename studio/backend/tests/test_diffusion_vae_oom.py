@@ -1481,6 +1481,7 @@ def test_wide_tiles_free_the_card_before_falling_back_to_stock_tiles(monkeypatch
 
 
 def test_ltx2_tiles_free_the_card_before_the_floor_tile(monkeypatch):
+    pytest.importorskip("diffusers")  # tiled_decode builds a diffusers DecoderOutput
     from core.inference import video_ltx2_vae_tiles as lt
 
     tried = []
@@ -2309,6 +2310,7 @@ class _CausalLtx:
 def test_ltx2_floor_decode_starts_clean_after_a_freed_retry_fails_part_way(monkeypatch, k):
     """Item 4286353660: the freed retry of the wide LTX-2 tiles ran k tiles, then ran out of memory; the floor-tile
     decode started on that partial causal state. Every retry after a partial causal decode clears it first."""
+    pytest.importorskip("diffusers")  # tiled_decode builds a diffusers DecoderOutput
     from core.inference import video_ltx2_vae_tiles as T
 
     z = torch.randn(1, 4, 1, 48, 48)
