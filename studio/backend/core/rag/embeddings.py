@@ -28,6 +28,7 @@ from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any, Callable
 
+from utils.cpu_threads import fit_threads_to_affinity
 from utils.hardware.hardware import DeviceType, get_device
 from utils.transformers_dtype import dtype_kwargs
 from utils.utils import hf_env_offline
@@ -668,6 +669,8 @@ def _st_encode(
         # Admission and model lookup are one lease: lookup first would let unload clear the globals while
         # this call still held a strong reference.
         model = _get(model_name)
+        # Affinity narrowed in Task Manager mid-index must reach this thread's pool (#14313).
+        fit_threads_to_affinity()
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
         try:
             with _inference_ctx():
