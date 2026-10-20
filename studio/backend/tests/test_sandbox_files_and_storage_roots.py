@@ -6575,24 +6575,19 @@ def _stage_like_an_older_build(
     return linked
 
 
-def test_opening_a_file_clears_old_and_hard_linked_staged_files(tmp_path, monkeypatch):
-    from core.inference import os_sandbox
-
+def test_opening_a_file_clears_old_staged_files(tmp_path, monkeypatch):
     inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
-    linked = _stage_like_an_older_build(tmp_path, sandbox)
-    staging = linked.parent
+    staging = tmp_path / "cache" / "open-staging"
     old, recent = staging / "old", staging / "recent"
     for entry in (old, recent):
-        entry.mkdir()
+        entry.mkdir(parents = True)
         (entry / "notes.txt").write_text("x", encoding = "utf-8")
     day_ago = time.time() - 25 * 60 * 60
     os.utime(old, (day_ago, day_ago))
     (sandbox / "report.pdf").write_bytes(b"%PDF-1.4")
     assert _open(inference, "report.pdf") == {"status": "ok"}
-    assert os.stat(linked / "chart.png").st_nlink == 1
     assert not old.exists()
     assert recent.exists()
-    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
 
 
 # The longest name a filesystem allows, so the swap cannot lengthen it.
@@ -6642,6 +6637,39 @@ def test_an_app_saving_while_a_legacy_link_is_replaced_keeps_its_save(tmp_path, 
     assert (linked / "chart.png").read_bytes() == b"edited in the app"
     assert os.listdir(linked) == ["chart.png"]
     assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+
+
+def test_a_sibling_backend_breaking_legacy_links_is_not_raced(tmp_path, monkeypatch):
+    from utils.cache_cleanup import _try_lock, _unlock
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    sibling = os.open(tmp_path / "cache" / "open-staging.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    _try_lock(sibling)
+    path_utils.prune_open_staging()
+    assert os.stat(linked / "chart.png").st_nlink == 2
+    _unlock(sibling)
+    path_utils.prune_open_staging()
+    assert os.stat(linked / "chart.png").st_nlink == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
+def test_a_symlinked_staging_entry_is_not_walked(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.txt").write_bytes(b"shared")
+    os.link(outside / "a.txt", outside / "b.txt")
+    (tmp_path / "cache" / "open-staging").mkdir(parents = True)
+    (tmp_path / "cache" / "open-staging" / "redirect").symlink_to(outside, target_is_directory = True)
+    path_utils.prune_open_staging()
+    assert os.stat(outside / "a.txt").st_ino == os.stat(outside / "b.txt").st_ino
+    assert sorted(os.listdir(outside)) == ["a.txt", "b.txt"]
 
 
 def test_a_failed_copy_leaves_nothing_staged(tmp_path, monkeypatch):

@@ -498,8 +498,9 @@ def _break_hard_links(entry: Path) -> None:
                 held.unlink(missing_ok = True)
 
 
-def _prune_open_staging(root: Path) -> None:
+def _prune_open_staging(root: Path, break_links: bool = False) -> None:
     import shutil
+    import stat as stat_module
     import time
 
     cutoff = time.time() - _OPEN_STAGING_MAX_AGE_S
@@ -509,17 +510,39 @@ def _prune_open_staging(root: Path) -> None:
         return
     for entry in entries:
         try:
-            if entry.lstat().st_mtime < cutoff:
+            info = entry.lstat()
+            if info.st_mtime < cutoff:
                 shutil.rmtree(entry, ignore_errors = True)
-            else:
+            # Never through a symlink or junction, which would reach outside the cache.
+            elif (
+                break_links
+                and stat_module.S_ISDIR(info.st_mode)
+                and not getattr(info, "st_reparse_tag", 0)
+            ):
                 _break_hard_links(entry)
         except OSError:
             continue
 
 
+# Startup only, before any Open; sibling backends on the same home take turns, so no two swaps race.
 def prune_open_staging() -> None:
+    from utils.cache_cleanup import _CONTENTION_ERRNOS, _try_lock, _unlock
     from utils.paths.storage_roots import cache_root
-    _prune_open_staging(cache_root() / "open-staging")
+
+    try:
+        handle = os.open(cache_root() / "open-staging.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        return
+    try:
+        _try_lock(handle)
+    except OSError as exc:
+        if exc.errno in _CONTENTION_ERRNOS:
+            os.close(handle)
+            return
+    try:
+        _prune_open_staging(cache_root() / "open-staging", break_links = True)
+    finally:
+        _unlock(handle)
 
 
 def _opened_path(handle: int) -> Optional[str]:
