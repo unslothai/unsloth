@@ -202,8 +202,39 @@ def test_an_automatic_cpu_record_counts_as_chosen_only_on_a_jetson(monkeypatch, 
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
     monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
     monkeypatch.setattr(hw, "_recorded_install_flavor", lambda: ("cpu", False))
-    monkeypatch.setattr(tegra_mod, "is_tegra", lambda: tegra)
+    monkeypatch.setattr(tegra_mod, "tegra_before_cuda13", lambda: tegra)
     assert hw._expected_cpu_flavor_was_chosen() is chosen
     # A pinned cpu record stays a choice everywhere.
     monkeypatch.setattr(hw, "_recorded_install_flavor", lambda: ("cpu", True))
     assert hw._expected_cpu_flavor_was_chosen() is True
+
+
+
+@pytest.mark.parametrize(
+    "release, compatible, expected",
+    [
+        ("# R36 (release), REVISION: 4.3\n", b"nvidia,tegra234\0", True),  # JetPack 6 Orin
+        ("# R35 (release), REVISION: 5.0\n", b"nvidia,tegra194\0", True),  # JetPack 5 Xavier
+        ("# R38 (release), REVISION: 2.0\n", b"nvidia,tegra264\0", False),  # JetPack 7 Thor
+        (None, b"nvidia,tegra264\0", False),
+        (None, b"nvidia,tegra234\0", True),
+        (None, b"nvidia,grace-hopper\0", False),  # not a Jetson
+    ],
+)
+def test_tegra_before_cuda13_reads_the_l4t_release(tmp_path, monkeypatch, release, compatible, expected):
+    from utils import tegra as tegra_mod
+
+    rel = tmp_path / "nv_tegra_release"
+    if release is not None:
+        rel.write_text(release)
+    dt = tmp_path / "compatible"
+    dt.write_bytes(compatible)
+    monkeypatch.setattr(tegra_mod, "_TEGRA_RELEASE", str(rel))
+    monkeypatch.setattr(tegra_mod, "_DEVICE_TREE_COMPATIBLE", str(dt))
+    tegra_mod.is_tegra.cache_clear()
+    tegra_mod.tegra_before_cuda13.cache_clear()
+    try:
+        assert tegra_mod.tegra_before_cuda13() is expected
+    finally:
+        tegra_mod.is_tegra.cache_clear()
+        tegra_mod.tegra_before_cuda13.cache_clear()
