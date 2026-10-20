@@ -93,7 +93,6 @@ def validate_mcp_address(url: str) -> None:
     # Studio's own Decisions server is answered in process; with a local model no request leaves this machine.
     if not _managed_mcp_restricted() or (is_studio_decisions(url) and _local_decisions()):
         return
-    # So is the Unsloth Studio tools row, as the account's own key.
     if is_studio_tools(url):
         return
     if is_stdio(url):
@@ -2261,7 +2260,6 @@ def call_tool_sync(
     """
 
     if is_studio_tools(url):
-        # In process with a per-call key; no pooled session, so no caller outlives its call.
         if config_check is not None and not config_check():
             return f"Error: MCP tool '{name}' failed: MCP server was updated or removed"
         from core.inference import studio_tools_mcp

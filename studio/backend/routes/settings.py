@@ -4096,7 +4096,6 @@ class McpToolSetting(BaseModel):
     name: str
     area: str
     enabled: bool
-    # False for the tools an Unsloth Studio chat never gets, whatever the switch says.
     chat: bool
 
 

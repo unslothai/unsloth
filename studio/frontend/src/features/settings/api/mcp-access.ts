@@ -11,7 +11,6 @@ export type McpToolSetting = {
   /** the tool's module, used to group rows */
   area: string;
   enabled: boolean;
-  /** false for a tool an Unsloth Studio chat never gets; missing on older backends */
   chat?: boolean;
 };
 

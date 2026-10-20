@@ -1119,7 +1119,6 @@ app.router.lifespan_context = combine_lifespans(
     app.router.lifespan_context, _studio_mcp_app.lifespan
 )
 app.mount("/mcp", StudioMcpGate(_studio_mcp_app))
-# The chat's Unsloth Studio tools row forwards into this app in process (core/inference/studio_tools_mcp.py).
 from core.inference.studio_tools_mcp import ChatRootPathMiddleware, remember_studio_app  # noqa: E402
 
 remember_studio_app(app)

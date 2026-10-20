@@ -1754,7 +1754,6 @@ DEEP_RESEARCH_WORKFLOW_KEY_NAME = "deep-research workflow"
 # What `unsloth start` mints for its coding agents (unsloth_cli/commands/start.py). Only a desktop
 # session can create a key with this name, and only the owner's may spend saved Connections.
 UNSLOTH_START_API_KEY_NAME = "Coding agents (unsloth start)"
-# Minted per tool call by the chat's Unsloth Studio row (core/inference/studio_tools_mcp.py), revoked when it ends.
 STUDIO_CHAT_TOOLS_KEY_NAME = "Unsloth Studio chat tools"
 
 

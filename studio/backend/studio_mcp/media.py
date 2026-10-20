@@ -61,7 +61,6 @@ def _base(caller: Caller) -> str:
         return ""
     base = urlsplit(caller.public_base)
     if not base.scheme:
-        # A chat call's base is only the proxy's path prefix; its links stay relative to the chat's origin.
         return base.path.rstrip("/")
     tunnel = getattr(getattr(caller.studio_app, "state", None), "cloudflare_url", None)
     if isinstance(tunnel, str) and tunnel:

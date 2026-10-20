@@ -152,7 +152,6 @@ def listed(account):
     return run_as(account, asyncio.run, tools_mod.get_enabled_mcp_tools())
 
 
-# -- the row and the chat instance ------------------------------------------------------------------------------
 
 
 def test_the_reserved_url_is_port_agnostic_and_distinct_from_decisions():
@@ -202,7 +201,6 @@ def test_the_chat_instance_drops_exactly_the_denylist_and_mcp_keeps_every_tool()
 @pytest.mark.parametrize("who", ["owner", "alice"])
 def test_the_chat_lists_only_chat_tools_under_the_row_id(studio_home, accounts, who):
     account = getattr(accounts, who)
-    # A managed account's UI session may add the row: it is answered in process, never dialled.
     row = add_row(account)
     names = [tool["function"]["name"] for tool in listed(account)]
     prefix = f"mcp__{row.id}__"
@@ -251,7 +249,6 @@ def test_an_owner_disabled_tool_is_unlisted_and_refused(
     refused = bridge(accounts.alice, "list_training_runs")
     assert refused.startswith("Error: ") and "[tool_disabled]" in refused, refused
     assert app.state.seen == []
-    # Back on: the very next send lists it and the call runs, with no cache eviction.
     mcp_access.set_mcp_settings(disabled_tools = [])
     assert any(
         name.endswith("__list_training_runs")
@@ -260,7 +257,6 @@ def test_an_owner_disabled_tool_is_unlisted_and_refused(
     assert "qwen-lora" in bridge(accounts.alice, "list_training_runs")
 
 
-# -- calls ------------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("name", sorted(CHAT_DENYLIST))
@@ -386,7 +382,6 @@ def test_without_a_server_loop_or_app_nothing_is_minted(studio_home, accounts, m
     assert chat_keys() == []
 
 
-# -- host paths ---------------------------------------------------------------------------------------------------
 
 
 def test_host_paths_are_refused_even_for_the_owner(
@@ -407,7 +402,6 @@ def test_route_host_paths_do_not_reach_the_chat(studio_home, accounts, server_lo
     assert not any(root in result for root in SENTINEL_ROOTS), result
 
 
-# -- the caller ContextVar ---------------------------------------------------------------------------------------
 
 
 def test_after_a_call_no_caller_is_left_bound(studio_home, accounts, server_loop, monkeypatch):
@@ -499,7 +493,6 @@ def test_an_outer_http_request_on_the_tool_thread_does_not_outrank_the_bridge(
     assert app.state.seen and "outer-agent-key" not in {entry["token"] for entry in app.state.seen}
 
 
-# -- the external /mcp gate is untouched -------------------------------------------------------------------------
 
 
 def test_chat_works_with_agent_access_off_and_its_key_cannot_use_mcp(
@@ -529,7 +522,6 @@ def test_chat_works_with_agent_access_off_and_its_key_cannot_use_mcp(
     storage.revoke_internal_api_key(key["id"])
 
 
-# -- mcp_client and the chat request ----------------------------------------------------------------------------
 
 
 def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(
@@ -562,7 +554,6 @@ def test_call_tool_sync_uses_the_bridge_and_no_pooled_session(
         {},
         config_check = lambda: False,
     )
-    # The stale call mints nothing: only the first call ever had a key.
     assert stale.startswith("Error: ") and len(minted) == 1 and chat_keys() == []
 
 
@@ -643,7 +634,6 @@ def test_chat_tool_media_links_are_origin_relative(studio_home, accounts, server
     assert not bridge(OWNER, "list_training_runs").startswith("Error")
     (caller,) = callers
     assert caller.public_base == "" and caller.call_scoped and not caller.direct_local
-    # A browser resolves these against whatever address it reached Unsloth Studio on.
     assert (
         public_url(caller, image_gallery_path("img-1"))
         == "/api/inference/images/gallery/img-1/file"

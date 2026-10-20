@@ -32,7 +32,6 @@ def caller_from_scope(scope: dict) -> Optional[Caller]:
     return caller if isinstance(caller, Caller) else None
 
 
-# Set only by the chat bridge (core/inference/studio_tools_mcp.py), never from the network.
 _bound: ContextVar[Optional[Caller]] = ContextVar("unsloth_mcp_bound_caller", default = None)
 
 
@@ -50,7 +49,6 @@ def current_caller() -> Caller:
     try:
         request = get_http_request()
     except RuntimeError:
-        # No HTTP request: only the chat bridge's own task can have bound a caller.
         caller = _bound.get()
     else:
         # An HTTP request always answers for itself, so /mcp never sees a bound caller.

@@ -34,7 +34,6 @@ _POLL_S = 0.25
 _studio_app: Any = None
 _mcp: Any = None
 _mcp_lock = threading.Lock()
-# The proxy path prefix of the request that is running the chat, so its media links keep it.
 _root_path: contextvars.ContextVar[str] = contextvars.ContextVar(
     "studio_tools_root_path", default = ""
 )
@@ -85,7 +84,6 @@ def _mint(account: Any, limit: float) -> tuple[str, dict]:
         name = storage.STUDIO_CHAT_TOOLS_KEY_NAME,
         expires_at = expires.isoformat(),
         internal = True,
-        # A reset since the chat request authenticated refuses the mint, as for any new key.
         expect_gen = account.credential_gen,
         # Pinned to this account, as Deep Research does: the username could name a recreated namesake.
         account_id = None if record.is_owner else record.account_id,
@@ -95,7 +93,6 @@ def _mint(account: Any, limit: float) -> tuple[str, dict]:
 def _revoke(key_id: int) -> None:
     from auth import storage
     try:
-        # Deleted, not just revoked: one row per tool call would otherwise pile up in auth.db.
         storage.delete_internal_api_key(key_id)
     except Exception:  # noqa: BLE001 - the key still expires on its own
         logger.exception("Could not revoke the Unsloth Studio chat tools key %s", key_id)
@@ -130,7 +127,6 @@ def call(
     from utils.account_context import arun_as, current_account
 
     account = current_account()
-    # Read here, on the chat's own thread: the server-loop task below starts from an empty context.
     root_path = _root_path.get()
     app = _studio_app
     loop = server_loop()
@@ -139,7 +135,6 @@ def call(
             f"Error: MCP tool '{name}' failed: Unsloth Studio tools are not ready yet. Try again."
         )
     limit = _DEFAULT_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
-    # The key must outlive the call.
     limit = min(limit, _KEY_MAX_S - _KEY_GRACE_S)
     try:
         key, row = _mint(account, limit)
@@ -152,8 +147,6 @@ def call(
             account_id = account.account_id,
             # A prompt-injected model must not reach host files, even the owner's.
             direct_local = False,
-            # Path only: media links come back relative to the chat's own origin, so they open from any browser
-            # (LAN, tunnel, proxy), and keep a proxy's path prefix.
             public_base = root_path,
             studio_app = app,
             hf_token = None,
