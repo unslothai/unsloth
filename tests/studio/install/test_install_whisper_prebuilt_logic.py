@@ -2956,3 +2956,90 @@ def test_a_custom_repository_asset_name_is_judged_by_the_recorded_platform(tmp_p
         install_dir, asset = f"whisper-v1.9.1-{os_token}-{arch_token}-cpu.tar.gz", os = None, arch = None
     )
     assert _whisper_check(install_dir, host) is True
+
+
+def _paired_macos_release(requires_llama_tag: str) -> M.ReleaseBundle:
+    asset = "whisper-macos-arm64-slim.tar.gz"
+    return _release_for_selection(
+        "v1.9.5-unsloth.9",
+        "v1.9.5",
+        _slim_artifact(
+            os = "macos",
+            arch = "arm64",
+            asset = asset,
+            requires_llama_tag = requires_llama_tag,
+            requires_ggml_sonames = ["libggml.0.dylib", "libggml-base.0.dylib"],
+        ),
+    )
+
+
+def _macos_pairing_gap(monkeypatch, installed_llama_tag: str) -> list[str]:
+    """The newest whisper.cpp release pairs with b10069; llama.cpp is installed at another build."""
+    newest = _paired_macos_release(SLIM_LLAMA_TAG)
+    monkeypatch.setattr(
+        M,
+        "installed_llama_runtime",
+        lambda install_dir = None: (Path("/nowhere"), installed_llama_tag, ""),
+    )
+    monkeypatch.setattr(M, "installed_llama_ggml_tree", lambda *a, **k: None)
+    monkeypatch.setattr(M, "installed_llama_tree_repo", lambda *a, **k: None)
+    monkeypatch.setattr(
+        M, "fetch_release_for_install", lambda repo, *, published_release_tag = None: (newest, {})
+    )
+    listed: list[str] = []
+
+    def listing(repo):
+        listed.append(repo)
+        return [newest.release_tag]
+
+    monkeypatch.setattr(M, "_published_release_tags", listing)
+    return listed
+
+
+def _plan_on_macos():
+    return M._release_plan_for_host(
+        _host("macos", "arm64", macos_version = (15, 7)),
+        published_repo = "unslothai/whisper.cpp",
+        published_release_tag = None,
+        whisper_tag = "latest",
+        requested_backend = "metal",
+    )
+
+
+def test_macos_does_not_walk_back_when_llama_is_ahead_of_every_whisper_release(monkeypatch):
+    """llama.cpp b10080 is out and its paired whisper.cpp release is not yet: no older release can
+    pair with a newer llama.cpp, so listing and fetching all of them (two requests each, on every
+    update) found nothing. Seen in CI as ~50 GitHub requests in a no-op macOS update."""
+    listed = _macos_pairing_gap(monkeypatch, "b10080-mix-0000000")
+    with pytest.raises(ReleaseCompatibilityError, match = SLIM_LLAMA_TAG):
+        _plan_on_macos()
+    assert listed == []
+
+
+def test_macos_still_walks_back_when_llama_is_behind_the_newest_whisper_release(monkeypatch):
+    # An older whisper.cpp release may pair with the older llama.cpp still installed.
+    listed = _macos_pairing_gap(monkeypatch, "b10060-mix-0000000")
+    with pytest.raises(ReleaseCompatibilityError, match = SLIM_LLAMA_TAG):
+        _plan_on_macos()
+    assert listed == ["unslothai/whisper.cpp"]
+
+
+@pytest.mark.parametrize(
+    "tag, build",
+    [
+        ("b11734-mix-c208e5f", 11734),
+        ("b11734", 11734),
+        ("b11734x", None),
+        ("v1.9.5", None),
+        (None, None),
+    ],
+)
+def test_llama_build_numbers(tag, build):
+    assert M._llama_build(tag) == build
+
+
+def test_an_unparsable_llama_tag_keeps_the_walk(monkeypatch):
+    listed = _macos_pairing_gap(monkeypatch, "custom-build")
+    with pytest.raises(ReleaseCompatibilityError):
+        _plan_on_macos()
+    assert listed == ["unslothai/whisper.cpp"]

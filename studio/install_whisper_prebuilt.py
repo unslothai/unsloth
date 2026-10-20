@@ -634,6 +634,35 @@ def select_artifact_with_cpu_fallback(
         raise
 
 
+_LLAMA_BUILD = re.compile(r"^b(\d+)(?:-|$)")
+
+
+def _llama_build(tag: Any) -> int | None:
+    match = _LLAMA_BUILD.match(tag) if isinstance(tag, str) else None
+    return int(match.group(1)) if match else None
+
+
+def _installed_llama_is_ahead(manifest: dict[str, Any], host: HostInfo) -> bool:
+    """Whether every slim bundle this host can run needs an older llama.cpp build than the installed one."""
+    os_token, arch_token = host_platform_tokens(host)
+    required = [
+        _llama_build(artifact.get("requires_llama_tag"))
+        for artifact in manifest.get("artifacts", [])
+        if artifact.get("os") == os_token
+        and artifact.get("arch") == arch_token
+        and artifact.get("backend") == "slim"
+        and artifact.get("install_kind") == "slim"
+        and (not host.is_macos or _macos_min_os_ok(host, artifact.get("min_os")))
+    ]
+    runtime = installed_llama_runtime()
+    installed = _llama_build(runtime[1]) if runtime is not None else None
+    return (
+        bool(required)
+        and installed is not None
+        and all(build is not None and build < installed for build in required)
+    )
+
+
 def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> str | None:
     """Explain a valid platform slim release that this runtime cannot pair.
 
@@ -1708,6 +1737,17 @@ def _release_plan_for_host(
         raise first_error
 
     if not requested_specific_tag and not host.is_macos:
+        assert first_error is not None
+        raise first_error
+
+    if (
+        not requested_specific_tag
+        and first_bundle is not None
+        and _installed_llama_is_ahead(first_bundle.manifest, host)
+    ):
+        # llama.cpp is published before its paired whisper.cpp release. Until that lands, the newest
+        # release pairs with an older llama.cpp and older ones with older still, so a walk finds
+        # nothing and costs a release listing plus two fetches per release on every update.
         assert first_error is not None
         raise first_error
 
