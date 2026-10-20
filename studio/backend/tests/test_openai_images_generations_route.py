@@ -504,6 +504,12 @@ def test_one_recipe_field_leaves_the_other_default(client):
     assert (client.backend.calls[0]["steps"], client.backend.calls[0]["guidance"]) == (8, 1.5)
 
 
+def test_seed_minus_one_means_random(client):
+    # Ignored before this route took seed, so a client sending -1 must keep getting a random seed, not a 400.
+    assert _post(client, {"prompt": "p", "seed": -1}).status_code == 200
+    assert client.backend.calls[0]["seed"] is None
+
+
 def test_width_height_agreeing_with_size_is_accepted(client):
     resp = _post(client, {"prompt": "p", "size": "512x768", "width": 512, "height": 768})
     assert resp.status_code == 200
@@ -520,7 +526,7 @@ def test_width_height_agreeing_with_size_is_accepted(client):
         {"width": 128, "height": 512},  # below the bound
         {"steps": 0},
         {"guidance": 25.0},
-        {"seed": -1},
+        {"seed": -2},
     ],
 )
 def test_bad_recipe_fields_are_a_400_before_any_run(client, extra):

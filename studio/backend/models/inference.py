@@ -5801,6 +5801,12 @@ class ImageGenerationRequest(BaseModel):
             return cls.model_fields[info.field_name].default
         return value
 
+    @field_validator("seed", mode = "before")
+    @classmethod
+    def _minus_one_seed_means_random(cls, value):
+        # -1 is the usual "random seed" (A1111, stable-diffusion.cpp); this route ignored seed before, so it must not start 400ing.
+        return None if value == -1 else value
+
 
 class ImageGenerationData(BaseModel):
     """One image in an ``ImagesResponse`` (OpenAI ``Image``). Exactly one of
