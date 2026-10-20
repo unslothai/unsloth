@@ -5647,6 +5647,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "LoRA is unavailable on the current engine for this GGUF, but reloading it on the "
         "native sd.cpp engine would apply LoRAs.",
     )
+    lora_after_reload: bool = Field(
+        False,
+        description = "LoRA is off only because Speed=Auto compiled the model on its 3rd image; "
+        "reloading it (still Speed=Auto) brings LoRAs back until then.",
+    )
     supports_lora: bool = Field(
         False,
         description = "Whether the loaded model + quantisation can apply LoRA adapters (drives the "

@@ -354,6 +354,7 @@ import {
   loadedEngineChoice,
   nativeLoadAdvanced,
   nativeReloadTarget,
+  offersCompiledLoraReload,
   offersNativeLoraReload,
   reapplyChangesEngine,
   reapplyTarget,
@@ -6141,6 +6142,14 @@ export function ImagesPage({
                 <span>LoRAs need the native engine for this GGUF; diffusers runs it without them.</span>
                 <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleNativeReload}>
                   Reload with native engine
+                </Button>
+              </div>
+            )}
+            {!external && !loraCapable && offersCompiledLoraReload(status) && (
+              <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                <span>Speed compiled this model after a few images, so LoRAs are off. Reload it to add LoRAs.</span>
+                <Button size="sm" variant="secondary" className="h-7 shrink-0 text-xs" disabled={busy !== null} onClick={handleReapply}>
+                  Reload model
                 </Button>
               </div>
             )}
