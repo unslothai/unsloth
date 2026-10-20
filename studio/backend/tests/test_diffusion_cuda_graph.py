@@ -1444,7 +1444,11 @@ def test_separate_reference_images_are_part_of_the_image_scope(stub_torch, monke
     handle = _armed(module, max_graphs = 8)
     assert handle.length_varies is True
 
-    def call(text_len, refs, value = 0.0):
+    def call(
+        text_len,
+        refs,
+        value = 0.0,
+    ):
         kw = {}
         if refs:
             kw = {"image_cond_hidden_states": _t((1, refs)), "image_cond_ids": _t((refs, 3))}
