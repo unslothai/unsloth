@@ -1150,7 +1150,6 @@ class TestProgressLineNotes:
         frames = out.split("\r")[1:]
         assert all(" 5/14  flash-attn" in frame for frame in frames), frames
         assert "flash-attn 0:00" in frames[1]
-        # Finished: the plain label again, padded over the elapsed time.
         assert frames[-1].rstrip().endswith("flash-attn")
         assert len(frames[-1]) >= max(len(frame) for frame in frames[1:-1])
 
