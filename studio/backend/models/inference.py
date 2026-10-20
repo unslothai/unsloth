@@ -5680,7 +5680,7 @@ class DiffusionStatusResponse(BaseModel):
     supports_live_preview: bool = Field(
         True,
         description = "Whether generations on this load can stream live denoise previews (drives the Live preview "
-        "switch). False on the native engine and for families without a fitted preview map.",
+        "switch). False on the native and MLX engines and for families without a fitted preview map.",
     )
     prompt_hint: Optional[str] = Field(
         None,
