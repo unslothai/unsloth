@@ -176,7 +176,7 @@ test("streaming reparses only the active Markdown tail", () => {
     jsxAttribute(streamdown, "parseIncompleteMarkdown")?.initializer?.getText(
       source,
     ),
-    "{!incrementalRender}",
+    "{repairSettled}",
   );
   assert.equal(
     jsxAttribute(streamdown, "remend")?.initializer?.getText(source),

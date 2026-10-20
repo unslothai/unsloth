@@ -138,6 +138,29 @@ export function restoredAssistantStatus(
   return { type: "incomplete", reason: STATUS_REASON[incomplete.reason] };
 }
 
+// Live, only a Stop or an error reaches `status`; a length or stall end is stamped on metadata.
+export function isCutTextPart(
+  message: {
+    status?: { type: string };
+    metadata?: unknown;
+    parts: readonly { type: string }[];
+  },
+  partIndex: number,
+): boolean {
+  if (message.status?.type === "running") return false;
+  if (
+    message.status?.type !== "incomplete" &&
+    readIncompleteInfo(message.metadata) === null
+  ) {
+    return false;
+  }
+  for (let i = message.parts.length - 1; i > partIndex; i -= 1) {
+    const type = message.parts[i]?.type;
+    if (type === "text" || type === "reasoning") return false;
+  }
+  return true;
+}
+
 const INCOMPLETE_LABELS: Record<IncompleteReason, string> = {
   length: "Response hit the Max Tokens limit",
   cancelled: "Response stopped",

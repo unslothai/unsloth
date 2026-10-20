@@ -8,6 +8,7 @@ import { filesOpenInBrowser, openFileInBrowser } from "@/features/browser";
 import { useT } from "@/i18n";
 import {
   ArtifactCard,
+  isCutTextPart,
   useChatProjectScope,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -1489,6 +1490,7 @@ type MarkdownTextRendererProps = {
   messageId: string;
   messageTextKey: string;
   precedingText: string;
+  repairSettled: boolean;
   searchImagesKey: string;
   statusType: string;
   text: string;
@@ -1500,6 +1502,7 @@ function MarkdownTextRenderer({
   messageId,
   messageTextKey,
   precedingText,
+  repairSettled,
   searchImagesKey,
   statusType,
   text,
@@ -1569,8 +1572,8 @@ function MarkdownTextRenderer({
     ? incrementalCache.update(processedText)
     : null;
   const pendingLinkRepair = useMemo(
-    () => !isStreaming && hasIncompleteLinkRepair(processedText),
-    [isStreaming, processedText],
+    () => repairSettled && hasIncompleteLinkRepair(processedText),
+    [repairSettled, processedText],
   );
   const renderKey = markdownRenderKey(processedText);
 
@@ -1588,7 +1591,7 @@ function MarkdownTextRenderer({
           <Streamdown
             key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
             mode="streaming"
-            parseIncompleteMarkdown={!incrementalRender}
+            parseIncompleteMarkdown={repairSettled}
             remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
@@ -1646,6 +1649,7 @@ const MarkdownTextImpl = () => {
       ? partsTextKey(message.parts)
       : "[]",
   );
+  const cut = useAuiState(({ message }) => isCutTextPart(message, partIndex));
 
   return (
     <MarkdownTextRenderer
@@ -1654,6 +1658,7 @@ const MarkdownTextImpl = () => {
       messageId={messageId}
       messageTextKey={messageTextKey}
       precedingText={precedingText}
+      repairSettled={cut}
       searchImagesKey={searchImagesKey}
       statusType={status.type}
       text={text}
@@ -1680,6 +1685,7 @@ const MarkdownTextSourceImpl = ({
     messageId={messageId}
     messageTextKey="[]"
     precedingText=""
+    repairSettled={!streaming}
     searchImagesKey=""
     statusType={streaming ? "running" : "complete"}
     text={sourceText}

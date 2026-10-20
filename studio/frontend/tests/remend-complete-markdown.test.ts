@@ -18,16 +18,16 @@ import {
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
- * before parsing it, and Unsloth runs it on every SETTLED body: `markdown-text.tsx` passes
- * `parseIncompleteMarkdown={!incrementalRender}` and `incrementalRender` is null exactly when the
- * message is not streaming. So this dependency decides what a finished message LOOKS like, not
- * only what a half-written one looks like, and a version bump is a rendering change.
+ * before parsing it, and Unsloth runs it on every settled body that was CUT (stopped, cut at max
+ * tokens, errored): `markdown-text.tsx` passes `parseIncompleteMarkdown={repairSettled}`. So this
+ * dependency decides what a stopped message LOOKS like, not only what a half-written one looks
+ * like, and a version bump is a rendering change.
  *
  * These are RUN, not scraped. Every assertion below is either a call into the resolved package or
  * a render through Streamdown, so the file fails if the dependency is downgraded, if the override
  * that forces one copy of it is dropped, or if the settled branch stops asking for the repair.
  * That last one is checked by EVALUATING the `parseIncompleteMarkdown` expression that
- * `markdown-text.tsx` writes, at `incrementalRender === null`, and handing the result to a real
+ * `markdown-text.tsx` writes, for a settled cut or finished part, and handing the result to a real
  * `<Streamdown>` -- not by asserting on the package in isolation and hoping the wiring agrees.
  *
  * WHAT THIS FILE DOES NOT COVER, so that the paragraph above is not read as wider than it is: the
@@ -112,11 +112,10 @@ const MARKDOWN_TEXT = new URL(
 
 /**
  * The `parseIncompleteMarkdown` a SETTLED body is rendered with, taken from the source and
- * evaluated rather than restated. `incrementalRender` is null exactly when the message is not
- * streaming, so evaluating the real expression in that state is the same question the component
- * answers on the settled path.
+ * evaluated rather than restated, with `incrementalRender` null as it is whenever the message is
+ * not streaming.
  */
-function settledParseIncompleteMarkdown(): boolean {
+function settledParseIncompleteMarkdown(cut: boolean): boolean {
   const source = readFileSync(MARKDOWN_TEXT, "utf8");
   const opened = source.indexOf("<Streamdown");
   assert.notEqual(
@@ -135,23 +134,24 @@ function settledParseIncompleteMarkdown(): boolean {
   );
   const value: unknown = new Function(
     "incrementalRender",
+    "repairSettled",
     `return (${expression});`,
-  )(null);
+  )(null, cut);
   assert.equal(
     typeof value,
     "boolean",
-    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean at incrementalRender === null`,
+    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean for a settled part`,
   );
   return value as boolean;
 }
 
-function renderSettled(markdown: string): string {
+function renderSettled(markdown: string, cut = true): string {
   return renderToStaticMarkup(
     createElement(
       Streamdown,
       {
         mode: "streaming",
-        parseIncompleteMarkdown: settledParseIncompleteMarkdown(),
+        parseIncompleteMarkdown: settledParseIncompleteMarkdown(cut),
         remend: hasIncompleteLinkRepair(markdown)
           ? LITERAL_LINK_REMEND
           : undefined,
@@ -175,13 +175,13 @@ test("a settled unfinished link remains text without a blocked placeholder", () 
 
 test("the settled render path runs the repair, not just the package", () => {
   // THE TESTS ABOVE CALL `remend` THEMSELVES, so all of them pass while the UI has the repair
-  // switched off: mutating `parseIncompleteMarkdown={!incrementalRender}` to `{false}` in
+  // switched off: mutating `parseIncompleteMarkdown={repairSettled}` to `{false}` in
   // `markdown-text.tsx` left this file green until this test existed. The only way to see the
   // difference is to render, and the only documents where the repair is VISIBLE are truncated
   // ones -- a complete document is by construction unchanged either way.
   //
-  // A truncated body does reach the settled path: a cancelled or errored response settles
-  // mid-construct and is then rendered with `incrementalRender === null` forever.
+  // A truncated body does reach the settled path: a stopped, length-cut or errored response
+  // settles mid-construct and is then rendered with `repairSettled` true.
   for (const [truncated, repaired] of [
     ["this is **bol", 'data-streamdown="strong"'],
     ["call `foo(", 'data-streamdown="inline-code"'],
@@ -226,12 +226,34 @@ test("a complete document survives the settled render path unchanged", () => {
   // the `\(` escapes.
   const underscores = (text: string): number => (text.match(/_/g) ?? []).length;
   for (const complete of COMPLETE_LATEX_DOCUMENTS) {
-    const text = renderedText(renderSettled(complete));
+    const text = renderedText(renderSettled(complete, false));
     assert.equal(
       underscores(text),
       underscores(complete),
       `the settled render of ${JSON.stringify(complete)} changed how many underscores reach the ` +
         `reader: ${JSON.stringify(text)}`,
+    );
+  }
+});
+
+test("a finished reply keeps its lone markers as written", () => {
+  for (const reply of [
+    "Fields marked with an asterisk (*) are required.",
+    "Add *.pyc to your .gitignore file.",
+    "Pass options with **kwargs to forward them.",
+    "Press the ` key to open the console.",
+    "Delete files matching *.tmp first.\n\nThen restart the server.",
+  ]) {
+    const html = renderSettled(reply, false);
+    assert.doesNotMatch(
+      html,
+      /data-streamdown="(emphasis|strong|inline-code)"|<em>|<strong>|<code/,
+      `a finished ${JSON.stringify(reply)} was restyled: ${html}`,
+    );
+    assert.equal(
+      renderedText(html).replace(/\s+/g, ""),
+      reply.replace(/\s+/g, ""),
+      `a finished ${JSON.stringify(reply)} did not reach the reader as written`,
     );
   }
 });
