@@ -7698,29 +7698,45 @@ _SPEC_DRAFT_MODEL_FLAGS = frozenset({"-md", "--model-draft", "--spec-draft-model
 _SPEC_DRAFT_MODEL_ENV = ("LLAMA_ARG_MODEL_DRAFT", "LLAMA_ARG_SPEC_DRAFT_MODEL")
 
 
+def _launch_flag_values(argv: Sequence[str], flags: Collection[str]) -> list[str]:
+    """Every value ``argv`` gives one of ``flags``, in order, matched as llama.cpp matches them.
+
+    common/arg.cpp folds a long option's underscores to hyphens (``--sampler_seq`` is
+    ``--sampler-seq``, which Studio's extra args accept too), so names go through ``_flag_name``
+    and ``flags`` lists each short alias by itself; the value is the next token. llama.cpp
+    refuses an attached ``--flag=value`` (as validate_extra_args does), so reading one as the
+    flag only ever turns the GPU sampler off for a launch that would not start anyway.
+    """
+    args = [str(a) for a in argv]
+    values = []
+    for i, raw in enumerate(args):
+        if _flag_name(raw) in flags:
+            _, eq, inline = raw.partition("=")
+            values.append(inline if eq else (args[i + 1] if i + 1 < len(args) else ""))
+    return values
+
+
 def _launch_speculates(argv: Sequence[str], env: Optional[Mapping[str, str]] = None) -> bool:
     """Whether llama-server runs speculative decoding for this argv and env.
 
-    The last ``--spec-type`` / ``--spec-default`` wins, then ``LLAMA_ARG_SPEC_TYPE``;
-    ``none`` is the only spelling that turns it off. A draft model alone also drafts.
+    As common/arg.cpp builds the type list: ``LLAMA_ARG_SPEC_TYPE`` first, then every
+    ``--spec-type`` and ``--spec-default`` appends, so a later ``--spec-type none`` does not undo
+    an earlier type (``none`` only drops the rest of its own value). A draft model also drafts.
     """
     source_env = os.environ if env is None else env
-    args = [str(a) for a in argv]
-    value: Optional[str] = None
-    draft = False
-    for i, raw in enumerate(args):
-        name, eq, inline = raw.partition("=")
-        if name == "--spec-default":
-            value = "default"
-        elif name == "--spec-type":
-            value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        elif name in _SPEC_DRAFT_MODEL_FLAGS:
-            draft = True
-    if value is None:
-        value = source_env.get("LLAMA_ARG_SPEC_TYPE")
-    if value is not None:
-        return str(value).strip().lower() not in ("", "none")
-    return draft or any(source_env.get(name) for name in _SPEC_DRAFT_MODEL_ENV)
+
+    def drafts(value) -> bool:
+        return "none" not in [n.strip().lower() for n in str(value).split(",")]
+
+    types = _launch_flag_values(argv, {"--spec-type"})
+    if source_env.get("LLAMA_ARG_SPEC_TYPE") is not None:
+        types.append(source_env["LLAMA_ARG_SPEC_TYPE"])
+    return (
+        any(drafts(value) for value in types)
+        or _extra_args_set_any_flag(argv, {"--spec-default"})
+        or _extra_args_set_any_flag(argv, _SPEC_DRAFT_MODEL_FLAGS)
+        or any(source_env.get(name) for name in _SPEC_DRAFT_MODEL_ENV)
+    )
 
 
 def _backend_sampling_flags(
@@ -7742,9 +7758,10 @@ def _backend_sampling_flags(
     slots, Studio's chains: Qwen3.5-0.8B 20.3 -> 7.0 ms per token, Qwen3-0.6B 7.3 -> 6.1 ms,
     Qwen3.5 flood throughput 2.2x; each new request pays ~20-25 ms more TTFT for llama.cpp's
     per-request scheduler re-reserve). It is per request and falls back to the CPU by itself for
-    what it cannot run (grammar / tools, a reasoning budget, pre-sampling logprobs, DRY / XTC /
-    mirostat and anything after them in the chain), with the same distribution for the same
-    logits; a request outside ``_gpu_sampler_envelope_breach`` is sent back to the CPU chain.
+    what it cannot run at all (grammar / tools, a reasoning budget, pre-sampling logprobs). DRY /
+    XTC / typical-p / top-n-sigma / mirostat it would split into a GPU prefix and a CPU suffix
+    that sees masked candidates, so those requests, like every one outside
+    ``_gpu_sampler_envelope_breach``, are sent back to the CPU chain.
     Off where it is not measured to help: no GPU, a build without the CUDA backend (ROCm,
     SYCL), Vulkan, macOS, and any speculative decoding (penalties cannot run on the GPU when a
     step verifies several tokens per slot, and the drafts dominate there). A user's own flag or
@@ -7781,13 +7798,8 @@ def _backend_sampling_flags(
 
 def _argv_keeps_layers_on_cpu(argv: Sequence[str]) -> bool:
     """The last layer-count flag says 0: the output layer, and with it the sampler, is on the CPU."""
-    args = [str(a) for a in argv]
-    value: Optional[str] = None
-    for i, raw in enumerate(args):
-        name, eq, inline = raw.partition("=")
-        if _flag_name(name) in _GPU_LAYER_FLAGS:
-            value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-    return value is not None and value.strip() == "0"
+    values = _launch_flag_values(argv, _GPU_LAYER_FLAGS)
+    return bool(values) and values[-1].strip() == "0"
 
 
 # llama.cpp's GPU sampler (src/llama-sampler.cpp, the *_backend_apply graphs) parts from the CPU
@@ -7813,9 +7825,15 @@ def _argv_keeps_layers_on_cpu(argv: Sequence[str]) -> bool:
 # - a fixed seed with top_p off: the GPU top_k hands its candidates to the draw in an order that is
 #   not even stable across runs, so the same seed writes another reply each time, where Studio
 #   promises a fixed seed reproduces (_apply_seeded_llama_request). top_p sorts them first.
+# - a sampler with no backend implementation, active: XTC (probability > 0, threshold <= 0.5), DRY
+#   (multiplier != 0, a nonzero window), typical-p < 1, top-n-sigma > 0, mirostat 1 / 2 (adaptive-p
+#   and infill only through a sampler order, above). llama.cpp then runs the chain's GPU prefix and
+#   hands the rest to the CPU, and those CPU samplers see the candidates the GPU masked to -inf
+#   where the CPU chain had removed them: XTC at threshold 0 counts a masked one as qualifying and
+#   keeps it, with NaN probability. The whole request goes to the CPU instead.
 #
-# The rest matches the CPU (temperature 0, top_p 0 / 1, penalties, mirostat, n_probs past
-# the vocabulary) or llama-server refuses it either way (repeat_penalty <= 0).
+# The rest matches the CPU (temperature 0, top_p 0 / 1, penalties, n_probs past the vocabulary)
+# or llama-server refuses it either way (repeat_penalty <= 0).
 _GPU_MIN_P_SAFE_MAX = 0.999
 _GPU_TOP_K_PROBE_CANDIDATES = 128 * 1024
 _GPU_TOP_K_UNKNOWN_VOCAB_MAX = 256
@@ -7824,8 +7842,8 @@ _LLAMA_DEFAULT_SAMPLER_ORDER = (
     "edskypmxt",
 )
 
-# Request field -> (llama-server flags, env) whose last value is the default a request omitting
-# the field takes. --samplers / -l / --seed / --dynatemp-range have no LLAMA_ARG_* variable.
+# Request field -> (llama-server flags with every alias, env) whose last value is the default a
+# request omitting the field takes (common/arg.cpp; only these four have a LLAMA_ARG_* variable).
 _LAUNCH_SAMPLING_FIELDS = {
     "min_p": (("--min-p",), "LLAMA_ARG_MIN_P"),
     "top_k": (("--top-k",), "LLAMA_ARG_TOP_K"),
@@ -7834,6 +7852,13 @@ _LAUNCH_SAMPLING_FIELDS = {
     "seed": (("-s", "--seed"), None),
     "samplers": (("--samplers", "--sampler-seq", "--sampling-seq"), None),
     "logit_bias": (("-l", "--logit-bias"), None),
+    "xtc_probability": (("--xtc-probability",), None),
+    "xtc_threshold": (("--xtc-threshold",), None),
+    "dry_multiplier": (("--dry-multiplier",), None),
+    "dry_penalty_last_n": (("--dry-penalty-last-n",), None),
+    "typical_p": (("--typical", "--typical-p"), None),
+    "top_n_sigma": (("--top-nsigma", "--top-n-sigma"), None),
+    "mirostat": (("--mirostat",), None),
 }
 
 
@@ -7843,14 +7868,10 @@ def _launch_sampling_defaults(argv: Sequence[str], env: Mapping[str, str]) -> di
     A field neither the argv nor the env sets is absent: llama.cpp's own default is inside the
     GPU sampler's envelope for every one of them.
     """
-    args = [str(a) for a in argv]
     found = {}
     for field, (flags, env_name) in _LAUNCH_SAMPLING_FIELDS.items():
-        value = env.get(env_name) if env_name else None
-        for i, raw in enumerate(args):
-            name, eq, inline = raw.partition("=")
-            if name in flags:
-                value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        values = _launch_flag_values(argv, flags)  # argv after the env, the last one wins
+        value = values[-1] if values else (env.get(env_name) if env_name else None)
         if value is not None:
             found[field] = value
     default_order = (";".join(_LLAMA_DEFAULT_SAMPLER_ORDER[0]), _LLAMA_DEFAULT_SAMPLER_ORDER[1])
@@ -7895,7 +7916,10 @@ def _gpu_sampler_envelope_breach(
             return default
         if isinstance(got, bool):
             raise ValueError(name)
-        return float(got)
+        got = float(got)
+        if math.isnan(got):
+            raise ValueError(name)
+        return got
 
     top_k_max = min(
         n_vocab if n_vocab and n_vocab > 0 else _GPU_TOP_K_UNKNOWN_VOCAB_MAX,
@@ -7913,6 +7937,18 @@ def _gpu_sampler_envelope_breach(
         ),
         ("samplers", lambda: value("samplers") not in (None, *_LLAMA_DEFAULT_SAMPLER_ORDER)),
         ("logit_bias", lambda: bool(value("logit_bias"))),
+        # No backend implementation: a GPU prefix would hand them masked candidates.
+        (
+            "xtc_probability",
+            lambda: number("xtc_probability", 0.0) > 0 and number("xtc_threshold", 0.1) <= 0.5,
+        ),
+        (
+            "dry_multiplier",
+            lambda: number("dry_multiplier", 0.0) != 0 and number("dry_penalty_last_n", 64) != 0,
+        ),
+        ("typical_p", lambda: number("typical_p", 1.0) < 1),
+        ("top_n_sigma", lambda: number("top_n_sigma", -1.0) > 0),
+        ("mirostat", lambda: number("mirostat", 0.0) != 0),
     )
     for name, outside in checks:
         try:

@@ -10,8 +10,10 @@ runs the sampler chain on the CPU. Measured on a Colab L4 with 4 slots (-c 8192
 per request. It is per request and steps aside on its own for grammar / tools, a reasoning
 budget and pre-sampling logprobs; Studio sends every request outside the envelope where it
 samples as the CPU chain does (min_p near 1, top_k past the vocabulary, min_keep, dynatemp,
-a custom sampler order, logit_bias, a fixed seed without top_p) back to the CPU with
-backend_sampling: false.
+a custom sampler order, logit_bias, a fixed seed without top_p, an active sampler with no
+backend implementation: XTC, DRY, typical-p, top-n-sigma, mirostat) back to the CPU with
+backend_sampling: false. Launch flags are read as llama.cpp reads them (underscore spellings,
+short aliases, every --spec-type appended).
 
 The gate: the binary must advertise the flag (an unknown argument stops an older
 llama-server from starting), a GPU must be there and hold the output layer, the backend
@@ -151,8 +153,30 @@ class TestTheGate:
         assert _backend_sampling_flags(ON, self.BASE + tail, **GPU) == []
 
     def test_spec_type_none_is_not_speculation(self):
-        argv = self.BASE + ["--spec-default", "--spec-type", "none"]
+        argv = self.BASE + ["--spec-type", "none"]
         assert _backend_sampling_flags(ON, argv, **GPU) == ["--backend-sampling"]
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            ["--spec_default"],
+            ["--spec_type", "ngram-mod"],
+            ["--model_draft", "d.gguf"],
+            ["--spec-draft-model", "d.gguf"],
+            ["--spec_draft_model", "d.gguf"],
+            # llama.cpp appends every --spec-type: a later none does not undo the default.
+            ["--spec-default", "--spec-type", "none"],
+            ["--spec-type", "ngram-mod", "--spec-type", "none"],
+        ],
+    )
+    def test_speculation_spelled_any_way_llama_cpp_reads_gets_nothing(self, tail):
+        assert _backend_sampling_flags(ON, self.BASE + tail, **GPU) == []
+
+    @pytest.mark.parametrize(
+        "tail", [["--gpu_layers", "0"], ["--n_gpu_layers", "0"], ["--n-gpu-layers", "0"]]
+    )
+    def test_a_cpu_placed_model_spelled_another_way_gets_nothing(self, tail):
+        assert _backend_sampling_flags(ON, self.BASE + tail, **GPU) == []
 
     def test_a_kept_spec_env_counts(self):
         kw = {**GPU, "spec_env": {"LLAMA_ARG_SPEC_TYPE": "ngram-mod"}}
@@ -202,6 +226,62 @@ class TestTheGate:
     @pytest.mark.parametrize(
         "tail",
         [
+            ["--sampler_seq", "tk"],
+            ["--sampling_seq", "tk"],
+            ["--sampling-seq", "tk"],
+            ["--samplers", "temperature;top_k"],
+            ["--top_k", "1000000"],
+            ["--min_p", "1"],
+            ["--min_p=1"],
+            ["--logit_bias", "15+5"],
+            ["--dynatemp_range", "0.5"],
+            ["-s", "42", "--top_p", "1"],
+            ["--seed", "42", "--top-p=1"],
+        ],
+    )
+    def test_a_launch_default_spelled_another_way_gets_nothing(self, tail):
+        # llama.cpp folds a long option's underscores (common/arg.cpp), and so do Studio's extras.
+        assert _backend_sampling_flags(ON, self.BASE + tail, **GPU) == []
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            ["--xtc-probability", "0.5"],  # llama.cpp's threshold is 0.1
+            ["--xtc_probability", "1", "--xtc-threshold", "0"],
+            ["--dry-multiplier", "0.8"],
+            ["--dry_multiplier", "0.8"],
+            ["--typical", "0.9"],
+            ["--typical-p", "0.9"],
+            ["--typical_p", "0.9"],
+            ["--top-nsigma", "1"],
+            ["--top-n-sigma", "1"],
+            ["--top_n_sigma", "1"],
+            ["--mirostat", "1"],
+            ["--mirostat", "2"],
+        ],
+    )
+    def test_a_launch_default_with_a_cpu_only_sampler_gets_nothing(self, tail):
+        # It would run after a GPU prefix on the candidates the GPU masked.
+        assert _backend_sampling_flags(ON, self.BASE + tail, **GPU) == []
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
+            ["--xtc-probability", "0.5", "--xtc-threshold", "0.6"],
+            ["--xtc-probability", "0"],
+            ["--dry-multiplier", "0.8", "--dry-penalty-last-n", "0"],
+            ["--dry-multiplier", "0"],
+            ["--typical", "1"],
+            ["--top-nsigma", "-1"],
+            ["--mirostat", "2", "--mirostat", "0"],
+        ],
+    )
+    def test_a_cpu_only_sampler_left_off_at_launch_still_gets_it(self, tail):
+        assert _backend_sampling_flags(ON, self.BASE + tail, **GPU) == ["--backend-sampling"]
+
+    @pytest.mark.parametrize(
+        "tail",
+        [
             ["--min-p", "0.99"],
             ["--top-k", "40"],
             ["--seed", "-1"],
@@ -233,11 +313,16 @@ class TestTheGate:
         ([], {}, False),
         (["--spec-default"], {}, True),
         (["--spec-type", "none"], {}, False),
-        (["--spec-default", "--spec-type", "none"], {}, False),
+        (["--spec-default", "--spec-type", "none"], {}, True),  # appended, not replaced
+        (["--spec_default"], {}, True),
+        (["--spec_type", "ngram-mod"], {}, True),
+        (["--spec-type", "ngram-mod,none"], {}, False),  # none drops its own value
+        (["--model_draft", "d.gguf"], {}, True),
         (["--spec-type", "none", "--spec-default"], {}, True),
         ([], {"LLAMA_ARG_SPEC_TYPE": "none"}, False),
         ([], {"LLAMA_ARG_MODEL_DRAFT": "d.gguf"}, True),
-        (["--spec-type", "none"], {"LLAMA_ARG_SPEC_TYPE": "ngram-mod"}, False),
+        (["--spec-type", "none"], {"LLAMA_ARG_SPEC_TYPE": "ngram-mod"}, True),  # env first
+        (["--spec-type", "none"], {"LLAMA_ARG_SPEC_TYPE": "none"}, False),
     ],
 )
 def test_launch_speculates(argv, env, expected):
@@ -310,6 +395,29 @@ def test_the_users_flag_is_passed_once(launch):
     assert cmd.count("--backend-sampling") == 1
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--sampler_seq", "tk"],
+        ["--top_k", "1000000"],
+        ["--xtc-probability", "0.5"],
+        ["--mirostat", "2"],
+        ["--spec_type", "ngram-mod"],
+    ],
+)
+def test_a_launch_default_outside_it_keeps_the_cpu_sampler(launch, extra):
+    assert "--backend-sampling" not in launch(extra_args = extra)
+
+
+def test_a_users_own_flag_records_the_underscore_order(launch):
+    # Review round 3: --sampler_seq tk with the GPU sampler on, then temperature 0 and top_k 20,
+    # aborted llama-server (GPU temperature leaves one candidate ahead of top-k's 20).
+    cmd = launch(extra_args = ["-bs", "--sampler_seq", "tk"])
+    assert cmd.count("-bs") == 1 and "--backend-sampling" not in cmd
+    guarded = launch.backend.guard_gpu_sampler({"temperature": 0, "top_k": 20})
+    assert guarded.get("backend_sampling") is False
+
+
 def test_the_opt_out_launches_as_before(launch, monkeypatch):
     monkeypatch.setenv("UNSLOTH_LLAMA_BACKEND_SAMPLING", "0")
     assert "--backend-sampling" not in launch()
@@ -340,11 +448,27 @@ _OUTSIDE = [
     ({"logit_bias": [[15, 2], [15, 3]]}, "logit_bias"),
     ({"seed": 42, "top_p": 1.0}, "seed"),
     ({"seed": 0, "top_p": 1}, "seed"),
+    # A sampler with no backend implementation, active: it would see GPU-masked candidates.
+    (
+        {"top_k": 3, "top_p": 0.8, "temperature": 1, "xtc_probability": 1, "xtc_threshold": 0},
+        "xtc_probability",
+    ),
+    ({"xtc_probability": 0.5}, "xtc_probability"),  # llama.cpp's threshold is 0.1
+    ({"xtc_probability": 0.1, "xtc_threshold": 0.5}, "xtc_probability"),
+    ({"dry_multiplier": 0.8}, "dry_multiplier"),
+    ({"dry_multiplier": -0.5, "dry_penalty_last_n": 16}, "dry_multiplier"),
+    ({"typical_p": 0.9}, "typical_p"),
+    ({"typical_p": 0}, "typical_p"),
+    ({"top_n_sigma": 1.0}, "top_n_sigma"),
+    ({"mirostat": 1}, "mirostat"),
+    ({"mirostat": 2, "temperature": 0}, "mirostat"),
     # Unparseable: fail closed, the raw /v1/completions body is the client's own.
     ({"top_k": "lots"}, "top_k"),
     ({"min_keep": [3]}, "min_keep"),
     ({"seed": True, "top_p": 1.0}, "seed"),
     ({"seed": 42, "top_p": "off"}, "seed"),
+    ({"min_p": float("nan")}, "min_p"),
+    ({"xtc_probability": "nan"}, "xtc_probability"),
 ]
 _INSIDE = [
     {},
@@ -378,7 +502,14 @@ _INSIDE = [
     {"logit_bias": []},
     {"repeat_penalty": 1.1, "presence_penalty": 1.5, "frequency_penalty": 0.5},
     {"repeat_penalty": 0},  # llama-server refuses it on either sampler
-    {"mirostat": 2, "temperature": 0},
+    {"mirostat": 0},
+    {"xtc_probability": 0, "xtc_threshold": 0},
+    {"xtc_probability": 1, "xtc_threshold": 0.6},  # > 0.5 turns XTC off
+    {"dry_multiplier": 0},
+    {"dry_multiplier": 0.8, "dry_penalty_last_n": 0},
+    {"typical_p": 1.0},
+    {"top_n_sigma": -1},
+    {"top_n_sigma": 0},
     {"seed": -1, "top_p": 1.0},
     {"seed": 0xFFFFFFFF, "top_p": 1.0},
     {"seed": 42},  # llama.cpp's top_p 0.95 sorts the candidates before the draw
@@ -431,6 +562,12 @@ def test_an_omitted_field_takes_the_launch_default():
         ({"seed": "42", "top_p": "1"}, {"seed": -1}, {}),
         ({"seed": "42"}, {"top_p": 0.9}, {"top_p": 1.0}),
         ({"samplers": "tk"}, {"samplers": "edskypmxt"}, {}),
+        ({"xtc_probability": "1", "xtc_threshold": "0"}, {"xtc_probability": 0}, {}),
+        ({"xtc_probability": "1"}, {"xtc_threshold": 0.9}, {"xtc_threshold": 0}),
+        ({"dry_multiplier": "0.8"}, {"dry_multiplier": 0}, {"top_k": 20}),
+        ({"typical_p": "0.9"}, {"typical_p": 1}, {}),
+        ({"top_n_sigma": "1"}, {"top_n_sigma": -1}, {}),
+        ({"mirostat": "2"}, {"mirostat": 0}, {"temperature": 0}),
     ]:
         assert _cpu_sampling_outside_gpu_envelope(inside, launch, _VOCAB) is inside
         assert _cpu_sampling_outside_gpu_envelope(outside, launch, _VOCAB) == {
@@ -458,6 +595,30 @@ def test_an_omitted_field_takes_the_launch_default():
         ),
         ([*_ON, "--sampler-seq", "edskypmxt"], {}, {}),
         ([*_ON, "--samplers", "top_k;temperature"], {}, {"samplers": "top_k;temperature"}),
+        # Underscore spellings llama.cpp folds, and the short aliases.
+        ([*_ON, "--sampler_seq", "tk"], {}, {"samplers": "tk"}),
+        (
+            ["/fake/llama-server", "--backend_sampling", "--sampling_seq", "kt"],
+            {},
+            {"samplers": "kt"},
+        ),
+        ([*_ON, "--top_k", "9", "--min_p", "1"], {}, {"top_k": "9", "min_p": "1"}),
+        ([*_ON, "--top_k", "9"], {"LLAMA_ARG_TOP_K": "40"}, {"top_k": "9"}),  # argv over env
+        (
+            [*_ON, "--logit_bias", "1+1", "--dynatemp_range", "1"],
+            {},
+            {"logit_bias": "1+1", "dynatemp_range": "1"},
+        ),
+        (
+            [*_ON, "--xtc_probability", "1", "--xtc-threshold=0", "--typical", "0.9"],
+            {},
+            {"xtc_probability": "1", "xtc_threshold": "0", "typical_p": "0.9"},
+        ),
+        (
+            [*_ON, "--dry_multiplier", "0.8", "--top-n-sigma", "1", "--mirostat", "2"],
+            {},
+            {"dry_multiplier": "0.8", "top_n_sigma": "1", "mirostat": "2"},
+        ),
     ],
 )
 def test_launch_gpu_sampler(argv, env, expected):
@@ -633,6 +794,13 @@ def test_every_passthrough_build_hands_over_the_backend():
         (True, {"logit_bias": [[15, 2], [15, 3]]}, False),
         (True, {"dynatemp_range": 0.5}, False),
         (True, {"seed": 42, "top_p": 1.0}, False),
+        (
+            True,
+            {"top_k": 3, "top_p": 0.8, "temperature": 1, "xtc_probability": 1, "xtc_threshold": 0},
+            False,
+        ),
+        (True, {"dry_multiplier": 0.8}, False),
+        (True, {"mirostat": 2}, False),
         (True, {"seed": 42, "top_p": 0.9}, None),
         (True, {"min_p": 0.99, "top_k": 40}, None),
         (True, {}, None),
