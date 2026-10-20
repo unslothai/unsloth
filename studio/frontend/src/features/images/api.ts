@@ -73,11 +73,26 @@ export interface DiffusionStatus {
   workflows?: string[];
   // Absent on an older backend: callers keep the historical limits (4 images, RGB, 16 px, 2048).
   conditioning?: DiffusionConditioning | null;
+  // Engine that ran the load ("diffusers" | "sd_cpp" | "mlx") and, for diffusers, why it was chosen.
+  engine?: string | null;
+  fallback_reason?: string | null;
+  // Engine UNSLOTH_DIFFUSION_ENGINE pins; a load's own engine pick is ignored while set.
+  engine_forced?: string | null;
+  // A loaded GGUF the native sd.cpp engine can run (drives the Advanced Engine select).
+  native_engine_eligible?: boolean;
+  // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
+  lora_via_native?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // The guidance a negative prompt is used above; null when guidance does not gate it, absent on older backends.
+  negative_prompt_min_guidance?: number | null;
+  // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
+  supports_guidance?: boolean;
+  // False when this load streams no denoise previews (native engine, families without a preview map).
+  supports_live_preview?: boolean;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
@@ -161,6 +176,8 @@ export interface DiffusionLoadRequest {
   base_repo?: string;
   family_override?: string;
   hf_token?: string;
+  // Engine for this load (GGUF only); omit for auto. Refused with a 400 when the engine cannot serve the pick.
+  engine?: "auto" | "diffusers" | "sd_cpp";
   cpu_offload?: boolean;
   // Separate .safetensors files (e.g. ComfyUI models/text_encoders, models/vae); gguf / single_file only.
   text_encoder_file?: string | string[];

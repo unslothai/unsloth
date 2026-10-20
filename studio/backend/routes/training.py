@@ -2437,6 +2437,8 @@ async def start_training(
 
                 # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the diffusers backend
                 # reports unloaded while the native engine still holds state.
+                # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+                gpu_arbiter.release_mask_segmenter("training start")
                 diffusion = get_active_diffusion_engine()
                 if getattr(diffusion, "runs_off_torch_device", False) is True:
                     logger.info("Keeping the Images model: it runs outside torch's GPUs")
@@ -2447,6 +2449,8 @@ async def start_training(
                         )
                     diffusion.unload()
                     gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+            except gpu_arbiter.SegmenterStillRunningError:
+                raise
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
@@ -2502,6 +2506,7 @@ async def start_training(
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        from core.inference.gpu_arbiter import SegmenterStillRunningError
         from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
@@ -2518,6 +2523,7 @@ async def start_training(
                 SidecarSwapInProgress,
                 ExactResumeResourcesUnavailable,
                 ManagedEngineStillRunning,
+                SegmenterStillRunningError,
             ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
@@ -2575,7 +2581,11 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
-        except (ExactResumeResourcesUnavailable, ManagedEngineStillRunning) as exc:
+        except (
+            ExactResumeResourcesUnavailable,
+            ManagedEngineStillRunning,
+            SegmenterStillRunningError,
+        ) as exc:
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
@@ -3479,6 +3489,8 @@ def _free_gpu_for_diffusion_training() -> None:
 
         # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the resident sd-server still
         # holds the GPU, so unloading only the singleton is a no-op.
+        # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
+        gpu_arbiter.release_mask_segmenter("diffusion training start")
         diffusion = get_active_diffusion_engine()
         if getattr(diffusion, "runs_off_torch_device", False) is True:
             logger.info("Keeping the Images model: it runs outside torch's GPUs")
@@ -3487,6 +3499,8 @@ def _free_gpu_for_diffusion_training() -> None:
                 logger.info("Unloading resident Images pipeline to free GPU memory for training")
             diffusion.unload()
             gpu_arbiter.release(gpu_arbiter.DIFFUSION)
+    except gpu_arbiter.SegmenterStillRunningError:
+        raise  # a RuntimeError: the start route answers 409
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
