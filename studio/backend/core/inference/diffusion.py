@@ -409,15 +409,47 @@ logger = get_logger(__name__)
 _ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES = frozenset(("z-image", KREA2_FAMILY_NAME))
 
 
+def _negative_prompt_guidance_threshold(family: DiffusionFamily) -> Optional[float]:
+    """The guidance above which Studio passes a negative prompt; None when guidance does not gate it. Studio's rule,
+    not the guider's: diffusers also runs CFG below 1, steering toward the negative prompt."""
+    if family.cfg_kwarg == "true_cfg_scale":
+        return 1.0
+    if family.cfg_kwarg == "guidance_scale":
+        return 0.0 if family.name in _ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES else 1.0
+    return None
+
+
+def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
+    """Recapturing a block-streamed graph after a LoRA weight change fails, and the eager fallback then fails every
+    later generate, so such a load keeps its baked weights until a reload."""
+    handles = getattr(state, "cuda_graphs", ()) or ()
+    if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
+        raise ValueError(
+            "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
+            "model is reloaded. Reload the model with the new adapter weights."
+        )
+
+
+def _guidance_supported(state: Any) -> bool:
+    """FLUX.2 klein base and distilled share a family; Flux2KleinPipeline turns guidance off on ``is_distilled``."""
+    if not state.family.uses_guidance:
+        return False
+    config = getattr(getattr(state, "pipe", None), "config", None)
+    return not (
+        state.family.name == "flux.2-klein" and bool(getattr(config, "is_distilled", False))
+    )
+
+
+def _live_preview_available(state: Any) -> bool:
+    from .diffusion_preview import preview_available
+    return preview_available(getattr(state.family, "name", None), getattr(state, "device", None))
+
+
 def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
     if not family.uses_negative_prompt:
         return False
-    if family.cfg_kwarg == "true_cfg_scale":
-        return float(guidance) > 1.0
-    if family.cfg_kwarg == "guidance_scale":
-        threshold = 0.0 if family.name in _ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES else 1.0
-        return float(guidance) > threshold
-    return True
+    threshold = _negative_prompt_guidance_threshold(family)
+    return threshold is None or float(guidance) > threshold
 
 
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
@@ -11177,8 +11209,8 @@ class DiffusionBackend:
                 "(GGUF-via-diffusers, or a torch.compile'd Speed=default/max load). Reload with "
                 "transformer_quant int8 or fp8, which rebuilds the GGUF into a LoRA-capable dense "
                 "transformer, or use a bf16 / bnb-4bit load at Speed=off/eager. To keep the GGUF "
-                "weights themselves, run the native engine, which a GPU host selects only when "
-                "UNSLOTH_DIFFUSION_ENGINE=sd_cpp is set."
+                "weights themselves, reload it on the native engine (Advanced > Engine > Native, "
+                "or engine=sd_cpp on the load), which a GPU host does not select on its own."
             )
 
         desired = self._resolve_lora_set(
@@ -11223,10 +11255,10 @@ class DiffusionBackend:
     ) -> None:
         """Generation-time LoRA handling for a torchao-quantized pipe. The adapters (if any) were
         baked at load time, before quantize_ + compile, so the module topology is immutable here.
-        Allowed without a reload: weight tweaks on the baked set and disabling everything (scale
-        0 reproduces the quantized base exactly; set_adapters is value-level, so torch.compile
-        guards absorb it). Anything that would change topology raises a clean 400 telling the
-        client to reload with the new selection."""
+        Allowed without a reload: weight tweaks on the baked set and disabling any of it (scale 0
+        reproduces the quantized base exactly; set_adapters is value-level, so torch.compile guards
+        absorb it). Anything that would change topology raises a clean 400 telling the client to
+        reload with the new selection."""
         if not quant_baked:
             if not specs:
                 return  # no adapters baked, none requested
@@ -11238,6 +11270,7 @@ class DiffusionBackend:
             # Disable every baked adapter: scale 0 reproduces the quantized base exactly.
             names = [n for (n, _p, _w) in current]
             if any(w != 0 for (_n, _p, w) in current):
+                _refuse_weight_change_on_streamed_graph(state)
                 pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
                 pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in current)
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
@@ -11249,20 +11282,29 @@ class DiffusionBackend:
             hf_token = state.hf_token,
             cancel = cancel,
         )
-        if desired == current:
-            return
-        if [(n, p) for (n, p, _w) in desired] == [(n, p) for (n, p, _w) in current]:
-            pipe.set_adapters(
-                [n for (n, _p, _w) in desired],
-                adapter_weights = [w for (_n, _p, w) in desired],
-            )
-            pipe._unsloth_loras = desired
-            cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
-            return
-        raise ValueError(
-            "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
-            "adapters at load time. Reload the model with the new adapter selection."
+        # Requests drop zero-weight rows, so ``desired`` is the active subset of the bake. Match by file: names
+        # are deduplicated per resolved set, so a subset can rename an adapter. Omitted adapters run at 0.
+        wanted: dict[str, list[float]] = {}
+        for _n, path, weight in desired:
+            wanted.setdefault(path, []).append(weight)
+        updated = tuple(
+            (name, path, wanted[path].pop(0) if wanted.get(path) else 0.0)
+            for (name, path, _w) in current
         )
+        if any(wanted.values()):
+            raise ValueError(
+                "The LoRA selection changed, but a quantized (int8/fp8) transformer bakes its "
+                "adapters at load time. Reload the model with the new adapter selection."
+            )
+        if updated == current:
+            return
+        _refuse_weight_change_on_streamed_graph(state)
+        pipe.set_adapters(
+            [n for (n, _p, _w) in updated],
+            adapter_weights = [w for (_n, _p, w) in updated],
+        )
+        pipe._unsloth_loras = updated
+        cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
 
     @staticmethod
     def _reset_step_cache(pipe: Any) -> None:
@@ -12799,6 +12841,9 @@ class DiffusionBackend:
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "supports_negative_prompt": state.family.uses_negative_prompt,
+            "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),
+            "supports_guidance": _guidance_supported(state),
+            "supports_live_preview": _live_preview_available(state),
             "prompt_hint": state.family.prompt_hint,
             "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),
             "conditioning": conditioning_capabilities(

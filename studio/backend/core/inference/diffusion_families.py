@@ -89,6 +89,8 @@ class DiffusionFamily:
     cfg_kwarg: str = "guidance_scale"
     # False when the diffusers pipeline ignores a negative prompt; the native engine decides on its own.
     uses_negative_prompt: bool = True
+    # False when the diffusers pipeline takes no guidance (FLUX.3 distilled); FLUX.2 klein is per checkpoint.
+    uses_guidance: bool = True
     # One or two sentences on how this family reads prompts; None when it has no quirks.
     prompt_hint: Optional[str] = None
     # The pipe attribute holding the denoiser: ``pipe.transformer`` for DiT families, ``pipe.unet`` for SDXL.
@@ -511,6 +513,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # Every keep-set measured 0.09-0.12 LPIPS against bf16 on NVFP4, as did BFL's own nvfp4 package. A passing
             # NVFP4 gate record for a base still lifts it.
             scheme_deny = frozenset({"nvfp4"}),
+            # The FLUX.2 VAE and the same 2x2 packed 128-channel tokens, so FLUX.2's fitted map applies.
+            preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
@@ -563,6 +567,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # Every keep-set measured 0.09-0.12 LPIPS against bf16 on NVFP4, as did BFL's own nvfp4 package. A passing
             # NVFP4 gate record for a base still lifts it.
             scheme_deny = frozenset({"nvfp4"}),
+            # The FLUX.2 VAE and the same 2x2 packed 128-channel tokens, so FLUX.2's fitted map applies.
+            preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
@@ -572,6 +578,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/flux-3-image-klein-FP8"),
         ),
         uses_negative_prompt = False,
+        uses_guidance = False,
         transformer_class = "Flux3Transformer2DModel",
         # Qwen3-VL-4B pre-cast fp8, the int8 ConvRot encoder's fallback (diffusion_te_prequant.TE_INT8_CONVROT_FILES).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/flux-3-image-klein-FP8"),),

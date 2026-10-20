@@ -20,12 +20,12 @@ import { readSrc } from "./helpers/kit.ts";
  * working in BOTH directions. A truth table nobody executes is not evidence of that.
  */
 
-test("an install that has never set the flag gets the ship default", () => {
-  assert.equal(SHIP_DEFAULT, "window", "the ship default is the windowed deferral");
-  assert.equal(resolveFenceMode(undefined, ""), "window");
+test("the default defers highlighting without moving line windows during scroll", () => {
+  assert.equal(SHIP_DEFAULT, "defer");
+  assert.equal(resolveFenceMode(undefined, ""), "defer");
 });
 
-test("the plain deferral stays reachable as the ablation arm", () => {
+test("explicit deferral and windowing overrides remain available", () => {
   assert.equal(resolveFenceMode(undefined, "defer"), "defer");
   assert.equal(resolveFenceMode("defer", ""), "defer");
   assert.equal(resolveFenceMode(true, ""), "defer");

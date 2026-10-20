@@ -1852,6 +1852,25 @@ def test_the_native_plan_refuses_the_same_request_the_native_load_would(client, 
     assert "native engine" in resp.json()["detail"]
 
 
+def test_the_native_plan_refuses_an_explicit_precision_while_training_runs(client, monkeypatch):
+    # Value-only, so it is not gated on training like the diffusers probe: the plan must not stage a native load
+    # /images/load refuses once training ends.
+    import core.inference.diffusion_engine_router as engine_router
+    import routes.inference as inference_routes
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    monkeypatch.setattr(inference_routes, "_training_is_active", lambda: True)
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: ENGINE_SD_CPP)
+    resp = _post_download_plan(
+        client,
+        model_path = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        transformer_quant = "fp8",
+    )
+    assert resp.status_code == 409, resp.text
+    assert "native engine" in resp.json()["detail"]
+
+
 def test_the_plan_still_answers_when_nothing_was_promised(client):
     resp = _post_download_plan(
         client,
