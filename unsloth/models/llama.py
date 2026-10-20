@@ -4323,6 +4323,8 @@ class FastLlamaModel:
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the
             # detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
+            skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
 
