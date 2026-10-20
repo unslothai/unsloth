@@ -53,7 +53,6 @@ def _worker(rank, world, init_file, path, out):
         out.put((rank, {"file_complete_on_return": os.path.exists(path)}))
     except Exception as exc:
         import traceback
-
         out.put((rank, {"crash": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"}))
     finally:
         try:
