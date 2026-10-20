@@ -7524,7 +7524,9 @@ class TorchAOConfig:
         default_factory = lambda: [
             (
                 Int4WeightOnlyConfig(group_size = 128),
-                lambda m, _: isinstance(m, torch.nn.Linear) and getattr(m, "in_features", 0) >= 128,
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and getattr(m, "in_features", 0) >= 128
+                and m.in_features % 128 == 0,
             ),
         ]
     )
@@ -7805,6 +7807,33 @@ def _convert_torchao_model(model):
     model.config.quantization_config = quantization_config
 
 
+def _group_size_linear_filter(model, group_size, qat_scheme):
+    """Linear filter for a PerGroup(group_size) scheme: in_features must be a multiple of group_size, else the
+    fake quantizer's reshape fails at the first forward. Warns about the base Linears left in full precision."""
+    filter_fn = lambda m, _: (
+        isinstance(m, torch.nn.Linear)
+        and m.in_features >= group_size
+        and m.in_features % group_size == 0
+    )
+    skipped = [
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Linear)
+        and module.in_features >= group_size
+        and module.in_features % group_size != 0
+        and ".lora_" not in name
+    ]
+    if skipped:
+        warnings.warn(
+            f"Unsloth: qat_scheme='{qat_scheme}' uses group_size {group_size}; these Linear layers have "
+            f"in_features not divisible by {group_size} and stay in full precision: "
+            + ", ".join(skipped[:8])
+            + (f", ... ({len(skipped) - 8} more)" if len(skipped) > 8 else ""),
+            stacklevel = 3,
+        )
+    return filter_fn
+
+
 def _prepare_model_for_qat(
     model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]
 ) -> torch.nn.Module:
@@ -7829,7 +7858,7 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+            filter_fn = _group_size_linear_filter(model, group_size, qat_scheme)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -7896,7 +7925,7 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+            filter_fn = _group_size_linear_filter(model, group_size, qat_scheme)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],

@@ -121,3 +121,23 @@ def test_gemma3_fake_quantized_embedding_keeps_embed_scale(scheme, convert):
     # int8 per-row error is ~0.4% of the row max; a lost sqrt(hidden_size) = 8x scale is not.
     rel = (out - ref).abs().max() / ref.abs().max()
     assert rel < 0.02, float(rel)
+
+
+def test_int4_skips_linears_not_divisible_by_group_size():
+    class _M(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ok = torch.nn.Linear(256, 64, bias = False)
+            self.odd = torch.nn.Linear(192, 64, bias = False)
+
+        def forward(self, x):
+            return self.ok(torch.nn.functional.pad(x, (0, 64))) + self.odd(x)
+
+    model = _M().to(torch.bfloat16)
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, "int4")
+    assert _is_fake_quantized(model.ok)
+    assert not _is_fake_quantized(model.odd)
+    assert any("odd" in str(w.message) for w in caught)
+    model(torch.randn(2, 192, dtype = torch.bfloat16))
