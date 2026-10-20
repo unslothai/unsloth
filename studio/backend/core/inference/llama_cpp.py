@@ -19190,9 +19190,7 @@ class LlamaCppBackend:
             discrete_total = None
             if integrated and (ctx_checkpoints or discrete_host_only_bytes):
                 discrete_total = (
-                    total
-                    - discrete_host_only_bytes
-                    - (kv - _kv(0) if ctx_checkpoints else 0)
+                    total - discrete_host_only_bytes - (kv - _kv(0) if ctx_checkpoints else 0)
                 )
             gpu_indices, use_fit = self._select_gpus_split_aware(
                 total,
