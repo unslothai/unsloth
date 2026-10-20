@@ -741,7 +741,6 @@ def _wrap(cls, compile_options):
     cls.forward = forward
 
 
-# Path segments of vision / audio towers and projectors: their blocks keep their own compile.
 _TOWER_SEGMENTS = (
     "vision",
     "visual",
@@ -777,8 +776,7 @@ def _in_tower(name):
 
 
 def _is_ssm_layer(layer):
-    # Mamba-style mixers: under a trace transformers swaps the CUDA scan kernels for its torch scan
-    # (a per-token loop on older versions). UNSLOTH_BLOCK_COMPILE_SSM=1 compiles them anyway.
+    # Traced, transformers swaps Mamba CUDA scan kernels for a torch scan; UNSLOTH_BLOCK_COMPILE_SSM=1.
     for module in layer.modules():
         name = type(module).__name__
         if ("Mamba" in name and name.endswith("Mixer")) or hasattr(module, "ssm_state_size"):
@@ -787,9 +785,7 @@ def _is_ssm_layer(layer):
 
 
 def _find_layer_lists(model):
-    """(ModuleList, legacy) for text decoder layer lists, not vision / audio towers. A list may mix
-    classes (hybrid stacks); layers inside an already found layer are not searched. `legacy`: the
-    list matched the rule before structural discovery (one *DecoderLayer class, anywhere)."""
+    """(ModuleList, legacy) per text decoder list; legacy = the old one-*DecoderLayer-class rule."""
     gc_layer = _gc_layer_class()
     found, prefixes = [], []
     modules = dict(model.named_modules())
@@ -822,7 +818,7 @@ def _layer_lists(model):
 
 
 def _layers(model):
-    """(layer, legacy) for every decoder layer once (a module shared by several lists counts once)."""
+    """(layer, legacy) per decoder layer, shared modules once."""
     seen, layers = set(), []
     for layer_list, legacy in _find_layer_lists(model):
         for layer in layer_list:
@@ -903,8 +899,7 @@ def _experts_outside(layer):
 
 
 def _raise_cache_limit(kinds):
-    # Each layer kind keeps a grad and a no-grad graph (and the flex-outside retry): a hybrid stack
-    # with several kinds per class would hit dynamo's per-code cache limit and run eager.
+    # 4 graphs per kind (grad x flex retry): mixed-kind classes would hit dynamo's cache limit.
     config = torch._dynamo.config
     name = "recompile_limit" if hasattr(config, "recompile_limit") else "cache_size_limit"
     need = 4 * kinds
@@ -931,9 +926,8 @@ def patch_block_compile(model):
     for layer, legacy in layers:
         if type(layer).__name__ in _SKIP:
             continue
-        # Lists the old *DecoderLayer rule found keep compiling as before.
+        # Per layer, not class: NemotronHBlock holds both kinds. Legacy lists compile as before.
         if not legacy and not ssm and _is_ssm_layer(layer):
-            # Per layer: one class can hold both kinds (NemotronHBlock).
             layer.__dict__["_unsloth_block_mode"] = _OFF
             continue
         compiled_layers.append(layer)
@@ -954,8 +948,7 @@ def patch_block_compile(model):
     for layer in compiled_layers:
         kinds.setdefault(type(layer), set()).add(_layer_kind(layer))
     _raise_cache_limit(max(len(k) for k in kinds.values()))
-    # The wrap is per class: the same class outside the decoder lists (a T5 encoder block, a
-    # tower) keeps its stock forward.
+    # The wrap is per class: instances outside the decoder lists (T5 encoder) stay stock.
     found = {id(layer) for layer, _ in layers}
     for module in model.modules():
         if type(module) in classes and id(module) not in found:

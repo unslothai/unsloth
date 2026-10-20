@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Structural discovery of decoder layers for block compile (unsloth/models/_block_compile.py).
-
-CPU only: transformers models built on the meta device from default configs; which layer lists and
-classes are found, which stay eager (Mamba-style mixers), towers excluded, mixed stacks wrapped per
-class, shared layers counted once.
-"""
+"""Block compile decoder-layer discovery on meta-device default-config models (CPU)."""
 
 import importlib.util
 import os
@@ -67,11 +62,9 @@ def _eager_ssm(M, model):
 
 # model_type -> (layer lists found, classes kept eager as Mamba-style SSM layers)
 _EXPECTED = {
-    # Found before structural discovery too: unchanged.
     "llama": ({"model.layers": ["LlamaDecoderLayer"]}, []),
     "qwen3": ({"model.layers": ["Qwen3DecoderLayer"]}, []),
     "falcon_h1": ({"model.layers": ["FalconH1DecoderLayer"]}, []),
-    # Newly found: suffix is not DecoderLayer, or the list mixes classes.
     "gpt_neox": ({"gpt_neox.layers": ["GPTNeoXLayer"]}, []),
     "gpt2": ({"transformer.h": ["GPT2Block"]}, []),
     "olmo_hybrid": (
@@ -199,7 +192,7 @@ def test_mixed_shared_and_tower_layers(monkeypatch):
         "ToySsmLayer",
         "ToyPlainBlock",
     ]
-    assert len(M._layers(model)) == 5  # `shared` once
+    assert len(M._layers(model)) == 5
     limit = torch._dynamo.config.recompile_limit if hasattr(torch._dynamo.config, "recompile_limit") else None
     wrapped = M.patch_block_compile(model)
     assert wrapped == ["ToyAttnLayer", "ToyPlainBlock"]
@@ -248,7 +241,7 @@ def test_cache_limit_covers_every_layer_kind(monkeypatch):
     M._raise_cache_limit(5)
     assert getattr(config, name) == 20
     M._raise_cache_limit(1)
-    assert getattr(config, name) == 20  # never lowered
+    assert getattr(config, name) == 20
 
 
 def test_same_class_outside_the_decoder_stays_stock(monkeypatch):
