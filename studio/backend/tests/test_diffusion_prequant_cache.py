@@ -273,21 +273,29 @@ def test_interrupted_write_leaves_no_entry(env, tmp_path, scheme, monkeypatch):
     _quantize(model, scheme)
     fam = _fam(base)
 
+    wrote = []
+
     def boom(
         path,
         tensors,
         metadata = None,
+        cancel_check = None,
+        hasher = None,
     ):
         with open(path, "wb") as fh:
             fh.write(b"partial")
+        wrote.append(path)
         raise OSError("killed mid-write")
 
     monkeypatch.setattr(C, "write_streaming_safetensors", boom)
     assert C.save_runtime_quant(model, fam, base_repo = str(base)) is None
+    assert wrote, "the stub must really write partial bytes, or this passes on a signature error"
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
-    # The root's lock file is the cache's own (eviction lease), not a partial entry.
+    # The root's lock file and the per-key build lease are the cache's own, not a partial entry.
     leftovers = [
-        p for p in env.rglob("*") if p.is_file() and p.name not in (C.LAST_USED_NAME, C._LOCK_NAME)
+        p
+        for p in env.rglob("*")
+        if p.is_file() and p.name not in (C.LAST_USED_NAME, C._LOCK_NAME) and not p.name.endswith(".writing")
     ]
     assert leftovers == []
 
@@ -854,7 +862,10 @@ def test_a_cancelled_load_stops_the_cache_write_between_tensors(env, tmp_path, s
 
     assert C.save_runtime_quant(model, _fam(base), base_repo = str(base), cancel_check = cancel_check) is None
     assert len(calls) == 3
-    leftovers = [p for p in env.rglob("*") if p.is_file() and p.name != C._LOCK_NAME]
+    # the root lock and the per-key build lease are the cache's own files, not a partial entry
+    leftovers = [
+        p for p in env.rglob("*") if p.is_file() and p.name != C._LOCK_NAME and not p.name.endswith(".writing")
+    ]
     assert leftovers == []
 
 
@@ -1003,3 +1014,126 @@ def test_entries_written_minutes_ago_do_not_hold_the_cache_over_budget(env):
     active = _old_entry(env, "3" * 32, 1000, age = 5)
     assert C.evict(root = env, max_bytes = 1500) == [older.name, newer.name]
     assert active.exists()
+
+
+
+# ------------------------------------------------------------------------------------------------ review fixes
+def test_the_flatten_writes_torchaos_bytes_without_cloning_the_quantized_payload(env, tmp_path, scheme):
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    state = model.state_dict()
+    flatten, _ = PS._torchao_helpers()
+    # the previous whole-dict flatten: torchao over every non-root key at once, root keys appended under the prefix
+    roots = PS._root_level_keys(state)
+    whole, whole_meta = flatten({k: v for k, v in state.items() if k not in set(roots)})
+    whole, whole_meta = dict(whole), dict(whole_meta)
+    for key in roots:
+        whole[f"{PS.UNSLOTH_ROOT_PREFIX}{key}"] = state[key]
+    if roots:
+        whole_meta[PS.UNSLOTH_ROOT_KEYS_KEY] = json.dumps([str(k) for k in roots])
+    flat, header = C._flatten(state)
+    if any(type(v) is not torch.Tensor for v in state.values()):
+        # quantized fields point at the live module's storage instead of a torchao clone
+        assert any(isinstance(v, C._FlatRef) for v in flat.values())
+    assert sorted(flat) == sorted(whole) and header == {**whole_meta}
+    a, b = tmp_path / "ref.safetensors", tmp_path / "new.safetensors"
+    C.write_streaming_safetensors(a, dict(whole), dict(whole_meta))
+    C.write_streaming_safetensors(b, flat, header)
+    assert a.read_bytes() == b.read_bytes()
+
+
+def _copy_snapshot(tmp_path: Path, base_dir: Path, commit: str = "d" * 40) -> str:
+    """A Hub cache laid out without symlinks (Windows without Developer Mode): the file copied into the snapshot."""
+    shard = base_dir / "transformer" / "diffusion_pytorch_model.safetensors"
+    snap = tmp_path / "hub_copy" / "models--org--tiny" / "snapshots" / commit / "transformer"
+    snap.mkdir(parents = True)
+    target = snap / "diffusion_pytorch_model.safetensors"
+    target.write_bytes(shard.read_bytes())
+    return str(target)
+
+
+def test_a_hub_cache_without_symlinks_is_judged_by_its_commit_not_its_filename(env, tmp_path, scheme, monkeypatch):
+    import huggingface_hub
+
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    commit = "d" * 40
+    copy = _copy_snapshot(tmp_path, base, commit)
+    monkeypatch.setattr(C, "source_shards", lambda *_a, **_k: [copy])
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    C._REMOTE_MEMO.clear()
+    etags = {"main": "a" * 64, commit: "a" * 64}
+
+    def metadata(url, **_k):
+        rev = "main" if "/resolve/main/" in url else commit
+        return types.SimpleNamespace(etag = etags[rev])
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", metadata)
+    fam = _fam(base)
+    path = C.save_runtime_quant(model, fam, base_repo = "org/tiny")
+    assert path and C.lookup(fam, scheme, base_repo = "org/tiny") == path  # unchanged weights: a hit
+    C._REMOTE_MEMO.clear()
+    etags["main"] = "b" * 64  # main moved past the snapshot's commit
+    assert C.lookup(fam, scheme, base_repo = "org/tiny") is None
+
+
+def test_a_builder_rechecks_after_taking_the_key_lease(env, tmp_path, scheme, monkeypatch):
+    """Two processes building the same key: the second waits on the lease, then finds the first's entry published and
+    skips, instead of replacing the artifact under the first's digest marker and manifest."""
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    fam = _fam(base)
+    first = C.save_runtime_quant(model, fam, base_repo = str(base))
+    assert first
+    entry = Path(first)
+    before = entry.stat().st_mtime_ns
+    real = C._writer_lock
+    took = []
+
+    @C.contextmanager
+    def lease(root, key):
+        took.append(key)
+        with real(root, key) as ok:
+            yield ok
+
+    monkeypatch.setattr(C, "_writer_lock", lease)
+    assert C.save_runtime_quant(model, fam, base_repo = str(base)) is None
+    assert took and entry.stat().st_mtime_ns == before
+
+
+def test_eviction_skips_an_entry_whose_build_is_in_progress(env):
+    old = _old_entry(env, "a" * 32, 4 << 20, age = 10_000)
+    with C._writer_lock(env, old.name) as ok:
+        assert ok and C._writer_active(env, old.name)
+        assert C.evict(root = env, max_bytes = 0) == []
+        assert old.is_dir()
+    assert not C._writer_active(env, old.name)
+    assert C.evict(root = env, max_bytes = 0) == [old.name]
+
+
+def test_auto_never_promotes_a_lower_rung_through_the_local_cache():
+    import inspect
+
+    from core.inference import diffusion as D
+    from core.inference import video as V
+
+    planned = inspect.getsource(D.DiffusionBackend._pipeline_planned_denoiser_scheme)
+    assert "rung != scheme and _is_local_cache_entry(source)" in planned
+    retry = inspect.getsource(D.DiffusionBackend._auto_prequant_retry_scheme)
+    assert "_is_local_cache_entry(source)" in retry
+    video = inspect.getsource(V.VideoBackend.load_pipeline)
+    save_at = video.index("_save_runtime_quant_to_cache(")
+    assert "if transformer_quant_pinned is not None:" in video[save_at - 400 : save_at]
+
+
+def test_is_local_cache_entry(env, tmp_path):
+    from core.inference import diffusion as D
+
+    inside = env / ("e" * 32) / C.FILE_NAME
+    inside.parent.mkdir(parents = True)
+    inside.write_bytes(b"x")
+    assert D._is_local_cache_entry(types.SimpleNamespace(kind = "path", location = str(inside)))
+    outside = tmp_path / "own.safetensors"
+    outside.write_bytes(b"x")
+    assert not D._is_local_cache_entry(types.SimpleNamespace(kind = "path", location = str(outside)))
+    assert not D._is_local_cache_entry(types.SimpleNamespace(kind = "repo", location = "unsloth/x"))

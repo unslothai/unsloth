@@ -37,10 +37,12 @@ ENV:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shutil
+import sys
 import struct
 import tempfile
 import threading
@@ -547,9 +549,11 @@ _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
 
 
-def _hub_coords(path: Any) -> Optional[tuple[str, str, str]]:
-    """``(repo_id, filename, blob)`` of a Hub cache snapshot path (``.../models--org--name/snapshots/<commit>/<file>``),
-    or None for anything else (a local model dir)."""
+def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
+    """``(repo_id, filename, blob, commit)`` of a Hub cache snapshot path
+    (``.../models--org--name/snapshots/<commit>/<file>``), or None for anything else (a local model dir). ``blob`` is the
+    resolved file's basename: the content hash in the symlinked layout, the plain filename in a cache without symlinks
+    (Windows without Developer Mode copies the file into the snapshot)."""
     parts = Path(str(path)).parts
     try:
         i = len(parts) - 1 - parts[::-1].index("snapshots")
@@ -558,13 +562,17 @@ def _hub_coords(path: Any) -> Optional[tuple[str, str, str]]:
     if i < 1 or i + 2 >= len(parts) or not parts[i - 1].startswith("models--"):
         return None
     repo = parts[i - 1][len("models--") :].replace("--", "/")
-    return repo, "/".join(parts[i + 2 :]), os.path.basename(os.path.realpath(str(path)))
+    return repo, "/".join(parts[i + 2 :]), os.path.basename(os.path.realpath(str(path))), parts[i + 1]
 
 
-def _remote_etag(repo: str, filename: str) -> Optional[str]:
-    """The Hub's current etag (the blob name) of ``filename`` on ``repo``'s main revision, ``_GONE`` when the file is no
-    longer there, or None when it cannot be answered (network, auth): then the local snapshot stands, as offline."""
-    memo = (repo, filename)
+def _is_content_hash(name: str) -> bool:
+    return len(name) in (40, 64) and all(c in "0123456789abcdef" for c in name)
+
+
+def _remote_etag(repo: str, filename: str, revision: str = "main") -> Optional[str]:
+    """The Hub's etag (the blob name) of ``filename`` on ``repo`` at ``revision`` (default main), ``_GONE`` when the
+    file is not there, or None when it cannot be answered (network, auth): then the local snapshot stands, as offline."""
+    memo = (repo, filename, revision)
     with _lock:
         hit = _REMOTE_MEMO.get(memo)
     if hit is not None and time.monotonic() - hit[0] < _REMOTE_TTL_SECONDS:
@@ -582,7 +590,7 @@ def _remote_etag(repo: str, filename: str) -> Optional[str]:
         token = None
     try:
         etag = get_hf_file_metadata(
-            hf_hub_url(repo, filename, revision = "main"),
+            hf_hub_url(repo, filename, revision = revision),
             token = token or None,
             timeout = _REMOTE_TIMEOUT_SECONDS,
         ).etag
@@ -612,8 +620,13 @@ def _hub_source_stale(shards: Optional[list], logger: Any = None) -> bool:
         coords = _hub_coords(shard)
         if coords is None:
             continue
-        repo, filename, blob = coords
+        repo, filename, blob, commit = coords
         etag = _remote_etag(repo, filename)
+        if etag is not None and not _is_content_hash(blob):
+            # No symlink to read the content hash from: ask what the snapshot's own commit serves for this file.
+            blob = _remote_etag(repo, filename, revision = commit)
+            if blob is None or blob == _GONE:
+                continue  # unanswerable: the local snapshot stands, as offline
         if etag is not None and etag != blob:
             _log(logger, "info", f"miss ({repo}:{filename} changed on the Hub since it was cached)")
             return True
@@ -703,6 +716,78 @@ def _cache_lock(root: Optional[Path] = None):
                 pass
 
 
+def _writer_lock_path(root: Path, key: str) -> Path:
+    # Beside the key dir, not in it: eviction renames the dir, and the lock must outlive that rename.
+    return root / f".{key}.writing"
+
+
+def _try_lock_file(fh: Any) -> Optional[bool]:
+    """Non-blocking exclusive lock on ``fh``: True when taken, False when another holder has it, None when no lock
+    primitive exists here."""
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+    try:
+        import msvcrt
+    except ImportError:
+        return None
+    try:
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError:
+        return False
+
+
+@contextmanager
+def _writer_lock(root: Path, key: str):
+    """Exclusive per-key build lease across processes, held from the "already cached?" check through publication, so
+    two writers never interleave their artifact, digest marker and manifest. Yields False (and the caller skips) when
+    the lock cannot be taken at all, rather than running the publication unlocked."""
+    fh = None
+    kind = None
+    try:
+        root.mkdir(parents = True, exist_ok = True)
+        fh = open(_writer_lock_path(root, key), "a+b")
+        kind = _lock_file(fh)
+    except OSError:
+        kind = None
+    try:
+        yield kind is not None
+    finally:
+        if fh is not None:
+            try:
+                _unlock_file(fh, kind)
+            except OSError:
+                pass
+            try:
+                fh.close()
+            except OSError:
+                pass
+
+
+def _writer_active(root: Path, key: str) -> bool:
+    """Whether a build of ``key`` is in progress in some process (its lease is held). Never raises."""
+    path = _writer_lock_path(root, key)
+    if not path.exists():
+        return False
+    try:
+        with open(path, "a+b") as fh:
+            taken = _try_lock_file(fh)
+            if taken:
+                _unlock_file(fh, "msvcrt" if sys.platform == "win32" else "flock")
+            return taken is False
+    except OSError:
+        return False
+
+
 def _reclaim(kdir: Path) -> None:
     """Remove a key dir: renamed to a tombstone under the cache lock, then deleted. Never raises."""
     tomb = kdir.with_name(f"{kdir.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}")
@@ -773,6 +858,8 @@ def write_streaming_safetensors(
                 cancel_check()  # raises for a cancelled / superseded load; the caller removes the temp file
             if tensor.numel() == 0:
                 continue
+            if isinstance(tensor, _FlatRef):
+                tensor = tensor.tensor()
             flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
             host = flat.cpu() if flat.device.type != "cpu" else flat
             put(memoryview(host.numpy()))
@@ -799,8 +886,35 @@ def _atomic_bytes(path: Path, data: bytes) -> None:
                 pass
 
 
+class _FlatRef:
+    """One flat safetensors entry that reads its bytes from the live module when written (no copy kept). torchao's
+    ``flatten_tensor_state_dict`` clones every quantized tensor on its device, which for a whole denoiser is a second
+    full copy in VRAM at the moment the card is fullest; the header is built one parameter at a time instead and each
+    entry points back at the subclass field it came from."""
+
+    __slots__ = ("_get", "dtype", "shape", "_numel", "_esize")
+
+    def __init__(self, get: Any, tensor: Any) -> None:
+        self._get = get
+        self.dtype = tensor.dtype
+        self.shape = tuple(tensor.shape)
+        self._numel = int(tensor.numel())
+        self._esize = int(tensor.element_size())
+
+    def numel(self) -> int:
+        return self._numel
+
+    def element_size(self) -> int:
+        return self._esize
+
+    def tensor(self) -> Any:
+        return self._get()
+
+
 def _flatten(state_dict: dict) -> tuple[dict, dict]:
-    """``(flat tensors, header)`` in the exact layout ``save_prequant_safetensors`` writes, without host copies."""
+    """``(flat tensors, header)`` in the exact layout ``save_prequant_safetensors`` writes. Quantized entries are
+    ``_FlatRef`` handles onto the module's own storage; peak extra device memory is one parameter's torchao clone, taken
+    while that parameter's header entry is built and dropped right after."""
     from .prequant_safetensors import (
         UNSLOTH_ROOT_KEYS_KEY,
         UNSLOTH_ROOT_PREFIX,
@@ -814,18 +928,38 @@ def _flatten(state_dict: dict) -> tuple[dict, dict]:
         raise RuntimeError("torchao safetensors helpers unavailable")
     if unsupported_state_dict_keys(state_dict):
         raise ValueError("root-level quantized tensors cannot be written as safetensors")
-    roots = _root_level_keys(state_dict)
-    quantizable = (
-        {k: v for k, v in state_dict.items() if k not in set(roots)} if roots else state_dict
-    )
+    roots = set(_root_level_keys(state_dict))
     flatten, _ = helpers
-    flat, torchao_metadata = flatten(quantizable)
-    header = dict(torchao_metadata or {})
-    flat = dict(flat)
+    header: dict = {}
+    flat: dict = {}
+    names: list = []
+    for key, value in state_dict.items():
+        if key in roots:
+            continue
+        part, meta = flatten({key: value})
+        names.append(key)
+        header[key] = meta[key]
+        if "." in key:
+            prefix, _, last = key.rpartition(".")
+            stem = f"{prefix}._{last}_"
+        else:
+            stem = None
+        for name, clone in part.items():
+            if name == key:  # a plain tensor is passed through, not cloned
+                flat[name] = value
+                continue
+            field = name[len(stem) :] if stem is not None and name.startswith(stem) else None
+            inner = getattr(value, field, None) if field else None
+            if inner is not None and tuple(inner.shape) == tuple(clone.shape) and inner.dtype == clone.dtype:
+                flat[name] = _FlatRef(lambda v = value, f = field: getattr(v, f), clone)
+            else:
+                flat[name] = clone  # an unrecognised naming keeps torchao's own copy (correct, just not bounded)
+        del part
+    header["tensor_names"] = json.dumps(names)
     if roots:
-        for key in roots:
+        for key in _root_level_keys(state_dict):
             flat[f"{UNSLOTH_ROOT_PREFIX}{key}"] = state_dict[key]
-        header[UNSLOTH_ROOT_KEYS_KEY] = json.dumps([str(k) for k in roots])
+        header[UNSLOTH_ROOT_KEYS_KEY] = json.dumps([str(k) for k in _root_level_keys(state_dict)])
     return flat, header
 
 
@@ -869,6 +1003,7 @@ def save_runtime_quant(
             cancelled[0] = True
             raise
 
+    stack = contextlib.ExitStack()
     try:
         info = dict(getattr(transformer, "_unsloth_runtime_quant_info", None) or {})
         scheme = info.get("scheme")
@@ -919,6 +1054,10 @@ def save_runtime_quant(
                 return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
+            return None
+        # One builder per key across processes, from the "already cached?" check through publication.
+        if not stack.enter_context(_writer_lock(cache_root(), key)):
+            _log(logger, "info", "skipped (no cross-process lock available for the build)")
             return None
         existing = _entry(key)
         replacing = None
@@ -1049,7 +1188,7 @@ def save_runtime_quant(
         _log(logger, "warning", f"skipped (save failed: {type(exc).__name__}: {str(exc)[:200]})")
         return None
     finally:
-        # torchao's flatten clones every quantized tensor on the device; hand those blocks back.
+        stack.close()
         flat = header = state_dict = None
         _release_device_cache()
 
@@ -1128,6 +1267,8 @@ def evict(
                 break
             if path.name == keep or path.name in removed or used > cutoff:
                 continue
+            if _writer_active(root, path.name):
+                continue  # a build is streaming into it: not idle, whatever its timestamps say
             tomb = path.with_name(
                 f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}"
             )

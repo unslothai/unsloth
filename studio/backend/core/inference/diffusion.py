@@ -1921,6 +1921,19 @@ def _planned_quant_scheme(
     )
 
 
+def _is_local_cache_entry(source: Any) -> bool:
+    """A source resolved from Studio's local pre-quant cache (diffusion_prequant_cache), not a hosted repo or an
+    operator's own file."""
+    if getattr(source, "kind", None) != "path":
+        return False
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+
+        return bool(path_in_cache(getattr(source, "location", None)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _prequant_probe(
     fam: Optional[DiffusionFamily], *, base_repo: Optional[str], prequant_path: Optional[str]
 ) -> Callable[[str], bool]:
@@ -3535,7 +3548,9 @@ class DiffusionBackend:
             source = usable_prequant_source(
                 fam, candidate, path_override = path_override, base_repo = base_repo
             )
-            if source is None:
+            if source is None or _is_local_cache_entry(source):
+                # A rung below the winner is reached only through a hosted / operator checkpoint, never through this
+                # machine's cache (it would let one earlier explicit load change what auto picks).
                 continue
             # Same cached-only rule _uncached_prequant_repo applies to the winner. That guard runs
             # select_transformer_quant_scheme, which only ever sees the winner, so a retry that returned an UNCACHED
@@ -4979,6 +4994,10 @@ class DiffusionBackend:
                         cache_dir = hub_cache_dir(),
                     )
                     if source is None:
+                        continue
+                    if rung != scheme and _is_local_cache_entry(source):
+                        # This machine's own cache seeds the scheme auto picked, never a lower one: a single explicit
+                        # int8 load must not turn every later auto load from fp8 into int8.
                         continue
                     # The loader's checkpoint validation refuses a FORCED fp8 accumulate the artifact does not bake,
                     # but only after the plan dropped the released shards. Hosted artifacts and Studio's own local

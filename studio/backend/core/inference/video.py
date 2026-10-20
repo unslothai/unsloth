@@ -8654,14 +8654,18 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
-                _save_runtime_quant_to_cache(
-                    fam,
-                    views,
-                    base = base,
-                    source = _base_local_dir or base,
-                    cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
-                )
-                self._raise_if_video_load_superseded(_load_token)
+                # Only an explicit scheme reads the cache back (_video_auto_denoiser_scheme never consults it under
+                # auto, so a cache entry cannot change an auto pick): an auto save would pay the write and the disk
+                # for an artifact no later load opens.
+                if transformer_quant_pinned is not None:
+                    _save_runtime_quant_to_cache(
+                        fam,
+                        views,
+                        base = base,
+                        source = _base_local_dir or base,
+                        cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                    )
+                    self._raise_if_video_load_superseded(_load_token)
             elif transformer_quant_pinned is not None:
                 transformer_quant_decline = (
                     f"'{transformer_quant_pinned}' did not engage on family '{fam.name}' with this "
