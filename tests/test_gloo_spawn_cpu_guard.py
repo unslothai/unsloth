@@ -21,9 +21,7 @@ GUARDED = "parent_process() is not None"
 
 
 def _child(out):
-    out.put(
-        (os.environ.get("_UNSLOTH_TEST_GUARD_FIRED"), os.environ.get("CUDA_VISIBLE_DEVICES"))
-    )
+    out.put((os.environ.get("_UNSLOTH_TEST_GUARD_FIRED"), os.environ.get("CUDA_VISIBLE_DEVICES")))
 
 
 def test_guard_fires_in_a_spawned_child():
