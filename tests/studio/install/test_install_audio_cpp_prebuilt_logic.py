@@ -146,6 +146,7 @@ def _fake_nvidia_smi(
     monkeypatch.setattr(M.shutil, "which", lambda name: "nvidia-smi")
     monkeypatch.setattr(M.subprocess, "run", run)
     monkeypatch.setattr(M, "_amd_gpu_present", lambda: amd)
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_REPO", raising = False)
 
 
 @pytest.mark.parametrize(
@@ -182,6 +183,16 @@ def test_pre_turing_nvidia_beside_amd_still_skips_vulkan(monkeypatch):
 def test_sm75_or_unreadable_compute_cap_keeps_cuda(monkeypatch, caps):
     _fake_nvidia_smi(monkeypatch, caps)
     assert M.detect_accelerator() == "cuda"
+
+
+@pytest.mark.parametrize("repo", ["0xShug0/audio.cpp", "someone/audio.cpp-fork"])
+def test_custom_audio_repo_keeps_cuda_on_pre_turing(monkeypatch, repo):
+    """The sm_75 floor is the default fork's; a custom publisher may ship Pascal / Volta kernels."""
+    _fake_nvidia_smi(monkeypatch, "6.1\n")
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_REPO", repo)
+    assert M.detect_accelerator() == "cuda"
+    monkeypatch.setenv("UNSLOTH_AUDIO_CPP_REPO", "UnslothAI/Audio.cpp")
+    assert M.detect_accelerator() == "cpu"
 
 
 def test_a_failing_compute_cap_query_keeps_cuda(monkeypatch):
@@ -1921,6 +1932,7 @@ def _fake_host(
     )
     monkeypatch.setattr(M.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if smi else None)
     monkeypatch.setattr(M, "nvidia_driver_cuda_version", lambda: cuda)
+    monkeypatch.setattr(M, "_nvidia_has_prebuilt_arch", lambda: None)
     real_listdir = M.os.listdir
     monkeypatch.setattr(
         M.os,
