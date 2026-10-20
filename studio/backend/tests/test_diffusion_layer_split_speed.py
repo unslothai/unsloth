@@ -599,9 +599,9 @@ def test_q21_fused_checks_the_arch_of_every_split_card(monkeypatch):
     assert seen == [0, 1]
 
 
-def test_hunyuan_image_routes_lazily_and_hidream_stays_eager():
+def test_hunyuan_image_and_hidream_route_lazily():
     assert "HunyuanImageTransformer2DModel" in ls.LAZY_CLASSES
-    assert not any("HiDream" in name for name in ls.LAZY_CLASSES)
+    assert "HiDreamImageTransformer2DModel" in ls.LAZY_CLASSES
 
 
 def test_real_rope_probes_every_card_of_a_split(monkeypatch):
