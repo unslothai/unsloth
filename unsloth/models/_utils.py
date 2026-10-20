@@ -142,7 +142,7 @@ __all__ = [
 
 
 import torch
-from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
+from typing import Union, Optional, List, Any, Callable, Dict, Tuple, Iterator
 from platform import system as platform_system
 
 platform_system = platform_system()
@@ -7562,6 +7562,81 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     assert out_proj.weight.data_ptr() != in_emb.weight.data_ptr(), "Embeddings still tied!"
 
 
+def _embedding_subclasses(model: torch.nn.Module) -> Dict[str, torch.nn.Module]:
+    """nn.Embedding subclasses with their own forward (Gemma3TextScaledWordEmbedding scales by embed_scale)."""
+    try:
+        from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+    except ImportError:
+        return {}
+    return {
+        fqn: module
+        for fqn, module in model.named_modules()
+        if isinstance(module, torch.nn.Embedding)
+        and type(module) is not torch.nn.Embedding
+        and not isinstance(module, FakeQuantizedEmbedding)
+    }
+
+
+def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -> None:
+    """Copy the buffers and plain attributes an Embedding subclass adds (e.g. embed_scale) onto dst."""
+    for name, buffer in src._buffers.items():
+        if name not in dst._buffers:
+            dst.register_buffer(
+                name, buffer, persistent = name not in src._non_persistent_buffers_set
+            )
+    for name, value in vars(src).items():
+        if name.startswith("_") or name in vars(dst) or isinstance(value, torch.nn.Module):
+            continue
+        setattr(dst, name, value)
+
+
+_FAKE_QUANTIZED_EMBEDDING_CLASSES = {}
+
+
+def _fake_quantized_embedding_class(original_cls):
+    """FakeQuantizedEmbedding that keeps original_cls.forward: its super().forward() is the fake-quantized lookup."""
+    from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+
+    cls = _FAKE_QUANTIZED_EMBEDDING_CLASSES.get(original_cls)
+    if cls is not None:
+        return cls
+
+    def to_embedding(self):
+        # QATConfig(step = "convert") swaps back to a plain nn.Embedding; restore the subclass and its scale.
+        embedding = FakeQuantizedEmbedding.to_embedding(self)
+        embedding.__class__ = original_cls
+        _copy_embedding_subclass_state(embedding, self)
+        return embedding
+
+    cls = type(
+        f"FakeQuantized{original_cls.__name__}",
+        (original_cls, FakeQuantizedEmbedding),
+        {"to_embedding": to_embedding, "__module__": __name__},
+    )
+    _FAKE_QUANTIZED_EMBEDDING_CLASSES[original_cls] = cls
+    return cls
+
+
+def _restore_fake_quantized_embedding_subclasses(
+    model: torch.nn.Module, originals: Dict[str, torch.nn.Module]
+) -> None:
+    """torchao's FakeQuantizedEmbedding is a plain nn.Embedding, so QAT prepare drops a subclass forward such as
+    Gemma3's embed_scale (sqrt(hidden_size)) multiply, and the loss explodes. Put the subclass forward back."""
+    if not originals:
+        return
+    from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+
+    for fqn, original in originals.items():
+        try:
+            module = model.get_submodule(fqn)
+        except AttributeError:
+            continue
+        if type(module) is not FakeQuantizedEmbedding:
+            continue
+        module.__class__ = _fake_quantized_embedding_class(type(original))
+        _copy_embedding_subclass_state(module, original)
+
+
 def _filter_fn_to_fqns(
     model: torch.nn.Module, filter_fn: Callable[[torch.nn.Module, str], bool]
 ) -> Iterator[str]:
@@ -7741,16 +7816,9 @@ def _prepare_model_for_qat(
     except ImportError:
         raise ImportError(TORCHAO_MSG)
 
-    # Gemma3 int8 embedding quantization struggles with its 262144-token vocabulary, so auto-switch to int4 weight-only.
-    if qat_scheme == "int8-int4":
-        model_types = get_transformers_model_type(model.config)
-        is_gemma3 = any("gemma3" in mt or "gemma_3" in mt for mt in model_types)
-        if is_gemma3:
-            print(
-                "Unsloth: Gemma3 has a large vocabulary causing int8 embedding issues. "
-                "Switching to int4 weight-only QAT for training stability."
-            )
-            qat_scheme = "int4"
+    # from_pretrained aliases this too; get_peft_model passes the scheme straight here.
+    if qat_scheme == "phone-deployment":
+        qat_scheme = "int8-int4"
 
     if not isinstance(qat_scheme, TorchAOConfig):
         torchao_config: Optional[TorchAOConfig] = None
@@ -7903,8 +7971,10 @@ def _prepare_model_for_qat(
 
     if torchao_config.prequantization_transform is not None:
         torchao_config.prequantization_transform(model)
+    embedding_subclasses = _embedding_subclasses(model)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
+    _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)
 
     return model
 
