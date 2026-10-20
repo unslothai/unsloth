@@ -78,7 +78,6 @@ def _single_name(names, host, monkeypatch):
     return ILP.resolve_upstream_asset_choice(host, TAG).name
 
 
-# ---- Windows AMD with ROCm against upstream asset names ----
 
 
 @pytest.mark.parametrize(
@@ -135,7 +134,6 @@ def test_windows_non_rocm_hosts_unchanged(flags, expected, monkeypatch):
     assert _single_name(names, host, monkeypatch) == expected[0]
 
 
-# ---- Apple Silicon under Rosetta ----
 
 MAC_ARM = f"llama-{TAG}-bin-macos-arm64.tar.gz"
 MAC_X64 = f"llama-{TAG}-bin-macos-x64.tar.gz"
@@ -190,7 +188,6 @@ def test_macos_host_machine(
         _release([MAC_ARM, MAC_X64]), host, ILP.UPSTREAM_REPO, "latest"
     )
     assert [a.name for a in plan.attempts] == [expected_asset]
-    # The no-probe host used by the payload health checks must agree.
     cheap = ILP.platform_only_host()
     assert (cheap.machine, cheap.is_arm64, cheap.is_x86_64) == (
         host.machine,
@@ -206,7 +203,6 @@ def test_sysctl_is_not_run_off_macos(monkeypatch):
     assert calls == []
 
 
-# ---- Jetson / Tegra ----
 
 
 def _fake_tegra(

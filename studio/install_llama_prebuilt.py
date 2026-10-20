@@ -822,8 +822,7 @@ def _upstream_arm64_cuda_allowed() -> bool:
 
 
 def _upstream_windows_hip_asset_names(release_tag: str, assets: "Iterable[str]") -> list[str]:
-    """Upstream Windows HIP bundles in this release: the old win-hip-radeon name, then
-    win-rocm-<ver> (the only name since ggml-org moved to TheRock builds), newest first."""
+    """Legacy win-hip-radeon first, then win-rocm-<ver> (current upstream name), newest first."""
     names = list(assets)
     legacy = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
     pattern = re.compile(
@@ -1358,7 +1357,7 @@ def direct_upstream_release_plan(
                         install_kind = "windows-hip",
                     )
                 )
-            # Vulkan before CPU should the HIP bundle be missing or fail validation.
+            # Vulkan before CPU if HIP is missing or fails validation.
             if not host.has_physical_nvidia:
                 vulkan_asset = f"llama-{release_tag}-bin-win-vulkan-x64.zip"
                 vulkan_url = assets.get(vulkan_asset)
@@ -2073,8 +2072,7 @@ _TEGRA_FALLBACK_LOGGED: list[bool] = []
 
 @functools.lru_cache(maxsize = 1)
 def _is_tegra() -> bool:
-    """Jetson: JetPack's release file, or a Tegra SoC in the device tree. Mirrors
-    studio/backend/utils/tegra.py; never raises."""
+    """Mirrors studio/backend/utils/tegra.py; never raises."""
     try:
         if os.path.exists("/etc/nv_tegra_release"):
             return True
@@ -2085,9 +2083,7 @@ def _is_tegra() -> bool:
 
 
 def _tegra_blocks_arm64_cuda(host: HostInfo) -> bool:
-    """A Jetson below CUDA 13: the linux-arm64-cuda bundle is built for server (SBSA) ARM64
-    and its CUDA libraries do not run on JetPack, so it source-builds. Thor (JetPack 7,
-    CUDA 13) is SBSA and keeps the bundle; an unknown driver version keeps it too."""
+    """Jetson below CUDA 13 cannot run the SBSA arm64 CUDA bundle; Thor (CUDA 13) and unknown drivers can."""
     return (
         host.is_linux
         and host.is_arm64
@@ -3078,11 +3074,7 @@ def _windows_display_adapter_in_registry(needles: tuple[tuple[str, str], ...]) -
 
 
 def _host_machine(system: str) -> str:
-    """platform.machine(), except Apple Silicon under Rosetta reads as arm64.
-
-    x86_64 Python there would install macos-x64, which upstream builds with Metal off, so
-    llama-server ran emulated on CPU; the native arm64 binary runs fine as a child process.
-    hw.optional.arm64 is install.sh's Rosetta probe."""
+    """platform.machine(), but arm64 under Rosetta: macos-x64 is built without Metal."""
     machine = platform.machine().lower()
     if system != "Darwin" or machine != "x86_64":
         return machine
@@ -4350,7 +4342,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
 
         # Mirrors the Linux branch: without the AMD half a Strix Halo box with no ROCm
         # tooling took windows-cpu, where the same silicon takes Vulkan on Linux. ROCm
-        # hosts reach here only when the release has no HIP bundle.
+        # hosts reach here only without a HIP bundle.
         if (
             host.has_intel_gpu or host.has_amd_gpu_without_rocm or host.has_rocm
         ) and not host.has_physical_nvidia:
@@ -7603,7 +7595,7 @@ def _fork_manifest_release_plans(
                     and driver_below_cuda_prebuilt_floor(host)
                 ):
                     raise PrebuiltFallback(cuda_driver_floor_message(host)) from exc
-                # Same for a Jetson, which no release's arm64 CUDA bundle serves.
+                # Same for Jetson: no release's arm64 CUDA bundle serves it.
                 if host.has_physical_nvidia and _tegra_blocks_arm64_cuda(host):
                     raise
                 log(
