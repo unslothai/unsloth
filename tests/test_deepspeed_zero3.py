@@ -275,3 +275,21 @@ def test_vlm_gradient_checkpointing_reentrant(monkeypatch, distributed, fsdp2, s
     monkeypatch.setattr(loader_utils, "fsdp2_requested", lambda: fsdp2)
     monkeypatch.setattr(loader_utils, "deepspeed_zero_stage", lambda: stage)
     assert loader_utils.vlm_gradient_checkpointing_reentrant() is reentrant
+
+
+# Fused LoRA layers read their weights without calling the Linear modules: ZeRO-3 leaves.
+def test_fused_lora_layers_become_zero3_leaves_only_under_zero3(monkeypatch):
+    torch = pytest.importorskip("torch")
+    layers = torch.nn.ModuleList([torch.nn.Linear(2, 2), torch.nn.Linear(2, 2)])
+    monkeypatch.setattr(loader_utils, "deepspeed_zero3_requested", lambda: False)
+    assert loader_utils.set_deepspeed_fused_lora_leaf_modules(layers) == 0
+    assert not any(getattr(m, "_z3_leaf", False) for m in layers)
+    monkeypatch.setattr(loader_utils, "deepspeed_zero3_requested", lambda: True)
+    assert loader_utils.set_deepspeed_fused_lora_leaf_modules(layers) == 2
+    assert all(m._z3_leaf for m in layers)
+    try:
+        from deepspeed.utils import z3_leaf_module
+    except Exception:
+        return
+    # The flag DeepSpeed's hook installer reads (deepspeed/utils/z3_leaf_module.py).
+    assert all(z3_leaf_module(m) for m in layers)

@@ -366,6 +366,25 @@ def set_deepspeed_moe_leaf_modules(model):
     return tuple(cls.__name__ for cls in classes)
 
 
+def set_deepspeed_fused_lora_leaf_modules(layers):
+    """Under ZeRO-3, mark decoder layers running Unsloth's fused LoRA kernels as leaf modules.
+
+    The fused kernels (and the fast RMSNorm) read the q/k/v/o, MLP and LoRA weights inside the layer
+    forward without calling those modules, so ZeRO-3 only finds them through attribute access and
+    registers them as external parameters of whichever module is running. Its prefetch trace then
+    stops matching once forwards differ (GRPO scores without gradients, then trains), and the next
+    step dies with "tracing error ... expected the next N parameters in the parameter fetch queue".
+    A leaf layer gathers its whole subtree on entry (and again for the checkpoint recompute), which
+    is every weight those kernels read. Returns the number of layers marked."""
+    if not deepspeed_zero3_requested():
+        return 0
+    n = 0
+    for layer in layers:
+        layer._z3_leaf = True
+        n += 1
+    return n
+
+
 UNSLOTH_DEVICE_MAP = "unsloth"
 
 # Same planner, different answer when it declines: every veto path ends in "sequential", which fills the first device to its whole free budget, wrong for a caller that picked several cards.

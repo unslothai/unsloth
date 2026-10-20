@@ -60,6 +60,7 @@ except ImportError:  # unsloth_zoo predating the helper (unsloth-zoo#1751)
 
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    set_deepspeed_fused_lora_leaf_modules,
     set_deepspeed_moe_leaf_modules,
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
@@ -5127,6 +5128,8 @@ class FastLlamaModel:
             f"Unsloth {__version__} patched {len(model.model.model.layers)} layers with "
             f"{n_qkv} QKV layers, {n_o} O layers and {n_mlp} MLP layers.{unfused_reason}",
         )
+        if n_qkv + n_o + n_mlp > 0:
+            set_deepspeed_fused_lora_leaf_modules(model.model.model.layers)
         patch_saving_functions(model)
 
         # Patch cross entropy loss labels; fixes #10.
