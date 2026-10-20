@@ -90,7 +90,8 @@ class DiffusionFamily:
     # False when the diffusers pipeline ignores a negative prompt; the native engine decides on its own.
     uses_negative_prompt: bool = True
     # False when the diffusers pipeline takes no guidance at all (FLUX.3 distilled has no guider), so the Guidance
-    # control is fixed. The native engine decides on its own.
+    # control is fixed. FLUX.2 klein decides per checkpoint (diffusion._guidance_supported); the native engine on its
+    # own.
     uses_guidance: bool = True
     # One or two sentences on how this family reads prompts; None when it has no quirks.
     prompt_hint: Optional[str] = None

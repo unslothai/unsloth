@@ -42,9 +42,31 @@ def test_flux3_thresholds_are_one():
     assert diffusion._negative_prompt_guidance_threshold(by_name["flux.3-klein-base"]) == 1.0
 
 
-def test_only_the_distilled_flux3_graph_ignores_guidance():
+def test_only_the_distilled_flux3_graph_ignores_guidance_as_a_family():
     # Flux3DistilledModularPipeline has no guider, so diffusion_flux3._set_guidance drops the value.
     assert [f.name for f in _FAMILIES if not f.uses_guidance] == ["flux.3-klein"]
+
+
+@pytest.mark.parametrize(
+    "family, is_distilled, expected",
+    [
+        ("flux.3-klein", False, False),
+        ("flux.3-klein-base", False, True),
+        # Flux2KleinPipeline.do_classifier_free_guidance is False whenever config.is_distilled.
+        ("flux.2-klein", True, False),
+        ("flux.2-klein", False, True),
+        # Krea 2 Turbo's is_distilled only moves the scheduler shift; it still runs CFG.
+        ("krea-2", True, True),
+    ],
+)
+def test_guidance_support_follows_the_loaded_checkpoint(family, is_distilled, expected):
+    from types import SimpleNamespace
+
+    fam = next(f for f in _FAMILIES if f.name == family)
+    state = SimpleNamespace(
+        family = fam, pipe = SimpleNamespace(config = SimpleNamespace(is_distilled = is_distilled))
+    )
+    assert diffusion._guidance_supported(state) is expected
 
 
 @pytest.mark.parametrize("name", ["flux.3-klein", "flux.3-klein-base", "flux.2-klein"])

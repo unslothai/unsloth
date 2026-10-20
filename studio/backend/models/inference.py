@@ -5668,13 +5668,14 @@ class DiffusionStatusResponse(BaseModel):
     )
     negative_prompt_min_guidance: Optional[float] = Field(
         None,
-        description = "The guidance a negative prompt is used above (1 for classifier-free guidance, 0 for "
-        "Z-Image and Krea 2 on diffusers); null when guidance does not gate it. Drives the Negative prompt hint.",
+        description = "The guidance Studio passes a negative prompt above (1 for classifier-free guidance, 0 "
+        "for Z-Image and Krea 2 on diffusers); null when guidance does not gate it. Drives the Negative prompt hint.",
     )
     supports_guidance: bool = Field(
         True,
         description = "Whether the loaded model reads the guidance value on this engine (drives the Guidance "
-        "control). False for FLUX.3 Klein (distilled) on diffusers, whose pipeline has no guidance.",
+        "control). False on diffusers for FLUX.3 Klein (distilled), whose pipeline has no guidance, and for "
+        "distilled FLUX.2 klein checkpoints, which Flux2KleinPipeline runs without it.",
     )
     supports_live_preview: bool = Field(
         True,

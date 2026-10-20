@@ -410,7 +410,8 @@ _ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES = frozenset(("z-image", KREA2_FAMILY_NA
 
 
 def _negative_prompt_guidance_threshold(family: DiffusionFamily) -> Optional[float]:
-    """The guidance a negative prompt is used above, None when guidance does not gate it."""
+    """The guidance above which Studio passes a negative prompt, None when guidance does not gate it. Studio's rule,
+    not the guider's: diffusers also runs CFG below 1, where it would steer toward the negative prompt."""
     if family.cfg_kwarg == "true_cfg_scale":
         return 1.0
     if family.cfg_kwarg == "guidance_scale":
@@ -428,6 +429,17 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
             "model is reloaded. Reload the model with the new adapter weights."
         )
+
+
+def _guidance_supported(state: Any) -> bool:
+    """Whether the loaded pipeline reads the guidance value. FLUX.2 klein's base and distilled checkpoints share one
+    family, and Flux2KleinPipeline turns guidance off when its config says ``is_distilled``."""
+    if not state.family.uses_guidance:
+        return False
+    config = getattr(getattr(state, "pipe", None), "config", None)
+    return not (
+        state.family.name == "flux.2-klein" and bool(getattr(config, "is_distilled", False))
+    )
 
 
 def _live_preview_available(state: Any) -> bool:
@@ -12834,7 +12846,7 @@ class DiffusionBackend:
             "workflows": _family_workflows(state.family),
             "supports_negative_prompt": state.family.uses_negative_prompt,
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),
-            "supports_guidance": state.family.uses_guidance,
+            "supports_guidance": _guidance_supported(state),
             "supports_live_preview": _live_preview_available(state),
             "prompt_hint": state.family.prompt_hint,
             "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),
