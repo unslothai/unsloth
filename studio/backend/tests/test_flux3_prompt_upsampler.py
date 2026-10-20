@@ -1754,7 +1754,11 @@ def test_a_finished_layout_caption_skips_the_upsampler(runnable):
     out = pup.enhance_for_generation([_FINISHED], family_name = "flux.3-klein", enhance_prompt = None)
     assert runnable.calls == []
     # Used as it is, which is what enhancement off records, not a failed rewrite.
-    assert out.status == "off" and out.encoded(_FINISHED) == _FINISHED and out.caption_for(_FINISHED) is None
+    assert (
+        out.status == "off"
+        and out.encoded(_FINISHED) == _FINISHED
+        and out.caption_for(_FINISHED) is None
+    )
 
 
 def test_a_box_request_uses_the_layout_prompt_and_keeps_the_boxes(runnable):
@@ -1771,7 +1775,9 @@ def test_a_box_request_uses_the_layout_prompt_and_keeps_the_boxes(runnable):
     payload = runnable.calls[0]["payload"]
     assert payload["messages"][0]["content"] == pup.SYSTEM_PROMPTS["t2i_bbox"]
     text = payload["messages"][1]["content"][0]["text"]
-    assert text.startswith("ORIGINAL PROMPT:\nhot-air balloons over a green valley at sunrise\n\nLOCKED")
+    assert text.startswith(
+        "ORIGINAL PROMPT:\nhot-air balloons over a green valley at sunrise\n\nLOCKED"
+    )
     assert '"bbox": [80, 60, 480, 380]' in text
     assert caption == (
         "Full-color photograph with a balloon <obj_1> and the sun <sun_1>. "
@@ -1785,5 +1791,7 @@ def test_a_box_edit_uses_the_layout_edit_prompt(runnable):
     content = runnable.calls[0]["payload"]["messages"][1]["content"]
     assert runnable.calls[0]["payload"]["messages"][0]["content"] == pup.SYSTEM_PROMPTS["i2i_bbox"]
     assert content[0]["type"] == "image_url"
-    assert content[-1]["text"].startswith("Reference images follow in attachment order: ref_image_0")
+    assert content[-1]["text"].startswith(
+        "Reference images follow in attachment order: ref_image_0"
+    )
     assert "User editing instruction: ORIGINAL PROMPT:" in content[-1]["text"]
