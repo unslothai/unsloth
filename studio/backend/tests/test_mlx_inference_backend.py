@@ -622,14 +622,11 @@ def test_experts_on_disk_prefill_every_text_and_batch_path_in_the_planned_step(
         raising = False,
     )
     backend._processor = object()
-    for kind, step in ((Defaults, 8192), (Older, None)):
+    # Batched rows bank prefix-reuse snapshots: they prefill on mlx-vlm's grid.
+    for kind, step in ((Defaults, 2048), (Older, None)):
         monkeypatch.setattr(engine, "GenerationDefaults", kind, raising = False)
         mlx_inference._VisionBatchSession(backend, width = 2).close()
         assert getattr(opened[-1], "prefill_step_size", None) == step
-    backend._prefill_layer_step = 2048
-    monkeypatch.setattr(engine, "GenerationDefaults", Defaults, raising = False)
-    mlx_inference._VisionBatchSession(backend, width = 2).close()
-    assert opened[-1].prefill_step_size == 2048
 
 
 @pytest.fixture(params = ["stub", "zoo"])
@@ -7703,7 +7700,7 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
         next(backend._generate_vlm_batch([{}]))
     from dataclasses import make_dataclass
 
-    # Experts on disk: the batch prefills in the planned step, as the single path does.
+    # Experts on disk: batch rows bank snapshots, so they prefill on mlx-vlm's grid.
     fields = (
         "max_tokens",
         "prefill_batch_size",
@@ -7716,12 +7713,8 @@ def test_a_text_load_batch_row_carries_one_bos_as_the_single_path_does(monkeypat
     backend._prefill_step = 8192
     with pytest.raises(LookupError):
         next(backend._generate_vlm_batch([{}]))
-    assert asked[-1].prefill_step_size == 8192 and added.pop() == "hi"
-    backend._prefill_layer_step, backend._kv_runtime_quant_kwargs = 2048, lambda: {}
-    with pytest.raises(LookupError):
-        next(backend._generate_vlm_batch([{}]))
     assert asked[-1].prefill_step_size == 2048 and added.pop() == "hi"
-    backend._prefill_step = backend._prefill_layer_step = None
+    backend._prefill_step = None
     for reads_vision in (False, True):
         backend._reads_vision = reads_vision
         session.admit({}, reads_vision)
@@ -9345,11 +9338,13 @@ def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypat
     session = backend._vlm_prompt_cache_session("base")
     assert mlx_inference.vlm_prefill_step() == 1234 and session.step == 1234
     assert mlx_inference.shape_stable_prefix(1300, step = session.step) == 1234
-    # Experts on disk: snapshots sit on the grid of the planned step the load prefills in.
-    backend._prefill_step = 8192
-    assert backend._vlm_prompt_cache_session("base").step == 8192
-    assert backend._vlm_batch_row_cache("base", ())._step == 8192
-    # Windows unsloth_zoo prefills as mlx-vlm steps: snapshots on mlx-vlm's grid, cut inside a window.
+    # Experts on disk: snapshots stay on mlx-vlm's grid; a session prefills in the planned step only
+    # where unsloth_zoo runs it as mlx-vlm steps and copies snapshots inside it.
+    backend._prefill_step, backend._kv_runtime_quant_kwargs = 8192, lambda: {}
+    grid = lambda: (lambda session: (session.step, session.window))(
+        backend._vlm_prompt_cache_session("base")
+    )
+    assert grid() == (1234, 1234) and backend._vlm_batch_row_cache("base", ())._step == 1234
     zoo = types.SimpleNamespace(wide_prefill_step = lambda model: 1234 if model == "wide" else None)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.offload", zoo)
     probe = [
@@ -9357,15 +9352,10 @@ def test_mlx_vlm_prompt_cache_session_prefills_on_mlx_vlm_default_step(monkeypat
         for args in (("wide", 4936), ("wide", 8192), ("whole", 4936))
     ]
     assert probe == [1234, None, None]
-    backend._prefill_layer_step, backend._kv_runtime_quant_kwargs = 1234, lambda: {}
-    session = backend._vlm_prompt_cache_session("base")
-    assert (session.step, session.window, backend._vlm_batch_row_cache("base", ())._step) == (
-        1234,
-        8192,
-        1234,
-    )
+    backend._prefill_layer_step = 1234
+    assert grid() == (1234, 8192) and backend._vlm_batch_row_cache("base", ())._step == 1234
     backend._kv_runtime_quant_kwargs = lambda: {"kv_bits": 4}
-    assert backend._vlm_prompt_cache_session("base").step == 8192
+    assert grid() == (1234, 1234)
 
 
 # ── Unset generation budget ──────────────────────────────────────────────

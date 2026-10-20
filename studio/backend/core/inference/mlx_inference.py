@@ -4607,8 +4607,8 @@ class MLXInferenceBackend:
                 releases_unserved = bool(images),
                 media_block = block,
                 policy_hosts = (self._model, language_model) if block is not None else (),
-                step = self._snapshot_grid(),
-                window = getattr(self, "_prefill_step", None) or vlm_prefill_step(),
+                step = vlm_prefill_step(),
+                window = self._session_window(),
             )
         except Exception as exc:
             # A layout that cannot be built once cannot be built later.
@@ -4665,7 +4665,7 @@ class MLXInferenceBackend:
             make_cache,
             media_ids,
             releases_unserved = bool(images),
-            step = self._snapshot_grid(),
+            step = vlm_prefill_step(),
         )
 
     @staticmethod
@@ -4790,18 +4790,19 @@ class MLXInferenceBackend:
             return entries
         return _quantize_kv_entries(entries, bits)
 
-    def _snapshot_grid(self):
-        """Rows prefix-reuse snapshots sit on: the planned step, or mlx-vlm's own where unsloth_zoo
-        prefills each planned step layer by layer in it and a snapshot inside one can be cut there.
-        TurboQuant converts the cache between forwards, which a cut inside one would miss."""
+    def _session_window(self):
+        """Rows a prefix-reuse session prefills in: the planned step only where unsloth_zoo runs it
+        layer by layer in mlx-vlm's steps and copies snapshots inside it, keeping them on mlx-vlm's
+        grid; else mlx-vlm's step. TurboQuant converts the cache between forwards, which a copy inside
+        one would miss."""
         step = getattr(self, "_prefill_step", None)
         if (
-            step is None
-            or getattr(self, "_prefill_layer_step", None) is None
-            or self._kv_runtime_quant_kwargs()
+            step
+            and getattr(self, "_prefill_layer_step", None)
+            and not self._kv_runtime_quant_kwargs()
         ):
-            return step or vlm_prefill_step()
-        return self._prefill_layer_step
+            return step
+        return vlm_prefill_step()
 
     def _prefill_step_kwargs(
         self,
@@ -4812,7 +4813,7 @@ class MLXInferenceBackend:
         *target* (a constructor, or unsloth_zoo's defaults type), only when it takes one."""
         step = getattr(self, "_prefill_step", None)
         if step is not None and grid:
-            step = self._snapshot_grid()
+            step = vlm_prefill_step()
         if step is None or not (target is None or _takes_prefill_step(target)):
             return {}
         return {"prefill_step_size": step}
