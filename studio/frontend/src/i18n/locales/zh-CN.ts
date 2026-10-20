@@ -2360,6 +2360,9 @@ export const zhCN = {
         multiModelDescriptionAlways:
           "加载模型时绝不卸载其他模型。无法容纳的模型不会被加载。空闲自动卸载和训练仍会释放内存。",
         multiModelHint: "适用于聊天、语音、图像和视频模型。每个已加载的聊天模型都会响应指定它的请求。在多 GPU 机器上，Unsloth 会尽量把新模型放到没有其他模型使用的 GPU 上。“能容纳时”会预留约 1 GB 空间。“能容纳时”和“总是”都不会卸载其他 GPU 上的模型。",
+        allowOversizedLoad: "允许加载超大模型",
+        allowOversizedLoadDescription: "即使内存检查认为放不下，也加载图像和视频模型。",
+        allowOversizedLoadHint: "适用于 CPU 和 GPU 共用一块内存的设备（Apple Silicon、集成显卡）。当模型权重的估算值大于为操作系统预留空间后剩余的内存时，Studio 会拒绝加载。开启后仍会尝试加载。估算可能偏高也可能偏低：超大加载可能失败、耗尽内存、导致电脑大量换页或无响应，或使 Studio 停止运行。默认关闭。",
         mediaIdleUnloadDescription:
           "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",

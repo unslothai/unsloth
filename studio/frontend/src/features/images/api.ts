@@ -5,6 +5,7 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
+import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
@@ -162,6 +163,8 @@ export interface DiffusionLoadProgress {
   bytes_total: number;
   fraction: number;
   error: string | null;
+  /** Machine-readable kind of ``error`` ("unified-memory-load"); absent on an older backend. */
+  error_code?: string | null;
 }
 
 export interface DiffusionLoadRequest {
@@ -217,6 +220,9 @@ export interface DiffusionLoadRequest {
   // quantisation and compile, so a quantized load that omits them rejects every generation. Ignored by bf16 /
   // bnb-4bit, which apply at generate time.
   loras?: LoraSpecInput[];
+  // Load even when the unified-memory check estimates the weights will not fit. Omitted = refuse as usual; the
+  // persisted "Allow oversized model loads" setting fills it in (withAllowOversizedLoad).
+  allow_oversized_load?: boolean;
 }
 
 export interface DiffusionGenerateRequest {
@@ -414,7 +420,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
         await authFetch("/api/inference/images/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withAllowOversizedLoad(body)),
         }),
       ),
     async (signal) => (await getDiffusionLoadProgress(signal)).phase,
@@ -443,6 +449,8 @@ export interface DiffusionDownloadPlan {
      *  speak, refuse the pick here, since the alternative is the loader saying the same thing after a ~19 GB
      *  download. */
   incompatible_reason?: string | null;
+  /** Machine-readable kind of ``incompatible_reason`` ("unified-memory-load"); absent on an older backend. */
+  incompatible_code?: string | null;
 }
 
 /** What to stage through the download manager before loading this pick. */
@@ -453,7 +461,7 @@ export async function getDiffusionDownloadPlan(
     await authFetch("/api/inference/images/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withAllowOversizedLoad(body)),
     }),
   );
 }

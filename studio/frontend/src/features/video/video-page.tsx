@@ -194,6 +194,8 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
+import { readAllowOversizedLoad, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
@@ -963,6 +965,7 @@ type VideoLoadAdvanced = Pick<
   | "transformer_quant"
   | "family_override"
   | "gpu_ids"
+  | "allow_oversized_load"
 >;
 
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
@@ -1254,6 +1257,13 @@ function VideoGenerator({
   // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails:
   // handleLoad overwrites lastLoad at load start, and a later failure leaves the old model.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
+  // Set only around a confirmed Load anyway retry, so that pick's snapshot carries allow_oversized_load.
+  const oversizedLoadOnce = useRef(false);
+  // The pick the last handleLoad sent, so a load-progress refusal can retry it with the override.
+  const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
+  // handleLoad itself, synced after render, for that retry (handleLoadRef is written during render).
+  const retryLoadRef = useRef<((repoId: string, opts: VideoLoadOptions, pinned?: VideoLoadAdvanced) => Promise<boolean>) | null>(null);
+  const { offer: offerLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Which pick owns the page: resolving and staging do not set `busy`, so a pick can land on an
   // awaiting one. Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
@@ -2435,6 +2445,17 @@ function VideoGenerator({
     setSelectorOpen(false);
   }, [active]);
 
+  // Offers Load anyway for the last load's unified-memory refusal; false leaves the failure to reportLoadFailure.
+  const offerLoadAnywayFor = useCallback(
+    (failure: unknown, code?: string | null): boolean => {
+      const attempt = lastLoadAttempt.current;
+      if (!attempt || !shouldOfferLoadAnyway({ code, failure, overrideSent: attempt.overrideSent })) return false;
+      offerLoadAnyway(failureMessage(failure) || "Failed to load model", attempt.retry);
+      return true;
+    },
+    [offerLoadAnyway],
+  );
+
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
@@ -2465,7 +2486,7 @@ function VideoGenerator({
       if (p.phase === "error") {
         pendingEvicted.current = [];
         dismissLoadToast();
-        reportLoadFailure(p.error, "Failed to load model");
+        if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         if (quantRevert.current) {
           revertPick(quantRevert.current);
@@ -2509,7 +2530,7 @@ function VideoGenerator({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -2685,6 +2706,8 @@ function VideoGenerator({
           controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)
             ? [Number(controls.selectedGpu)]
             : undefined,
+        // Only a confirmed Load anyway retry sets it, around the one loadOrStage call that snapshots this.
+        allow_oversized_load: oversizedLoadOnce.current ? true : undefined,
       };
     },
     [],
@@ -2755,6 +2778,12 @@ function VideoGenerator({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
+      const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+      // Retries this same pick once with the override, from the load-progress refusal or the start refusal.
+      const retryOversized = () => {
+        void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true });
+      };
+      lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
         if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
@@ -2779,6 +2808,7 @@ function VideoGenerator({
           // joining the pinned set.
           h3_task: opts.h3Task,
           gpu_ids: advanced.gpu_ids,
+          allow_oversized_load: advanced.allow_oversized_load,
         });
         const answer = await startRequest;
         pendingEvicted.current = evictedSlotsFrom(answer);
@@ -2789,7 +2819,7 @@ function VideoGenerator({
         setCanReapply(prevCanReapply);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        reportLoadFailure(err, "Failed to start load");
+        if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
@@ -2825,6 +2855,7 @@ function VideoGenerator({
       canReapply,
       currentLoadAdvanced,
       pickToast,
+      offerLoadAnywayFor,
     ],
   );
 
@@ -2839,6 +2870,9 @@ function VideoGenerator({
     toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
+  useEffect(() => {
+    retryLoadRef.current = handleLoad;
+  }, [handleLoad]);
   handleLoadRef.current = handleLoad;
   // A download finishing while this page is hidden must not evict the model the visible page
   // loaded. The pick is held, not dropped.
@@ -2932,6 +2966,7 @@ function VideoGenerator({
       const ownRevert = quantRevert.current;
       // Read inside the try, acted on outside it, as on the images page.
       let incompatible: string | null = null;
+      let incompatibleCode: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
           model_path: opts.displayRepoId ?? repoId,
@@ -2949,6 +2984,8 @@ function VideoGenerator({
           h3_task: opts.h3Task,
           // The plan sizes its file set against the card the load will use, so it needs the pick.
           gpu_ids: advanced.gpu_ids,
+          // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
+          allow_oversized_load: advanced.allow_oversized_load,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) {
@@ -2960,6 +2997,7 @@ function VideoGenerator({
         // GGUF/base size pairing and the video planner has no diffusers base to pair against, so this is
         // the shared envelope's half of the contract rather than a live path.
         incompatible = plan.incompatible_reason ?? null;
+        incompatibleCode = plan.incompatible_code ?? null;
         if (!incompatible && plan.entries.length > 0) {
           const entries = diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) return handleLoadRef.current(repoId, opts, advanced);
@@ -2985,13 +3023,30 @@ function VideoGenerator({
       }
       if (incompatible) {
         pickToast.dismiss(pickToastId);
-        toast.error(incompatible);
+        const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+        if (shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
+          offerLoadAnyway(incompatible, () => {
+            oversizedLoadOnce.current = true;
+            try {
+              void loadOrStageRef.current(repoId, opts, source, undefined, familyOverrideRequired);
+            } finally {
+              oversizedLoadOnce.current = false;
+            }
+          });
+        } else {
+          toast.error(incompatible);
+        }
         return false;
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, pickGuard, currentLoadAdvanced, pickToast],
+    [stage, pickGuard, currentLoadAdvanced, pickToast, offerLoadAnyway],
   );
+  // For the Load anyway retry, which re-runs the refused pick from inside loadOrStage itself.
+  const loadOrStageRef = useRef(loadOrStage);
+  useEffect(() => {
+    loadOrStageRef.current = loadOrStage;
+  }, [loadOrStage]);
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.
@@ -4937,6 +4992,7 @@ function VideoGenerator({
         </div>
 
       </div>
+      {loadAnywayDialog}
     </div>
   );
 }

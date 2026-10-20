@@ -8,6 +8,7 @@ import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
+import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 
 // One Advanced control's resolved value plus provenance, same shape as the diffusion status.
 // `value` is engaged, `requested` is what the caller asked for (null = left to the backend),
@@ -145,6 +146,8 @@ export interface VideoLoadProgress {
   // null when the total isn't known yet.
   expected_bytes?: number | null;
   error?: string | null;
+  /** Machine-readable kind of ``error`` ("unified-memory-load"); absent on an older backend. */
+  error_code?: string | null;
 }
 
 export interface VideoLoadRequest {
@@ -189,6 +192,9 @@ export interface VideoLoadRequest {
   // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
   // "none" keeps the dense bf16 encoder. An explicit scheme is refused with a 409 when the host cannot run it.
   text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Load even when the unified-memory check estimates the weights will not fit. Omitted = refuse as usual; the
+  // persisted "Allow oversized model loads" setting fills it in (withAllowOversizedLoad).
+  allow_oversized_load?: boolean;
 }
 
 /** One reference video, with the soundtrack MiniMax-H3 conditions on alongside it. */
@@ -312,7 +318,7 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
         await authFetch("/api/inference/video/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withAllowOversizedLoad(body)),
         }),
       ),
     async (signal) => (await getVideoLoadProgress(signal)).phase,
@@ -327,7 +333,7 @@ export async function getVideoDownloadPlan(
     await authFetch("/api/inference/video/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withAllowOversizedLoad(body)),
     }),
   );
 }

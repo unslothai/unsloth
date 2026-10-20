@@ -212,6 +212,8 @@ import {
   routedGgufLabel,
 } from "@/lib/diffusion-route-search";
 import { toast } from "@/lib/toast";
+import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
+import { readAllowOversizedLoad, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
 import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
 import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
 import { watchSavingPhase } from "@/lib/swap-save-phase";
@@ -1506,6 +1508,7 @@ type LoadAdvanced = Pick<
   | "text_encoder_file"
   | "vae_file"
   | "engine"
+  | "allow_oversized_load"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1730,6 +1733,13 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
+  // Set only around a confirmed Load anyway retry, so that pick's snapshot carries allow_oversized_load.
+  const oversizedLoadOnce = useRef(false);
+  // The pick the last handleLoad sent, so a load-progress refusal can retry it with the override.
+  const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
+  // handleLoad itself, synced after render, for that retry (handleLoadRef is written during render).
+  const retryLoadRef = useRef<((repoId: string, opts: ImageLoadOptions, pinned?: LoadAdvanced) => Promise<boolean>) | null>(null);
+  const { offer: offerLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Queued: "Generate anyway" is clickable before the refused run releases busy.
   const [oversizedRetryQueued, setOversizedRetryQueued] = useState(false);
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
@@ -3005,6 +3015,17 @@ export function ImagesPage({
     setAspectOpen(false);
   }, [active]);
 
+  // Offers Load anyway for the last load's unified-memory refusal; false leaves the failure to reportLoadFailure.
+  const offerLoadAnywayFor = useCallback(
+    (failure: unknown, code?: string | null): boolean => {
+      const attempt = lastLoadAttempt.current;
+      if (!attempt || !shouldOfferLoadAnyway({ code, failure, overrideSent: attempt.overrideSent })) return false;
+      offerLoadAnyway(failureMessage(failure) || "Failed to load model", attempt.retry);
+      return true;
+    },
+    [offerLoadAnyway],
+  );
+
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
@@ -3059,7 +3080,7 @@ export function ImagesPage({
         pendingRecalledGeneration.current = null;
         pendingEvicted.current = [];
         dismissLoadToast();
-        reportLoadFailure(p.error, "Failed to load model");
+        if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         // A load that failed AFTER starting leaves the previous pipeline loaded, so roll the
         // optimistic quant label back.
@@ -3112,7 +3133,7 @@ export function ImagesPage({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -3470,6 +3491,12 @@ export function ImagesPage({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
+      const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+      // Retries this same pick once with the override, from the load-progress refusal or the start refusal.
+      const retryOversized = () => {
+        void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true });
+      };
+      lastLoadAttempt.current = { overrideSent, retry: retryOversized };
       // The POST may first save the chat model's context; show that on this load's toast meanwhile.
       const savePoll = watchSavingPhase(getDiffusionLoadProgress, () => {
         if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
@@ -3500,6 +3527,7 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
+          allow_oversized_load: advanced.allow_oversized_load,
           ...componentFiles,
         });
         const answer = await startRequest;
@@ -3514,7 +3542,7 @@ export function ImagesPage({
         // Engine select from the resident build rather than replay the refused pick on the next Reapply.
         setEngineSeed("");
         dismissLoadToast();
-        reportLoadFailure(err, "Failed to start load");
+        if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
@@ -3542,7 +3570,7 @@ export function ImagesPage({
       void pollLoadProgress();
       return settle(true);
     },
-    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor],
+    [pollLoadProgress, refreshStatus, dismissLoadToast, currentLoadAdvanced, cancelLoadFromToast, pickToast, engineFor, offerLoadAnywayFor],
   );
 
   // Set or clear the Transform/Inpaint source image; always drop the painted mask, which is
@@ -3638,6 +3666,9 @@ export function ImagesPage({
     toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
+  useEffect(() => {
+    retryLoadRef.current = handleLoad;
+  }, [handleLoad]);
   handleLoadRef.current = handleLoad;
   // Set when a staged download finished while this page was hidden: both diffusion pages stay
   // mounted and a load evicts whatever holds the GPU. The pick fires on return.
@@ -3813,6 +3844,8 @@ export function ImagesPage({
         // The plan route preflights precision and sizes the file set against the card the load will
         // use, so a selection the load carries has to reach the plan.
         gpu_ids: advanced.gpu_ids,
+        // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
+        allow_oversized_load: advanced.allow_oversized_load,
         ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       });
     },
@@ -3832,6 +3865,8 @@ export function ImagesPage({
     ): Promise<boolean> => {
       const downloadOnly =
         downloadSnapshot !== undefined || (!forceLoad && modelSelectionAction === "download");
+      // Read before the first await: a confirmed Load anyway retry sets it only around this call.
+      const oversizedRetry = oversizedLoadOnce.current && !downloadOnly;
       // Staging never sets `busy`, so a second pick passes the guard while this plan is in flight, and
       // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
       // a local pick invalidates an in-flight hub plan. Never for a download-only pick: it supersedes
@@ -3871,6 +3906,8 @@ export function ImagesPage({
         // A local snapshot of the copy is now a Hub load of the base: plan and stage it like one.
         source = "hub";
       }
+      // The retry's override rides the same snapshot, so its plan and its load both carry it.
+      if (oversizedRetry) advanced = { ...advanced, allow_oversized_load: true };
       // Resolve the engine into the snapshot, so the plan and the load it fires cannot read different selects.
       if (!advanced.engine && sendsEngine(opts.kind, opts.filename)) {
         advanced = { ...advanced, engine: engineFor(repoId, opts, advanced) ?? "auto" };
@@ -3887,6 +3924,7 @@ export function ImagesPage({
       // Read inside the try, acted on outside it: refusing from in there would fall through to the
       // load if the refusal itself threw.
       let incompatible: string | null = null;
+      let incompatibleCode: string | null = null;
       try {
         const plan = await requestDownloadPlan(opts.displayRepoId ?? repoId, opts, advanced);
         // Only load intents are superseded; accepted downloads keep their own plans.
@@ -3898,6 +3936,7 @@ export function ImagesPage({
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
         }
         incompatible = plan.incompatible_reason ?? null;
+        incompatibleCode = plan.incompatible_code ?? null;
         if (!incompatible && plan.entries.length > 0) {
           if (!downloadOnly) {
             pendingStagedLoad.current = {
@@ -3954,7 +3993,20 @@ export function ImagesPage({
       }
       if (incompatible) {
         pickToast.dismiss(pickToastId);
-        toast.error(incompatible);
+        const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+        if (!downloadOnly && shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
+          const retrySource = source;
+          offerLoadAnyway(incompatible, () => {
+            oversizedLoadOnce.current = true;
+            try {
+              void loadOrStageRef.current(repoId, opts, retrySource, undefined, familyOverrideRequired, undefined, true);
+            } finally {
+              oversizedLoadOnce.current = false;
+            }
+          });
+        } else {
+          toast.error(incompatible);
+        }
         return downloadOnly;
       }
       if (downloadOnly) {
@@ -3963,8 +4015,13 @@ export function ImagesPage({
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick, pickToast, engineFor, offerLoadAnyway],
   );
+  // For the Load anyway retry, which re-runs the refused pick from inside loadOrStage itself.
+  const loadOrStageRef = useRef(loadOrStage);
+  useEffect(() => {
+    loadOrStageRef.current = loadOrStage;
+  }, [loadOrStage]);
 
   const resolveDownloadFootprint = useCallback(
     async (repoId: string, meta: ModelSelectorChangeMeta) => {
@@ -6788,6 +6845,7 @@ export function ImagesPage({
 
       </div>
       )}
+      {loadAnywayDialog}
     </div>
   );
 }
