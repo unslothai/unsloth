@@ -151,7 +151,6 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
     pipe, router = _armed(model, monkeypatch)
     got, _ = _flux_loop(model)
     torch.testing.assert_close(got, ref)
-    # step 1 warms up, step 2 is the plain pair, steps 3.. run one doubled call
     assert router.stats["batched_steps"] == 4 and router.stats["hits"] == 4
     assert model.calls[-2:] == [2, 2]
     assert cb.cfg_batch_status(pipe)["batched_steps"] == 4
@@ -196,8 +195,7 @@ def test_qwen_unequal_prompt_lengths_and_img_shapes_batch(monkeypatch):
 
 
 def test_a_changed_second_branch_reruns_plain_and_stops_after_three_misses(monkeypatch):
-    # the uncond prompt is rewritten in place between the two calls from step 3 on: every doubled call batched the
-    # old bytes, so the second call must miss, rerun plain, and give exactly the two-call result
+    # uncond prompt rewritten in place: the doubled call must miss, rerun plain, and match the two-call result
     def between(i, neg):
         if i >= 2:
             neg.add_(0.5)
@@ -220,7 +218,6 @@ def test_guidance_ending_wastes_at_most_one_doubled_call(monkeypatch):
     got, _ = _flux_loop(model, steps = 8, guided = lambda i: i < 5)
     torch.testing.assert_close(got, ref)
     assert router.stats["misses"] == 1  # step 6's doubled call found no second branch
-    # after it, each one-call step runs one plain call: no more doubled calls
     assert model.calls[-2:] == [1, 1]
 
 

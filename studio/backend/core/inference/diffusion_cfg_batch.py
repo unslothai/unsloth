@@ -278,7 +278,6 @@ class CfgBatchRouter:
         module = self.module_ref()
         return module is None or module.__dict__.get("forward") is not self
 
-    # -- dispatch ---------------------------------------------------------------------------------------------------
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         mg = _mg()
@@ -343,7 +342,6 @@ class CfgBatchRouter:
         self.stats["plain_calls"] += 1
         return self.orig_forward(*args, **kwargs)
 
-    # -- pricing ----------------------------------------------------------------------------------------------------
 
     def _sync(self, latent: Any) -> bool:
         if getattr(latent.device, "type", None) != "cuda":
@@ -356,8 +354,8 @@ class CfgBatchRouter:
         if not self._sync(latent):
             shape.plain_pair_s = 0.0  # no device timer: batch on the memory gate alone
             return self._plain(args, kwargs)
-        # never reset the peak counters (other measurements own their windows): a call that raised the peak measured
-        # its own activations exactly; one that stayed under an earlier peak leaves them unknown (the OOM backstop)
+        # never reset the peak counters (other measurements own them); a call that stayed under an
+        # earlier peak leaves its activations unknown
         base = torch.cuda.memory_allocated(latent.device)
         before = torch.cuda.max_memory_allocated(latent.device)
         t0 = time.perf_counter()
@@ -387,7 +385,6 @@ class CfgBatchRouter:
                 f"measured no gain: batched pair {batched:.4f}s vs plain pair {shape.plain_pair_s:.4f}s",
             )
 
-    # -- the doubled call -------------------------------------------------------------------------------------------
 
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         """How the second call's arguments relate to the first's: the latent, a first-branch tensor (same object, or a
