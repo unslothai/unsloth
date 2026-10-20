@@ -999,7 +999,9 @@ def _vulkan_device_args(
         import torch
 
         matched = next((row["name"] for row in rows if f"Vulkan{row['index']}" == device), "")
-        exact = bool(name) and _normalized_card_name(_without_driver_tag(matched)) == _normalized_card_name(name)
+        exact = bool(name) and _normalized_card_name(
+            _without_driver_tag(matched)
+        ) == _normalized_card_name(name)
         if not exact and (len(rows) > 1 or torch.cuda.device_count() > 1):
             return None
         return [] if len(rows) == 1 else ["--device", device]

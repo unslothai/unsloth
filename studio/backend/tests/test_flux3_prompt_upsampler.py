@@ -2194,9 +2194,12 @@ def test_a_negative_ordinal_is_never_pinned():
 
 
 @pytest.mark.parametrize(
-    "row, pinned", [("AMD Radeon RX 7600 XT (RADV NAVI33)", False), ("AMD Radeon RX 7600 (RADV NAVI33)", True)]
+    "row, pinned",
+    [("AMD Radeon RX 7600 XT (RADV NAVI33)", False), ("AMD Radeon RX 7600 (RADV NAVI33)", True)],
 )
-def test_a_loose_name_match_beside_other_vulkan_devices_is_unknown(spawn_argv, monkeypatch, row, pinned):
+def test_a_loose_name_match_beside_other_vulkan_devices_is_unknown(
+    spawn_argv, monkeypatch, row, pinned
+):
     # An iGPU beside the XT must not make the XT stand in for the RX 7600 the memory probe read.
     import torch
 
