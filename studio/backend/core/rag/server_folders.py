@@ -3,6 +3,8 @@
 
 """Source folders explicitly exposed by the server operator, never by an HTTP caller."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import logging

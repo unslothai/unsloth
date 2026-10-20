@@ -299,8 +299,11 @@ export const BUDGET = {
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
   // Explicit browser download names retain the prior startup margin.
-  transferBytes: 2_062_292,
-  rawBytes: 6_847_855,
+  // Server source folders (#14292) add 1,273 B raw / 180 B transfer (6,847,533 -> 6,848,806 B raw,
+  // 2,062,180 -> 2,062,360 B transfer against e9127c97b8, one machine and build, 96 chunks): the server folder
+  // picker and its list request sit in the eager linked-folder manager. Raised by that.
+  transferBytes: 2_062_472,
+  rawBytes: 6_849_128,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -193,6 +193,10 @@ _MULTIPART = (
     "the JSON-only matrix client cannot send the multipart upload, so the owning account stops "
     "at 400 after the ownership check that returns 404 to everyone else"
 )
+_SERVER_FOLDER = (
+    "server source folders are owner-only, so managed accounts stop at 403 before any lookup; the "
+    "owner meets the scope ownership check, then 400 for a folder id the server does not configure"
+)
 _MULTIPART_UNSCOPED = (
     "thread uploads have no thread-existence check and need a multipart body the JSON matrix "
     "client cannot send, so every actor stops at the same 400 and no case can discriminate"
@@ -227,6 +231,14 @@ FACTORIES = {
         fragment = "Native path grant",
         self_expected = (400,),
         reason = _LEASE,
+    ),
+    "routes.rag:POST:/knowledge-bases/{kb_id}/server-linked-folders": Factory(
+        "rag-kb",
+        {"serverFolderId": "rag-matrix-unconfigured"},
+        right = (403,),
+        wrong = (403,),
+        self_expected = (400,),
+        reason = _SERVER_FOLDER,
     ),
     "routes.rag:DELETE:/documents/{document_id}": Factory("rag-document"),
     "routes.rag:GET:/documents/{document_id}/file-url": Factory(
@@ -275,6 +287,14 @@ FACTORIES = {
         fragment = "Native path grant",
         self_expected = (400,),
         reason = _LEASE,
+    ),
+    "routes.rag:POST:/projects/{project_id}/server-linked-folders": Factory(
+        "rag-project",
+        {"serverFolderId": "rag-matrix-unconfigured"},
+        right = (403,),
+        wrong = (403,),
+        self_expected = (400,),
+        reason = _SERVER_FOLDER,
     ),
     "routes.rag:GET:/threads/{thread_id}/documents": Factory(
         "rag-thread-document",

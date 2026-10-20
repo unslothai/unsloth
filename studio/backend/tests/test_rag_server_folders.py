@@ -56,7 +56,9 @@ def test_bad_setting_and_missing_folder_warn_once(rag_home, monkeypatch, caplog)
 
 
 def test_an_undecodable_path_does_not_break_the_listing(source, monkeypatch):
-    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps(["/srv/\udcff", str(source)]))
+    monkeypatch.setenv(
+        server_folders.ENV_NAME, json.dumps([str(source.parent / "\udcff"), str(source)])
+    )
     assert [f["displayName"] for f in server_folders.available_folders()] == ["documents"]
 
 
@@ -83,11 +85,13 @@ def test_same_named_folders_are_told_apart(rag_home, monkeypatch):
     assert names == [str(Path("team-a", "docs")), str(Path("team-b", "docs")), "notes"]
 
 
-def test_a_suffix_of_another_folder_is_not_labelled_by_its_absolute_path(rag_home, monkeypatch):
-    monkeypatch.setattr(server_folders, "_resolve", lambda path: (path, (0, 0)))
-    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps(["/srv/docs", "/archive/srv/docs"]))
-    names = [f["displayName"] for f in server_folders.available_folders()]
-    assert names == [str(Path("srv", "docs")), str(Path("archive", "srv", "docs"))]
+def test_a_suffix_of_another_folder_is_not_labelled_by_its_absolute_path(monkeypatch):
+    from pathlib import PurePosixPath
+    monkeypatch.setattr(server_folders, "Path", PurePosixPath)
+    assert server_folders._labels(["/srv/docs", "/archive/srv/docs"]) == [
+        "srv/docs",
+        "archive/srv/docs",
+    ]
 
 
 def test_same_named_folders_on_different_windows_drives_are_told_apart(monkeypatch):
