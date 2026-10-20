@@ -205,6 +205,7 @@ def test_small_decode_batches_skip_the_dequantize(bsz, monkeypatch):
         @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
     )
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", True)
     monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
     monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: pytest.fail("dequantized"))
     first = utils.fast_linear_forward(proj, X)
@@ -424,6 +425,7 @@ def test_decode_rows_above_the_gemv_cap_use_the_bnb_gemm(bsz, monkeypatch):
     X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
     ref = X.float().view(bsz, -1) @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", True)
     monkeypatch.setattr(utils, "_bnb_gemm_4bit_device_ok", lambda device: True)
     monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: pytest.fail("dequantized"))
     with torch.no_grad():
@@ -442,8 +444,7 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
     bsz = utils._BNB_GEMM_4BIT_MAX_ROWS + 1 if case == "too_many_rows" else 8
     X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
-    if case == "switch_off":
-        monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", False)
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", case != "switch_off")
     if case == "other_arch":
         monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_ARCHS", set())
         monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DEVICE", {})
@@ -457,14 +458,23 @@ def test_the_bnb_gemm_is_skipped_where_it_does_not_apply(case, monkeypatch):
     assert calls, case
 
 
-@pytest.mark.parametrize("env", [None, "1"])
+@pytest.mark.parametrize("env", [None, "0", "1"])
 def test_the_bnb_gemm_runs_only_on_listed_archs_unless_forced(env, monkeypatch):
     utils = _bnb_gemm_utils()
+    monkeypatch.setattr(utils, "_BNB_GEMM_4BIT", None)
     monkeypatch.setattr(utils, "_BNB_GEMM_4BIT_DEVICE", {})
     if env is None:
         monkeypatch.delenv("UNSLOTH_BNB_GEMM_4BIT", raising = False)
     else:
         monkeypatch.setenv("UNSLOTH_BNB_GEMM_4BIT", env)
-    device = torch.device("cuda", torch.cuda.current_device())
-    listed = torch.cuda.get_device_capability(device) in utils._BNB_GEMM_4BIT_ARCHS
-    assert utils._bnb_gemm_4bit_device_ok(device) == (listed or env == "1")
+    proj = _linear4bit(1024, 4096)
+    X = torch.randn(8, 4096, dtype = torch.bfloat16, device = "cuda")
+    listed = [
+        torch.cuda.get_device_capability(i) in utils._BNB_GEMM_4BIT_ARCHS
+        for i in range(torch.cuda.device_count())
+    ]
+    with torch.no_grad():
+        ok = utils._bnb_gemm_4bit_ok(X, proj.weight.quant_state)
+    # Decided once for the process: off when no visible GPU is listed, so the decode loop skips the check.
+    assert utils._BNB_GEMM_4BIT == (env != "0" and (env == "1" or any(listed)))
+    assert ok == (env != "0" and (env == "1" or listed[X.device.index]))

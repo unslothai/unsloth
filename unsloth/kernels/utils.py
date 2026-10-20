@@ -1488,8 +1488,16 @@ def _gemv_rows_cap(device):
 # like the GEMV table. UNSLOTH_BNB_GEMM_4BIT=0 keeps the dequantize path, =1 uses it on any arch.
 _BNB_GEMM_4BIT_MAX_ROWS = 16
 _BNB_GEMM_4BIT_ARCHS = {(7, 5)}
+# None until first use, then False (no visible GPU in the table: fast_linear_forward skips the check) or True.
 _BNB_GEMM_4BIT = None
 _BNB_GEMM_4BIT_DEVICE = {}
+
+
+def _bnb_gemm_4bit_arch_ok(device):
+    return (
+        os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1"
+        or torch.cuda.get_device_capability(device) in _BNB_GEMM_4BIT_ARCHS
+    )
 
 
 def _bnb_gemm_4bit_device_ok(device):
@@ -1497,10 +1505,7 @@ def _bnb_gemm_4bit_device_ok(device):
     ok = _BNB_GEMM_4BIT_DEVICE.get(index)
     if ok is None:
         try:
-            ok = (
-                os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1"
-                or torch.cuda.get_device_capability(device) in _BNB_GEMM_4BIT_ARCHS
-            )
+            ok = _bnb_gemm_4bit_arch_ok(device)
         except Exception:
             ok = False
         _BNB_GEMM_4BIT_DEVICE[index] = ok
@@ -1516,6 +1521,7 @@ def _bnb_gemm_4bit_ok(X, quant_state):
                 and torch.version.hip is None
                 and os.environ.get("UNSLOTH_BNB_GEMM_4BIT") != "0"
                 and hasattr(torch.ops.bitsandbytes, "gemm_4bit")
+                and any(_bnb_gemm_4bit_arch_ok(i) for i in range(torch.cuda.device_count()))
             )
         except Exception:
             _BNB_GEMM_4BIT = False
@@ -1682,7 +1688,7 @@ def fast_linear_forward(
         and (rows := _gemv_rows(X, W, W_quant, out)) is not None
     ):
         out = rows
-    elif bsz <= _BNB_GEMM_4BIT_MAX_ROWS and _bnb_gemm_4bit_ok(X, W_quant):
+    elif _BNB_GEMM_4BIT is not False and bsz <= _BNB_GEMM_4BIT_MAX_ROWS and _bnb_gemm_4bit_ok(X, W_quant):
         out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
