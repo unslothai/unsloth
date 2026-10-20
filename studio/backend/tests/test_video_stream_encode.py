@@ -14,8 +14,13 @@ torch = pytest.importorskip("torch")
 av = pytest.importorskip("av")
 diffusers = pytest.importorskip("diffusers")
 
-from diffusers import AutoencoderKLWan  # noqa: E402
-from diffusers.video_processor import VideoProcessor  # noqa: E402
+# Not importorskip alone: diffusers resolves these lazily, and that import can raise RuntimeError (a broken
+# bitsandbytes), an environment fact that must skip the module rather than abort collection.
+try:
+    from diffusers import AutoencoderKLWan  # noqa: E402
+    from diffusers.video_processor import VideoProcessor  # noqa: E402
+except (ImportError, RuntimeError) as exc:
+    pytest.skip(f"diffusers is not importable here: {type(exc).__name__}", allow_module_level = True)
 
 from core.inference import video_stream_encode as vse  # noqa: E402
 from core.inference.video_frames import uint8_video_frames  # noqa: E402
