@@ -3,7 +3,6 @@
 
 """FSDP launch detection from the launcher env only (no torch): identical on every rank."""
 
-import importlib
 import importlib.util
 import os
 import sys
@@ -202,6 +201,25 @@ def _set_arg(training_args, name):
     return value is not None and value is not False and value != "" and value != {}
 
 
+def _import_vendor(package):
+    """The vendor extension that registers its device with torch, as accelerate imports it
+    (accelerate/utils/imports.py is_*_available). Written-out names only."""
+    if package == "torch_mlu":
+        import torch_mlu  # noqa: F401
+    elif package == "torch_sdaa":
+        import torch_sdaa  # noqa: F401
+    elif package == "torch_musa":
+        import torch_musa  # noqa: F401
+    elif package == "torch_npu":
+        import torch_npu  # noqa: F401
+    elif package == "habana_frameworks.torch":
+        import habana_frameworks.torch  # noqa: F401
+    elif package == "torch_neuronx":
+        import torch_neuronx  # noqa: F401
+    else:
+        raise ValueError(package)
+
+
 def _device_available(spec):
     package, attr, before_cuda = spec
     torch = sys.modules.get("torch")
@@ -213,7 +231,7 @@ def _device_available(spec):
         if package is not None:
             if importlib.util.find_spec(package.split(".")[0]) is None:
                 return False
-            importlib.import_module(package)
+            _import_vendor(package)
         backend = getattr(torch, attr, None)
         return bool(backend is not None and backend.is_available())
     except Exception:
