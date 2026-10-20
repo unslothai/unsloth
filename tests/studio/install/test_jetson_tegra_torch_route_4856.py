@@ -176,6 +176,11 @@ _SH_CELLS = [
 ]
 
 
+# install.sh runs on Linux / macOS only; Git Bash on Windows lacks the tools it shells out to.
+_POSIX = pytest.mark.skipif(sys.platform == "win32", reason = "install.sh is POSIX-only")
+
+
+@_POSIX
 @pytest.mark.parametrize(
     "host_kw, env, expected, warns", [c[1:] for c in _SH_CELLS], ids = [c[0] for c in _SH_CELLS]
 )
