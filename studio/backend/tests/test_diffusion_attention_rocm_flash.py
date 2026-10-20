@@ -1981,7 +1981,7 @@ def test_cross_attention_is_not_decided_by_a_square_probe(monkeypatch):
     # the square 16k self-attention admits flash; the 27k x 512 cross-attention is timed as 16384 x 512 and loses
     assert timed == [4096, 16384, (16384, 512)]
     assert ran == ["flash", "native", "native"]
-    rec = att.ROCM_FLASH_ADMISSIONS[("cuda:0", "torch.bfloat16", 32, 2, 16, 16384, 512)]
+    rec = att.ROCM_FLASH_ADMISSIONS[("cuda:0", "torch.bfloat16", (32, 2, 16), 16384, 512, 1)]
     assert rec["kv_tokens"] == 512 and rec["admitted"] is False
 
 
@@ -2045,7 +2045,7 @@ def test_batch_two_is_not_decided_by_a_batch_one_verdict(monkeypatch):
     call(2)
     call(3)  # batch bucket 2
     assert timed == [4096, (4096, "b2")] and ran == ["flash", "native", "native"]
-    rec = att.ROCM_FLASH_ADMISSIONS[("cuda:0", "torch.bfloat16", 32, 2, 16, 4096, "b2")]
+    rec = att.ROCM_FLASH_ADMISSIONS[("cuda:0", "torch.bfloat16", (32, 2, 16), 4096, 4096, 2)]
     assert rec["batch"] == 2 and rec["admitted"] is False
 
 
@@ -2119,7 +2119,7 @@ def test_context_width_is_part_of_the_geometry(monkeypatch):
     assert att._rocm_flash_geometry_admitted("cuda:0", "torch.bfloat16", (32, 2, 16, 48))
     assert att._rocm_flash_geometry_admitted("cuda:0", "torch.bfloat16", (32, 2, 16))
     assert seen == [48, None]
-    rec = att.ROCM_FLASH_ADMISSIONS[("cuda:0", "torch.bfloat16", 32, 2, 16, 48, 4096)]
+    rec = att.ROCM_FLASH_ADMISSIONS[("cuda:0", "torch.bfloat16", (32, 2, 16, 48), 4096, 4096, 1)]
     assert rec["geometry"]["context"] == 48 and att._rocm_flash_record_ok(rec)
 
 
@@ -2191,3 +2191,33 @@ def test_attention_status_reason():
     assert att.attention_status_reason(None, None) == "diffusers default"
     assert att.attention_status_reason("flash", "flash") == "requested"
     assert att.attention_status_reason("flash", None) == "diffusers default"
+
+
+# The in-memory admission key keeps geometry, query length, key length and batch in separate fields: a cross-attention
+# geometry whose context width equals a bucket edge must not alias a narrower geometry at rectangular lengths.
+
+
+def test_admission_key_does_not_alias_geometry_and_lengths(monkeypatch):
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_rocm_flash_toolchain_key", lambda device: None)
+    timed = []
+
+    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096, kv_tokens = None, **kw):
+        timed.append((hidden, heads, head_dim, tokens, kv_tokens, kw.get("ctx_dim")))
+        wins = kv_tokens is None  # the square cross-attention wins, the rectangle loses
+        return {
+            "native_ms": 80.0,
+            "flash_ms": 60.0 if wins else 90.0,
+            "rel_l1": 1e-3,
+            "max_rel": 1e-3,
+            "finite": True,
+            "tokens": tokens,
+            **({} if kv_tokens is None else {"kv_tokens": kv_tokens}),
+        }
+
+    monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
+    assert att._rocm_flash_geometry_admitted("cuda:0", "bf16", (32, 2, 16, 256), tokens = 4096) is True
+    # (32, 2, 16) at 256 x 4096 flattens to the same tuple as (32, 2, 16, 256) at 4096: it must be timed on its own
+    assert att._rocm_flash_geometry_admitted("cuda:0", "bf16", (32, 2, 16), tokens = 256, kv_tokens = 4096) is False
+    assert timed == [(32, 2, 16, 4096, None, 256), (32, 2, 16, 256, 4096, None)]
+    assert len(att.ROCM_FLASH_ADMISSIONS) == 2

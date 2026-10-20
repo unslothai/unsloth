@@ -521,7 +521,7 @@ ROCM_FLASH_MIN_BUCKET = 256
 ROCM_FLASH_LONG_PROBE = (
     16384  # from here the probe times fewer runs (one native SDPA call is seconds at 64k tokens)
 )
-# (device, dtype, hidden, heads, head_dim, tokens) -> admission record.
+# (device, dtype, geometry, query tokens, key tokens, batch) -> admission record.
 ROCM_FLASH_ADMISSIONS: dict[tuple, dict] = {}
 # Bump when the block probe changes what it measures: every stored verdict is then re-timed.
 # 2: the flash arm runs through diffusers' dispatch (the generation path), not flash_attn_func directly.
@@ -984,8 +984,8 @@ def _rocm_flash_geometry_admitted(
     queries x ``kv_tokens`` keys (default square, batch 1). None when the probe could not run (it raised, or ``live``,
     inside a running forward, and there is no room for it beside that forward's tensors): nothing is cached."""
     kv = tokens if kv_tokens is None else int(kv_tokens)
-    extra = (() if kv == tokens else (kv,)) + (() if batch == 1 else (f"b{batch}",))
-    key = (device, str(dtype), *geometry, tokens) + extra
+    # Geometry, lengths and batch as separate fields: a flat tuple aliases (h, H, d, ctx) at n with (h, H, d) at ctx x n.
+    key = (device, str(dtype), tuple(geometry), tokens, kv, batch)
     _sync_rocm_flash_baseline()
     cached = ROCM_FLASH_ADMISSIONS.get(key)
     if cached is not None:
