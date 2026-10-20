@@ -1462,3 +1462,59 @@ def test_evict_counts_a_key_another_evictor_took(monkeypatch, tmp_path):
     monkeypatch.setattr(os, "rename", another_process_got_there_first)
     assert cc.evict(root = tmp_path, max_bytes = 1500) == []
     assert not taken.exists() and nxt.exists()
+
+
+def _bundle_ctx(tmp_path):
+    return cc.CacheContext(
+        key = "abc",
+        dir = tmp_path / "abc",
+        bundle = tmp_path / "abc" / "cache.bin",
+        manifest_path = tmp_path / "abc" / "manifest.json",
+        env_fp = "e",
+        model_fp = "m",
+        mode = "auto",
+    )
+
+
+def test_a_resave_after_a_recompile_restores_every_graph(tmp_path, monkeypatch):
+    # torch appends one (type, artifacts) group per save_cache_artifacts() call and deserialises them with dict(), so
+    # a bundle written after a recompile restored only the newest group: the first resolution's graphs were lost.
+    pytest.importorskip("torch.compiler._cache")
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "first-resolution", b"one")
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "second-resolution", b"two")
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        data = (ctx.dir / manifest["bundle"]).read_bytes()
+        restored = M.deserialize(data)
+        assert sorted(a.key for a in restored["inductor"]) == ["first-resolution", "second-resolution"]
+    finally:
+        M.clear()
+
+
+def test_the_bundle_is_serialised_under_torch_compile_lock(tmp_path, monkeypatch):
+    # An artifact recorded while torch serialises is cleared from the pending list but stays "seen": lost for good.
+    # A compile on another thread (a render, a background compile) records under compile_lock, so the save takes it.
+    import threading
+
+    import torch
+    from torch._dynamo import convert_frame
+
+    lock = threading.RLock()
+    held = []
+
+    def save():
+        held.append(lock._is_owned())
+        return None
+
+    monkeypatch.setattr(convert_frame, "compile_lock", lock)
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", save)
+    cc._write_bundle(_bundle_ctx(tmp_path), None)
+    assert held == [True]

@@ -56,6 +56,7 @@ version is deliberately NOT bumped, since bumping it is what would invalidate th
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -924,6 +925,47 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
     return removed
 
 
+def _compile_lock() -> Any:
+    try:
+        from torch._dynamo.convert_frame import compile_lock  # noqa: PLC0415
+        return compile_lock
+    except Exception:  # noqa: BLE001 - no dynamo lock on this build: save unlocked, as before
+        return contextlib.nullcontext()
+
+
+def _one_group_per_type(data: bytes, logger: Any) -> bytes:
+    """torch appends one ``(type, artifacts)`` group per ``save_cache_artifacts`` call and deserialises them with
+    ``dict(...)``, so a bundle re-saved after a recompile restored only the newest group of each type. Rewrite it as
+    one group per type (first occurrence of each key kept). Unchanged when already so, or on a torch whose internals
+    differ."""
+    try:
+        from torch.compiler._cache import (  # noqa: PLC0415
+            CacheArtifactManager,
+            _deserialize_single_cache,
+            _serialize_single_cache,
+        )
+        from torch.utils._appending_byte_serializer import AppendingByteSerializer  # noqa: PLC0415
+
+        CacheArtifactManager._ensure_cache_artifacts_registered()
+        groups = AppendingByteSerializer.to_list(data, deserialize_fn = _deserialize_single_cache)
+        merged: dict[str, list] = {}
+        seen: set = set()
+        for kind, artifacts in groups:
+            bucket = merged.setdefault(kind, [])
+            for artifact in artifacts:
+                if (kind, artifact.key) not in seen:
+                    seen.add((kind, artifact.key))
+                    bucket.append(artifact)
+        if len(merged) == len(groups):
+            return data
+        out = AppendingByteSerializer(serialize_fn = _serialize_single_cache)
+        out.extend(merged.items())
+        return out.to_bytes()
+    except Exception as exc:  # noqa: BLE001 - keep torch's own bytes
+        _warn(logger, f"compile-cache: could not merge artifact groups ({exc}); saving torch's bundle as is")
+        return data
+
+
 def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     """The save itself. Runs on the caller's thread (``save``) or the worker (``save_async``)."""
     if not _save_enabled(ctx.mode) or ctx.saved:
@@ -935,7 +977,10 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         shapes = sorted(list(s) for s in ctx.shapes)
     try:
         import torch  # noqa: PLC0415
-        result = torch.compiler.save_cache_artifacts()
+        # Under torch's compile lock: an artifact recorded while torch serialises is dropped from the pending list but
+        # stays "seen", so it never reaches a later bundle either. Renders and background compiles record under it.
+        with _compile_lock():
+            result = torch.compiler.save_cache_artifacts()
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: save_cache_artifacts failed: {exc}")
         return False
@@ -943,7 +988,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         _warn(logger, "compile-cache: nothing to save (empty artifacts)")
         return False
 
-    data = result[0]
+    data = _one_group_per_type(result[0], logger)
     try:
         ctx.dir.mkdir(parents = True, exist_ok = True)
         digest = hashlib.sha256(data).hexdigest()
