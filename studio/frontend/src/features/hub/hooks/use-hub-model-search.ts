@@ -1134,8 +1134,13 @@ export function useHubModelSearch(
     () =>
       needsMetadata
         ? (raw: unknown) => {
-            const result = mapModel(raw);
-            return result !== null && (keepResult?.(result) ?? true);
+            try {
+              const result = mapModel(raw);
+              return result !== null && (keepResult?.(result) ?? true);
+            } catch {
+              // Pagination skips a row its mapper throws on; skip it here too, not the search.
+              return false;
+            }
           }
         : undefined,
     [needsMetadata, mapModel, keepResult],

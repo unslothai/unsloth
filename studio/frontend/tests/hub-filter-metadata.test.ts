@@ -248,3 +248,16 @@ test("rows the list hides cost no metadata request", async () => {
   );
   assert.equal(requested.length, 1);
 });
+
+test("a row the mapper throws on is skipped, not the whole search", async () => {
+  const hook = searchHarness(async () =>
+    Response.json({ max_position_embeddings: 32768 }),
+  );
+  const keepResult = (result: { id: string }) => {
+    if (result.id === "unsloth/small") throw new RangeError("Invalid time value");
+    return true;
+  };
+  assert.deepEqual(await hook.search({ minContext: 2048 }, { keepResult }), [
+    hook.rows[1],
+  ]);
+});
