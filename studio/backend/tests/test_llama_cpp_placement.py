@@ -6358,3 +6358,35 @@ def test_projector_preflight_does_not_count_an_apu_as_private_vram(tmp_path, mon
     assert launch([(0, 60_000, 65_536), _DGPU], {0}) == "1"
     # Control: the same big card as a dGPU keeps the projector there, as before.
     assert launch([(0, 60_000, 65_536), _DGPU], ()) == "0"
+
+
+@pytest.mark.parametrize("shared, expected_gpu, pinned", [(True, "0", False), (False, "1", True)])
+def test_projector_preflight_skips_a_shared_dgpu_like_placement(
+    tmp_path, monkeypatch, shared, expected_gpu, pinned
+):
+    # The occupied dGPU fits only with the projector on host, but placement takes the
+    # unshared APU, where pinning the projector frees nothing.
+    gb = 1024**3
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0})
+    )
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 60_000, 65_536), _DGPU])
+    backend._get_gguf_size_bytes = lambda _path: 13 * gb
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 64 * 1024
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+
+    def read_metadata(_path):
+        backend._context_length = 131_072
+
+    backend._read_gguf_metadata = read_metadata
+    backend._mmproj_vram_bytes = lambda _path: 3 * gb
+    backend._resolve_launch_mmproj_path = lambda **_kw: str(mmproj)
+    if shared:
+        backend._other_planned_vram_mib = lambda: {1: 0}
+    out = _launch(backend, gguf, n_ctx = 8192, is_vision = True)
+    assert out["env"].get("CUDA_VISIBLE_DEVICES") == expected_gpu
+    assert ("--no-mmproj-offload" in out["cmd"]) is pinned

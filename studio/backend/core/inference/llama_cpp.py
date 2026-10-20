@@ -27881,7 +27881,7 @@ class LlamaCppBackend:
                         # RAM, so moving the projector frees nothing there. Also pin when that
                         # alone lets the discrete cards hold the model (#7624).
                         _mm_discrete = LlamaCppBackend._discrete_tier(
-                            _mm_budgeted_gpus, _integrated_gpus
+                            _mm_budgeted_gpus, _integrated_gpus, _shared_gpus
                         )
                         if (
                             not _mm_needs_fit
