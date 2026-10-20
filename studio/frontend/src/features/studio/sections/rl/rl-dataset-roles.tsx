@@ -153,6 +153,8 @@ export function RlDatasetRoles({
   ]);
   const columns = loaded?.key === datasetKey ? loaded.columns : null;
   const loadColumns = useCallback(async () => {
+    // The row is the reward tester's reference: never show one dataset's under another.
+    setPreviewRow(null);
     if (!datasetName) {
       return;
     }

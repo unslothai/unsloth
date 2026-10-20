@@ -90,3 +90,21 @@ test("a panel unmounted before its deferred load starts never inspects the datas
   await settle();
   assert.equal(h.pending.has("A"), false);
 });
+
+test("switching or clearing the dataset drops the previous dataset's preview row at once", async () => {
+  const h = harness();
+  h.mount("A");
+  await settle();
+  h.reply("A");
+  await settle();
+  assert.deepEqual(h.shared.preview, { q: "A" });
+  h.mount("B");
+  await settle();
+  assert.equal(h.shared.preview, null); // B still loading: no reference from A
+  h.reply("B");
+  await settle();
+  assert.deepEqual(h.shared.preview, { q: "B" });
+  h.mount("");
+  await settle();
+  assert.equal(h.shared.preview, null);
+});
