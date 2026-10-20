@@ -465,7 +465,6 @@ _OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
 
 def _holds_hard_link(entry: Path) -> bool:
     import stat as stat_module
-
     for child in entry.iterdir():
         info = child.lstat()
         if stat_module.S_ISREG(info.st_mode) and info.st_nlink > 1:
@@ -493,7 +492,6 @@ def _prune_open_staging(root: Path) -> None:
 
 def prune_open_staging() -> None:
     from utils.paths.storage_roots import cache_root
-
     _prune_open_staging(cache_root() / "open-staging")
 
 
