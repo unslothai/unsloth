@@ -27,10 +27,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Tuple
 import typer
+from typer.core import TyperCommand
 
 from unsloth_cli import _studio_deps, _studio_runtime_gate, _studio_stage
 from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
+from studio.backend.utils.pid_records import (
+    RecordedStart,
+    pid_reuse_proven,
+    pid_start_matches,
+    recorded_start,
+)
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
@@ -49,9 +56,10 @@ _CMD_SHIM_MAX_BYTES = 8192
 
 
 def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
-    """Sentinel (share/studio.conf, or our own bin/unsloth.cmd) so a dev venv named
-    unsloth_studio is not taken for a custom root. It must be OUR shim: the dir is on PATH."""
-    if (candidate / "share" / "studio.conf").is_file():
+    # Default POSIX installs keep studio.conf outside the install tree.
+    if (candidate / "share" / "studio.conf").is_file() or (
+        candidate / "share" / "studio_install_id"
+    ).is_file():
         return True
     if platform.system() != "Windows":
         return (candidate / "bin" / "unsloth").is_file()
@@ -90,10 +98,7 @@ def _resolve_studio_home() -> tuple[Path, bool]:
             legacy = (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
             legacy = Path.home() / ".unsloth" / "studio"
-        # install.sh and install.ps1 do not read UNSLOTH_HOME yet, so they leave the venv and the
-        # launcher at the legacy root while setup puts the runtimes under the master root:
-        # preferring <master>/studio unconditionally reported "Unsloth Studio not set up" for an
-        # install that is right there. The master root wins only when it HAS an install.
+        # Preserve legacy installs until a managed install exists at the master root.
         if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
             if _looks_like_installer_managed_studio_home(legacy):
                 return legacy, False
@@ -2353,6 +2358,27 @@ def _consume_legacy_short_aliases(
     return value, out
 
 
+class _LlamaPassthroughCommand(TyperCommand):
+    """Pass unknown short tokens to llama-server whole: Click split `-dev` into `-de` + our -v,
+    and `-ctxcp 8` into --port 8. Tokens starting with our own letter (`-p8888`) still cluster."""
+
+    def make_parser(self, ctx):
+        parser = super().make_parser(ctx)
+        match_short = getattr(parser, "_match_short_opt", None)
+        short_opts = getattr(parser, "_short_opt", None)
+        if match_short is None or short_opts is None or not ctx.ignore_unknown_options:
+            return parser
+
+        def _match_short_opt(arg, state):
+            if len(arg) > 2 and arg[:2] not in short_opts:
+                state.largs.append(arg)
+                return
+            match_short(arg, state)
+
+        parser._match_short_opt = _match_short_opt
+        return parser
+
+
 _RUN_PANEL_MODEL = "Model"
 _RUN_PANEL_SERVER = "Server & network"
 _RUN_PANEL_TOOLS = "Tool calls"
@@ -2361,6 +2387,7 @@ _RUN_PANEL_ADVANCED = "Advanced"
 
 
 @studio_app.command(
+    cls = _LlamaPassthroughCommand,
     context_settings = {
         "allow_extra_args": True,
         "ignore_unknown_options": True,
@@ -3192,11 +3219,13 @@ def _pid_alive(pid: int) -> bool:
                 encoding = "utf-8",
                 errors = "replace",
                 timeout = 10,
-            ).stdout
+            )
         except Exception:
             # Cannot determine; assume alive, taskkill no-ops if already gone.
             return True
-        return f'"{int(pid)}"' in out
+        if out.returncode != 0:
+            return True
+        return f'"{int(pid)}"' in out.stdout
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -3206,7 +3235,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _parse_pid_record(text: str) -> "tuple[int, float | None, str | None] | None":
+def _parse_pid_record(text: str) -> "tuple[int, RecordedStart, str | None] | None":
     lines = text.splitlines()
     if not lines or not lines[0].strip().isdigit():
         return None
@@ -3218,18 +3247,13 @@ def _parse_pid_record(text: str) -> "tuple[int, float | None, str | None] | None
     # kill(0) signals our whole process group; kill(1) is init. Never either.
     if pid < 2:
         return None
-    created = None
-    if len(lines) > 1:
-        try:
-            created = float(lines[1].strip())
-        except ValueError:
-            created = None
+    created = recorded_start(lines)
     # Third line: the addresses run.py bound, absent in a legacy record.
     address = lines[2].strip() if len(lines) > 2 and lines[2].strip() else None
     return pid, created, address
 
 
-def _read_pid_record(path: Path) -> "tuple[int, float | None, str | None] | None":
+def _read_pid_record(path: Path) -> "tuple[int, RecordedStart, str | None] | None":
     try:
         text = path.read_text(encoding = "utf-8")
     except (OSError, UnicodeDecodeError):
@@ -3258,11 +3282,11 @@ def _report_unreadable(paths: "list[Path]") -> None:
 
 def _pid_file_entries(
     unreadable: "list[Path] | None" = None,
-) -> "list[tuple[int, list[float | None], list[Path]]]":
+) -> "list[tuple[int, list[RecordedStart], list[Path]]]":
     """(pid, create_times, files) per recorded server, including the legacy studio.pid. Grouped by
     PID: a second SIGTERM would hard-kill a server mid-shutdown. Every recorded time is kept, so a
     stale file cannot veto a live server."""
-    by_pid: "dict[int, tuple[list[float | None], list[Path]]]" = {}
+    by_pid: "dict[int, tuple[list[RecordedStart], list[Path]]]" = {}
     try:
         paths = sorted(STUDIO_HOME.glob(PID_FILE_GLOB)) + [_PID_FILE]
     except OSError:
@@ -3292,18 +3316,8 @@ def _pid_file_entries(
     return [(pid, times, files) for pid, (times, files) in by_pid.items()]
 
 
-def _pid_is_studio_server(pid: int, created_times: "Sequence[float | None]" = ()) -> bool:
-    """False only when a recorded start time proves this PID is a different process. Untimed records
-    are trusted and must not cancel a timed one: every server writes both."""
-    known = [c for c in created_times if c is not None]
-    if not known:
-        return True
-    try:
-        import psutil
-        actual = psutil.Process(pid).create_time()
-    except Exception:
-        return True
-    return any(abs(actual - c) < 1.0 for c in known)
+def _pid_is_studio_server(pid: int, created_times: "Sequence[RecordedStart]" = ()) -> bool:
+    return pid_start_matches(pid, created_times)
 
 
 def _graceful_shutdown_on_sigterm() -> None:
@@ -3353,11 +3367,22 @@ def stop():
         typer.echo("No running Unsloth server found (no PID file).")
         raise typer.Exit(0)
 
-    signalled, failed = [], []
+    signalled, failed, unverified = [], [], []
     for pid, created_times, paths in entries:
-        if not _pid_alive(pid) or not _pid_is_studio_server(pid, created_times):
+        if not _pid_alive(pid):
             for path in paths:
                 _unlink_quietly(path)
+            continue
+        if not _pid_is_studio_server(pid, created_times):
+            if pid_reuse_proven(pid, created_times):
+                for path in paths:
+                    _unlink_quietly(path)
+                continue
+            unverified.append(pid)
+            typer.echo(
+                f"Could not verify Unsloth server identity (PID {pid}); kept its PID files.",
+                err = True,
+            )
             continue
         error = _signal_stop(pid)
         if error is not None:
@@ -3368,6 +3393,8 @@ def stop():
         signalled.append((pid, paths))
 
     if not signalled and not failed:
+        if unverified:
+            raise typer.Exit(1)
         if unreadable:
             _report_unreadable(unreadable)
             raise typer.Exit(1)
@@ -3393,7 +3420,7 @@ def stop():
         typer.echo(f"Unsloth server (PID {pid}) is shutting down (may take a few seconds).")
     if unreadable:
         _report_unreadable(unreadable)
-    if failed or unreadable:
+    if failed or unreadable or unverified:
         raise typer.Exit(1)
 
 
@@ -4960,7 +4987,7 @@ def _managed_llama_runtime_is_the_active_one() -> bool:
     return _llama_runtime_to_grade() is not None
 
 
-def _llama_runtime_to_grade() -> Path | None:
+def _llama_runtime_to_grade() -> Optional[Path]:
     """The llama.cpp tree preflight should grade, or None when the runtime the
     backend would load is one the user chose and this PR does not grade.
 

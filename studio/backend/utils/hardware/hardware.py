@@ -383,7 +383,25 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
         logger.debug("KFD gfx target probe failed: %s", e)
         return []
     found = sorted({gfx for gfx in targets if gfx})
-    return found if "gfx1153" in found else []
+    if "gfx1153" not in found:
+        return []
+    # KFD reads the silicon, immune to HSA_OVERRIDE_GFX_VERSION; the installers judge a readable
+    # override instead (install_python_stack._linux_host_only_uncovered_amd): any arch outside
+    # their uncovered set (per-arch or generic-only, e.g. gfx942) gets a ROCm wheel, so keep the
+    # conservative no-candidates answer; an uncovered one stays on CPU torch on purpose.
+    _hsa = (os.environ.get("HSA_OVERRIDE_GFX_VERSION") or "").strip()
+    if not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() and re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+", _hsa
+    ):
+        _maj, _min, _step = (int(p) for p in _hsa.split("."))
+        if (
+            _maj > 0
+            and _min <= 9
+            and _step <= 15
+            and f"gfx{_maj}{_min}{_step:x}" not in _LINUX_UNCOVERED_AMD_GFX
+        ):
+            return []
+    return found
 
 
 def _linux_amd_gfx_candidates() -> list[str]:
@@ -1062,6 +1080,9 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 # Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
+# install_python_stack._LINUX_UNCOVERED_AMD_GFX: the arches the Linux installers leave on CPU torch.
+_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803"}
+
 # Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
 # first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).
 _LINUX_KRACKAN2_NAME_RE = r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330"
@@ -1653,6 +1674,9 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
+        elif _installed_without_torch():
+            # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            CHAT_ONLY_REASON = "no_torch"
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -1943,8 +1967,35 @@ def export_capability() -> dict:
     }
 
 
+def _video_cpu_opt_in() -> bool:
+    """Developer mode's CPU video opt-in (env override, else the owner setting). Never raises: an unreadable setting is off."""
+    try:
+        from utils.video_cpu_settings import video_cpu_enabled
+        return bool(video_cpu_enabled())
+    except Exception as exc:  # noqa: BLE001 -- the gate must answer even when the settings store cannot
+        logger.debug("video_capability: CPU opt-in unreadable (%s); treating it as off", exc)
+        return False
+
+
 def video_capability() -> dict:
-    """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch. Returns {video_supported, video_unsupported_reason, video_unsupported_message}."""
+    """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch.
+
+    A plain CPU-only host (reason ``no_accelerator``: torch imports, detection worked, no GPU at all) is refused by default; Developer mode (``utils.video_cpu_settings``) admits it as experimental, the diffusers pipelines then resolving to the float32 CPU target. Every other refusal stays one whatever the opt-in says. Returns {video_supported, video_unsupported_reason, video_unsupported_message, video_cpu_experimental, video_cpu_opt_in_applicable}: the last says whether the opt-in would change the answer on this host, so Settings can say when it has no effect."""
+    cap = _video_capability_verdict()
+    applicable = cap["video_unsupported_reason"] == "no_accelerator"
+    if applicable and _video_cpu_opt_in():
+        return {
+            "video_supported": True,
+            "video_unsupported_reason": None,
+            "video_unsupported_message": None,
+            "video_cpu_experimental": True,
+            "video_cpu_opt_in_applicable": True,
+        }
+    return {**cap, "video_cpu_experimental": False, "video_cpu_opt_in_applicable": applicable}
+
+
+def _video_capability_verdict() -> dict:
+    """``video_capability`` without the Developer mode opt-in: {video_supported, video_unsupported_reason, video_unsupported_message}."""
     if get_device() in (DeviceType.CUDA, DeviceType.XPU):
         return {
             "video_supported": True,
@@ -2006,8 +2057,9 @@ def video_capability() -> dict:
         reason = "no_accelerator"
         message = (
             "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator was "
-            "found on this host. (PyTorch is installed, but the video pipelines cannot run on CPU "
-            "only.)"
+            "found on this host. (PyTorch is installed, but the video pipelines are not enabled on "
+            "CPU only. The owner can allow experimental CPU video in Settings > General > "
+            "Developer mode.)"
         )
     return {
         "video_supported": False,

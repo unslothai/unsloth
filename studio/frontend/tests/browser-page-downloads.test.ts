@@ -59,7 +59,8 @@ function setup() {
     Event,
     setTimeout,
     nativeFetch: fetch,
-    post: (message: Record<string, unknown>) => posted.push(message),
+    resolve: (href: string) => href,
+    post: (message: Record<string, unknown>) => message.type !== "linkClick" && posted.push(message),
     navigate: (url: string) => navigated.push(url),
     followHash: () => {},
   });

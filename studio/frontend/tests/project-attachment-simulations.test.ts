@@ -115,9 +115,12 @@ function ragScope(opts: {
   projectId?: string | null;
 }): Record<string, string> {
   const { ragEnabled, kbId, threadId, projectRagEnabled, projectId } = opts;
-  if (ragEnabled && kbId) return { kb_id: kbId };
   return {
-    ...(ragEnabled && threadId ? { thread_id: threadId } : {}),
+    ...(ragEnabled && kbId
+      ? { kb_id: kbId }
+      : ragEnabled && threadId
+        ? { thread_id: threadId }
+        : {}),
     ...(projectRagEnabled && projectId ? { project_id: projectId } : {}),
   };
 }
@@ -141,11 +144,13 @@ test("a project chat with the pill on retrieves both", () => {
   );
 });
 
-test("a knowledge base replaces everything, project included", () => {
+// #9485: picking a knowledge base in a project chat must not drop the project's sources.
+test("a knowledge base replaces the thread but keeps the project", () => {
   assert.deepEqual(
     ragScope({ ragEnabled: true, kbId: "K", threadId: "T", projectRagEnabled: true, projectId: "P" }),
-    { kb_id: "K" },
+    { kb_id: "K", project_id: "P" },
   );
+  assert.deepEqual(ragScope({ ragEnabled: true, kbId: "K", threadId: "T" }), { kb_id: "K" });
 });
 
 // ------------------------------------------------------- folder syncs the composer gates on

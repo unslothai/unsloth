@@ -11,7 +11,7 @@ import { type BrowserPage, fetchBrowserPage } from "./api";
 import { abandonDownload, beginDownload, finishDownload } from "./download-activity";
 import type { DownloadsRule } from "./agent/permissions";
 import { approveDownload } from "./download-approval-queue";
-import { isDangerousDownload } from "./download-safety";
+import { isDangerousDownload, withTypeExtension } from "./download-safety";
 import { useBrowserHistoryStore } from "./history-store";
 import { type SavedNativeDownload, saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -69,6 +69,11 @@ function approved(url: string | null, name: string, site?: string, agentRule?: D
   return url && isWebUrl(url) ? approveDownload(url, name, site ?? url, agentRule) : Promise.resolve(true);
 }
 
+function downloadName(name: string, contentType: string): string {
+  const typed = withTypeExtension(safeDownloadName(name), contentType, !isTauri);
+  return isTauri ? typed : typed.replace(/^\.+/, "").replace(/[. ]+$/, "") || "download";
+}
+
 // A page can post files without end; only the newest few wait for Save.
 const SAVE_PROMPTS = 3;
 let savePrompts = 0;
@@ -83,11 +88,12 @@ function offerSave(name: string, save: () => Promise<void>, id?: string): void {
 
 export function saveBrowserDownloadOnClick(download: BrowserDownload): void {
   const temporary = download.temporary ?? useChatRuntimeStore.getState().incognito;
-  offerSave(download.name, () => saveBrowserDownload({ ...download, temporary }), `page-download-${savePrompts++ % SAVE_PROMPTS}`);
+  offerSave(downloadName(download.name, download.contentType), () => saveBrowserDownload({ ...download, temporary }), `page-download-${savePrompts++ % SAVE_PROMPTS}`);
 }
 
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
-export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
+export async function saveBrowserDownload(given: BrowserDownload, target?: SaveHandle | null): Promise<void> {
+  const download = { ...given, name: downloadName(given.name, given.contentType) };
   // Taken now: the fetch, approval and the save dialog can outlast the temporary chat.
   const temporary = download.temporary ?? useChatRuntimeStore.getState().incognito;
   if (target === undefined) {
@@ -127,7 +133,8 @@ async function writeDownload(
         await writable.write(blob);
         await writable.close();
       } else {
-        await downloadFile(blob, name, contentType || undefined);
+        // The browser must not infer an unapproved extension from its MIME registry.
+        await downloadFile(blob.slice(0, blob.size, "application/octet-stream"), name);
       }
     }
   } catch (error) {
@@ -157,7 +164,8 @@ const RESOLVE_BEFORE_ASK_MS = 1000;
 /** A fetched link as a file: the server's name, or the page as .html. */
 function linkDownload(page: BrowserPage, url: string): BrowserDownload {
   if (page.kind === "raw") {
-    return { blob: page.blob, name: page.fileName ?? fileNameFromUrl(page.url), contentType: page.contentType, url };
+    const name = downloadName(page.fileName ?? fileNameFromUrl(page.url), page.contentType);
+    return { blob: page.blob, name, contentType: page.contentType, url };
   }
   const name = fileNameFromUrl(page.url);
   return {

@@ -205,6 +205,7 @@ export function PageFrame({
           );
         return;
       }
+      if (message.type === "typed" && left) return;
       message = userAction(message, userActive(frame, message), performance.now());
       if (!message) return;
       if (message.type === "loaded") {
@@ -243,6 +244,7 @@ export function PageFrame({
       stopClearing();
       stopSyncing();
       requests.stop();
+      onMessageRef.current({ type: "typed", reset: true });
     };
   }, [origin]);
 
@@ -277,6 +279,7 @@ export function PageFrame({
       title={title}
       src={browserFrameUrl(loadId)}
       sandbox="allow-scripts allow-forms"
+      allow="clipboard-write"
       allowFullScreen
       referrerPolicy="no-referrer"
       className="size-full border-0 bg-white"
