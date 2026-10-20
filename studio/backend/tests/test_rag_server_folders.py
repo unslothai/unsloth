@@ -55,6 +55,11 @@ def test_bad_setting_and_missing_folder_warn_once(rag_home, monkeypatch, caplog)
     assert "missing" in warnings[1]
 
 
+def test_an_undecodable_path_does_not_break_the_listing(source, monkeypatch):
+    monkeypatch.setenv(server_folders.ENV_NAME, json.dumps(["/srv/\udcff", str(source)]))
+    assert [f["displayName"] for f in server_folders.available_folders()] == ["documents"]
+
+
 def test_only_configured_folder_ids_resolve(source):
     choices = server_folders.available_folders()
     assert len(choices) == 1

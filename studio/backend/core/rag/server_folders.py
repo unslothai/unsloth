@@ -35,7 +35,9 @@ def configured_folders() -> dict[str, str]:
         _warn_once(f"{ENV_NAME} must be a JSON array of absolute folder paths; ignoring it")
         return {}
     # Keep the configured path out of browser requests and responses.
-    return {hashlib.sha256(path.encode("utf-8")).hexdigest(): path for path in paths}
+    return {
+        hashlib.sha256(path.encode("utf-8", "surrogatepass")).hexdigest(): path for path in paths
+    }
 
 
 def _resolve(path: str) -> tuple[str, tuple[int, int]]:

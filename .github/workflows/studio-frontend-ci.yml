@@ -33,6 +33,7 @@ on:
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_project_folders.py'
+      - 'tests/studio/playwright_server_source_folders.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -76,6 +77,7 @@ on:
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_project_folders.py'
+      - 'tests/studio/playwright_server_source_folders.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -556,6 +558,13 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 10
         run: python3 tests/studio/playwright_project_folders.py --out "$RUNNER_TEMP/project-folders"
+
+      - name: Browser smoke for server source folders
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 10
+        env:
+          SMOKE_OUT: ${{ runner.temp }}/server-source-folders
+        run: python3 tests/studio/playwright_server_source_folders.py
 
       - name: Icon tooltips follow the pointer between neighbours
         working-directory: ${{ github.workspace }}

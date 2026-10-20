@@ -45,7 +45,7 @@ async def scene(
                 }
             )
         if path.startswith("rag/linked-folders"):
-            return await route.fulfill(json = {"folders": linked})
+            return await route.fulfill(json = {"linkedFolders": linked})
         if path == "rag/knowledge-bases/knowledge/server-linked-folders":
             requests.append(route.request.post_data_json)
             if reject:
