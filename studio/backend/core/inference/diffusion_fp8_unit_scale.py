@@ -105,8 +105,10 @@ def install(logger: Any = None) -> bool:
         bias: Optional[Any] = None,
         use_fast_accum: bool = False,
     ) -> Any:
+        # Fast accumulate (Studio's default) leaves on the first test: the wrapper costs one bool check there.
         if (
-            output_scale is None
+            (force or not use_fast_accum)
+            and output_scale is None
             and output_dtype == torch.bfloat16
             and a_data.device.type == "cuda"
             and a_data.device.index in qualifying
@@ -119,7 +121,6 @@ def install(logger: Any = None) -> bool:
             and a_scale.shape[0] == a_data.shape[0]
             and b_scale.shape[1] == b_data.shape[1]
             and a_data.shape[0] >= min_rows
-            and (force or not use_fast_accum)
         ):
             if not _compiling():
                 _COUNTS["unit_scale"] += 1
@@ -134,9 +135,12 @@ def install(logger: Any = None) -> bool:
             )
             if isinstance(acc, tuple):  # torch < 2.5 returns (out, amax)
                 acc = acc[0]
-            out = acc.float() * a_scale.float() * b_scale.float()
+            # bf16 * fp32 promotes without a separate upcast copy, then in place: eager (no compile) saves one
+            # fp32 [M, N] buffer and a pass; same fp32 math and result, and Inductor fuses either form.
+            out = acc * a_scale.float()
+            out.mul_(b_scale.float())
             if bias is not None:
-                out = out + bias.float()
+                out.add_(bias.float())
             return out.to(output_dtype)
         if not _compiling():
             _COUNTS["rowwise"] += 1
