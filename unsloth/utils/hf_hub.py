@@ -16,12 +16,11 @@ BILLION = 1000000000
 def formatted_int(value: int) -> str:
     if value < THOUSAND:
         return str(value)
-    elif value < MILLION:
-        return f"{float(value) / 1000:,.1f}K"
-    elif value < BILLION:
-        return f"{float(value) / 1000000:,.1f}M"
-    else:
-        return f"{float(value) / 1000000000:,.1f}B"
+    # Move up a unit when rounding to one decimal would print 1,000.0 of this one.
+    for divisor, suffix in ((THOUSAND, "K"), (MILLION, "M")):
+        if round(float(value) / divisor, 1) < THOUSAND:
+            return f"{float(value) / divisor:,.1f}{suffix}"
+    return f"{float(value) / BILLION:,.1f}B"
 
 
 def get_model_info(
