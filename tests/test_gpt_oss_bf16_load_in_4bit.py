@@ -204,7 +204,6 @@ def test_bf16_checkpoint_4bit_generate_matches_prefill(tmp_path):
     assert torch.equal(full[:, n - 1 : -1].argmax(-1), seq[:, n:])
 
 
-
 @pytest.mark.parametrize(
     "name, config, load_in_4bit, keeps",
     [

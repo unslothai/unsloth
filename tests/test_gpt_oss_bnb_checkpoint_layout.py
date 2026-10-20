@@ -462,8 +462,12 @@ def test_use_safetensors_selects_the_probed_file(tmp_path):
     path = _both_formats(tmp_path)
     cfg = SimpleNamespace(quantization_config = BNB_QC)
     assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path) is False
-    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path, use_safetensors = True) is False
-    assert loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path, use_safetensors = False) is True
+    assert (
+        loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path, use_safetensors = True) is False
+    )
+    assert (
+        loader_utils.gpt_oss_checkpoint_has_fused_experts(cfg, path, use_safetensors = False) is True
+    )
 
 
 def test_sync_passes_use_safetensors(tmp_path, monkeypatch):
@@ -486,7 +490,11 @@ def test_loader_forwards_use_safetensors_to_the_probe(tmp_path, monkeypatch):
 
     seen = []
 
-    def probe(config, model_name = None, **kwargs):
+    def probe(
+        config,
+        model_name = None,
+        **kwargs,
+    ):
         seen.append(kwargs.get("use_safetensors"))
         return True
 
