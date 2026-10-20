@@ -172,3 +172,62 @@ def test_unload_clears_the_strikes(harness):
     backend.unload_model()
 
     assert backend._metal_oom_strikes is None and backend._metal_oom_terminal_key is None
+
+
+def test_a_model_swap_during_retirement_is_not_charged_the_strike(harness):
+    """The strike belongs to the load that ran out of memory: an explicit load must not
+    be able to publish another model while the dead child is being reaped."""
+    intent = _Intent(speculative_type = "off")
+    backend, first, _loads = harness(intent, "none")
+    real_kill = first.kill
+    blocked = {}
+
+    def kill_and_try_a_load():
+        real_kill()
+        got = []
+        t = threading.Thread(
+            target = lambda: got.append(backend._serial_load_lock.acquire(blocking = False))
+        )
+        t.start()
+        t.join()
+        blocked["load"] = got == [False]
+        if got == [True]:
+            backend._serial_load_lock.release()
+
+    first.kill = kill_and_try_a_load
+    backend._retire_device_lost_server(first, metal_poison = {"draft": False})
+    assert blocked.get("load") is True
+    assert backend._metal_oom_strikes == (backend._metal_oom_key(intent), 1)
+
+
+def test_the_strike_is_recorded_before_a_respawn_can_run(harness):
+    """Retirement decides the recovery before releasing _respawn_lock, so a request
+    racing the kill cannot replay the speculative config first."""
+    backend, first, loads = harness(_Intent(), "draft-dspark")
+    seen = {}
+    real_after = backend._after_metal_poisoned_server
+
+    def after(draft_failed):
+        seen["respawn_lock_held"] = backend._respawn_lock.locked()
+        return real_after(draft_failed)
+
+    backend._after_metal_poisoned_server = after
+    backend._retire_device_lost_server(first, metal_poison = {"draft": True})
+    assert seen.get("respawn_lock_held") is True
+    assert _wait(lambda: len(loads) == 1)
+    assert loads[0].speculative_type == "off"
+
+
+def test_mtp_recovery_respects_the_terminal_strike(harness):
+    """After two Metal OOMs the MTP-crash reload must not launch a third child."""
+    intent = _Intent()
+    backend, first, loads = harness(intent, "draft-dspark")
+    backend._metal_oom_terminal_key = backend._metal_oom_key(intent)
+    backend._mtp_runtime_fallback_active = True
+    first.kill()
+    first.wait()
+
+    assert backend._maybe_recover_from_mtp_crash(RuntimeError("boom")) is False
+    assert backend._maybe_recover_from_mtp_crash(sidecar_oom = True) is False
+    time.sleep(0.3)
+    assert loads == []

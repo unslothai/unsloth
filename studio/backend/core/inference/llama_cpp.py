@@ -26828,6 +26828,7 @@ class LlamaCppBackend:
                 # Added on top of --fit-target for a DSpark/DFlash sidecar the child's
                 # fitter cannot size; 0 when none launches or it runs on the CPU.
                 _sidecar_fit_reserve_mib = 0
+                _sidecar_kind_for_fit = None
                 # The fit and launch must use the same Model Memory snapshot.
                 from utils.model_memory_settings import capture_model_memory_settings
 
@@ -28866,6 +28867,17 @@ class LlamaCppBackend:
                                 _mtp_reserves_gpu = False
                                 mtp_overhead_fn = None
                                 _mtp_kv_unsized = False
+                                # The discrete drop runs before these were derived; this one
+                                # runs after, so undo them or Auto keeps a smaller context
+                                # than Off for a drafter that no longer launches.
+                                _mtp_gpu_bytes_remain = False
+                                _flat_mtp_engages = False
+                                _flat_mtp_reserve = 0.0
+                                _pin_fraction = _vram_frac
+                                _apple_fit_budget_mib = _apple_budget_mib
+                                _soft_overhead -= self._MTP_DRAFT_COMPUTE_BYTES
+                                model_size_fit -= self._MTP_DRAFT_COMPUTE_BYTES
+                                _apple_model_size_fit -= self._MTP_DRAFT_COMPUTE_BYTES
 
                         if self._can_estimate_kv():
                             cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_MIN_CTX)
@@ -29581,14 +29593,33 @@ class LlamaCppBackend:
                     # child's margin, or the draft allocates past it: Metal OOM at the
                     # first prefill (screenshots discussion 139). A CPU-pinned drafter
                     # takes no device memory, so _mtp_reserves_gpu leaves it out.
+                    # The kind and file the CHILD loads: extras owning --spec-type
+                    # replace Unsloth's emission, so Studio's own mode is not the answer.
+                    _sidecar_kind_for_fit = (
+                        _mtp_effective if _mtp_effective in ("dspark", "dflash") else None
+                    )
+                    if _extra_args_set_spec_type(extra_args):
+                        _child_spec_types = _accumulated_spec_types(extra_args, env = _spec_env)
+                        _sidecar_kind_for_fit = (
+                            "dspark"
+                            if "draft-dspark" in _child_spec_types
+                            else ("dflash" if "draft-dflash" in _child_spec_types else None)
+                        )
+                    # --fit-target is one margin broadcast to every device, so a pooled
+                    # reserve would be withheld on each card; only a single-device launch
+                    # (Metal, or one GPU) can carry it without displacing the target.
+                    _fit_device_count = len(
+                        gpu_indices if gpu_indices is not None else _detected_gpus
+                    )
                     if (
                         use_fit
                         and _mtp_will_engage
                         and _mtp_reserves_gpu
-                        and _mtp_effective in ("dspark", "dflash")
+                        and _sidecar_kind_for_fit is not None
+                        and (_apple_budget_mib > 0 or _fit_device_count == 1)
                     ):
                         _sidecar_fit_reserve_mib = self._sidecar_fit_reserve_mib(
-                            _mtp_reserve_bytes, mtp_draft_path
+                            _mtp_reserve_bytes, _mtp_draft_for_budget or mtp_draft_path
                         )
                     if _mtp_will_engage:
                         _mtp_note = self._mtp_reserve_note(
@@ -30672,7 +30703,7 @@ class LlamaCppBackend:
                         logger.info(
                             "%s under --fit on: llama.cpp cannot size the sidecar, so "
                             "--fit-target keeps %.2f GB free for it.",
-                            "DSpark" if _mtp_effective == "dspark" else "DFlash",
+                            "DSpark" if _sidecar_kind_for_fit == "dspark" else "DFlash",
                             _sidecar_fit_reserve_mib / 1024,
                         )
                     elif _sidecar_fit_reserve_mib:
@@ -37875,6 +37906,8 @@ class LlamaCppBackend:
         proc = self._process
         if snapshot is None or proc is None:
             return False
+        if self._metal_oom_is_terminal(snapshot):
+            return False
         # Still serving: a transient error, so leave the caller its normal retry.
         if proc.poll() is None and self._server_socket_is_open():
             return False
@@ -37913,6 +37946,10 @@ class LlamaCppBackend:
                             return
                         if self._last_load_intent != snapshot:
                             logger.info("MTP-crash reload skipped: load settings changed.")
+                            return
+                        if self._metal_oom_is_terminal(snapshot):
+                            # Queued before the second strike was published.
+                            logger.info("MTP-crash reload skipped: out of Metal memory twice.")
                             return
                         unload_epoch = self._unload_epoch
                     # Appending --spec-default cannot drop MTP: llama.cpp appends spec
@@ -38870,8 +38907,7 @@ class LlamaCppBackend:
                     intent = self._last_load_intent
                     if intent is None:
                         return False
-                    terminal = getattr(self, "_metal_oom_terminal_key", None)
-                    if terminal is not None and self._metal_oom_key(intent) == terminal:
+                    if self._metal_oom_is_terminal(intent):
                         # A replay would only run out of Metal memory again.
                         logger.error(
                             f"Not restarting llama-server for '{self._model_identifier}': "
@@ -38905,7 +38941,9 @@ class LlamaCppBackend:
         what _respawn_if_dead already recovers. ``metal_poison`` marks the Metal variant:
         a failed command buffer (usually out of memory) latches the backend the same way.
         """
-        with self._respawn_lock:
+        # _serial_load_lock too: a Metal strike is charged to the load it read, so an
+        # explicit load must not publish another model between the kill and that read.
+        with self._respawn_lock, self._serial_load_lock:
             if (
                 served_by is None
                 or served_by is not self._process
@@ -38920,9 +38958,14 @@ class LlamaCppBackend:
                 served_by.wait(timeout = 10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        if metal_poison is not None:
-            self._after_metal_poisoned_server(bool(metal_poison.get("draft")))
-            return
+            if metal_poison is not None:
+                # Decided before _respawn_lock is released: a request respawning the dead
+                # child in between would replay the speculative config the drafter-free
+                # reload exists to avoid, or a third child after the second strike.
+                with self._lock:
+                    if self._process is served_by and not self._cancel_event.is_set():
+                        self._after_metal_poisoned_server(bool(metal_poison.get("draft")))
+                return
         try:
             logger.warning(
                 f"llama-server for '{self._model_identifier}' lost its GPU device "
@@ -38942,6 +38985,11 @@ class LlamaCppBackend:
             return replace(intent, speculative_type = None)
         except TypeError:
             return intent
+
+    def _metal_oom_is_terminal(self, intent) -> bool:
+        """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
+        terminal = getattr(self, "_metal_oom_terminal_key", None)
+        return terminal is not None and intent is not None and self._metal_oom_key(intent) == terminal
 
     def _after_metal_poisoned_server(self, draft_failed: bool) -> None:
         """Choose the recovery after a Metal-poisoned server was retired.

@@ -204,3 +204,84 @@ def test_reserve_is_read_after_the_budget_price():
     priced = src.index('_fit_target_priced = "--fit-target" in _integrity_flags')
     reserve = src.index("fit_target_reserve_mib = _sidecar_fit_reserve_mib")
     assert priced < reserve
+
+
+def test_multi_gpu_cuda_does_not_broadcast_the_reserve(tmp_path):
+    """--fit-target is one margin applied to every device: adding the whole sidecar to
+    it would withhold the sidecar on each card and push target layers to the host."""
+    backend, gguf = _placement._backend_non_vulkan(
+        tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._select_gpus = lambda *a, **k: (None, True)
+    backend.probe_server_capabilities = lambda _binary = None: dict(_CAPS)
+    backend._get_gguf_size_bytes = lambda path: 8 * _GIB if "dspark" in str(path) else 1024
+    cmd = _placement._launch(
+        backend, gguf, speculative_type = "dspark", dspark_draft_path = str(sidecar)
+    )["cmd"]
+    assert _flag(cmd, "--model-draft") == str(sidecar)
+    assert int(_flag(cmd, "--fit-target") or 1024) < 1024 + 8 * 1024
+
+
+@pytest.mark.parametrize("spec_type", ["draft-dspark", "draft-dflash"])
+def test_a_pass_through_sidecar_is_reserved_too(tmp_path, spec_type):
+    """Extras owning --spec-type replace Studio's emission, so the reserve has to follow
+    the sidecar the child really loads, even with Studio's own speculation off."""
+    backend, gguf = _placement._backend_non_vulkan(tmp_path, memory = [(0, 24_000, 24_000)])
+    sidecar = tmp_path / "custom-sidecar-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._select_gpus = lambda *a, **k: (None, True)
+    backend.probe_server_capabilities = lambda _binary = None: dict(_CAPS)
+    backend._get_gguf_size_bytes = lambda path: 8 * _GIB if "sidecar" in str(path) else 1024
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        speculative_type = "off",
+        extra_args = ["--spec-type", spec_type, "--model-draft", str(sidecar)],
+    )["cmd"]
+    assert str(sidecar) in cmd
+    assert int(_flag(cmd, "--fit-target")) >= 1024 + 8 * 1024
+
+
+def _metal_ctx(tmp_path, monkeypatch, mode):
+    sub = tmp_path / mode
+    sub.mkdir()
+    sidecar = sub / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    real_init = GgufLoadIntent.__init__
+
+    def init(self, *args, **kwargs):
+        kwargs.setdefault("dspark_draft_path", str(sidecar))
+        kwargs.setdefault("speculative_type", mode)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(GgufLoadIntent, "__init__", init)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: dict(_CAPS)),
+    )
+    backend = LlamaCppBackend()
+    cmd = _metal._launch(
+        sub,
+        monkeypatch,
+        n_ctx = 0,
+        backend = backend,
+        real_fit = True,
+        budget_bytes = 12 * _GIB,
+        wired_bytes = 12 * _GIB,
+        weights_bytes = 4 * _GIB,
+        kv_per_token = 128 * 1024,
+    )["cmd"]
+    monkeypatch.undo()
+    return cmd
+
+
+def test_metal_auto_drop_releases_the_drafter_charges(tmp_path, monkeypatch):
+    """Once Auto drops the sidecar the context must match a load with speculation off:
+    the flat draft reserve and the draft compute charge go with it."""
+    auto = _metal_ctx(tmp_path, monkeypatch, "auto")
+    off = _metal_ctx(tmp_path, monkeypatch, "off")
+    assert "--model-draft" not in auto and "--model-draft" not in off
+    assert _flag(auto, "-c") == _flag(off, "-c")
