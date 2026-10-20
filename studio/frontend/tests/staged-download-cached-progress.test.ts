@@ -72,3 +72,16 @@ test("an entry whose scope is all missing keeps the plain reading", () => {
   );
   assert.equal(stagedEntryTransferredBytes(100, null), 0);
 });
+
+test("a held sample keeps the last measured reading instead of pricing it against the new total", () => {
+  // A retry's first poll reports 0 bytes against a smaller total; the job holds the previous 3 GB beside it.
+  const held = { expectedBytes: 0.5 * GB, downloadedBytes: 3 * GB, measuredTransfer: false };
+  assert.equal(stagedEntryTransferredBytes(0.5 * GB, held), 0);
+  assert.equal(stagedEntryTransferredBytes(0.5 * GB, held, 0.2 * GB), 0.2 * GB);
+  assert.equal(stagedEntryTransferredBytes(0.5 * GB, held, 0.9 * GB), 0.5 * GB);
+  // A measured sample ignores `previous`.
+  assert.equal(
+    stagedEntryTransferredBytes(100, { expectedBytes: 100, downloadedBytes: 40, measuredTransfer: true }, 90),
+    40,
+  );
+});
