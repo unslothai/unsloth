@@ -124,7 +124,6 @@ def test_each_base_resolves_its_own_hosted_files(base, repo, names):
         assert source is not None and source.location == repo, (base, scheme)
         candidates = candidate_filenames_of(source)
         positions = [candidates.index(n) for n in expected]
-        # ConvRot first, plain int8 behind it
         assert positions == sorted(positions), candidates
         other = "SFT" if "Base" in repo else "Base"
         assert not any(f"MOSS-Image-{other}-" in n for n in candidates), candidates
@@ -141,7 +140,6 @@ def test_auto_never_picks_fp8_but_an_explicit_fp8_is_allowed(family):
         assert order and order[0] == "int8", (cap, order)
         assert "fp8" not in order and "mxfp8" not in order, (cap, order)
     assert not tq._family_denied(family, "fp8")
-    # other families keep fp8 in their ladder
     assert "fp8" in tq._auto_scheme_order("qwen-image-2.1", "cuda", (10, 0))
 
 
@@ -155,7 +153,6 @@ def test_auto_keeps_the_5b_dit_bf16_while_it_fits():
 
     fam = _fam()
     assert "0.049 vs 0.025" in auto_bf16_when_resident_reason("moss-image")
-    # The Base builds record "moss-image-base"; the family row is the one that decides.
     assert _auto_keeps_bf16_reason(fam, "pipeline") is not None
     assert _auto_keeps_bf16_reason(fam, "gguf") is None
 
@@ -182,7 +179,6 @@ def test_text_encoder_file_and_equivalence():
     source = tp.resolve_te_prequant_source(fam, "text_encoder", "int8")
     assert source.location == SFT_REPO
     assert source.filename == "MOSS-Image-SFT-text_encoder-INT8-ConvRot.safetensors"
-    # no fp8 encoder is hosted, so nothing sits behind the int8 file
     assert (
         source.fallback_filenames == ()
         and tp.resolve_te_prequant_source(fam, "text_encoder", "fp8") is None
@@ -322,7 +318,6 @@ def test_tokenizer_class_comes_from_its_config(tmp_path, offline_empty):
         json.dumps({"tokenizer_class": "Qwen2Tokenizer"})
     )
     assert moss._tokenizer_class(str(tmp_path), {}) is transformers.Qwen2Tokenizer
-    # an unreadable config leaves AutoTokenizer to report the real error
     assert moss._tokenizer_class(str(tmp_path / "missing"), {}) is transformers.AutoTokenizer
     assert (
         moss._tokenizer_class(SFT, {"local_files_only": True, "cache_dir": offline_empty})
@@ -351,5 +346,4 @@ def test_measured_peak_seeds_the_quantised_placement():
 
     assert measured_image_runtime_mib("moss-image", "default") == 3584
     assert measured_image_runtime_mib("moss-image", "max") == 3584
-    # the dense eager table is untouched: bf16 keeps the flat estimate
     assert measured_image_runtime_mib("moss-image", "off", dense_transformer_mib = 9800) is None

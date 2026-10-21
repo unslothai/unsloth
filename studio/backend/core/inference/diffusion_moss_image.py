@@ -164,7 +164,6 @@ def _attention(
             q.to(v.dtype).transpose(1, 2), k.to(v.dtype).transpose(1, 2), v.transpose(1, 2)
         ).transpose(1, 2)
     else:
-        # [B, S, H, D] in and out; the native backend is the same SDPA call on the same transposed views.
         out = _DISPATCH(q.to(v.dtype), k.to(v.dtype), v, backend = backend)
     return out.flatten(2)
 
@@ -282,7 +281,6 @@ class _Block(nn.Module, _AttentionMixin):
 
 
 class _RoPE(nn.Module):
-    # Built tables kept per key; a render needs one per (resolution, prompt length), cond and uncond each.
     _MAX_CACHED = 8
 
     def __init__(self, head_dim, base):
@@ -827,7 +825,6 @@ class MOSSImagePipeline(DiffusionPipeline):
             width // 16,
         )
         if latents is None:
-            # fp32 CPU noise from the generator seed, matching ComfyUI.
             latents = comfy_noise(shape, generator, device)
         elif tuple(latents.shape) != shape:
             raise ValueError(f"latents must have shape {shape}.")

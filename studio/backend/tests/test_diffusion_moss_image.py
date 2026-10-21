@@ -86,7 +86,6 @@ def _inputs(
     return latents, embeds, mask
 
 
-# --------------------------------------------------------------------------------------------- transformer parity
 
 
 def test_state_dict_keys_match_the_reference(transformers_pair):
@@ -165,7 +164,6 @@ def test_refined_text_and_mask_are_exclusive(transformers_pair):
         )
 
 
-# ------------------------------------------------------------------------------------------------------ scheduler
 
 
 @pytest.mark.parametrize("steps", [1, 2, 8, 28, 50])
@@ -232,7 +230,6 @@ def test_repo_scheduler_config_loads(moss, tmp_path):
     assert sched.config.shift == 5.0 and sched.resolved_sigma_schedule() in moss.SIGMA_SCHEDULES
 
 
-# ---------------------------------------------------------------------------------------------------------- noise
 
 
 def test_cpu_generator_noise_is_the_reference_draw(moss):
@@ -274,7 +271,6 @@ def test_accelerator_generator_draws_comfyui_cpu_noise_from_its_seed(moss):
         moss.comfy_noise((3, 128, 4, 4), [_FakeCudaGenerator(), _FakeCudaGenerator()], "cpu")
 
 
-# ------------------------------------------------------------------------------------------------- full pipeline
 
 
 @pytest.fixture(scope = "module")
@@ -409,7 +405,6 @@ def test_skip_layers_reach_the_transformer_as_a_tuple(pipelines, monkeypatch):
     assert calls == [None, (22,)]
 
 
-# ---------------------------------------------------------------------------------------- family row and gating
 
 
 def test_family_detects_both_repos_and_a_local_pipeline(tmp_path):

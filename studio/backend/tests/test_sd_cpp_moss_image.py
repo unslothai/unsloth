@@ -78,7 +78,6 @@ def test_the_asset_specs_fetch_the_tokenizer():
         _TE,
         (*_TOKENIZER, "tokenizer"),
     ]
-    # Every other family plans no tokenizer.
     z = detect_family("z-image")
     assert not any(
         kind == "tokenizer"
@@ -124,7 +123,6 @@ def test_the_tokenizer_defaults_to_none():
     assert SdCppModelFiles(**_FILES).tokenizer is None
 
 
-# ── routing: a MOSS GGUF loads only natively ──────────────────────────────────
 
 
 def _binary(tmp_path, name, *, marker):
@@ -148,7 +146,6 @@ def test_a_moss_gguf_goes_native_even_on_a_gpu_host(monkeypatch, tmp_path, backe
     assert r.predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
     r.select_and_activate_engine(fam, model_kind = "gguf")
     assert r.active_engine_name() == ENGINE_SD_CPP
-    # The pipeline repo keeps the GPU host's diffusers default.
     if backend == "cuda":
         assert r.predict_engine(fam, model_kind = "pipeline") == ENGINE_DIFFUSERS
 
@@ -195,8 +192,7 @@ def test_the_native_disable_wins_and_diffusers_refuses_the_gguf(monkeypatch, env
 
 
 def test_the_route_validation_passes_a_gguf_native_can_take(monkeypatch, tmp_path):
-    # The load and plan routes run the diffusers validation on EVERY pick before the router picks an engine, so it
-    # must not refuse the GGUF the router is about to send to sd.cpp, and must refuse it once native cannot take it.
+    # Diffusers validation runs before routing: pass a GGUF bound for sd.cpp, refuse it once native cannot take it.
     from core.inference.diffusion import DiffusionBackend
 
     _set_device(monkeypatch, "cuda")
@@ -211,7 +207,6 @@ def test_the_route_validation_passes_a_gguf_native_can_take(monkeypatch, tmp_pat
     assert not r.family_buildable_here(fam, model_kind = "gguf", gguf_filename = _GGUF)
     with pytest.raises(ValueError, match = "only on the native stable-diffusion.cpp engine"):
         DiffusionBackend().validate_load_request(_REPO, gguf_filename = _GGUF, model_kind = "gguf")
-    # The pipeline repo is untouched by any of this: buildable exactly where diffusers can build the pipeline.
     assert r.family_buildable_here(fam, model_kind = "pipeline") == r.family_pipeline_available(fam)
 
 

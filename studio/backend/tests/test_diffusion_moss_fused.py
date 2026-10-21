@@ -76,7 +76,6 @@ def test_fused_qkv_matches_the_three_projections(mods):
         a, b = _compiling(torch, moss)
         with a, b:
             out = transformer(x, t, e, return_dict = False)[0]
-        # eager (not compiling): the block keeps the stock projections
         eager = transformer(x, t, e, return_dict = False)[0]
     assert torch.equal(out, ref) and torch.equal(eager, ref)
     # the parts are views of the fused weight: no second copy
@@ -123,7 +122,6 @@ def test_the_runner_reaches_every_block_linear(mods):
         with a, b:
             out = transformer(x, t, e, return_dict = False)[0]
     assert torch.equal(out, ref)
-    # q, k, v, o, ffn_up_gate, ffn_down per block, 3 blocks
     assert len(seen) == 6 * 3
 
 

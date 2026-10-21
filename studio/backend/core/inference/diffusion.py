@@ -4342,8 +4342,7 @@ class DiffusionBackend:
         # same predicate. Imported here, not at module import, because the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
-        # MOSS-Image GGUFs run on sd.cpp only; refuse picks the router cannot send there before eviction,
-        # and before the diffusers class check, whose remedy (newer transformers / diffusers) cannot help them.
+        # MOSS-Image GGUFs are sd.cpp only: refuse before eviction and before the diffusers class check.
         if getattr(fam, "native_transformer_files_only", False) and (
             kind == "single_file"
             or (
@@ -8655,7 +8654,6 @@ class DiffusionBackend:
                                     finally:
                                         self._stop_load_prefetch()
                                 elif fam.name == MOSS_IMAGE_FAMILY_NAME:
-                                    # Remote-code repos: assemble the in-tree port per component.
                                     from .diffusion_moss_image import load_moss_image_pipeline
                                     try:
                                         pipe = load_moss_image_pipeline(
