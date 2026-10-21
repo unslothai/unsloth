@@ -116,7 +116,7 @@ import {
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
-import { SamplingDefaultsRow } from "./sampling-defaults-dialog";
+import { SamplingDefaultsRow } from "./sampling-defaults-row";
 import { useInt8PrefillAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,

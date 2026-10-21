@@ -13,18 +13,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { type InferenceParams, useChatRuntimeStore } from "@/features/chat";
 import { toast } from "@/lib/toast";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   SAMPLING_DEFAULT_FIELDS,
   type SamplingDefaultField,
   type SamplingDefaults,
   fetchEffectiveSampling,
-  fetchModelSamplingDefaults,
   putModelSamplingDefaults,
 } from "../api/model-sampling-defaults";
 
@@ -270,20 +268,23 @@ function SamplingDefaultsDialog({
   );
 }
 
-export function SamplingDefaultsRow({
+/** Loaded on demand: the run settings page is part of the first screen, and this is not. */
+export default function SamplingDefaultsEditor({
+  open,
+  onOpenChange,
   modelId,
   chatModelId,
   displayName,
-  rowClassName,
-  labelClassName,
+  stored,
+  onWritten,
 }: {
-  /** What the server row is keyed by: the id the run settings are stored under. */
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   modelId: string;
-  /** The id Chat remembers this model's settings under. */
   chatModelId: string;
   displayName: string;
-  rowClassName: string;
-  labelClassName: string;
+  stored: SamplingDefaults;
+  onWritten: (written: SamplingDefaults) => void;
 }) {
   const setRememberedParamsForModel = useChatRuntimeStore(
     (state) => state.setRememberedParamsForModel,
@@ -291,49 +292,13 @@ export function SamplingDefaultsRow({
   const rememberParamsPerModel = useChatRuntimeStore(
     (state) => state.rememberParamsPerModel,
   );
-  const [stored, setStored] = useState<{
-    modelId: string;
-    saved: SamplingDefaults;
-  } | null>(null);
-  const [openCount, setOpenCount] = useState(0);
-  const [open, setOpen] = useState(false);
-  const [opening, setOpening] = useState(false);
-  const saved = stored?.modelId === modelId ? stored.saved : null;
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchModelSamplingDefaults(modelId)
-      .then((resolved) => {
-        if (!cancelled) {
-          setStored({ modelId, saved: resolved });
-        }
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [modelId]);
-
-  const openEditor = async () => {
-    setOpening(true);
-    try {
-      const resolved = await fetchModelSamplingDefaults(modelId);
-      setStored({ modelId, saved: resolved });
-      setOpenCount((count) => count + 1);
-      setOpen(true);
-    } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : String(error));
-    } finally {
-      setOpening(false);
-    }
-  };
 
   const write = async (next: SamplingDefaults): Promise<boolean> => {
     try {
       const written = await putModelSamplingDefaults(modelId, next);
       const cleared = SAMPLING_DEFAULT_FIELDS.filter(
         (field) =>
-          typeof saved?.[field] === "number" &&
+          typeof stored[field] === "number" &&
           typeof written[field] !== "number",
       );
       const fallback =
@@ -345,7 +310,7 @@ export function SamplingDefaultsRow({
       for (const id of new Set([modelId, chatModelId])) {
         setRememberedParamsForModel(id, patch);
       }
-      setStored({ modelId, saved: written });
+      onWritten(written);
       toast.success(
         Object.keys(written).length > 0
           ? "Sampling defaults saved."
@@ -358,40 +323,14 @@ export function SamplingDefaultsRow({
     }
   };
 
-  const savedCount = saved ? Object.keys(saved).length : 0;
   return (
-    <div className={rowClassName}>
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span className={labelClassName}>Sampling Defaults</span>
-        <InfoHint>
-          Temperature, Top P and the other sampling values this model starts
-          with in Chat and uses for API requests that leave them out.
-        </InfoHint>
-      </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        className="shrink-0"
-        aria-label="Edit sampling defaults"
-        disabled={opening}
-        onClick={() => {
-          openEditor().catch(() => undefined);
-        }}
-      >
-        {savedCount > 0 ? `Custom (${savedCount})` : "Model default"}
-      </Button>
-      {open ? (
-        <SamplingDefaultsDialog
-          key={openCount}
-          open={open}
-          onOpenChange={setOpen}
-          stored={saved ?? {}}
-          displayName={displayName}
-          rememberParamsPerModel={rememberParamsPerModel}
-          onWrite={write}
-        />
-      ) : null}
-    </div>
+    <SamplingDefaultsDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      stored={stored}
+      displayName={displayName}
+      rememberParamsPerModel={rememberParamsPerModel}
+      onWrite={write}
+    />
   );
 }

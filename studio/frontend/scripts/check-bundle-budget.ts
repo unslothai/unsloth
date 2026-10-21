@@ -345,8 +345,11 @@ export const BUDGET = {
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  transferBytes: 2_071_574,
-  rawBytes: 6_878_779,
+  // Per-model sampling defaults (#14515): the run settings row and its API helper are eager with the page, the
+  // editor itself is lazy. +2,315 B raw / +650 B transfer (6,878,631 -> 6,880,946 B raw, 2,071,507 -> 2,072,157 B
+  // transfer against 0a20d7bf1, 97 chunks). Raised by that.
+  transferBytes: 2_072_224,
+  rawBytes: 6_881_094,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
