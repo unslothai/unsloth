@@ -25,13 +25,24 @@ from utils.paths.path_utils import file_contents_available_locally
 
 
 _DIFFUSION_GGUF_ARCHS = frozenset(
-    {"flux", "flux2", "qwen_image", "qwenimage", "qwen_image21", "qwenimage21", "z_image", "zimage"}
+    {
+        "flux",
+        "flux2",
+        "qwen_image",
+        "qwenimage",
+        "qwen_image21",
+        "qwenimage21",
+        "z_image",
+        "zimage",
+        "krea2",
+    }
 )
+# Archs only one family's GGUFs declare, so the header alone names the family. Not "flux" or
+# "qwen_image": Krea 2 and other DiTs ship GGUFs under those too (the loader reads the tensors).
+# A custom krea2 file named "my-mix-Q4_K_M.gguf" otherwise has no family to check (#14474).
+_FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2"})
 _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
-    # krea2: Krea 2 is diffusers pipeline-only (no GGUF / sd.cpp mapping). Without this entry a
-    # custom ``general.architecture = krea2`` GGUF falls through to text-generation, Hub offers
-    # RUN as chat, and llama.cpp dies with "does not recognise ... ('krea2')" (#14474).
-    {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid", "krea2"}
+    {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}
 )
 _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 _PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
@@ -118,6 +129,16 @@ def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
     except Exception:
         return True
     return True
+
+
+def _diffusion_gguf_family_hints(
+    arch: Optional[str], name_hints: tuple[Optional[str], ...]
+) -> tuple[Optional[str], ...]:
+    """``name_hints`` led by the architecture when it alone names the family."""
+    normalized = (arch or "").strip().lower()
+    if normalized in _FAMILY_NAMING_DIFFUSION_GGUF_ARCHS:
+        return (normalized, *name_hints)
+    return tuple(name_hints)
 
 
 def _video_family_buildable(family) -> bool:
@@ -305,7 +326,9 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         return _SPEECH_TASK
     if normalized in _DIFFUSION_GGUF_ARCHS:
         return (
-            "text-to-image" if _gguf_family_buildable(name_hints) else _UNSUPPORTED_DIFFUSION_TASK
+            "text-to-image"
+            if _gguf_family_buildable(_diffusion_gguf_family_hints(normalized, name_hints))
+            else _UNSUPPORTED_DIFFUSION_TASK
         )
     if normalized in _VIDEO_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family

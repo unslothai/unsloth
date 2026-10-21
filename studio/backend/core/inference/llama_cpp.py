@@ -22052,6 +22052,9 @@ class LlamaCppBackend:
             "qwen_image",
             "qwen_image21",
             "flux",
+            # Krea 2 GGUFs from some converters (molbal/krea2-gguf); the Images page loads them
+            # like the Krea 2 GGUFs that declare "flux" / "qwen_image" (#14474).
+            "krea2",
         )
     )
     # Archs shared by more than one family, so the header alone does NOT say whether the
@@ -22082,8 +22085,6 @@ class LlamaCppBackend:
     #     one are still tagged unsupported (that family ships no ``gguf_repo``).
     #   * "sd1" / "sd3" / "sdxl" / "aura" / "hidream": unsupported on the image side for
     #     the same reason, so "use the Images page" was always an empty promise.
-    #   * "krea2": Krea 2 is pipeline-only in Studio (no GGUF / sd.cpp mapping). Without this
-    #     a custom-folder GGUF was offered as chat RUN and failed in llama.cpp (#14474).
     # Kept inside _DIFFUSION_ARCHES so the pre-launch refusal still fires, it just names no
     # destination. Mirrors the whole set: a partial mirror leaves the same dead end.
     _UNRUNNABLE_MEDIA_ARCHES = frozenset(
@@ -22095,7 +22096,6 @@ class LlamaCppBackend:
             "sdxl",
             "aura",
             "hidream",
-            "krea2",
         )
     )
     _DIFFUSION_ARCHES = (
@@ -22148,11 +22148,17 @@ class LlamaCppBackend:
             return True
 
     @staticmethod
-    def _image_arch_is_pickable(gguf_path: Optional[str], model_identifier: Optional[str]) -> bool:
+    def _image_arch_is_pickable(
+        gguf_path: Optional[str], model_identifier: Optional[str], arch: Optional[str] = None
+    ) -> bool:
         """The Images picker's fail-open buildability gate (Qwen-Image-2.1 needs diffusers 0.41)."""
         try:
-            from routes.models import _gguf_family_buildable
-            return _gguf_family_buildable((model_identifier, os.path.basename(gguf_path or "")))
+            from routes.models import _diffusion_gguf_family_hints, _gguf_family_buildable
+            return _gguf_family_buildable(
+                _diffusion_gguf_family_hints(
+                    arch, (model_identifier, os.path.basename(gguf_path or ""))
+                )
+            )
         except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
             logger.debug("Family probe failed for image arch: %s", e)
             return True
@@ -22265,7 +22271,7 @@ class LlamaCppBackend:
                     "from a GGUF, so the Video page does not list it either."
                 )
             if arch in self._IMAGE_ARCHES:
-                if self._image_arch_is_pickable(gguf_path, self._model_identifier):
+                if self._image_arch_is_pickable(gguf_path, self._model_identifier, arch):
                     return (
                         f"This is an image-generation GGUF (architecture '{arch}'), which "
                         "cannot run as a chat model. Open it from the Images page instead."
@@ -23085,7 +23091,7 @@ class LlamaCppBackend:
                 )
             if (
                 arch in LlamaCppBackend._IMAGE_ARCHES
-                and LlamaCppBackend._image_arch_is_pickable(gguf_path, model_identifier)
+                and LlamaCppBackend._image_arch_is_pickable(gguf_path, model_identifier, arch)
             ) or (
                 arch in LlamaCppBackend._AMBIGUOUS_IMAGE_ARCHES
                 and LlamaCppBackend._ambiguous_image_arch_is_pickable(gguf_path, model_identifier)

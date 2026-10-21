@@ -459,3 +459,33 @@ def test_an_image_arch_this_host_cannot_build_promises_no_page(tmp_path, monkeyp
         identifier = "unsloth/Qwen-Image-2.1-GGUF",
     )
     assert "Open it from the Images page" in message
+
+
+@pytest.mark.parametrize("name", ["krea2_turbo-Q4_0.gguf", "my-custom-mix-Q8_0.gguf"])
+def test_a_krea2_gguf_names_the_images_page(tmp_path, name):
+    # Was "does not recognise this GGUF's model architecture ('krea2')" from llama-server (#14474).
+    _, message = _refusal(tmp_path, arch = "krea2", name = name)
+    assert message is not None
+    assert "Open it from the Images page" in message
+    assert "Video page" not in message
+
+
+def test_a_krea2_gguf_this_host_cannot_build_promises_no_page(tmp_path, monkeypatch):
+    import core.inference.diffusion_engine_router as router
+
+    monkeypatch.setattr(
+        router, "family_buildable_here", lambda fam, *, model_kind: fam.name != "krea-2"
+    )
+    _, message = _refusal(tmp_path, arch = "krea2", name = "my-custom-mix-Q8_0.gguf")
+    assert message is not None
+    assert "cannot run as a chat model" in message
+    assert "Open it from the Images page" not in message
+    # The llama-server error path answers the same way.
+    text = LlamaCppBackend._classify_start_failure_text(
+        "error loading model: unknown model architecture: 'krea2'",
+        str(tmp_path / "my-custom-mix-Q8_0.gguf"),
+        None,
+    )
+    assert "krea2" in text
+    assert "Use Unsloth's Images page to generate" not in text
+    assert "does not list it either" in text

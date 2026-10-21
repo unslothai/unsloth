@@ -2683,6 +2683,34 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
     assert calls == [("org/repo", None, "token", "/data/hf/hub")]
 
 
+def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
+    """Custom Krea 2 GGUFs (molbal/krea2-gguf) declare general.architecture = krea2. The Images
+    loader reads the DiT from the tensors and loads them like the Krea 2 GGUFs that declare
+    "flux" / "qwen_image", so the Hub must not offer them as chat RUN (#14474)."""
+    for hints in ((), ("custom/my-mix-Q4_K_M.gguf",), ("molbal/krea2-gguf", "krea2_turbo-Q4_0.gguf")):
+        assert models_route._arch_to_task("krea2", hints) == "text-to-image"
+        assert models_route._arch_to_task("KREA2", hints) == "text-to-image"
+
+    # The arch alone names the family, so a host that cannot build Krea 2 hides even a file whose
+    # name says nothing (the name-only gate fails open on it).
+    import core.inference.diffusion_engine_router as router
+
+    seen = []
+
+    def buildable(fam, *, model_kind):
+        seen.append((fam.name, model_kind))
+        return fam.name != "krea-2"
+
+    monkeypatch.setattr(router, "family_buildable_here", buildable)
+    assert models_route._arch_to_task("krea2", ("custom/my-mix-Q4_K_M.gguf",)) == (
+        models_route._UNSUPPORTED_DIFFUSION_TASK
+    )
+    assert seen == [("krea-2", "gguf")]
+    # "flux" / "qwen_image" are shared by several DiTs, so they still go by the name alone.
+    assert models_route._arch_to_task("flux", ("custom/my-mix-Q4_K_M.gguf",)) == "text-to-image"
+    assert models_route._arch_to_task("qwen_image", ("org/Qwen-Image-GGUF",)) == "text-to-image"
+
+
 def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("flux") == "text-to-image"
     assert models_route._arch_to_task("z_image") == "text-to-image"
@@ -2695,14 +2723,10 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("llama") == "text-generation"
     assert models_route._arch_to_task(None) is None
     # Known-but-unsupported diffusion archs get a task that is neither chat nor a loadable image task, so both pickers skip them.
-    for arch in ("sdxl", "sd1", "sd3", "lumina2", "hidream", "cosmos", "hyvid", "krea2"):
+    for arch in ("sdxl", "sd1", "sd3", "lumina2", "hidream", "cosmos", "hyvid"):
         task = models_route._arch_to_task(arch)
         assert task == models_route._UNSUPPORTED_DIFFUSION_TASK
         assert task not in ("text-generation", "text-to-image")
-    # Custom Krea 2 GGUFs declare architecture "krea2"; they must not be offered as chat (#14474).
-    assert models_route._arch_to_task("krea2", ("custom/Krea-2-Q4_K_M.gguf",)) == (
-        models_route._UNSUPPORTED_DIFFUSION_TASK
-    )
     # A video arch with a REGISTERED VideoFamily surfaces with the Video-picker task.
     assert models_route._arch_to_task("ltxv") == models_route._VIDEO_GEN_TASK
     assert models_route._arch_to_task("ltxv") not in ("text-generation", "text-to-image")
