@@ -341,8 +341,9 @@ export const BUDGET = {
   // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
   // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
   // 96 chunks). Raised by that.
-  transferBytes: 2_070_999,
-  rawBytes: 6_877_089,
+  // Floating panels remembering their dropped spot (#14355) add 701 B raw / 211 B transfer. Raised by that.
+  transferBytes: 2_071_210,
+  rawBytes: 6_877_790,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
