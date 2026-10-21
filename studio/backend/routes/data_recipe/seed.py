@@ -1092,7 +1092,7 @@ def _read_preview_rows_from_multi_files(
     preview_size: int,
     chunk_size: int | None,
     chunk_overlap: int | None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], int]:
     chunking = _chunking()
     if chunking is None:
         raise HTTPException(
@@ -1100,7 +1100,7 @@ def _read_preview_rows_from_multi_files(
             "Unstructured seed support not available (missing data_designer_unstructured_seed)",
         )
 
-    return chunking.build_multi_file_preview_rows(
+    return chunking.build_multi_file_preview(
         file_entries = _multi_file_entries(block_id, file_ids, file_names),
         preview_size = preview_size,
         chunk_size = chunk_size,
@@ -1605,7 +1605,7 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
         _validate_safe_id(payload.block_id, "block_id")
         for fid in payload.file_ids:
             _validate_safe_id(fid, "file_id")
-        preview_rows = _read_preview_rows_from_multi_files(
+        preview_rows, total_rows = _read_preview_rows_from_multi_files(
             block_id = payload.block_id,
             file_ids = payload.file_ids,
             file_names = payload.file_names,
@@ -1614,14 +1614,6 @@ def inspect_seed_upload(payload: SeedInspectUploadRequest) -> SeedInspectRespons
             chunk_overlap = payload.unstructured_chunk_overlap,
         )
         columns = ["chunk_text", "source_file"] if preview_rows else []
-        # The preview holds at most preview_size rows; the total tells a user how many rows export every chunk once.
-        total_rows = _chunking().count_multi_file_chunks(
-            file_entries = _multi_file_entries(
-                payload.block_id, payload.file_ids, payload.file_names
-            ),
-            chunk_size = payload.unstructured_chunk_size,
-            chunk_overlap = payload.unstructured_chunk_overlap,
-        )
         resolved_paths = [
             str(UNSTRUCTURED_UPLOAD_ROOT / payload.block_id / f"{fid}.extracted.txt")
             for fid in payload.file_ids
