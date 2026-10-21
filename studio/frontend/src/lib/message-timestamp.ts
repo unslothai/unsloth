@@ -18,11 +18,21 @@ export function replyFinishedTimestamp(message: {
   metadata?: { custom?: Record<string, unknown> };
 }): number | undefined {
   if (message.status?.type === "running") return undefined;
-  const details = message.metadata?.custom?.responseDetails as
-    | { finishedAt?: unknown }
+  const custom = message.metadata?.custom;
+  const details = custom?.responseDetails as { finishedAt?: unknown } | undefined;
+  if (typeof details?.finishedAt === "number" && Number.isFinite(details.finishedAt)) {
+    return details.finishedAt;
+  }
+  // Stopped and failed replies persist only their stream timing, which ends where they stopped.
+  const timing = custom?.timing as
+    | { streamStartTime?: unknown; totalStreamTime?: unknown }
     | undefined;
-  const finishedAt = details?.finishedAt;
-  return typeof finishedAt === "number" && Number.isFinite(finishedAt)
-    ? finishedAt
-    : messageTimestamp(message);
+  if (
+    typeof timing?.streamStartTime === "number" &&
+    typeof timing.totalStreamTime === "number"
+  ) {
+    const end = timing.streamStartTime + timing.totalStreamTime;
+    if (Number.isFinite(end)) return end;
+  }
+  return messageTimestamp(message);
 }

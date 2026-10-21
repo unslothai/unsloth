@@ -35,6 +35,8 @@ test("the time leads the reply footer, outside the autohiding action bar", () =>
   assert.ok(time !== -1 && time < bar);
   assert.match(TIME, /if \(!showReplyTimes \|\| finishedAt === undefined\)/);
   assert.doesNotMatch(TIME, /setInterval|setTimeout|useEffect|components\/ui\/tooltip/);
+  // Relative labels would go stale on a thread left open past midnight.
+  assert.doesNotMatch(TIME, /formatMessageDate|todayAt|yesterdayAt/);
 });
 
 test("prefers the finish time, falls back to creation, hides while running", () => {
@@ -53,6 +55,23 @@ test("prefers the finish time, falls back to creation, hides while running", () 
   assert.equal(
     replyFinishedTimestamp({ ...done, status: { type: "running" } }),
     undefined,
+  );
+  // A stopped reply records no responseDetails, only how long it streamed.
+  const stoppedAt = Date.parse("2026-10-14T04:12:00Z");
+  assert.equal(
+    replyFinishedTimestamp({
+      createdAt,
+      status: { type: "incomplete" },
+      metadata: {
+        custom: {
+          timing: {
+            streamStartTime: createdAt.getTime(),
+            totalStreamTime: stoppedAt - createdAt.getTime(),
+          },
+        },
+      },
+    }),
+    stoppedAt,
   );
   assert.equal(
     replyFinishedTimestamp({
