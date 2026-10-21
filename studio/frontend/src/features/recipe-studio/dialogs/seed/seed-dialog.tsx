@@ -700,6 +700,8 @@ export function SeedDialog({
             unstructured_file_ids: okFiles.map((f) => f.id),
             unstructured_file_names: okFiles.map((f) => f.name),
             unstructured_file_sizes: okFiles.map((f) => f.size),
+            // The total is only valid for the files and chunking it was counted with.
+            seed_total_rows: undefined,
           });
         });
         return next;
@@ -1207,6 +1209,7 @@ export function SeedDialog({
                       onChange={(event) =>
                         onUpdate({
                           unstructured_chunk_size: event.target.value,
+                          seed_total_rows: undefined,
                         })
                       }
                     />
@@ -1228,6 +1231,7 @@ export function SeedDialog({
                       onChange={(event) =>
                         onUpdate({
                           unstructured_chunk_overlap: event.target.value,
+                          seed_total_rows: undefined,
                         })
                       }
                     />
