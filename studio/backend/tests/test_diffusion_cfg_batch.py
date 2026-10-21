@@ -95,17 +95,18 @@ def _flux_loop(
     neg = None,
     guided = None,
     between = None,
+    device = "cpu",
 ):
     """The diffusers FLUX.2-klein loop: per step one latent object, cond then uncond call, CFG combine."""
     torch.manual_seed(0)
-    latents = torch.randn(1, 4, 8)
-    pos = torch.randn(1, 5, 8)
-    neg = torch.randn(1, 5, 8) if neg is None else neg
-    txt_ids = torch.zeros(1, 5, 4)
-    img_ids = torch.ones(1, 4, 4)
+    latents = torch.randn(1, 4, 8).to(device)
+    pos = torch.randn(1, 5, 8).to(device)
+    neg = (torch.randn(1, 5, 8) if neg is None else neg).to(device)
+    txt_ids = torch.zeros(1, 5, 4, device = device)
+    img_ids = torch.ones(1, 4, 4, device = device)
     outs = []
     for i in range(steps):
-        t = torch.full((1,), 1.0 - i / steps)
+        t = torch.full((1,), 1.0 - i / steps, device = device)
         latent_model_input = latents.clone()
         cond = model(
             hidden_states = latent_model_input,
@@ -151,13 +152,32 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
     pipe, router = _armed(model, monkeypatch)
     got, _ = _flux_loop(model)
     torch.testing.assert_close(got, ref)
-    # step 1 plain (it teaches the second branch's arguments), every later step batched
+    # steps 1-2 plain (step 2 teaches the second branch's arguments), every later step batched
     assert router.stats["batched_steps"] == 4 and router.stats["hits"] == 4
     assert model.calls[-2:] == [2, 2]
     assert cb.cfg_batch_status(pipe)["batched_steps"] == 4
     cb.end_cfg_batch_render(pipe)
-    assert cb.cfg_batch_status(pipe)["plain_pair_s"] is not None or not torch.cuda.is_available()
+    # CPU latents have no device timer: the trial judges without timing (even when a GPU is visible)
+    assert cb.cfg_batch_status(pipe)["plain_pair_s"] is None
     assert cb.cfg_batch_status(pipe)["shape_off"] is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device timer")
+def test_cuda_latents_time_the_step_two_pair_and_keep_the_image(monkeypatch):
+    ref, _ = _flux_loop(_offloaded(Flux2Transformer2DModel()).cuda(), device = "cuda")
+    model = Flux2Transformer2DModel().cuda()
+    pipe, router = _armed(model, monkeypatch)
+    got, _ = _flux_loop(model, device = "cuda")
+    torch.testing.assert_close(got, ref)
+    status = cb.cfg_batch_status(pipe)
+    # step 2's pair was timed on the device; batching engages from step 3 only when the doubled call paid
+    assert status["plain_pair_s"] is not None and status["batched_pair_s"] is not None
+    if status["shape_off"] is None:
+        assert router.stats["batched_steps"] == 4 and model.calls[-2:] == [2, 2]
+    else:
+        assert "measured no gain" in status["shape_off"]
+        assert router.stats["batched_steps"] == 0 and model.calls[-2:] == [1, 1]
+    cb.end_cfg_batch_render(pipe)
 
 
 def test_wan_expanded_timesteps_serve_the_second_branch(monkeypatch):
