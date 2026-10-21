@@ -1728,5 +1728,6 @@ def test_a_rooted_router_path_checks_the_folder_the_loader_reads(tmp_path, monke
         json.dumps([{"idx": 0, "name": "0", "path": str(elsewhere), "type": _ROUTER}]),
         encoding = "utf8",
     )
-    with pytest.raises(ValueError, match = "evil_pkg.Thing"):
+    # The folder-containment check, where present, refuses it before the type gate does.
+    with pytest.raises(ValueError, match = r"evil_pkg\.Thing|outside the model"):
         FastSentenceTransformer._check_modules_json_types(str(model), None, False)
