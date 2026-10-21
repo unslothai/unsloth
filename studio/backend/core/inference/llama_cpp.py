@@ -7195,10 +7195,13 @@ def _widen_pin_ids_for_companion_devices(
     allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
     all_sites = _device_list_sites(cmd, env)
     # A later --no-mmproj-offload keeps the projector in host RAM whatever device it named,
-    # so every projector value is then only parsed, like an overridden one.
+    # so every projector value is then only parsed, like an overridden one. Its final value
+    # still numbers the cards a tensor override names, as with the projector on a card.
+    host_mmproj = None
     if any(s.group == "mmproj" for s in all_sites) and (
         _mmproj_placement(cmd, env if env is not None else {}) == "host"
     ):
+        host_mmproj = next((s for s in all_sites if s.group == "mmproj" and s.final), None)
         all_sites = [s._replace(final = False) if s.group == "mmproj" else s for s in all_sites]
     final_main = next((s for s in all_sites if s.group == "main" and s.final), None)
     # A main device past the pinned positions would resolve to a widened companion card.
@@ -7240,6 +7243,17 @@ def _widen_pin_ids_for_companion_devices(
                     excluded = excluded or physical is not None
                     physical = None
             tokens.append((token, physical))
+        if host_mmproj is not None and site == host_mmproj._replace(final = False):
+            for token in site.value.split(","):
+                match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
+                n = int(match.group(2)) if match else None
+                if n is None or (inherited_ids is not None and n >= len(inherited_ids)):
+                    continue
+                numbered = n if inherited_ids is None else int(inherited_ids[n])
+                if allowed is not None and numbered not in main_ids and numbered not in allowed:
+                    continue
+                if numbered not in companion_mask:
+                    companion_mask.append(numbered)
         # An overridden value places nothing: one needing a card off the pin is
         # cleared, never widened onto (the extra card could be one the gate excludes).
         if not site.final and (

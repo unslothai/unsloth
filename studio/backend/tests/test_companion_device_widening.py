@@ -786,3 +786,22 @@ def test_a_companion_numbered_override_survives_an_excluded_inherited_card(argv)
                 placed[t.partition("=")[0]] = pin[int(t.rpartition("=")[2][-1])]
     assert placed == {"a": 3, "b": 0}
     assert pin[int(_value(cmd, "--spec-draft-device")[-1])] == 0
+
+
+@pytest.mark.parametrize(
+    "offload", [[], ["--no-mmproj-offload"]], ids = ["gpu_projector", "host_projector"]
+)
+def test_a_host_projector_keeps_the_tensor_numbering_a_gpu_one_gives(offload):
+    # Auto picked physical GPU 1. --no-mmproj-offload only moves the projector, so the
+    # override's CUDA1 still names physical GPU 0, as with the projector on a card.
+    argv = ["--mmproj-device", "CUDA0", *offload, "-ot", ".*=CUDA1"]
+    cmd, pin, note = _widen([1], argv, inherited = [0, 1])
+    buffer = next(a for a in cmd if a.startswith(".*="))
+    assert pin[int(buffer[-1])] == 0
+    assert pin[int(_value(cmd, "--device")[-1])] == 1
+
+
+def test_a_host_projector_alone_still_never_widens_the_pin():
+    flags = ["--mmproj-device", "CUDA0", "--no-mmproj-offload", "-ot", ".*=CPU"]
+    cmd, pin, note = _widen([1], flags, inherited = [0, 1])
+    assert pin == [1] and cmd == flags
