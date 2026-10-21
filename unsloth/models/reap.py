@@ -206,8 +206,6 @@ def _calibration_ids(dataset, tokenizer, num_samples, max_seq_length):
         dataset = _DEFAULT_DATASET
     if isinstance(dataset, str):
         from datasets import load_dataset
-
-        # Streaming reads only the rows used instead of the whole dataset.
         dataset = load_dataset(dataset, split = "train", streaming = True)
     ids = []
     for row in dataset:
@@ -427,7 +425,6 @@ class _Saliency:
         dist = torch.distributed
         if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() < 2:
             return
-        # Every rank joins, including one whose shard routed no token here.
         device, acc = _collective_device()
         both = torch.zeros(2, self.num_experts, dtype = acc, device = device)
         if self.total is not None:
@@ -534,7 +531,6 @@ class _ExpertsTap:
         top_k_weights = top_k_weights.reshape(hidden_states.shape[0], -1)
         n_tokens, top_k = top_k_index.shape
         valid = self.valid if self.valid is not None and self.valid.numel() == n_tokens else None
-        # Routed rows are top_k times the batch, so they are scored in bounded chunks.
         step = max(
             1, _TAP_CHUNK_BYTES // (top_k * hidden_states.shape[-1] * hidden_states.element_size())
         )
@@ -701,9 +697,7 @@ def reap_prune(
         )
     layout = _model_parallel_layout(model)
     if layout is not None:
-        # Expert / tensor / FSDP sharding gives each rank a slice of the expert weights (and expert
-        # parallel routes other ranks' tokens to out of range ids); pipeline stages own different
-        # layers, so per-layer scores cannot line up across ranks. Data parallel runs are fine.
+        # Each rank would hold a slice of the experts (or, pipelined, other layers); plain DP is fine.
         raise RuntimeError(
             f"Unsloth: REAP does not support {layout} models. Load the model on one device (or with "
             "`device_map`, or plain data parallel) to prune it."
@@ -758,7 +752,6 @@ def reap_prune(
     layer_names = {id(m): n for n, m in model.named_modules()}
     for layer in layers:
         moes = _layer_moes(layer, num_experts)
-        # Every refusal happens here, before any layer is sliced.
         if len(moes) > 1:
             raise ValueError(
                 "Unsloth: REAP supports one MoE block per decoder layer; "
@@ -872,8 +865,6 @@ def reap_prune(
         )
         rebuilt_layers = 0
         for index, layer in enumerate(layers):
-            # A rank-specific failure streaming the layer in (OOM from uneven free memory) is shared
-            # at this layer's first agreement below, like any other failure in it.
             move_error = None
             try:
                 layer_device, moved = _stream_in(layer, device)
@@ -885,9 +876,7 @@ def reap_prune(
 
                 def run(b, h):
                     args, kwargs = kwargs_per_batch[b][index]
-                    # Gemma 4's per-batch `shared_kv_states` (a UserDict the attention writes K / V
-                    # into) is shared by identity across layers; offloaded, its tensors follow the
-                    # activations instead of piling up on the GPU for every batch.
+                    # Gemma 4's shared_kv_states (a UserDict shared across layers) follows offloaded activations.
                     shared = [
                         v
                         for v in kwargs.values()
@@ -910,8 +899,6 @@ def reap_prune(
                 if moe is not None:
                     _, block, experts, router = moe
                     block_name = layer_names[id(block)]
-                    # A rank-specific failure here (a bad token id, OOM) is shared before the
-                    # saliency collective, so no rank waits in it for one that has stopped.
                     stage_error = None
                     try:
                         if move_error is not None:
@@ -998,8 +985,6 @@ def reap_prune(
                     except Exception as e:
                         post_error = e
 
-                # Each rank's own shard flows through the (pruned) layer. A rank-specific failure in
-                # the slicing above or here is shared before the next layer's collectives.
                 try:
                     for b in range(len(batches) if post_error is None else 0):
                         h = hidden[b].to(layer_device, non_blocking = True)
@@ -1019,9 +1004,7 @@ def reap_prune(
             )
     except BaseException:
         if report or pruning is not None:
-            # Mixed pruned / unpruned layers (or one cut short part way): mark it REAP modified and
-            # unsaved, so get_peft_model and the merge / adapter save guards refuse it instead of
-            # using a checkpoint that no longer matches the weights.
+            # Partly pruned: mark it REAP modified and unsaved so the PEFT / save guards refuse it.
             partial = dict(report)
             if pruning is not None:
                 partial.setdefault(pruning, [])
@@ -1071,7 +1054,6 @@ def reap_prune(
         if source_model and os.path.exists(source_model):
             # This folder may be pushed to the Hub: name a local source without its path.
             source_model = os.path.basename(os.path.normpath(source_model))
-        # Every rank pruned the same experts (summed saliency); one writes, the rest wait for it.
         error = None
         if not multi_rank or dist.get_rank() == 0:
             try:
@@ -1085,7 +1067,6 @@ def reap_prune(
                     json.dump({"source_model": source_model, "kept_experts": report}, f, indent = 1)
             except Exception as e:
                 error = e
-        # Rank 0 shares whether its write worked (this also syncs the ranks before going on).
         _ranks_agree(error, f"save the pruned model to {save_directory}")
         # Merged / GGUF saves read config._name_or_path; PEFT's adapter config reads model.name_or_path.
         for config in configs:
