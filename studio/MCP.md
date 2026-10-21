@@ -277,7 +277,9 @@ api_key_format = "Bearer {token}"
 | `studio_status` | What is loaded, loading and running: chat, image, video, speech-to-text and embedding models, training, export and GPUs. |
 | `list_models` | Models Unsloth Studio can serve, by kind or by Audio page `workflow`. With `model`, its training defaults. With `source="catalog"`, the image, video and audio models it can download, with their size and whether they fit on the GPU now. |
 | `load_model` | Load a chat, image, video or speech-to-text model, downloading it first if needed. Reports progress, waits up to `wait_s` (240 s by default) and lists what it unloaded. |
-| `unload_model` | Unload a model. |
+| `unload_model` | Unload a model, or every chat, speech, image, video and speech-to-text model with `kind="all"`. The embedding model stays. |
+| `plan_load` | Preview a load without loading anything: GGUF variants and sizes, bytes to download, and the models it would unload. |
+| `download_model` | Download a model ahead of time without loading it. Follow it with `get_job`; `load_model` waits for it. |
 | `chat` | Ask the loaded model, with optional images, thinking controls and a `response_format`. Reports progress and returns a `cancel_id`. |
 | `embed` | Embed up to 2048 texts, or rank them against a `query` and return the `top_k` best matches. |
 | `system_one` | Ask the Decision API typed questions. The Decision API must be on. |
@@ -290,8 +292,8 @@ api_key_format = "Bearer {token}"
 | `list_media` | Earlier images, audio clips, videos, transcripts and saved voices, a page at a time. |
 | `voices` | List, save, rename and delete saved voices. |
 | `run_recipe` | Validate, preview or run a Data Recipe. |
-| `datasets` | List, check, download and follow training datasets. |
-| `start_training` | Start LLM or image LoRA training. Follow it with `studio_status`. |
+| `datasets` | List, check, upload, download and follow training datasets, and upload image datasets for image LoRA training. |
+| `start_training` | Start LLM, text-to-speech or image LoRA training. Follow it with `get_job`. |
 | `list_training_runs` | Past runs and their checkpoints, by name. |
 | `export_model` | Export a checkpoint to GGUF, merged weights, a LoRA adapter or the base model. |
 | `cancel` | Stop running work of a given kind; the kinds are listed in the tool's schema. |
@@ -370,7 +372,5 @@ for the job.
   unload route does not resolve it. Unload it in the Unsloth Studio UI.
 - Unsloth Studio runs one Data Recipe job at a time, and a recipe job id is not tied to
   an account. Anyone with a key who knows the id can read that job's status.
-- Image LoRA training takes a dataset that is already in Unsloth Studio. There is no
-  upload tool.
 - Models can be unloaded between calls when an idle timeout is set. Tools then
   say to load the model again.

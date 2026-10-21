@@ -28,6 +28,7 @@ from .import_fixes import (
     check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
+    fix_torchao_pytree_register_constant,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
     check_transformers_dependency_versions,
@@ -92,6 +93,8 @@ patch_torch_missing_attribute_error()
 fix_bitsandbytes_rocm_arch_detection()
 # Torch-only, so it can run first; torchao 0.18 on torch < 2.10 needs it before any torchao import.
 fix_torchao_torch_symbol_skew()
+# Same skew for torchao 0.17+ on torch 2.6 (no pytree register_constant).
+fix_torchao_pytree_register_constant()
 # Before unsloth_zoo and transformers (and vllm, below): real torchao on a torch without torch.distributed.
 from ._torchao_nodist import fix_torchao_without_torch_distributed
 
@@ -128,6 +131,7 @@ del fix_message_factory_issue
 del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
+del fix_torchao_pytree_register_constant
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
@@ -232,7 +236,17 @@ try:
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
         )
+    _restore_nccl_debug = None
+    if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
+        # unsloth_zoo's logging switches reset NCCL_DEBUG to WARN on import.
+        from .distributed_debug import keep_debug_nccl_env
+        _restore_nccl_debug = keep_debug_nccl_env()
+        del keep_debug_nccl_env
     import unsloth_zoo
+
+    if _restore_nccl_debug is not None:
+        _restore_nccl_debug()
+    del _restore_nccl_debug
 except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
@@ -316,8 +330,11 @@ try:
         arch_lacks_buffer_ops,
         apply_gfx101x_triton_workaround,
         cuda_gate_capabilities,
+        cuda_order_mismatch_names,
         cuda_visible_capabilities,
         hip_visible_archs,
+        xpu_supports_native_bf16,
+        zoo_shares_xpu_bf16,
     )
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
@@ -574,6 +591,21 @@ elif DEVICE_TYPE == "cuda":
             return SUPPORTS_BFLOAT16
 
         torch.cuda.is_bf16_supported = is_bf16_supported
+
+    _mixed_names = cuda_order_mismatch_names()
+    if _mixed_names:
+        _order_hint = (
+            "$env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'"
+            if os.name == "nt"
+            else "export CUDA_DEVICE_ORDER=PCI_BUS_ID"
+        )
+        print(
+            f"Unsloth: visible GPUs differ ({', '.join(_mixed_names)}), so CUDA's device indices may "
+            "not match nvidia-smi's and CUDA_VISIBLE_DEVICES can select another card. "
+            f"Run `{_order_hint}` before starting Python to make them match."
+        )
+        del _order_hint
+    del _mixed_names
 elif DEVICE_TYPE == "hip":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
 
@@ -588,9 +620,10 @@ elif DEVICE_TYPE == "hip":
     torch.cuda.is_bf16_supported = is_bf16_supported
     del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
-    # torch.xpu.is_bf16_supported() does not have including_emulation set SUPPORTS_BFLOAT16 as
-    # torch.xpu.is_bf16_supported()
-    SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+    # Don't patch torch.xpu.is_bf16_supported: Studio reads its strict answer.
+    SUPPORTS_BFLOAT16 = (
+        xpu_supports_native_bf16() if zoo_shares_xpu_bf16() else torch.xpu.is_bf16_supported()
+    )
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()

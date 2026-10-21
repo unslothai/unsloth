@@ -125,7 +125,9 @@ def tool_error(
         text = text[:_MAX_MESSAGE_CHARS] + "…"
     if hint:
         text = f"{text} {hint}"
-    if tag and _TAG_CODE.match(tag.split(" ", 1)[0]):
+    code = tag.split(" ", 1)[0] if tag else ""
+    # A message the route already led with its own [code] tag keeps just that one.
+    if code and _TAG_CODE.match(code) and not text.startswith(f"[{code}"):
         text = f"[{tag}] {text}"
     return ToolError(text)
 

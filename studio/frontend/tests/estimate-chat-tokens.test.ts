@@ -86,3 +86,37 @@ test("an estimate against a window gives a ratio but no limit advice", () => {
   const exact = deriveContextUsageBar({ used: 30000, total: 32768 });
   assert.equal(exact?.advice, "stops-at-limit");
 });
+
+test("a tool call Studio ran counts its arguments and the result the model read", () => {
+  const reply = (part: Record<string, unknown>): MessageRecord => ({
+    id: "2",
+    threadId: "t",
+    role: "assistant",
+    content: [part, { type: "text", text: "a".repeat(40) }] as unknown as MessageRecord["content"],
+    createdAt: 2,
+  });
+  const call = { type: "tool-call", toolCallId: "c1", toolName: "python", argsText: "b".repeat(40) };
+  const local = { source: "local", round_id: 1 };
+  assert.equal(estimateMessagesTokenCount([reply({ ...call, provenance: local, result: "c".repeat(320) })]), 100);
+  assert.equal(
+    estimateMessagesTokenCount([reply({ ...call, provenance: local, result: { text: "c".repeat(320), images: [{ data: "d".repeat(4000) }] } })]),
+    100,
+  );
+  assert.equal(estimateMessagesTokenCount([reply({ ...call, provenance: local, result: { rows: ["d".repeat(4000)] } })]), 20);
+  assert.equal(estimateMessagesTokenCount([reply({ ...call, result: "c".repeat(320) })]), 10);
+});
+
+test("a retrieval result's source map feeds the citation card, not the model, so it is not counted", () => {
+  const map = JSON.stringify([{ chunkId: "c1", filename: "a.pdf", text: "c".repeat(400) }]);
+  const reply = (result: string): MessageRecord => ({
+    id: "2",
+    threadId: "t",
+    role: "assistant",
+    content: [
+      { type: "tool-call", toolCallId: "c1", toolName: "search_knowledge_base", args: {}, argsText: "", result, provenance: { source: "local", round_id: 1 } },
+    ] as unknown as MessageRecord["content"],
+    createdAt: 2,
+  });
+  assert.equal(estimateMessagesTokenCount([reply(`${"c".repeat(400)}\n__RAG_SOURCES__:${map}`)]), 100);
+  assert.equal(estimateMessagesTokenCount([reply("c".repeat(400))]), 100);
+});

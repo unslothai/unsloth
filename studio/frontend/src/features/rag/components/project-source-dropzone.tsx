@@ -394,7 +394,7 @@ export function ProjectSourceDropzone({
               className="size-6 text-muted-foreground"
             />
             <span className="text-sm text-muted-foreground">
-              Add files every chat in this project can read
+              Add documents for chats in this project to search
             </span>
           </button>
         ) : (

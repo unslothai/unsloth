@@ -77,6 +77,8 @@ def test_load_sends_the_body_and_reports_the_result(monkeypatch, kind):
         "loaded": True,
         **SETTLED,
         "display_name": "Llama 3.2 1B",
+        "placement": None,
+        "alongside_applied": None,
         "evicted": ["unsloth/Qwen3-0.6B"],
         "evicted_slots": [{"kind": "llm", "model": "unsloth/Qwen3-0.6B"}],
     }
@@ -241,6 +243,7 @@ def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extr
         monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", **extra}
     )
     loaded = {"kind": "image", "model": FLUX_GGUF, "loaded": True, **SETTLED, "display_name": None}
+    loaded.update(placement = None, alongside_applied = None)
     assert result["structuredContent"] == {**loaded, "evicted": [], "evicted_slots": []}
     expected = {"model_path": FLUX_GGUF, "gguf_filename": filename, "model_kind": "gguf"}
     expected.update({"hf_token": extra["hf_token"]} if "hf_token" in extra else {})
@@ -349,7 +352,8 @@ def test_another_variant_of_the_resident_repo_waits_for_its_own_load(
     if filename:
 
         async def pick(*_args):
-            return filename
+            # The variant row, as _gguf_filename returns it here.
+            return {"filename": filename}
 
         monkeypatch.setattr(loading, "_gguf_filename", pick)
     resident = {"loaded": True, "repo_id": FLUX_GGUF, "model_kind": "gguf"}
