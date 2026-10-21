@@ -672,7 +672,10 @@ _PRIMARY_ARCH_BACKENDS = frozenset({"_flash_3_hub", "flash_4_hub", "sage", "sage
 
 
 def _backend_cards(
-    pipe: Any, primary: int, secondaries: Sequence[int], logger: Any = None
+    pipe: Any,
+    primary: int,
+    secondaries: Sequence[int],
+    logger: Any = None,
 ) -> tuple[tuple[int, ...], Optional[str]]:
     """``(secondaries the engaged attention backend runs on, that backend)``; a card of unknown capability is kept."""
     from . import diffusion_multigpu as mg
@@ -759,14 +762,19 @@ def _rocm_sdpa_math_only(ordinal: int, dtype: Any) -> bool:
 
         from .diffusion_attention import sdpa_math_only
         return bool(
-            sdpa_math_only(SimpleNamespace(device = "cuda", torch_device = f"cuda:{int(ordinal)}", dtype = dtype))
+            sdpa_math_only(
+                SimpleNamespace(device = "cuda", torch_device = f"cuda:{int(ordinal)}", dtype = dtype)
+            )
         )
     except Exception:  # noqa: BLE001
         return False
 
 
 def _rocm_drop_math_only(
-    pipe: Any, primary: int, cards: tuple[int, ...], logger: Any = None
+    pipe: Any,
+    primary: int,
+    cards: tuple[int, ...],
+    logger: Any = None,
 ) -> tuple[int, ...]:
     """Drop a secondary whose native SDPA is math-only when the primary's is not: the plan's activation figures were
     priced for the primary's fused kernel, and math SDPA materialises the full score matrix on the card running the
@@ -797,7 +805,10 @@ def _math_only_reason(primary: int, cards: Sequence[int]) -> str:
 
 
 def _rocm_backend_cards(
-    pipe: Any, primary: int, cards: tuple[int, ...], logger: Any = None
+    pipe: Any,
+    primary: int,
+    cards: tuple[int, ...],
+    logger: Any = None,
 ) -> tuple[tuple[int, ...], Optional[str]]:
     """ROCm: native SDPA runs on any gfx target (the load dtype is already matched by ``make_selection``), so every
     card whose SDPA is not math-only where the primary's is fused is kept. A per-target kernel (flash_attn, AITER) the
