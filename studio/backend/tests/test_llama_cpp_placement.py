@@ -6524,6 +6524,27 @@ def test_a_user_device_flag_keeps_host_ram_off_the_dgpu_budget(tmp_path, monkeyp
     assert launch(extra_args = flag) == launch() == ("0", 32_768)
 
 
+def test_the_context_ceiling_holds_a_dgpu_tier_to_each_cards_reserve(tmp_path, monkeypatch):
+    # An iGPU ranked between two dGPUs: the dGPU-only tier pools a small second card, which Auto
+    # caps to its replicated reserve; the published ceiling must apply the same cap.
+    memory = [(0, 12_000, 16_384), (1, 300, 0), (2, 2_000, 2_200)]
+    backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, memory, 11, rocm = (1,))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_every_gpu_holds_reserve",
+        staticmethod(lambda usable, reserve: len(list(usable)) < 2),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_cap_ctx_to_per_device_reserve",
+        staticmethod(lambda ctx, usable, fn, min_ctx = 8192: min(ctx, 12_288)),
+    )
+    result = _launch(backend, gguf, n_ctx = 0)
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,2"
+    assert _launched_ctx(result) == 12_288
+    assert backend.max_context_length == 12_288
+
+
 @pytest.mark.parametrize("flag", [None, ["--device", "ROCm0"], ["--main-gpu", "0"]])
 def test_the_context_ceiling_starts_at_a_forced_gpu_floor(tmp_path, monkeypatch, flag):
     # A retry that must stay multi-GPU never takes a dGPU-only subset, so its checkpoint-free

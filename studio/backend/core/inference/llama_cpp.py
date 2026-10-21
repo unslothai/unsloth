@@ -28598,8 +28598,26 @@ class LlamaCppBackend:
                                 footprint_mib = (
                                     _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
                                 ) / (1024 * 1024)
-                                if footprint_mib <= pool_budget:
-                                    best_cap = max(best_cap, capped)
+                                if footprint_mib > pool_budget:
+                                    continue
+                                if (
+                                    n_gpus > 1
+                                    and _integrated_gpus
+                                    and _integrated_gpus.isdisjoint(i for i, _f in subset)
+                                ):
+                                    # A dGPU-only tier is not a usable-descending prefix, so pooling can
+                                    # hide a small card's replicated reserve: cap as Auto's walk does.
+                                    _usable_mib = [_gpu_usable(g, _cap_fraction) for g in subset]
+                                    _reserve_at = lambda c, n = n_gpus: (
+                                        _pipeline_overhead_bytes + _cc_bytes(c, n) // n
+                                    )
+                                    if not self._every_gpu_holds_reserve(
+                                        _usable_mib, _reserve_at(capped)
+                                    ):
+                                        capped = self._cap_ctx_to_per_device_reserve(
+                                            capped, _usable_mib, _reserve_at
+                                        )
+                                best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
                                 _ctx_cap_fits = True
@@ -28701,6 +28719,7 @@ class LlamaCppBackend:
                                             split_extra_bytes = _cc_split_extra(
                                                 effective_ctx, cache_type = "q8_0"
                                             ),
+                                            shared = _shared_gpus,
                                             integrated = _tier_gpus,
                                             discrete_size_bytes = model_size_fit
                                             + _q8_kv
@@ -29326,7 +29345,8 @@ class LlamaCppBackend:
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _placement_ctx_checkpoints,
-                            integrated = _integrated_gpus,
+                            # Picks a subset, so an explicit device pick keeps the base pick.
+                            integrated = _tier_gpus,
                             discrete_host_only_bytes = _discrete_host_only(),
                         )
                         if not _uf_slots:
@@ -29363,7 +29383,7 @@ class LlamaCppBackend:
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
                                     ctx_checkpoints = _placement_ctx_checkpoints,
-                                    integrated = _integrated_gpus,
+                                    integrated = _tier_gpus,
                                     discrete_host_only_bytes = _discrete_host_only(),
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
