@@ -3650,7 +3650,7 @@ function Test-MasterRootNoteIsHonoured {
     # warned about nothing, and was then honoured by nobody.
     $legacyStudio = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")
     if ($legacyStudio -and ($here -ieq $legacyStudio)) {
-        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio is the" -ForegroundColor Yellow
+        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio is the" -ForegroundColor Yellow
         Write-StudioLine "        default install at $here, where no reader honours a recorded root." -ForegroundColor Yellow
         Write-StudioLine "        That root cannot be recorded, so a later launch or uninstall will" -ForegroundColor Yellow
         Write-StudioLine "        not find them. Set UNSLOTH_STUDIO_HOME to $norm\studio, or re-set" -ForegroundColor Yellow
@@ -3662,7 +3662,7 @@ function Test-MasterRootNoteIsHonoured {
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
     }
-    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio lives at" -ForegroundColor Yellow
+    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio lives at" -ForegroundColor Yellow
     Write-StudioLine "        $here, which is outside it. That root cannot be recorded, so a later" -ForegroundColor Yellow
     Write-StudioLine "        launch or uninstall will not find them. Set UNSLOTH_STUDIO_HOME to" -ForegroundColor Yellow
     Write-StudioLine "        $norm\studio, or re-set UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
@@ -9647,7 +9647,7 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         } elseif ($_mxcExit -eq 3) {
             step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
         } else {
-            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+            step "MXC Preview" "prebuilt unavailable; Unsloth Studio will use software safeguards" "Yellow"
         }
         if ($script:UnslothVerbose -and $_mxcOutput) {
             Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })

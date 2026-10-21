@@ -673,7 +673,7 @@ def execute_browser_tool(
 
     if output_callback is None:
         return (
-            "Error: the browser is only available in a Studio chat, where the browser panel runs "
+            "Error: the browser is only available in an Unsloth chat, where the browser panel runs "
             "these actions."
         )
     if not isinstance(arguments, dict):

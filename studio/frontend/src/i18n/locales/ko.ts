@@ -215,7 +215,7 @@ export const ko = {
     importBookmarksDoneOne: "북마크 {count}개를 가져왔습니다.",
     importBookmarksDoneMany: "북마크 {count}개를 가져왔습니다.",
     importBookmarksNone: "이 파일에 새 북마크가 없습니다.",
-    importBookmarksPartial: "{count}개를 가져왔지만 {leftOut}개는 더 넣을 수 없었습니다. Studio는 북마크를 최대 {max}개까지 보관합니다.",
+    importBookmarksPartial: "{count}개를 가져왔지만 {leftOut}개는 더 넣을 수 없었습니다. Unsloth는 북마크를 최대 {max}개까지 보관합니다.",
     importBookmarksFailed: "파일을 읽을 수 없습니다. 브라우저에서 내보낸 북마크 HTML 파일을 선택하세요.",
     downloadsTitle: "다운로드",
     askWhereToSaveSetting: "파일마다 저장 위치 묻기",
@@ -266,7 +266,7 @@ export const ko = {
     annotationScreenshotsAlways: "항상 포함",
     annotationScreenshotsNever: "포함하지 않음",
     clearDataSetting: "인터넷 사용 기록 삭제",
-    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 Studio를 다시 불러올 때까지만 쿠키와 사이트 데이터를 저장합니다.",
+    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 Unsloth를 다시 불러올 때까지만 쿠키와 사이트 데이터를 저장합니다.",
     manage: "관리",
     fullView: {
       enter: "전체 보기",
@@ -1447,15 +1447,15 @@ export const ko = {
       dictation: {
         audioUploadTitle: "녹음으로 받아쓰기",
         audioUploadDescription:
-          "Studio에서 직접 녹음하려면 브라우저에 보안 연결(HTTPS)이 필요합니다. 이 HTTP 연결에서는 휴대폰 녹음기를 사용하거나 저장된 녹음을 선택하세요. Studio 서버가 오디오를 텍스트로 변환하여 메시지에 추가합니다.",
+          "Unsloth에서 직접 녹음하려면 브라우저에 보안 연결(HTTPS)이 필요합니다. 이 HTTP 연결에서는 휴대폰 녹음기를 사용하거나 저장된 녹음을 선택하세요. Unsloth 서버가 오디오를 텍스트로 변환하여 메시지에 추가합니다.",
         audioUploadChooseFile: "녹음 선택",
         audioUploadRecord: "오디오 녹음",
         audioUploadIphoneHint:
           "iPhone에서는 Voice Memos 또는 다른 녹음 앱에서 녹음을 저장한 다음 여기에서 선택하세요.",
         audioUploadServerModelNote:
-          "일반 받아쓰기가 다른 엔진을 사용하더라도 이 녹음에는 Studio 서버에서 위에 표시된 로컬 모델이 사용됩니다.",
+          "일반 받아쓰기가 다른 엔진을 사용하더라도 이 녹음에는 Unsloth 서버에서 위에 표시된 로컬 모델이 사용됩니다.",
         audioUploadAutomatic: "자동",
-        audioUploadModelReady: "이 Studio 서버에서 준비됨",
+        audioUploadModelReady: "이 Unsloth 서버에서 준비됨",
         audioUploadRetryTitle: "{file}을(를) 전사하지 못했습니다",
         audioUploadRetry: "전사 다시 시도",
         audioUploadChooseModel:
@@ -1957,7 +1957,7 @@ export const ko = {
         menuSubtitle: "파일 검색에 사용",
         device: "임베딩 장치",
         deviceDescription:
-          "모든 모델에서 임베딩 모델이 실행되는 위치입니다. GPU는 대량의 문서를 더 빠르게 색인하지만 Studio를 다시 시작할 때까지 일부 VRAM을 계속 사용합니다.",
+          "모든 모델에서 임베딩 모델이 실행되는 위치입니다. GPU는 대량의 문서를 더 빠르게 색인하지만 Unsloth를 다시 시작할 때까지 일부 VRAM을 계속 사용합니다.",
         deviceAuto: "자동",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2392,7 +2392,7 @@ export const ko = {
         multiModelHint: "채팅, 음성, 이미지, 동영상 모델에 적용됩니다. 로드된 각 채팅 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 Unsloth는 다른 모델이 사용하지 않는 GPU에 새 모델을 배치하려고 합니다. '공간이 있을 때'는 약 1GB를 남겨 둡니다. '공간이 있을 때'와 '항상'은 다른 GPU에 있는 모델을 언로드하지 않습니다.",
         allowOversizedLoad: "너무 큰 모델 로드 허용",
         allowOversizedLoadDescription: "메모리 검사에서 맞지 않는다고 판단해도 이미지 및 비디오 모델을 로드합니다.",
-        allowOversizedLoadHint: "CPU와 GPU가 하나의 메모리를 공유하는 경우(Apple Silicon, 내장 GPU)에 적용됩니다. 모델 가중치 추정치가 운영 체제용 공간을 확보한 후 남은 메모리보다 크면 Studio는 로드를 거부합니다. 이 옵션을 켜면 그래도 로드를 시도합니다. 추정치는 어느 방향으로든 틀릴 수 있으며, 너무 큰 로드는 실패하거나, 메모리를 모두 사용하거나, 심한 스와핑 또는 응답 없음을 일으키거나, Studio를 중지시킬 수 있습니다. 기본값은 꺼짐입니다.",
+        allowOversizedLoadHint: "CPU와 GPU가 하나의 메모리를 공유하는 경우(Apple Silicon, 내장 GPU)에 적용됩니다. 모델 가중치 추정치가 운영 체제용 공간을 확보한 후 남은 메모리보다 크면 Unsloth는 로드를 거부합니다. 이 옵션을 켜면 그래도 로드를 시도합니다. 추정치는 어느 방향으로든 틀릴 수 있으며, 너무 큰 로드는 실패하거나, 메모리를 모두 사용하거나, 심한 스와핑 또는 응답 없음을 일으키거나, Unsloth를 중지시킬 수 있습니다. 기본값은 꺼짐입니다.",
         mediaIdleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
@@ -2833,7 +2833,7 @@ export const ko = {
       importFailed: "가져오기에 실패했습니다.",
       importFromSource: "{source}에서 가져오기",
       importFromSourceDescription:
-        "{source}의 대화를 프로젝트별로 묶어 Studio로 복사합니다.",
+        "{source}의 대화를 프로젝트별로 묶어 Unsloth로 복사합니다.",
       importingAction: "가져오는 중...",
       importedSourceOneChat: "{source}에서 대화 1개를 가져왔습니다.",
       importedSourceChatCount: "{source}에서 대화 {count}개를 가져왔습니다.",
@@ -3255,7 +3255,7 @@ export const ko = {
         desktopAvailableDescription:
           "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
         desktopExternalServer:
-          "앱이 이미 실행 중인 Studio 서버에 연결되어 있어 업데이트할 수 없습니다. 해당 서버를 중지한 다음 데스크톱 앱을 종료하고 다시 열어 업데이트하세요.",
+          "앱이 이미 실행 중인 Unsloth 서버에 연결되어 있어 업데이트할 수 없습니다. 해당 서버를 중지한 다음 데스크톱 앱을 종료하고 다시 열어 업데이트하세요.",
         desktopManualInstall:
           "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
         desktopCheckFailed: "업데이트를 확인하지 못했습니다",
@@ -3866,7 +3866,7 @@ export const ko = {
         decisionColumnsMissing:
           "판단 모델에는 state, questions, gold(또는 answers) 열이 필요합니다. 누락된 열: {columns}",
         decisionOwnerOnly:
-          "판단 모델은 Studio 소유자만 파인튜닝할 수 있습니다.",
+          "판단 모델은 Unsloth 소유자만 파인튜닝할 수 있습니다.",
         hfDatasetRequired: "Hugging Face 데이터셋을 먼저 선택하세요.",
         hfDatasetSplitRequired: "먼저 학습 분할을 선택하거나 입력하세요.",
         localDatasetRequired: "로컬 데이터셋을 먼저 선택하세요.",
