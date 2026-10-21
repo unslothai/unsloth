@@ -25,6 +25,7 @@ def _planted_workdir(tmp_path):
     packages.mkdir(parents = True)
     for folder in (workdir, packages):
         (folder / "csv.py").write_text("print('PLANTED', __file__)\n", encoding = "utf-8")
+    (packages / "chatpkg.py").write_text("VALUE = 'from-session-packages'\n", encoding = "utf-8")
     (workdir / ".gitconfig").write_text("[core]\n\tfsmonitor = planted\n", encoding = "utf-8")
     return workdir
 
@@ -43,10 +44,14 @@ def test_an_approved_host_call_loads_nothing_from_the_workdir(tmp_path, monkeypa
         "print('HOME', os.environ['HOME'])\n"
         "print('FILE', __file__)\n"
         "print('CWD', os.getcwd())\n"
+        "import chatpkg\n"
+        "print('PKG', chatpkg.VALUE)\n"
     )
     out = tools._python_exec(code, None, 60, "hardening-chat", host_access_approved = True)
     assert "ROWS [['a', 'b']]" in out, out
     assert "PLANTED" not in out, out
+    # A package pip-installed in the chat is still importable, behind the stdlib.
+    assert "PKG from-session-packages" in out, out
     lines = dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
     assert os.path.realpath(lines["HOME"]) != os.path.realpath(workdir)
     assert not lines["FILE"].startswith(str(workdir)), "the approved script ran from the workdir"
