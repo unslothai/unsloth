@@ -18,8 +18,10 @@ bit-exact: a single sample with no mask can pick other attention / GEMM tiles th
 
 Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
-recompile. Declined per call under a step cache / static step skip (they key cond and uncond on the one batched call)
-and a CFG-parallel router. Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
+recompile. Declined per call under a step cache / static step skip (they key cond and uncond on the one batched call).
+Under a CFG-parallel router the two halves are handed to it as one explicit pair (``run_pair``): the conditional half on
+the source card, the unconditional one on the replica, at the same time. Their inputs are fresh tensors every step, so
+the router's own pairing by latent identity never matches them. Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 """
 
 from __future__ import annotations
@@ -62,8 +64,6 @@ def _declined_now(module: Any) -> Optional[str]:
         return "step cache"
     if getattr(slots.get("forward"), "_unsloth_outer_forward", False):
         return "static step skip"
-    if getattr(module, "_unsloth_cfg_router", None) is not None:
-        return "cfg parallel"
     if getattr(module, "training", False):
         return "training"
     return None
@@ -114,8 +114,19 @@ def _make_call(orig_call: Any) -> Any:
                 stats["batched"] += 1
             return orig_call(self, *args, **kwargs)
         cond, uncond, kw = parts
-        out_cond = orig_call(self, *cond, **kw)
-        out_uncond = orig_call(self, *uncond, **kw)
+        router = slots.get("_unsloth_cfg_router")
+        pair = None
+        if router is not None and slots.get("forward") is router:
+            pair = router.run_pair(lambda: orig_call(self, *cond, **kw), uncond, dict(kw))
+        if pair is not None:
+            out_cond, out_uncond = pair
+            if out_uncond is None:
+                out_uncond = orig_call(self, *uncond, **kw)
+            elif stats is not None:
+                stats["parallel"] = stats.get("parallel", 0) + 1
+        else:
+            out_cond = orig_call(self, *cond, **kw)
+            out_uncond = orig_call(self, *uncond, **kw)
         if stats is not None:
             stats["split"] += 1
         return _join(out_cond, out_uncond)

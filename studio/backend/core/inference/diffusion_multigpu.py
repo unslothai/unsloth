@@ -1217,6 +1217,9 @@ def _hooks_present(module: Any) -> Optional[str]:
         override = sub.__dict__.get("forward")
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
             continue
+        if not name and _resident_graph(sub) is not None:
+            # the root's whole-step graph: install_cfg_parallel moves it under the router, the copy runs the class forward
+            continue
         if kind == "offload" or _is_offload_object(override):
             continue
         if callable(override) and not _trusted_hook(override):
@@ -1695,7 +1698,14 @@ class CfgParallelRouter:
     step's; the rest -- negative embeds, masks -- kept) and launched on the replica BEFORE the primary branch runs, so
     the two cards overlap even when the primary forward blocks the host. The real call must then pass exactly the
     predicted tensors (identity) and equal plain values, else the prediction is discarded and the branch runs
-    unpredicted."""
+    unpredicted.
+
+    A whole-step CUDA graph armed later (the deferred speed profile) installs UNDER the router (``inner``): the primary
+    branch replays it, the replica runs the same compiled blocks ungraphed (same kernels, same output). A caller that
+    splits one batched guided call into its two halves (Z-Image) pairs them explicitly through :meth:`run_pair`."""
+
+    # diffusion_cuda_graph.GraphedForward.install looks for this to install under the router instead of replacing it
+    _unsloth_cfg_router_layer = True
 
     def __init__(
         self,
@@ -1709,6 +1719,10 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
+        # The whole-step graph wrapper installed under the router (diffusion_cuda_graph), else None.
+        self.inner: Any = None
+        # True while run_pair's primary half passes through this router on the source.
+        self._pairing = False
         self.had_override = "forward" in module.__dict__
         self.primary = torch.device(primary)
         self.secondary = torch.device(secondary)
@@ -1735,6 +1749,7 @@ class CfgParallelRouter:
             "predicted_hits": 0,
             "predicted_misses": 0,
             "opaque_primary_calls": 0,
+            "pairs_parallel": 0,
         }
         self.template: Optional[tuple[Any, Any, dict]] = None
         self.pending: Optional[dict] = None
@@ -1787,13 +1802,20 @@ class CfgParallelRouter:
         self.cfg_seen = False
         self.singles = 0
 
+    def _primary(self, *args: Any, **kwargs: Any) -> Any:
+        inner = self.inner
+        return (inner if inner is not None else self.orig_forward)(*args, **kwargs)
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        if self._pairing:
+            self.stats["primary_calls"] += 1
+            return self._primary(*args, **kwargs)
         if self.disabled_reason is not None or _background_compile_call():
             # Disabled: no branch state to keep. A render that must run eager while its compile is in flight, or the
             # background compile thread itself replaying recorded inputs: both branches stay on the source, which
             # keeps that render bit-identical to an eager one and leaves the router's per-render state untouched.
             self.stats["primary_calls"] += 1
-            return self.orig_forward(*args, **kwargs)
+            return self._primary(*args, **kwargs)
         latent = _latent_arg(args, kwargs)
         if latent is not None and self.prev_latent is not None and latent is self.prev_latent:
             self.branch += 1
@@ -1845,7 +1867,66 @@ class CfgParallelRouter:
                     self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             self.cfg_seen = True
         self.stats["primary_calls"] += 1
-        return self.orig_forward(*args, **kwargs)
+        return self._primary(*args, **kwargs)
+
+    def run_pair(
+        self, primary_call: Callable[[], Any], args: tuple, kwargs: dict
+    ) -> Optional[tuple]:
+        """The two halves of one guided step, known up front by a caller that split a batched call (Z-Image): the
+        second half (``args`` / ``kwargs``) is queued on the replica, then ``primary_call`` runs the first half on the
+        source through its normal call (the graph under the router, when armed). ``(first, second)``, or None when the
+        pair cannot run here; the caller then runs both halves on the source. The halves are fresh tensors every call,
+        which the identity pairing of :meth:`__call__` can never match."""
+        if self.disabled_reason is not None or _background_compile_call():
+            return None
+        module = self.module_ref()
+        if module is None or _holds_opaque_tensors((args, kwargs)):
+            return None
+        # A root hook would run on the source for the first half only; its per-call state has no second call to set.
+        if any(getattr(module, attr, None) for attr in _ROOT_HOOK_DICTS):
+            return None
+        # this step's state is the pair's own: nothing the identity path predicted belongs to it
+        self._drop_pending()
+        self.template = None
+        self.prev_latent = None
+        self.branch = 0
+        if self.replica is not None:
+            self._drop_if_stale()
+        if self.replica is None and self.disabled_reason is None:
+            self._build_replica()
+        if self.replica is None or self.worker is None or self.disabled_reason is not None:
+            return None
+        self.prefetched.clear()
+        hook_state = _mirror_hook_state(self.pairs)
+        try:
+            r_args = self._to_replica(args)
+            r_kwargs = self._to_replica(kwargs)
+        finally:
+            self.next_carry = []
+            self.prefetched.clear()
+        job = self.worker.submit(_outside_capture(self.replica, r_args, r_kwargs))
+        self._pairing = True
+        try:
+            first = primary_call()
+        except BaseException:
+            with contextlib.suppress(BaseException):
+                _ReplicaWorker.wait(job)
+            raise
+        finally:
+            self._pairing = False
+        try:
+            second = _ReplicaWorker.wait(job)
+            if _hook_state(self.pairs) != hook_state:
+                # the source's state moved during the first half: run the second again on what it is now
+                _mirror_hook_state(self.pairs)
+                second = self.worker.call(_outside_capture(self.replica, r_args, r_kwargs))
+        except Exception as exc:  # noqa: BLE001 - the caller recomputes the second half on the source
+            self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
+            return first, None
+        self.stats["replica_calls"] += 1
+        self.stats["steps_parallel"] += 1
+        self.stats["pairs_parallel"] += 1
+        return first, move_to_device(second, self.primary)
 
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         torch = _torch()
@@ -1916,7 +1997,7 @@ class CfgParallelRouter:
             "leaves": _leaves((p_args, p_kwargs)),
             "by_value": {path for path, kind in kinds.items() if kind[0] == "b0eq"},
             "snapshots": snapshots,
-            "job": self.worker.submit(lambda: replica(*r_args, **r_kwargs)),
+            "job": self.worker.submit(_outside_capture(replica, r_args, r_kwargs)),
         }
 
     def _take_prediction(self, args: tuple, kwargs: dict) -> Any:
@@ -2061,8 +2142,20 @@ class CfgParallelRouter:
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica
-        out = self.worker.call(lambda: replica(*r_args, **r_kwargs))
+        out = self.worker.call(_outside_capture(replica, r_args, r_kwargs))
         return move_to_device(out, self.primary)
+
+
+def _outside_capture(replica: Any, args: tuple, kwargs: dict) -> Callable[[], Any]:
+    """A replica job that never overlaps a CUDA-graph recording on the source card: the recordings use the global
+    capture mode, which prohibits the replica thread's allocations for as long as one records anywhere in the process."""
+
+    def job() -> Any:
+        from .diffusion_cuda_graph import outside_capture
+        with outside_capture():
+            return replica(*args, **kwargs)
+
+    return job
 
 
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()
@@ -2114,6 +2207,22 @@ def cfg_parallel_decline(
     return None
 
 
+def _resident_graph(module: Any) -> Any:
+    """The whole-step graph wrapper of a resident denoiser in its forward slot (no offload placement), else None."""
+    slot = module.__dict__.get("forward")
+    try:
+        from .diffusion_cuda_graph import GraphedCompiledCall, GraphedForward
+    except Exception:  # noqa: BLE001
+        return None
+    if (
+        type(slot) is GraphedForward
+        and slot.placement is None
+        and not isinstance(slot, GraphedCompiledCall)
+    ):
+        return slot
+    return None
+
+
 def install_cfg_parallel(
     pipe: Any,
     *,
@@ -2157,12 +2266,19 @@ def install_cfg_parallel(
             if free is not None and need_mib + 1024 > free:
                 reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
             else:
+                # A whole-step graph armed at load (before this router) moves under it, as a later one would install.
+                graph = _resident_graph(denoiser)
+                if graph is not None:
+                    del denoiser.__dict__["forward"]
                 router = CfgParallelRouter(
                     denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
                 )
+                router.inner = graph
                 try:
                     _CFG_ROUTERS[pipe] = router
                 except TypeError:
+                    if graph is not None:
+                        denoiser.__dict__["forward"] = graph
                     return "pipeline cannot be tracked (not weak-referenceable)"
                 denoiser.forward = router
                 denoiser._unsloth_cfg_router = router
@@ -2250,7 +2366,11 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
     module = router.module_ref()
     if module is not None:
         if module.__dict__.get("forward") is router:
-            if router.had_override:
+            if router.inner is not None:
+                # the graph wrapper installed under the router takes the slot back
+                module.__dict__["forward"] = router.inner
+                router.inner = None
+            elif router.had_override:
                 module.__dict__["forward"] = router.orig_forward
             else:
                 del module.__dict__["forward"]

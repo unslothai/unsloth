@@ -138,6 +138,11 @@ def _disabled_reason() -> str:
 # and neither holds the lock while it records, so captures do not serialise against each other.
 _CAPTURE_LOCK = threading.Lock()
 _CAPTURE_DEPTH = 0
+# A CFG-parallel replica runs a whole forward on another thread (diffusion_multigpu), far longer than a query, so it
+# cannot hold the lock across its calls; it counts itself in instead, and a capture waits for the count to drain.
+_CAPTURE_IDLE = threading.Condition(_CAPTURE_LOCK)
+_OUTSIDE_JOBS = 0
+_OUTSIDE_LOCAL = threading.local()
 
 
 @contextlib.contextmanager
@@ -148,13 +153,34 @@ def _capturing():
     ordering above hold; keep this the outermost of the two context managers.
     """
     global _CAPTURE_DEPTH
-    with _CAPTURE_LOCK:
+    with _CAPTURE_IDLE:
+        if not getattr(_OUTSIDE_LOCAL, "depth", 0):
+            _CAPTURE_IDLE.wait_for(lambda: _OUTSIDE_JOBS == 0)
         _CAPTURE_DEPTH += 1
     try:
         yield
     finally:
-        with _CAPTURE_LOCK:
+        with _CAPTURE_IDLE:
             _CAPTURE_DEPTH -= 1
+            _CAPTURE_IDLE.notify_all()
+
+
+@contextlib.contextmanager
+def outside_capture():
+    """For CUDA work on another thread (a CFG-parallel replica forward): waits for every recording to end and holds
+    new ones off until the block exits, so its allocations never land inside a global-mode capture."""
+    global _OUTSIDE_JOBS
+    with _CAPTURE_IDLE:
+        _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0)
+        _OUTSIDE_JOBS += 1
+    _OUTSIDE_LOCAL.depth = getattr(_OUTSIDE_LOCAL, "depth", 0) + 1
+    try:
+        yield
+    finally:
+        _OUTSIDE_LOCAL.depth -= 1
+        with _CAPTURE_IDLE:
+            _OUTSIDE_JOBS -= 1
+            _CAPTURE_IDLE.notify_all()
 
 
 @contextlib.contextmanager
@@ -641,6 +667,15 @@ def _outer_layer(module: Any) -> Any:
     return slot if getattr(slot, "_unsloth_outer_forward", False) is True else None
 
 
+def _router_layer(module: Any) -> Any:
+    """The CFG-parallel router (diffusion_multigpu.CfgParallelRouter) in ``module``'s forward slot, else None."""
+    try:
+        slot = module.__dict__.get("forward")
+    except Exception:  # noqa: BLE001
+        return None
+    return slot if getattr(type(slot), "_unsloth_cfg_router_layer", False) is True else None
+
+
 class _Entry:
     """One captured graph plus the static buffers it replays into."""
 
@@ -800,9 +835,14 @@ class GraphedForward:
         return bool(getattr(self, "_sealed_scopes", None))
 
     def install(self) -> "GraphedForward":
-        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer."""
+        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer or
+        CFG-parallel router (which keeps routing the guidance branches: the primary one replays this graph)."""
         if self.placement is not None:
             self.placement.install(self)
+            return self
+        router = _router_layer(self.module)
+        if router is not None:
+            router.inner = self
             return self
         outer = _outer_layer(self.module)
         if outer is not None:
@@ -814,6 +854,10 @@ class GraphedForward:
     def uninstall(self) -> "GraphedForward":
         if self.placement is not None:
             self.placement.uninstall(self)
+            return self
+        router = _router_layer(self.module)
+        if router is not None and router.inner is self:
+            router.inner = None
             return self
         outer = _outer_layer(self.module)
         if outer is not None:
