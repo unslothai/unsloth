@@ -345,13 +345,13 @@ export const BUDGET = {
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  // The model location row under Advanced settings (#14105) adds 3,168 B raw / 1,023 B transfer (6,878,631 ->
-  // 6,881,799 B raw, 2,071,507 -> 2,072,530 B transfer against 9f303b390, one machine and build, Node 24, 97
+  // The model location row under Advanced settings (#14105) adds 3,240 B raw / 1,055 B transfer (6,878,631 ->
+  // 6,881,871 B raw, 2,071,507 -> 2,072,562 B transfer against 9f303b390, one machine and build, Node 24, 97
   // chunks): the picked model's path threads through the local pickers' change meta, and the location helper
   // rides the eager config page (lazy-loading it was measured and lost: an extra eager chunk). Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_072_719,
-  rawBytes: 6_881_959,
+  transferBytes: 2_072_751,
+  rawBytes: 6_882_031,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

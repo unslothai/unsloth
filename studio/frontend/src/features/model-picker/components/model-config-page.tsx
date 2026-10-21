@@ -2380,7 +2380,7 @@ function ModelLocationRow({ path }: { path: string }) {
   return (
     <div className="space-y-1.5">
       <div className={ROW_CLASS}>
-        <span className={LABEL_CLASS}>Location</span>
+        <span className={`${LABEL_CLASS} shrink-0`}>Location</span>
         <div className="flex min-w-0 items-center gap-0.5">
           <button
             type="button"
@@ -2390,7 +2390,10 @@ function ModelLocationRow({ path }: { path: string }) {
             title={path}
             className="flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-ui-11 text-muted-foreground transition-colors hover:text-foreground"
           >
-            <span className="min-w-0 truncate">{shortModelLocation(path)}</span>
+            {/* Clipped from the left so the file's quant suffix stays in view. */}
+            <span dir="rtl" className="min-w-0 truncate text-left">
+              <bdi dir="ltr">{shortModelLocation(path)}</bdi>
+            </span>
             <HugeiconsIcon
               icon={ChevronDownStandardIcon}
               strokeWidth={1.75}
