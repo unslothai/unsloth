@@ -36,6 +36,7 @@ from test_llama_cpp_placement import (  # noqa: F401 -- fixtures by name
 )
 from test_offload_planner import _StubReader, _StubTensor, _shard_fields, _shard_tensors
 
+
 def _host_pinned_input_bytes(*args):
     return llama_cpp_module._host_pinned_input_bytes(*args)
 
@@ -160,8 +161,7 @@ def test_a_tied_file_duplicates_token_embd_but_not_the_per_layer_table():
 def _flash_next_layout():
     # 40 MoE blocks of 1.0 GiB experts and 0.14 GiB attention/shared: 73.45 GiB in all.
     blocks = tuple(
-        BlockLayout(index = i, spillable_bytes = GIB, resident_bytes = int(0.14 * GIB))
-        for i in range(40)
+        BlockLayout(index = i, spillable_bytes = GIB, resident_bytes = int(0.14 * GIB)) for i in range(40)
     )
     return ModelLayout(
         arch = "qwen4exp",
@@ -188,7 +188,9 @@ def test_a_lazy_table_does_not_deny_load_mode_none_to_spilled_experts():
     pushed the host side past the RAM and left the experts on the slow mmap path."""
     layout = _flash_next_layout()
     chosen = list(layout.blocks[:25])
-    lazy = _finish(layout, PlanOptions(lazy_read_bytes = FLASH_NEXT_PLE), 8192, chosen, False, 48 * GIB)
+    lazy = _finish(
+        layout, PlanOptions(lazy_read_bytes = FLASH_NEXT_PLE), 8192, chosen, False, 48 * GIB
+    )
     assert lazy.load_mode_none
     assert lazy.host_bytes == FLASH_NEXT_TOKEN_EMBD + 25 * GIB
     # Resident table (-lzm off, or auto resolved off on an iGPU): charged in full.
@@ -208,28 +210,34 @@ def test_host_pinned_inputs_for_the_three_families():
         )
         == GEMMA3N_PLE
     )
-    assert _host_pinned_input_bytes(
-        (
-            "qwen4exp",
-            {
-                PLE: FLASH_NEXT_PLE,
-                "token_embd.weight": FLASH_NEXT_TOKEN_EMBD,
-                "output.weight": FLASH_NEXT_OUTPUT,
-            },
-            0,
+    assert (
+        _host_pinned_input_bytes(
+            (
+                "qwen4exp",
+                {
+                    PLE: FLASH_NEXT_PLE,
+                    "token_embd.weight": FLASH_NEXT_TOKEN_EMBD,
+                    "output.weight": FLASH_NEXT_OUTPUT,
+                },
+                0,
+            )
         )
-    ) == FLASH_NEXT_PLE + FLASH_NEXT_TOKEN_EMBD
-    assert _host_pinned_input_bytes(
-        (
-            "deepseek41",
-            {
-                PLE: DSV41_ENGRAM,
-                "token_embd.weight": DSV41_TOKEN_EMBD,
-                "output.weight": DSV41_OUTPUT,
-            },
-            0,
+        == FLASH_NEXT_PLE + FLASH_NEXT_TOKEN_EMBD
+    )
+    assert (
+        _host_pinned_input_bytes(
+            (
+                "deepseek41",
+                {
+                    PLE: DSV41_ENGRAM,
+                    "token_embd.weight": DSV41_TOKEN_EMBD,
+                    "output.weight": DSV41_OUTPUT,
+                },
+                0,
+            )
         )
-    ) == DSV41_ENGRAM + DSV41_TOKEN_EMBD
+        == DSV41_ENGRAM + DSV41_TOKEN_EMBD
+    )
     assert _host_pinned_input_bytes(None) == 0
 
 
@@ -255,9 +263,7 @@ def _fit_flags(cmd):
     return cmd[i + 1]
 
 
-def test_gemma3n_fits_a_small_card_once_its_tables_leave_the_vram_charge(
-    tmp_path, _moe_cache_host
-):
+def test_gemma3n_fits_a_small_card_once_its_tables_leave_the_vram_charge(tmp_path, _moe_cache_host):
     """gemma-3n-E4B Q4_K_M (4.23 GiB). The weights the GPU really holds are ~2.6 GiB:
     the 1.64 GiB PLE table is host-pinned, and the tied token_embd copy is the only
     embedding on the card. On a card whose free VRAM sits between the two charges
@@ -403,7 +409,11 @@ def test_dsv41_streams_its_engram_table_on_24gb_plus_64gb(tmp_path, _moe_cache_h
         memory = [(0, 23_800, 24_576)],
         ram_gib = 58,
         expert_gib = 100,
-        lazy = {PLE: DSV41_ENGRAM, "token_embd.weight": DSV41_TOKEN_EMBD, "output.weight": DSV41_OUTPUT},
+        lazy = {
+            PLE: DSV41_ENGRAM,
+            "token_embd.weight": DSV41_TOKEN_EMBD,
+            "output.weight": DSV41_OUTPUT,
+        },
         arch = "deepseek41",
     )
     assert _lazy_values(cmd) == [], cmd
@@ -411,9 +421,7 @@ def test_dsv41_streams_its_engram_table_on_24gb_plus_64gb(tmp_path, _moe_cache_h
 
 def test_the_decision_is_logged_once(monkeypatch):
     seen = []
-    monkeypatch.setattr(
-        llama_cpp_module.logger, "info", lambda msg, *a, **k: seen.append(str(msg))
-    )
+    monkeypatch.setattr(llama_cpp_module.logger, "info", lambda msg, *a, **k: seen.append(str(msg)))
     backend = _scan_backend("qwen4exp", {PLE: FLASH_NEXT_PLE})
     for _ in range(3):
         flags = backend._managed_lazy_mode_flags(
@@ -453,7 +461,14 @@ def _apple_backend(arch, named, avail_gib):
     return backend
 
 
-def _apple_discount(backend, *, probe, model_size_fit, budget_gib, need_at_ctx = GIB):
+def _apple_discount(
+    backend,
+    *,
+    probe,
+    model_size_fit,
+    budget_gib,
+    need_at_ctx = GIB,
+):
     return backend._apple_lookup_table_discount(
         probe,
         "/m.gguf",
@@ -481,7 +496,10 @@ def test_a_failed_metal_probe_still_leaves_the_engram_table_out():
 def test_a_successful_probe_keeps_its_larger_measured_discount():
     backend = _apple_backend("deepseek41", {PLE: DSV41_ENGRAM}, avail_gib = 119)
     measured = DSV41_ENGRAM + DSV41_TOKEN_EMBD
-    assert _apple_discount(backend, probe = measured, model_size_fit = DSV41_TOTAL, budget_gib = 96) == measured
+    assert (
+        _apple_discount(backend, probe = measured, model_size_fit = DSV41_TOTAL, budget_gib = 96)
+        == measured
+    )
 
 
 def test_flash_next_goes_resident_on_a_128gb_mac_and_stays_charged():

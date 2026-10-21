@@ -15723,9 +15723,7 @@ def _gguf_memory_breakdown(
         if (
             not lookup_table_on_disk
             and _lt_arch != "deepseek41"
-            and _override_places_tensor_on_device(
-                "per_layer_token_embd.weight", extras, os.environ
-            )
+            and _override_places_tensor_on_device("per_layer_token_embd.weight", extras, os.environ)
         ):
             lookup_table_bytes = 0
     if lookup_table_on_disk:

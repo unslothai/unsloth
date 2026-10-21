@@ -11579,14 +11579,16 @@ class LlamaCppBackend:
         if table <= 0:
             # A user's "off" reads the table resident, but the probe ran under the
             # default auto and may have measured it outside Metal: take it back out.
-            auto_table = self._lazy_read_host_bytes(
-                model_path, caps = caps, extra_args = (), env = {}
-            )
-            if auto_table > 0 and _effective_lazy_mode(
-                extra_args,
-                source_env,
-                flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode"),
-            ) == "off":
+            auto_table = self._lazy_read_host_bytes(model_path, caps = caps, extra_args = (), env = {})
+            if (
+                auto_table > 0
+                and _effective_lazy_mode(
+                    extra_args,
+                    source_env,
+                    flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode"),
+                )
+                == "off"
+            ):
                 return max(0, int(probe_discount) - auto_table)
             return probe_discount
         # Same guard as the measured discount: a pass-through adapter is resident and
@@ -30369,7 +30371,10 @@ class LlamaCppBackend:
                         )
 
                         def _table_resident_fits(table: int) -> Optional[bool]:
-                            if _lazy_prompt_cache is None or not _fit_load_mode_kwargs["model_size"]:
+                            if (
+                                _lazy_prompt_cache is None
+                                or not _fit_load_mode_kwargs["model_size"]
+                            ):
                                 return None
                             return (
                                 self._fit_derived_load_mode(

@@ -293,9 +293,7 @@ class TestListing:
         from hub.utils import gguf_lookup_tables as glt
 
         # The repo's architecture is already known (an earlier listing fetched it).
-        monkeypatch.setattr(
-            gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp")
-        )
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp"))
         monkeypatch.setattr(
             glt,
             "remote_lookup_info",
@@ -334,9 +332,7 @@ class TestListing:
             return "qwen4exp"
 
         monkeypatch.setattr(gv, "_hub_repo_architecture", slow_arch)
-        monkeypatch.setattr(
-            gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None)
-        )
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None))
         monkeypatch.setattr(
             glt, "remote_lookup_info", lambda *a, **k: pytest.fail("no header read yet")
         )
@@ -357,7 +353,6 @@ class TestListing:
             if not gv._lookup_inflight:
                 break
             import time
-
             time.sleep(0.05)
         assert fetched == ["o/cold"]
 
@@ -465,9 +460,7 @@ class TestEstimate:
         assert b.lookup_table_on_disk is False
         assert b.weights_bytes == int(round(self.WEIGHTS))
 
-    def test_a_resident_table_moved_to_the_gpu_stays_in_the_gpu_share(
-        self, breakdown, monkeypatch
-    ):
+    def test_a_resident_table_moved_to_the_gpu_stays_in_the_gpu_share(self, breakdown, monkeypatch):
         monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
         monkeypatch.delenv("LLAMA_ARG_OVERRIDE_TENSOR", raising = False)
         b = breakdown(llama_extra_args = ["-lzm", "off", "-ot", "per_layer_token_embd=CUDA0"])

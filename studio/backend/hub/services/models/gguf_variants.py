@@ -1551,7 +1551,11 @@ async def _with_lookup_tables(
                         if busy:
                             continue
 
-                        def _read(name = v.filename, ident = identity, k = key):
+                        def _read(
+                            name = v.filename,
+                            ident = identity,
+                            k = key,
+                        ):
                             try:
                                 return _remote_lookup_bytes(repo_id, name, hf_token, ident)
                             finally:

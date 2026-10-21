@@ -36,7 +36,9 @@ def is_per_layer_embedding(name: str) -> bool:
 
 
 def lazy_read_bytes(
-    architecture: Optional[str], tensor_bytes: Mapping[str, int], mode: str = "auto"
+    architecture: Optional[str],
+    tensor_bytes: Mapping[str, int],
+    mode: str = "auto",
 ) -> int:
     """Bytes of ``tensor_bytes`` llama.cpp reads lazily under ``mode``."""
     if mode not in ("auto", "on"):
