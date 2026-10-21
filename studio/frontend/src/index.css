@@ -356,17 +356,18 @@
 	   a softer feel. Dark mode (further down) keeps parity with the
 	   muted-text token. */
 	--panel-slider-fg-base: #9a9a9c;
-	/* Every slider (components/ui/slider.tsx, the Hub range filter, native
-	   media ranges): one look in every palette, filled with the accent. The
-	   track is translucent so it sits the same step off any surface (#eaeaea
-	   on #fafafa). */
+	/* Every slider (components/ui/slider.tsx, native media ranges; the Hub
+	   range filter takes only the sizes): one look in every palette, filled
+	   with the accent. The track is translucent so it sits the same step off
+	   any surface (#eaeaea on #fafafa). */
 	--slider-fill: var(--control-accent);
 	--slider-track: rgb(0 0 0 / calc(0.065 * var(--contrast-wash-gain, 1)));
 	--slider-thumb: #ffffff;
 	--slider-thumb-hover: #ededed;
-	--slider-thumb-border: #e3e3e3;
-	--slider-thumb-shadow: 0 1px 4px rgb(0 0 0 / 0.08);
-	--slider-track-height: calc(0.25rem * var(--ui-space-scale, 1));
+	/* The border is an inset shadow: Chromium snaps border widths to whole
+	   pixels, so a 1.5px border renders as 1px. */
+	--slider-thumb-shadow: inset 0 0 0 1.5px #e3e3e3, 0 1px 3px rgb(0 0 0 / 0.06);
+	--slider-track-height: calc(0.125rem * var(--ui-space-scale, 1));
 	--slider-thumb-size: calc(1.25rem * var(--ui-space-scale, 1));
 	/* Chat-message action icons (assistant action bar, branch picker
 	   chevrons + numbers, message-timing token counter, code-block
@@ -574,7 +575,6 @@
 	--slider-fill: color-mix(in oklab, var(--control-accent) 75%, #a0a0a0);
 	--slider-track: rgb(255 255 255 / calc(0.045 * var(--contrast-wash-gain, 1)));
 	--slider-thumb-hover: #dcdcdc;
-	--slider-thumb-border: transparent;
 	--slider-thumb-shadow: 0 0 #0000;
 	/* Chat action icons: under the ink so they read as controls, not text.
 	   Hover restores full --foreground. */
@@ -5288,7 +5288,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	margin-top: calc((var(--slider-track-height) - var(--slider-thumb-size)) / 2);
 	border-radius: 9999px;
 	background: var(--slider-thumb);
-	border: 1px solid var(--slider-thumb-border);
+	border: none;
 	box-shadow: var(--slider-thumb-shadow);
 	transition: background-color 100ms ease-out;
 }
@@ -5299,7 +5299,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	height: var(--slider-thumb-size);
 	border-radius: 9999px;
 	background: var(--slider-thumb);
-	border: 1px solid var(--slider-thumb-border);
+	border: none;
 	box-shadow: var(--slider-thumb-shadow);
 	transition: background-color 100ms ease-out;
 }

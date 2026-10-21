@@ -318,7 +318,7 @@ function RangeStops({
           }}
           className="group/range relative flex h-(--slider-thumb-size) w-full touch-none select-none items-center"
         >
-          <SliderPrimitive.Track className="relative h-(--slider-track-height) w-full grow rounded-full bg-(--slider-track)">
+          <SliderPrimitive.Track className="relative h-(--slider-track-height) w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
             {spec.stops.map((_, i) =>
               // Under the range, which covers them where it runs, so its fill stays unbroken.
               i === 0 || i === last ? null : (
@@ -331,14 +331,19 @@ function RangeStops({
                 />
               ),
             )}
-            <SliderPrimitive.Range className="absolute h-full rounded-full bg-(--slider-fill)" />
+            <SliderPrimitive.Range
+              className={cn("absolute h-full rounded-full", RANGE_FILL)}
+            />
           </SliderPrimitive.Track>
           {([lo, hi] as const).map((index, thumb) => (
             <SliderPrimitive.Thumb
               key={thumb === 0 ? "min" : "max"}
               aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
               aria-valuetext={chip(index)}
-              className="relative block size-(--slider-thumb-size) cursor-grab rounded-full border border-(--slider-thumb-border) bg-(--slider-thumb) shadow-(--slider-thumb-shadow) hover:bg-(--slider-thumb-hover) ring-(--slider-fill)/30 outline-none transition-colors duration-100 ease-out focus-visible:ring-4 active:cursor-grabbing"
+              className={cn(
+                "relative block size-(--slider-thumb-size) cursor-grab rounded-full ring-(--hub-slider-fg)/20 outline-none focus-visible:ring-4 active:cursor-grabbing",
+                RANGE_FILL,
+              )}
             />
           ))}
         </SliderPrimitive.Root>
