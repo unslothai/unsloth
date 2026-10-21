@@ -7,6 +7,7 @@ import {
   cleanupExport,
   exportGGUF,
   exportLoRA,
+  runPostExportHook,
   exportMerged,
   getExportStatus,
   isRecoverableTransportError,
@@ -179,6 +180,14 @@ export interface RunExportParams {
   loraGguf?: boolean;
   adapterFormat?: "mlx" | "peft";
   loraGgufOuttype?: string;
+  /** Selected post-export hooks, run on each local output after the export succeeds. `asMethod`: the hook is the
+   * export method -- its output replaces the export's, and the export (temporary) is removed once it succeeds. */
+  postExportHooks?: {
+    id: string;
+    label: string;
+    options: Record<string, string>;
+    asMethod?: boolean;
+  }[];
   saveDirectory: string;
   destination: ExportDestination;
   repoId?: string;
@@ -584,6 +593,54 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           });
         }
         drafter = exportDrafterFrom(loraDetails);
+      }
+      if (!isCurrent()) return;
+
+      // 3. Post-export hooks (e.g. another runtime's format) on each local merged/LoRA output. A hook that IS
+      // the export method replaces the outputs with what it produced (its source export is temporary).
+      const hooks = params.postExportHooks ?? [];
+      if (hooks.length > 0 && params.destination !== "hub") {
+        const methodMode = hooks.some((h) => h.asMethod);
+        const produced: { label: string; path: string }[] = [];
+        for (const out of outputs.slice()) {
+          for (const hook of hooks) {
+            if (!isCurrent()) {
+              return;
+            }
+            try {
+              const res = await runPostExportHook({
+                hook_id: hook.id,
+                export_path: out.path,
+                options: hook.options,
+                discard_export: Boolean(hook.asMethod),
+              });
+              const path = res.details?.output_path;
+              produced.push({
+                label: hook.label,
+                path: typeof path === "string" && path ? path : out.path,
+              });
+            } catch (hookErr) {
+              const message =
+                hookErr instanceof Error ? hookErr.message : String(hookErr);
+              if (hook.asMethod) {
+                // The method's own output failed: that is the export failing; keep the source for a retry.
+                throw new Error(
+                  `${hook.label} failed: ${message}. The intermediate export is kept at ${out.path}.`,
+                );
+              }
+              // The export itself already succeeded: a failing switch hook is reported beside it.
+              produced.push({
+                label: `${hook.label}: failed (${message})`,
+                path: out.path,
+              });
+            }
+          }
+        }
+        if (methodMode) {
+          outputs.splice(0, outputs.length, ...produced);
+        } else {
+          outputs.push(...produced);
+        }
       }
       if (!isCurrent()) return;
 

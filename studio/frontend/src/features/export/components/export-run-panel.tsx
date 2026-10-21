@@ -97,6 +97,8 @@ function waitingMessage(phase: string, stage: string | null): string {
 
 export interface ExportRunPanelProps {
   exportMethod: ExportMethod | null;
+  /** Shown instead of the built-in method's title (a post-export hook used as the method). */
+  methodLabel?: string;
   quantLevels: string[];
   checkpoint: string | null;
   baseModelName: string;
@@ -206,9 +208,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     setFollowTail(nearBottom);
   };
 
-  const methodTitle = EXPORT_METHODS.find(
-    (m) => m.value === exportMethod,
-  )?.title;
+  const methodTitle =
+    props.methodLabel ??
+    EXPORT_METHODS.find((m) => m.value === exportMethod)?.title;
   const summary = run.summary;
   const summaryBaseModel = summary?.baseModelName ?? baseModelName;
   const summaryCheckpoint = summary?.checkpointLabel ?? checkpoint;
