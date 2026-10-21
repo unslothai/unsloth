@@ -14,8 +14,12 @@ torch = pytest.importorskip("torch")
 av = pytest.importorskip("av")
 diffusers = pytest.importorskip("diffusers")
 
-from diffusers import AutoencoderKLWan  # noqa: E402
-from diffusers.video_processor import VideoProcessor  # noqa: E402
+# Lazy diffusers imports can raise RuntimeError (broken bitsandbytes): skip, not abort collection.
+try:
+    from diffusers import AutoencoderKLWan  # noqa: E402
+    from diffusers.video_processor import VideoProcessor  # noqa: E402
+except (ImportError, RuntimeError) as exc:
+    pytest.skip(f"diffusers is not importable here: {type(exc).__name__}", allow_module_level = True)
 
 from core.inference import video_stream_encode as vse  # noqa: E402
 from core.inference.video_frames import uint8_video_frames  # noqa: E402
@@ -193,3 +197,43 @@ def test_encode_mp4_claims_an_offered_stream_once():
     assert vse._mp4_frame_count(data, frames.shape[1:3]) == len(frames)
     assert vse._mp4_frame_count(again, frames.shape[1:3]) == len(frames)
     assert vse.STATS["streamed"] == before + 1
+
+
+def test_a_failed_final_flush_falls_back_without_hanging(monkeypatch):
+    """The flush runs after the encoder thread took the stop marker; a failure there must not wait for another."""
+    import threading
+
+    class _Stream:
+        width = height = 0
+        pix_fmt = None
+        codec_context = type("Ctx", (), {"thread_type": None})()
+
+        def encode(self, frame = None):
+            if frame is None:
+                raise OSError(28, "No space left on device")
+            return []
+
+    class _Container:
+        def add_stream(self, *args, **kwargs):
+            return _Stream()
+
+        def mux(self, packet):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(av, "open", lambda *args, **kwargs: _Container())
+    pipe = _Pipe(_vae())
+    session = vse.StreamEncode(pipe.vae, pipe.video_processor, 8)
+    frames = _render(pipe, session, torch.randn(1, 4, 2, 8, 8))
+    result = {}
+    worker = threading.Thread(
+        target = lambda: result.setdefault("data", session.take(frames, 8)), daemon = True
+    )
+    worker.start()
+    worker.join(timeout = 60)
+    assert not worker.is_alive(), "take() hung after the encoder's final flush failed"
+    assert result["data"] is None
+    session.close()
+    assert not os.path.exists(session.path)
