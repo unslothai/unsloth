@@ -2253,7 +2253,8 @@ mod tests {
 
     #[test]
     fn every_page_webview_gets_the_permission_handler() {
-        let source = include_str!("browser_webview.rs");
+        // A Windows checkout may carry CRLF line endings.
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
         let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
         let start = code.find("fn with_page_profile").unwrap();
         let body = &code[start..start + code[start..].find("\n}\n").unwrap()];
