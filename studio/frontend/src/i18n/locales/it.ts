@@ -49,6 +49,11 @@ export const it = {
     removeFromMessage: "Rimuovi dal messaggio",
   },
   browser: {
+    drafts: {
+      title: "Scaricare una pagina con testo inserito?",
+      description: "Per mantenere la chat reattiva, solo tre pagine nascoste con testo inserito restano in esecuzione. Continuando verrà scaricata {pages} e il testo non salvato potrebbe andare perso. Annulla torna alla scheda precedente.",
+      confirm: "Scarica e continua",
+    },
     agentSettings: {
       title: "Uso del browser",
       enable: "Consenti ai modelli di usare il browser",
@@ -1524,9 +1529,9 @@ export const it = {
         autoDescription: "Legge ad alta voce ogni risposta appena è completa",
         engineLabel: "Motore TTS",
         engineSystemDescription: "Voci integrate nel dispositivo",
-        engineStudioDescription: "Usa il modello vocale caricato in Audio",
+        engineStudioDescription: "Parla con un modello caricato in Audio › Sintesi vocale",
         engineSystem: "Voci di sistema",
-        engineStudio: "Carica un modello TTS",
+        engineStudio: "Modello di Unsloth",
         engineCustom: "Endpoint personalizzato",
         engineCustomDescription:
           "Un server TTS compatibile con OpenAI dalle tue connessioni (ad es. Kokoro)",
@@ -1538,8 +1543,11 @@ export const it = {
         customVoiceDescription:
           "Nome della voce atteso dall'endpoint; il valore predefinito è alloy",
         modelLabel: "Modello TTS",
-        modelDescription:
-          "Carica un modello vocale in Audio. Sostituisce il modello della chat.",
+        modelDescription: "Nessuno caricato. Caricane uno in Audio › Sintesi vocale.",
+        modelLoaded: "{model} è caricato",
+        keepBothLabel: "Mantieni caricato il modello di chat",
+        keepBothDescription: "«Mantieni più modelli caricati» è su «Disattivato», quindi caricare un modello vocale scarica il modello di chat.",
+        keepBothAction: "Mantieni entrambi caricati",
         openAudioAction: "Apri Audio",
         voiceLabel: "Voce",
         voiceDescription: "Le migliori voci disponibili su questo dispositivo",
@@ -1617,6 +1625,23 @@ export const it = {
           "Caricamento delle impostazioni dell'LLM di supporto non riuscito.",
         saveError:
           "Salvataggio delle impostazioni dell'LLM di supporto non riuscito.",
+      },
+      developerMode: {
+        sectionTitle: "Modalità sviluppatore",
+        videoCpu: "Consenti la generazione video su CPU (sperimentale)",
+        videoCpuDescription: "Consente di usare la pagina Video su un host senza GPU supportata. Disattivato per impostazione predefinita; non supportato e molto lento.",
+        notApplicable: "Nessun effetto su questa macchina: il video viene già eseguito sulla GPU oppure è bloccato da qualcosa che la CPU non può aggirare.",
+        forcedOnByEnv: "Attivato da UNSLOTH_VIDEO_ALLOW_CPU nell'ambiente del backend.",
+        forcedOffByEnv: "Disattivato da UNSLOTH_VIDEO_ALLOW_CPU nell'ambiente del backend.",
+        confirmTitle: "Attivare la generazione video su CPU?",
+        confirmWarning: "La generazione video su CPU può richiedere ore, consumare grandi quantità di RAM e bloccare il sistema. Procedi a tuo rischio.",
+        ramBelowMinimum: "Questa macchina ha {host} GB di RAM, meno dei {min} GB richiesti dal modello video più piccolo su CPU. È probabile che il caricamento fallisca o blocchi il sistema.",
+        ramOk: "Questa macchina ha {host} GB di RAM. Il modello video più piccolo richiede circa {min} GB su CPU; i modelli più grandi ne richiedono molta di più.",
+        ramUnknown: "Il modello video più piccolo richiede circa {min} GB di RAM su CPU; i modelli più grandi ne richiedono molta di più.",
+        performanceEstimate: "Prevedi alcuni minuti per ogni passo di denoising: una clip di 5 frame a 832x480 con Wan2.1 1.3B a 3 passi ha richiesto circa 4 minuti su 16 thread CPU, e una clip completa con le impostazioni predefinite può richiedere ore.",
+        confirmAction: "Attiva comunque",
+        loadError: "Impossibile caricare le impostazioni della modalità sviluppatore.",
+        saveError: "Impossibile salvare le impostazioni della modalità sviluppatore.",
       },
       modelAutoSwitch: {
         sectionTitle: "Cambio automatico del modello (API OpenAI)",
@@ -1762,6 +1787,12 @@ export const it = {
           "Mantieni Unsloth e il suo server in esecuzione in background quando chiudi la finestra principale.",
         closeToTraySaveError:
           "Impossibile aggiornare l'impostazione di chiusura nell'area di notifica.",
+
+        menuBarIcon: "Mostra nella barra dei menu",
+        menuBarIconDescription:
+          "Mostra l'icona di Unsloth nella barra dei menu di macOS. Se nascosta, Unsloth rimane nel Dock, anche quando si avvia all'accesso.",
+        menuBarIconSaveError:
+          "Impossibile aggiornare l'impostazione dell'icona nella barra dei menu.",
         loadError: "Impossibile caricare l'impostazione di avvio all'accesso.",
         saveError:
           "Impossibile aggiornare l'impostazione di avvio all'accesso.",
@@ -1866,8 +1897,8 @@ export const it = {
         downloadFailed: "Impossibile avviare il download",
         downloadConflict: "Riprendi questo download dall'Hub",
         downloadBusy: "Download già in corso",
-        pin: "Fissa nel menu RAG",
-        unpin: "Rimuovi dal menu RAG",
+        pin: "Fissa nel menu Files",
+        unpin: "Rimuovi dal menu Files",
         menuChip: "Modello",
         moreModels: "Altri modelli",
         pinMoreModels: "Fissa altri modelli",
@@ -1956,6 +1987,8 @@ export const it = {
         subtitle:
           "Tutto quello che vedi qui è calcolato dalla tua cronologia. Nessun dato viene raccolto o inviato a Unsloth.",
         retry: "Riprova",
+        exportCsv: "Esporta CSV",
+        exportError: "Impossibile esportare l'utilizzo dei token",
         privacyNote:
           "Le statistiche sono calcolate dalla cronologia locale di chat, utilizzo API e addestramenti della tua installazione di Unsloth. Prompt, risposte e chiavi API non vengono mai salvati per le statistiche. Nulla viene inviato a Unsloth o a terze parti.",
         emptyChats:
@@ -2294,12 +2327,15 @@ export const it = {
         multiModelOff: "Disattivato",
         multiModelFit: "Se c'è spazio",
         multiModelAlways: "Sempre",
-        multiModelDescription: "Caricare un modello di chat, immagini o video scarica gli altri.",
+        multiModelDescription: "Caricare un modello di chat, voce, immagini o video scarica gli altri.",
         multiModelDescriptionFit:
           "Caricare un modello mantiene gli altri se c'è spazio. Altrimenti scarica prima quelli non in uso, poi quello attivo.",
         multiModelDescriptionAlways:
           "Caricare un modello non ne scarica mai un altro. Un modello che non entra non viene caricato. Lo scaricamento automatico per inattività e l'addestramento liberano comunque memoria.",
-        multiModelHint: "Vale per i modelli di chat, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
+        multiModelHint: "Vale per i modelli di chat, voce, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
+        allowOversizedLoad: "Consenti il caricamento di modelli troppo grandi",
+        allowOversizedLoadDescription: "Carica modelli di immagini e video anche quando il controllo della memoria indica che non entrano.",
+        allowOversizedLoadHint: "Si applica quando CPU e GPU condividono un'unica memoria (Apple Silicon, GPU integrate). Studio rifiuta il caricamento quando la stima dei pesi del modello supera la memoria rimasta dopo la riserva per il sistema operativo. Con questa opzione attiva, il caricamento viene tentato comunque. La stima può sbagliare in entrambe le direzioni: un caricamento troppo grande può fallire, esaurire la memoria, far usare molto lo swap al computer o bloccarlo, oppure chiudere Studio. Disattivato per impostazione predefinita.",
         mediaIdleUnloadDescription:
           "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. 0 li mantiene in memoria; il minimo è 60.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
@@ -2312,7 +2348,7 @@ export const it = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente bloccare fissare mantenere caricato scaricare inattivo mmap no-mmap load-mode paginazione swap",
         multiModelKeywords:
-          "più modelli insieme contemporaneamente cambio spazio scaricare espellere vram gpu immagini video chat sempre inattivo",
+          "più modelli insieme contemporaneamente cambio spazio scaricare espellere vram gpu immagini video chat sempre inattivo voce parlato tts lettura ad alta voce",
         mediaIdleUnloadKeywords:
           "immagini video diffusione inattivo scaricare ttl timeout secondi liberare vram gpu memoria",
       },
@@ -3123,6 +3159,7 @@ export const it = {
       audioCppVersion: "Versione di audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrata",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -4380,6 +4417,7 @@ export const it = {
       moreActions: "Altre azioni",
       chatAboutThis: "Chatta su questo",
       chatWithModel: "Chatta con questo modello",
+      editImage: "Modifica immagine",
       addToFavorites: "Aggiungi ai preferiti",
       regenerateTitle: "Rigenera titolo",
       removeFromFavorites: "Rimuovi dai preferiti",
@@ -4575,6 +4613,7 @@ export const it = {
       skippedOverLimit: "Altri {count} oltre il limite di {limit} file.",
       chatFilesWaiting: "{count} verranno allegati appena sarà caricato un modello in grado di leggerli.",
       openFilesFailed: "Impossibile aprire i file",
+      editImageFailed: "Impossibile aprire l'immagine per la modifica",
       speechModel: "{name} è un modello vocale",
       speechModelDescription: "Sceglilo dal menu dei modelli nella pagina Audio.",
       noMediaLink: "Il server non ha restituito alcun link per riprodurre questo file.",

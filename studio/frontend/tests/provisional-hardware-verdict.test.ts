@@ -419,6 +419,8 @@ test("the Video hint names the reason the host has no video device", () => {
     !/gpu|graphics|coming soon/i.test(videoNavHint(true, "intel_mac") ?? ""),
     "an Intel Mac is pointed at graphics hardware that cannot run video",
   );
+  // Rosetta has Apple Silicon underneath: the fix is a native arm64 install, not new hardware.
+  assert.match(videoNavHint(true, "rosetta") ?? "", /arm64/, "a Rosetta host is not told the fix");
 });
 
 // A broken MLX stack makes the host chat-only, but video runs on Metal and does not use MLX,
@@ -441,7 +443,7 @@ test("the Video row is disabled exactly when the hint has something to say", asy
   const { readFile } = await import("node:fs/promises");
   assert.match(
     APP_SIDEBAR,
-    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\)/,
+    /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn\)/,
     "the Video hint no longer comes from the shared derivation",
   );
   assert.match(

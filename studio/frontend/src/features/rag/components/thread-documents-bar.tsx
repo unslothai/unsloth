@@ -1028,18 +1028,16 @@ export function ThreadDocumentsBar({
     [],
   );
 
-  // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope,
-  // but a KB preference left over while the pill is off does not.
   const threadProjectId = useThreadProjectId(effectiveThreadId);
   // Attaching before the row has been read would file the file by guess.
   const projectUnresolved = threadProjectId === undefined;
   // A host where the vector extension cannot load answers 503 to every project
   // source request, so do not open a scope it can only fail.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  // Retrieval keeps the project beside a KB (#9485), so it is always watched for indexing.
+  const watchedProjectId = ragUnavailable ? null : (threadProjectId ?? null);
   const projectId =
-    (ragEnabled && ragSource.type === "kb") || ragUnavailable
-      ? null
-      : (threadProjectId ?? null);
+    ragEnabled && ragSource.type === "kb" ? null : watchedProjectId;
   // This chat's own choice if it made one, otherwise the saved default. Keeps a
   // pick in one chat from redirecting every other chat in the project.
   const projectAttachmentTarget =
@@ -1076,8 +1074,11 @@ export function ThreadDocumentsBar({
   // from another chat is visible rather than silently in effect. Retrieval already
   // combines both scopes (core/rag/tool.py).
   const projectLister = useCallback(
-    () => (projectId ? listProjectDocuments(projectId) : Promise.resolve([])),
-    [projectId],
+    () =>
+      watchedProjectId
+        ? listProjectDocuments(watchedProjectId)
+        : Promise.resolve([]),
+    [watchedProjectId],
   );
   const {
     documents: projectDocuments,
@@ -1089,13 +1090,13 @@ export function ThreadDocumentsBar({
     retry: retryProject,
     canRetry: canRetryProject,
   } = useRagDocuments(
-    projectId ? { type: "project", projectId } : null,
+    watchedProjectId ? { type: "project", projectId: watchedProjectId } : null,
     projectLister,
   );
 
   // Tell the composer whether any doc is still indexing, so it can hold a queued send until
-  // retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope is null, so both lists are
-  // empty and this reads false. From the hooks, not the rows: work started in the Sources panel is
+  // retrieval covers them (Composer.enqueueSend). A KB or RAG off leaves only the project watched,
+  // which reads false without one. From the hooks, not the rows: work started in the Sources panel is
   // in flight before either instance has a row for it, and a job already running on a reopened
   // project arrives with the first list, so hold until that lands. Both scopes hold on their first
   // list, for the same reason: reopening a chat whose own attachment was still indexing lists
@@ -1329,7 +1330,7 @@ export function ThreadDocumentsBar({
       <LinkedFolderCard name={folderNames.get(folderId)} docs={docs} />
     </div>
   ));
-  const fileCount = documents.length + projectDocuments.length;
+  const fileCount = documents.length + (projectId ? projectDocuments.length : 0);
   useEffect(() => {
     useChatRuntimeStore.getState().setRagPanelFileCount(fileCount);
   }, [fileCount]);

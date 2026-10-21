@@ -2785,3 +2785,59 @@ def test_a_media_request_parked_on_a_gate_is_not_read_as_running_chat_work(monke
             tracker._inflight = tracker._pending = 0
 
     assert [entry.model_id for entry in started] == ["org/target"]
+
+
+def test_a_downloaded_retired_flux3_copy_switches_to_the_base_it_copies(
+    catalog, enabled, backend, loads, tmp_path
+):
+    # unsloth/flux-3-image-klein is a retired full copy that the load route redirects to its BFL base (fetched from the
+    # -FP8 mirror). The switch has to prove THAT load is cached, and recognise the base it publishes as resident.
+    snapshot = tmp_path / "flux3-copy"
+    snapshot.mkdir()
+    (snapshot / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("unsloth/flux-3-image-klein", snapshot, task = mas.IMAGE_TASK))
+    planned: list = []
+
+    def _plan(model_path, **kwargs):
+        planned.append(model_path)
+        return {"total_bytes": backend.missing_bytes}
+
+    backend.download_plan = _plan
+    base = "black-forest-labs/flux-3-image-klein"
+    backend.missing_bytes = 5_000
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("unsloth/flux-3-image-klein")
+    assert excinfo.value.status_code == 409 and loads == []
+    assert planned and set(planned) == {base}
+
+    backend.missing_bytes = 0
+    _switch("unsloth/flux-3-image-klein")
+    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [
+        (base, base, "pipeline")
+    ]
+    # Resident as the base: the same request is answered without another load.
+    _switch("unsloth/flux-3-image-klein")
+    assert len(loads) == 1
+
+
+def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(
+    catalog, enabled, backend, loads, tmp_path
+):
+    # Picking the retired copy now stages its base's -FP8 mirror, so a later API request still naming the copy must find
+    # that download rather than answer model_not_found.
+    snapshot = tmp_path / "flux3-fp8"
+    snapshot.mkdir()
+    (snapshot / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("unsloth/flux-3-image-klein-FP8", snapshot, task = mas.IMAGE_TASK))
+    _switch("unsloth/flux-3-image-klein")
+    base = "black-forest-labs/flux-3-image-klein"
+    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [
+        (base, base, "pipeline")
+    ]
+    # The base, resident (as the Images page loads it), answers the copy's name without a reload.
+    _switch("unsloth/flux-3-image-klein")
+    assert len(loads) == 1
+    # A name with no retired mapping still refuses.
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("unsloth/not-a-model")
+    assert excinfo.value.status_code == 404

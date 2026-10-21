@@ -146,12 +146,14 @@ def test_every_slot_is_reported(monkeypatch):
         "family": "flux",
         **IMAGE_EXTRAS,
         "generating": False,
+        "placement": None,
     }
     assert status["video"] == {
         "loaded": True,
         "model": "Lightricks/LTX-Video",
         **VIDEO_EXTRAS,
         "generating": False,
+        "placement": None,
     }
     assert status["stt"] == {
         "engine": "gguf",
@@ -236,7 +238,13 @@ def test_failing_and_owner_only_slots_do_not_fail_the_tool(monkeypatch):
     assert set(status["unavailable"]) == {"video"}
     assert "Video backend crashed" in status["unavailable"]["video"]
     assert "/srv/hf" not in status["unavailable"]["video"]
-    assert status["video"] == {"loaded": False, "model": None, **VIDEO_EXTRAS, "generating": False}
+    assert status["video"] == {
+        "loaded": False,
+        "model": None,
+        **VIDEO_EXTRAS,
+        "generating": False,
+        "placement": None,
+    }
     assert status["embedder"] == {"available": False, "loaded": False, "model": None}
     assert status["image"]["generating"] is True
     assert status["chat"]["loaded"]
@@ -295,8 +303,15 @@ def test_unloaded_slots_name_no_model(monkeypatch):
         "family": None,
         **IMAGE_EXTRAS,
         "generating": False,
+        "placement": None,
     }
-    assert status["video"] == {"loaded": False, "model": None, **VIDEO_EXTRAS, "generating": False}
+    assert status["video"] == {
+        "loaded": False,
+        "model": None,
+        **VIDEO_EXTRAS,
+        "generating": False,
+        "placement": None,
+    }
 
 
 def _training_slot(monkeypatch, details):

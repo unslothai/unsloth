@@ -313,11 +313,18 @@ def is_model_downloaded(model_id: str) -> bool:
     return downloaded
 
 
+def _hub_entry_missing(exc: BaseException) -> bool:
+    """The Hub answered that this file (or revision) does not exist, as opposed to a network, auth or gate error."""
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    return bool(names & {"EntryNotFoundError", "RemoteEntryNotFoundError", "RevisionNotFoundError"})
+
+
 class _MtmdDownloadState:
     """Tracks the two-file download of one mtmd dictation model.
 
     ``specs`` / ``cached_paths`` / ``resolve`` let another llama.cpp sidecar (the FLUX.3 prompt upsampler) reuse the
-    same pinned two-file download; None keeps the dictation catalogue, looked up at call time.
+    same pinned two-file download; None keeps the dictation catalogue, looked up at call time. A spec with a ``files``
+    tuple downloads those files instead of its model and projector (the Images text-to-mask segmenter).
     """
 
     def __init__(
@@ -326,11 +333,14 @@ class _MtmdDownloadState:
         cached_paths = None,
         resolve = None,
         label: str = "mtmd STT",
+        describe_error = None,
     ) -> None:
         self._specs = specs
         self._cached_paths_fn = cached_paths
         self._resolve_fn = resolve
         self._label = label
+        # (model_id, exception or worker stderr) -> a message for the UI, or None for the generic one.
+        self._describe_error_fn = describe_error
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
@@ -349,6 +359,14 @@ class _MtmdDownloadState:
 
     def _resolve(self, model_id: Optional[str]) -> str:
         return (self._resolve_fn or resolve_mtmd_model_id)(model_id)
+
+    def _describe_error(self, model_id: str, error: object) -> Optional[str]:
+        if self._describe_error_fn is None:
+            return None
+        try:
+            return self._describe_error_fn(model_id, error)
+        except Exception:  # noqa: BLE001 -- the generic message still reaches the UI
+            return None
 
     def _cached_paths(self, model_id: str, **kwargs):
         return (self._cached_paths_fn or _cached_model_paths)(model_id, **kwargs)
@@ -495,12 +513,38 @@ class _MtmdDownloadState:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
             selected: list[_SelectedHubFile] = []
-            revision: Optional[str] = None
-            for filename in (spec.model_file, spec.mmproj_file):
-                meta = get_hf_file_metadata(
-                    hf_hub_url(spec.repo, filename, revision = revision),
-                    token = normalize_token(hf_token),
-                )
+            # A spec may pin a commit (the segmenter's variants); none, or a branch such as "main", resolves the newest.
+            pinned = getattr(spec, "revision", None)
+            revision: Optional[str] = (
+                pinned if isinstance(pinned, str) and _HF_COMMIT_SHA.fullmatch(pinned) else None
+            )
+            for filename in getattr(spec, "files", None) or (spec.model_file, spec.mmproj_file):
+                try:
+                    meta = get_hf_file_metadata(
+                        hf_hub_url(spec.repo, filename, revision = revision),
+                        token = normalize_token(hf_token),
+                    )
+                except Exception as exc:
+                    fallback = getattr(spec, "fallback", None)
+                    if not fallback or not _hub_entry_missing(exc):
+                        raise
+                    # A spec whose file is not published (yet) at its revision downloads its fallback instead:
+                    # the segmenter's pre-quantized file falls back to the bf16 one.
+                    logger.info(
+                        "%s: %s is not on %s at %s (%s); downloading %s instead",
+                        self._label,
+                        filename,
+                        spec.repo,
+                        revision or "main",
+                        type(exc).__name__,
+                        fallback,
+                    )
+                    with self._lock:
+                        if self._cancelled:
+                            return
+                        self._model_id = fallback
+                    self._run(fallback, hf_token, hub_cache)
+                    return
                 if revision is None:
                     revision = meta.commit_hash
                     if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
@@ -573,12 +617,20 @@ class _MtmdDownloadState:
             detail = stderr.decode("utf-8", "replace").strip()
             logger.warning("%s download failed for %s: %s", self._label, model_id, detail)
             with self._lock:
-                self._error = modelscope_missing(detail) or f"Download failed for '{model_id}'."
+                self._error = (
+                    self._describe_error(model_id, detail)
+                    or modelscope_missing(detail)
+                    or f"Download failed for '{model_id}'."
+                )
         except Exception as exc:
             with self._lock:
                 if not self._cancelled:
                     logger.warning("%s download failed for %s: %s", self._label, model_id, exc)
-                    self._error = modelscope_missing(exc) or f"Download failed for '{model_id}'."
+                    self._error = (
+                        self._describe_error(model_id, exc)
+                        or modelscope_missing(exc)
+                        or f"Download failed for '{model_id}'."
+                    )
         finally:
             # Release first: it is the half that would wedge the repository.
             if registry is not None and owner is not None:

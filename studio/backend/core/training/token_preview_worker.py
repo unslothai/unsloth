@@ -314,8 +314,10 @@ def run_token_preview_process(*, cmd_queue: Any, resp_queue: Any, config: dict) 
         sys.path.insert(0, backend_path)
 
     from utils.security.hub_data_files import install as guard_hub_data_files
+    from utils.security.dataset_media import install as guard_dataset_media
 
     guard_hub_data_files()
+    guard_dataset_media()
 
     tokenizer = None
     load_error = None

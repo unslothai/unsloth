@@ -38,6 +38,19 @@ def _patch(monkeypatch, *, torch: bool, device, apple: bool):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: apple)
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: False)
+
+
+def test_rosetta_export_gives_the_native_arm64_remedy(monkeypatch):
+    # is_apple_silicon() is False in an x86_64 process, so this fell through to no_accelerator.
+    _patch(monkeypatch, torch = True, device = hw.DeviceType.CPU, apple = False)
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("rosetta", None))
+    cap = hw.export_capability()
+    assert cap["export_supported"] is False
+    assert cap["export_unsupported_reason"] == "rosetta"
+    assert "arm64" in cap["export_unsupported_message"]
 
 
 def test_cpu_with_torch_unsupported_no_accelerator(monkeypatch):

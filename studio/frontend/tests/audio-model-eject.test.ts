@@ -26,7 +26,7 @@ test("Audio exposes the shared picker eject action only while idle", () => {
 test("Speak eject unloads the live main model and cancels stale auto-load", () => {
   assert.match(
     source,
-    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{\s*model_path: activeModel,\s*force_cancel_active: stopDecision\.forceCancelActive,\s*\}\)/,
+    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{\s*model_path: (?:slotModel \?\? )?activeModel,\s*force_cancel_active: stopDecision\.forceCancelActive,\s*\}\)/,
   );
   assert.match(
     source,
@@ -39,7 +39,7 @@ test("Speak eject asks about running chats before tearing anything down", () => 
   // Unforced, the backend refused with a 409 the page could only print as a toast.
   assert.match(
     source,
-    /const activeModel = status\?\.active_model;[\s\S]*confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*\)/,
+    /const activeModel = status\?\.active_model;[\s\S]*confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",?\s*\)/,
   );
   // Declining leaves the page as it was: the staged download dies only past the check.
   assert.match(
@@ -49,14 +49,19 @@ test("Speak eject asks about running chats before tearing anything down", () => 
   // Queues would otherwise start a fresh run on the model this eject removes.
   assert.match(
     source,
-    /cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*await unloadModel/,
+    /if \(!slotEject\) \{\s*cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*await unloadModel/,
   );
 });
 
 test("a Speak load asks the same question and forces from the answer", () => {
   assert.match(
     source,
-    /const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+    /const stopDecision = keepsChat\s*\? \{[\s\S]*?\}\s*: await confirmStopRunningChatsIfNeeded\(\);/,
+  );
+  // Only a load kept beside the chat model skips the question: its chats keep running.
+  assert.match(
+    source,
+    /const keepsChat = useChatRuntimeStore\.getState\(\)\.keepModelsLoaded;/,
   );
   // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
   assert.match(
@@ -81,7 +86,7 @@ test("a Speak load stops local queues only once /load is going out", () => {
   // happened, leaving the old model resident and the work gone.
   assert.match(
     source,
-    /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\},/,
+    /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\}\s*\},/,
   );
   assert.doesNotMatch(
     source,
@@ -95,7 +100,7 @@ test("a model swap holds Chat's lifecycle gate across the question", () => {
   // work nobody confirmed stopping, and a load started in that window 409s again.
   assert.match(
     source,
-    /ttsLoadInFlight\.current = true;[\s\S]{0,400}?const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);\s*if \(lifecycleLease === null\) \{[\s\S]*?return;\s*\}[\s\S]{0,200}?const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+    /ttsLoadInFlight\.current = true;[\s\S]{0,400}?const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);\s*if \(lifecycleLease === null\) \{[\s\S]*?return;\s*\}[\s\S]{0,500}?const stopDecision = keepsChat[\s\S]{0,300}?: await confirmStopRunningChatsIfNeeded\(\);/,
   );
   // Released before the queued replay, which needs the gate for its own attempt.
   assert.match(
@@ -105,7 +110,7 @@ test("a model swap holds Chat's lifecycle gate across the question", () => {
   // Eject takes it before it goes busy, so it is held across its own question too.
   assert.match(
     source,
-    /const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);[\s\S]{0,300}?setBusy\("unloading"\);[\s\S]{0,400}?confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",/,
+    /const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);[\s\S]{0,300}?setBusy\("unloading"\);[\s\S]{0,800}?confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",/,
   );
   assert.match(
     source,

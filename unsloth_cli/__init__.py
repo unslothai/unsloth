@@ -108,6 +108,7 @@ else:
         run as studio_run,
         studio_app,
         _expand_attached_np_short,
+        _LlamaPassthroughCommand,
     )
 
 
@@ -272,6 +273,7 @@ if not _windows_studio_mutation_entry:
     # top-level `unsloth run` aliases `unsloth studio run`; same context so unknown flags pass through to llama-server.
     app.command(
         "run",
+        cls = _LlamaPassthroughCommand,
         context_settings = {
             "allow_extra_args": True,
             "ignore_unknown_options": True,
