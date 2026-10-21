@@ -161,7 +161,7 @@ def test_macos_profile_hides_other_accounts_temporary_roots(tmp_path, monkeypatc
     (run_as(BOB, storage_roots.tmp_root) / "dataset.jsonl").write_text("BOB_PRIVATE")
 
     profile = run_as(ALICE, tools._account_confinement).wrap(["bash"])[2]
-    base = str((shared_tmp / "unsloth-studio").resolve())
+    base = str(storage_roots.shared_tmp_root().resolve())
     alice_tmp = str(run_as(ALICE, storage_roots.tmp_root).resolve())
     bob_tmp = str(run_as(BOB, storage_roots.tmp_root).resolve())
 
@@ -666,7 +666,7 @@ def test_default_layout_denies_exactly_the_previous_macos_roots(tmp_path, monkey
     assert denied == {
         "/private/var/folders",
         str((tmp_path / "studio").resolve()),
-        str((shared_tmp / "unsloth-studio").resolve()),
+        str(storage_roots.shared_tmp_root().resolve()),
         str(home.resolve()),
     }
 
