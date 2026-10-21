@@ -132,14 +132,15 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
 
 
 def test_stop_recomputation_does_not_demote(monkeypatch):
-    """#14063: non-reentrant checkpoint early-stop must not look like a compile failure."""
+    """#14063: a non-reentrant checkpoint ends its recompute by raising through the forward;
+    demoting on it left the stock forward for the rest of the recompute (CheckpointError)."""
+    from torch.utils.checkpoint import _StopRecomputationError
+
     M = _load()
-    if M._StopRecomputationError == ():
-        pytest.skip("torch has no _StopRecomputationError")
 
     def fake_compile(fn, **kwargs):
         def compiled(*args, **kw):
-            raise M._StopRecomputationError()
+            raise _StopRecomputationError()
 
         return compiled
 
@@ -147,11 +148,8 @@ def test_stop_recomputation_does_not_demote(monkeypatch):
     cls = _toy_class()
     M._wrap(cls, {})
     layer = cls()
-    x = torch.randn(2, 4, 8, requires_grad = True)
-    with pytest.raises(M._StopRecomputationError):
-        layer(x)
-    # Still on the first mode: demoting would force the stock forward for the rest of
-    # recomputation and trip CheckpointError on tensor-count mismatch.
+    with pytest.raises(_StopRecomputationError):
+        layer(torch.randn(2, 4, 8, requires_grad = True))
     assert layer._unsloth_block_mode == M._FIRST_MODE
     assert layer.__dict__.get("_unsloth_block_checked", 0) == 0
 
