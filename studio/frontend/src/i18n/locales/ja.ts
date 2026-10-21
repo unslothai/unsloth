@@ -216,7 +216,7 @@ export const ja = {
     importBookmarksDoneOne: "{count} 件のブックマークをインポートしました。",
     importBookmarksDoneMany: "{count} 件のブックマークをインポートしました。",
     importBookmarksNone: "このファイルに新しいブックマークはありません。",
-    importBookmarksPartial: "{count} 件をインポートしましたが、残りの {leftOut} 件は入りませんでした。Studio に保存できるブックマークは最大 {max} 件です。",
+    importBookmarksPartial: "{count} 件をインポートしましたが、残りの {leftOut} 件は入りませんでした。Unsloth に保存できるブックマークは最大 {max} 件です。",
     importBookmarksFailed: "ファイルを読み込めませんでした。ブラウザからエクスポートしたブックマークの HTML ファイルを選択してください。",
     downloadsTitle: "ダウンロード",
     askWhereToSaveSetting: "ファイルごとに保存先を確認する",
@@ -267,7 +267,7 @@ export const ja = {
     annotationScreenshotsAlways: "常に含める",
     annotationScreenshotsNever: "含めない",
     clearDataSetting: "閲覧データを消去",
-    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Studio を再読み込みするまでのみ保持されます。",
+    clearDataSettingDescription: "閲覧履歴、ダウンロード履歴、キャッシュされたページを消去します。ページの Cookie やサイトデータは Unsloth を再読み込みするまでのみ保持されます。",
     manage: "管理",
     fullView: {
       enter: "全画面表示",
@@ -846,6 +846,7 @@ export const ja = {
       byProject: "プロジェクト別",
       inOneList: "1つのリストで",
       sortChatsBy: "チャットの並び順",
+      projectsHome: "プロジェクトのホーム",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",
@@ -1448,15 +1449,15 @@ export const ja = {
       dictation: {
         audioUploadTitle: "録音を使って音声入力",
         audioUploadDescription:
-          "Studio で直接録音するには、ブラウザーでセキュア接続 (HTTPS) が必要です。この HTTP 接続では、代わりにスマートフォンのレコーダーを使うか、保存済みの録音を選択してください。Studio サーバーが音声を文字起こしし、テキストをメッセージに追加します。",
+          "Unsloth で直接録音するには、ブラウザーでセキュア接続 (HTTPS) が必要です。この HTTP 接続では、代わりにスマートフォンのレコーダーを使うか、保存済みの録音を選択してください。Unsloth サーバーが音声を文字起こしし、テキストをメッセージに追加します。",
         audioUploadChooseFile: "録音を選択",
         audioUploadRecord: "音声を録音",
         audioUploadIphoneHint:
           "iPhone では、Voice Memos または別の録音アプリで録音を保存してから、ここで選択してください。",
         audioUploadServerModelNote:
-          "この録音では、通常の音声入力に別のエンジンを使用している場合でも、Studio サーバー上で上に表示されているローカルモデルを使用します。",
+          "この録音では、通常の音声入力に別のエンジンを使用している場合でも、Unsloth サーバー上で上に表示されているローカルモデルを使用します。",
         audioUploadAutomatic: "自動",
-        audioUploadModelReady: "この Studio サーバーで使用可能",
+        audioUploadModelReady: "この Unsloth サーバーで使用可能",
         audioUploadRetryTitle: "{file} を文字起こしできませんでした",
         audioUploadRetry: "文字起こしを再試行",
         audioUploadChooseModel:
@@ -1946,7 +1947,7 @@ export const ja = {
         menuSubtitle: "ファイル検索に使用",
         device: "埋め込みデバイス",
         deviceDescription:
-          "すべてのモデルで埋め込みモデルを実行する場所です。GPU は大量のドキュメントをより速くインデックスしますが、Studio を再起動するまで一部の VRAM を使用し続けます。",
+          "すべてのモデルで埋め込みモデルを実行する場所です。GPU は大量のドキュメントをより速くインデックスしますが、Unsloth を再起動するまで一部の VRAM を使用し続けます。",
         deviceAuto: "自動",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2376,7 +2377,7 @@ export const ja = {
         multiModelHint: "チャット、音声、画像、動画のモデルが対象です。読み込まれた各チャットモデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、Unsloth は新しいモデルを他のモデルが使っていない GPU に配置しようとします。「収まる場合」は約 1 GB の空きを残します。「収まる場合」と「常に」は、別の GPU 上のモデルをアンロードしません。",
         allowOversizedLoad: "大きすぎるモデルの読み込みを許可",
         allowOversizedLoadDescription: "メモリチェックで収まらないと判定された場合でも、画像と動画のモデルを読み込みます。",
-        allowOversizedLoadHint: "CPU と GPU が 1 つのメモリを共有する環境 (Apple Silicon、内蔵 GPU) に適用されます。モデルの重みの推定値が、オペレーティングシステム用の領域を確保した後の残りメモリを超えると、Studio は読み込みを拒否します。オンにすると、その場合でも読み込みを試みます。推定はどちらの方向にも外れることがあり、大きすぎる読み込みは失敗する、メモリを使い切る、激しいスワップや応答停止を起こす、または Studio を停止させることがあります。既定ではオフです。",
+        allowOversizedLoadHint: "CPU と GPU が 1 つのメモリを共有する環境 (Apple Silicon、内蔵 GPU) に適用されます。モデルの重みの推定値が、オペレーティングシステム用の領域を確保した後の残りメモリを超えると、Unsloth は読み込みを拒否します。オンにすると、その場合でも読み込みを試みます。推定はどちらの方向にも外れることがあり、大きすぎる読み込みは失敗する、メモリを使い切る、激しいスワップや応答停止を起こす、または Unsloth を停止させることがあります。既定ではオフです。",
         mediaIdleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
@@ -2744,6 +2745,22 @@ export const ja = {
         visibilityDescription:
           "思考の開き方。個々のブロックは手動で展開・折りたたみできます。",
       },
+      memory: {
+        title: "メモリー",
+        description: "すべてのチャットが読み込むメモです。ローカルでもクラウドでも、どのモデルでも使われます。プロジェクト内のチャットは、そのプロジェクトの AGENTS.md も読み込みます。",
+        enable: "チャットでメモリーを使う",
+        enableDescription: "このメモをすべてのチャットに送信します。",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD により、このインストールでは無効になっています。",
+        editor: "メモリーのメモ",
+        placeholder: "例:\n- Python を書いていて uv を使っています。\n- 簡潔に答えてください。",
+        hint: "{path} に保存されます。このファイルは任意のテキストエディタでも編集できます。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "メモリーを保存しました",
+        loadError: "メモリーを読み込めませんでした。",
+        saveError: "メモリーを保存できませんでした。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md メモリー 記憶 覚える パーソナライズ プロフィール メモ",
+      },
       currentDate: {
         label: "今日の日付をモデルに伝える",
         description:
@@ -2821,7 +2838,7 @@ export const ja = {
       importFailed: "インポートに失敗しました。",
       importFromSource: "{source} からインポート",
       importFromSourceDescription:
-        "{source} の会話をプロジェクトごとにまとめて Studio にコピーします。",
+        "{source} の会話をプロジェクトごとにまとめて Unsloth にコピーします。",
       importingAction: "インポート中...",
       importedSourceOneChat: "{source} から 1 件の会話をインポートしました。",
       importedSourceChatCount:
@@ -3231,7 +3248,7 @@ export const ja = {
         desktopAvailableDescription:
           "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
-          "アプリはすでに実行中の Studio サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
+          "アプリはすでに実行中の Unsloth サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
         desktopManualInstall:
           "リリースページを開き、最新の Linux パッケージをインストールしてください。",
         desktopCheckFailed: "アップデートを確認できませんでした",
@@ -3827,7 +3844,7 @@ export const ja = {
         decisionColumnsMissing:
           "判定モデルには state、questions、gold（または answers）列が必要です。不足している列: {columns}",
         decisionOwnerOnly:
-          "判定モデルをファインチューニングできるのは Studio の所有者だけです。",
+          "判定モデルをファインチューニングできるのは Unsloth の所有者だけです。",
         hfDatasetRequired:
           "先に Hugging Face データセットを選択してください。",
         hfDatasetSplitRequired:

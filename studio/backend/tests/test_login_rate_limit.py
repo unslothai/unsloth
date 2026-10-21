@@ -78,11 +78,12 @@ class TestClientIp:
         # Proxy header is spoofable; without the opt-in, trust the direct connection.
         assert _client_ip(req) == "127.0.0.1"
 
-    def test_honours_first_xff_when_trust_on(self, env_trust_proxy):
+    def test_honours_rightmost_xff_when_trust_on(self, env_trust_proxy):
+        # The trusted proxy appends the real client; the entries left of it are the client's own.
         from routes.auth import _client_ip
         req = _FakeRequest(
             "127.0.0.1",
-            {"x-forwarded-for": "198.51.100.7, 10.0.0.1"},
+            {"x-forwarded-for": "10.0.0.1, 198.51.100.7"},
         )
         assert _client_ip(req) == "198.51.100.7"
 
@@ -107,12 +108,12 @@ class TestClientIp:
 
     def test_xff_strips_ipv4_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-        req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "198.51.100.7:50001, 10.0.0.1"})
+        req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "10.0.0.1, 198.51.100.7:50001"})
         assert _client_ip(req) == "198.51.100.7"
 
     def test_xff_strips_bracketed_ipv6_port(self, env_trust_proxy):
         from routes.auth import _client_ip
-        req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "[2001:db8::1]:50001, 10.0.0.1"})
+        req = _FakeRequest("127.0.0.1", {"x-forwarded-for": "10.0.0.1, [2001:db8::1]:50001"})
         assert _client_ip(req) == "2001:db8::1"
 
     def test_forwarded_strips_ipv4_port(self, env_trust_proxy):
@@ -125,13 +126,13 @@ class TestClientIp:
         req = _FakeRequest("127.0.0.1", {"forwarded": 'for="[2001:db8::1]:50001";proto=https'})
         assert _client_ip(req) == "2001:db8::1"
 
-    def test_forwarded_isolates_first_element(self, env_trust_proxy):
-        # Pick the first Forwarded element only, else suffix variations create
-        # attacker-controlled buckets.
+    def test_forwarded_isolates_last_element(self, env_trust_proxy):
+        # The last Forwarded element is the trusted proxy's; earlier ones are client-controlled
+        # and would let a caller pick a fresh bucket per guess.
         from routes.auth import _client_ip
         req = _FakeRequest(
             "127.0.0.1",
-            {"forwarded": "for=198.51.100.42, for=10.0.0.1;proto=https"},
+            {"forwarded": "for=10.0.0.1, for=198.51.100.42;proto=https"},
         )
         assert _client_ip(req) == "198.51.100.42"
 

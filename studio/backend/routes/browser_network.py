@@ -32,7 +32,7 @@ BROWSER_NETWORK_JS = r"""
 
         // To the browser the sandbox's origin is opaque, so even the page's own site is another origin,
         // and an API of it that sends no CORS headers can't be read. Requests to the page's origin go
-        // through the panel to Studio's backend (POST /api/browser/request), which makes them as the
+        // through the panel to Unsloth's backend (POST /api/browser/request), which makes them as the
         // same-origin requests they are. Requests to other sites stay the browser's. When the page's
         // site answers any origin (cfg.anyOrigin), its writes and XHRs stay the browser's too, streamed
         // and unbuffered; a fetch GET still falls back to the panel for an API that doesn't.

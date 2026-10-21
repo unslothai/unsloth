@@ -9,6 +9,9 @@ Three levers, all at a component or denoiser-call boundary, never inside a model
   other companions sit on a secondary card, when that removes offload on the primary. Inputs move to a module's own
   card at its entry points and outputs come back to the primary, so the pipeline still sees one device. Copies are
   exact, so the output is bit-identical to a single-card resident run.
+* Layer split (``diffusion_layer_split``): a DiT that fits no single selected card is split by contiguous ranges of
+  its repeated blocks, the rest of it on the primary. Activations cross at the range boundaries only; outputs are
+  bit-identical to a one-card run.
 * Second denoiser (after load): a two-DiT pipeline (an MoE ``transformer_2``) keeps one expert per card when both
   experts do not fit one card.
 * CFG-parallel (generate): when guidance runs separate cond / uncond denoiser calls on the same latents, every odd
@@ -17,6 +20,8 @@ Three levers, all at a component or denoiser-call boundary, never inside a model
   step stay on the primary. Branches are recognised from the call boundary alone (same latent tensor object in
   consecutive calls), so true CFG, rescale and multi-branch guidance work unchanged and a guidance-distilled model
   (one call per step) never builds a replica.
+* Layer split (after load, diffusion_layer_split_plan): when one card would offload the denoiser itself and no
+  component assignment fits, the denoiser's blocks are cut across the cards. Excludes CFG-parallel.
 
 Kill switches: ``UNSLOTH_DIFFUSION_MULTIGPU=0`` (everything here; one card as before), ``UNSLOTH_DIFFUSION_CFG_PARALLEL=0``
 (only the replica). ``UNSLOTH_DIFFUSION_MULTIGPU=force`` splits the companions even when one card would hold
@@ -120,6 +125,15 @@ def make_selection(
         pass
     if not others:
         return None
+    if _rocm_torch():
+        # ROCm's capability is the gfx target (gfx942 (9, 4)), which does not order; match the primary's load dtype
+        # instead (arch-pinned attention kernels are gated per card in diffusion_layer_split_plan).
+        others = tuple(o for o in others if _rocm_dtype_parity(int(primary), o))
+        return (
+            MultiGpuSelection(primary = int(primary), secondaries = others, automatic = automatic)
+            if others
+            else None
+        )
     # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
     # from Ada): a card of a lower compute capability may not run them, so it takes no component.
     need = _capability(int(primary))
@@ -166,6 +180,35 @@ def _capability(ordinal: int) -> Optional[tuple[int, int]]:
         return int(major), int(minor)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _rocm_torch() -> bool:
+    """A ROCm torch build (AMD SDK / Radeon wheels included, which leave ``torch.version.hip`` unset)."""
+    try:
+        import torch
+
+        from .rocm_bf16 import is_rocm_torch
+        return is_rocm_torch(torch)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _rocm_bf16(ordinal: int) -> Optional[bool]:
+    try:
+        import torch
+
+        from .rocm_bf16 import rocm_bf16_supported
+        return bool(rocm_bf16_supported(torch, int(ordinal)))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rocm_dtype_parity(primary: int, ordinal: int) -> bool:
+    """A ROCm card runs the dtype the load resolves for the primary: bf16 when the primary has native bf16 (RDNA1/2,
+    GCN and Vega emulate it), anything otherwise. An unreadable card is kept, like an unknown CUDA capability."""
+    if _rocm_bf16(primary) is not True:
+        return True
+    return _rocm_bf16(ordinal) is not False
 
 
 @contextlib.contextmanager
@@ -378,12 +421,14 @@ def choose_component_assignment(
     overhead_mib: int,
     primary_limit_mib: int,
     secondary_limit_mib: int,
+    move_denoisers: bool = True,
 ) -> Optional[tuple[str, ...]]:
     """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
     -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
     component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
     Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
-    companions. The first denoiser always stays on the primary."""
+    companions. The first denoiser always stays on the primary; ``move_denoisers=False`` (the secondary cannot run the
+    denoiser's attention backend) keeps every denoiser there."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
     if not dits:
         return None
@@ -400,7 +445,7 @@ def choose_component_assignment(
         candidates.append(tuple(companions))
     if encoders and len(encoders) < len(companions):
         candidates.append(tuple(encoders))
-    if seconds:
+    if seconds and move_denoisers:
         candidates.append(tuple(seconds))
         if companions:
             candidates.append(tuple(seconds + companions))
@@ -417,6 +462,32 @@ def choose_component_assignment(
     return None
 
 
+def _secondary_runs_denoiser(
+    pipe: Any, selection: MultiGpuSelection, secondary: int, sizes: dict, logger: Any
+) -> bool:
+    """Whether a second denoiser may move wholesale to ``secondary``. ROCm admits mixed gfx targets (make_selection),
+    so the card must pass the layer split's per-card attention gate: an arch-pinned kernel (flash_attn, AITER) only on
+    the primary's gfx target, native SDPA not math-only beside a fused primary. CUDA's capability order already holds."""
+    if not _rocm_torch() or sum(1 for _m, role in sizes.values() if role == "dit") < 2:
+        return True
+    try:
+        from .diffusion_layer_split_plan import _rocm_backend_cards
+        kept, _backend = _rocm_backend_cards(
+            pipe, int(selection.primary), (int(secondary),), logger
+        )
+    except Exception:  # noqa: BLE001 - unverifiable: keep the denoisers on the primary
+        return False
+    if int(secondary) in kept:
+        return True
+    if logger is not None:
+        logger.info(
+            "diffusion.multigpu: second denoiser stays on cuda:%s (attention backend not verified on cuda:%s)",
+            selection.primary,
+            secondary,
+        )
+    return False
+
+
 def refine_plan_for_multigpu(
     pipe: Any,
     plan: Any,
@@ -425,13 +496,20 @@ def refine_plan_for_multigpu(
     """Post-load: an offloading plan becomes a resident split when the LOADED components can be shared by the cards.
 
     No-op without a selection, for explicit offload modes, a plan already resident (unless forced) or split, unified memory
-    or an unknown budget. Returns the plan (a ``dataclasses.replace`` copy when it changed)."""
+    or an unknown budget. When no component assignment fits, a layer split (diffusion_layer_split_plan) is tried before
+    keeping the offload plan. Returns the plan (a ``dataclasses.replace`` copy when it changed)."""
     selection = current_selection()
     if selection is None or plan is None:
         return plan
-    if getattr(plan, "secondary_ordinal", None) is not None:
+    if (
+        getattr(plan, "secondary_ordinal", None) is not None
+        or getattr(plan, "layer_split", None) is not None
+    ):
         return plan
-    if plan.offload_policy == "none" and multigpu_mode() != "force":
+    from .diffusion_layer_split_plan import layer_split_mode, refine_plan_for_layer_split
+
+    layer_force = layer_split_mode() == "force"
+    if plan.offload_policy == "none" and multigpu_mode() != "force" and not layer_force:
         return plan
     if getattr(plan, "requested_mode", None) not in ("auto", "fast"):
         return plan
@@ -439,6 +517,9 @@ def refine_plan_for_multigpu(
         return plan
     memory = plan.device_memory
     if memory.is_unified or getattr(memory, "device", None) != "cuda":
+        if memory.is_unified:
+            from .diffusion_layer_split_plan import note_unified_primary
+            note_unified_primary(pipe, selection, logger)
         return plan
     budget = plan.estimates.get("safe_device_budget_mib")
     if budget is None:
@@ -469,15 +550,32 @@ def refine_plan_for_multigpu(
         or 0
     )
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
+
+    def layer_split_or_plan() -> Any:
+        return refine_plan_for_layer_split(
+            pipe,
+            plan,
+            selection = selection,
+            sizes = sizes,
+            primary_limit_mib = int(primary_limit),
+            secondary_limit_mib = lambda o: secondary_resident_limit_mib(o, mode),
+            headroom_mib = headroom,
+            overhead_mib = overhead,
+            logger = logger,
+        )
+
+    if layer_force:
+        return layer_split_or_plan()
     moved = choose_component_assignment(
         sizes,
         headroom_mib = headroom,
         overhead_mib = overhead,
         primary_limit_mib = int(primary_limit),
         secondary_limit_mib = int(sec_limit),
+        move_denoisers = _secondary_runs_denoiser(pipe, selection, secondary, sizes, logger),
     )
     if moved is None:
-        return plan
+        return layer_split_or_plan()
     reason = (
         f"multi-GPU (loaded sizes): {', '.join(moved)} on cuda:{secondary}, the rest resident on "
         f"cuda:{selection.primary}; single card would use '{plan.offload_policy}'"
@@ -538,10 +636,18 @@ def move_to_device(
     obj: Any,
     device: Any,
     _depth: int = 0,
+    *,
+    tensor_fn: Optional[Callable[[Any], Any]] = None,
+    objects: bool = True,
 ) -> Any:
+    """Tensors in ``obj`` (containers, dataclasses, ModelOutputs, plain attribute holders) on ``device``.
+    ``tensor_fn(t)`` replaces ``t.to(device)`` for a tensor that is elsewhere. ``objects=False`` leaves dataclasses
+    and attribute holders as they are (a per-layer KV cache the callee writes into must keep its identity)."""
     torch = _torch()
     if isinstance(obj, torch.Tensor):
-        return obj if obj.device == device else obj.to(device)
+        if obj.device == device:
+            return obj
+        return obj.to(device) if tensor_fn is None else tensor_fn(obj)
     if (
         _depth > 6
         or obj is None
@@ -553,28 +659,39 @@ def move_to_device(
         try:
             out = copy.copy(obj)
             for key, value in obj.items():
-                moved = move_to_device(value, device, _depth + 1)
+                moved = move_to_device(
+                    value, device, _depth + 1, tensor_fn = tensor_fn, objects = objects
+                )
                 if moved is not value:
                     out[key] = moved
             return out
         except Exception:  # noqa: BLE001
-            return type(obj)((k, move_to_device(v, device, _depth + 1)) for k, v in obj.items())
+            return type(obj)(
+                (k, move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects))
+                for k, v in obj.items()
+            )
     if isinstance(obj, tuple):
-        moved = [move_to_device(v, device, _depth + 1) for v in obj]
+        moved = [
+            move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj
+        ]
         if all(a is b for a, b in zip(moved, obj)):
             return obj
         if hasattr(obj, "_fields"):
             return type(obj)(*moved)
         return type(obj)(moved) if type(obj) is not tuple else tuple(moved)
     if isinstance(obj, list):
-        return [move_to_device(v, device, _depth + 1) for v in obj]
-    if isinstance(obj, torch.nn.Module):
+        return [
+            move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj
+        ]
+    if type(obj).__name__ == "BlockMask" and callable(getattr(obj, "to", None)):
+        return obj.to(device)
+    if isinstance(obj, torch.nn.Module) or not objects:
         return obj
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         changes = {}
         for f in dataclasses.fields(obj):
             value = getattr(obj, f.name, None)
-            moved = move_to_device(value, device, _depth + 1)
+            moved = move_to_device(value, device, _depth + 1, tensor_fn = tensor_fn, objects = objects)
             if moved is not value:
                 changes[f.name] = moved
         if not changes:
@@ -601,7 +718,7 @@ def move_to_device(
             out = copy.copy(obj)
             for k, v in state.items():
                 if isinstance(v, torch.Tensor) and v.device != device:
-                    setattr(out, k, v.to(device))
+                    setattr(out, k, v.to(device) if tensor_fn is None else tensor_fn(v))
             return out
     return obj
 
@@ -687,6 +804,12 @@ def _split_home(pipe: Any) -> Any:
         return None
     if not isinstance(components, dict):
         return None
+    from .diffusion_layer_split import layer_split_of
+
+    for module in components.values():
+        layered = layer_split_of(module)
+        if layered is not None:
+            return layered.current_home()
     for module in components.values():
         home = getattr(module, "_unsloth_split_home", None)
         if home is not None:
@@ -803,7 +926,18 @@ def place_split(
 
 
 def undo_split(pipe: Any) -> None:
+    """Remove every split placed on ``pipe``: a layer split of any denoiser (its block boundary and the planner's
+    record) and the component boundaries. Weights stay where they are."""
     torch = _torch()
+    from .diffusion_layer_split import undo_layer_split as undo_layers
+    from .diffusion_layer_split_plan import forget_applied_layer_split
+
+    for name in DENOISER_ATTRS:
+        try:
+            undo_layers(pipe, attr = name)
+        except Exception:  # noqa: BLE001 - best effort; the component boundaries below still come off
+            pass
+    forget_applied_layer_split(pipe)
     for module in (getattr(pipe, "components", {}) or {}).values():
         if isinstance(module, torch.nn.Module):
             remove_boundary(module)
@@ -850,12 +984,17 @@ def apply_split_plan(
 
 
 def is_split(pipe: Any) -> bool:
+    """A companion split or a layer split is placed on ``pipe``."""
     if pipe is None:
         return False
     try:
-        return pipe in _PLACEMENTS
+        if pipe in _PLACEMENTS:
+            return True
     except TypeError:
         return False
+    from .diffusion_layer_split_plan import is_layer_split
+
+    return is_layer_split(pipe)
 
 
 def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
@@ -867,9 +1006,28 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         declined = _CFG_DECLINES.get(pipe)
     except TypeError:
         return None
-    if info is None and cfg is None and declined is None:
+    from .diffusion_layer_split_plan import layer_split_status
+
+    layer = layer_split_status(pipe)
+    if info is None and cfg is None and declined is None and layer is None:
         return None
     out: dict[str, Any] = dict(info or {})
+    from .diffusion_layer_split import layer_split_stats
+
+    live = {
+        name: stats
+        for name in DENOISER_ATTRS
+        if (stats := layer_split_stats(getattr(pipe, name, None))) is not None
+    }
+    if layer is not None:
+        out["layer_split"] = dict(layer)
+        if live:
+            out["layer_split"]["live"] = live
+    elif (
+        "layer_split" in out
+    ):  # placed by the engine directly (no planner record): its own summary, live
+        engine = out["layer_split"]
+        out["layer_split"] = dict(live.get(engine.get("denoiser", "transformer")) or engine)
     if cfg is not None:
         out["cfg_parallel"] = cfg.describe()
     elif declined is not None:
@@ -1055,7 +1213,7 @@ def _hooks_present(module: Any) -> Optional[str]:
                 if name and not _trusted_hook(hook):
                     return f"{name}.{attr}"
                 if not name and not _hook_origin(hook).startswith(_TRUSTED_HOOK_MODULES):
-                    return f"<root>.{attr} (a hook outside Studio: its per-call state cannot be mirrored)"
+                    return f"<root>.{attr} (a hook outside Unsloth: its per-call state cannot be mirrored)"
         override = sub.__dict__.get("forward")
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
             continue
@@ -1919,6 +2077,11 @@ def cfg_parallel_decline(
     mode = cfg_parallel_mode()
     if mode == "off":
         return f"{CFG_PARALLEL_ENV}=0"
+    from .diffusion_layer_split_plan import is_layer_split
+
+    # A replica is a whole denoiser on one card, which a denoiser cut across cards cannot be.
+    if is_layer_split(pipe):
+        return "denoiser is split across cards (layer split)"
     # A replica takes a whole denoiser's worth of another card; automatic placement only borrows one to avoid offload.
     if selection.automatic and mode != "force":
         return f"automatic GPU placement (select several cards or set {CFG_PARALLEL_ENV}=force)"
@@ -1931,6 +2094,10 @@ def cfg_parallel_decline(
     torch = _torch()
     if not isinstance(denoiser, torch.nn.Module):
         return "no DiT denoiser (a U-Net batches its guidance branches)"
+    from .diffusion_layer_split import is_layer_split
+
+    if is_layer_split(denoiser):
+        return "denoiser is split across cards (layer split)"
     # Whole-module / sequential offload page the denoiser per call; a group / streaming plan is fine only when it left
     # the denoiser itself resident (encoders streamed), which shows as a denoiser without offload hooks.
     if offload_policy in ("model", "sequential"):
