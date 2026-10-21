@@ -429,8 +429,12 @@ test("chat settings offer the llama.cpp update only for a llama.cpp release", ()
 // whisper.cpp rides along: its own releases never open the card, so it has no notification setting.
 test("whisper.cpp is listed in the update card but never opens it", () => {
   const banner = readSrc("components/llama-update-banner.tsx");
-  assert.match(banner, /const due: UpdateComponentFlags = \{[^}]*whisper: false,/);
-  assert.match(banner, /const muted: UpdateComponentFlags = \{[^}]*whisper: true,/);
+  assert.match(banner, /const due: UpdateComponentFlags = \{[^}]*whisper: whisperRetry,/);
+  assert.match(banner, /const muted: UpdateComponentFlags = \{[^}]*whisper: !whisperRetry,/);
+  assert.match(
+    banner,
+    /const whisperRetry =\s*status\?\.job\.state === "error" && status\.component === "whisper\.cpp";/,
+  );
   const general = readSrc("features/settings/tabs/general-tab.tsx");
   assert.doesNotMatch(general, /channel="whisper"/);
   const listed = ["whisper.cpp"] as const;
@@ -442,5 +446,18 @@ test("whisper.cpp is listed in the update card but never opens it", () => {
       false,
     ),
     false,
+  );
+});
+
+// a failed whisper.cpp phase keeps its Retry after a reload, when no earlier open state is held.
+test("a failed whisper.cpp phase reopens the card for its retry", () => {
+  assert.equal(
+    updateBannerAllowed(
+      ["whisper.cpp"],
+      { llama: false, whisper: true, audio: false },
+      { llama: false, whisper: false, audio: false },
+      false,
+    ),
+    true,
   );
 });

@@ -183,17 +183,10 @@ export function LlamaUpdateBanner({
   const [shownChannels, setShownChannels] = useState<
     readonly NotificationChannel[]
   >([]);
-  // whisper.cpp rides along with llama.cpp and audio.cpp: listed in their card, never a reason to show it.
-  const due: UpdateComponentFlags = {
-    llama: useNotificationDue("llama"),
-    whisper: false,
-    audio: useNotificationDue("audio"),
-  };
-  const muted: UpdateComponentFlags = {
-    llama: useNotificationFrequency("llama") === "off",
-    whisper: true,
-    audio: useNotificationFrequency("audio") === "off",
-  };
+  const llamaDue = useNotificationDue("llama");
+  const audioDue = useNotificationDue("audio");
+  const llamaMuted = useNotificationFrequency("llama") === "off";
+  const audioMuted = useNotificationFrequency("audio") === "off";
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
   // listen regardless of banner preference so muting the UI does not silence cross-tab reload_required resync.
   const { status, visible, applying, apply, dismiss, snooze } =
@@ -201,6 +194,19 @@ export function LlamaUpdateBanner({
       enabled,
       onReloadRequired: resyncInferenceStatusAfterServerModelChange,
     });
+  // whisper.cpp rides along with llama.cpp and audio.cpp; it opens the card only to retry its own failed phase.
+  const whisperRetry =
+    status?.job.state === "error" && status.component === "whisper.cpp";
+  const due: UpdateComponentFlags = {
+    llama: llamaDue,
+    whisper: whisperRetry,
+    audio: audioDue,
+  };
+  const muted: UpdateComponentFlags = {
+    llama: llamaMuted,
+    whisper: !whisperRetry,
+    audio: audioMuted,
+  };
 
   const migrationPending = Boolean(status?.backend_migration_available);
   const listed = updateBannerComponents({
