@@ -802,7 +802,9 @@ from .trainer import *
 
 # Export dataprep utilities for CLI and downstream users
 from .dataprep.raw_text import RawTextDataLoader, TextPreprocessor
-from .dataprep.ebooks import load_ebook_dataset
+from .dataprep import ebooks as _ebooks
+
+load_ebook_dataset = _ebooks.load_ebook_dataset
 from unsloth_zoo.rl_environments import (
     check_python_modules,
     create_locked_down_function,
