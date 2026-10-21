@@ -381,6 +381,67 @@ def test_a_device_override_keeps_the_table_streamed(tmp_path, _moe_cache_host):
     assert backend._lazy_mode_flags == []
 
 
+def test_the_in_place_fit_on_retry_hands_the_table_back(tmp_path, _moe_cache_host, monkeypatch):
+    """A full offload launches with --fit off; when that crashes, the --fit on retry can
+    spill weights to RAM beside the table, so the resident verdict does not carry over."""
+    import subprocess
+    import test_llama_cpp_placement as placement
+
+    cmds = []
+
+    def launch(
+        backend,
+        gguf,
+        model_identifier = "test",
+        **kwargs,
+    ):
+        def fake_popen(cmd, **kw):
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return placement._REAL_POPEN(cmd, **kw)
+            cmds.append(list(cmd))
+            rc = 1 if len(cmds) == 1 else None
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 2**31 - 1,
+                    "stdout": (),
+                    "returncode": rc,
+                    "poll": lambda self: rc,
+                    "terminate": lambda self: None,
+                    "wait": lambda self, timeout = None: rc or 0,
+                    "kill": lambda self: None,
+                },
+            )()
+
+        backend._wait_for_health = lambda timeout = None, **_kw: len(cmds) > 1
+        with placement.patch.object(subprocess, "Popen", side_effect = fake_popen):
+            backend.load_model(
+                placement.GgufLoadIntent(
+                    gguf_path = str(gguf), model_identifier = model_identifier, **kwargs
+                )
+            )
+        return {"cmd": cmds[-1]}
+
+    monkeypatch.setattr(placement, "_launch", launch)
+    _cache_launch(
+        tmp_path,
+        size_gib = FLASH_NEXT_TOTAL / GIB,
+        memory = [(0, 96_000, 98_304)],
+        ram_gib = 128,
+        expert_gib = 40,
+        lazy = {
+            PLE: FLASH_NEXT_PLE,
+            "token_embd.weight": FLASH_NEXT_TOKEN_EMBD,
+            "output.weight": FLASH_NEXT_OUTPUT,
+        },
+        arch = "qwen4exp",
+    )
+    assert len(cmds) == 2, cmds
+    assert cmds[0][cmds[0].index("--fit") + 1] == "off" and _lazy_values(cmds[0]) == ["off"]
+    assert cmds[1][cmds[1].index("--fit") + 1] == "on" and _lazy_values(cmds[1]) == [], cmds[1]
+
+
 def test_flash_next_streams_its_table_on_a_64gb_box(tmp_path, _moe_cache_host):
     """24 GiB card + 64 GB RAM: ~47 GiB of weights, the 8 GiB prompt cache and the
     26.8 GiB table do not fit together, so llama.cpp's lazy auto stays."""

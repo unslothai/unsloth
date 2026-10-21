@@ -15831,19 +15831,79 @@ def _gguf_memory_breakdown(
             _LAZY_MODE_SPELLINGS,
             _LAZY_RESIDENT_MARGIN_FRAC,
             _extra_args_set_any_flag,
+            _prompt_cache_host_bytes,
         )
+        from core.inference.llama_server_args import fit_target_margin_in
 
         _lt_user = any(
             str(_lt_env.get(env_name) or "").strip() or _extra_args_set_any_flag(_lt_extras, flags)
             for flags, env_name in _LAZY_MODE_SPELLINGS.values()
         )
         _lt_avail = LlamaCppBackend._available_system_memory_mib()
-        _lt_host = int(max(0, main_bytes - lookup_table_bytes) * max(0.0, 1.0 - gpu_fraction))
+        _lt_device_share = max(0, main_bytes - lookup_table_bytes)
+        _lt_forced_host = int(_lt_device_share * max(0.0, 1.0 - gpu_fraction))
+        _lt_table_host = lookup_table_bytes + int(lookup_table_bytes * _LAZY_RESIDENT_MARGIN_FRAC)
+
+        def _lt_resident_fits() -> bool:
+            # The launch's proof (_table_resident_fits): the whole load fits VRAM plus RAM
+            # with the table, the prompt cache and a margin charged to RAM alone. Auto asks
+            # for every layer, so what the cards cannot hold spills beside the table.
+            if not _lt_avail:
+                return False
+            try:
+                rows = list(
+                    _lt_backend._get_gpu_memory(
+                        _lt_backend._find_llama_server_binary(), for_llama_server = True
+                    )
+                    or ()
+                )
+            except Exception:  # noqa: BLE001 -- unread cards: the request's share below
+                rows = []
+            if not rows:
+                # No card readout (Apple Silicon, a CPU host): the request's host share.
+                return _lt_avail * 1024 * 1024 >= _lt_forced_host + _lt_table_host
+            if not runtime.kv_estimable:
+                return False  # unsized: the launch keeps llama.cpp's default too
+            prompt = _prompt_cache_host_bytes(
+                None,
+                _lt_extras,
+                _lt_env,
+                supports_cache_ram = bool(
+                    (_lt_backend.probe_server_capabilities() or {}).get("supports_cache_ram")
+                ),
+            )
+            if prompt is None:
+                return False
+            host_only = _lt_forced_host + _lt_table_host + prompt
+            return bool(
+                _lt_backend._fits_without_paging(
+                    _lt_device_share
+                    - _lt_forced_host
+                    + runtime.kv_bytes
+                    + runtime.compute_bytes
+                    + host_only,
+                    [(idx, free) for idx, free, _total in rows],
+                    gpu_indices = sorted(int(i) for i in selected_gpu_ids)
+                    if selected_gpu_ids
+                    else None,
+                    host_only_bytes = host_only,
+                    # llama.cpp's --fit-target default, or the pass-through margin.
+                    vram_margin_mib = max(1024.0, fit_target_margin_in(_lt_extras, _lt_env) or 0.0),
+                    avail_mib = _lt_avail,
+                )
+            )
+
         if (
             not _lt_user
-            and _lt_avail
-            and _lt_avail * 1024 * 1024
-            >= _lt_host + int(lookup_table_bytes * (1 + _LAZY_RESIDENT_MARGIN_FRAC))
+            # Read resident, a device override would apply to the table; the launch then
+            # keeps it streamed (deepseek41's loader forces it to the host regardless).
+            and (
+                _lt_arch == "deepseek41"
+                or not _override_places_tensor_on_device(
+                    "per_layer_token_embd.weight", _lt_extras, _lt_env
+                )
+            )
+            and _lt_resident_fits()
         ):
             lookup_table_on_disk = False
     if lookup_table_on_disk:

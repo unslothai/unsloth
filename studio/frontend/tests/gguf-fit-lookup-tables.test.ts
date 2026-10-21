@@ -17,6 +17,7 @@ import {
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
   classifyGgufFit,
+  classifyGgufFitWithLookupTables,
   classifyGgufVariantFit,
   ggufVariantLookupTableBytes,
 } from "../src/lib/gguf-fit.ts";
@@ -87,6 +88,13 @@ test("a streamed quant runs but ranks below one that fits with everything reside
     comfortable,
   );
   assert.notEqual(classifyGgufVariantFit(smaller, HOST_24_64), "streamed");
+});
+
+test("a resident fit the table only improves keeps its own verdict", () => {
+  const fitOf = (bytes: number) =>
+    bytes > 60 * GIB ? "partial" : bytes > 40 * GIB ? "marginal" : "fits";
+  const variant = { quant: "Q4", size_bytes: 70 * GIB, lookup_table_bytes: 20 * GIB };
+  assert.equal(classifyGgufFitWithLookupTables(fitOf, variant), "partial");
 });
 
 test("a malformed table size is ignored", () => {

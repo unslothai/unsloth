@@ -27221,6 +27221,9 @@ class LlamaCppBackend:
                 # lookup table, [] to keep llama.cpp's auto, None while undecided. Bound
                 # before the try for the same reason.
                 _managed_lazy_flags: Optional[list[str]] = None
+                # Host-pinned input bytes the discrete fit leaves out of VRAM; bound before
+                # the try so the refusal and split checks below can read it on every path.
+                _host_input_embd = 0
                 # Layer-fallback min GPUs; raised below on a tensor downgrade. Bound
                 # before the try so the --fit-on except path still has it (no UnboundLocal).
                 _layer_min_gpus = 1
@@ -28191,6 +28194,34 @@ class LlamaCppBackend:
                             floor_ctx,
                         )
 
+                    def _host_input_bytes_now(weights: int) -> int:
+                        # Input-layer tensors (token_embd, per-layer lookup tables) stay on
+                        # the CPU, so a discrete card's fit does not carry them. Shared pools
+                        # (iGPU, APU) keep them; Apple prices its own discount below. One
+                        # answer for the fit and every probe that prices the same weights.
+                        if not (
+                            gpus
+                            and not _integrated_gpus
+                            and not _shared_gpu_ids
+                            and not _shared_pool_gpus
+                            and not _metal_capable_host()
+                            and not self._amd_apu_wants_unified_memory([i for i, _f in gpus])
+                            and not set(
+                                LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+                                    LlamaCppBackend._integrated_cuda_mask_key(), ()
+                                )
+                            ).intersection(i for i, _f in gpus)
+                        ):
+                            return 0
+                        try:
+                            found = _host_pinned_input_bytes(
+                                self._gguf_tensor_scan(model_path), extra_args, os.environ
+                            )
+                        except Exception as e:  # unread header: charge the whole file
+                            logger.debug("Host-pinned input embeddings unpriced: %s", e)
+                            return 0
+                        return min(max(0, found), max(0, int(weights) - 1))
+
                     _mm_budgeted_gpus = [
                         (_idx, _free) for _idx, _free in gpus if total_by_idx.get(_idx, 0) > 0
                     ]
@@ -28256,6 +28287,7 @@ class LlamaCppBackend:
                         )
                         _mm_need = (
                             gguf_size
+                            - _host_input_bytes_now(gguf_size)
                             + mmproj_size
                             + _compute_buffer_pipeline
                             + self._CUDA_CONTEXT_RESERVE_BYTES
@@ -28402,6 +28434,7 @@ class LlamaCppBackend:
                                 _soft += self._MTP_DRAFT_COMPUTE_BYTES
                             return (
                                 model_size
+                                - _host_input_bytes_now(model_size)
                                 + (
                                     _layer_compute_buffer(slots)
                                     if slots
@@ -28785,37 +28818,13 @@ class LlamaCppBackend:
                         if (not gpus or len(_mm_budgeted_gpus) < len(gpus))
                         else 0
                     )
-                    # Input-layer tensors (token_embd, per-layer lookup tables) stay on
-                    # the CPU, so a discrete card's fit does not carry them. Shared pools
-                    # (iGPU, APU) keep them; Apple prices its own discount below.
-                    _host_input_embd = 0
-                    if (
-                        gpus
-                        and not _integrated_gpus
-                        and not _shared_gpu_ids
-                        and not _shared_pool_gpus
-                        and not _metal_capable_host()
-                        and not self._amd_apu_wants_unified_memory([i for i, _f in gpus])
-                        and not set(
-                            LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
-                                LlamaCppBackend._integrated_cuda_mask_key(), ()
-                            )
-                        ).intersection(i for i, _f in gpus)
-                    ):
-                        try:
-                            _host_input_embd = _host_pinned_input_bytes(
-                                self._gguf_tensor_scan(model_path), extra_args, os.environ
-                            )
-                        except Exception as e:  # unread header: charge the whole file
-                            logger.debug("Host-pinned input embeddings unpriced: %s", e)
-                            _host_input_embd = 0
-                        _host_input_embd = min(max(0, _host_input_embd), max(0, model_size - 1))
-                        if _host_input_embd:
-                            logger.info(
-                                "GPU fit: %.2f GB of input embeddings and lookup tables stay "
-                                "in host memory; not charged to VRAM.",
-                                _host_input_embd / (1024**3),
-                            )
+                    _host_input_embd = _host_input_bytes_now(model_size)
+                    if _host_input_embd:
+                        logger.info(
+                            "GPU fit: %.2f GB of input embeddings and lookup tables stay "
+                            "in host memory; not charged to VRAM.",
+                            _host_input_embd / (1024**3),
+                        )
                     model_size_fit = (
                         model_size
                         - _host_input_embd
@@ -28870,9 +28879,9 @@ class LlamaCppBackend:
                                 _tp_flat_mtp,
                                 _mtp_bytes(min(2048, effective_ctx) if effective_ctx > 0 else 2048),
                             )
-                        _tp_required_mib = (model_size + _tp_mtp_floor + _soft_overhead) / (
-                            1024 * 1024
-                        )
+                        _tp_required_mib = (
+                            model_size - _host_input_embd + _tp_mtp_floor + _soft_overhead
+                        ) / (1024 * 1024)
                         if _tp_weight_budget_mib <= _tp_required_mib:
                             logger.info(
                                 "Tensor parallelism requested but the pooled VRAM "
@@ -28937,7 +28946,7 @@ class LlamaCppBackend:
                             tp_tensor_split,
                         ) = self._plan_tensor_parallel(
                             tp_gpus,
-                            model_size,
+                            max(1, model_size - _host_input_embd),
                             target_ctx,
                             cache_type_kv = cache_type_kv,
                             scratch_cache_type_kv = _scratch_cache_type_kv,
@@ -30685,7 +30694,9 @@ class LlamaCppBackend:
                 ):
                     capped_only = _ctx_capped_for_vram and not _placement_verdict_partial
                     asked_ctx = _ctx_before_fit if capped_only else effective_ctx
-                    need_mib = (gguf_size + mmproj_size + _kv_bytes(asked_ctx)) // (1024 * 1024)
+                    need_mib = (
+                        max(1, gguf_size - _host_input_embd) + mmproj_size + _kv_bytes(asked_ctx)
+                    ) // (1024 * 1024)
                     free_mib = sum(free for _, free in gpus)
                     need_gb, free_gb = need_mib / 1024, free_mib / 1024
                     # The probe's own classifiers: an integrated CUDA SoC can report a real total.
@@ -31403,7 +31414,7 @@ class LlamaCppBackend:
                                 _sanitized_split,
                                 tp_gpus,
                                 gpu_indices,
-                                model_size,
+                                max(1, model_size - _host_input_embd),
                                 effective_ctx,
                                 cache_type_kv = cache_type_kv,
                                 n_parallel = n_parallel,
@@ -33481,6 +33492,10 @@ class LlamaCppBackend:
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
                     for _spawn_attempt in (0, 1, 2, 3):
+                        # The in-place retries below (--fit on after a spill or a
+                        # --fit off crash, the MoE cache retry) re-place the model too.
+                        if _spawn_attempt:
+                            run_cmd = self._drop_managed_lazy_mode(run_cmd, "startup")
                         # Defensive kill: drop an orphan Popen a concurrent load may
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.

@@ -452,6 +452,40 @@ class TestListing:
             time.sleep(0.05)
         assert fetched == ["o/slow"]
 
+    def test_a_direct_file_source_finds_its_row_beside_it(self, tmp_path):
+        from types import SimpleNamespace
+
+        from hub.services.models import gguf_variants as gv
+
+        model = tmp_path / "Qwen3.8-Flash-Next-UD-Q2_K_XL.gguf"
+        model.write_bytes(b"GGUF")
+        row = SimpleNamespace(filename = model.name, quant = "UD-Q2_K_XL", downloaded = True)
+        for answer, repo in (
+            (SimpleNamespace(variant_context_sources = None, context_source = str(model)), "o/r"),
+            (SimpleNamespace(variant_context_sources = None, context_source = None), str(model)),
+        ):
+            assert gv._local_variant_gguf(answer, repo, row) == str(model)
+
+    def test_a_read_the_pool_refuses_after_the_deadline_releases_its_key(self, monkeypatch):
+        """Late refusals (the pool shut down at exit) never reach the read's own finally."""
+        from hub.services.models import gguf_variants as gv
+
+        async def refused(fn, /, *args):
+            await asyncio.sleep(0.01)
+            raise RuntimeError("cannot schedule new futures after shutdown")
+
+        monkeypatch.setattr(gv, "_lookup_thread", refused)
+        key = ("arch", "o/refused")
+
+        async def go():
+            loop = asyncio.get_running_loop()
+            assert await gv._lookup_await_once(key, loop.time(), lambda: 1) is None
+            assert key in gv._lookup_inflight  # still queued at the deadline
+            await asyncio.sleep(0.05)
+
+        asyncio.run(go())
+        assert key not in gv._lookup_inflight
+
     def test_a_cached_non_lazy_variant_does_not_veto_the_rest_of_the_repo(
         self, tmp_path, monkeypatch
     ):
@@ -642,6 +676,52 @@ class TestEstimate:
         # A user's own lazy mode wins over the managed choice, as at launch.
         assert b.lookup_table_on_disk is bool(extras)
         assert b.lookup_table_bytes == FLASH_NEXT_TABLE
+
+    def test_ram_the_spilled_weights_crowd_out_keeps_the_table_streamed(
+        self, breakdown, monkeypatch
+    ):
+        """24 GiB card + 58 GiB free RAM: Auto spills ~25 GiB of weights to RAM, and with the
+        8 GiB prompt cache the 26.8 GiB table no longer fits beside them (the launch streams
+        it). The request's every-layer offload alone would have read it resident."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_CACHE_RAM", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 58 * 1024)
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(
+                lambda cls, binary = None: {
+                    "found": True,
+                    "supports_lazy_mode": True,
+                    "supports_cache_ram": True,
+                }
+            ),
+        )
+        assert breakdown().lookup_table_on_disk is True
+        # A card that holds every weight leaves RAM to the table.
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gpu_memory",
+            staticmethod(lambda binary = None, **k: [(0, 96_000, 98_304)]),
+        )
+        assert breakdown().lookup_table_on_disk is False
+
+    def test_a_device_override_keeps_the_table_streamed_as_the_launch_does(
+        self, breakdown, monkeypatch
+    ):
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_OVERRIDE_TENSOR", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 256 * 1024)
+        )
+        b = breakdown(llama_extra_args = ["-ot", "per_layer_token_embd=CUDA0"])
+        assert b.lookup_table_on_disk is True
 
     def test_a_build_without_lazy_mode_keeps_the_table_resident(self, breakdown, monkeypatch):
         import routes.inference as ri

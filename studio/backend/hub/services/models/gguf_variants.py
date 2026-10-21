@@ -1381,6 +1381,15 @@ async def _lookup_thread(fn, /, *args):
     return await loop.run_in_executor(_LOOKUP_POOL, call)
 
 
+def _release_unrun_lookup(started: list, key, task: "asyncio.Future") -> None:
+    """Done callback: a read the pool refused, or whose wrapper was cancelled before the
+    pool ran it, never reaches its own ``finally``, so its in-flight key is released here.
+    A started read still owns the key: a closing loop cancels the wrapper, not the thread."""
+    if not started and (task.cancelled() or task.exception() is not None):
+        with _lookup_arch_lock:
+            _lookup_inflight.discard(key)
+
+
 async def _lookup_await_once(key, deadline: float, fn, /, *args):
     """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time); None when
     late or already in flight. A late call keeps running."""
@@ -1389,7 +1398,10 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
             return None
         _lookup_inflight.add(key)
 
+    started: list = []
+
     def _run():
+        started.append(True)
         try:
             return fn(*args)
         finally:
@@ -1397,14 +1409,11 @@ async def _lookup_await_once(key, deadline: float, fn, /, *args):
                 _lookup_inflight.discard(key)
 
     task = asyncio.ensure_future(_lookup_thread(_run))
+    # Also after the deadline: the pool refusing it (shut down at exit) skips _run.
+    task.add_done_callback(functools.partial(_release_unrun_lookup, started, key))
     loop = asyncio.get_running_loop()
     done, _pending = await asyncio.wait({task}, timeout = max(0.0, deadline - loop.time()))
-    if task not in done:
-        return None
-    if task.cancelled() or task.exception() is not None:
-        # The pool refused it (shut down at exit), so _run never released the key.
-        with _lookup_arch_lock:
-            _lookup_inflight.discard(key)
+    if task not in done or task.cancelled() or task.exception() is not None:
         return None
     return task.result()
 
@@ -1478,10 +1487,13 @@ def _local_variant_gguf(answer: "VariantsAnswer", repo_id: str, variant) -> Opti
     filename = str(variant.filename or "")
     sources = answer.variant_context_sources or {}
     candidates = [sources.get(str(variant.quant or "").lower())]
-    if is_local_path(repo_id):
-        candidates.append(str(Path(repo_id) / filename))
+    roots = [repo_id] if is_local_path(repo_id) else []
     if answer.context_source:
-        candidates.append(str(Path(answer.context_source) / filename))
+        roots.append(answer.context_source)
+    for root in roots:
+        # A direct-file source names the GGUF itself; its rows sit beside it.
+        path = Path(root).expanduser()
+        candidates.append(str((path.parent if path.is_file() else path) / filename))
     for candidate in candidates:
         if candidate and os.path.isfile(candidate):
             return candidate
@@ -1590,18 +1602,26 @@ async def _with_lookup_tables(
                                 _lookup_inflight.discard(key)
                             continue
 
+                        started: list = []
+
                         def _read(
                             name = v.filename,
                             ident = identity,
                             k = key,
+                            ran = started,
                         ):
+                            ran.append(True)
                             try:
                                 return _remote_lookup_bytes(repo_id, name, hf_token, ident)
                             finally:
                                 with _lookup_arch_lock:
                                     _lookup_inflight.discard(k)
 
-                        tasks[asyncio.ensure_future(_lookup_thread(_read))] = index
+                        task = asyncio.ensure_future(_lookup_thread(_read))
+                        task.add_done_callback(
+                            functools.partial(_release_unrun_lookup, started, key)
+                        )
+                        tasks[task] = index
                     if tasks:
                         # One deadline for the whole listing; late reads keep running
                         # and land in the cache for the next one.
