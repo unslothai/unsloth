@@ -379,16 +379,15 @@ test("a dark selection fill takes the token, not a wash", () => {
   );
 });
 
-test("panel sliders move with the slider too", () => {
-  // .panel-slider repaints the track, fill and thumb with !important, so the
-  // component's own gain-aware colours never reach them.
+test("slider tracks move with the slider too", () => {
+  // Every slider paints its track from --slider-track, in both themes.
   assert.match(
     CSS,
-    /\.panel-slider \[data-slot="slider-track"\] \{[^}]*rgb\(0 0 0 \/ calc\(0\.025 \* var\(--contrast-wash-gain, 1\)\)\)/,
+    /--slider-track: rgb\(0 0 0 \/ calc\(0\.065 \* var\(--contrast-wash-gain, 1\)\)\);/,
   );
   assert.match(
     CSS,
-    /\.dark \.panel-slider \[data-slot="slider-track"\] \{[^}]*rgb\(255 255 255 \/ calc\(0\.025 \* var\(--contrast-wash-gain, 1\)\)\)/,
+    /--slider-track: rgb\(255 255 255 \/ calc\(0\.045 \* var\(--contrast-wash-gain, 1\)\)\);/,
   );
   assert.ok(CSS.includes("--panel-slider-fg: var(--panel-slider-fg-base);"));
   assert.match(

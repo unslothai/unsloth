@@ -308,10 +308,8 @@ test("the plain stylesheets' controls follow the scale", () => {
       `${rule} has a fixed size`,
     );
   }
-  assert.match(
-    CSS,
-    /\.panel-slider \[data-slot="slider-thumb"\] \{\s*width: calc\(0\.875rem \* var\(--ui-space-scale, 1\)\) !important;/,
-  );
+  assert.match(CSS, /--slider-thumb-size: calc\(1\.5rem \* var\(--ui-space-scale, 1\)\);/);
+  assert.match(CSS, /--slider-track-height: calc\(0\.25rem \* var\(--ui-space-scale, 1\)\);/);
 });
 
 test("a scaled minimum never outgrows its own cap", () => {
