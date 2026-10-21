@@ -15824,6 +15824,29 @@ def _gguf_memory_breakdown(
         ):
             lookup_table_bytes = 0
     if lookup_table_on_disk:
+        # The launch reads the table resident (--lazy-mode off) where RAM holds it beside
+        # the host share of the weights with a margin, unless the user set a lazy mode
+        # (_managed_lazy_mode_flags); price that choice the same way.
+        from core.inference.llama_cpp import (
+            _LAZY_MODE_SPELLINGS,
+            _LAZY_RESIDENT_MARGIN_FRAC,
+            _extra_args_set_any_flag,
+        )
+
+        _lt_user = any(
+            str(_lt_env.get(env_name) or "").strip() or _extra_args_set_any_flag(_lt_extras, flags)
+            for flags, env_name in _LAZY_MODE_SPELLINGS.values()
+        )
+        _lt_avail = LlamaCppBackend._available_system_memory_mib()
+        _lt_host = int(max(0, main_bytes - lookup_table_bytes) * max(0.0, 1.0 - gpu_fraction))
+        if (
+            not _lt_user
+            and _lt_avail
+            and _lt_avail * 1024 * 1024
+            >= _lt_host + int(lookup_table_bytes * (1 + _LAZY_RESIDENT_MARGIN_FRAC))
+        ):
+            lookup_table_on_disk = False
+    if lookup_table_on_disk:
         weights_bytes = max(0, weights_bytes - lookup_table_bytes)
     # A drafter is only charged when it lands on the GPU (a CPU-pinned one is dropped
     # from the total upstream), so the projector is the single companion that can be

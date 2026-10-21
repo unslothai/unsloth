@@ -587,6 +587,10 @@ class TestEstimate:
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set())
         )
+        # 16 GiB of free RAM cannot hold the 26.82 GiB table: it streams.
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 16 * 1024)
+        )
         ri._estimate_files_cache.clear()
         ri._estimate_config_cache.clear()
         config = SimpleNamespace(
@@ -623,6 +627,21 @@ class TestEstimate:
         assert b.lookup_table_on_disk is False
         assert b.weights_bytes == int(round(self.WEIGHTS))
         assert b.gpu_bytes == b.total_bytes - FLASH_NEXT_TABLE
+
+    @pytest.mark.parametrize("extras", [[], ["-lzm", "auto"]], ids = ["managed", "user_auto"])
+    def test_ram_that_holds_the_table_reads_it_resident_as_the_launch_does(
+        self, breakdown, monkeypatch, extras
+    ):
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 256 * 1024)
+        )
+        b = breakdown(llama_extra_args = extras)
+        # A user's own lazy mode wins over the managed choice, as at launch.
+        assert b.lookup_table_on_disk is bool(extras)
+        assert b.lookup_table_bytes == FLASH_NEXT_TABLE
 
     def test_a_build_without_lazy_mode_keeps_the_table_resident(self, breakdown, monkeypatch):
         import routes.inference as ri
