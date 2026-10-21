@@ -113,7 +113,9 @@ def _hub(monkeypatch, vision_repos, rows):
         return Dataset.from_list(rows)
 
     monkeypatch.setattr(cache_safe, "load_dataset_cache_safe", load_dataset)
-    monkeypatch.setattr(models, "is_vision_model", lambda name, **kwargs: name in vision_repos)
+    monkeypatch.setattr(
+        models, "is_vision_model_checked", lambda name, **kwargs: (name in vision_repos, True)
+    )
     monkeypatch.setattr(models, "detect_audio_type_checked", lambda *args, **kwargs: (None, True))
     return loaded
 
@@ -274,7 +276,7 @@ def test_a_native_audio_model_is_told_its_dataset_has_audio(tmp_path, monkeypatc
     import utils.models as models
 
     monkeypatch.setattr(models, "detect_audio_type_checked", lambda *a, **k: ("whisper", True))
-    monkeypatch.setattr(models, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(models, "is_vision_model_checked", lambda *a, **k: (False, True))
 
     trainer = _train(
         tmp_path,
@@ -323,6 +325,25 @@ def test_every_local_dataset_path_is_checked_for_images(tmp_path, monkeypatch):
         str(text),
         "--local-dataset",
         str(images),
+    )
+
+    assert trainer.load_kwargs["is_dataset_image"] is True
+
+
+def test_a_transient_vision_probe_still_checks_the_dataset(tmp_path, monkeypatch):
+    train_module.ensure_studio_backend_path()
+    import utils.models as models
+
+    monkeypatch.setattr(models, "detect_audio_type_checked", lambda *a, **k: (None, True))
+    monkeypatch.setattr(models, "is_vision_model_checked", lambda *a, **k: (False, False))
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        "Qwen/Qwen2-VL-2B-Instruct",
+        "--local-dataset",
+        _local_parquet(tmp_path, _IMAGE_ROWS),
     )
 
     assert trainer.load_kwargs["is_dataset_image"] is True

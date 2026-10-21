@@ -3205,20 +3205,10 @@ class UnslothTrainer:
 
     @staticmethod
     def _load_saved_dataset(file_paths: list):
-        """One `save_to_disk` folder (Dataset or DatasetDict), loaded as saved; None otherwise."""
         if len(file_paths) != 1:
             return None
-        path = UnslothTrainer._resolve_local_path(file_paths[0])
-        if not (path / "dataset_dict.json").is_file() and not (
-            (path / "dataset_info.json").is_file() and (path / "state.json").is_file()
-        ):
-            return None
-        from datasets import DatasetDict, load_from_disk
-
-        dataset = load_from_disk(str(path))
-        if isinstance(dataset, DatasetDict):
-            dataset = dataset["train"] if "train" in dataset else next(iter(dataset.values()))
-        return dataset
+        from utils.datasets.saved import load_saved_dataset
+        return load_saved_dataset(UnslothTrainer._resolve_local_path(file_paths[0]))
 
     @staticmethod
     def _resolve_local_files(file_paths: list) -> list[str]:

@@ -96,32 +96,24 @@ def _dataset_modalities(
         from hub.utils.dataset_format import detect_multimodal_dataset
         from utils.datasets.audio_decode import ensure_audio_decoding
         from utils.datasets.cache_safe import load_dataset_cache_safe
-        from utils.models import detect_audio_type_checked, is_vision_model
+        from utils.datasets.saved import load_saved_dataset
+        from utils.models import detect_audio_type_checked, is_vision_model_checked
         from utils.models.unsloth_mirror import unsloth_public_mirror
         from utils.paths import resolve_dataset_path
 
     model_name = unsloth_public_mirror(cfg.model, load_in_4bit) or cfg.model
     audio_type, audio_type_known = detect_audio_type_checked(model_name, hf_token)
-    if (
-        audio_type is None
-        and audio_type_known
-        and not is_vision_model(model_name, hf_token = hf_token)
-    ):
-        return False, False
+    if audio_type is None and audio_type_known:
+        vision, vision_known = is_vision_model_checked(model_name, hf_token = hf_token)
+        if not vision and vision_known:
+            return False, False
 
     def preview(path):
         if not os.path.isabs(path) and not os.path.exists(path):
             path = resolve_dataset_path(path)
-        saved = Path(path)
-        if (saved / "dataset_dict.json").is_file() or (
-            (saved / "dataset_info.json").is_file() and (saved / "state.json").is_file()
-        ):
-            from datasets import DatasetDict, load_from_disk
-
-            dataset = load_from_disk(str(path))
-            if isinstance(dataset, DatasetDict):
-                dataset = dataset["train"] if "train" in dataset else next(iter(dataset.values()))
-            return dataset
+        saved = load_saved_dataset(path)
+        if saved is not None:
+            return saved
         dataset, _ = _load_local_preview_slice(
             dataset_path = Path(path), train_split = "train", preview_size = _MEDIA_SNIFF_ROWS
         )

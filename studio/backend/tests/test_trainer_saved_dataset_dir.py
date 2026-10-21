@@ -92,3 +92,20 @@ def test_a_folder_with_a_data_file_named_state_json_still_loads_its_rows(trainer
 
     assert result is not None
     assert len(result[0]["dataset"]) == 3
+
+
+@pytest.mark.parametrize("layout", ["dataset", "dict", "state_json_rows"])
+def test_the_saved_dataset_loader_shared_with_the_mlx_worker(tmp_path, layout):
+    from datasets import Dataset, DatasetDict
+    from utils.datasets.saved import load_saved_dataset
+
+    folder = tmp_path / layout
+    if layout == "state_json_rows":
+        folder.mkdir()
+        (folder / "state.json").write_text("\n".join(json.dumps(row) for row in _ROWS))
+        assert load_saved_dataset(folder) is None
+        return
+    dataset = Dataset.from_list(_ROWS)
+    (DatasetDict(train = dataset) if layout == "dict" else dataset).save_to_disk(str(folder))
+
+    assert load_saved_dataset(folder)["output"] == ["hi", "yes", "no"]

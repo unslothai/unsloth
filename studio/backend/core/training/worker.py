@@ -3369,12 +3369,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
 
     def _load_local(file_paths):
-        from datasets import load_from_disk
+        from utils.datasets.saved import load_saved_dataset
 
         if len(file_paths) == 1:
-            p = Path(file_paths[0])
-            if p.is_dir() and ((p / "dataset_info.json").exists() or (p / "state.json").exists()):
-                return load_from_disk(str(p))
+            saved = load_saved_dataset(file_paths[0])
+            if saved is not None:
+                return saved
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
             raise ValueError("No local dataset files found")
