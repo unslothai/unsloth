@@ -12,7 +12,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Callable
 
@@ -120,6 +122,22 @@ def prebuilt_wheel_torch_mm(torch_mm: str) -> str:
 # Upstream stops at torch 2.11 and the reuse window above stops at 2.12, because torch 2.13 broke the extension ABI again -- it changed c10::impl::cow::materialize_cow_storage and the signature of c10::cuda::c10_cuda_check_implementation, so an upstream wheel raises "undefined symbol" at import -- and 2.14 changed it once more. There is no upstream asset to point at and no older one that loads, so from 2.13 on we build the wheels and resolve to our own release. Built by .github/workflows/prebuilt-cuda-wheels.yml, one per (package, torch minor, interpreter), Sigstore-signed, on the tag below.
 UNSLOTH_PREBUILT_RELEASE_BASE_URL = "https://github.com/unslothai/unsloth/releases/download"
 UNSLOTH_PREBUILT_RELEASE_TAG = "prebuilt-wheels-cu13"
+
+# mamba_ssm with no compiled extension (MAMBA_KEEP_CUDA_BUILD unset), one py3-none-any wheel for every
+# torch, interpreter and platform. Its Triton kernels are all the Mamba-2 mixers call; unsloth_zoo
+# serves their causal conv (prefill, fused training path, decode) on Triton, so with a zoo that has
+# those drop-ins the Mamba-2 hybrids need neither CUDA wheel. Built and signed by
+# prebuilt-cuda-wheels.yml on the same tag.
+MAMBA_SSM_PURE_VERSION = "2.3.2.post1"
+MAMBA_SSM_PURE_WHEEL = f"mamba_ssm-{MAMBA_SSM_PURE_VERSION}-py3-none-any.whl"
+
+
+def mamba_ssm_pure_wheel_url(env: dict[str, str] | None = None) -> str:
+    """The extension-free mamba_ssm wheel (the same file for every environment)."""
+    return (
+        f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{MAMBA_SSM_PURE_WHEEL}"
+    )
+
 
 # Keyed on the torch minor, and exact rather than a floor: a wheel is built against one minor and there is no evidence any future one will load it, which is exactly the assumption that made the upstream wheels stop working here. A new torch minor adds a row only after the workflow has built and smoke-tested it.
 _UNSLOTH_PREBUILT_TORCH_MM = frozenset({"2.13", "2.14"})
@@ -547,6 +565,77 @@ def flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     )
 
 
+_WHEEL_FILENAME_FIELD_RE = re.compile(r"[A-Za-z0-9._+!]+")
+# Each picks the directory uv discovers its project config from; --project would override it.
+_UV_PROJECT_DIR_ENV = ("UV_PROJECT", "UV_WORKING_DIR", "UV_WORKING_DIRECTORY")
+
+
+def _pyproject_has_uv_table(path: str) -> bool:
+    """Whether a pyproject.toml has a [tool.uv] table; True when unreadable, so its config is kept."""
+    try:
+        # novermin -- 3.11; the ImportError fallback below is the guard, which vermin cannot see.
+        import tomllib  # novermin
+    except ImportError:  # Python < 3.11: no parser, stay out of the way
+        return True
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError):
+        return True
+    tool = data.get("tool")
+    return isinstance(tool, dict) and "uv" in tool
+
+
+def _uv_project_config_found() -> bool:
+    """Whether uv would find a project config from the cwd, which --project elsewhere drops."""
+    try:
+        directory = os.getcwd()
+    except OSError:
+        return True
+    while True:
+        if os.path.isfile(os.path.join(directory, "uv.toml")):
+            return True
+        pyproject = os.path.join(directory, "pyproject.toml")
+        if os.path.isfile(pyproject) and _pyproject_has_uv_table(pyproject):
+            return True
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return False
+        directory = parent
+
+
+# uv's boolean environment values; anything else counts as set, which only skips the shortcut.
+_UV_ENV_FALSE = frozenset({"", "0", "false", "f", "no", "n", "off"})
+
+
+def _uv_env_flag_set(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() not in _UV_ENV_FALSE
+
+
+def _uv_static_metadata_config(wheel_url: str, config_dir: str) -> bool:
+    """Write a uv.toml giving uv the wheel's metadata, so a rangeless GitHub asset downloads once
+    (astral-sh/uv#18998); --no-deps makes the empty requires-dist exact. True if written."""
+    if os.environ.get("UV_CONFIG_FILE") or _uv_env_flag_set("UV_NO_CONFIG"):
+        return False
+    if any(os.environ.get(name) for name in _UV_PROJECT_DIR_ENV) or _uv_project_config_found():
+        return False
+    filename = urllib.parse.unquote(urllib.parse.urlsplit(wheel_url).path.rsplit("/", 1)[-1])
+    fields = filename[: -len(".whl")].split("-") if filename.endswith(".whl") else []
+    if len(fields) not in (5, 6) or not all(
+        _WHEEL_FILENAME_FIELD_RE.fullmatch(f) for f in fields[:2]
+    ):
+        return False
+    name, version = fields[0].replace("_", "-").lower(), fields[1].lower()
+    with open(os.path.join(config_dir, "uv.toml"), "w", encoding = "utf-8") as fh:
+        fh.write(
+            "[[dependency-metadata]]\n"
+            f'name = "{name}"\n'
+            f'version = "{version}"\n'
+            "requires-dist = []\n"
+        )
+    return True
+
+
 _UV_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -601,15 +690,27 @@ def install_wheel(
         if reinstall:
             uv_cmd.append("--reinstall")
         uv_cmd.append(wheel_url)
-        result = run(
-            uv_cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = child_env_without_native_path_secret(),
-        )
+        config_dir = None
+        try:
+            config_dir = tempfile.mkdtemp(prefix = "unsloth-uv-")
+            # --project, not cwd: relative UV_CACHE_DIR etc. still resolve here; uv pip reads only config from it.
+            if _uv_static_metadata_config(wheel_url, config_dir):
+                uv_cmd[1:1] = ["--project", config_dir]
+        except OSError:
+            pass  # Optional: an unwritable temp dir must not stop the plain uv install.
+        try:
+            result = run(
+                uv_cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = child_env_without_native_path_secret(),
+            )
+        finally:
+            if config_dir:
+                shutil.rmtree(config_dir, ignore_errors = True)
         attempts.append(("uv", result))
         if result.returncode == 0:
             return attempts
