@@ -131,6 +131,7 @@ def _apply_data_designer_image_context_patch() -> None:
 
     try:
         from data_designer.config.models import ImageContext  # pyright: ignore[reportMissingImports]
+        from data_designer.config.utils.image_helpers import is_image_path  # pyright: ignore[reportMissingImports]
     except ImportError:
         return
 
@@ -142,7 +143,17 @@ def _apply_data_designer_image_context_patch() -> None:
 
     def _patched_auto_resolve(self: Any, context_value: Any, base_path: str | None) -> Any:
         normalized = _normalize_image_context_value(context_value, base_path = base_path)
-        return original_auto_resolve(self, normalized, base_path)
+        if not managed_account():
+            return original_auto_resolve(self, normalized, base_path)
+        # Managed image paths load under the workspace rule; with no base_path the engine never opens files.
+        if (
+            isinstance(normalized, str)
+            and not normalized.lower().startswith(("http://", "https://", "data:"))
+            and is_image_path(normalized)
+        ):
+            if as_base64 := _load_image_file_to_base64(normalized, base_path = base_path):
+                return self._format_base64_context(as_base64)
+        return original_auto_resolve(self, normalized, None)
 
     ImageContext._auto_resolve_context_value = _patched_auto_resolve
     setattr(ImageContext, "_unsloth_image_context_patch_applied", True)
@@ -395,6 +406,53 @@ def _apply_data_designer_mixed_type_parquet_patch() -> None:
 
     ArtifactStorage.write_parquet_file = _patched_write
     setattr(ArtifactStorage, "_unsloth_mixed_type_parquet_patch_applied", True)
+
+
+def _apply_data_designer_seed_uri_quote_patch() -> None:
+    # Seeds are read as FROM '<uri>': quote it for DuckDB. No ImportError guard: never run unquoted.
+    from data_designer.engine.resources.seed_reader import SeedReader  # pyright: ignore[reportMissingImports]
+
+    if getattr(SeedReader, "_unsloth_seed_uri_quote_patch_applied", False):
+        return
+
+    original_attach = SeedReader.attach
+
+    @functools.wraps(original_attach)
+    def _patched_attach(self: Any, *args: Any, **kwargs: Any) -> None:
+        # Calls the class method, so attaching twice never quotes twice.
+        self.get_dataset_uri = lambda: type(self).get_dataset_uri(self).replace("'", "''")
+        original_attach(self, *args, **kwargs)
+
+    SeedReader.attach = _patched_attach
+    setattr(SeedReader, "_unsloth_seed_uri_quote_patch_applied", True)
+
+
+def _ignore_sqlfluff_inline_config(*_args: Any, **_kwargs: Any) -> None:
+    return None
+
+
+def _apply_data_designer_sql_inline_config_patch() -> None:
+    # sqlfluff applies inline "-- sqlfluff:" config from the linted text (recipe data); code_lang sets the dialect.
+    try:
+        from data_designer.engine.validators.sql import SQLValidator  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        return
+
+    if getattr(SQLValidator, "_unsloth_sql_inline_config_patch_applied", False):
+        return
+
+    original_validate = SQLValidator._validate_query
+
+    @functools.wraps(original_validate)
+    def _patched_validate(self: Any, content: str) -> Any:
+        # sqlfluff is imported lazily, on the first SQL cell.
+        from sqlfluff.core import FluffConfig  # pyright: ignore[reportMissingImports]
+        if FluffConfig.process_raw_file_for_config is not _ignore_sqlfluff_inline_config:
+            FluffConfig.process_raw_file_for_config = _ignore_sqlfluff_inline_config
+        return original_validate(self, content)
+
+    SQLValidator._validate_query = _patched_validate
+    setattr(SQLValidator, "_unsloth_sql_inline_config_patch_applied", True)
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
@@ -670,6 +728,8 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     _apply_data_designer_prompt_blank_patch()
     _apply_data_designer_expression_blank_patch()
     _apply_data_designer_mixed_type_parquet_patch()
+    _apply_data_designer_seed_uri_quote_patch()
+    _apply_data_designer_sql_inline_config_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:

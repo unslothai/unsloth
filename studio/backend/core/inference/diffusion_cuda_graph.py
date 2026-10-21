@@ -51,6 +51,36 @@ def _torch():
 FORCE_FAMILIES_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPH_FAMILIES"
 # A module attribute: zero-arg callable returning hashable per-call state that the forward branches on.
 GRAPH_KEY_EXTRA_ATTR = "_unsloth_graph_key_extra"
+# =1: a denoiser whose text length follows the prompt records every new prompt length, on any render (the old way).
+EVERY_LENGTH_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPH_EVERY_LENGTH"
+
+
+def _every_length() -> bool:
+    return (os.environ.get(EVERY_LENGTH_ENV) or "").strip().lower() in _TRUE_TOKENS
+
+
+def _length_varies(module: Any) -> bool:
+    """Whether ``module``'s graphs key on the prompt length (diffusion_dynamic_text.PROMPT_LENGTH_POLICY)."""
+    if _every_length():
+        return False
+    try:
+        from .diffusion_dynamic_text import prompt_length_varies  # noqa: PLC0415
+        return bool(prompt_length_varies(module))
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's graphs
+        return False
+
+
+_REFERENCE_KWARGS = ("image_cond_hidden_states", "image_cond_ids")
+
+
+def _image_scope(args: tuple, kwargs: dict) -> tuple:
+    """The non-text part of a call's shape: the key of its first argument, the latents in every variable-length
+    family's denoiser call (``hidden_states`` for Qwen-Image, Qwen-Image-2.1's planned step, FLUX.1 and FLUX.3, the
+    latent list for Z-Image), plus any separate reference images. Resolution, batch and reference images change it;
+    the prompt length does not."""
+    first = args[0] if args else next(iter(kwargs.values()), None)
+    refs = tuple((name, graph_key(kwargs[name])) for name in _REFERENCE_KWARGS if name in kwargs)
+    return (graph_key(first),) + refs if refs else graph_key(first)
 
 
 def _family_forced(family: Any) -> bool:
@@ -617,6 +647,31 @@ class _Entry:
     )
 
 
+def _layer_split(module: Any) -> bool:
+    from .diffusion_layer_split import is_layer_split
+    return is_layer_split(module)
+
+
+def _rehome_after_layer_split(pipe: Any, logger: Any) -> None:
+    """Before any recording or first forward: the int8 / fused records the speed layer built on one card follow the
+    split's blocks to their cards (``diffusion_int8_gemm.after_layer_split``)."""
+    try:
+        from .diffusion_int8_gemm import after_layer_split
+        for module in _denoiser_modules(pipe):
+            if _layer_split(module):
+                after_layer_split(module, logger)
+    except Exception as exc:  # noqa: BLE001 - the stock paths stay correct
+        _warn(logger, "layer split re-home", exc)
+
+
+def _layer_split_pipe(pipe: Any) -> bool:
+    """Any denoiser of ``pipe`` is split across cards by block ranges."""
+    try:
+        return any(_layer_split(m) for m in _denoiser_modules(pipe))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class GraphedForward:
     """A callable that replaces one denoiser module's ``forward`` with a CUDA-graph replay.
 
@@ -714,9 +769,25 @@ class GraphedForward:
             "shape_warmups": 0,
             "evictions": 0,
             "speed_eager": 0,
+            "length_eager": 0,
         }
         self.valid_token: Any = None
+        # A denoiser whose text length follows the prompt keys a graph per prompt length, so every new prompt recorded
+        # one (warm-up forwards, a sync, the capture) on its render: Qwen-Image captured on generations 2 and 3. Per
+        # image scope (resolution, batch, references: _image_scope) it records the lengths of that scope's first render
+        # only: once one of its graphs replayed (or that render ended, seal_lengths), a prompt length it never recorded
+        # runs the compiled step ungraphed (the same kernels, so the same image) and a recorded one replays. A scope
+        # seen for the first time opens its own window, so a new resolution still records as before.
+        self.length_varies = _length_varies(module)
+        self._sealed_scopes: set = set()
+        self._scope_captures: dict = {}
+        self._render_scopes: set = set()
         _LIVE_WRAPPERS.add(self)
+
+    @property
+    def length_sealed(self) -> bool:
+        """Whether some image scope stopped recording new prompt lengths."""
+        return bool(getattr(self, "_sealed_scopes", None))
 
     def install(self) -> "GraphedForward":
         """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer."""
@@ -787,6 +858,10 @@ class GraphedForward:
         """Drop every captured graph (weights changed under us: LoRA load, unload, adapter switch)."""
         self.cache.clear()
         self._recorded.clear()
+        # Nothing recorded is left to replay: every scope's first render starts over (captures counted afresh).
+        self._sealed_scopes.clear()
+        self._scope_captures.clear()
+        self._render_scopes.clear()
         if getattr(self, "fallback_handle", None) is not None:
             try:
                 self.fallback_handle.reset()
@@ -840,6 +915,7 @@ class GraphedForward:
             "warmup": int(self.warmup),
             "max_graphs": int(self.max_graphs),
             "cap_hit": bool(self.cap_hit),
+            "length_sealed": bool(getattr(self, "length_sealed", False)),
             "placement": None if self.placement is None else self.placement.mode,
             "stats": dict(self.stats),
             "fallback": None
@@ -1003,6 +1079,7 @@ class GraphedForward:
             or self.poisoned
             # Belt to the caller's per-chunk bypass: one step's cond and uncond share a key.
             or getattr(self.module, "_unsloth_step_cache", None)
+            or _layer_split(self.module)
         ):
             return self._eager(args, kwargs)
 
@@ -1090,6 +1167,10 @@ class GraphedForward:
                 # null-mask flag): a graph recorded on one branch must never replay for the other.
                 key = key + (("x", extra()),)
             entry = self.cache.get(key)
+            scope = _image_scope(args, kwargs) if getattr(self, "length_varies", False) else None
+            # A key that also follows the step (NVFP4 protect branch, a pre-hook's branch flag) has variants a later
+            # step of this render still has to record: its scope seals when the render ends (seal_lengths).
+            step_keyed = bool(self.protect_keyed) or callable(extra)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
             return self._eager(eager_args, eager_kwargs)
@@ -1100,6 +1181,15 @@ class GraphedForward:
                 return self._eager(eager_args, eager_kwargs)
             if _has_float(key):
                 self.stats["refused_float"] += 1
+                return self._eager(eager_args, eager_kwargs)
+            if scope is not None:
+                self._render_scopes.add(scope)
+            if scope in getattr(self, "_sealed_scopes", ()) and (
+                self.placement is None or key not in self._recorded
+            ):
+                # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
+                # render. (An offloaded key it recorded before re-records after its weights moved, as before.)
+                self.stats["length_eager"] += 1
                 return self._eager(eager_args, eager_kwargs)
             if self.placement is not None and speed_check_enabled():
                 if key in self._dropped:
@@ -1174,6 +1264,8 @@ class GraphedForward:
                 return self._eager(eager_args, eager_kwargs)
             entry = captured
             self.cache[key] = entry
+            if scope is not None:
+                self._scope_captures[scope] = self._scope_captures.get(scope, 0) + 1
             self._unsloth_capture_device = capture_device()
             note_capture(self._unsloth_capture_device)
             if self.logger is not None:
@@ -1185,8 +1277,13 @@ class GraphedForward:
                     len(entry.static),
                 )
 
-        elif self.plan is not None:
-            self.cache[key] = self.cache.pop(key)
+        else:
+            if scope is not None:
+                self._render_scopes.add(scope)
+                if not step_keyed:
+                    self._sealed_scopes.add(scope)
+            if self.plan is not None:
+                self.cache[key] = self.cache.pop(key)
 
         live: list = []
         _flatten((args, kwargs), live)
@@ -1828,7 +1925,12 @@ def arm_after_placement(
     handles: list = []
     refusals: list = []
     modes: list = []
+    from .diffusion_layer_split import is_layer_split
+
     for module in _denoiser_modules(pipe):
+        if is_layer_split(module):
+            refusals.append(f"{type(module).__name__}: denoiser is split across cards")
+            continue
         placement, why = offload_placement(module)
         if why is not None:
             refusals.append(f"{type(module).__name__}: {why}")
@@ -1890,6 +1992,32 @@ def _denoiser_modules(pipe: Any) -> list:
     return [unet] if unet is not None else []
 
 
+PROMPT_LENGTH_REASON = "text length follows the prompt"
+
+
+def prompt_length_reason(pipe: Any, family: Any = None) -> Optional[str]:
+    """Why a denoiser whose text length follows the prompt (diffusion_dynamic_text.PROMPT_LENGTH_POLICY) records no
+    per-block graphs, else None. A block's graph keys on its inputs, which carry the text stream, so every new prompt
+    length would record every block again on that render; its whole-step graph instead records the first render's
+    lengths only (``GraphedForward.length_sealed``). ``UNSLOTH_DIFFUSION_CUDA_GRAPH_FAMILIES`` and
+    ``UNSLOTH_DIFFUSION_CUDA_GRAPH_EVERY_LENGTH`` still force it."""
+    if _family_forced(family) or _every_length():
+        return None
+    try:
+        from .diffusion_dynamic_text import prompt_length_varies  # noqa: PLC0415
+        names = sorted(
+            {type(m).__name__ for m in _denoiser_modules(pipe) if prompt_length_varies(m)}
+        )
+    except Exception:  # noqa: BLE001 - an unanswerable probe keeps today's graphs
+        return None
+    if not names:
+        return None
+    return (
+        f"{PROMPT_LENGTH_REASON} ({', '.join(names)}): per-block graphs would record every block again on each "
+        f"new prompt length, so the blocks run compiled ungraphed"
+    )
+
+
 def graph_eligible(
     target: Any,
     *,
@@ -1929,6 +2057,11 @@ def graph_eligible(
 
     # Lazy: ``diffusion_speed`` imports this module, so a module-level import here is a cycle.
     from .diffusion_speed import _denoiser_dits, _denoiser_unet
+
+    from .diffusion_layer_split import is_layer_split
+
+    if any(is_layer_split(m) for m in _denoiser_modules(pipe)):
+        return False, "denoiser is split across cards"
 
     # A whole-compiled U-Net serves from ``_compiled_call_impl``: GraphedCompiledCall captures there.
     if not _denoiser_dits(pipe) and _denoiser_unet(pipe) is None:
@@ -1997,6 +2130,23 @@ def install_cuda_graphs(
     return installed
 
 
+def seal_lengths(handles: Any) -> None:
+    """A render ended: a denoiser whose text length follows the prompt records no new prompt length from here on
+    (until ``reset``). Covers a first render that recorded but never replayed (an offloaded key still being timed)."""
+    for handle in handles or ():
+        try:
+            if not getattr(handle, "length_varies", False):
+                continue
+            # Only a scope that recorded since the last reset: a render that only warmed up (a planned step's first
+            # call at a new length) or recorded nothing keeps its window open.
+            for scope in handle._render_scopes:
+                if handle._scope_captures.get(scope, 0) > 0:
+                    handle._sealed_scopes.add(scope)
+            handle._render_scopes.clear()
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
+
+
 def set_bypass(handles: Any, on: bool) -> None:
     """Run eager without dropping graphs, for every handle."""
     for handle in handles or ():
@@ -2006,18 +2156,33 @@ def set_bypass(handles: Any, on: bool) -> None:
             pass
 
 
-def reset_all(handles: Any) -> None:
+def _holds_graphs(handle: Any) -> bool:
+    """True while ``handle`` (or its fallback handle) still holds a captured graph."""
+    if getattr(handle, "cache", None):
+        return True
+    fallback = getattr(handle, "fallback_handle", None)
+    return fallback is not None and fallback is not handle and _holds_graphs(fallback)
+
+
+def reset_all(handles: Any, strict: bool = False) -> None:
     """Drop every captured graph, for every handle (the weights changed).
 
     Drops the pool token with the last graph: a stale token dies on the allocator's
     "use_count > 0 INTERNAL ASSERT FAILED", raised after ``torch.cuda.graph`` entered its side
-    stream, so the thread is left off the default stream too."""
+    stream, so the thread is left off the default stream too. ``strict``: raise when a handle failed
+    to reset or still holds a graph (a caller about to move weights must not leave one that could replay)."""
+    failed: list = []
     for handle in handles or ():
         try:
             handle.reset()
-        except Exception:  # noqa: BLE001 - optimisation only
-            pass
+        except Exception as exc:  # noqa: BLE001 - optimisation only, unless strict
+            failed.append(f"{type(handle).__name__}: {type(exc).__name__}: {exc}")
+            continue
+        if strict and _holds_graphs(handle):
+            failed.append(f"{type(handle).__name__}: still holds a captured graph")
     _drop_pool_if_unused()
+    if strict and failed:
+        raise RuntimeError("could not drop every captured CUDA graph: " + "; ".join(failed))
 
 
 def uninstall_all(handles: Any, *, logger: Any = None) -> None:
@@ -2206,18 +2371,27 @@ def arm_block_graphs(
     whole = [h for h in handles if isinstance(h, GraphedForward)]
     prior = str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "")
     step = [h for h in whole if h.placement is not None or h.plan is not None]
+    split = _layer_split_pipe(pipe)
+    if split:
+        # a whole-step capture records one card; a split's blocks record per block on their own card
+        step = []
+        _rehome_after_layer_split(pipe, logger)
     if whole and len(step) == len(whole):
         # The whole step stays primary; where per-block graphs are the default they arm for the calls it leaves eager.
         pipe._unsloth_cuda_graph_mode = "step"
-        why = _block_basics(target, family, cache_engaged, speed_mode, family_default)
+        why = _block_basics(
+            target, family, cache_engaged, speed_mode, family_default
+        ) or prompt_length_reason(pipe, family)
         if why is None:
             _attach_block_fallback(pipe, step, target, hooked, pinned, logger)
         return handles
-    if not hooked and (whole or "not capture-safe" not in prior):
+    if not split and not hooked and (whole or "not capture-safe" not in prior):
         # Nothing moves the denoiser: the speed layer's decision stands, except a forward that is not capture-safe,
         # whose blocks still record.
         return handles
-    why = _block_basics(target, family, cache_engaged, speed_mode, family_default)
+    why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or (
+        None if split else prompt_length_reason(pipe, family)
+    )
     if whole:
         uninstall_all(whole, logger = logger)
     pipe._unsloth_cuda_graph_mode = None
@@ -2281,6 +2455,8 @@ def arm_block_graphs(
             if hooked and pinned
             else "offloaded denoiser"
             if hooked
+            else "split denoiser (each card's blocks on that card)"
+            if split
             else "denoiser"
         )
         slots = sum(int(getattr(h, "slots_mib", 0) or 0) for h in armed)
