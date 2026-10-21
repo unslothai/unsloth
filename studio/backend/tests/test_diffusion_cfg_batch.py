@@ -720,3 +720,22 @@ def test_a_new_request_shape_starts_without_the_previous_shapes_template(monkeyp
     big = torch.randn(2, 4, 8)
     router._new_step((), {"hidden_states": big}, big)
     assert router.last_shape is not first and router.template is None
+
+
+def test_the_trial_prices_the_batched_steps_preparation_and_verification(monkeypatch):
+    # A doubled call that wins on its own (1.2 s vs a 2.0 s pair) but whose snapshot + verify cost 0.7 s loses end to end.
+    model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else 1.2)
+    clock = cb.time.perf_counter
+    real_matches = cb._matches
+
+    def slow_matches(snapshots, call):
+        clock.now += 0.7
+        return real_matches(snapshots, call)
+
+    monkeypatch.setattr(cb, "_matches", slow_matches)
+    pipe = _Pipe(model)
+    assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
+    _flux_loop(model)
+    shape = cb.router_for(pipe).last_shape
+    assert shape.off is not None and "measured no gain" in shape.off
+    assert min(shape.batched_s) == pytest.approx(1.9)

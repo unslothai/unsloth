@@ -17,9 +17,9 @@ them for the classes whose forward keeps no state between calls:
 
 Priced once per request shape, before any batched result is used: steps 1-2 run plain (step 2 is timed); a resident
 pair >= ``_RESIDENT_MAX_PAIR_S`` stays plain untried. Otherwise a discarded trial (plain pairs interleaved with doubled
-calls) batches steps 3+ only if the fastest doubled call beats the fastest plain pair by ``_MEASURED_FRACTION``, so every
-render of a shape takes one path (same seed, same image). The doubled call needs room for twice a plain call's
-activations; an OOM turns the shape plain for that render.
+calls) batches steps 3+ only if the fastest batched step (predict, merge, snapshot, doubled call, split, verify) beats the
+fastest plain pair by ``_MEASURED_FRACTION``, so every render of a shape takes one path (same seed, same image). The
+doubled call needs room for twice a plain call's activations; an OOM turns the shape plain for that render.
 
 Not always bit-exact (other GEMM / attention tiles): B200 bf16 resident FLUX.2-klein-base-4B is bitwise equal,
 Wan2.1-T2V-1.3B LPIPS 0.019 mean; offloaded FLUX.2-klein-base LPIPS ~0.01. ``UNSLOTH_DIFFUSION_CFG_BATCH=0`` keeps the exact
@@ -499,7 +499,6 @@ class CfgBatchRouter:
         batch = int(latent.shape[0])
         plain_s: list[float] = []
         try:
-            b_args, b_kwargs = merge_branches(first, second, batch)
             graphs = _graph_count()
             # interleaved, fastest of each: one slow sample cannot decide the verdict
             for _ in range(_BATCHED_SAMPLES):
@@ -508,12 +507,17 @@ class CfgBatchRouter:
                 self.orig_forward(*second[0], **second[1])
                 self._sync(latent)
                 plain_s.append(time.perf_counter() - t0)
+                # the whole batched step as _batched + _take run it: predict, merge, snapshot, forward, split, verify
                 t0 = time.perf_counter()
+                predicted = self._predict(latent) if self.template is not None else second
+                b_args, b_kwargs = merge_branches(first, predicted, batch)
+                snapshots = _snapshot(predicted)
                 split_output(self.orig_forward(*b_args, **b_kwargs), batch)
+                _matches(snapshots, second)
                 self._sync(latent)
                 shape.batched_s.append(time.perf_counter() - t0)
+                del b_args, b_kwargs, snapshots, predicted
             shape.plain_pair_s = min(plain_s)
-            del b_args, b_kwargs
             if _graph_count() != graphs and self.render_compiled is None and not self.offloaded:
                 # a compiled region the markers did not show, on a resident denoiser: never again this load
                 self.disable(
