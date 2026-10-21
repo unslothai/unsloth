@@ -1019,6 +1019,17 @@ const uniqueLoras = (loras: string[]): string[] => {
 const str = (v: unknown): string | undefined =>
   typeof v === "string" ? v : undefined;
 
+/** The request's adapter limit (DiffusionGenerateRequest.loras). */
+export const MAX_LORAS = 8;
+
+/** The recipe's LoRA ids recipeSettings drops for being past MAX_LORAS. */
+export function lorasOverLimit(r: ImportedRecipe): string[] {
+  if (!Array.isArray(r.loras)) return [];
+  return uniqueLoras(r.loras.flatMap(loraOf))
+    .slice(MAX_LORAS)
+    .map((l) => l.slice(0, l.lastIndexOf(":")));
+}
+
 export function recipeSettings(
   r: ImportedRecipe,
   d: RecipeDefaults,
@@ -1039,7 +1050,7 @@ export function recipeSettings(
     model: str(r.model) ?? null,
     workflow: str(r.workflow),
     loras: Array.isArray(r.loras)
-      ? uniqueLoras(r.loras.flatMap(loraOf)).slice(0, 8)
+      ? uniqueLoras(r.loras.flatMap(loraOf)).slice(0, MAX_LORAS)
       : [],
     // The request takes strength in (0, 1]: 0 leaves no denoising steps, so it is not restored.
     strength: positive(clamp(num(r.strength), 0, 1)),

@@ -12,6 +12,8 @@ import {
   isGenerationParametersPaste,
   matchLoraTags,
   matchLoraTagsForImport,
+  MAX_LORAS,
+  lorasOverLimit,
   parseA1111Parameters,
   pastedParameters,
   recipeSettings,
@@ -337,5 +339,27 @@ test("LoRA tags pasted before a LoRA-capable model is resident match the whole l
   assert.match(
     page,
     /if \(cancelled\) return;\n\s+setAvailableLoras\(list\);\n\s+setLoraCatalogFamily\(fam\);/,
+  );
+});
+
+test("LoRAs past the request's adapter limit are named as not applied", () => {
+  const loras = Array.from({ length: MAX_LORAS + 2 }, (_, i) => `lora${i}:1`);
+  const settings = recipeSettings({ prompt: "p", loras }, DEFAULTS);
+  assert.equal(settings.loras.length, MAX_LORAS);
+  assert.deepEqual(lorasOverLimit({ prompt: "p", loras }), [
+    `lora${MAX_LORAS}`,
+    `lora${MAX_LORAS + 1}`,
+  ]);
+  // Duplicates and invalid rows are not counted against the limit.
+  assert.deepEqual(
+    lorasOverLimit({ prompt: "p", loras: [...loras.slice(0, MAX_LORAS), "lora0:0.5", "bad"] }),
+    [],
+  );
+  assert.deepEqual(lorasOverLimit({ prompt: "p" }), []);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /const settings = recipeSettings\(merged, \{ width, height, steps, guidance \}\);/);
+  assert.match(
+    page,
+    /\.\.\.lorasOverLimit\(merged\)\.map\(\(id\) => `LoRA \$\{id\} \(over the \$\{MAX_LORAS\} adapter limit\)`\),/,
   );
 });

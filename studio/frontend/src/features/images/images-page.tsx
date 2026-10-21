@@ -320,6 +320,8 @@ import {
   importNotApplied,
   isGenerationParametersPaste,
   matchLoraTagsForImport,
+  MAX_LORAS,
+  lorasOverLimit,
   newerRecipeSchema,
   pastedParameters,
   pngRecipe,
@@ -2823,12 +2825,11 @@ export function ImagesPage({
         availableLoras,
         () => listDiffusionLoras(),
       );
-      const settings = recipeSettings(
+      const merged =
         tagged.loras.length > 0
           ? { ...recipe, loras: [...(Array.isArray(recipe.loras) ? recipe.loras : []), ...tagged.loras] }
-          : recipe,
-        { width, height, steps, guidance },
-      );
+          : recipe;
+      const settings = recipeSettings(merged, { width, height, steps, guidance });
       const localized = settings.localized_edit;
       restoreSettings({
         ...settings,
@@ -2866,6 +2867,7 @@ export function ImagesPage({
       const notApplied = [
         ...importNotApplied(recipe),
         ...tagged.unmatched.map((name) => `LoRA ${name} (not installed)`),
+        ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
         ...tagged.notes,
         ...unknownRecipeKeys(recipe),
       ];
