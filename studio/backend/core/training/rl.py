@@ -366,18 +366,32 @@ def render_grpo_prompts(
     if not (thinking or nulls or tools or _has_tool_ended_prompts(dataset)):
         return (dataset.remove_columns(drop) if drop else dataset), False
     kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
+    # TRL continues an assistant-ended prompt and puts it back in front of the completion before
+    # scoring; a text prompt loses both, so the prefill is kept for the rewards (make_reward_func).
+    prefills = any(
+        isinstance(p, list) and p and isinstance(p[-1], dict) and p[-1].get("role") == "assistant"
+        for p in dataset["prompt"]
+    )
 
     def render(row: dict) -> dict:
         row_tools = _row_tools(row)
-        return {
+        prompt = row["prompt"]
+        prefill = (
+            isinstance(prompt, list) and bool(prompt) and prompt[-1].get("role") == "assistant"
+        )
+        out = {
             "prompt": tokenizer.apply_chat_template(
-                _without_nulls(row["prompt"]),
+                _without_nulls(prompt),
                 tokenize = False,
-                add_generation_prompt = True,
+                add_generation_prompt = not prefill,
+                **({"continue_final_message": True} if prefill else {}),
                 **({"tools": row_tools} if row_tools else {}),
                 **kwargs,
             )
         }
+        if prefills:
+            out["prefill"] = (prompt[-1].get("content") or "") if prefill else ""
+        return out
 
     map_kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
     return dataset.map(render, remove_columns = drop, **map_kwargs), True

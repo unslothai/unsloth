@@ -579,6 +579,8 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
         **kwargs,
     ) -> list[float]:
         references = kwargs.get(column) if column else None
+        # A pre-rendered prompt's assistant prefill, which TRL would have restored itself.
+        prefills = kwargs.get("prefill")
         out = []
         for i, completion in enumerate(completions or []):
             ref = (
@@ -586,7 +588,10 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
                 if isinstance(references, (list, tuple)) and i < len(references)
                 else None
             )
-            out.append(float(score_rule(rule, completion_text(completion), ref)))
+            text = completion_text(completion)
+            if isinstance(prefills, (list, tuple)) and i < len(prefills) and prefills[i]:
+                text = prefills[i] + text
+            out.append(float(score_rule(rule, text, ref)))
         return out
 
     reward.__name__ = spec["name"].replace("-", "_")
