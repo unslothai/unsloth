@@ -6613,7 +6613,6 @@ def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch,
 
     source = inspect.getsource(main.lifespan)
     assert "prune_open_staging()" in source
-    # Run on a thread, so a slow cache mount cannot hold up startup.
     assert "threading.Thread(" in source and "target = _prune_open_staging_in_background" in source
 
 

@@ -463,8 +463,7 @@ DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
 _OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
 
 
-# Older builds staged a hard link to the chat's file, which the OS sandbox refuses to run beside. Only that name
-# goes, never its directory, so an app that still has it open can save there; a save that lands meanwhile stays.
+# Older builds staged hard links the OS sandbox refuses; only the name goes, so an app holding the dir can still save.
 def _break_hard_links(entry: Path) -> None:
     import stat as stat_module
     import tempfile
@@ -516,8 +515,7 @@ def _prune_open_staging(root: Path, break_links: bool = False) -> None:
             continue
 
 
-# At startup, and before a chat is refused for a staged link. Only under the lock, so sibling backends sharing the
-# home never swap at once; without it (busy, or a filesystem that cannot lock) the links wait for a later call.
+# Only under the lock, so sibling backends sharing the home never swap at once; no lock = links wait for a later call.
 def prune_open_staging() -> None:
     from utils.cache_cleanup import _try_lock, _unlock
     from utils.paths.storage_roots import cache_root
@@ -598,9 +596,7 @@ def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
         staging.mkdir(parents = True, exist_ok = True)
         _prune_open_staging(staging)
 
-        # Opening the same file again reuses its copy, so repeated opens of a large file do not fill the disk.
-        # Compared byte for byte: an app may have edited the copy, and coarse mtimes miss a same-size rewrite.
-        # Only against the newest copy, so an Open never rereads every older version of the file.
+        # Reuse the newest copy only if byte-identical: an app may have edited it, and coarse mtimes miss same-size rewrites.
         def newest_first(entry: Path) -> int:
             try:
                 return entry.lstat().st_mtime_ns
