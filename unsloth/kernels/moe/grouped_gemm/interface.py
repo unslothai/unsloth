@@ -40,7 +40,6 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
-# Precompute TMA support (NVIDIA capability >= 9 plus a triton carrying make_tensor_descriptor) to avoid graph breaks.
 # Process-wide, so every visible card must be sm90+ (experts may sit on any); an unreadable card means False.
 def _check_tma_support():
     if DEVICE_TYPE in ("xpu", "hip"):
@@ -74,7 +73,6 @@ def _autotuner_for(kernel, device):
     return _DEVICE_AUTOTUNERS[key]
 
 
-# triton.set_allocator is Triton 3.0+.
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
 
 
@@ -133,7 +131,6 @@ def _grouped_gemm_forward_impl(
     permute_y: bool = False,
     fuse_mul_post: bool = False,
     autotune: bool = False,
-    # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -142,7 +139,6 @@ def _grouped_gemm_forward_impl(
     use_tma_load_w: bool = False,
     use_tma_load_x: bool = False,
     use_tma_store: bool = False,
-    # Software pipelining; no effect until the loop is re-written.
     flatten: bool = True,
     debug: bool = False,
 ) -> torch.Tensor:
@@ -168,7 +164,6 @@ def _grouped_gemm_forward_impl(
     assert not (permute_y and use_tma_store), "Cannot use both TMA store and permute_y"
 
     if use_tma_load_x:
-        # TMA load for activations; TMA gather is Blackwell+ only.
         assert not permute_x, "Cannot use both use_tma_load_x and permute_x"
 
     use_tma = use_tma_load_w or use_tma_load_x or use_tma_store
@@ -290,7 +285,6 @@ def _grouped_gemm_forward_impl(
 
     is_fake = _is_tracing(X, W)
     if not is_fake:
-        # Triton launches on the current device: pin it to the operands' card.
         with torch_gpu_device(X.device):
             compiled_kernel: triton.compiler.CompiledKernel = kernel[grid](
                 **kernel_args, enable_fp_fusion = True
@@ -339,7 +333,6 @@ def _grouped_gemm_dX_impl(
     assert m_sizes.ndim == 1
 
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
-    # Flipped from the forward pass: a y permuted in the forward must be permuted on load in the backward.
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_store), "Cannot use both TMA store and permute_x"
 
@@ -375,7 +368,6 @@ def _grouped_gemm_dX_impl(
     assert M_total % topk == 0, f"M_total ({M_total}) must be divisible by topk ({topk})"
     num_tokens = M_total // topk
 
-    # The kernel only reads gather_indices under permute_x / permute_y, so it stays optional otherwise.
     if permute_x or permute_y:
         assert (
             gather_indices is not None
@@ -383,7 +375,6 @@ def _grouped_gemm_dX_impl(
     total_tokens = gather_indices.shape[0] if gather_indices is not None else M_total
     assert total_tokens == M_total, f"Total tokens ({total_tokens}) must match M_total ({M_total})"
 
-    # The output stays [NUM_TOKENS * TOPK, K] even under permute_x: gradients accumulate across every expert a token chose, reduced in a post-processing step.
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
@@ -535,8 +526,6 @@ def _launch_grouped_gemm_dW(
         assert dW_out.is_contiguous() and dW_out.device == X.device
         dW = dW_out
     else:
-        # dW_dtype (the weight's dtype) writes the fp32 accumulator rounded once, exactly what
-        # autograd's later cast of an X.dtype buffer would give, without that buffer.
         dW = torch.zeros(
             (num_experts, N, K), device = X.device, dtype = X.dtype if dW_dtype is None else dW_dtype
         )
@@ -647,8 +636,7 @@ def _grouped_gemm_dW_impl(
     debug: bool = False,
     dW_dtype: Optional[torch.dtype] = None,
 ) -> torch.Tensor:
-    """Backward dW kernel into a fresh zero-initialised (E, N, K) buffer of dW_dtype (default
-    X.dtype); see _launch_grouped_gemm_dW."""
+    """dW into a fresh zeroed (E, N, K) buffer of dW_dtype (default X.dtype)."""
     kwargs = dict(locals())
     return _launch_grouped_gemm_dW(dW_out = None, accumulate = False, **kwargs)
 
@@ -671,8 +659,7 @@ def _grouped_gemm_dW_accumulate_impl(
     num_warps: int = 4,
     num_stages: int = 2,
 ) -> None:
-    """dW += X^T dY per expert, in place: the existing tile is loaded, added in fp32 and rounded once
-    to dW.dtype. Experts with no tokens leave dW untouched. Returns nothing (mutates dW)."""
+    """dW += X^T dY per expert, in place, added in fp32 and rounded once to dW.dtype."""
     kwargs = dict(locals())
     dW_out = kwargs.pop("dW")
     _launch_grouped_gemm_dW(dW_out = dW_out, accumulate = True, **kwargs)
@@ -722,7 +709,6 @@ def _make_op(
         return torch._dynamo.disable(impl)
     existing = getattr(getattr(torch.ops, "unsloth", None), name, None)
     if existing is not None:
-        # grouped_gemm is also importable as a top-level package (glm4_moe, tests): reuse the registration.
         return existing
     params = [
         p.replace(
@@ -778,7 +764,6 @@ def _dispatch(impl, op, args, kwargs):
     bound = dict(defaults)
     bound.update(zip(names, args))
     bound.update(kwargs)
-    # Eager calls skip the custom-op dispatcher; traced calls (dynamo, or fake tensors under make_fx) need the op.
     if torch.compiler.is_compiling() or _is_tracing(bound[names[0]], bound[names[1]]):
         return op(*[bound[n] for n in names])
     return impl(**bound)
@@ -804,7 +789,6 @@ def grouped_gemm_dW_accumulate(*args, **kwargs) -> None:
     return _dispatch(_grouped_gemm_dW_accumulate_impl, _grouped_gemm_dW_accumulate_op, args, kwargs)
 
 
-# Engagement census for the in-place path (eager backward only, so no Dynamo side effects).
 DW_ACCUMULATE_STATS = {"inplace": 0, "fallback": 0}
 
 
@@ -818,16 +802,10 @@ def _dW_accumulate_enabled():
 def _dW_accumulate_target(ctx, X, autotune):
     """The leaf parameter whose existing .grad the dW kernel may add into, else None.
 
-    Returning None for W in backward skips autograd's AccumulateGrad add (and the dW temporary), so
-    every case where AccumulateGrad would do more than `param.grad += dW` falls back to the
-    returned-gradient path: compiling (the AOT backward graph decides statically), autograd.grad or
-    backward(inputs=) not covering W, create_graph, no gradient yet (AccumulateGrad steals the fresh
-    buffer, so there is nothing to save), tensor hooks, anomaly mode, a weight used on a non-default
-    CUDA stream, layout or dtype mismatch, autotune. Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook)
-    cannot be enumerated from Python and see None for W here; UNSLOTH_MOE_DW_ACCUMULATE=0 restores
-    the returned-gradient path. The grad may be narrower than X (bf16 weights, fp32 activations):
-    the add still runs in fp32.
-    """
+    Any case where AccumulateGrad would do more than `param.grad += dW` falls back to returning dW.
+    Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook) cannot be
+    enumerated from Python and see None for W here; UNSLOTH_MOE_DW_ACCUMULATE=0 restores the
+    returned-gradient path."""
     if torch.compiler.is_compiling() or _is_tracing(X) or torch.is_grad_enabled():
         return None
     # Anomaly mode checks the returned gradients for NaN; an in-place add returns None for W.
@@ -840,7 +818,7 @@ def _dW_accumulate_target(ctx, X, autotune):
     except (AttributeError, IndexError, TypeError):
         return None
     if acc is None or type(acc).__name__ != "AccumulateGrad":
-        return None  # W is not a leaf (e.g. a transposed copy): its grad flows on through autograd
+        return None
     param = acc.variable
     if type(param) not in (torch.Tensor, torch.nn.Parameter):
         return None  # tensor subclasses (DTensor, quantized) own their gradient layout
@@ -858,14 +836,14 @@ def _dW_accumulate_target(ctx, X, autotune):
     if getattr(param, "_backward_hooks", None) or getattr(
         param, "_post_accumulate_grad_hooks", None
     ):
-        return None  # these hooks only run on a defined incoming gradient
+        return None
     if getattr(param, "_unsloth_dw_side_stream", False):
         return None
     if torch.cuda.current_stream(X.device) != torch.cuda.default_stream(X.device):
         return None
     try:
         if not torch._C._will_engine_execute_node(acc):
-            return None  # backward(inputs=[...]) without W
+            return None
     except RuntimeError:
         return None  # autograd.grad(): W's gradient is captured, never accumulated
     return param
@@ -902,7 +880,6 @@ class GroupedGemm(torch.autograd.Function):
         ctx.dX_only = dX_only
         ctx.dW_only = dW_only
 
-        # topk_weights is not saved for backward: training with fused_mul is unsupported.
         ctx.save_for_backward(X, W, m_sizes, gather_indices)
         if W.requires_grad and X.is_cuda and not torch.compiler.is_compiling():
             if torch.cuda.current_stream(X.device) != torch.cuda.default_stream(X.device):
@@ -948,7 +925,6 @@ class GroupedGemm(torch.autograd.Function):
         assert (
             not ctx.fuse_mul_post
         ), "fused_mul should only be used for inference, not for training"
-        # Frozen W (LoRA, dequantized experts) or X: skip its kernel and buffer, as autograd does for _grouped_mm.
         dX_only = ctx.dX_only or not ctx.needs_input_grad[1]
         dW_only = ctx.dW_only or not ctx.needs_input_grad[0]
         if dX_only and dW_only:
@@ -995,7 +971,6 @@ class GroupedGemm(torch.autograd.Function):
                 DW_ACCUMULATE_STATS["inplace"] += 1
             else:
                 if W.dtype != X.dtype and W.dtype in _DW_DTYPES and _dW_accumulate_enabled():
-                    # Write the weight's dtype directly: autograd would cast an X.dtype dW to it.
                     bwd_dW_config["dW_dtype"] = W.dtype
                 dW = grouped_gemm_dW(
                     X = X,

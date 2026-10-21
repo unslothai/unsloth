@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The grouped GEMM dW backward adds straight into an existing param.grad (fp32 add, one rounding)
-instead of returning a fresh dW for AccumulateGrad to add. Checked against the returned-gradient
-path (UNSLOTH_MOE_DW_ACCUMULATE=0) and an fp64 reference, plus every case that must fall back."""
+"""In-place grouped GEMM dW accumulation vs UNSLOTH_MOE_DW_ACCUMULATE=0 and an fp64 reference."""
 
 import os
 import re
@@ -111,7 +109,6 @@ class _Case:
         self.X = torch.randn(rows, K, device = DEV, generator = g).to(dtype)
         self.G = torch.randn(T * topk, N, device = DEV, generator = g).to(dtype)
         self.ref = _ref_dW(self.X, self.G, self.m_sizes, self.gather, topk, mode, E, N, K)
-        # sum |dY| |X|: scales the fp32 accumulation error of the kernel's dot products.
         self.absref = _ref_dW(
             self.X.abs(), self.G.abs(), self.m_sizes, self.gather, topk, mode, E, N, K
         )
@@ -167,26 +164,20 @@ def test_matches_returned_gradient_path_and_is_closer_to_fp64(
     ours, used_ours = _run_steps(cases, W, cfgs, True, g0, monkeypatch)
     ours_steps = _run_steps.steps
     assert used_stock == 0
-    # The first micro-step from grad None returns dW (AccumulateGrad steals it); every later one adds in place.
     assert used_ours == (ga - 1 if grad_start == "none" else ga)
 
     if ga == 1 and grad_start in ("none", "zeros"):
-        # One kernel rounding either way: 0 + acc rounds exactly like acc.
         assert torch.equal(ours, stock)
         return
     ref = sum(c.ref for c in cases) + (0 if g0 is None else g0.double())
     err_o, err_s = (ours.double() - ref).abs(), (stock.double() - ref).abs()
     if dtype == torch.float32:
-        # An fp32 dW adds the finished fp32 sum to the grad: the same single add autograd does.
         assert torch.equal(ours, stock)
         return
-    # bf16 / fp16: stock rounds dW then the sum (two roundings), ours rounds the fp32 sum once.
     assert err_o.mean() <= err_s.mean(), (err_o.mean().item(), err_s.mean().item())
     closer = (err_o < err_s).sum().item()
     farther = (err_o > err_s).sum().item()
     assert closer >= farther, (closer, farther)
-    # Every in-place micro-step is correctly rounded (up to fp32 accumulation noise): one rounding of
-    # the stored grad plus the exact dW. The max error of both paths sits at that rounding floor.
     for prev, after, step_ref, absref in ours_steps:
         if prev is None:
             continue
@@ -195,7 +186,6 @@ def test_matches_returned_gradient_path_and_is_closer_to_fp64(
         assert ((after.double() - r).abs() <= bound).all()
 
 
-# fp32 accumulation error of the dot products and the fp32 add, relative to sum |terms| (measured <= 2^-24).
 _FP32_SLACK = 2.0**-20
 
 
@@ -208,13 +198,11 @@ def _half_ulp(ref, out, dtype):
 
 @pytest.mark.parametrize("mode", ["permute_x", "permute_y"])
 def test_bf16_weight_with_fp32_activations(mode, monkeypatch):
-    # Unsloth full finetuning runs the experts on fp32 hidden states with bf16 weights.
     E, N, K, T, topk = 8, 128, 192, 200, 2
     cfgs = _cfgs()
     cases = [_Case(E, N, K, T, topk, mode, torch.float32, seed = 20 + i) for i in range(3)]
     kw = dict(BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 64, BLOCK_SIZE_K = 64,
               permute_x = mode == "permute_x", permute_y = mode == "permute_y")  # fmt: skip
-    # The kernel's own fp32 accumulators: what today's X.dtype buffer holds before autograd's cast.
     accs = [gg.grouped_gemm_dW(c.X, c.G, c.m_sizes, c.gather, topk, **kw) for c in cases]
     assert accs[0].dtype == torch.float32
     W = _param(E, N, K, torch.bfloat16)
@@ -222,7 +210,6 @@ def test_bf16_weight_with_fp32_activations(mode, monkeypatch):
     for inplace in (False, True):
         _run_steps(cases, W, cfgs, inplace, None, monkeypatch)
         out[inplace] = _run_steps.steps
-    # First micro-step: both round the same fp32 accumulator once (fresh bf16 buffer vs fp32 + cast).
     for inplace in (False, True):
         assert torch.equal(out[inplace][0][1], accs[0].to(torch.bfloat16)), inplace
     assert gg.DW_ACCUMULATE_STATS["inplace"] > 0
@@ -249,19 +236,17 @@ def test_empty_experts_keep_their_gradient(tma_store, monkeypatch):
     assert case.m_sizes[1].item() == 0 and case.m_sizes[5].item() == 0
     W = _param(E, N, K, torch.bfloat16)
     g0 = torch.randn_like(W)
-    g0[1, 0, 0] = -0.0  # stock 0 + -0 gives +0; untouched means the sign bit survives
+    g0[1, 0, 0] = -0.0
     ours, used = _run_steps([case], W, cfgs, True, g0, monkeypatch)
     assert used == 1
     for e in (1, 5):
         assert torch.equal(ours[e], g0[e]) and torch.signbit(ours[1, 0, 0])
-    # From grad None the fresh buffer holds zeros for them.
     fresh, _ = _run_steps([case], W, cfgs, True, None, monkeypatch)
     assert fresh[1].abs().sum() == 0 and fresh[5].abs().sum() == 0
 
 
 @pytest.mark.parametrize("N, K, T", [(96, 80, 37), (40, 72, 1), (130, 48, 301)])
 def test_odd_shapes_direct_op(N, K, T):
-    # Partial N / K tiles and token counts that are not multiples of BLOCK_SIZE_M.
     E, topk = 5, 2
     for mode in ("permute_x", "permute_y", "none"):
         c = _Case(E, N, K, T, topk, mode, torch.bfloat16, seed = N + K + T)
@@ -311,7 +296,6 @@ def test_autograd_grad_and_backward_inputs_do_not_touch_param_grad(monkeypatch):
     g0, _ = _fallback_check(W, cfgs, c, inputs_call)
     assert torch.equal(W.grad, g0) and X.grad is not None
 
-    # backward(inputs=[W]) does accumulate into W, so the in-place path applies.
     W.grad = g0.clone()
     before = gg.DW_ACCUMULATE_STATS["inplace"]
     _gemm(X, W, c.m_sizes, c.gather, topk, c.mode, cfgs).backward(c.G, inputs = [W])
@@ -350,14 +334,12 @@ def test_hooks_create_graph_kill_switch_and_non_leaf_fall_back(monkeypatch):
     _fallback_check(W, cfgs, c, lambda: c.backward(W, cfgs))
     monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")
 
-    # A non-leaf weight (scaled copy): its grad must flow on through autograd.
     W = _param(E, N, K, torch.bfloat16)
     g0, _ = _fallback_check(W, cfgs, c, lambda: c.backward(W * 1.0, cfgs))
     torch.testing.assert_close(
         (W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item()
     )
 
-    # Frozen experts (LoRA): no dW at all.
     W = _param(E, N, K, torch.bfloat16).requires_grad_(False)
     X = c.X.clone().requires_grad_(True)
     before = dict(gg.DW_ACCUMULATE_STATS)
@@ -379,7 +361,6 @@ def test_retain_graph_tied_weight_and_inf_propagation(monkeypatch):
         Y = _gemm(c.X, W, c.m_sizes, c.gather, topk, c.mode, cfgs)
         Y.backward(c.G, retain_graph = True)
         Y.backward(c.G)
-        # Tied: the same weight in two GEMMs of one graph.
         Y1 = _gemm(c.X, W, c.m_sizes, c.gather, topk, c.mode, cfgs)
         Y2 = _gemm(c2.X, W, c2.m_sizes, c2.gather, topk, c2.mode, cfgs)
         ((Y1 * c.G).sum() + (Y2 * c2.G).sum()).backward()
@@ -389,7 +370,6 @@ def test_retain_graph_tied_weight_and_inf_propagation(monkeypatch):
     err_s = (results[False].double() - ref).abs()
     assert err_o.mean() <= err_s.mean()
 
-    # A GradScaler overflow in dY must reach the accumulated gradient so found_inf sees it.
     monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")
     W = _param(E, N, K, torch.bfloat16)
     W.grad = g0.clone()
@@ -426,7 +406,6 @@ def test_compiled_fullgraph_zero_breaks_and_matches_eager(monkeypatch):
     for g in grads:
         torch.testing.assert_close(g, 2 * c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item())
 
-    # The mutating op itself is opaque to the compiler and mutates its dW argument.
     def acc(X, dY, buf):
         gg.grouped_gemm_dW_accumulate(
             X, dY, c.m_sizes, c.gather, buf, topk, BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 64,
@@ -500,12 +479,11 @@ def test_ddp_gradient_accumulation_with_bucket_hooks(bucket_view, tmp_path):
         got[inplace] = [torch.load(f"{out}.{r}") for r in range(2)]
     for r in range(2):
         assert got[False][r]["inplace"] == 0
-        assert got[True][r]["inplace"] == 3  # micro-steps 2..4
-    # The reducer fired: both ranks hold the same averaged gradient.
+        assert got[True][r]["inplace"] == 3
     assert torch.equal(got[True][0]["grad"], got[True][1]["grad"])
     a, b = got[True][0]["grad"], got[False][0]["grad"]
     rel = ((a - b).norm() / b.norm()).item()
-    assert rel < 1e-2, rel  # a dropped micro-step or a skipped all-reduce is a > 10% error
+    assert rel < 1e-2, rel
 
 
 def _fsdp2_worker(rank, inplace, out_path):
@@ -557,13 +535,10 @@ def test_fsdp2_no_sync_gradient_accumulation(tmp_path):
     a, b = got[True]["grad"], got[False]["grad"]
     rel = ((a - b).norm() / b.norm()).item()
     assert rel < 1e-2, rel
-    # Whether FSDP2 keeps the unsharded grad between no-sync micro-steps decides engagement; record it.
     print(f"FSDP2 in-place launches: {got[True]['inplace']}, rel vs stock {rel:.2e}")
 
 
 def test_existing_gradient_survives_in_microbatch_cancellation(monkeypatch):
-    # dW = +1e8 (first M tile) - 1e8 (second M tile) = 0: the existing 1 must stay 1, not be
-    # absorbed into the fp32 accumulator before the reduction.
     monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")
     E, N, K, T = 1, 64, 64, 128
     dtype, big = torch.bfloat16, 1e4
@@ -597,5 +572,4 @@ def test_side_stream_use_keeps_the_returned_gradient_path(monkeypatch):
 
     g0, _ = _fallback_check(W, cfgs, c, side_call)
     torch.testing.assert_close((W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item())
-    # The weight was seen on a side stream: later default-stream uses fall back too.
     _fallback_check(W, cfgs, c, lambda: c.backward(W, cfgs))
