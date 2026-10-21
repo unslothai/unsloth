@@ -1477,6 +1477,28 @@ def test_an_automatic_replace_fallback_waits_for_the_active_chats(backends, monk
     assert waited == ["org/A-GGUF"] and primary.model_identifier == "org/C-GGUF"
 
 
+def test_an_automatic_replace_fallback_rechecks_the_sidecar_after_the_drain(backends, monkeypatch):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    installing = []
+
+    def sidecar():
+        if installing:
+            raise HTTPException(status_code = 409, detail = "installing")
+
+    async def wait(**kw):
+        installing.append(True)  # a transformers install claims its window meanwhile
+
+    monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", sidecar)
+    monkeypatch.setattr(inf, "_wait_for_model_switch_idle", wait)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inf.load_model_gated(request, None, "s", background = True))
+    # Refused before the active model went.
+    assert exc.value.status_code == 409 and primary.model_identifier == "org/A-GGUF"
+
+
 def test_training_stops_on_a_kept_model_that_would_not_unload(backends, monkeypatch):
     _, extra = backends
 

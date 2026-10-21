@@ -12901,12 +12901,17 @@ def test_completions_on_mlx_refuses_an_audio_cpp_target_before_it_loads(monkeypa
     assert exc.value.status_code == 400 and rec.calls == []
 
 
-def _beside_case(monkeypatch, mode, primary_speaks):
-    """A speech switch with a GGUF primary that is (or is not) a speech model, under ``mode``."""
+def _beside_case(
+    monkeypatch,
+    mode,
+    primary_speaks,
+    audio_type = "snac",
+):
+    """A switch to a target of ``audio_type`` with a GGUF primary that is (or is not) a speech model."""
     from core.inference import model_slots
     from utils import multi_model_settings
 
-    backend, recorder = _speech_case(monkeypatch)
+    backend, recorder = _speech_case(monkeypatch, audio_type)
     primary = SimpleNamespace(is_active = True, _is_audio = primary_speaks)
     monkeypatch.setattr(inference_route, "_llama_cpp_backend", primary)
     monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: mode)
@@ -12960,9 +12965,40 @@ def test_a_speech_switch_still_replaces_under_off_or_another_speech_model(
 
 
 def test_a_chat_switch_keeps_a_loaded_speech_model(monkeypatch):
-    _backend, recorder, _slot, gated = _beside_case(monkeypatch, "fit", primary_speaks = True)
+    _backend, recorder, _slot, gated = _beside_case(
+        monkeypatch, "fit", primary_speaks = True, audio_type = None
+    )
     asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "tester"))
     assert recorder.calls == [] and len(gated) == 1 and gated[0][0].alongside
+
+
+@pytest.mark.parametrize("primary_speaks", [False, True])
+def test_a_chat_request_naming_a_speech_model_is_classified_by_its_target(
+    monkeypatch, primary_speaks
+):
+    # Chat serves a TTS model too: beside a text model, in place of another speech model.
+    _backend, recorder, _slot, gated = _beside_case(monkeypatch, "fit", primary_speaks)
+    asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "tester"))
+    if primary_speaks:
+        assert gated == [] and len(recorder.calls) == 1
+    else:
+        assert recorder.calls == [] and len(gated) == 1 and gated[0][0].alongside
+
+
+def test_a_kept_slot_unloaded_before_it_is_reserved_refuses_the_request(monkeypatch):
+    from core.inference import model_slots
+
+    backend, recorder, slot, gated = _beside_case(monkeypatch, "fit", primary_speaks = False)
+    monkeypatch.setattr(model_slots, "reserve", lambda _slot: False)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF", object(), "tester", require_speech = True
+            )
+        )
+    assert exc.value.status_code == 503 and len(gated) == 1
+    # The chat model never answers to the speech model's id.
+    assert getattr(backend, "_openai_advertised_id", None) != "org/B-GGUF"
 
 
 def test_a_background_tracked_load_keeps_the_request_cancel_and_no_user_warnings(monkeypatch):
@@ -12970,17 +13006,36 @@ def test_a_background_tracked_load_keeps_the_request_cancel_and_no_user_warnings
 
     async def impl(request, fastapi_request, current_subject, **kwargs):
         seen.update(kwargs, warnings = inference_route._load_warnings_reach_user.get())
+        if "request_cancel" in seen:
+            seen["request_cancel"].set()
+            for _ in range(50):
+                if kwargs["load_cancel_event"].is_set():
+                    break
+                await asyncio.sleep(0.02)
 
     monkeypatch.setattr(inference_route, "_load_model_impl", impl)
-    cancel = threading.Event()
     request = LoadRequest(model_path = "org/B-GGUF")
-    for background, impl_kwargs in ((True, {"load_cancel_event": cancel}), (False, None)):
+    for background in (True, False):
+        seen.clear()
+        attempt = inference_route._begin_load_attempt(request, "tester")
+        cancel = threading.Event()
+        impl_kwargs = None
+        if background:
+            seen["request_cancel"] = cancel
+            impl_kwargs = {"load_cancel_event": cancel}
         asyncio.run(
             inference_route._run_tracked_load_model_impl(
-                request, object(), "tester", impl_kwargs = impl_kwargs, background = background
+                request,
+                object(),
+                "tester",
+                attempt = attempt,
+                impl_kwargs = impl_kwargs,
+                background = background,
             )
         )
-        if background:
-            assert seen["load_cancel_event"] is cancel and seen["warnings"] is False
-        else:
-            assert seen["load_cancel_event"] is not cancel and seen["warnings"] is True
+        inference_route._finish_load_attempt(attempt)
+        # The load always watches the attempt's event, which /unload and shutdown set too.
+        assert seen["load_cancel_event"] is attempt.cancel_event
+        assert seen["warnings"] is (not background)
+        # The request's own cancel reaches it.
+        assert attempt.cancel_event.is_set() is background

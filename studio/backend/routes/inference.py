@@ -11559,24 +11559,25 @@ async def _auto_switch_npu_model(
             _note_switch_waiter(key, -1)
 
 
-def _switch_loads_beside(require_speech: bool) -> bool:
+def _switch_loads_beside(target_speaks: Callable[[], bool]) -> bool:
     """Whether an automatic load keeps the primary: a speech model beside a text one, or the reverse.
 
     Only under Keep multiple models loaded, as the Audio page and the chat auto-load ask with
-    ``alongside``. Another model of the same kind still replaces the primary.
+    ``alongside``. Another model of the same kind still replaces the primary. ``target_speaks``
+    probes the target, so it runs only once the mode allows a kept slot.
     """
     from utils.multi_model_settings import get_multi_model_enabled
 
     if not get_multi_model_enabled():
         return False
     if _llama_cpp_backend.is_active:
-        return require_speech != bool(getattr(_llama_cpp_backend, "_is_audio", False))
+        return target_speaks() != bool(getattr(_llama_cpp_backend, "_is_audio", False))
     orchestrator = _peek_inference_backend()
     active = getattr(orchestrator, "active_model_name", None)
     if not active or getattr(orchestrator, "_managed_engine", None) is not None:
         return False
     info = orchestrator.models.get(active, {})
-    return require_speech != bool(info.get("is_audio") and info.get("audio_type") != "whisper")
+    return target_speaks() != bool(info.get("is_audio") and info.get("audio_type") != "whisper")
 
 
 async def _maybe_auto_switch_model(
@@ -12213,7 +12214,16 @@ async def _maybe_auto_switch_model(
                     # start on the model while it is being torn down and replaced.
                     # A load kept beside the primary goes through load_model_gated, which takes the
                     # load gate itself and leaves the primary serving while it loads.
-                    beside = await asyncio.to_thread(_switch_loads_beside, require_speech)
+                    beside = await asyncio.to_thread(
+                        _switch_loads_beside,
+                        # Chat serves a TTS model too, so the target decides, not the endpoint.
+                        lambda: require_speech
+                        or (
+                            resolved is not None
+                            and _target_speech_audio_type(target_id, target_is_gguf, variant)
+                            is not None
+                        ),
+                    )
                     async with AsyncExitStack() as swap_gates:
                         if not beside:
                             await swap_gates.enter_async_context(model_load_gate())
@@ -12349,8 +12359,19 @@ async def _maybe_auto_switch_model(
                                 if slot is None:
                                     return
                                 if not model_slots.reserve(slot):
+                                    # Unloaded since (e.g. Keep multiple models turned off): the
+                                    # primary is not the model asked for, so never answer as it.
                                     routed_slot.set(None)
-                                    return
+                                    raise HTTPException(
+                                        status_code = 503,
+                                        detail = openai_error_body(
+                                            "The requested model was unloaded before this request "
+                                            "could use it. Please retry shortly.",
+                                            status = 503,
+                                            code = "model_loading",
+                                            param = "model",
+                                        ),
+                                    )
                                 target_backend = slot.llama if target_is_gguf else slot.orchestrator
 
                             try:
@@ -18677,9 +18698,25 @@ async def _run_tracked_load_model_impl(
 
     owned_attempt = attempt is None
     attempt = attempt or _begin_load_attempt(request, current_subject)
+    impl_kwargs = dict(impl_kwargs or {})
+    request_cancel = impl_kwargs.pop("load_cancel_event", None)
+    follow = None
     with _scoped_load_attempts_lock:
         _running_load_attempt = attempt
     try:
+        if request_cancel is not None:
+            # The load watches the attempt's event, which /unload, shutdown and account
+            # retirement set; the request's own cancel reaches it through this bridge.
+            async def _follow_request_cancel():
+                while not attempt.cancel_event.is_set():
+                    if request_cancel.is_set():
+                        _cancel_for_shutdown(attempt)
+                        return
+                    await asyncio.sleep(0.1)
+
+            if request_cancel.is_set():
+                _cancel_for_shutdown(attempt)
+            follow = asyncio.create_task(_follow_request_cancel())
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
         warnings_token = _load_warnings_reach_user.set(not background)
@@ -18691,7 +18728,8 @@ async def _run_tracked_load_model_impl(
                     current_subject,
                     current_request_counted = current_request_counted,
                     on_reload_confirmed = on_reload_confirmed,
-                    **{"load_cancel_event": attempt.cancel_event, **(impl_kwargs or {})},
+                    load_cancel_event = attempt.cancel_event,
+                    **impl_kwargs,
                 )
         finally:
             _load_warnings_reach_user.reset(warnings_token)
@@ -18699,6 +18737,8 @@ async def _run_tracked_load_model_impl(
         _remember_hub_access_warning(response, token_rejections)
         return response
     finally:
+        if follow is not None:
+            follow.cancel()
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
                 attempt.cancel_complete.wait, _SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S
@@ -19022,6 +19062,8 @@ async def load_model_gated(
                                     await _wait_for_model_switch_idle(
                                         current_request_counted = current_request_counted
                                     )
+                                    # The drain can outlast a sidecar install claiming its window.
+                                    _raise_if_sidecar_swap_in_progress()
                                 else:
                                     _raise_or_cancel_active_generations(
                                         force = request.force_cancel_active,
