@@ -328,6 +328,12 @@ from .diffusion_flow_shift import (
     pipe_sample_sigmas,
     sample_sigmas_for_steps,
 )
+from .diffusion_mask import (
+    ONLY_MASKED_UNSUPPORTED_MSG,
+    blur_mask,
+    inpaint_class_accepts_padding_mask_crop,
+    resolve_padding,
+)
 from .diffusion_sampler import (
     DEFAULT_SAMPLER,
     apply_checkpoint_prediction_type,
@@ -12063,6 +12069,11 @@ class DiffusionBackend:
         live_preview: Optional[bool] = None,
         sampler: Optional[str] = None,
         schedule_type: Optional[str] = None,
+        # Inpaint only (init + mask): Gaussian mask blur radius px, and "Only masked" (diffusers padding_mask_crop)
+        # with its padding (None = 32). None / 0 / False keep the plain inpaint call.
+        mask_blur: Optional[int] = None,
+        inpaint_only_masked: Optional[bool] = None,
+        inpaint_padding: Optional[int] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -12378,6 +12389,18 @@ class DiffusionBackend:
                     pipe.scheduler = swapped
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
                 call_params = inspect.signature(pipe.__call__).parameters
+                mask_blur_applied = inpaint_padding_applied = None
+                if workflow == "inpaint" and mask_pil is not None:
+                    inpaint_padding_applied = resolve_padding(inpaint_only_masked, inpaint_padding)
+                    if (
+                        inpaint_padding_applied is not None
+                        and "padding_mask_crop" not in call_params
+                    ):
+                        raise ValueError(ONLY_MASKED_UNSUPPORTED_MSG)
+                    if mask_blur:
+                        # After the snap/resize above, so the radius is in source-image pixels.
+                        mask_pil = blur_mask(mask_pil, mask_blur)
+                        mask_blur_applied = int(mask_blur)
 
                 kwargs: dict[str, Any] = {
                     # prompt / generator / num_images_per_prompt are set per chunk below, one torch.Generator PER
@@ -12431,6 +12454,8 @@ class DiffusionBackend:
                         kwargs["output_resolution"] = ref_resolution
                     if mask_pil is not None and "mask_image" in call_params:
                         kwargs["mask_image"] = mask_pil
+                    if inpaint_padding_applied is not None:
+                        kwargs["padding_mask_crop"] = inpaint_padding_applied
                     if strength is not None and "strength" in call_params:
                         kwargs["strength"] = strength
                 # width/height: txt2img uses the slider; image-conditioned pipes must use the INPUT IMAGE's size or
@@ -12987,6 +13012,10 @@ class DiffusionBackend:
                     if swapped is not None and sampler != DEFAULT_SAMPLER
                     else None,
                     "schedule_type": resolved_schedule,
+                    # Recorded only when applied, so a plain inpaint recipe stays unchanged.
+                    "mask_blur": mask_blur_applied,
+                    "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
+                    "inpaint_padding": inpaint_padding_applied,
                 }
                 logger.info(
                     "diffusion.generated: %s",
@@ -13321,6 +13350,9 @@ class DiffusionBackend:
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "supports_negative_prompt": state.family.uses_negative_prompt,
+            "supports_inpaint_only_masked": inpaint_class_accepts_padding_mask_crop(
+                getattr(state.family, "inpaint_pipeline_class", None)
+            ),
             "negative_prompt_min_guidance": _negative_prompt_guidance_threshold(state.family),
             "supports_guidance": _guidance_supported(state),
             "supports_live_preview": _live_preview_available(state),
