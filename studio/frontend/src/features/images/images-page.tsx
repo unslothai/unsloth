@@ -333,6 +333,13 @@ import {
   withSamplerChoice,
 } from "./lib/sampler-choice";
 import {
+  EMPTY_SHIFT,
+  shiftRequestFields,
+  type ShiftValue,
+  withEmbeddingTrigger,
+} from "./lib/shift-choice";
+import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
+import {
   enhancePromptRequestField,
   enhanceRestoreFor,
   enhancementNotice,
@@ -2136,6 +2143,23 @@ export function ImagesPage({
     },
     [samplerChoice, samplerModelKey, samplerOptions],
   );
+  // Shift override (flow-matching models) and textual-inversion embeddings (SDXL): offered only when the loaded
+  // model reports them, and a newly loaded checkpoint starts on its own schedule.
+  const shiftControl = !external && status?.loaded ? (status.shift_control ?? null) : null;
+  const [shiftState, setShiftState] = useState<{ key: string; value: ShiftValue }>({
+    key: "",
+    value: EMPTY_SHIFT,
+  });
+  const shiftValue = shiftState.key === samplerModelKey ? shiftState.value : EMPTY_SHIFT;
+  const setShiftValue = useCallback(
+    (value: ShiftValue) => setShiftState({ key: samplerModelKey, value }),
+    [samplerModelKey],
+  );
+  const embeddingsEnabled = !external && status?.loaded === true && !!status.textual_inversion;
+  const insertEmbedding = useCallback((trigger: string, target: "prompt" | "negative") => {
+    if (target === "negative") setNegativePrompt((p) => withEmbeddingTrigger(p, trigger));
+    else setPrompt((p) => withEmbeddingTrigger(p, trigger));
+  }, [setPrompt]);
   // Enhance prompt (FLUX.3's prompt upsampler): stored per family, defaulting to the family's own default. A
   // restore or "Use as prompt" sets a one-off override that the next toggle or family change drops.
   const upsamplerCapability = promptUpsamplerCapability(status, Boolean(external));
@@ -5071,6 +5095,7 @@ export function ImagesPage({
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
+            ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
@@ -5164,7 +5189,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -6462,6 +6487,12 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
+            <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
+            <EmbeddingsField
+              family={status?.family}
+              enabled={embeddingsEnabled}
+              onInsert={insertEmbedding}
+            />
             {!external && (
               <>
                 <Field

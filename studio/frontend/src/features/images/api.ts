@@ -12,6 +12,7 @@ import {
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
+import type { ShiftControl } from "./lib/shift-choice";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -100,6 +101,10 @@ export interface DiffusionStatus {
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
+  // The Shift override the loaded flow-matching model takes; null/absent = no Shift control.
+  shift_control?: ShiftControl | null;
+  // Textual-inversion embedding format the loaded model takes ("sdxl"); null/absent = no embeddings.
+  textual_inversion?: string | null;
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
@@ -258,6 +263,11 @@ export interface DiffusionGenerateRequest {
   controlnet?: ControlNetSpecInput;
   sampler?: string;
   schedule_type?: string;
+  // Flow shift override: `shift` for a "sd3" shift_control, `base_shift` / `max_shift` for "flux". Omitted = the
+  // model's own schedule.
+  shift?: number;
+  base_shift?: number;
+  max_shift?: number;
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
   enhance_prompt?: boolean | null;
@@ -552,6 +562,25 @@ export async function listDiffusionLoras(family?: string): Promise<DiffusionLora
     await authFetch(`/api/models/diffusion-loras${qs}`),
   );
   return data.loras ?? [];
+}
+
+// A textual-inversion embedding file (from GET /api/models/diffusion-embeddings); `trigger` is the file stem.
+export interface DiffusionEmbeddingInfo {
+  id: string;
+  trigger: string;
+  kind: string | null;
+  vectors: number;
+  size_bytes: number;
+}
+
+/** List textual-inversion embeddings usable by a model family. */
+export async function listDiffusionEmbeddings(
+  family: string,
+): Promise<{ embeddings: DiffusionEmbeddingInfo[]; embeddings_dir?: string }> {
+  const data = await parseJson<{ embeddings: DiffusionEmbeddingInfo[]; embeddings_dir?: string }>(
+    await authFetch(`/api/models/diffusion-embeddings?family=${encodeURIComponent(family)}`),
+  );
+  return { embeddings: data.embeddings ?? [], embeddings_dir: data.embeddings_dir };
 }
 
 /** List diffusion ControlNet models, optionally filtered to a model family. */
