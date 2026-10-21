@@ -5368,7 +5368,10 @@ export function ImagesPage({
           duration: 20_000,
           action: {
             label: GENERATE_ANYWAY_LABEL,
-            onClick: () => setOversizedRetryQueued(true),
+            onClick: () => {
+              varyOnce.current = vary;
+              setOversizedRetryQueued(true);
+            },
           },
         });
       } else if (report)
