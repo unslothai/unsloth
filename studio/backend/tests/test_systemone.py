@@ -1169,7 +1169,7 @@ def test_real_laya_answers_through_the_route(client, monkeypatch):
     )
     assert options_response.status_code == 422
     message = options_response.json()["detail"]["message"]
-    assert "route" in message and "context window" in message and "criteria" in message
+    assert "route" in message and "cut short" in message and "criteria" in message
     assert "answers" not in options_response.json()
     assert _post(client).status_code == 200
 
@@ -1195,6 +1195,56 @@ def test_long_state_is_tokenized_only_as_far_as_the_model_reads():
     ids, cut = laya_runtime._state_ids(tok, "word " * 100_000, 900)
     assert (ids, cut) == ([4] * 900, True)
     assert max(tok.calls) < 100_000
+
+
+_CHARGED = "the customer was charged twice and wants the money back"
+
+
+@pytest.mark.parametrize(
+    "options, description, status, refusal",
+    [
+        (14, _CHARGED, 200, None),
+        (15, _CHARGED, 422, "cut short"),
+        (40, _CHARGED, 422, "cut short"),
+        (40, None, 200, None),
+        (100, None, 200, None),
+        (255, None, 422, "context window"),
+    ],
+)
+def test_choice_options_laya_would_cut_short_are_refused(
+    client, monkeypatch, options, description, status, refusal
+):
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("torch")
+    tok = WordTokenizer()
+    tok.mask_token_id, tok.cls_token_id, tok.sep_token_id = 1, 2, 3
+    agent = SimpleNamespace(
+        tok = tok,
+        cfg = {"max_len": 512, "head_max_len": 192},
+        _to_internal = laya_runtime._laya().Agent._to_internal,
+        temperature = [1.0, 1.0, 1.0],
+        temperature_by_options = {},
+    )
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", lambda c: (agent, "cpu"))
+    monkeypatch.setattr(laya_runtime, "_predict", _REAL_PREDICT)
+    monkeypatch.setattr(
+        laya_runtime, "_forward", lambda agent, items: (np.zeros((len(items), 256)), 1)
+    )
+    response = _post(
+        client,
+        questions = {
+            "route": {
+                "type": "choice",
+                "instructions": "Which queue should handle this ticket?",
+                "criteria": {f"team_{i}": description for i in range(options)},
+            }
+        },
+    )
+    assert response.status_code == status, response.text
+    if refusal:
+        message = response.json()["detail"]["message"]
+        assert "'route'" in message and refusal in message
+        assert "answers" not in response.json()
 
 
 @pytest.mark.parametrize("words, cut", [(900, False), (901, True), (5000, True)])
