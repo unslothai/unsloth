@@ -74,7 +74,6 @@ function downloadName(name: string, contentType: string): string {
   return isTauri ? typed : typed.replace(/^\.+/, "").replace(/[. ]+$/, "") || "download";
 }
 
-// A page can post files without end; only the newest few wait for Save.
 const SAVE_PROMPTS = 3;
 let savePrompts = 0;
 
@@ -95,7 +94,6 @@ export function saveBrowserDownloadOnClick(download: BrowserDownload): void {
 
 type LinkedFile = Pick<BrowserDownload, "site" | "temporary"> & { agentRule: (fileUrl: string) => DownloadsRule | null };
 
-/** A page's download link, fetched through the panel's proxy; `askFirst` fetches only once Save is clicked. */
 export function saveLinkedFile(url: string, name: string, file: LinkedFile, askFirst = false): void {
   const temporary = file.temporary ?? useChatRuntimeStore.getState().incognito;
   const save = () =>
@@ -177,7 +175,6 @@ async function writeDownload(
 // Well inside the ~5 s a click lets a page open the save dialog.
 const RESOLVE_BEFORE_ASK_MS = 1000;
 
-/** A fetched link as a file: the server's name, else the link's, or the page as .html. */
 function linkDownload(page: BrowserPage, url: string, linkName = ""): BrowserDownload {
   if (page.kind === "raw") {
     const name = downloadName(page.fileName ?? (linkName || fileNameFromUrl(page.url)), page.contentType);

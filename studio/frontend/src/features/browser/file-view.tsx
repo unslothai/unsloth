@@ -195,7 +195,6 @@ export function FileView({
   scale?: number;
   tabId?: string;
   reloadNonce?: number;
-  /** Saved instead of shown, as an attachment is. */
   saved?: boolean;
 }) {
   const t = useT();

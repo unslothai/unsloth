@@ -130,7 +130,6 @@ test("a file a page saves reaches the panel with its bytes and name only", () =>
   assert.equal(message?.type === "download" && message.name, "data.csv");
   assert.equal(from({ type: "download", name: "data.csv", blob: "a,b" }), null);
   assert.equal(from({ type: "download", name: "", blob }), null);
-  // A name too long to keep is cut to fit, keeping its extension, rather than losing the file.
   const long = from({ type: "download", name: `${"x".repeat(5000)}.csv`, blob });
   assert.ok(long?.type === "download" && long.name.length <= 1024 && /^x+\.csv$/.test(long.name));
   const unnamed = from({ type: "download", name: "\u{1F600}".repeat(3000), blob });

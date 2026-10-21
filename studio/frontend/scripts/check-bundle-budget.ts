@@ -313,9 +313,7 @@ export const BUDGET = {
   // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
   // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  // Saving files from download links, attachments, file navigations and the page's own frames in browser panel
-  // pages adds 1,471 B raw / 335 B transfer (215 + 1,256 B raw, 47 + 288 B transfer, measured against f7b147dd10 and
-  // 22a0426b3a, one machine and build, Node 22, 96 chunks). Raised by that.
+  // Browser panel page downloads add 1,471 B raw / 335 B transfer (vs f7b147dd10 and 22a0426b3a, Node 22).
   transferBytes: 2_066_918,
   rawBytes: 6_864_255,
 };

@@ -701,7 +701,6 @@ test("a file a page sent without a click waits for Save, then asks for its page 
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(g.__toasts.at(-1)!.message, "browser.downloadPrompt.blocked");
   assert.equal(useApprovalStore.getState().queue.length, 0);
-  // A page that sends file after file leaves only the newest few waiting.
   for (let i = 0; i < 4; i++) saveBrowserDownloadOnClick(download);
   const ids = g.__toasts.slice(-4).map((toast) => toast.options?.id);
   assert.equal(new Set(ids).size, 3);
@@ -741,7 +740,6 @@ test("a download link's file is fetched through the panel, named by the server, 
     saveLinkedFile("https://a.example/downloads/data.txt", "data.txt", file);
     assert.deepEqual(await asked(), ["report.txt", "https://a.example"]);
     assert.deepEqual(rules, Array(3).fill("https://a.example/downloads/data.txt"));
-    // Sent without a fresh click, nothing is fetched until Save.
     g.__toasts = [];
     saveLinkedFile("https://a.example/downloads/data.txt", "", file, true);
     await new Promise((resolve) => setTimeout(resolve, 20));

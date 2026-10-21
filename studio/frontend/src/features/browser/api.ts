@@ -22,9 +22,7 @@ export type BrowserPage =
       url: string;
       blob: Blob;
       contentType: string;
-      /** the server's download name. */
       fileName?: string;
-      /** sent as Content-Disposition: attachment, so it is saved even when the panel could show it. */
       attachment?: boolean;
     };
 

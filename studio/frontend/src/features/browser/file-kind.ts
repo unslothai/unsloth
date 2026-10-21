@@ -53,7 +53,6 @@ export function canShowFile(name: string, contentType: string): boolean {
   return TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType;
 }
 
-// As in a browser, a file its site sends as an attachment is saved even when it could be shown.
 export function savesFile(name: string, contentType: string, attachment = false): boolean {
   return attachment || !canShowFile(name, contentType);
 }

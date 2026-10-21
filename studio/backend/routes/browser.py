@@ -1890,7 +1890,6 @@ def _build_response(
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or url
-    # An HTML attachment is saved, as in a browser, not shown.
     if is_html and (error is not None or not _is_attachment(meta)):
         if len(body) > _MAX_BROWSER_HTML_BYTES:
             raise HTTPException(

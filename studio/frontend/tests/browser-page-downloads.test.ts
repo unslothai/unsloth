@@ -221,7 +221,6 @@ test("a file the page sends a window to, or opens, is saved; it would otherwise 
   sent.navigate(href);
   assert.deepEqual(await savedFile(sent.posted), { name: "download", type: "text/csv", text: "a,b" });
   URL.revokeObjectURL(href);
-  // Still a popup blocker for pages: an ordinary address opens only on a click.
   const blocked = shellNavigation();
   blocked.open("https://b.example/");
   await new Promise((resolve) => setTimeout(resolve, 50));

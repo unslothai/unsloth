@@ -15,7 +15,6 @@ export type FrameMessage =
     }
   | { type: "external"; url: string }
   | { type: "download"; name: string; blob: Blob; askFirst?: true }
-  /** A download link to the page's own site; `name` is the link's, empty for the server's or the address's. */
   | { type: "download"; name: string; url: string; askFirst?: true }
   | { type: "loaded"; title: string; favicon: string | null }
   | { type: "title"; title: string }
@@ -182,7 +181,6 @@ function pageRequest(message: Record<string, unknown>): PageRequest | null {
   return { url, method, headers, body, redirect: redirect as RedirectMode, integrity };
 }
 
-// A long name is cut, not refused, so the file still saves under its extension.
 function fileName(value: unknown): string | null {
   if (typeof value !== "string" || value.length <= MAX_TITLE_CHARS) return text(value, MAX_TITLE_CHARS);
   const extension = /\.[^./\\]{1,32}$/.exec(value.slice(-33))?.[0] ?? "";
@@ -290,7 +288,6 @@ export const frameNotice = (type: "upload" | "scriptNavigation" | "needsBrowser"
   ...(type === "needsBrowser" && { duration: Number.POSITIVE_INFINITY }),
 });
 
-// Messages that open tabs or apps, run shortcuts or save files. Pages can post anything, so check them here.
 const isUserAction = (message: FrameMessage) =>
   (message.type === "navigate" && message.newTab === true) ||
   message.type === "external" ||
@@ -300,12 +297,10 @@ const isUserAction = (message: FrameMessage) =>
 // Activation outlives the click that loaded the page, so user actions are also rate limited, per page.
 const USER_ACTION_INTERVAL_MS = 1000;
 
-// Per page; a file that may not be saved now waits for a click on Save instead of being dropped.
 export function userActionGate(): (message: FrameMessage, active: boolean, now: number) => FrameMessage | null {
   let lastUserAction = Number.NEGATIVE_INFINITY;
   return (message, active, now) => {
     if (!isUserAction(message)) return message;
-    // Shortcuts too: a script can queue many before the first one moves focus off the page.
     if (active && now - lastUserAction >= USER_ACTION_INTERVAL_MS) {
       lastUserAction = now;
       return message;
