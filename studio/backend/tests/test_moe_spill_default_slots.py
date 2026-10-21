@@ -407,3 +407,52 @@ def test_a_shallow_spill_loading_by_mmap_is_still_cut(tmp_path, _moe_cache_host)
     _backend, cmd = _load(tmp_path, load_mode = "mmap")
 
     assert _flag(cmd, "--parallel") == "2", cmd
+
+
+@pytest.mark.parametrize("speculative_type", ["dspark", "dflash"])
+def test_a_sidecar_mode_with_no_sidecar_keeps_the_slots(
+    tmp_path, _moe_cache_host, _hybrid_head, speculative_type
+):
+    """DSpark / DFlash forced with no sidecar launch without a drafter, even with an
+    embedded head in the model, so there is nothing to cut for."""
+    caps = dict(_CAPS, supports_dspark = True, supports_dflash = True)
+    backend, cmd = _cache_launch(
+        tmp_path,
+        caps = caps,
+        n_parallel = 4,
+        n_parallel_from_default = True,
+        speculative_type = speculative_type,
+    )
+
+    assert "--model-draft" not in cmd, cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+
+def test_an_mtp_named_model_whose_drafter_is_dropped_keeps_the_slots(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """No embedded head and the sidecar unopenable: the launch has no drafter."""
+    monkeypatch.setattr(llama_cpp_module, "_mtp_drafter_loads_standalone", lambda *a, **k: False)
+    kw = dict(mtp_draft_path = str(_write_gguf(tmp_path / "mtp-draft.gguf")))
+    backend, cmd = _cache_launch(
+        tmp_path,
+        caps = _CAPS,
+        n_parallel = 4,
+        n_parallel_from_default = True,
+        speculative_type = "auto",
+        model_identifier = "unsloth/Qwen3-MoE-MTP-GGUF",
+        **kw,
+    )
+
+    assert _flag(cmd, "--spec-type") != "draft-mtp", cmd
+    assert "--model-draft" not in cmd, cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+
+def test_an_mtp_named_model_with_its_drafter_is_still_cut(tmp_path, _moe_cache_host):
+    _backend, cmd = _load(
+        tmp_path, speculative_type = "auto", model_identifier = "unsloth/Qwen3-MoE-MTP-GGUF"
+    )
+
+    assert _flag(cmd, "--spec-type") == "draft-mtp", cmd
+    assert _flag(cmd, "--parallel") == "2", cmd

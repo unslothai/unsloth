@@ -29624,6 +29624,14 @@ class LlamaCppBackend:
                             )
                         )
                     )
+                    # _mtp_will_engage reserves for a drafter the name or the mode implies
+                    # (a forced DSpark / DFlash with no sidecar, an -mtp name whose sidecar
+                    # was dropped), which launches without one. The cut needs one that
+                    # runs: a separate drafter the launch emits, or the embedded head.
+                    _drafter_launches = bool(
+                        _separate_draft_launches
+                        or (self._nextn_predict_layers and _spec_canon not in ("dspark", "dflash"))
+                    )
                     _slots_switch = _moe_switch(_MOE_SPILL_SLOTS_ENV)
 
                     def _spill_slots_near_edge() -> bool:
@@ -29669,6 +29677,7 @@ class LlamaCppBackend:
                         and _moe_spill_discrete_gpu
                         and self.n_moe_layers > 0
                         and _mtp_will_engage
+                        and _drafter_launches
                         and not _drafter_stands_down
                         and intent.n_parallel_from_default
                         and n_parallel > _MOE_SPILL_DEFAULT_SLOTS
