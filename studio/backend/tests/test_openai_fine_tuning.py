@@ -136,7 +136,9 @@ def test_upload_then_create_starts_a_studio_run(studio):
 
     async def flow():
         uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        second = await client.files.create(file = ("more.jsonl", CHATS), purpose = "fine-tune")
         listed = await client.files.list()
+        first_page = await client.files.list(limit = 1)
         job = await client.fine_tuning.jobs.create(
             model = "unsloth/Qwen3-0.6B",
             training_file = uploaded.id,
@@ -153,15 +155,17 @@ def test_upload_then_create_starts_a_studio_run(studio):
                     }
                 },
             },
+            integrations = [{"type": "wandb", "wandb": {"project": "support"}}],
             extra_body = {"lora_r": 32, "max_seq_length": 4096},
         )
         retrieved = await client.fine_tuning.jobs.retrieve(job.id)
-        return uploaded, listed, job, retrieved
+        return uploaded, second, listed, first_page, job, retrieved
 
-    uploaded, listed, job, retrieved = _run(flow())
+    uploaded, second, listed, first_page, job, retrieved = _run(flow())
     assert uploaded.id.startswith("file-") and uploaded.filename == "chats.jsonl"
     assert uploaded.bytes == len(CHATS)
-    assert [f.id for f in listed.data] == [uploaded.id]
+    assert {f.id for f in listed.data} == {uploaded.id, second.id}
+    assert len(first_page.data) == 1 and first_page.has_more
 
     [request] = calls["start"]
     assert request.model_name == "unsloth/Qwen3-0.6B"
@@ -171,6 +175,7 @@ def test_upload_then_create_starts_a_studio_run(studio):
     assert (request.num_epochs, request.batch_size, request.random_seed) == (2, 4, 7)
     assert float(request.learning_rate) == 1e-4
     assert request.local_eval_datasets == request.local_datasets and request.eval_steps > 0
+    assert request.enable_wandb and request.wandb_project == "support"
     assert (request.lora_r, request.max_seq_length, request.project_name) == (
         32,
         4096,
@@ -311,3 +316,22 @@ def test_a_live_job_cursor_still_reaches_the_history(studio, tmp_path):
         return [job.id async for job in client.fine_tuning.jobs.list(limit = 1)]
 
     assert _run(every_id()) == ["ftjob_20261021_111500_cd34ef56", "ftjob_20261021_101500_ab12cd34"]
+
+
+def test_a_legacy_non_finite_config_still_lists(studio, tmp_path):
+    client, _calls, _live = studio
+    run_id = _finished_run(
+        tmp_path, tmp_path / ("0123456789abcdef0123456789abcdef" + "_chats.jsonl")
+    )
+    conn = studio_db.get_connection()
+    conn.execute(
+        "UPDATE training_runs SET config_json = ? WHERE id = ?",
+        ('{"model_name": "unsloth/Qwen3-0.6B", "learning_rate": Infinity}', run_id),
+    )
+    conn.commit()
+    conn.close()
+
+    async def listed():
+        return await client.fine_tuning.jobs.list()
+
+    assert [j.status for j in _run(listed()).data] == ["succeeded"]

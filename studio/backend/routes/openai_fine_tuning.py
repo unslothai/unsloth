@@ -27,6 +27,7 @@ from hub.utils.host_paths import host_paths_visible, redact_host_paths, redact_p
 from loggers import get_logger
 from models.training import TrainingStartRequest
 from storage.studio_db import get_connection, get_run, list_runs
+from utils.training_runs import drop_non_finite
 
 logger = get_logger(__name__)
 
@@ -150,9 +151,13 @@ async def create_file(
 
 
 @router.get("/files")
-async def list_files(current_subject: str = Depends(get_current_subject)):
+async def list_files(
+    after: Optional[str] = None,
+    limit: int = Query(10000, ge = 1, le = 10000),
+    current_subject: str = Depends(get_current_subject),
+):
     files = await asyncio.to_thread(lambda: [_file_object(path) for path in _uploaded_files()])
-    return {"object": "list", "data": files, "has_more": False}
+    return _paged(files, after, limit)
 
 
 @router.get("/files/{file_id}")
@@ -221,7 +226,8 @@ def _job_object(
 
 def _run_config(run: dict[str, Any]) -> dict[str, Any]:
     try:
-        config = json.loads(run.get("config_json") or "{}")
+        # An older install may have stored Infinity / NaN, which the JSON response cannot carry.
+        config = drop_non_finite(json.loads(run.get("config_json") or "{}"))
     except (TypeError, ValueError):
         config = {}
     return config if isinstance(config, dict) else {}
@@ -361,6 +367,17 @@ def _training_config(body: FineTuningJobCreate) -> dict[str, Any]:
         config.setdefault("eval_steps", 0.1)
     if body.suffix:
         config["project_name"] = body.suffix
+    for integration in body.integrations or []:
+        integration = _object(integration, "integrations[]")
+        if integration.get("type") != "wandb":
+            raise _bad_request(
+                f"Integration '{integration.get('type')}' is not supported; use 'wandb'."
+            )
+        wandb = _object(integration.get("wandb"), "integrations[].wandb")
+        # The W&B key is the server's WANDB_API_KEY, or wandb_token through extra_body.
+        config.setdefault("enable_wandb", True)
+        if wandb.get("project"):
+            config.setdefault("wandb_project", wandb["project"])
     if body.seed is not None:
         config["random_seed"] = body.seed
     try:
