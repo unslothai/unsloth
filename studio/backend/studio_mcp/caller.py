@@ -35,6 +35,18 @@ def caller_from_scope(scope: dict) -> Optional[Caller]:
 _bound: ContextVar[Optional[Caller]] = ContextVar("unsloth_mcp_bound_caller", default = None)
 
 
+CHAT_TOOLS_SWITCH_REFUSED = (
+    "An Unsloth chat tool cannot load or switch models: it would replace the model serving this chat. "
+    "Leave model unset to use the loaded one, or load the model from the Unsloth UI first."
+)
+
+
+def chat_tools_call() -> bool:
+    """True inside a call from the chat's Unsloth tools bridge (never for an /mcp request)."""
+    caller = _bound.get()
+    return caller is not None and caller.call_scoped
+
+
 def bind_caller(caller: Caller) -> Token:
     return _bound.set(caller)
 

@@ -11561,6 +11561,18 @@ async def _auto_switch_npu_model(
             _note_switch_waiter(key, -1)
 
 
+def _refuse_chat_tools_switch() -> None:
+    """A chat tools call never loads or replaces a model: it would evict the model serving its own chat."""
+    from studio_mcp.caller import CHAT_TOOLS_SWITCH_REFUSED, chat_tools_call
+    if chat_tools_call():
+        raise HTTPException(
+            status_code = 403,
+            detail = openai_error_body(
+                CHAT_TOOLS_SWITCH_REFUSED, status = 403, code = "model_switch_refused", param = "model"
+            ),
+        )
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -11781,6 +11793,7 @@ async def _maybe_auto_switch_model(
             rejection_prefix = rejection_prefix,
             request_check = npu_request_check,
         )
+        _refuse_chat_tools_switch()
         await _auto_switch_npu_model(
             named_model, fastapi_request, current_subject, claim_resident = claim_resident
         )
@@ -11821,6 +11834,7 @@ async def _maybe_auto_switch_model(
         if resolved is None:
             # Not on disk. Opt-in: fetch in the background and ask the caller to retry.
             if auto_switch_on and not reload_only:
+                _refuse_chat_tools_switch()
                 await _maybe_auto_download_model(
                     requested_model,
                     fastapi_request,
@@ -12182,6 +12196,7 @@ async def _maybe_auto_switch_model(
                         param = "model",
                     ),
                 ) from None
+        _refuse_chat_tools_switch()
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
