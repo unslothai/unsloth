@@ -437,10 +437,15 @@ _ST_PACKAGE_PREFIX = "sentence_transformers."
 _ST_GATE_MARKER = "_unsloth_custom_module_gate"
 
 
-def _refuse_custom_module(class_ref, model_name_or_path, trust_remote_code) -> None:
+def _refuse_custom_module(
+    class_ref,
+    model_name_or_path,
+    trust_remote_code,
+    prefix = _ST_PACKAGE_PREFIX,
+) -> None:
     if (
         isinstance(class_ref, str)
-        and not class_ref.startswith(_ST_PACKAGE_PREFIX)
+        and not class_ref.startswith(prefix)
         and model_name_or_path is not None
         and not trust_remote_code
     ):
@@ -486,25 +491,44 @@ def _gate_st_custom_modules() -> None:
             setattr(_load_module_class_from_ref, _ST_GATE_MARKER, True)
             _load_module_class_from_ref.__wrapped__ = original
             setattr(owner, "_load_module_class_from_ref", _load_module_class_from_ref)
-    # 5.0-5.4 Router imports via import_from_string, past both resolvers.
-    try:
-        import importlib
+    # Below 6.0 these module loaders import a dotted path out of their own config via
+    # import_from_string, past both resolvers: Router its types, Dense its
+    # activation_function (and calls it), WordEmbeddings its tokenizer_class.
+    for module_path, prefix, where in (
+        ("sentence_transformers.models.Router", _ST_PACKAGE_PREFIX, "behind this Router"),
+        ("sentence_transformers.models.Dense", "torch.", "in a Dense module"),
+        (
+            "sentence_transformers.models.WordEmbeddings",
+            _ST_PACKAGE_PREFIX,
+            "in a WordEmbeddings module",
+        ),
+    ):
+        try:
+            import importlib
 
-        router = importlib.import_module("sentence_transformers.models.Router")
-        original_from_string = getattr(router, "import_from_string", None)
-        if original_from_string is not None and not getattr(
-            original_from_string, _ST_GATE_MARKER, False
-        ):
+            module = importlib.import_module(module_path)
+            original_from_string = getattr(module, "import_from_string", None)
+            if original_from_string is None or getattr(
+                original_from_string, _ST_GATE_MARKER, False
+            ):
+                continue
 
-            def import_from_string(dotted_path, *args, **kwargs):
-                _refuse_custom_module(dotted_path, "behind this Router", False)
-                return original_from_string(dotted_path, *args, **kwargs)
+            def import_from_string(
+                dotted_path,
+                *args,
+                _original = original_from_string,
+                _prefix = prefix,
+                _where = where,
+                **kwargs,
+            ):
+                _refuse_custom_module(dotted_path, _where, False, prefix = _prefix)
+                return _original(dotted_path, *args, **kwargs)
 
             setattr(import_from_string, _ST_GATE_MARKER, True)
             import_from_string.__wrapped__ = original_from_string
-            router.import_from_string = import_from_string
-    except Exception:
-        pass
+            module.import_from_string = import_from_string
+        except Exception:
+            pass
     try:
         import sys
         from sentence_transformers.util import misc

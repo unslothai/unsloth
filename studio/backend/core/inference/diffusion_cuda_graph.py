@@ -647,6 +647,31 @@ class _Entry:
     )
 
 
+def _layer_split(module: Any) -> bool:
+    from .diffusion_layer_split import is_layer_split
+    return is_layer_split(module)
+
+
+def _rehome_after_layer_split(pipe: Any, logger: Any) -> None:
+    """Before any recording or first forward: the int8 / fused records the speed layer built on one card follow the
+    split's blocks to their cards (``diffusion_int8_gemm.after_layer_split``)."""
+    try:
+        from .diffusion_int8_gemm import after_layer_split
+        for module in _denoiser_modules(pipe):
+            if _layer_split(module):
+                after_layer_split(module, logger)
+    except Exception as exc:  # noqa: BLE001 - the stock paths stay correct
+        _warn(logger, "layer split re-home", exc)
+
+
+def _layer_split_pipe(pipe: Any) -> bool:
+    """Any denoiser of ``pipe`` is split across cards by block ranges."""
+    try:
+        return any(_layer_split(m) for m in _denoiser_modules(pipe))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class GraphedForward:
     """A callable that replaces one denoiser module's ``forward`` with a CUDA-graph replay.
 
@@ -1026,6 +1051,34 @@ class GraphedForward:
         self.stats["eager_calls"] += 1
         return self.orig(*args, **kwargs)
 
+    def _eager_as_recorded(self, args: tuple, kwargs: dict) -> Any:
+        """Eager step with inference leaves copied to normal tensors, matching what unplanned captures compiled
+        blocks for (else dispatch-key guards recompile them, e.g. FLUX.3 cached conditioning states)."""
+        if self.plan is not None:
+            return self._eager(args, kwargs)
+        live: list = []
+        try:
+            spec = _flatten((args, kwargs), live)
+        except TypeError:
+            return self._eager(args, kwargs)
+        picks = [
+            i
+            for i, t in enumerate(live)
+            if callable(getattr(t, "is_inference", None)) and t.is_inference()
+        ]
+        if not picks:
+            return self._eager(args, kwargs)
+        try:
+            copies = self._statics([live[i] for i in picks])
+        except (
+            _torch().cuda.OutOfMemoryError
+        ):  # no room for the copies: run as before, at the cost of a recompile
+            return self._eager(args, kwargs)
+        for i, fresh in zip(picks, copies):
+            live[i] = fresh
+        args, kwargs = _rebuild(spec, live)
+        return self._eager(args, kwargs)
+
     def _engage_fallback(self) -> None:
         """Arm the per-block graphs once this whole-step graph dropped a key or failed: the calls it now leaves eager
         run through them. Between forwards' blocks (the step has not started), so the slot ring can change."""
@@ -1054,6 +1107,7 @@ class GraphedForward:
             or self.poisoned
             # Belt to the caller's per-chunk bypass: one step's cond and uncond share a key.
             or getattr(self.module, "_unsloth_step_cache", None)
+            or _layer_split(self.module)
         ):
             return self._eager(args, kwargs)
 
@@ -1164,7 +1218,7 @@ class GraphedForward:
                 # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
                 # render. (An offloaded key it recorded before re-records after its weights moved, as before.)
                 self.stats["length_eager"] += 1
-                return self._eager(eager_args, eager_kwargs)
+                return self._eager_as_recorded(eager_args, eager_kwargs)
             if self.placement is not None and speed_check_enabled():
                 if key in self._dropped:
                     return self._eager(eager_args, eager_kwargs)
@@ -1205,7 +1259,7 @@ class GraphedForward:
                             self.max_graphs,
                             type(self.module).__name__,
                         )
-                return self._eager(eager_args, eager_kwargs)
+                return self._eager_as_recorded(eager_args, eager_kwargs)
             captured = None
             stream_before = _current_stream()
             try:
@@ -1899,7 +1953,12 @@ def arm_after_placement(
     handles: list = []
     refusals: list = []
     modes: list = []
+    from .diffusion_layer_split import is_layer_split
+
     for module in _denoiser_modules(pipe):
+        if is_layer_split(module):
+            refusals.append(f"{type(module).__name__}: denoiser is split across cards")
+            continue
         placement, why = offload_placement(module)
         if why is not None:
             refusals.append(f"{type(module).__name__}: {why}")
@@ -2026,6 +2085,11 @@ def graph_eligible(
 
     # Lazy: ``diffusion_speed`` imports this module, so a module-level import here is a cycle.
     from .diffusion_speed import _denoiser_dits, _denoiser_unet
+
+    from .diffusion_layer_split import is_layer_split
+
+    if any(is_layer_split(m) for m in _denoiser_modules(pipe)):
+        return False, "denoiser is split across cards"
 
     # A whole-compiled U-Net serves from ``_compiled_call_impl``: GraphedCompiledCall captures there.
     if not _denoiser_dits(pipe) and _denoiser_unet(pipe) is None:
@@ -2335,6 +2399,11 @@ def arm_block_graphs(
     whole = [h for h in handles if isinstance(h, GraphedForward)]
     prior = str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "")
     step = [h for h in whole if h.placement is not None or h.plan is not None]
+    split = _layer_split_pipe(pipe)
+    if split:
+        # a whole-step capture records one card; a split's blocks record per block on their own card
+        step = []
+        _rehome_after_layer_split(pipe, logger)
     if whole and len(step) == len(whole):
         # The whole step stays primary; where per-block graphs are the default they arm for the calls it leaves eager.
         pipe._unsloth_cuda_graph_mode = "step"
@@ -2344,13 +2413,13 @@ def arm_block_graphs(
         if why is None:
             _attach_block_fallback(pipe, step, target, hooked, pinned, logger)
         return handles
-    if not hooked and (whole or "not capture-safe" not in prior):
+    if not split and not hooked and (whole or "not capture-safe" not in prior):
         # Nothing moves the denoiser: the speed layer's decision stands, except a forward that is not capture-safe,
         # whose blocks still record.
         return handles
-    why = _block_basics(
-        target, family, cache_engaged, speed_mode, family_default
-    ) or prompt_length_reason(pipe, family)
+    why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or (
+        None if split else prompt_length_reason(pipe, family)
+    )
     if whole:
         uninstall_all(whole, logger = logger)
     pipe._unsloth_cuda_graph_mode = None
@@ -2414,6 +2483,8 @@ def arm_block_graphs(
             if hooked and pinned
             else "offloaded denoiser"
             if hooked
+            else "split denoiser (each card's blocks on that card)"
+            if split
             else "denoiser"
         )
         slots = sum(int(getattr(h, "slots_mib", 0) or 0) for h in armed)

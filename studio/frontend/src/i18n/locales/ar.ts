@@ -844,6 +844,7 @@ export const ar = {
       byProject: "حسب المشروع",
       inOneList: "في قائمة واحدة",
       sortChatsBy: "ترتيب المحادثات حسب",
+      projectsHome: "صفحة المشاريع",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
       switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",

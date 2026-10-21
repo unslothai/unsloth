@@ -170,8 +170,19 @@ def _adapter_base_changed_error(config: dict) -> str | None:
         return None
     from utils.models.model_config import get_base_model_from_lora
 
-    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
+    # The folder the loader reads: a cached Hub snapshot, not the repo id it came from.
+    if (
+        get_base_model_from_lora(str(_resolve_cached_model_load_name(config) or "")) or ""
+    ) != pinned:
         return "The adapter's base model changed after the run was checked. Start the run again."
+    return None
+
+
+def _escaping_weights_error(config: dict) -> str | None:
+    from utils.security.file_security import escaping_weight_references
+    for key in ("model_name", "model_local_path", "model_snapshot_path", "adapter_base_pin"):
+        if config.get(key) and escaping_weight_references(config[key]):
+            return "This model's weight index names files outside its folder."
     return None
 
 
@@ -4086,8 +4097,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     from utils.security.hub_data_files import install as guard_hub_data_files
+    from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
 
     guard_hub_data_files()
+    guard_dataset_media()
+    allow_dataset_repos(config.get("hf_dataset"))
 
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
@@ -4181,6 +4195,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     apply_gpu_ids(gpu_ids, backend = config.get("device_backend"))
 
     if not _validate_training_worker_config(config, event_queue):
+        return
+    # Before any backend dispatch: the MLX, decision and embedding runners load these weights too.
+    weights_error = _escaping_weights_error(config)
+    if weights_error:
+        event_queue.put({"type": "error", "error": weights_error, "stack": "", "ts": time.time()})
         return
 
     model_name = config["model_name"]
@@ -5079,7 +5098,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         from utils.hf_xet_fallback import start_watchdog
 
         # Recheck right before the load: the adapter folder may have been edited since start (#13140).
-        base_error = _adapter_base_changed_error(config)
+        base_error = _adapter_base_changed_error(config) or _escaping_weights_error(config)
         if base_error:
             event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
             return

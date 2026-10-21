@@ -181,6 +181,31 @@ def normalize_decision_quants(quantization_method) -> list:
     return chosen or [DECISION_GGUF_QUANTIZATIONS[0]]
 
 
+def adapter_load_bases(folder) -> list[str]:
+    """Every base a local adapter folder's loaders follow: the decision config's ``base_model``
+    (preferred by the decision loader) and adapter_config.json's ``base_model_name_or_path``."""
+    folder = Path(str(folder)).expanduser()
+    if not (folder / "adapter_config.json").is_file():
+        return []
+    bases = []
+    for name, key in (
+        ("unsloth_decision_config.json", "base_model"),
+        ("adapter_config.json", "base_model_name_or_path"),
+    ):
+        try:
+            value = json.loads((folder / name).read_text(encoding = "utf-8-sig")).get(key)
+        except (OSError, ValueError, AttributeError):
+            value = None
+        if value and str(value) not in bases:
+            bases.append(str(value))
+    return bases
+
+
+def adapter_base_changed(folder, pinned: str) -> bool:
+    """Whether the folder now names a base other than the one authorized for it."""
+    return any(base != pinned for base in adapter_load_bases(folder))
+
+
 def adapter_base(checkpoint_path) -> str:
     """The base an adapter-only decision folder loads; both configs must name the same one."""
     folder = Path(str(checkpoint_path)).expanduser()
