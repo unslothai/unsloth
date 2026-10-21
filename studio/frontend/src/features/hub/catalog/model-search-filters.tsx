@@ -338,7 +338,7 @@ function RangeStops({
               key={thumb === 0 ? "min" : "max"}
               aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
               aria-valuetext={chip(index)}
-              className="relative block size-(--slider-thumb-size) cursor-grab rounded-full border-2 border-(--slider-thumb-border) bg-(--slider-thumb) shadow-(--slider-thumb-shadow) ring-(--slider-fill)/30 outline-none transition-[transform,box-shadow] duration-100 ease-out hover:scale-110 hover:ring-4 focus-visible:ring-4 active:scale-95 active:cursor-grabbing"
+              className="relative block size-(--slider-thumb-size) cursor-grab rounded-full border border-(--slider-thumb-border) bg-(--slider-thumb) shadow-(--slider-thumb-shadow) hover:bg-(--slider-thumb-hover) ring-(--slider-fill)/30 outline-none transition-colors duration-100 ease-out focus-visible:ring-4 active:cursor-grabbing"
             />
           ))}
         </SliderPrimitive.Root>

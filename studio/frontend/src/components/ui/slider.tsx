@@ -6,7 +6,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-const THUMB_SIZE_PX = 24;
+const THUMB_SIZE_PX = 20;
 
 function getThumbInBoundsOffset(width: number, percent: number) {
   const halfWidth = width / 2;
@@ -60,7 +60,7 @@ function Slider({
   const isSingleThumbHorizontal =
     values.length === 1 && orientation === "horizontal";
   // The thumb follows the UI size (--slider-thumb-size), so the fill measures it
-  // rather than assuming 24px. offsetWidth ignores the hover/press transforms.
+  // rather than assuming 20px. offsetWidth ignores the hover/press transforms.
   const thumbRef = React.useRef<HTMLSpanElement | null>(null);
   const [thumbWidth, setThumbWidth] = React.useState(THUMB_SIZE_PX);
   React.useLayoutEffect(() => {
@@ -143,7 +143,7 @@ function Slider({
           aria-label={props["aria-label"]}
           aria-labelledby={props["aria-labelledby"]}
           aria-valuetext={thumbValueText?.(values[index] ?? min, index)}
-          className="ring-(--slider-fill)/30 relative z-10 size-(--slider-thumb-size) rounded-full border-2 border-(--slider-thumb-border) bg-(--slider-thumb) shadow-(--slider-thumb-shadow) block shrink-0 select-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 transition-[transform,box-shadow] duration-100 ease-out hover:scale-110 hover:ring-4 active:scale-95 focus-visible:ring-4 focus-visible:outline-hidden"
+          className="ring-(--slider-fill)/30 relative z-10 size-(--slider-thumb-size) rounded-full border border-(--slider-thumb-border) bg-(--slider-thumb) shadow-(--slider-thumb-shadow) hover:bg-(--slider-thumb-hover) block shrink-0 select-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 transition-colors duration-100 ease-out focus-visible:ring-4 focus-visible:outline-hidden"
         />
       ))}
     </SliderPrimitive.Root>
