@@ -2412,7 +2412,12 @@ def test_maintenance_waits_for_every_abandoned_vulkan_probe(monkeypatch):
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
     )
-    for var in ("HIP_VISIBLE_DEVICES", "GGML_BACKEND_PATH", "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "GGML_BACKEND_PATH",
+        "LLAMA_ARG_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+    ):
         monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
     monkeypatch.setattr(pup, "_vulkan_probe_workers", [], raising = False)
