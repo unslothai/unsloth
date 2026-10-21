@@ -698,6 +698,7 @@ def test_mamba_ssm_path_preserves_wheel_first_install_args(monkeypatch):
         release_base_url = "https://github.com/state-spaces/mamba/releases/download",
         allow_source_build = True,
         required = True,
+        extension = "selective_scan_cuda",
     )
 
 

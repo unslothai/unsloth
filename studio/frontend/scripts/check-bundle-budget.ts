@@ -299,14 +299,34 @@ export const BUDGET = {
   // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
   // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
   // Explicit browser download names retain the prior startup margin.
-  // The model location row in the load settings (#14105) adds 2,087 B raw / 489 B transfer (6,847,448 ->
-  // 6,849,535 B raw, 2,062,129 -> 2,062,618 B transfer against 705bcc0, one machine and build, Node 24, chunk
-  // count unchanged at 96): the picked model's path threads through the local pickers' change meta, and the
-  // location helper rides the eager config page. Lazy-loading that helper was measured first and lost (an extra
-  // eager chunk, +0.2 KB), so it is imported statically. Raised to that build plus the same 160 B raw / 189 B
-  // transfer margin.
-  transferBytes: 2_062_807,
-  rawBytes: 6_849_695,
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
+  // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
+  // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Chat safety for diagrams, redirect links and approval cards adds 617 B raw / 238 B transfer (6,862,624 ->
+  // 6,863,241 B raw, 2,066,394 -> 2,066,632 B transfer against 731cb16c2, one machine and build, the diagram
+  // source check itself loaded with the first diagram). Raised to that build plus the same margin.
+  // The sidebar Projects menu's Projects home item and its strings add 240 B raw / no transfer (6,862,692 ->
+  // 6,862,932 B raw, 2,066,441 -> 2,066,440 B transfer against 2aeeceb07e, one machine and build, 96 chunks).
+  // Merged with main at 2552ee3895 the build measures 6,863,532 B raw / 2,066,692 B transfer (Node 26, 97 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The model location row in the load settings (#14105) adds 2,146 B raw / 712 B transfer (6,863,614 ->
+  // 6,865,760 B raw, 2,066,668 -> 2,067,380 B transfer against 439411c65, one machine and build, Node 24, 97
+  // chunks): the picked model's path threads through the local pickers' change meta, and the location helper
+  // rides the eager config page (lazy-loading it was measured and lost: an extra eager chunk). Raised to that
+  // build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_067_569,
+  rawBytes: 6_865_920,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

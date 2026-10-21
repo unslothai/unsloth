@@ -229,6 +229,23 @@ def install(logger: Any = None, device: Any = None) -> bool:
     return True
 
 
+def probe_split_cards(cards: Any) -> tuple:
+    """A layer split runs its blocks on several cards, and the real-arithmetic wrapper reads each card's own probe
+    (an unprobed card keeps the complex form). Probes every card not yet probed; nothing when no install probed a
+    card (the patch is not in use). Returns the cards whose probe passed."""
+    if real_rope_disabled() or not _FUSION:
+        return ()
+    import torch
+
+    for index in cards:
+        if index not in _FUSION:
+            try:
+                _FUSION[index] = probe_fusion(torch.device("cuda", int(index)))
+            except Exception:  # noqa: BLE001 - that card keeps the complex form
+                _FUSION[index] = None
+    return tuple(index for index in cards if _FUSION.get(index) is not None)
+
+
 def uninstall() -> None:
     with _LOCK:
         for mod, stock in list(_INSTALLED.items()):

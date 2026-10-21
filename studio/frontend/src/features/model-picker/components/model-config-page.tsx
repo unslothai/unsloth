@@ -3918,7 +3918,7 @@ export function ModelConfigPage({
                   <p className="text-ui-11 text-amber-500">
                     {isAppleUnifiedMemory ? (
                       <>
-                        Above Studio&apos;s free-memory estimate (
+                        Above Unsloth&apos;s free-memory estimate (
                         {loadedMaxContextLength.toLocaleString()} tokens). It
                         may still load, but macOS may have to compress or swap
                         other apps and generation may slow down.
