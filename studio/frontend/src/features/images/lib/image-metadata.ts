@@ -1076,8 +1076,13 @@ export function importNotApplied(
     else if (clipSkip > clipMax) out.push(`Clip skip ${clipSkip} (clamped to ${clipMax})`);
   }
   const rescale = num(r.cfg_rescale);
-  if (rescale !== undefined && rescale !== 0 && !sdControls?.cfg_rescale)
-    out.push(`CFG rescale ${rescale}`);
+  if (rescale !== undefined && rescale !== 0) {
+    // recipeSettings clamps to the request's [0, 1], the request to the model's max.
+    const hi = sdControls?.cfg_rescale ? Math.min(1, sdControls.cfg_rescale.max) : undefined;
+    const sent = hi === undefined ? undefined : clamp(rescale, 0, hi);
+    if (sent === undefined) out.push(`CFG rescale ${rescale}`);
+    else if (sent !== rescale) out.push(`CFG rescale ${rescale} (clamped to ${sent})`);
+  }
   const variation = num(r.variation_seed);
   const variationStrength = num(r.variation_strength);
   if (variationApplies(r, sdControls)) {

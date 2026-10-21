@@ -357,3 +357,13 @@ test("pasted A1111 Emphasis: None restores prompt weighting off, and sd.cpp name
     "prompt weighting off (the native sd.cpp engine always reads (word:1.2) syntax)",
   ]);
 });
+
+test("an imported CFG rescale outside the accepted range is named with its clamp", async () => {
+  const { importNotApplied } = await import("../src/features/images/lib/image-metadata.ts");
+  assert.deepEqual(importNotApplied({ prompt: "x", cfg_rescale: 0.7 }, "sdxl", false, SDXL), []);
+  assert.deepEqual(importNotApplied({ prompt: "x", cfg_rescale: 1.5 }, "sdxl", false, SDXL), ["CFG rescale 1.5 (clamped to 1)"]);
+  assert.deepEqual(importNotApplied({ prompt: "x", cfg_rescale: -0.2 }, "sdxl", false, SDXL), ["CFG rescale -0.2 (clamped to 0)"]);
+  const narrow = { ...SDXL, cfg_rescale: { ...SDXL.cfg_rescale, max: 0.5 } };
+  assert.deepEqual(importNotApplied({ prompt: "x", cfg_rescale: 0.7 }, "sdxl", false, narrow), ["CFG rescale 0.7 (clamped to 0.5)"]);
+  assert.deepEqual(importNotApplied({ prompt: "x", cfg_rescale: 0.7 }, "sdxl", false, null), ["CFG rescale 0.7"]);
+});
