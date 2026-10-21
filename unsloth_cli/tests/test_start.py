@@ -7532,6 +7532,16 @@ def test_connect_dsh_no_launch(fake_studio, tmp_path):
     assert not (home / "settings.yaml").exists()
 
 
+@pytest.mark.parametrize("window, warned", [(8_192, True), (12_288, True), (16_384, False)])
+def test_dsh_warns_when_the_context_leaves_replies_no_room(fake_studio, window, warned):
+    # #14315: at 8,192 dsh sends max_tokens 1, so every reply is "The" and nothing else.
+    fake_studio.state["models"] = [{**MODEL, "context_length": window}]
+    result = CliRunner().invoke(start.start_app, ["dsh", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert (f"loaded with {window:,} tokens of context, too few" in result.output) is warned
+    assert ("--max-seq-length 16384" in result.output) is warned
+
+
 def _vibe_settings(env: dict) -> tuple:
     return json.loads(env["VIBE_PROVIDERS"]), json.loads(env["VIBE_MODELS"])
 
