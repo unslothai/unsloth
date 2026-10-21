@@ -6,6 +6,7 @@
 import ast, logging, os
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 transformers = pytest.importorskip("transformers")
 from transformers import Qwen3Config, Qwen3ForCausalLM
@@ -103,7 +104,7 @@ def _step(model, ids):
     }
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_plans_after_first_step_and_keeps_gradients():
     ns, found = _load()
     assert "_AutoCheckpointSkip" in found, 'checkpoint_skip_layers = "auto" is not implemented'
@@ -132,7 +133,7 @@ def test_auto_plans_after_first_step_and_keeps_gradients():
             torch.testing.assert_close(grads[name], ref_grads[name], rtol = 0, atol = 0, msg = name)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_keeps_everything_checkpointed_without_headroom(monkeypatch):
     ns, found = _load()
     ids = torch.randint(0, 128, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
@@ -148,7 +149,7 @@ def test_auto_keeps_everything_checkpointed_without_headroom(monkeypatch):
     assert _checkpointed(model) == [True] * 6
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_backs_off_without_reentrant_checkpointing():
     ns, found = _load()
     ids = torch.randint(0, 128, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
@@ -173,7 +174,7 @@ def test_auto_without_cuda_says_so_once(monkeypatch, capsys):
     assert not hasattr(model, "_unsloth_auto_skip")
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_ignores_allocation_spike_before_first_step():
     ns, found = _load()
     ids = torch.randint(0, 128, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
@@ -207,7 +208,7 @@ def _big_model():
     return model
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 @pytest.mark.parametrize("optimizer_stepped", [True, False])
 def test_auto_reserves_optimizer_state_only_when_not_allocated(optimizer_stepped):
     ns, found = _load()
@@ -253,7 +254,7 @@ def test_auto_with_model_off_cuda_on_a_cuda_host_installs_nothing(monkeypatch, c
     assert dict(getattr(torch_optimizer, "_global_optimizer_pre_hooks", {})) == global_hooks
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_reserves_state_for_params_the_optimizer_has_not_seen():
     ns, found = _load()
     ids = torch.randint(0, 32000, (2, 64), generator = torch.Generator().manual_seed(1)).cuda()
@@ -278,7 +279,7 @@ def test_auto_reserves_state_for_params_the_optimizer_has_not_seen():
     torch.cuda.empty_cache()
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the auto planner sizes CUDA memory")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the auto planner sizes CUDA memory")
 def test_auto_does_not_scale_persistent_grads_by_sequence_length():
     ns, found = _load()
     model = _big_model()
