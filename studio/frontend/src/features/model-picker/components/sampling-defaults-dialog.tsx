@@ -158,7 +158,7 @@ function SamplingFieldRow({
         min={spec.min}
         max={spec.max}
         step={spec.step}
-        placeholder="Model default"
+        placeholder="Default"
         aria-invalid={invalid || undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -216,12 +216,12 @@ function SamplingDefaultsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{displayName} sampling defaults</DialogTitle>
+          <DialogTitle>Sampling defaults</DialogTitle>
           <DialogDescription>
-            Used when Chat loads this model, and by API requests that leave a
-            value out, including one that switches to this model. An empty field
-            gives API requests the model&apos;s recommended value, and Chat
-            keeps the value you last used.
+            {displayName}. Used when Chat loads this model, and by API requests
+            that leave a value out, including one that switches to this model.
+            An empty field gives API requests the model&apos;s recommended
+            value, and Chat keeps the value you last used.
           </DialogDescription>
         </DialogHeader>
 
