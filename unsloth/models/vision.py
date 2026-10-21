@@ -155,6 +155,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _dequantize_leftover_fp8_params,
+    _drop_fp8_dequantize_conversions,
     _restore_dropped_fp8_scales,
     _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
@@ -4016,6 +4017,7 @@ class FastBaseModel:
                 elif fsdp2_requested():
                     prepare_fsdp2_qlora(model, bnb_compute_dtype)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
+                    _drop_fp8_dequantize_conversions(model)
                     _dequantize_leftover_fp8_params(
                         model,
                         model_name,
