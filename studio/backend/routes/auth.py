@@ -599,6 +599,9 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     # Safe to clear the aggregate as well now that the address is suffixed: it is this route's own entry,
     # not /login's, so a desktop success cannot hand anyone a fresh password-guessing budget.
     _clear_login_bucket(key)
+    # Shell-owned backends never use the seeded password; terminal-started ones keep the web autofill.
+    if getattr(request.app.state, "desktop_owned", False):
+        request.app.state.bootstrap_password = None
 
     from auth.policy import installation_is_multi_user
 
