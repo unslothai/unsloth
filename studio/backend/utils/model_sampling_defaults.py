@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Mapping, Optional
 
-from utils.account_context import OWNER, current_account, is_owner_context
+from utils.account_context import current_account
 from utils.openai_auto_switch_settings import (
     _cached_setting,
     _fold_case_insensitive_path,
@@ -99,14 +99,11 @@ def _lookup(
 
 def saved_sampling_defaults(model_id: Optional[str]) -> dict[str, Any]:
     """The saved defaults for ``model_id``, or ``{}``. A cached repo loads from its snapshot path, so
-    the repo id it came from is tried too. A managed account without its own row reads the owner's."""
+    the repo id it came from is tried too."""
     if not model_id or not isinstance(model_id, str):
         return {}
-    accounts = [current_account()]
-    if not is_owner_context():
-        accounts.append(OWNER)
-    indexes = [_index(account) for account in accounts]
-    if not any(exact for exact, _folded in indexes):
+    exact, folded = _index(current_account())
+    if not exact:
         return {}
     from core.inference.model_ids import hf_cache_repo_id
 
@@ -114,11 +111,8 @@ def saved_sampling_defaults(model_id: Optional[str]) -> dict[str, Any]:
     repo_id = hf_cache_repo_id(model_id)
     if repo_id and repo_id not in candidates:
         candidates.append(repo_id)
-    for exact, folded in indexes:
-        found = _lookup(exact, folded, candidates)
-        if found is not None:
-            return dict(found)
-    return {}
+    found = _lookup(exact, folded, candidates)
+    return dict(found) if found is not None else {}
 
 
 def set_model_sampling_defaults(

@@ -3901,7 +3901,10 @@ export function ModelConfigPage({
             )}
           </>
         )}
-        {!resolvedIsDiffusion && !audioRuntimeGguf && !target.meta.audioType && (
+        {!resolvedIsDiffusion &&
+          !audioRuntimeGguf &&
+          !targetIsNpu &&
+          !target.meta.audioType && (
           <SamplingDefaultsRow
             modelId={configId}
             chatModelId={target.id}
