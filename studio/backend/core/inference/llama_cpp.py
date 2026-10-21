@@ -5279,6 +5279,8 @@ def _fit_measures_borrowed_drafts(bin_path: Optional[str]) -> bool:
         return False
     candidates = [Path(bin_path)]
     try:
+        # A wrapper script execs the real server, which holds fit.cpp in a static build.
+        candidates.append(Path(_resolve_llama_binary(bin_path)))
         lib_dir = _llama_lib_dir(bin_path)
         for pattern in _LLAMA_COMMON_LIB_GLOBS:
             candidates.extend(sorted(lib_dir.glob(pattern)))
@@ -6757,6 +6759,10 @@ def _draft_is_split_across_host(
 _DRAFT_OVERRIDE_TENSOR_FLAGS = frozenset(
     {"-otd", "--override-tensor-draft", "--spec-draft-override-tensor"}
 )
+_DRAFT_CPU_MOE_FLAGS = frozenset({"--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft"})
+_DRAFT_N_CPU_MOE_FLAGS = frozenset(
+    {"--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"}
+)
 
 
 def _draft_card_share_unknown(
@@ -6768,8 +6774,20 @@ def _draft_card_share_unknown(
     """True when the drafter is not wholly on the target's card, so its whole file is not
     the share to reserve there: a positive -ngld below its depth (split with the host), or
     a draft tensor override, which llama.cpp applies per weight while picking buffers (the
-    same flags the fit-voiding list treats as placement changes)."""
-    if _extra_args_set_any_flag(extra_args, _DRAFT_OVERRIDE_TENSOR_FLAGS):
+    same flags the fit-voiding list treats as placement changes), or the draft CPU-MoE
+    switches, which llama.cpp turns into draft tensor overrides."""
+    if _extra_args_set_any_flag(extra_args, _DRAFT_OVERRIDE_TENSOR_FLAGS | _DRAFT_CPU_MOE_FLAGS):
+        return True
+    source_env = os.environ if env is None else env
+    if source_env.get("LLAMA_ARG_SPEC_DRAFT_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    count = source_env.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE")
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        name, eq, inline = raw.partition("=")
+        if name in _DRAFT_N_CPU_MOE_FLAGS:
+            count = inline if eq else (args[i + 1] if i + 1 < len(args) else None)
+    if _is_positive_int(count):
         return True
     return _draft_is_split_across_host(extra_args, env, n_draft_layers = n_draft_layers)
 
@@ -30024,17 +30042,17 @@ class LlamaCppBackend:
                     _fit_device_count = len(
                         gpu_indices if gpu_indices is not None else _detected_gpus
                     )
-                    # Extras or LLAMA_ARG_DEVICE that survive the launch can widen a
-                    # planner-picked single device; the scalar margin would then land on
-                    # every card they name.
+                    # Extras or LLAMA_ARG_DEVICE that survive the launch decide the
+                    # devices the child uses: they can widen a planner-picked single
+                    # device (the scalar margin would land on every card they name) or
+                    # narrow a multi-GPU host to one card.
                     if not _gpu_ids_own_device_flags:
                         _reserve_devices = _extra_args_main_device(extra_args) or os.environ.get(
                             "LLAMA_ARG_DEVICE"
                         )
                         if _reserve_devices:
-                            _fit_device_count = max(
-                                _fit_device_count,
-                                len([d for d in str(_reserve_devices).split(",") if d.strip()]),
+                            _fit_device_count = len(
+                                [d for d in str(_reserve_devices).split(",") if d.strip()]
                             )
                     # A draft pinned to another device (--device-draft Vulkan1 next to
                     # Vulkan0) allocates there, so the scalar margin would only starve
@@ -30082,10 +30100,24 @@ class LlamaCppBackend:
                         # (_soft_overhead), so it rides on top here too.
                         _sidecar_reserve_ctx = effective_ctx
                         if effective_ctx <= 0:
+                            # With -c omitted a pass-through -c, else a positive
+                            # inherited LLAMA_ARG_CTX_SIZE, is what the child runs at.
+                            _child_ctx = parse_ctx_override(extra_args)
+                            if _child_ctx is None:
+                                try:
+                                    _child_ctx = int(
+                                        str(os.environ.get("LLAMA_ARG_CTX_SIZE", "")).strip()
+                                    )
+                                except (TypeError, ValueError):
+                                    _child_ctx = None
                             _native_bound = self._context_length or 0
                             if not planned_kv_unified:
                                 _native_bound *= max(1, n_parallel or 1)
-                            _sidecar_reserve_ctx = max(effective_ctx, _native_bound)
+                            _sidecar_reserve_ctx = (
+                                _child_ctx
+                                if _child_ctx and _child_ctx > 0
+                                else max(effective_ctx, _native_bound)
+                            )
                         _sidecar_compute_mib = math.ceil(
                             self._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024)
                         )
@@ -30122,7 +30154,13 @@ class LlamaCppBackend:
                         ) -> int:
                             # A --flash-attn off respawn pads the draft V (and an MLA K)
                             # to f16, so the reserve priced for the first launch is short.
+                            # Slots and the KV layout come off the argv too: extras can
+                            # set --parallel / --no-kv-unified past the request.
                             _ck, _cv = _extra_args_draft_cache_types(run_args, env)
+                            _np = _extra_args_n_parallel(run_args, env) or _np
+                            _kv_unified = _kv_unified_from_args(
+                                run_args, default = _kv_unified, env = env
+                            )
                             _v = self._estimate_mtp_overhead_bytes(
                                 _ctx,
                                 spec_draft_n_max = _n,
@@ -33492,7 +33530,9 @@ class LlamaCppBackend:
                             "supports_fit_target"
                         ):
                             _spawn_reserve = _sidecar_fit_reserve_eligible_mib
-                            if label and _sidecar_reserve_reprice is not None:
+                            # Every spawn, the first included: emitted flags and extras
+                            # (draft cache types, slots, KV layout) are final only here.
+                            if _sidecar_reserve_reprice is not None:
                                 _spawn_reserve = max(
                                     _spawn_reserve, _sidecar_reserve_reprice(list(run_cmd))
                                 )

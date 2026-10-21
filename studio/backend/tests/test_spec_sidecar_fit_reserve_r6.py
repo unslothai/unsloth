@@ -295,3 +295,136 @@ def test_the_reserve_stands_down_when_the_fitter_measures_the_draft(tmp_path, na
         assert _r4._margin(cmd) < _FLOOR
     else:
         assert _r4._margin(cmd) >= _FLOOR
+
+
+# Review round 7.
+
+# The first spawn reprices from its final argv: pass-through slots raise the reserve.
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [("--parallel", "8"), ("-np", "8"), ("--parallel=8",)],
+    ids = ["long", "short", "equals"],
+)
+def test_pass_through_slots_are_priced_on_the_first_spawn(tmp_path, extras):
+    backend, gguf = _slot_priced_backend(tmp_path)
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        n_ctx = 4096,
+        n_parallel = 1,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = extras,
+    )["cmd"]
+    assert _r4._margin(cmd) >= _FLOOR + 8 * 1024
+
+
+# Draft CPU-MoE switches become draft tensor overrides: the card share is unpriced.
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        ("--spec-draft-cpu-moe",),
+        ("-cmoed",),
+        ("--spec-draft-n-cpu-moe", "99"),
+        ("--n-cpu-moe-draft=4",),
+    ],
+    ids = ["cpu-moe", "short", "n-cpu-moe", "n-equals"],
+)
+def test_draft_cpu_moe_gets_no_whole_file_reserve(tmp_path, extras):
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = extras,
+    )["cmd"]
+    assert _r4._margin(cmd) < _FLOOR
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "1"}, {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "8"}],
+    ids = ["cpu-moe", "n-cpu-moe"],
+)
+def test_draft_cpu_moe_from_the_env_is_a_placement_too(env):
+    assert _lc._draft_card_share_unknown([], env)
+    assert not _lc._draft_card_share_unknown([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "0"})
+
+
+def test_metal_auto_keeps_a_drafter_with_its_experts_on_cpu(tmp_path, monkeypatch):
+    cmd, backend = _r2._metal_cmd(
+        tmp_path, monkeypatch, "auto", budget_gib = 12, extra_args = ["--cpu-moe-draft"]
+    )
+    assert "--model-draft" in cmd
+    assert backend.spec_fallback_reason != "drafter_no_vram"
+
+
+# A surviving --device naming one card is a single-device launch on a multi-GPU host.
+
+
+def test_one_named_device_on_a_two_gpu_host_keeps_the_reserve(tmp_path):
+    backend, gguf = _r2._cuda_backend(
+        tmp_path, memory = ((0, 24_000, 24_000), (1, 24_000, 24_000)), vulkan = True
+    )
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = ("--device", "Vulkan0"),
+    )["cmd"]
+    assert _r2._last(cmd, "--device") == "Vulkan0"
+    assert _r4._margin(cmd) >= _FLOOR
+
+
+def test_two_detected_gpus_without_a_device_pin_stay_unreserved(tmp_path):
+    """Control: with nothing narrowing the launch it spans both cards."""
+    backend, gguf = _r2._cuda_backend(
+        tmp_path, memory = ((0, 24_000, 24_000), (1, 24_000, 24_000)), vulkan = True
+    )
+    cmd = _placement._launch(
+        backend, gguf, speculative_type = "dspark", dspark_draft_path = _r4._sidecar(tmp_path)
+    )["cmd"]
+    assert _r4._margin(cmd) < _FLOOR
+
+
+# Manual + Auto context with a positive inherited LLAMA_ARG_CTX_SIZE runs at that size.
+
+
+def test_manual_auto_context_prices_an_inherited_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "8192")
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    backend._context_length = 131072
+    per_token = 64 * 1024  # 8 GiB of draft KV at the native 131072, 0.5 GiB at 8192
+
+    def estimate(n_ctx, **kw):
+        return 8 * _GIB + max(0, int(n_ctx)) * per_token
+
+    backend._estimate_mtp_overhead_bytes = estimate
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        n_ctx = 0,
+    )["cmd"]
+    assert "--fit-target" in cmd
+    assert _r4._margin(cmd) < 512 + 12 * 1024
+
+
+# A static server behind the installer's wrapper script carries the marker itself.
+
+
+def test_native_measurement_is_read_through_the_installer_wrapper(tmp_path):
+    _write(tmp_path / "llama-server-real", _MARKER)
+    wrapper = tmp_path / "llama-server"
+    wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
+    wrapper.chmod(0o755)
+    assert _lc._fit_measures_borrowed_drafts(str(wrapper))
