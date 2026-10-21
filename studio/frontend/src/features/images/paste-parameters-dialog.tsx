@@ -27,10 +27,11 @@ export function PasteParametersDialog({
   onOpenChange: (open: boolean) => void;
   text: string;
   onTextChange: (text: string) => void;
-  onApply: (text: string) => boolean;
+  onApply: (text: string) => Promise<boolean>;
 }) {
-  const apply = () => {
-    if (text.trim() && onApply(text)) {
+  // Closes only once the settings are applied; a failed or superseded paste keeps the text.
+  const apply = async () => {
+    if (text.trim() && (await onApply(text))) {
       onTextChange("");
       onOpenChange(false);
     }
@@ -42,7 +43,7 @@ export function PasteParametersDialog({
           className="grid gap-5"
           onSubmit={(event) => {
             event.preventDefault();
-            apply();
+            void apply();
           }}
         >
           <DialogHeader>
@@ -66,7 +67,7 @@ export function PasteParametersDialog({
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
-                apply();
+                void apply();
               }
             }}
             className="max-h-[50dvh] min-h-40 resize-y font-mono text-xs"

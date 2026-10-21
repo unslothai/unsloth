@@ -2827,8 +2827,11 @@ export function ImagesPage({
       description: `Not applied: ${missed.join(", ")}. This model or build does not support them.`,
     });
   }, [status, inpaintOnlyMasked, inpaintPadding]);
+  // A later import supersedes one still waiting on the LoRA lookup.
+  const importSeq = useRef(0);
   const applyImportedRecipe = useCallback(
-    async (recipe: ImportedRecipe) => {
+    async (recipe: ImportedRecipe): Promise<boolean> => {
+      const seq = ++importSeq.current;
       const tagged = await matchLoraTagsForImport(
         recipe.lora_tags,
         // Only a finished fetch for the loaded family: right after a load or family switch it is empty or stale.
@@ -2837,6 +2840,7 @@ export function ImagesPage({
         // A LoRA is family-specific, so a loaded model narrows the lookup like the picker does.
         () => listDiffusionLoras(status?.loaded ? (status.family ?? undefined) : undefined),
       );
+      if (seq !== importSeq.current) return false;
       const merged =
         tagged.loras.length > 0
           ? { ...recipe, loras: [...(Array.isArray(recipe.loras) ? recipe.loras : []), ...tagged.loras] }
@@ -2929,6 +2933,7 @@ export function ImagesPage({
               : "This model or build does not support them."),
         });
       }
+      return true;
     },
     [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily],
   );
@@ -2947,12 +2952,12 @@ export function ImagesPage({
         });
         return;
       }
-      applyImportedRecipe(recipe);
+      await applyImportedRecipe(recipe);
     },
     [applyImportedRecipe],
   );
   const importSettingsFromText = useCallback(
-    (text: string): boolean => {
+    async (text: string): Promise<boolean> => {
       const recipe = pastedParameters(text);
       if (!recipe) {
         toast.error("No generation parameters found in that text", {
@@ -2960,8 +2965,7 @@ export function ImagesPage({
         });
         return false;
       }
-      applyImportedRecipe(recipe);
-      return true;
+      return applyImportedRecipe(recipe);
     },
     [applyImportedRecipe],
   );
@@ -6328,7 +6332,7 @@ export function ImagesPage({
                   const text = e.clipboardData.getData("text/plain");
                   if (isGenerationParametersPaste(text)) {
                     e.preventDefault();
-                    importSettingsFromText(text);
+                    void importSettingsFromText(text);
                   }
                 }}
               />

@@ -273,13 +273,13 @@ test("the Images page wires paste into the same restore path as a drop", () => {
   assert.match(page, /const applyImportedRecipe = useCallback\(/);
   assert.match(
     page,
-    /const importSettingsFromText = useCallback\(\n\s+\(text: string\): boolean => \{\n\s+const recipe = pastedParameters\(text\);[\s\S]*?applyImportedRecipe\(recipe\);\n\s+return true;\n\s+\},\n\s+\[applyImportedRecipe\],/,
+    /const importSettingsFromText = useCallback\(\n\s+async \(text: string\): Promise<boolean> => \{\n\s+const recipe = pastedParameters\(text\);[\s\S]*?return applyImportedRecipe\(recipe\);\n\s+\},\n\s+\[applyImportedRecipe\],/,
   );
   assert.match(page, /const recipe = pastedParameters\(text\);/);
   assert.match(page, /onPasteParameters=\{\(\) => setPasteOpen\(true\)\}/);
   assert.match(
     page,
-    /if \(isGenerationParametersPaste\(text\)\) \{\n\s+e\.preventDefault\(\);\n\s+importSettingsFromText\(text\);/,
+    /if \(isGenerationParametersPaste\(text\)\) \{\n\s+e\.preventDefault\(\);\n\s+void importSettingsFromText\(text\);/,
   );
   assert.match(page, /\.\.\.importNotApplied\(recipe, status\?\.loaded \? status\.family : null\),/);
   assert.match(
@@ -398,4 +398,26 @@ test("a non-default A1111 Emphasis mode is named as not applied; Original stays 
   assert.deepEqual(parse("No norm"), ["Emphasis: No norm"]);
   assert.deepEqual(parse("Ignore"), ["Emphasis: Ignore"]);
   assert.deepEqual(parse("Original"), []);
+});
+
+test("a paste is reported applied only once its settings land, and a later import wins", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  // A sequence token taken before the LoRA lookup: an earlier import finishing late changes nothing.
+  assert.match(
+    page,
+    /async \(recipe: ImportedRecipe\): Promise<boolean> => \{\n\s+const seq = \+\+importSeq\.current;\n\s+const tagged = await matchLoraTagsForImport\(/,
+  );
+  assert.match(
+    page,
+    /\(\) => listDiffusionLoras\([^\n]*\),\n\s+\);\n\s+if \(seq !== importSeq\.current\) return false;/,
+  );
+  assert.match(page, /\n\s+return true;\n\s+\},\n\s+\[restoreSettings, width, height,/);
+  assert.match(page, /await applyImportedRecipe\(recipe\);\n\s+\},\n\s+\[applyImportedRecipe\],/);
+  // The dialog clears and closes only after the awaited apply succeeded.
+  const dialog = readSrc("features/images/paste-parameters-dialog.tsx");
+  assert.match(dialog, /onApply: \(text: string\) => Promise<boolean>;/);
+  assert.match(
+    dialog,
+    /const apply = async \(\) => \{\n\s+if \(text\.trim\(\) && \(await onApply\(text\)\)\) \{\n\s+onTextChange\(""\);\n\s+onOpenChange\(false\);/,
+  );
 });
