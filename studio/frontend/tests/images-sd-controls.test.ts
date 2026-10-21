@@ -78,7 +78,6 @@ test("non-default values map to request fields", () => {
       variation_strength: 0.1,
     },
   );
-  // Clamped to what the model advertises.
   assert.equal(
     sdControlsRequestFields(
       { ...SDXL, clip_skip: { min: 1, max: 5, default: 1 } },
@@ -114,7 +113,6 @@ test("recipe restore and rows", () => {
     batch_index: 3,
     batch_size: 4,
   });
-  // A batch replays from its first image's variation seed.
   assert.equal(restored.variationSeed, "12");
   assert.equal(restored.clipSkip, 2);
   assert.deepEqual(sdControlsRecipeRows({}), []);
@@ -198,7 +196,6 @@ test("pasted A1111 Clip skip, CFG Rescale and Variation seed restore into the SD
   assert.equal(variationApplies(r, SDXL), true);
   // SDXL's prompt weighting reads the emphasis and escapes, so nothing is reported.
   assert.deepEqual(importNotApplied(r, "sdxl", false, SDXL), []);
-  // A model without the controls still names every one.
   assert.deepEqual(importNotApplied(r, "flux", true, null), [
     "Clip skip 3",
     "CFG rescale 0.7",

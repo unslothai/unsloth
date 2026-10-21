@@ -12193,8 +12193,7 @@ class DiffusionBackend:
                     batch_size = batch_size,
                     draw_seed = torch.Generator(device = state.device).seed,
                 )
-                # Variation seeds (webui all_subseeds): one per image from the variation seed, and a batch keeps ONE
-                # base seed so it renders variations of a single image. Only when a strength is set.
+                # A batch keeps ONE base seed so it renders variations of a single image.
                 variation_seed_list: Optional[list[int]] = None
                 if sd_controls is not None and sd_controls.variation_strength:
                     if seeds is None and prompts is None:
@@ -12795,8 +12794,6 @@ class DiffusionBackend:
                 def _render_chunk(
                     chunk_kwargs: dict[str, Any], chunk_variation: Optional[list[int]]
                 ):
-                    # Inside the render's grad mode and thread: weighted prompts encode here, and the initial latent
-                    # takes the variation noise. Both are no-ops for a plain request.
                     if sd_controls_mod.apply_prompt_controls(
                         pipe, fam, sd_controls, chunk_kwargs, guidance = guidance
                     ):

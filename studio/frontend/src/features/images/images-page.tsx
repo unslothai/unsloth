@@ -5170,7 +5170,6 @@ export function ImagesPage({
     } else {
       baseSeed = Math.floor(Math.random() * 2 ** 32);
     }
-    // A variation keeps the seed across runs and advances the variation seed instead (webui subseeds).
     const runChoice: SdControlsChoice = vary
       ? { ...sdChoice, variationSeed: String(vary.variationSeed), variationStrength: vary.strength }
       : sdChoice;
@@ -5271,7 +5270,6 @@ export function ImagesPage({
         );
         // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
         // would regenerate batch-mates.
-        // A variation run keeps the seed fixed and varies the variation seed instead.
         const runBaseSeed = varying ? baseSeed : baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
@@ -5512,8 +5510,6 @@ export function ImagesPage({
     });
   }, [oversizedRetryQueued, busy, handleGenerateWithRecall]);
 
-  // Vary: the selected image's seed again, toward a fresh variation seed at a small strength (webui
-  // "Variation seed"); the rest of the request is the current settings.
   const canVary =
     !external && Boolean(status?.loaded && sdCaps?.variation_seed) && workflow === "create" && selected !== null;
   const handleVary = useCallback(() => {

@@ -180,7 +180,6 @@ def test_emphasis_restores_the_mean():
     assert torch.equal(ones, z)
 
 
-# --- CLIP skip mapping ---
 
 
 @pytest.mark.parametrize(
@@ -203,7 +202,6 @@ def test_clip_skip_mapping(family, a1111, expected):
     assert diffusers_clip_skip(family, a1111) == expected
 
 
-# --- gating ---
 
 
 def _fake_pipe(layers = 12):
@@ -252,7 +250,6 @@ def test_flux_refuses_requested_controls_clearly():
         validate(SdControls(clip_skip = 2, cfg_rescale = 0.5), FLUX, pipe, {}, "txt2img")
     with pytest.raises(ValueError, match = "variation seed applies to SDXL"):
         validate(SdControls(variation_strength = 0.2), FLUX, pipe, {}, "txt2img")
-    # FLUX keeps literal text, weight syntax or not.
     assert not weighting_engaged(None, FLUX, pipe, ["a (fox:1.5)"])
 
 
@@ -333,7 +330,6 @@ def test_slerp_matches_webui_and_its_endpoints():
     # Spherical: the interpolant keeps a unit-variance-like norm, a lerp would shrink it.
     mid = slerp(0.5, low, high)
     assert abs(mid.std().item() - 1.0) < 0.2
-    # webui's nearly-parallel branch as written.
     assert torch.equal(slerp(0.25, low, low), low * 0.25 + low * 0.75)
 
 
@@ -480,7 +476,6 @@ def test_weights_and_long_prompts_change_the_embeddings(tiny_sdxl):
             tiny_sdxl, ["a (fox:1.2), " + "snowy forest, " * 40], ["blurry"], guidance_engaged = True
         )
     assert not torch.equal(one["prompt_embeds"], more["prompt_embeds"])
-    # The pooled embedding is the unweighted first chunk's.
     assert torch.equal(one["pooled_prompt_embeds"], more["pooled_prompt_embeds"])
     seq = long["prompt_embeds"].shape[1]
     assert seq % 77 == 0 and seq > 77
@@ -489,7 +484,6 @@ def test_weights_and_long_prompts_change_the_embeddings(tiny_sdxl):
     assert not one["negative_prompt_embeds"].any()
 
 
-# --- request model, route and recipe ---
 
 
 def test_request_model_ranges():
@@ -633,8 +627,7 @@ def test_sd15_encoder_matches_encode_prompt(tiny_sd15):
         try:
             ref_skip = tiny_sd15.encode_prompt("a red fox", "cpu", 1, False, clip_skip = skip)[0]
         except AttributeError:
-            # diffusers' SD 1.x clip_skip branch reads ``text_encoder.text_model``, which transformers 5 dropped:
-            # rebuild the same expression (pipeline_stable_diffusion.py encode_prompt) by hand.
+            # transformers 5 dropped ``text_model`` that diffusers' SD 1.x clip_skip reads: rebuild it by hand.
             ids = tiny_sd15.tokenizer(
                 "a red fox",
                 padding = "max_length",

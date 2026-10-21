@@ -1019,9 +1019,7 @@ const bounded = (r: ImportedRecipe, key: keyof typeof RECIPE_BOUNDS): number | u
 
 /** `family`: the loaded model's family, when one is loaded. `parsesEmphasis`: the loaded engine reads
  *  A1111 attention syntax itself (sd.cpp's parse_prompt_attention); diffusers and MLX do not.
- *  `sdControls`: the loaded model's status `sd_controls` (lib/sd-controls); a control it offers is
- *  applied by the restore, so only the ones it lacks are named. Its prompt weighting reads A1111
- *  emphasis and escaped brackets too. */
+ *  `sdControls`: status `sd_controls`; only the controls it lacks are named. */
 export function importNotApplied(
   r: ImportedRecipe,
   family?: string | null,
@@ -1065,7 +1063,6 @@ export function importNotApplied(
   const variation = num(r.variation_seed);
   const variationStrength = num(r.variation_strength);
   if (variationApplies(r, sdControls)) {
-    // Restored into the Variation controls.
   } else if (variation !== undefined && variationStrength !== 0) {
     out.push(
       `variation seed ${variation}${variationStrength !== undefined ? ` (strength ${variationStrength})` : ""}`,

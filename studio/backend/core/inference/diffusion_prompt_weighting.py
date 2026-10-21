@@ -3,28 +3,8 @@
 
 """AUTOMATIC1111 prompt weighting for the CLIP-conditioned (SD 1.x / SDXL) diffusers pipelines.
 
-Syntax and numerics follow stable-diffusion-webui (commit 82a973c, AGPL-3.0, the same licence as Studio), rewritten
-here rather than copied:
-
-- ``modules/prompt_parser.py`` ``parse_prompt_attention``: ``(text)`` x1.1, ``[text]`` /1.1, ``(text:1.3)`` an explicit
-  multiplier, ``\\(`` ``\\)`` ``\\[`` ``\\]`` ``\\\\`` literals, unclosed brackets apply to the end, ``BREAK`` starts a
-  new 75-token chunk, adjacent runs of equal weight merge.
-- ``modules/sd_hijack_clip.py`` ``tokenize_line`` / ``process_tokens``: fragments tokenized without special tokens,
-  packed into 75-token chunks (``<bos>`` + 75 + ``<eos>``), a full chunk moves the tokens after a comma within the last
-  20 tokens to the next chunk (``comma_padding_backtrack``), each chunk is encoded on its own and the chunks are
-  concatenated, so a prompt past 77 tokens is not truncated. Positions after the first ``<eos>`` take the tokenizer's
-  pad id (``!`` for SDXL's OpenCLIP tokenizer, as webui's ``id_pad``).
-- ``modules/sd_emphasis.py`` ``EmphasisOriginal`` (webui's default): the encoder output of each chunk is scaled per
-  token by its weight, then rescaled so its mean equals the unweighted mean.
-- The pooled embedding (SDXL) is the first chunk's, unweighted (``zs[0].pooled``).
-
-Layer selection is diffusers' own (``StableDiffusionXLPipeline.encode_prompt``: ``hidden_states[-(clip_skip + 2)]``,
-``StableDiffusionPipeline.encode_prompt``: ``hidden_states[-(clip_skip + 1)]`` then ``final_layer_norm``), so at
-weight 1 a single-chunk prompt reproduces the pipeline's encoding bit for bit.
-
-A prompt the parser reads back unchanged (no brackets, escapes or BREAK) that fits in 75 tokens never reaches this
-module: the pipeline encodes it exactly as before. A longer one is chunked here instead of truncated. No torch import
-at module level.
+Follows stable-diffusion-webui (commit 82a973c) prompt_parser / sd_hijack_clip / sd_emphasis, rewritten not copied.
+Layer selection is diffusers' own, so at weight 1 a single-chunk prompt matches the pipeline bit for bit.
 """
 
 from __future__ import annotations
@@ -32,7 +12,6 @@ from __future__ import annotations
 import re
 from typing import Any, Optional, Sequence
 
-# A1111 prompt_parser.re_attention, the token alternation in its order.
 _ATTENTION_RE = re.compile(
     r"""
 \\\(|
@@ -57,7 +36,6 @@ ROUND_MULTIPLIER = 1.1
 SQUARE_MULTIPLIER = 1 / 1.1
 BREAK_WEIGHT = -1.0
 CHUNK_TOKENS = 75
-# A1111 opts.comma_padding_backtrack default.
 COMMA_BACKTRACK = 20
 
 
@@ -154,13 +132,9 @@ def tokenize_chunks(
     weighted: bool = True,
     convert: Any = None,
 ) -> list[tuple[list[int], list[float]]]:
-    """A1111 ``tokenize_line``: ``[(77 token ids, 77 weights), ...]`` for one prompt.
-
-    ``convert`` is the pipeline's ``maybe_convert_prompt`` (textual inversion multi-vector tokens), applied per
-    fragment; ``weighted=False`` reads the text literally (webui's "None" emphasis) but still chunks it."""
+    """A1111 ``tokenize_line``: ``[(77 token ids, 77 weights), ...]``; ``weighted=False`` still chunks."""
     parsed = parse_prompt_attention(text) if weighted else [[text, 1.0]]
     bos, eos, pad, comma = _special_ids(tokenizer)
-    # Chunking is the point of the untruncated tokenization: silence the tokenizer's one-shot "too long" warning.
     warned = getattr(tokenizer, "deprecation_warnings", None)
     if isinstance(warned, dict):
         warned["sequence-length-is-longer-than-the-specified-maximum"] = True
@@ -332,11 +306,7 @@ def encode_weighted_prompts(
     weighted: bool = True,
     clip_skip: Optional[int] = None,
 ) -> dict[str, Any]:
-    """Pipeline kwargs (``prompt_embeds``, ``pooled_prompt_embeds`` and their negatives) for ``prompts``.
-
-    ``negative_prompts`` None with ``force_zeros_for_empty_prompt`` (SDXL) gives zero negatives, the pipeline's own
-    rule. Positive and negative rows share one chunk count, the shorter padded with empty-prompt chunks (webui's
-    ``pad_cond_uncond``), since a guided step batches both branches."""
+    """Pipeline kwargs (``prompt_embeds``, ``pooled_prompt_embeds`` and their negatives) for ``prompts``. Both share one chunk count (CFG batches them)."""
     import torch
 
     device = getattr(pipe, "_execution_device", None) or pipe.device

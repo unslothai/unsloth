@@ -1,25 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Generation controls for the CLIP-conditioned U-Net families (SDXL on the diffusers engine): A1111 prompt weighting,
-CLIP skip, CFG rescale and variation seeds. Every control defaults to off, and off leaves the pipeline call exactly as
-it was.
+"""SDXL generation controls (diffusers engine): A1111 prompt weighting, CLIP skip, CFG rescale, variation seeds.
 
-- CLIP skip uses A1111 numbering (1 = the model's own layer). diffusers counts layers skipped past the layer the
-  pipeline already reads: ``StableDiffusionPipeline.encode_prompt`` reads ``hidden_states[-(clip_skip + 1)]`` (then
-  ``final_layer_norm``) and ``StableDiffusionXLPipeline.encode_prompt`` reads ``hidden_states[-(clip_skip + 2)]``,
-  "because SDXL always indexes from the penultimate layer". webui-forge reads ``hidden_states[-max(N, minimal)]`` with
-  ``minimal_clip_skip`` 1 for SD 1.x and 2 for SDXL (``backend/diffusion_engine/sdxl.py``), and A1111 keeps SDXL on
-  the penultimate layer unless ``sdxl_clip_l_skip`` is set. So A1111 N is diffusers ``N - 1`` on SD 1.x and
-  ``N - 2`` on SDXL, where SDXL "CLIP skip 2" (common on Pony / Illustrious cards) is already the default.
-- CFG rescale (request ``cfg_rescale``) is diffusers ``guidance_rescale`` (``rescale_noise_cfg``, arXiv 2305.08891 section 3.4), applied by
-  the pipeline after the guided combination.
-- Variation seed: webui ``modules/rng.py`` ``ImageRNG.first``: the seed's noise is slerped toward the variation
-  seed's noise by ``variation_strength`` (``slerp`` below, webui's formula including its nearly-parallel lerp branch).
-  The base noise is still drawn by the pipeline's own ``prepare_latents`` from the request's generator, so the
-  generator advances exactly as before and an ancestral sampler's per-step noise is unchanged.
-
-No torch import at module level.
+CLIP skip uses A1111 numbering: A1111 N = diffusers N - 1 on SD 1.x and N - 2 on SDXL (diffusers already reads
+the penultimate layer there; matches webui-forge minimal_clip_skip). Variation seeds follow webui modules/rng.py;
+the base noise is still drawn by prepare_latents, so the generator advances exactly as before.
 """
 
 from __future__ import annotations
@@ -35,15 +21,12 @@ from .diffusion_prompt_weighting import (
     has_prompt_syntax,
 )
 
-# Family name -> the layer A1111 / Forge treat as CLIP skip 1 when converting to diffusers' count (SDXL already
-# reads the penultimate layer). SD 1.x would be 1; Studio's diffusers engine has no SD 1.x family.
+# A1111 CLIP skip at or below this = the family's default layer (SD 1.x would be 1).
 _CLIP_SKIP_BASE: dict[str, int] = {"sdxl": 2}
 CLIP_SKIP_MAX = 12
 GUIDANCE_RESCALE_MAX = 1.0
-# arXiv 2305.08891 section 3.4 ("phi = 0.7 works well") for zero-terminal-SNR / v-prediction models. Shown as a
-# recommendation only: no model card Studio knows of names it, so no load defaults to it.
+# arXiv 2305.08891 sec 3.4; a recommendation only, never a load default.
 GUIDANCE_RESCALE_VPRED_HINT = 0.7
-# Small variation for the Vary action: webui users run 0.05-0.3; 0.15 keeps composition and changes detail.
 VARY_STRENGTH = 0.15
 
 
@@ -122,7 +105,6 @@ def status_fields(family: Any, pipe: Any) -> Optional[dict[str, Any]]:
             "min": 1,
             "max": clip_skip_max(family.name, pipe),
             "default": 1,
-            # A1111 values at or below this read the model's own layer (SDXL: 1 and 2 match).
             "same_as_default_through": _CLIP_SKIP_BASE.get(family.name, 1),
         },
         "cfg_rescale": {
@@ -190,10 +172,8 @@ def weighting_engaged(
 ) -> bool:
     """Whether this call encodes its prompts here instead of in the pipeline.
 
-    Engaged by weight syntax (unless ``prompt_weighting`` is False), a prompt past 75 tokens (which
-    ``encode_prompt`` would truncate; webui chunks it, with or without emphasis) or a CLIP skip past the model's
-    layer. A plain prompt that fits in one chunk at the default CLIP skip leaves the pipeline's own encode path, so
-    it renders bit-identically."""
+    Engaged by weight syntax, a prompt past 75 tokens or a CLIP skip past the model's layer; otherwise the
+    pipeline encodes, bit-identically."""
     if not supports_sd_controls(family, pipe):
         return False
     controls = controls or SdControls()
@@ -212,10 +192,8 @@ def apply_prompt_controls(
     *,
     guidance: float,
 ) -> bool:
-    """Swap ``prompt`` / ``negative_prompt`` for weighted embeddings in ``call_kwargs`` when engaged. True when weight
-    syntax was applied (a CLIP-skip-only swap returns False).
-
-    Runs inside the render (no-grad / inference mode, render thread), right before the pipeline call."""
+    """Swap ``prompt`` / ``negative_prompt`` for weighted embeddings in ``call_kwargs`` when engaged.
+    True when weight syntax was applied. Runs inside the render thread and grad mode."""
     prompt = call_kwargs.get("prompt")
     negative = call_kwargs.get("negative_prompt")
     prompts = [prompt] if isinstance(prompt, str) else list(prompt or [])
@@ -253,10 +231,7 @@ def guidance_rescale_kwargs(controls: Optional[SdControls], call_params: Any) ->
 
 
 def slerp(val: float, low: Any, high: Any) -> Any:
-    """webui ``modules/rng.py`` ``slerp`` on one image's ``[C, H, W]`` noise (norms over dim 1, as webui).
-
-    The nearly-parallel branch is webui's as written (``low * val + high * (1 - val)``), so a variation seed equal to
-    the seed matches it too."""
+    """webui ``modules/rng.py`` ``slerp`` on one image's ``[C, H, W]`` noise (norms over dim 1, as webui)."""
     import torch
 
     low_norm = low / torch.norm(low, dim = 1, keepdim = True)
@@ -304,10 +279,7 @@ def variation_seeds(variation_seed: int, count: int) -> list[int]:
 def variation_latents(
     pipe: Any, seeds: Optional[Sequence[int]], strength: Optional[float]
 ) -> Iterator[None]:
-    """For one pipeline call, slerp the initial latents toward ``seeds``' noise by ``strength``. No-op when off.
-
-    The pipeline still draws its own noise (same generator, same order), so only the initial latent changes: no new
-    shape reaches the denoiser, and nothing compiled sees a difference beyond the input values."""
+    """For one pipeline call, slerp the initial latents toward ``seeds``' noise by ``strength``. No-op when off."""
     if not strength or not seeds:
         yield
         return

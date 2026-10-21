@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// SDXL generation controls (status `sd_controls`): AUTOMATIC1111 prompt weighting, CLIP skip,
-// CFG rescale and variation seeds. Every control at its default sends nothing, so the request is
-// the one the page sent before these existed.
+// SDXL controls (status `sd_controls`); every control at its default sends nothing.
 
 export interface SdControlsCapability {
   prompt_weighting?: boolean;
@@ -41,7 +39,6 @@ export const DEFAULT_SD_CONTROLS: SdControlsChoice = {
   variationStrength: 0,
 };
 
-// webui's own suggestion range for a "small" variation; the backend advertises its value.
 export const FALLBACK_VARY_STRENGTH = 0.15;
 
 export interface SdControlsRequest {
@@ -56,7 +53,6 @@ export function randomVariationSeed(): number {
   return Math.floor(Math.random() * 2 ** 32);
 }
 
-/** Parsed variation seed, or null when empty or not a valid 32-bit seed. */
 export function parseVariationSeed(text: string): number | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -89,7 +85,6 @@ export function sdControlsRequestFields(
   return out;
 }
 
-/** The Vary action: the same seed, a fresh variation seed, the advertised small strength. */
 export function varyChoice(
   capability: SdControlsCapability | null | undefined,
   choice: SdControlsChoice,
@@ -126,7 +121,6 @@ export function sdControlsFromRecipe(image: {
   };
 }
 
-/** Recipe rows, empty when every control was off. */
 export function sdControlsRecipeRows(image: {
   clip_skip?: number | null;
   cfg_rescale?: number | null;
