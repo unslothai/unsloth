@@ -21,15 +21,12 @@ const adapter = await readSrcAsync("features/chat/api/chat-adapter.ts");
 test("memory size is counted the way the backend saves it", () => {
   assert.equal(chatMemoryBytes(""), 0);
   assert.equal(chatMemoryBytes("  \n\n "), 0);
-  // Trimmed, CRLF folded, one trailing newline added.
   assert.equal(chatMemoryBytes(" a\r\nb \n\n"), "a\nb\n".length);
-  // UTF-8 bytes, not UTF-16 code units.
   assert.equal(chatMemoryBytes("é"), 3);
 });
 
 test("the Chat tab shows the memory section and search finds it", () => {
   assert.match(chatTab, /<ChatMemorySection \/>/);
-  // Lazy, so the eager settings chunk stays within the startup budget.
   assert.match(chatTab, /lazy\(\(\) =>\s*import\("..\/components\/chat-memory-section"\)/);
   const index = createSettingsSearchIndex({
     desktop: false,

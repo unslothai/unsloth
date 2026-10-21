@@ -18,7 +18,6 @@ import { chatMemoryBytes, normaliseChatMemory } from "../lib/chat-memory-size";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-/** The account's global AGENTS.md: notes every chat reads, for every model. */
 export function ChatMemorySection() {
   const t = useT();
   const editorId = useId();

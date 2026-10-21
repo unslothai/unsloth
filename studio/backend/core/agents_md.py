@@ -18,7 +18,6 @@ from utils.paths import ensure_dir, workspace_root
 MAX_AGENTS_MD_BYTES = 32 * 1024
 TRUNCATED_NOTE = "\n[AGENTS.md truncated at 32 KiB]"
 _DISABLE_ENV = "UNSLOTH_STUDIO_AGENTS_MD"
-# Per account (studio.db): whether the global file, the memory Settings > Chat edits, reaches chats.
 MEMORY_ENABLED_KEY = "chat_memory_enabled"
 # The editor loads the whole file, not the chat's 32 KiB cut: saving a prefix would drop the rest.
 MAX_MEMORY_EDIT_BYTES = 1024 * 1024
