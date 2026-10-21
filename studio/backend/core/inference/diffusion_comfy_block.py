@@ -50,7 +50,9 @@ def untile_scales(tiled: Any, rows: int, blocks: int) -> Any:
     # tile (row // 128, block // 4) is 512 values: inner (row % 32, (row % 128) // 32, block % 4)
     from .diffusion_single_file_converters import charge_host_ram
 
-    charge_host_ram(rp * bp * flat.element_size())  # the permuted copy
+    # the permuted copy, and while it is still live the trimmed copy when the block count is padded
+    trimmed = rows * blocks if blocks != bp else 0
+    charge_host_ram((rp * bp + trimmed) * flat.element_size())
     v = flat.reshape(rp // 128, bp // 4, 32, 4, 4).permute(0, 3, 2, 1, 4).reshape(rp, bp)
     return v[:rows, :blocks].contiguous()
 

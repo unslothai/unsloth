@@ -989,3 +989,17 @@ def test_swap_nibbles_is_bit_identical_and_checked_for_its_peak(monkeypatch):
     growth = peak[0] - start
     assert out.shape == packed.shape
     assert seen and max(seen) >= 0.9 * growth, (seen, growth)
+
+
+def test_untiling_padded_blocks_checks_both_live_copies(monkeypatch):
+    """With a block count that is not a multiple of 4 the permuted padded buffer and the trimmed copy are
+    live together; both are checked before either is made."""
+    import core.inference.diffusion_single_file_converters as conv
+
+    rows, blocks = 200, 6
+    plain = torch.randint(0, 255, (rows, blocks), dtype = torch.uint8)
+    tiled = cb.tile_scales(plain)
+    seen = []
+    monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
+    assert torch.equal(cb.untile_scales(tiled, rows, blocks), plain)
+    assert seen == [_ceil(rows, 128) * _ceil(blocks, 4) + rows * blocks]

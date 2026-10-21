@@ -1254,6 +1254,9 @@ def load_comfy_quant_transformer(
         except HostRamShortfallError:
             raise  # a refusal, not an unproven tag: the full-width retry would only allocate more
         except Exception:  # noqa: BLE001 -- the full-width pass raises the real refusal
+            # Full-width float64 tags are views, but a converter that joins or splits rows materializes them
+            # (8 bytes per weight element) before any checked helper runs: check that before retrying.
+            charge_host_ram(8 * sum(int(codes.numel()) for _layer, codes, *_rest in sources))
             converted = _convert_tagged(None)
     del state
     if fp16_keep:
