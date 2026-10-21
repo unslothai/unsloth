@@ -75,6 +75,23 @@ test("a cached non-GGUF repo resolves without a variant", () => {
   });
 });
 
+test("a snapshot-pinned repo shows the pinned snapshot, not a cache lookup", () => {
+  const pinned = target({
+    id: "unsloth/Repo-GGUF",
+    ggufVariant: "Q4_K_M",
+    meta: {
+      source: "hub",
+      isLora: false,
+      isDownloaded: true,
+      loadId: "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/abc123",
+    },
+  });
+  assert.deepEqual(resolveModelLocation(pinned), {
+    kind: "path",
+    path: "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/abc123",
+  });
+});
+
 test("the settings id is preferred when the load id only spells the quant", () => {
   const cached = target({
     id: "unsloth/Repo-GGUF:Q4_K_M",

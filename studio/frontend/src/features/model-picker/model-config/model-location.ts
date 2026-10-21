@@ -37,6 +37,12 @@ export function resolveModelLocation(
   if (looksLikeLocalPath(id)) {
     return { kind: "path", path: id };
   }
+  // A snapshot pin (a repo outside the active cache) is what the load reads; the cache lookup
+  // would answer for whichever cached copy is largest.
+  const loadId = target.meta.loadId?.trim();
+  if (loadId && looksLikeLocalPath(loadId)) {
+    return { kind: "path", path: loadId };
+  }
 
   if (target.meta.source === "external") {
     return null;
