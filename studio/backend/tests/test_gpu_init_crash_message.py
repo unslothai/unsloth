@@ -107,7 +107,10 @@ def _run_cpu_fallback_load(
     cancel_in_prepare = False,
     platform = None,
     sink = None,
+    stall_launches = (),
 ):
+    """``stall_launches``: 0-based launch indexes whose child stays alive while the
+    health wait reports a startup stall (a hung driver rather than a crash)."""
     if platform is not None:
         monkeypatch.setattr(llama_cpp.sys, "platform", platform)
 
@@ -159,6 +162,8 @@ def _run_cpu_fallback_load(
 
     launches = []
     fallback_sources = []
+    health_kwargs = []
+    health_timeouts = []
 
     class _Process:
         pid = 123
@@ -185,10 +190,16 @@ def _run_cpu_fallback_load(
         return _Process(returncodes[index])
 
     def _wait_for_health(timeout, **_kw):
+        health_kwargs.append(dict(_kw))
+        health_timeouts.append(timeout)
+        backend._health_wait_stalled = False
         if len(launches) == 1 and first_output:
             backend._stdout_lines = [first_output]
         if cancel_after is not None and len(launches) >= cancel_after:
             backend._cancel_event.set()
+        if len(launches) - 1 in stall_launches:
+            backend._health_wait_stalled = True
+            return False
         return returncodes[len(launches) - 1] is None
 
     cleanups = []
@@ -217,8 +228,13 @@ def _run_cpu_fallback_load(
         sink["launches"] = launches
         sink["fallback_sources"] = fallback_sources
         sink["cleanups"] = cleanups
+        sink["health_kwargs"] = health_kwargs
+        sink["health_timeouts"] = health_timeouts
     if resident_fallback:
-        backend._cpu_fallback_reason = "vulkan_startup_crash"
+        # A string seeds that reason; True keeps the crash it always meant.
+        backend._cpu_fallback_reason = (
+            resident_fallback if isinstance(resident_fallback, str) else "vulkan_startup_crash"
+        )
 
     loaded = backend.load_model(
         GgufLoadIntent(

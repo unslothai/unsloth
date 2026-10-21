@@ -169,7 +169,10 @@ export function parseLlamaBackendSwitchStarted(
   };
 }
 
-/** Show installable options and preserve the selected value if it became unavailable. */
+/** Show installable options and preserve the selected value if it became unavailable. The
+ *  options can also be empty while the selection is known (resolution pending or failed, a job
+ *  running), and a Select whose value has no item renders blank, so the selection is then
+ *  listed on its own, "auto" labelled with the backend the install runs on. */
 export function visibleLlamaBackendOptions(
   status: LlamaBackendStatus | null,
   selected: LlamaBackend | null,
@@ -177,7 +180,17 @@ export function visibleLlamaBackendOptions(
   if (!status) {
     return [];
   }
-  return status.options.filter(
+  const visible = status.options.filter(
     (option) => option.available || option.backend === selected,
   );
+  if (selected && !visible.some((option) => option.backend === selected)) {
+    visible.push({
+      backend: selected,
+      available: false,
+      resolvedBackend: selected === "auto" ? status.backend : null,
+      releaseTag: null,
+      downloadSizeBytes: null,
+    });
+  }
+  return visible;
 }

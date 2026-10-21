@@ -1875,12 +1875,17 @@ class _InferenceRuntimeFields(BaseModel):
             "deliberate placement can arrive with gpu_memory_mode still 'auto'."
         ),
     )
-    cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
+    cpu_fallback_reason: Optional[
+        Literal["vulkan_startup_crash", "vulkan_startup_stall", "vulkan_no_device"]
+    ] = Field(
         None,
         description = (
             "Why an automatic GGUF load was downgraded to CPU. "
             "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
-            "hard-crashed and the same launch became healthy with GPU devices disabled."
+            "hard-crashed and the same launch became healthy with GPU devices disabled. "
+            "'vulkan_startup_stall' means that launch stopped making startup progress. "
+            "'vulkan_no_device' means the Vulkan probe found no usable device, so the "
+            "load started on CPU without initialising the Vulkan runtime."
         ),
     )
 
