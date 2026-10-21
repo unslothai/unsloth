@@ -150,9 +150,7 @@ def sample_sigmas_for_steps(grid: tuple[float, ...], steps: int) -> list[float]:
     return out
 
 
-# Per-request shift override, mirroring the ComfyUI node a family's workflow uses to set it
-# (comfy_extras/nodes_model_advanced.py). The value is resolved to ONE static flow shift and set on
-# a fresh copy of the scheduler for that generation only.
+# Per-request shift (ComfyUI comfy_extras/nodes_model_advanced.py): one static shift on a per-generation scheduler copy.
 # ModelSamplingSD3 / ModelSamplingAuraFlow: sigma = shift * t / (1 + (shift - 1) * t).
 SHIFT_NODE_SD3 = "sd3"
 # ModelSamplingFlux: mu = linear in latent tokens between (256, base_shift) and (4096, max_shift),
