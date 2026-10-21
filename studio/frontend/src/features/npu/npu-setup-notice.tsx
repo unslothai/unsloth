@@ -76,7 +76,7 @@ function NpuEnableCard({ catalog }: { catalog: NpuCatalog }) {
       <div className="flex items-center justify-between gap-3">
         <span className="text-muted-foreground">
           {status.runtime_installed
-            ? "The NPU runtime is already downloaded."
+            ? "Finishes setup and checks the NPU driver."
             : "One-time setup: downloads about 47 MB and checks the NPU driver."}
         </span>
         <Button size="sm" onClick={() => void enable()} disabled={enabling}>

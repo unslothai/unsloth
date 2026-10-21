@@ -108,7 +108,7 @@ def test_no_npu_says_so():
 def test_an_npu_left_off_names_the_flag():
     studio = _Studio(supported = False)
     studio.status["hardware"] = {"present": True, "family": "XDNA2", "enabled": False}
-    with pytest.raises(NpuCliError, match = "UNSLOTH_STUDIO_ENABLE_NPU=0"):
+    with pytest.raises(NpuCliError, match = "UNSLOTH_STUDIO_ENABLE_NPU=1"):
         prepare_npu_model(studio, "lemonade:qwen3-0.6b-FLM", print)
 
 
