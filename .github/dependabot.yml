@@ -109,6 +109,15 @@ updates:
       # compiling (`write_to_png` not found), as in #13837.
       - dependency-name: "cairo-rs"
         versions: [">= 0.19"]
+      # gio is only used for the proxy resolver gtk already builds; 0.19+
+      # adds a second glib next to gtk's 0.18.
+      - dependency-name: "gio"
+        versions: [">= 0.19"]
+      # tauri-plugin-deep-link 2.6.2 builds rust-ini's ParseOption as a
+      # struct literal, and 0.21.3 added fields to it, so Linux stops
+      # compiling (E0063). Lift once deep-link builds against 0.21.3.
+      - dependency-name: "rust-ini"
+        versions: [">= 0.21.2"]
       # windows-core must match the copy webview2-com and tauri build on
       # (Cargo.toml: "Keep these versions aligned with Tauri's WebView2
       # controller bindings"); a lone windows-core bump puts a second copy
