@@ -739,6 +739,9 @@ def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
         return "The adapter's base model changed after it was checked. Load it again."
     if escaping_weight_references(checkpoint_path):
         return "This checkpoint's weight index names files outside its folder."
+    # A local base loads too: its own index must stay inside its folder as well.
+    if pinned_base and os.path.isdir(pinned_base) and escaping_weight_references(pinned_base):
+        return "The base model's weight index names files outside its folder."
     return None
 
 
@@ -1183,6 +1186,8 @@ class ExportBackend:
         except DecisionExportError as exc:
             return False, str(exc)
         self.decision = {"layout": layout, "adapter_only": adapter_only}
+        # The base is loaded only at export: kept here and rechecked right before that load.
+        self._decision_base_pin = resolved if adapter_only else None
         # An adapter folder loads its base at export time, under the credential of this load.
         self._decision_token = token
         self.is_vision = False
@@ -1208,8 +1213,20 @@ class ExportBackend:
                 "Decision model GGUF export does not support imatrix or Q4NX conversion.",
                 None,
             )
-        from core.export.decision import DecisionExportError, run_decision_gguf_export
+        from core.export.decision import DecisionExportError, adapter_base, run_decision_gguf_export
 
+        pinned = getattr(self, "_decision_base_pin", None)
+        if pinned:
+            try:
+                current = adapter_base(self.current_checkpoint)
+            except DecisionExportError as exc:
+                return False, str(exc), None
+            if current != pinned:
+                return (
+                    False,
+                    "The adapter's base model changed after it was loaded. Load it again.",
+                    None,
+                )
         try:
             data = run_decision_gguf_export(
                 self.current_checkpoint,

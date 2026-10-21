@@ -74,16 +74,7 @@ def _escapes_folder(name: str) -> bool:
     return normalized == ".." or normalized.startswith("../")
 
 
-def escaping_weight_references(folder) -> list:
-    """Weight names a local model folder's index files or config.json ``transformers_weights``
-    give that point outside the folder: transformers joins each onto the folder as is. Text only,
-    so Hub cache snapshots whose files link into the blob store still pass."""
-    try:
-        folder = Path(str(folder)).expanduser()
-        if not folder.is_dir():
-            return []
-    except (OSError, ValueError):
-        return []
+def _weight_names(folder: Path) -> list:
     names = []
     for index_name in _TORCH_INDEX_FILES:
         try:
@@ -102,6 +93,35 @@ def escaping_weight_references(folder) -> list:
         names.append(weights)
     elif isinstance(weights, (list, tuple)):
         names.extend(v for v in weights if isinstance(v, str))
+    return names
+
+
+def escaping_weight_references(folder) -> list:
+    """Weight names a local model folder's index files or config.json ``transformers_weights``
+    give that point outside the folder: transformers joins each onto the folder as is. Text only,
+    so Hub cache snapshots whose files link into the blob store still pass. A Sentence Transformers
+    folder's modules.json module folders are read too, judged against the model folder."""
+    try:
+        folder = Path(str(folder)).expanduser()
+        if not folder.is_dir():
+            return []
+    except (OSError, ValueError):
+        return []
+    names = _weight_names(folder)
+    try:
+        modules = json.loads((folder / "modules.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        modules = None
+    for module in modules if isinstance(modules, list) else []:
+        sub = module.get("path") if isinstance(module, dict) else None
+        if not isinstance(sub, str) or not sub.strip("./\\"):
+            continue
+        if _escapes_folder(sub):
+            names.append(sub)
+            continue
+        names.extend(
+            posixpath.join(sub.replace("\\", "/"), name) for name in _weight_names(folder / sub)
+        )
     return [name for name in dict.fromkeys(names) if _escapes_folder(name)]
 
 

@@ -304,3 +304,40 @@ def test_a_cached_snapshot_adapter_pin_is_rechecked_against_the_snapshot(tmp_pat
     }
     assert worker._adapter_base_changed_error(config) is None
     assert worker._adapter_base_changed_error({**config, "adapter_base_pin": "org/other"})
+
+
+def test_a_sentence_transformers_module_index_outside_the_model_is_flagged(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(
+        tmp_path / "st",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "0_Transformer", "type": "x"}]},
+    )
+    _write(
+        folder / "0_Transformer",
+        {"model.safetensors.index.json": {"weight_map": {"w": "../../victim/model.safetensors"}}},
+    )
+    assert escaping_weight_references(folder)
+    _write(
+        folder / "0_Transformer",
+        {
+            "model.safetensors.index.json": {
+                "weight_map": {"w": "../0_Transformer/model.safetensors"}
+            }
+        },
+    )
+    assert escaping_weight_references(folder) == []
+
+
+def test_an_export_base_whose_index_escapes_is_refused(tmp_path):
+    from core.export.export import _checkpoint_load_refusal
+
+    adapter = _write(
+        tmp_path / "adapter", {"adapter_config.json": {"base_model_name_or_path": "x"}}
+    )
+    base = _write(
+        tmp_path / "base",
+        {"model.safetensors.index.json": {"weight_map": {"w": "../victim/model.safetensors"}}},
+    )
+    (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": str(base)}))
+    assert _checkpoint_load_refusal(str(adapter), str(base))
