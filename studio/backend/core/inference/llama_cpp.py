@@ -6506,8 +6506,7 @@ def _sidecar_reserve_margin_flags(
     if devices and len([d for d in str(devices).split(",") if d.strip()]) > 1:
         return []
     want = math.ceil(
-        max(base_margin_mib, _single_device_fit_margin(user_args or (), env) or 0.0)
-        + reserve_mib
+        max(base_margin_mib, _single_device_fit_margin(user_args or (), env) or 0.0) + reserve_mib
     )
     have = _single_device_fit_margin(args, None)
     if have is not None and have >= want:
@@ -19733,7 +19732,9 @@ class LlamaCppBackend:
                             elif (
                                 not device_lost_seen
                                 and not metal_poison.get("pending")
-                                and any(marker in line for marker in _METAL_BACKEND_POISONED_MARKERS)
+                                and any(
+                                    marker in line for marker in _METAL_BACKEND_POISONED_MARKERS
+                                )
                             ):
                                 # Not latched like device loss: a request can make the
                                 # server echo this text (a grammar parse error prints the
@@ -34752,7 +34753,10 @@ class LlamaCppBackend:
                         # The sidecar reserve was priced for the slots and KV layout just
                         # dropped: take it off and reprice for one sequence, or the stale
                         # margin (a floor at spawn) keeps memory for slots that never run.
-                        if _sidecar_fit_reserve_eligible_mib and _sidecar_reserve_reprice is not None:
+                        if (
+                            _sidecar_fit_reserve_eligible_mib
+                            and _sidecar_reserve_reprice is not None
+                        ):
                             cmd = _drop_sidecar_margins(
                                 cmd,
                                 _integrity_flags,
@@ -38534,7 +38538,10 @@ class LlamaCppBackend:
                 logger.debug(f"slot {entry.get('id')} restore returned HTTP {resp.status_code}")
 
     def _maybe_recover_from_mtp_crash(
-        self, exc: Optional[BaseException] = None, *, sidecar_oom: bool = False
+        self,
+        exc: Optional[BaseException] = None,
+        *,
+        sidecar_oom: bool = False,
     ) -> bool:
         """Schedule one background reload without MTP after a mid-generation death.
 
@@ -39584,7 +39591,11 @@ class LlamaCppBackend:
                     return False
                 return started
 
-    def _retire_device_lost_server(self, served_by, metal_poison: Optional[dict] = None) -> None:
+    def _retire_device_lost_server(
+        self,
+        served_by,
+        metal_poison: Optional[dict] = None,
+    ) -> None:
         """Kill the llama-server that hit a lost GPU device, if it is still current (#11453).
 
         It survives VK_ERROR_DEVICE_LOST but fails every later request; a dead child is
@@ -39656,8 +39667,10 @@ class LlamaCppBackend:
             error = resp.json().get("error", {})
             message = error.get("message", "") if isinstance(error, dict) else error
             # The draft context fails the same way, behind the speculative-batch wrapper.
-            return str(message).rstrip().endswith(
-                ("Compute error.", "failed to process speculative batch")
+            return (
+                str(message)
+                .rstrip()
+                .endswith(("Compute error.", "failed to process speculative batch"))
             )
         except Exception:
             return False
@@ -39676,7 +39689,9 @@ class LlamaCppBackend:
     def _metal_oom_is_terminal(self, intent) -> bool:
         """Whether ``intent`` already ran out of Metal memory twice (no more replays)."""
         terminal = getattr(self, "_metal_oom_terminal_key", None)
-        return terminal is not None and intent is not None and self._metal_oom_key(intent) == terminal
+        return (
+            terminal is not None and intent is not None and self._metal_oom_key(intent) == terminal
+        )
 
     def _after_metal_poisoned_server(self, draft_failed: bool) -> None:
         """Choose the recovery after a Metal-poisoned server was retired.
@@ -39734,7 +39749,11 @@ class LlamaCppBackend:
             # The logger raises once stdout is closed; recovery must not.
             pass
 
-    def _retire_device_lost_server_soon(self, served_by, metal_poison: Optional[dict] = None) -> None:
+    def _retire_device_lost_server_soon(
+        self,
+        served_by,
+        metal_poison: Optional[dict] = None,
+    ) -> None:
         """Retire after a device loss in the server log, for the passthrough routes.
 
         The grace lets a chat request that hit the same error retire and retry first.

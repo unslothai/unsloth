@@ -105,7 +105,13 @@ class TestReserveArithmetic:
         assert self._backend(0)._sidecar_fit_reserve_mib(0, None) == 0
 
 
-def _cuda_launch(tmp_path, *, kind = "dspark", use_fit = True, extra_args = None):
+def _cuda_launch(
+    tmp_path,
+    *,
+    kind = "dspark",
+    use_fit = True,
+    extra_args = None,
+):
     backend, gguf = _placement._backend_non_vulkan(tmp_path, memory = [(0, 24_000, 24_000)])
     sidecar = tmp_path / f"{kind}-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
@@ -182,9 +188,7 @@ class TestMetalLaunch:
         assert backend.spec_fallback_reason == "drafter_no_vram"
 
     def test_explicit_dspark_keeps_it_with_the_reserve(self, tmp_path, monkeypatch):
-        cmd, backend, sidecar = _metal_launch(
-            tmp_path, monkeypatch, mode = "dspark", budget_gib = 12
-        )
+        cmd, backend, sidecar = _metal_launch(tmp_path, monkeypatch, mode = "dspark", budget_gib = 12)
         assert _flag(cmd, "--model-draft") == sidecar
         assert int(_flag(cmd, "--fit-target")) >= 1024 + 4 * 1024
 

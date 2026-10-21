@@ -60,7 +60,15 @@ def _last(cmd, name):
     return value
 
 
-def _metal_cmd(tmp_path, monkeypatch, mode, *, budget_gib, extra_args = None, sub = None):
+def _metal_cmd(
+    tmp_path,
+    monkeypatch,
+    mode,
+    *,
+    budget_gib,
+    extra_args = None,
+    sub = None,
+):
     sub = tmp_path / (sub or mode)
     sub.mkdir()
     sidecar = sub / "dspark-model-Q8_0.gguf"
@@ -115,7 +123,11 @@ def test_metal_auto_keeps_a_user_owned_bare_model_draft(tmp_path, monkeypatch):
     assert backend.spec_fallback_reason != "drafter_no_vram"
 
 
-def _cuda_backend(tmp_path, memory = ((0, 24_000, 24_000),), vulkan = False):
+def _cuda_backend(
+    tmp_path,
+    memory = ((0, 24_000, 24_000),),
+    vulkan = False,
+):
     backend, gguf = _placement._backend(tmp_path, vulkan = vulkan, memory = list(memory))
     backend._select_gpus = lambda *a, **k: (None, True)
     backend.probe_server_capabilities = lambda _binary = None: dict(_CAPS)

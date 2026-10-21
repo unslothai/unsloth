@@ -80,7 +80,9 @@ def test_single_device_reserve_uses_the_first_list_entry(value):
 # Finding 3: a positive -ngld below the drafter's depth splits it with the host.
 
 
-@pytest.mark.parametrize("extras", [("-ngld", "1"), ("--spec-draft-ngl", "1")], ids = ["short", "long"])
+@pytest.mark.parametrize(
+    "extras", [("-ngld", "1"), ("--spec-draft-ngl", "1")], ids = ["short", "long"]
+)
 def test_partial_draft_offload_gets_no_whole_file_reserve(tmp_path, extras):
     backend, gguf = _r2._cuda_backend(tmp_path)
     cmd = _placement._launch(
@@ -110,7 +112,12 @@ def _rollback_backend(tmp_path):
     backend, gguf = _r2._cuda_backend(tmp_path)
     backend._rollback_state_bytes = lambda n_parallel = 1: _ROLLBACK
 
-    def estimate(n_ctx, target_rollback = True, spec_draft_n_max = 0, **kw):
+    def estimate(
+        n_ctx,
+        target_rollback = True,
+        spec_draft_n_max = 0,
+        **kw,
+    ):
         rollback = _ROLLBACK * spec_draft_n_max if target_rollback else 0
         return 8 * _GIB + rollback
 

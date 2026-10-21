@@ -16,10 +16,16 @@ _TABLE = """0.00.408.825 I common_memory_breakdown_print: | memory breakdown [Mi
 0.00.429.748 I common_memory_breakdown_print: |   - Host               |                 2352 =  2288 +       0 +      64                |
 """
 
-posix_only = pytest.mark.skipif(sys.platform == "win32", reason = "shell script stands in for the binary")
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason = "shell script stands in for the binary"
+)
 
 
-def _install(tmp_path, script, mode = 0o755):
+def _install(
+    tmp_path,
+    script,
+    mode = 0o755,
+):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "llama-server").write_text("")
@@ -118,4 +124,3 @@ def test_the_launch_log_carries_the_reason():
     src = inspect.getsource(LlamaCppBackend._metal_demand_paged_embedding_bytes)
     assert "_metal_probe_failure" in src
     assert "missing or unreadable" not in src
-

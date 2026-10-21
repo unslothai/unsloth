@@ -59,7 +59,11 @@ def harness(monkeypatch):
     monkeypatch.setattr(llama_cpp, "_DEVICE_LOST_LOG_GRACE_S", 0.0)
     children = []
 
-    def make(intent: _Intent, speculative_type: str = "draft-dspark", lines = ()):
+    def make(
+        intent: _Intent,
+        speculative_type: str = "draft-dspark",
+        lines = (),
+    ):
         backend = LlamaCppBackend()
         first = _child(lines)
         children.append(first)
@@ -109,8 +113,16 @@ def _wait(predicate, timeout = 10.0):
     [
         ([METAL_OOM], True),
         ([METAL_LATCHED], True),
-        (["0.01.000.000 I slot launch_slot_: id  0 | prompt: what is kIOGPUCommandBufferCallbackErrorOutOfMemory?"], False),
-        (["what does backend is in error state from a previous command buffer failure mean?"], False),
+        (
+            [
+                "0.01.000.000 I slot launch_slot_: id  0 | prompt: what is kIOGPUCommandBufferCallbackErrorOutOfMemory?"
+            ],
+            False,
+        ),
+        (
+            ["what does backend is in error state from a previous command buffer failure mean?"],
+            False,
+        ),
     ],
     ids = ["oom_line", "latched_line", "info_line", "unprefixed_request_dump"],
 )
@@ -125,7 +137,9 @@ def test_a_poisoned_metal_backend_in_the_log_retires_the_server(harness, lines, 
 
 
 def test_auto_dspark_draft_oom_reloads_once_without_the_drafter_then_stops(harness):
-    backend, first, loads = harness(_Intent(), "draft-dspark", [METAL_OOM, METAL_LATCHED, DRAFT_FAILED])
+    backend, first, loads = harness(
+        _Intent(), "draft-dspark", [METAL_OOM, METAL_LATCHED, DRAFT_FAILED]
+    )
     threading.Thread(target = backend._drain_stdout, daemon = True).start()
 
     assert _wait(lambda: len(loads) == 1)

@@ -206,7 +206,12 @@ def test_the_metal_auto_drop_recomputes_the_embedding_discount(tmp_path, monkeyp
     blocks forfeit it); once Auto drops the drafter it must be decided again, or Auto keeps a
     smaller context than Off (finding 8)."""
 
-    def embd(self, *a, mtp_may_engage = False, **k):
+    def embd(
+        self,
+        *a,
+        mtp_may_engage = False,
+        **k,
+    ):
         return 0 if mtp_may_engage else 3 * _GIB
 
     def run(mode):
@@ -249,7 +254,11 @@ def test_a_retired_child_is_not_reused_by_an_identical_load(tmp_path, retired):
     proc = type(
         "P",
         (),
-        {"poll": lambda self: None, "kill": lambda self: None, "wait": lambda self, timeout = None: 0},
+        {
+            "poll": lambda self: None,
+            "kill": lambda self: None,
+            "wait": lambda self, timeout = None: 0,
+        },
     )()
     backend._process = proc
     backend._healthy = True

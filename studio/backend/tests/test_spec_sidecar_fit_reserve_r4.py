@@ -47,7 +47,15 @@ def _sidecar(tmp_path):
     return str(sidecar)
 
 
-def _run(backend, gguf, *, crash, healthy, late_exit = False, **intent):
+def _run(
+    backend,
+    gguf,
+    *,
+    crash,
+    healthy,
+    late_exit = False,
+    **intent,
+):
     """Every llama-server argv the load spawns. ``crash(cmd)`` is the child's exit code
     (None = still running), ``healthy(cmd)`` its health answer. ``late_exit`` makes the
     first poll still see the child running: it exits between the startup retry's check and
@@ -199,7 +207,11 @@ def test_the_noflash_fit_flip_carries_the_reserve(tmp_path):
 def test_the_noflash_retry_reprices_the_reserve(tmp_path):
     backend, gguf = _r2._cuda_backend(tmp_path)
 
-    def estimate(n_ctx, draft_cache_type_v = None, **kw):
+    def estimate(
+        n_ctx,
+        draft_cache_type_v = None,
+        **kw,
+    ):
         quantized = str(draft_cache_type_v or "f16").lower().startswith("q")
         return 8 * _GIB + (1 if quantized else 3) * _GIB
 
@@ -278,10 +290,13 @@ def test_cleanup_removes_every_recorded_pair():
 # Finding 4: the Auto-drop predicate prices the target with its drafter-free discount.
 
 
-def test_metal_auto_drop_prices_the_target_with_the_drafter_free_discount(
-    tmp_path, monkeypatch
-):
-    def discount(self, *args, mtp_may_engage = True, **kwargs):
+def test_metal_auto_drop_prices_the_target_with_the_drafter_free_discount(tmp_path, monkeypatch):
+    def discount(
+        self,
+        *args,
+        mtp_may_engage = True,
+        **kwargs,
+    ):
         return 0 if mtp_may_engage else 3 * _GIB
 
     monkeypatch.setattr(LlamaCppBackend, "_metal_demand_paged_embedding_bytes", discount)

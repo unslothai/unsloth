@@ -183,7 +183,11 @@ _PER_SLOT = 1 * _GIB
 def _slot_priced_backend(tmp_path):
     backend, gguf = _r2._cuda_backend(tmp_path)
 
-    def estimate(n_ctx, n_parallel = 1, **kw):
+    def estimate(
+        n_ctx,
+        n_parallel = 1,
+        **kw,
+    ):
         return 8 * _GIB + max(1, int(n_parallel or 1)) * _PER_SLOT
 
     backend._estimate_mtp_overhead_bytes = estimate
