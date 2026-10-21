@@ -884,8 +884,8 @@ def _swap_on(transformer: Any, logger: Any, index: int) -> int:
 def after_layer_split(transformer: Any, logger: Any = None) -> dict:
     """Run once a layer split placed ``transformer``'s blocks, before its first forward: re-home the fused int8 / QKV
     records built while it sat on one card (``diffusion_int8_fused.relocate_after_layer_split``), and probe each card's
-    GEMM tiles so the int8 Linears swapped before the split run their own card's kernel. Idempotent; a no-op on a
-    denoiser that is not split."""
+    GEMM tiles so the int8 Linears swapped before the split run their own card's kernel; each RoPE patch's probe map
+    covers every card. Idempotent; a no-op on a denoiser that is not split."""
     out: dict = {"cards": (), "gemm": 0}
     cards = _split_cards(transformer)
     if len(cards) < 2:
@@ -902,6 +902,11 @@ def after_layer_split(transformer: Any, logger: Any = None) -> dict:
     try:
         from .diffusion_qwenimage21_rope import probe_split_cards
         out["rope_cards"] = probe_split_cards(cards)
+    except Exception:  # noqa: BLE001 - an unprobed card keeps the complex RoPE
+        pass
+    try:
+        from .diffusion_zimage_fused import probe_split_cards as zimage_probe
+        out["zimage_rope_cards"] = zimage_probe(cards)
     except Exception:  # noqa: BLE001 - an unprobed card keeps the complex RoPE
         pass
     if int8_gemm_mode() != "off" and any(_MARK in m.__dict__ for m in transformer.modules()):

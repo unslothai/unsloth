@@ -365,6 +365,29 @@ def install_modules(
     return result
 
 
+def probe_split_cards(cards: Any) -> tuple:
+    """A layer split placed after :func:`install_modules` probed only the card the denoiser sat on: probe every other
+    card of the split (the processor reads its query's card, and an unprobed one takes the complex RoPE that the
+    regional compile cannot lower). Nothing when no install probed a card. Returns the cards whose probe passed."""
+    if zimage_fused_disabled() or not _FUSION:
+        return ()
+    import torch
+
+    with _LOCK:
+        for index in cards:
+            index = int(index)
+            if index in _FUSION:
+                continue
+            try:
+                from .diffusion_qwenimage21_rope import inductor_addcmul_is_fma, probe_fusion
+                _FUSION[index] = (
+                    probe_fusion(torch.device("cuda", index)) if inductor_addcmul_is_fma() else None
+                )
+            except Exception:  # noqa: BLE001 - that card keeps the complex form
+                _FUSION[index] = None
+    return tuple(index for index in cards if _FUSION.get(int(index)) is not None)
+
+
 def uninstall(transformer: Any = None) -> None:
     """Restore the stock processor; drop the fused Linears (the per-row views stay valid) and pending install."""
     if transformer is not None:

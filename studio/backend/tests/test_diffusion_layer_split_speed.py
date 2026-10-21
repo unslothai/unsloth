@@ -749,3 +749,27 @@ def test_a_split_records_block_graphs_for_a_prompt_length_family(monkeypatch):
     src = inspect.getsource(cg.arm_block_graphs)
     assert "None if split else prompt_length_reason(pipe, family)" in src
     assert "handle.track_scopes()" in inspect.getsource(bg.install_block_graphs)
+
+
+def test_zimage_real_rope_probes_every_card_of_a_split(monkeypatch):
+    # Z-Image's speed patch installed while the denoiser sat on cuda:0 probed only that card: after the split the
+    # blocks on cuda:1 must not fall back to the complex RoPE inside the regional compile
+    from core.inference import diffusion_qwenimage21_rope as q21r
+    from core.inference import diffusion_zimage_fused as zf
+
+    monkeypatch.setattr(zf, "zimage_fused_disabled", lambda: False)
+    probed = []
+    monkeypatch.setattr(q21r, "inductor_addcmul_is_fma", lambda: True)
+    monkeypatch.setattr(
+        q21r,
+        "probe_fusion",
+        lambda dev: probed.append(dev.index) or (None if dev.index == 2 else "x"),
+    )
+    monkeypatch.setattr(zf, "_FUSION", {0: "x"})
+    monkeypatch.setattr(q21r, "_FUSION", {})
+    monkeypatch.setattr(g8, "_split_cards", lambda m: (0, 1, 2))
+    out = g8.after_layer_split(nn.Linear(2, 2))
+    assert zf._FUSION == {0: "x", 1: "x", 2: None} and probed == [1, 2]
+    assert out["zimage_rope_cards"] == (0, 1)
+    monkeypatch.setattr(zf, "_FUSION", {})
+    assert zf.probe_split_cards((0, 1)) == ()  # no install probed a card: the patch is not in use
