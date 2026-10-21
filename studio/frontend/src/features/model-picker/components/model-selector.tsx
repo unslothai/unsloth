@@ -494,6 +494,8 @@ function ModelSelectorContent({
     string | null
   >(null);
   const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
+  // A page's own Run settings button opened it, so there is no list to go back to.
+  const [configStandalone, setConfigStandalone] = useState(false);
 
   // Cleared during render, as a config request is adopted below: from an effect, a close and
   // reopen inside the exit animation (a Run settings button clicked with the list open) dropped
@@ -504,6 +506,7 @@ function ModelSelectorContent({
     if (!open) {
       setConfigTarget(null);
       setConfigFocus(null);
+      setConfigStandalone(false);
     }
   }
 
@@ -569,6 +572,7 @@ function ModelSelectorContent({
       : undefined;
     setConfigTarget(modelConfigTarget(id, meta, displayName));
     setConfigFocus(null);
+    setConfigStandalone(false);
   };
   const requestedConfigTarget = useMemo(
     () =>
@@ -606,6 +610,7 @@ function ModelSelectorContent({
     setAdoptedConfigRequestId(configRequest.requestId);
     setConfigTarget(requestedConfigTarget);
     setConfigFocus(configRequest.focus ?? null);
+    setConfigStandalone(configRequest.standalone === true);
   }
   useEffect(() => {
     if (!configRequest || adoptedConfigRequestId !== configRequest.requestId) {
@@ -677,10 +682,14 @@ function ModelSelectorContent({
                 visibleLoadedConfig,
               )}
               target={visibleConfigTarget}
-              onBack={() => {
-                setConfigTarget(null);
-                setConfigFocus(null);
-              }}
+              onBack={
+                configStandalone
+                  ? undefined
+                  : () => {
+                      setConfigTarget(null);
+                      setConfigFocus(null);
+                    }
+              }
               focusField={configFocus ?? undefined}
               onRun={(config, isDiffusion) =>
                 onSelect(

@@ -61,6 +61,7 @@ export function runSettingsRequest(
     requestId,
     id: resident.checkpoint,
     focus: "advanced",
+    standalone: true,
     meta: {
       source: "local",
       isLora: resident.isLora,
@@ -85,6 +86,7 @@ export function keptRunSettingsRequest(
     requestId,
     id: model.checkpoint,
     focus: "advanced",
+    standalone: true,
     meta: {
       source: "local",
       isLora: false,
