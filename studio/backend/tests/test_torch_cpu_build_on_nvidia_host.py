@@ -105,6 +105,14 @@ def _no_inherited_visibility_mask(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _not_a_jetson(monkeypatch):
+    """A pre-CUDA-13 Jetson treats an automatic cpu record as chosen, so running the suite on one would
+    flip every unpinned-cpu assertion here. The Jetson cells live in test_chat_only_reason.py."""
+    from utils import tegra as tegra_mod
+    monkeypatch.setattr(tegra_mod, "tegra_before_cuda13", lambda: False)
+
+
+@pytest.fixture(autouse = True)
 def _no_carried_over_torch_measurement(monkeypatch):
     """The torch snapshot is cached with a TTL, so one test's fake host would answer
     for the next one. Both caches start empty here, as they do in a fresh process."""
