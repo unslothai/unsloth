@@ -28208,16 +28208,20 @@ def _av_expected_samples(container, sample_rate: int, ceiling: int) -> int:
     return min(int(seconds * sample_rate) + 1, ceiling)
 
 
-def _av_open(av, source):
+# An upload probed as a concat playlist would otherwise decode the files it names.
+NO_PROTOCOLS = {"protocol_whitelist": "none"}
+
+
+def _av_open(av, source, **extra):
     """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
     try:
-        return av.open(source, mode = "r", metadata_errors = "ignore")
+        return av.open(source, mode = "r", metadata_errors = "ignore", **extra)
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
         # format = None is PyAV's own default (probe the container); spelling it keeps this call
         # distinguishable from Path.open for the text-encoding lint.
-        return av.open(source, mode = "r", format = None)
+        return av.open(source, mode = "r", format = None, **extra)
 
 
 def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
@@ -28259,7 +28263,7 @@ def _decode_audio_mono_with_av(raw: bytes) -> "tuple[np.ndarray, int]":
             joined = grown
         joined[sample_count - len(block) : sample_count] = block
 
-    with _av_open(av, io.BytesIO(raw)) as container:
+    with _av_open(av, io.BytesIO(raw), options = NO_PROTOCOLS) as container:
         if not container.streams.audio:
             raise ValueError("audio container has no audio stream")
         for frame in container.decode(audio = 0):
