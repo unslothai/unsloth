@@ -410,9 +410,7 @@ class TestUvSafePathWindowsNo8dot3:
         assert uvps.uv_safe_path(str(src)) == str(src)
 
     def test_uv_accepts_the_returned_constraint_path(self, tmp_path, monkeypatch):
-        """End to end against the real uv: the returned path is read. uv before 0.13 split a spaced
-        -c path at the space and refused it; 0.13 reads it, so the refusal is only checked where the
-        installed uv still splits."""
+        """End to end against the real uv. uv < 0.13 cuts a spaced -c path at the space; 0.13 reads it."""
         import shutil
         import subprocess
         import sys
@@ -449,7 +447,6 @@ class TestUvSafePathWindowsNo8dot3:
         assert "File not found" not in accepted.stderr, accepted.stderr
         refused = dry_run(str(src))
         if "File not found" in refused.stderr:
-            # The workaround's reason: this uv cut the path at the space.
             assert str(src).split(" ")[0] in refused.stderr, refused.stderr
 
     @pytest.mark.skipif(not ips.IS_WINDOWS, reason = "real NTFS 8.3 names")
