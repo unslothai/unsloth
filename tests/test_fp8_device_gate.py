@@ -44,7 +44,6 @@ def test_non_fp8_checkpoints_load_anywhere(monkeypatch, device_type):
     ],
 )
 def test_cuda_capability_rules_are_unchanged(monkeypatch, capability, quant_method, refused):
-    # transformers 4.57.x: no 16-bit fallback below sm89, so the gate still refuses.
     monkeypatch.setattr(_utils, "_fp8_checkpoint_dequantizes_below_sm89", lambda: False)
     monkeypatch.setattr(_utils, "DEVICE_TYPE", "cuda")
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: capability)
@@ -64,7 +63,6 @@ def _spoof_cuda(monkeypatch, capability):
 
 @pytest.mark.parametrize("capability", [(7, 5), (8, 0), (8, 6)])
 def test_fp8_checkpoint_loads_dequantized_below_sm89(monkeypatch, capability):
-    # T4 / A100 / A10: transformers 5.x decodes the weights to 16-bit, nothing needs FP8 compute.
     _spoof_cuda(monkeypatch, capability)
     monkeypatch.setattr(_utils, "_fp8_checkpoint_dequantizes_below_sm89", lambda: True)
     _utils.verify_fp8_support_if_applicable(_config("fp8"))
@@ -105,7 +103,6 @@ def test_fallback_detection_follows_the_installed_transformers():
 
 
 def test_real_check_admits_t4_on_this_transformers(monkeypatch):
-    """No stub on the detector: what a T4 user on the installed transformers gets."""
     from transformers.utils.quantization_config import FineGrainedFP8Config
     import inspect
 
