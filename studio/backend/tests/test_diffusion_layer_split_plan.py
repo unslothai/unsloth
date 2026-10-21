@@ -868,3 +868,27 @@ def test_two_denoisers_that_fit_only_jointly_are_cut_jointly():
         assert mine[0][0] == 0 and mine[-1][1] == len(layout.block_mib)  # every block placed once
         assert any(r.card != 0 for r in split.ranges if r.denoiser == name)
     assert lsp._search_cuts([(1, 1), (1, 2, 1)], [2, 2]) is None  # truly infeasible stays declined
+
+
+def test_dual_denoisers_may_keep_one_wholly_on_the_primary():
+    # A=(2,2) fits only wholly on the 4 MiB primary, B=(3,3) only wholly on the 6 MiB secondary: forcing both
+    # to cut onto the secondary would decline a placement that fits
+    assert lsp._search_cuts([(2, 2), (3, 3)], [4, 6]) == [[0, 2, 2], [0, 0, 2]]
+    assert lsp._search_cuts([(2, 2), (3, 3)], [10, 0]) is None  # nothing off the primary: no split
+    split, reason = lsp.plan_layer_split(
+        denoisers = {"transformer": L(0, (2, 2)), "transformer_2": L(0, (3, 3))},
+        companions = {},
+        primary = 0,
+        card_limits = {0: 4, 1: 6},
+        headroom_mib = 0,
+        overhead_mib = 0,
+        phase_headroom_mib = (0, 0, 0),
+        working_set_mib = 0,
+        secondary_overhead_mib = 0,
+    )
+    assert split is not None, reason
+    _check(split, {0: 4, 1: 6})
+    assert {(r.denoiser, r.card) for r in split.ranges} == {
+        ("transformer", 0),
+        ("transformer_2", 1),
+    }

@@ -182,8 +182,8 @@ def _search_cuts(
     layouts: Sequence[Sequence[int]], capacities: Sequence[int]
 ) -> Optional[list[list[int]]]:
     """Cut points for several denoisers sharing the cards, by backtracking: each denoiser contiguous over the cards in
-    order, every one keeping a block off the primary (the engine places each denoiser on its own), each card's parts
-    within its capacity. The fallback when cutting each denoiser in turn by proportion leaves a later one no fit.
+    order, at least one keeping a block off the primary (a denoiser wholly on the primary is placed there unsplit),
+    each card's parts within its capacity. The fallback when cutting each denoiser in turn by proportion leaves a later one no fit.
     None when nothing fits within the search budget."""
     k = len(capacities)
     prefixes = []
@@ -210,24 +210,23 @@ def _search_cuts(
 
         yield from rec(0, 0, [0])
 
-    def dfs(d: int, remaining: list[int]) -> Optional[list[list[int]]]:
+    def dfs(d: int, remaining: list[int], split: bool) -> Optional[list[list[int]]]:
         if d == len(layouts):
-            return []
+            return [] if split else None
         prefix = prefixes[d]
         n = len(prefix) - 1
         for cuts in options(d, remaining):
             visited[0] += 1
             if visited[0] > _SEARCH_BUDGET:
                 return None
-            if n > 1 and cuts[1] == n:
-                continue  # every block on the primary: the engine refuses that denoiser
+            # a denoiser wholly on the primary is placed there as is; the plan only needs one denoiser off it
             left = [remaining[i] - (prefix[cuts[i + 1]] - prefix[cuts[i]]) for i in range(k)]
-            rest = dfs(d + 1, left)
+            rest = dfs(d + 1, left, split or cuts[1] < n)
             if rest is not None:
                 return [cuts, *rest]
         return None
 
-    return dfs(0, [int(c) for c in capacities])
+    return dfs(0, [int(c) for c in capacities], False)
 
 
 def plan_layer_split(
