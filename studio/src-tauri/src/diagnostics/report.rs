@@ -358,9 +358,14 @@ fn append_log_sections(
     warnings: &mut Vec<String>,
 ) {
     out.push_str("\n== Log tails ==\n");
-    for name in ["tauri.log", "tauri.log.1"] {
-        let path = studio_dir().join(name);
-        append_tail_section(out, &path, name, "local-app-log", warnings);
+    for (index, root) in super::log_roots().into_iter().enumerate() {
+        for name in ["tauri.log", "tauri.log.1"] {
+            let path = root.join(name);
+            if index > 0 && !path.is_file() {
+                continue;
+            }
+            append_tail_section(out, &path, name, "local-app-log", warnings);
+        }
     }
 
     let server_log_dir = logs_dir().join("server");
@@ -588,12 +593,21 @@ fn read_tail(path: &Path, max_lines: usize, max_bytes: usize) -> Result<TailRead
     let size = metadata.len();
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let start = size.saturating_sub(max_bytes as u64);
-    file.seek(SeekFrom::Start(start))
+    // Read from one byte early so a cut that lands on a line start keeps that line.
+    let read_from = start.saturating_sub(1);
+    file.seek(SeekFrom::Start(read_from))
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    file.take(max_bytes as u64)
+    file.take(max_bytes as u64 + (start - read_from))
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
+    if start > 0 {
+        // Drop the partial first line: a value cut from its key escapes the key-based redactor.
+        match bytes.iter().position(|&b| b == b'\n') {
+            Some(newline) => drop(bytes.drain(..=newline)),
+            None => bytes.clear(),
+        }
+    }
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     let mut truncated = start > 0;
     if truncated {
@@ -970,6 +984,21 @@ mod tests {
         fs::write(&path, [0xff, b'a', b'\n', b'b']).unwrap();
         let tail = read_tail(&path, 10, 100).unwrap();
         assert!(tail.text.contains('�'));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_byte_cut_tail_never_starts_mid_line() {
+        let path = std::env::temp_dir().join(format!("unsloth-cut-tail-{}", std::process::id()));
+        // Cut after the key: the bare value must not survive.
+        fs::write(&path, "{\"password\": \"opaque0123456789\"}\nkept line\n").unwrap();
+        let tail = read_tail(&path, 10, 29).unwrap();
+        assert!(!tail.text.contains("opaque"), "{}", tail.text);
+        assert!(tail.text.contains("kept line"), "{}", tail.text);
+
+        fs::write(&path, "first\nsecond\n").unwrap();
+        let tail = read_tail(&path, 10, 7).unwrap();
+        assert!(tail.text.contains("second"), "{}", tail.text);
         let _ = fs::remove_file(path);
     }
 

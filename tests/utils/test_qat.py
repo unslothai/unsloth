@@ -5,7 +5,6 @@ from typing import Dict
 import pytest
 import torch
 
-# torchao is an optional extra.
 pytest.importorskip(
     "torchao.quantization.qat",
     reason = "install or upgrade with: pip install 'torchao>=0.15.0'",
@@ -19,7 +18,6 @@ from torchao.quantization.qat.fake_quantizer import (
     IntxFakeQuantizer,
 )
 
-# Loads a real model per qat_scheme and fake-quantizes it on the accelerator.
 pytestmark = pytest.mark.gpu
 
 
@@ -128,7 +126,6 @@ def _test_fake_quantizers_are_called(
                         assert hasattr(base_layer, "activation_fake_quantizer")
                         assert base_layer.activation_fake_quantizer.count == 1
                 elif isinstance(child, FakeQuantizedLinear):
-                    # Weight fake quantizers must always be called.
                     assert child.weight_fake_quantizer.count == 1
 
     if torch.cuda.is_available():
@@ -162,8 +159,7 @@ def _test_model_fake_quantize(qat_scheme: str, full_finetuning: bool):
     _test_fake_quantizers_are_called(model, inputs, full_finetuning, qat_scheme)
 
 
-# TODO: there are bad interactions across tests right now, need to figure out how to disable model caching before
-# re-enabling this test
+# TODO: re-enable once model caching across tests can be disabled.
 @pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def _test_full_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = True)

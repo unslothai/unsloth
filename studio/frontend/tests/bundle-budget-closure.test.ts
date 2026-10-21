@@ -7,10 +7,15 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
   BUDGET,
+  LAZY_ONLY_NEEDLES,
+  eagerChunksContaining,
   eagerChunksFromHtml,
   eagerSetFromHtml,
 } from "../scripts/check-bundle-budget.ts";
@@ -339,4 +344,35 @@ test("the chunk count is not budgeted", () => {
   // Splitting a page out of the entry raises the count while lowering the bytes.
   // A cap here would fail the very change the gate exists to encourage.
   assert.ok(!("chunks" in BUDGET));
+});
+
+test("React-preview runtime code in an eager chunk is found, and only there", () => {
+  const dist = mkdtempSync(join(tmpdir(), "bundle-needles-"));
+  try {
+    mkdirSync(join(dist, "assets"));
+    writeFileSync(join(dist, "assets", "index-a.js"), "export const a = 1;\n");
+    writeFileSync(
+      join(dist, "assets", "chat-b.js"),
+      'const r = globalThis.__unslothModules ??= {}; r["x"] = 1;\n',
+    );
+    // A lazy chunk may carry it: it is not in the eager list, so it is not read.
+    writeFileSync(
+      join(dist, "assets", "react-preview-c.js"),
+      "__vite_ssr_import__('react')\n",
+    );
+    const eager = ["assets/index-a.js", "assets/chat-b.js", "assets/gone-d.js"];
+    assert.deepEqual(eagerChunksContaining(dist, eager, LAZY_ONLY_NEEDLES), [
+      { chunk: "assets/chat-b.js", needle: "__unslothModules" },
+    ]);
+    assert.deepEqual(
+      eagerChunksContaining(dist, ["assets/index-a.js"], LAZY_ONLY_NEEDLES),
+      [],
+    );
+    assert.deepEqual(LAZY_ONLY_NEEDLES, [
+      "__unslothModules",
+      "__vite_ssr_import__",
+    ]);
+  } finally {
+    rmSync(dist, { recursive: true, force: true });
+  }
 });

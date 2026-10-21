@@ -61,6 +61,10 @@ test("an interaction on a toast does not dismiss the dialog under it", () => {
     },
     "@/components/app-readiness": { AppPortalGate: "AppPortalGate" },
     "@/components/ui/button": { Button: "Button" },
+    "@/components/ui/dropdown-glow": {
+      DropdownGlowContext: { Provider: "Provider" },
+      dialogDropdownGlow: () => null,
+    },
     "@/lib/utils": { cn: (...classes: unknown[]) => classes.join(" ") },
     "@hugeicons/core-free-icons": { Cancel01Icon: {} },
     "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
@@ -100,6 +104,10 @@ test("an interaction on a toast does not dismiss the sheet under it", () => {
     },
     "@/components/app-readiness": { AppPortalGate: "AppPortalGate" },
     "@/components/ui/button": { Button: "Button" },
+    "@/components/ui/dropdown-glow": {
+      DropdownGlowContext: { Provider: "Provider" },
+      dialogDropdownGlow: () => null,
+    },
     "@/components/ui/dialog": {
       DialogPortalContainerContext: { Provider: "Provider" },
     },

@@ -19,6 +19,7 @@ import type {
   TrainingConfigStore,
   TrainingMethodProvenance,
 } from "../types/config";
+import { drafterStateFrom } from "../lib/drafter-config";
 import {
   createHfBrowseDatasetSelection,
   createUploadBrowseDatasetSelection,
@@ -26,7 +27,7 @@ import {
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
-export const TRAINING_CONFIG_PERSISTENCE_VERSION = 22;
+export const TRAINING_CONFIG_PERSISTENCE_VERSION = 23;
 
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
   new Set([
@@ -45,6 +46,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "decisionLayout",
     "s3Config",
     "wandbToken",
+    "drafterCapability",
   ]);
 
 export function partializeTrainingConfig(
@@ -291,6 +293,27 @@ function migrateThroughVersion22(
   }
 }
 
+// Drafter training arrived in 23: older state has no drafter keys, and a hand-edited or
+// partially written one must never turn the phase on.
+function migrateThroughVersion23(
+  state: PersistedTrainingConfig,
+  version: number,
+): void {
+  if (version >= 23) return;
+  Object.assign(
+    state,
+    drafterStateFrom({
+      enabled: state.drafterEnabled,
+      strategy: state.drafterStrategy,
+      data_source: state.drafterDataSource,
+      max_examples: state.drafterMaxExamples,
+      epochs: state.drafterEpochs,
+      learning_rate: state.drafterLearningRate,
+      draft_steps: state.drafterDraftSteps,
+    }),
+  );
+}
+
 function isDatasetFormat(value: unknown): value is DatasetFormat {
   return (
     value === "auto" ||
@@ -391,6 +414,7 @@ export function migrateTrainingConfig(
   migrateThroughVersion19(state, version);
   migrateThroughVersion21(state, version);
   migrateThroughVersion22(state, version);
+  migrateThroughVersion23(state, version);
   return state as unknown as TrainingConfigStore;
 }
 

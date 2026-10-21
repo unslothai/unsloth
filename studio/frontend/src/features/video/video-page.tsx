@@ -4,7 +4,10 @@
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Alert02Icon,
   ArrowExpand01Icon,
+  ArrowLeftRightIcon,
+  ArrowUpDownIcon,
   Refresh01Icon,
   Cancel01Icon,
   Delete02Icon,
@@ -106,7 +109,20 @@ import {
 import { InfoHint } from "@/components/ui/info-hint";
 import { Switch } from "@/components/ui/switch";
 import { useSidebar } from "@/components/ui/sidebar";
-import { NegativePromptField } from "@/components/negative-prompt-field";
+import { NegativePromptField, PROMPT_BOX_CLASS } from "@/components/negative-prompt-field";
+import {
+  ASPECT_RATIOS,
+  AspectRatioSelect,
+  DimensionSelect,
+  matchAspect,
+} from "@/components/media-size-controls";
+import {
+  fitVideoSize,
+  isPresetSize,
+  snapVideoDim,
+  videoDimOptions,
+  videoSizeLimits,
+} from "./video-size";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -142,7 +158,6 @@ import {
   MediaGenerationPresetControl,
   type VideoGenerationPresetParams,
   closestDurationIndex,
-  closestResolutionIndex,
   shouldApplyModelDefaults,
   useMediaGenerationPresets,
 } from "@/features/generation-presets";
@@ -179,19 +194,25 @@ import {
   isDownloadCancelled,
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
+import { useLoadAnywayPrompt } from "@/components/load-anyway-dialog";
+import { readAllowOversizedLoad, retryWhileCurrent, shouldOfferLoadAnyway } from "@/lib/unified-memory-load-refusal";
+import { evictedSlotsFrom, evictedToastOptions, resyncEvicted, type EvictedSlot } from "@/lib/evicted-toast";
+import { failureMessage, isMultiModelRefusal, MULTI_MODEL_REFUSAL_TITLE, refusalHeadersOf } from "@/lib/multi-model-refusal";
+import { watchSavingPhase } from "@/lib/swap-save-phase";
+import { modelMemorySettingsAction } from "@/features/settings/lib/model-memory-action";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
-import { MATCH_SOURCE_RESOLUTION, matchedCanvas } from "./keyframe-canvas";
+import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
   applyReferenceImageCrop,
   referenceImageDataUrls,
   stageReferenceImage,
   type StagedReferenceImage,
-} from "./reference-image-crop";
-import { ReferenceImageEditor } from "./reference-image-editor";
+} from "@/lib/image-crop";
+import { ReferenceImageEditor } from "@/components/image-crop-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
   defaultReferenceVideoTrim,
@@ -245,29 +266,78 @@ function useVideoModels(
   );
 }
 
-// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
+// Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first. The id is
+// normalized like the backend's family matcher (separator runs become "-", plus a trailing "-"), so "Wan2_1-T2V-14B"
+// and "wan2.1_t2v_14b" hit the same row.
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
 
 const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> = [
   { match: "minimax-h3", steps: 30, guidance: 1 },
-  { match: "minimax_h3", steps: 30, guidance: 1 },
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
+  // Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
+  { match: "fusionx", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
   // T2V-A14B before the generic Wan key.
   { match: "a14b", steps: 20, guidance: 3.5 },
-  { match: "wan2.2-14b", steps: 20, guidance: 3.5 },
+  { match: "wan2-2-14b", steps: 20, guidance: 3.5 },
+  // Before the generic Wan key; the 14B reference workflow runs 20 steps, the 1.3B 30.
+  { match: "wan2-1-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan2-1-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-t2v-14b-", steps: 20, guidance: 6 },
+  { match: "wan21-14b-", steps: 20, guidance: 6 },
+  { match: "wan2-1-", steps: 30, guidance: 6 },
+  { match: "wan21-", steps: 30, guidance: 6 },
   // The backend supplies the fps per family.
   { match: "wan", steps: 20, guidance: 5 },
   { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 
-function defaultsFor(repoId: string): { steps: number; guidance: number } {
-  const id = repoId.toLowerCase();
-  return MODEL_DEFAULTS.find((d) => id.includes(d.match)) ?? DEFAULT_GEN;
+function defaultsFor(repoId: string, family?: string): { steps: number; guidance: number } {
+  const fold = (text: string) => `${text.toLowerCase().replace(/[-_.\s]+/g, "-")}-`;
+  const id = fold(repoId);
+  // The Wan and FusionX rows count only in the model / file name, as on the backend.
+  const name = fold(repoId.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
+  // LTX-2.5 (diffusers' pre-release "2.4" too) is decided on the two names the backend gets: the selected file and
+  // the repo, read by their last segment. A local file's repo is the folder it sits in (the picker loads it from that
+  // directory), a Hub file's is the repo segment after the owner. The version is ltx_name_version's ("ltx-2.5",
+  // "LTX25", "ltx2.5", "LTX-Video-2.5"), or the explicit ltx-2.5 family. The variant is ltx25_is_dev's: the first
+  // name naming one decides, "distill" before a dev / full / sft token (or transformer_full); a dev pick runs 30
+  // steps at guidance 3, anything else the distilled 8 at guidance 1.
+  const segments = repoId.replace(/[\\/]+$/, "").split(/[\\/]/);
+  const local = /^([\\/~.]|[a-z]:)/i.test(repoId);
+  const fileLeaf = segments[segments.length - 1] ?? "";
+  const repoLeaf = local ? segments[segments.length - 2] : segments.length >= 3 ? segments[1] : undefined;
+  const names = [fileLeaf, ...(repoLeaf ? [repoLeaf] : [])].map((n) => n.toLowerCase());
+  const ltxMinor = (text: string) => {
+    for (const found of text.matchAll(
+      /(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9]+)(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))/g,
+    )) {
+      if (found[2] === undefined || Number(found[2]) >= 4) return Number(found[1] ?? found[2] ?? 0);
+    }
+    return undefined;
+  };
+  // The family itself comes from the weights, so a name-less pair falls back to the nearest folder naming a release.
+  const minor = [...names, ...segments.slice(0, -1).reverse().map((n) => n.toLowerCase())]
+    .map(ltxMinor)
+    .find((m) => m !== undefined);
+  if (family?.toLowerCase() === "ltx-2.5" || minor === 4 || minor === 5) {
+    for (const n of names) {
+      if (/(?<![a-z0-9])distill/.test(n)) break;
+      if (/(?<![a-z0-9])(?:dev|full|sft)(?![a-z0-9])|transformer_full/.test(n)) return { steps: 30, guidance: 3 };
+    }
+    return { steps: 8, guidance: 1 };
+  }
+  return (
+    MODEL_DEFAULTS.find((d) =>
+      (d.match.startsWith("wan") || d.match === "fusionx" ? name : id).includes(d.match),
+    ) ?? DEFAULT_GEN
+  );
 }
 
 function defaultsKeyFor(repoId: string, familyOverride: string): string {
+  // An explicit LTX-2.5 family keeps the id: its file and repo names still pick dev or distilled.
+  if (explicitFamily(familyOverride)?.toLowerCase() === "ltx-2.5") return repoId;
   return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
 }
 
@@ -277,6 +347,8 @@ const FALLBACK_RESOLUTION_PRESETS: Array<[number, number]> = [
   [1216, 704],
   [704, 1216],
 ];
+
+const MATCH_SOURCE = "match";
 
 // Fallbacks for the duration presets before a model is loaded, so the select is populated and valid on first paint.
 const FALLBACK_FRAME_STEP = 8;
@@ -406,6 +478,14 @@ function loadFraction(p: VideoLoadProgress): number | null {
 }
 
 function loadToastDescription(p: VideoLoadProgress) {
+  if (p.phase === "saving_chat_context") {
+    return (
+      <ModelLoadDescription
+        title="Saving chat context…"
+        message="Saving the chat model's context so it can resume after this load."
+      />
+    );
+  }
   const frac = loadFraction(p);
   const downloading =
     p.phase === "downloading" && (frac === null || frac < 0.999);
@@ -454,6 +534,9 @@ const IDLE_PROGRESS: VideoLoadProgress = {
   expected_bytes: null,
   error: null,
 };
+
+// What the load toast shows while the backend saves the chat model's context ahead of this load.
+const SAVING_PROGRESS: VideoLoadProgress = { ...IDLE_PROGRESS, phase: "saving_chat_context" };
 
 // Chat's slider, shared with Create. Signature kept for the call sites below.
 function SliderField({
@@ -610,10 +693,14 @@ function LoadedBuildSummary({ status }: { status: VideoStatus | null }) {
   );
 }
 
-/** Report a failed load. A refused precision is a long actionable sentence, so it becomes a
- *  toast description under a short title. Mirrors the images page. */
-function reportLoadFailure(message: string | null | undefined, fallback: string): void {
-  const text = (message || "").trim();
+/** Report a failed load. A refused precision or a Model memory refusal is a long actionable
+ *  sentence, so it becomes a toast description under a short title. Mirrors the images page. */
+function reportLoadFailure(failure: unknown, fallback: string): void {
+  const text = failureMessage(failure).trim();
+  if (isMultiModelRefusal(null, refusalHeadersOf(failure), text)) {
+    toast.error(MULTI_MODEL_REFUSAL_TITLE, { description: text || fallback, action: modelMemorySettingsAction() });
+    return;
+  }
   if (text && isPrecisionRefusal(text)) {
     toast.error(PRECISION_REFUSAL_TITLE, { description: text });
     return;
@@ -878,6 +965,7 @@ type VideoLoadAdvanced = Pick<
   | "transformer_quant"
   | "family_override"
   | "gpu_ids"
+  | "allow_oversized_load"
 >;
 
 // Centered panel used for both halves of the capability gate below: the wait, and the answer.
@@ -934,16 +1022,41 @@ export function VideoPage({
   }
 
   return (
-    <VideoGenerator active={active} onInitialReady={onInitialReady} />
+    <VideoGenerator
+      active={active}
+      onInitialReady={onInitialReady}
+      cpuExperimental={hardware.videoCpuExperimental}
+    />
+  );
+}
+
+/** Kept up for as long as Developer mode is what lets this host render: nothing else on the page
+ *  says the clip is about to run on the CPU. */
+function VideoCpuExperimentalBanner() {
+  return (
+    <div
+      role="status"
+      data-testid="video-cpu-experimental"
+      className="relative z-40 flex shrink-0 items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-xs leading-snug text-amber-700 dark:text-amber-300"
+    >
+      <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} className="mt-px size-3.5 shrink-0" />
+      <span>
+        <span className="font-medium">CPU (experimental).</span> No supported GPU was found, so
+        Developer mode runs video on the CPU. A clip may take hours, use large amounts of RAM and
+        freeze the system. Turn it off in Settings, General, Developer mode.
+      </span>
+    </div>
   );
 }
 
 function VideoGenerator({
   active = true,
   onInitialReady,
+  cpuExperimental = false,
 }: {
   active?: boolean;
   onInitialReady?: () => void;
+  cpuExperimental?: boolean;
 }) {
   const t = useT();
   const initialReadySent = useRef(false);
@@ -992,11 +1105,13 @@ function VideoGenerator({
     guidance: number;
   } | null>(null);
   const [seed, setSeed] = useState("");
-  // Preset index, or MATCH_SOURCE_RESOLUTION for a keyframe-derived canvas.
-  const [resolutionIdx, setResolutionIdx] = useState(0);
+  // True while a staged keyframe sizes the canvas ("Match source"); else resolutionIntent does.
+  const [matchSource, setMatchSource] = useState(false);
   const [resolutionIntent, setResolutionIntent] = useState<[number, number]>(
     FALLBACK_RESOLUTION_PRESETS[0]!,
   );
+  const [aspect, setAspect] = useState(() => matchAspect(...FALLBACK_RESOLUTION_PRESETS[0]!).key);
+  const [portrait, setPortrait] = useState(false);
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
@@ -1126,6 +1241,8 @@ function VideoGenerator({
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The persistent load toast's id, so each poll updates it in place.
   const loadToastId = useRef<string | number | null>(null);
+  // What the load POST unloaded to make room, shown on the "Model loaded" toast it ends with.
+  const pendingEvicted = useRef<EvictedSlot[]>([]);
   // Last load-progress signature shown, so a tick that moved nothing skips the toast.
   const lastLoadSig = useRef<string | null>(null);
   // The quant to restore if the current optimistic swap fails. A pick also applies its own
@@ -1140,6 +1257,12 @@ function VideoGenerator({
   // The Reapply target (and its canReapply flag) to restore if the optimistic swap fails:
   // handleLoad overwrites lastLoad at load start, and a later failure leaves the old model.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current; canReapply: boolean } | null>(null);
+  // Set only around a confirmed Load anyway retry.
+  const oversizedLoadOnce = useRef(false);
+  const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
+  // Synced after render (handleLoadRef is written during render).
+  const retryLoadRef = useRef<((repoId: string, opts: VideoLoadOptions, pinned?: VideoLoadAdvanced) => Promise<boolean>) | null>(null);
+  const { offer: offerLoadAnyway, dismiss: dismissLoadAnyway, dialog: loadAnywayDialog } = useLoadAnywayPrompt();
   // Which pick owns the page: resolving and staging do not set `busy`, so a pick can land on an
   // awaiting one. Lazy state, not a ref, since a ref cannot be written during render.
   const [pickGuard] = useState(createPickGuard);
@@ -1262,10 +1385,15 @@ function VideoGenerator({
     }
     return FALLBACK_RESOLUTION_PRESETS;
   }, [status?.defaults?.resolution_presets]);
-  const livePreviewPreset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
-  const livePreviewBox = livePreviewPreset
-    ? { maxWidth: livePreviewPreset[0], maxHeight: livePreviewPreset[1] }
-    : undefined;
+  const sizeLimits = useMemo(
+    () => videoSizeLimits(status?.defaults, resolutionPresets),
+    [status?.defaults, resolutionPresets],
+  );
+  // The intent survives a family swap; what is shown and sent is its nearest size the family accepts.
+  const videoSize = useMemo(
+    () => fitVideoSize(resolutionIntent[0], resolutionIntent[1], sizeLimits),
+    [resolutionIntent, sizeLimits],
+  );
 
   const frameStep = status?.defaults?.frame_step ?? FALLBACK_FRAME_STEP;
   const frameOffset = status?.defaults?.frame_offset ?? FALLBACK_FRAME_OFFSET;
@@ -1288,16 +1416,13 @@ function VideoGenerator({
     return out;
   }, [frameStep, frameOffset, fps, durationTargets]);
 
-  // Keep the resolution / frame-count selections valid when the loaded family changes.
-  useEffect(() => {
-    setResolutionIdx((idx) =>
-      idx === MATCH_SOURCE_RESOLUTION || idx < resolutionPresets.length ? idx : 0,
-    );
-  }, [resolutionPresets.length]);
-
-  const supportsKeyframes = status?.supports_keyframes === true;
+  const { first: supportsFirstFrame, last: supportsLastFrame } = keyframeSupport(status);
+  const supportsKeyframes = supportsFirstFrame || supportsLastFrame;
   // The keyframe the canvas follows: the first when there is one, else the last, matching the backend.
   const canvasKeyframe = firstFrame ?? lastFrame;
+  // Only MiniMax-H3 derives its canvas from the aspect itself and refuses ratios past 1:4 / 4:1;
+  // the preset families always find a nearest preset.
+  const canvasRefusesAspect = !status?.defaults?.canvas_from_presets;
 
   const supportsReferences = status?.supports_references === true;
   const hasReferenceRoom = hasReferenceCapacity(
@@ -1310,11 +1435,9 @@ function VideoGenerator({
 
   // Drop conditioning that the newly loaded partition cannot accept.
   useEffect(() => {
-    if (status?.loaded && !supportsKeyframes) {
-      setFirstFrame(null);
-      setLastFrame(null);
-    }
-  }, [status?.loaded, supportsKeyframes]);
+    if (status?.loaded && !supportsFirstFrame) setFirstFrame(null);
+    if (status?.loaded && !supportsLastFrame) setLastFrame(null);
+  }, [status?.loaded, supportsFirstFrame, supportsLastFrame]);
   useEffect(() => {
     if (status?.loaded && !supportsReferences) {
       setReferenceImages([]);
@@ -1356,11 +1479,12 @@ function VideoGenerator({
     [keyframeAspect, status?.defaults],
   );
 
+  const sourceSized = matchSource && canvasKeyframe != null && matchedResolution != null;
+  const shownSize = sourceSized ? matchedResolution : videoSize;
+  const livePreviewBox = { maxWidth: shownSize[0], maxHeight: shownSize[1] };
+
   const videoPresetParams = useMemo<VideoGenerationPresetParams>(() => {
-    const resolution =
-      resolutionIdx === MATCH_SOURCE_RESOLUTION && matchedResolution
-        ? matchedResolution
-        : resolutionIntent;
+    const resolution = sourceSized ? matchedResolution : videoSize;
     return {
       negativePrompt,
       width: resolution[0],
@@ -1371,7 +1495,7 @@ function VideoGenerator({
       flowShift,
       audioFlowShift,
     };
-  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, resolutionIdx, resolutionIntent, steps]);
+  }, [audioFlowShift, durationIntentSeconds, flowShift, guidance, matchedResolution, negativePrompt, sourceSized, videoSize, steps]);
   const defaultSteps = status?.defaults?.steps;
   const defaultGuidance = status?.defaults?.guidance;
   const familyDefaultFrames = status?.defaults?.num_frames;
@@ -1405,21 +1529,20 @@ function VideoGenerator({
   }, [defaultAudioFlowShift, defaultFlowShift, defaultGuidance, defaultSteps, durationOptions, familyDefaultFrames, fps, pendingModelDefaults, presetRepoId, resolutionPresets, status?.loaded]);
   const applyVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
-      const resolutionIndex = closestResolutionIndex(
-        resolutionPresets,
-        params.width,
-        params.height,
-      );
+      const size = fitVideoSize(params.width, params.height, sizeLimits);
       const durationIndex = closestDurationIndex(durationOptions, params.durationSeconds);
       const durationFrames =
         durationOptions[durationIndex]?.frames ?? durationOptions[0]?.frames ?? numFrames;
-      setResolutionIntent([params.width, params.height]);
+      setResolutionIntent(size);
+      const matched = matchAspect(size[0], size[1]);
+      setAspect(matched.key);
+      setPortrait(matched.portrait);
+      setMatchSource(false);
       setDurationIntentSeconds(params.durationSeconds);
       setNegativePrompt(params.negativePrompt);
       // Same rule restoreSettings follows: a negative prompt in effect has to be visible, or the
       // user generates against a setting the collapsed field is hiding.
       if (params.negativePrompt) setNegativeOpen(true);
-      setResolutionIdx(resolutionIndex);
       setNumFrames(durationFrames);
       setSteps(params.steps);
       setGuidance(params.guidance);
@@ -1427,14 +1550,11 @@ function VideoGenerator({
       setAudioFlowShift(params.audioFlowShift);
       return params;
     },
-    [durationOptions, numFrames, resolutionPresets],
+    [durationOptions, numFrames, sizeLimits],
   );
   const normalizeVideoPresetParams = useCallback(
     (params: VideoGenerationPresetParams) => {
-      const resolution =
-        resolutionPresets[
-          closestResolutionIndex(resolutionPresets, params.width, params.height)
-        ] ?? resolutionPresets[0] ?? [768, 512];
+      const resolution = fitVideoSize(params.width, params.height, sizeLimits);
       const duration =
         durationOptions[
           closestDurationIndex(durationOptions, params.durationSeconds)
@@ -1446,7 +1566,7 @@ function VideoGenerator({
         durationSeconds: duration,
       };
     },
-    [durationOptions, resolutionPresets],
+    [durationOptions, sizeLimits],
   );
   const videoPresets = useMediaGenerationPresets({
     kind: "video",
@@ -1469,7 +1589,10 @@ function VideoGenerator({
       // whether the user takes the form after THIS pick.
       const claimedAt = videoFormClaimId();
       pickRecipeSuperseded.current = () => videoFormClaimId() !== claimedAt;
-      const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
+      const recommended = defaultsFor(
+        defaultsKeyFor(repoId, effectiveFamilyOverride),
+        explicitFamily(effectiveFamilyOverride),
+      );
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -1487,17 +1610,6 @@ function VideoGenerator({
     [claimVideoRecipe, familyOverride, videoFormClaimId],
   );
 
-  useEffect(() => {
-    setResolutionIdx((current) => {
-      if (current === MATCH_SOURCE_RESOLUTION) return current;
-      return closestResolutionIndex(
-        resolutionPresets,
-        resolutionIntent[0],
-        resolutionIntent[1],
-      );
-    });
-  }, [resolutionIntent, resolutionPresets]);
-
   // Select "match source" only after the staged keyframe passes the aspect-ratio check.
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
@@ -1505,17 +1617,8 @@ function VideoGenerator({
     if (has === hadKeyframeRef.current) return;
     if (has && !matchedResolution) return;
     hadKeyframeRef.current = has;
-    setResolutionIdx((idx) => {
-      if (has) return MATCH_SOURCE_RESOLUTION;
-      return idx === MATCH_SOURCE_RESOLUTION
-        ? closestResolutionIndex(
-            resolutionPresets,
-            resolutionIntent[0],
-            resolutionIntent[1],
-          )
-        : idx;
-    });
-  }, [canvasKeyframe, matchedResolution, resolutionIntent, resolutionPresets]);
+    setMatchSource(has);
+  }, [canvasKeyframe, matchedResolution]);
 
   const loadedFamily = status?.loaded ? status.family : null;
   const prevFamilyRef = useRef<string | null>(null);
@@ -2207,14 +2310,12 @@ function VideoGenerator({
       if (video.flow_shift != null) setFlowShift(video.flow_shift);
       if (video.audio_flow_shift != null) setAudioFlowShift(video.audio_flow_shift);
       setSeed(String(video.seed));
-      // Snap the resolution to the matching preset when one exists; else leave as is.
-      const presetIdx = resolutionPresets.findIndex(
-        ([w, h]) => w === video.width && h === video.height,
-      );
-      if (presetIdx >= 0) {
-        setResolutionIntent([video.width, video.height]);
-        setResolutionIdx(presetIdx);
-      }
+      const size = fitVideoSize(video.width, video.height, sizeLimits);
+      setResolutionIntent(size);
+      const matched = matchAspect(size[0], size[1]);
+      setAspect(matched.key);
+      setPortrait(matched.portrait);
+      setMatchSource(false);
       // Restore the frame count when it lies on the current lattice.
       if (durationOptions.some((o) => o.frames === video.num_frames)) {
         setDurationIntentSeconds(video.num_frames / fps);
@@ -2222,7 +2323,7 @@ function VideoGenerator({
       }
       toast.success("Settings restored to inputs");
     },
-    [resolutionPresets, durationOptions, fps],
+    [sizeLimits, durationOptions, fps],
   );
 
   // A status read started before an eject can answer after the one that followed it, and this
@@ -2343,6 +2444,16 @@ function VideoGenerator({
     setSelectorOpen(false);
   }, [active]);
 
+  const offerLoadAnywayFor = useCallback(
+    (failure: unknown, code?: string | null): boolean => {
+      const attempt = lastLoadAttempt.current;
+      if (!attempt || !shouldOfferLoadAnyway({ code, failure, overrideSent: attempt.overrideSent })) return false;
+      offerLoadAnyway(failureMessage(failure) || "Failed to load model", attempt.retry);
+      return true;
+    },
+    [offerLoadAnyway],
+  );
+
   // Poll load-progress until the background load reaches "ready" or "error", updating the persistent toast in place.
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
@@ -2360,7 +2471,9 @@ function VideoGenerator({
           return;
         }
         setStatusIfNewest(ticket, loaded);
-        toast.success("Model loaded");
+        const evicted = pendingEvicted.current;
+        pendingEvicted.current = [];
+        toast.success("Model loaded", evictedToastOptions(evicted));
         setBusy(null);
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
@@ -2369,8 +2482,9 @@ function VideoGenerator({
         return;
       }
       if (p.phase === "error") {
+        pendingEvicted.current = [];
         dismissLoadToast();
-        reportLoadFailure(p.error, "Failed to load model");
+        if (!offerLoadAnywayFor(p.error, p.error_code)) reportLoadFailure(p.error, "Failed to load model");
         setBusy(null);
         if (quantRevert.current) {
           revertPick(quantRevert.current);
@@ -2386,6 +2500,7 @@ function VideoGenerator({
         return;
       }
       if (p.phase === null) {
+        pendingEvicted.current = [];
         // No load in flight and nothing loaded: the load was cancelled or evicted. Terminal, else this
         // loop spins forever.
         dismissLoadToast();
@@ -2413,7 +2528,7 @@ function VideoGenerator({
     }
     if (seq !== cancelSeq.current) return;
     pollTimer.current = setTimeout(() => void pollLoadProgress(), 1000);
-  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast]);
+  }, [dismissLoadToast, refreshStatus, cancelLoadFromToast, offerLoadAnywayFor]);
 
   // Put back what a teardown removed when the load it was tearing down is still running: the
   // unload failed, so the poll and toast were stopped for nothing. refreshStatus cannot do
@@ -2589,6 +2704,8 @@ function VideoGenerator({
           controls.gpuChoices.some((d) => String(d.index) === controls.selectedGpu)
             ? [Number(controls.selectedGpu)]
             : undefined,
+        // Only a confirmed Load anyway retry sets it, around the one loadOrStage call that snapshots this.
+        allow_oversized_load: oversizedLoadOnce.current ? true : undefined,
       };
     },
     [],
@@ -2633,6 +2750,8 @@ function VideoGenerator({
       // unload that can reach the backend first, find no load registered, and stop nothing.
       const startSeq = cancelSeq.current;
       const startLoad = ++loadSeq.current;
+      // An older pick's Load anyway prompt would retry a model this load supersedes.
+      dismissLoadAnyway();
       // Published now and settled in the finally below, so a cancel waits for the WHOLE path.
       let settleLoad: () => void = () => {};
       const inFlight = new Promise<void>((resolve) => {
@@ -2659,6 +2778,19 @@ function VideoGenerator({
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad, canReapply: prevCanReapply };
+      const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+      const retryPick = pickSeq.current;
+      const retryOversized = retryWhileCurrent(
+        () => retryPick === pickSeq.current && startLoad === loadSeq.current,
+        () => void retryLoadRef.current?.(repoId, opts, { ...advanced, allow_oversized_load: true }),
+      );
+      lastLoadAttempt.current = { overrideSent, retry: retryOversized };
+      // The POST may first save the chat model's context; show that on this load's toast meanwhile.
+      const savePoll = watchSavingPhase(getVideoLoadProgress, () => {
+        if (startSeq === cancelSeq.current && startLoad === loadSeq.current && loadToastId.current != null) {
+          toast(null, loadToastArgs(SAVING_PROGRESS, loadToastId.current, cancelLoadFromToast));
+        }
+      });
       try {
         // Returns immediately; the load runs in the background and we poll.
         const startRequest = loadVideoModel({
@@ -2677,19 +2809,26 @@ function VideoGenerator({
           // joining the pinned set.
           h3_task: opts.h3Task,
           gpu_ids: advanced.gpu_ids,
+          allow_oversized_load: advanced.allow_oversized_load,
         });
-        await startRequest;
+        const answer = await startRequest;
+        pendingEvicted.current = evictedSlotsFrom(answer);
+        resyncEvicted(pendingEvicted.current, "video");
       } catch (err) {
+        pendingEvicted.current = [];
         lastLoad.current = prevLastLoad;
         setCanReapply(prevCanReapply);
         lastLoadRevert.current = null;
         dismissLoadToast();
-        reportLoadFailure(err instanceof Error ? err.message : "", "Failed to start load");
+        if (!offerLoadAnywayFor(err)) reportLoadFailure(err, "Failed to start load");
         setBusy(null);
         void refreshStatus();
         return settle(false);
+      } finally {
+        savePoll.stop();
       }
       if (startSeq !== cancelSeq.current) {
+        pendingEvicted.current = [];
         // Cancelled during the start request: the unload it sent may have landed before this load
         // registered, leaving it running with no toast and no Cancel. The load exists as of this
         // line, so unload once more, unless a NEWER load has taken the page.
@@ -2717,6 +2856,8 @@ function VideoGenerator({
       canReapply,
       currentLoadAdvanced,
       pickToast,
+      offerLoadAnywayFor,
+      dismissLoadAnyway,
     ],
   );
 
@@ -2731,6 +2872,9 @@ function VideoGenerator({
     toastId?: string;
   } | null>(null);
   const handleLoadRef = useRef(handleLoad);
+  useEffect(() => {
+    retryLoadRef.current = handleLoad;
+  }, [handleLoad]);
   handleLoadRef.current = handleLoad;
   // A download finishing while this page is hidden must not evict the model the visible page
   // loaded. The pick is held, not dropped.
@@ -2807,6 +2951,7 @@ function VideoGenerator({
       // missing its base repo's text encoder or VAE. Staging never sets `busy`, so plans resolve in
       // response order; bumped before the non-hub return too, so a local pick invalidates one in flight.
       const pick = ++pickSeq.current;
+      dismissLoadAnyway();
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       pendingStagedLoad.current = null;
@@ -2824,6 +2969,7 @@ function VideoGenerator({
       const ownRevert = quantRevert.current;
       // Read inside the try, acted on outside it, as on the images page.
       let incompatible: string | null = null;
+      let incompatibleCode: string | null = null;
       try {
         const plan = await getVideoDownloadPlan({
           model_path: opts.displayRepoId ?? repoId,
@@ -2841,6 +2987,8 @@ function VideoGenerator({
           h3_task: opts.h3Task,
           // The plan sizes its file set against the card the load will use, so it needs the pick.
           gpu_ids: advanced.gpu_ids,
+          // A Load anyway retry sends it on the plan too, or the plan refuses the pick again.
+          allow_oversized_load: advanced.allow_oversized_load,
         });
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) {
@@ -2852,6 +3000,7 @@ function VideoGenerator({
         // GGUF/base size pairing and the video planner has no diffusers base to pair against, so this is
         // the shared envelope's half of the contract rather than a live path.
         incompatible = plan.incompatible_reason ?? null;
+        incompatibleCode = plan.incompatible_code ?? null;
         if (!incompatible && plan.entries.length > 0) {
           const entries = diffusionStagingEntries(plan.entries, repoId, opts);
           if (entries.length === 0) return handleLoadRef.current(repoId, opts, advanced);
@@ -2877,13 +3026,29 @@ function VideoGenerator({
       }
       if (incompatible) {
         pickToast.dismiss(pickToastId);
-        toast.error(incompatible);
+        const overrideSent = advanced.allow_oversized_load === true || readAllowOversizedLoad();
+        if (shouldOfferLoadAnyway({ code: incompatibleCode, overrideSent })) {
+          offerLoadAnyway(incompatible, retryWhileCurrent(() => pick === pickSeq.current, () => {
+            oversizedLoadOnce.current = true;
+            try {
+              void loadOrStageRef.current(repoId, opts, source, undefined, familyOverrideRequired);
+            } finally {
+              oversizedLoadOnce.current = false;
+            }
+          }));
+        } else {
+          toast.error(incompatible);
+        }
         return false;
       }
       return handleLoadRef.current(repoId, opts, advanced, pickToastId);
     },
-    [stage, pickGuard, currentLoadAdvanced, pickToast],
+    [stage, pickGuard, currentLoadAdvanced, pickToast, offerLoadAnyway, dismissLoadAnyway],
   );
+  const loadOrStageRef = useRef(loadOrStage);
+  useEffect(() => {
+    loadOrStageRef.current = loadOrStage;
+  }, [loadOrStage]);
 
   // A GGUF pick can arrive with only a repo id. The backend rejects a gguf load with no filename
   // and a pipeline load of a GGUF repo, so name the file from the listing first.
@@ -3132,7 +3297,8 @@ function VideoGenerator({
     stagedLoadDeferred.current = false;
     stagedQuantRevert.current = null;
     pickToast.dismissAll();
-  }, [pickToast]);
+    dismissLoadAnyway();
+  }, [pickToast, dismissLoadAnyway]);
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
@@ -3384,6 +3550,54 @@ function VideoGenerator({
     }
   }, []);
 
+  // As on Images: a locked ratio keeps the paired side in step; every pair is fitted to the family.
+  const dimOptions = useMemo(() => videoDimOptions(sizeLimits), [sizeLimits]);
+  const applySize = (width: number, height: number, keepAspect = false) => {
+    const size = fitVideoSize(width, height, sizeLimits);
+    setResolutionIntent(size);
+    setMatchSource(false);
+    if (keepAspect) return;
+    const matched = matchAspect(size[0], size[1]);
+    setAspect(matched.key);
+    setPortrait(matched.portrait);
+  };
+  const ratioHW = (key: string, isPortrait: boolean) => {
+    const [a, b] = ASPECT_RATIOS[key] ?? [1, 1];
+    return isPortrait ? a / b : b / a;
+  };
+  const changeAspect = (key: string) => {
+    if (key === MATCH_SOURCE) {
+      setMatchSource(true);
+      return;
+    }
+    setAspect(key);
+    const [w, h] = shownSize;
+    // Leaving Match source takes the keyframe's orientation with its size.
+    const isPortrait = sourceSized ? h > w : portrait;
+    setPortrait(isPortrait);
+    if (key === "custom") {
+      applySize(w, h, true);
+      return;
+    }
+    applySize(w, snapVideoDim(w * ratioHW(key, isPortrait), sizeLimits), true);
+  };
+  const changeWidth = (v: number) => {
+    const locked = !sourceSized && aspect !== "custom";
+    applySize(v, locked ? snapVideoDim(v * ratioHW(aspect, portrait), sizeLimits) : shownSize[1], locked);
+  };
+  const changeHeight = (v: number) => {
+    const locked = !sourceSized && aspect !== "custom";
+    applySize(locked ? snapVideoDim(v / ratioHW(aspect, portrait), sizeLimits) : shownSize[0], v, locked);
+  };
+  const flipDimensions = () => {
+    if (sourceSized) {
+      applySize(shownSize[1], shownSize[0]);
+      return;
+    }
+    applySize(shownSize[1], shownSize[0], true);
+    setPortrait((p) => !p);
+  };
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
@@ -3421,8 +3635,6 @@ function VideoGenerator({
     }
 
     // Omitting both dimensions delegates "match source" to the backend.
-    const matchSource = resolutionIdx === MATCH_SOURCE_RESOLUTION;
-    const preset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
 
     // Saved only once the request passes validation, so a rejected attempt is not kept.
     saveLastPrompt("video", prompt);
@@ -3438,15 +3650,15 @@ function VideoGenerator({
           status?.supports_cfg !== false && guidance > 0
             ? negativePrompt.trim() || undefined
             : undefined,
-        width: matchSource ? undefined : preset[0],
-        height: matchSource ? undefined : preset[1],
+        width: sourceSized ? undefined : videoSize[0],
+        height: sourceSized ? undefined : videoSize[1],
         num_frames: numFrames,
         fps,
         steps,
         guidance: status?.supports_cfg !== false ? guidance : undefined,
         seed: resolvedSeed,
-        first_frame: supportsKeyframes ? firstFrame ?? undefined : undefined,
-        last_frame: supportsKeyframes ? lastFrame ?? undefined : undefined,
+        first_frame: supportsFirstFrame ? firstFrame ?? undefined : undefined,
+        last_frame: supportsLastFrame ? lastFrame ?? undefined : undefined,
         reference_images:
           supportsReferences && referenceImages.length > 0
             ? referenceImageDataUrls(referenceImages)
@@ -3496,13 +3708,14 @@ function VideoGenerator({
     negativePrompt,
     guidance,
     seed,
-    resolutionPresets,
-    resolutionIdx,
+    videoSize,
+    sourceSized,
     numFrames,
     fps,
     steps,
     status?.supports_cfg,
-    supportsKeyframes,
+    supportsFirstFrame,
+    supportsLastFrame,
     firstFrame,
     lastFrame,
     supportsReferences,
@@ -3587,7 +3800,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Unsloth fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -3731,6 +3944,7 @@ function VideoGenerator({
           </div>
         </DialogContent>
       </Dialog>
+      {cpuExperimental ? <VideoCpuExperimentalBanner /> : null}
       {/* Header: selector over the rail, Library link over the preview, as on Images and Audio. */}
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
         <div
@@ -3760,7 +3974,7 @@ function VideoGenerator({
               task={VIDEO_GEN_TASKS}
               catalog={VIDEO_CATALOG}
               opaqueKind={opaqueKind}
-              hubCapability="diffusion"
+              hubCapability="video-gen"
               placeholder="Select video model"
               open={active && selectorOpen}
               onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -3838,9 +4052,11 @@ function VideoGenerator({
               <p className="text-xs leading-snug text-muted-foreground">
                 {supportsReferences
                   ? "Generate a video from a prompt and reference pictures, videos or audio"
-                  : supportsKeyframes
+                  : supportsLastFrame
                     ? "Generate a video from a prompt, or from a start and end frame"
-                    : "Generate a video from a prompt"}
+                    : supportsFirstFrame
+                      ? "Generate a video from a prompt, or animate a start frame"
+                      : "Generate a video from a prompt"}
               </p>
             </div>
 
@@ -3856,10 +4072,11 @@ function VideoGenerator({
             />
           </div>
 
-          <Field label="Prompt">
+          <Field label="Prompt" hint={status?.prompt_hint || undefined}>
             <Textarea
               data-type-to-activate="prompt"
               rows={4}
+              className={cn(PROMPT_BOX_CLASS, "min-h-32")}
               placeholder={exampleDismissed ? undefined : VIDEO_EXAMPLE_PROMPT}
               value={prompt}
               onFocus={() => {
@@ -3870,39 +4087,51 @@ function VideoGenerator({
               onChange={(e) => setPrompt(e.target.value)}
             />
           </Field>
+          {status?.supports_cfg !== false && (
+            <NegativePromptField
+              value={negativePrompt}
+              onChange={setNegativePrompt}
+              open={negativeOpen}
+              onOpenChange={setNegativeOpen}
+              hint="What to steer the video away from. Only used when guidance is above 0."
+            />
+          )}
 
           {supportsKeyframes && (
-            <div className="grid gap-2">
+            <div className="grid gap-2" data-testid="video-keyframes">
               <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                Start and end frame
+                {supportsLastFrame ? "Start and end frame" : "Start frame"}
                 <InfoHint>
-                  Optional. A start frame animates that picture; an end frame makes the clip land
-                  on one; both make it travel between them. Text-to-video is what you get with
-                  neither. The start frame is stretched onto the canvas and the end frame is
-                  centre-cropped, which is how the model was conditioned.
+                  {supportsLastFrame
+                    ? "Optional. A start frame animates that picture; an end frame makes the clip land on one; both make it travel between them. Text-to-video is what you get with neither. The start frame is stretched onto the canvas and the end frame is centre-cropped, which is how the model was conditioned."
+                    : "Optional. The clip starts on this picture and animates it (image-to-video); without one it is text-to-video. Match source picks the resolution preset closest to the picture's shape, and the picture is centre-cropped onto it."}
                 </InfoHint>
               </span>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="grid gap-1.5">
-                  <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
-                  <ImageDropzone
-                    value={firstFrame}
-                    onChange={setFirstFrame}
-                    label="Click or drop"
-                    removeLabel="Remove start frame"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <span className="text-ui-11 text-muted-foreground/70">End frame</span>
-                  <ImageDropzone
-                    value={lastFrame}
-                    onChange={setLastFrame}
-                    label="Click or drop"
-                    removeLabel="Remove end frame"
-                  />
-                </div>
+              <div className={supportsLastFrame ? "grid grid-cols-2 gap-2" : "grid gap-2"}>
+                {supportsFirstFrame && (
+                  <div className="grid gap-1.5">
+                    <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
+                    <ImageDropzone
+                      value={firstFrame}
+                      onChange={setFirstFrame}
+                      label="Click or drop"
+                      removeLabel="Remove start frame"
+                    />
+                  </div>
+                )}
+                {supportsLastFrame && (
+                  <div className="grid gap-1.5">
+                    <span className="text-ui-11 text-muted-foreground/70">End frame</span>
+                    <ImageDropzone
+                      value={lastFrame}
+                      onChange={setLastFrame}
+                      label="Click or drop"
+                      removeLabel="Remove end frame"
+                    />
+                  </div>
+                )}
               </div>
-              {canvasKeyframe && !matchedResolution && (
+              {canvasKeyframe && !matchedResolution && canvasRefusesAspect && (
                 // Surface the same aspect-ratio rejection before Generate.
                 <p className="text-ui-11 leading-snug text-destructive">
                   This picture is too far from square for MiniMax-H3, which was trained between
@@ -3985,6 +4214,8 @@ function VideoGenerator({
                       }
                       label="Add"
                       className="h-24"
+                      // MiniMax-H3 references take up to 8192px and have their own crop and fit.
+                      maxSide={null}
                     />
                   </div>
                 )}
@@ -4206,43 +4437,69 @@ function VideoGenerator({
             />
           )}
 
-          {status?.supports_cfg !== false && (
-            <NegativePromptField
-              value={negativePrompt}
-              onChange={setNegativePrompt}
-              open={negativeOpen}
-              onOpenChange={setNegativeOpen}
-              hint="What to steer the video away from. Only used when guidance is above 0."
+          <Field
+            label="Aspect ratio"
+            hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height. With a keyframe staged, Match source keeps the picture's own shape."
+          >
+            <AspectRatioSelect
+              value={sourceSized ? MATCH_SOURCE : aspect}
+              onValueChange={changeAspect}
+              portrait={sourceSized ? shownSize[1] > shownSize[0] : portrait}
+              onFlip={flipDimensions}
+              extraItems={
+                canvasKeyframe && matchedResolution ? (
+                  <SelectItem value={MATCH_SOURCE}>Match source</SelectItem>
+                ) : null
+              }
             />
-          )}
+          </Field>
 
           <Field
             label="Resolution"
-            hint="The frame size. Presets come from the loaded model; portrait presets are marked. With a keyframe staged, Match source keeps the picture's own shape."
+            hint={`Width and height in pixels, in steps of ${sizeLimits.multiple}. The model was trained at ${resolutionPresets.map(([w, h]) => `${w} × ${h}`).join(", ")}; other sizes keep about the same pixel count and may lower quality.`}
+          >
+            <div className="flex items-center gap-2">
+              <DimensionSelect
+                icon={ArrowLeftRightIcon}
+                label="Width"
+                value={shownSize[0]}
+                onChange={changeWidth}
+                options={dimOptions}
+                snap={(n) => snapVideoDim(n, sizeLimits)}
+              />
+              <DimensionSelect
+                icon={ArrowUpDownIcon}
+                label="Height"
+                value={shownSize[1]}
+                onChange={changeHeight}
+                options={dimOptions}
+                snap={(n) => snapVideoDim(n, sizeLimits)}
+              />
+            </div>
+            {!sourceSized && !isPresetSize(videoSize[0], videoSize[1], sizeLimits) && (
+              <p className="text-ui-11 leading-snug text-muted-foreground">
+                Not one of the model's trained sizes, so quality may be lower.
+              </p>
+            )}
+          </Field>
+
+          <Field
+            label="Trained sizes"
+            hint="The sizes the loaded model was trained at, which give the best quality. Portrait sizes are marked."
           >
             <Select
-              value={String(resolutionIdx)}
+              value=""
               onValueChange={(v) => {
-                const index = Number(v);
-                const resolution = resolutionPresets[index];
-                if (resolution) setResolutionIntent(resolution);
-                setResolutionIdx(index);
+                const preset = resolutionPresets.find(([w, h]) => `${w}x${h}` === v);
+                if (preset) applySize(preset[0], preset[1]);
               }}
             >
-              <SelectTrigger>
-                <SelectValue />
+              <SelectTrigger aria-label="Trained sizes">
+                <SelectValue placeholder="Choose a trained size" />
               </SelectTrigger>
               <SelectContent>
-                {canvasKeyframe && (
-                  <SelectItem value={String(MATCH_SOURCE_RESOLUTION)}>
-                    Match source
-                    {matchedResolution
-                      ? ` · ${matchedResolution[0]} × ${matchedResolution[1]}`
-                      : ""}
-                  </SelectItem>
-                )}
-                {resolutionPresets.map(([w, h], i) => (
-                  <SelectItem key={`${w}x${h}`} value={String(i)}>
+                {resolutionPresets.map(([w, h]) => (
+                  <SelectItem key={`${w}x${h}`} value={`${w}x${h}`}>
                     {w} × {h}
                     {h > w ? " (portrait)" : ""}
                   </SelectItem>
@@ -4738,6 +4995,7 @@ function VideoGenerator({
         </div>
 
       </div>
+      {loadAnywayDialog}
     </div>
   );
 }

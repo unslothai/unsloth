@@ -36,6 +36,19 @@ QWEN3_BASE = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF"
 CLONE_FIELDS = {"workflow", "audio_inputs", "reference_text", "speed"}
 
 
+_CLIP_KEYS = {
+    "id",
+    "role",
+    "url",
+    "sample_rate",
+    "duration_s",
+    "workflow",
+    "seed",
+    "voice_id",
+    "source_clip_id",
+}
+
+
 def _wav(rate = 24000, frames = 2400) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
@@ -181,7 +194,7 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
     assert all(not isinstance(v, (bytes, bytearray)) for v in call.values())
     assert body["audio"] is None
     (clip,) = body["clips"]
-    assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow"}
+    assert set(clip) == _CLIP_KEYS
     assert (clip["role"], clip["workflow"], clip["sample_rate"]) == ("output", "clone", 24000)
     sidecar = _sidecar(tmp_path, clip["id"])
     meta = json.loads(sidecar)
@@ -192,6 +205,7 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         "options": {"x_vector_only_mode": False},
         "reference_text_used": True,
         "speed": None,
+        "seed": None,
     }
     assert str(tmp_path) not in sidecar and "inputs" not in sidecar
 
@@ -397,13 +411,14 @@ def test_an_emotion_clip_reaches_a_family_that_takes_one(stub):
 
 
 def test_a_failed_gallery_save_returns_the_audio_inline(stub, monkeypatch):
+    _reporting(stub["backend"], 77)
     input_id = _input(ALICE)
     monkeypatch.setattr(inference, "_persist_tts_clip", lambda *a, **k: None)
     with _client(ALICE) as client:
         response = _run(client, inputs = {"reference": {"input_id": input_id}, "reference_text": "x"})
     body = response.json()
     assert response.status_code == 200 and body["clips"] == []
-    assert body["audio"]["sample_rate"] == 24000
+    assert (body["audio"]["sample_rate"], body["audio"]["seed"]) == (24000, 77)
     assert base64.b64decode(body["audio"]["data"])[:4] == b"RIFF"
 
 
@@ -554,6 +569,22 @@ class _MusicBackend(_Backend):
 def _music(client, **body):
     payload = {"workflow": "music", "mode": "song", "text": "uplifting house", **body}
     return client.post("/api/inference/audio/run", json = payload)
+
+
+def test_music_wait_scales_with_the_runtime_backend(stub):
+    from core.inference.audio_cpp_music import timeout_seconds
+
+    waits = {}
+    for runtime in ("cuda", "metal"):
+        info = {**_music_info(), "audio_cpp_backend": runtime}
+        backend = stub["use"](STABLE_AUDIO, info)
+        backend.__class__ = _MusicBackend
+        backend.takes, backend.run_dirs = 1, []
+        with _client(ALICE) as client:
+            assert _music(client, duration_s = 30).status_code == 200
+        waits[runtime] = backend.calls[-1]["music"]["timeout_s"]
+    assert waits == {r: timeout_seconds("stable_audio", 30.0, 1, r) for r in waits}
+    assert waits["metal"] > waits["cuda"]
 
 
 def test_music_variations_are_saved_as_one_group(stub, tmp_path):
@@ -1024,7 +1055,7 @@ def test_a_separation_prepares_44k_and_saves_every_stem_as_one_group(sep, tmp_pa
     assert body["audio"] is None and body["model"] and len(body["group_id"]) == 32
     assert stem_bytes.status_code == 200 and stem_bytes.content[:4] == b"RIFF"
     for clip in body["clips"]:
-        assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow"}
+        assert set(clip) == _CLIP_KEYS
         assert (clip["workflow"], clip["sample_rate"], clip["duration_s"]) == (
             "separate",
             44100,
@@ -1052,6 +1083,26 @@ def test_a_mono_track_reaches_the_runtime_as_44k_mono(sep):
         assert _separate(client, {"input_id": input_id}).status_code == 200
     rate, channels, frames = _wav_info(sep.separations[0]["source_path"])
     assert (rate, channels) == (44100, 1) and abs(frames - 44100) <= 1
+
+
+def test_a_separation_that_runs_out_of_memory_answers_with_its_code(sep):
+    from core.inference import audio_cpp_failures as af
+    from core.inference.audio_cpp_server import AudioCppUnavailableError
+
+    tail = "ggml_gallocr_reserve_n: failed to allocate CUDA0 buffer of size 9663676416"
+    crash = af.attach_failure(
+        AudioCppUnavailableError("The audio runtime stopped while serving the request."),
+        af.classify_audio_cpp_failure(tail, backend = "cuda"),
+    )
+
+    def fail(output_dir):
+        raise crash
+
+    sep.outputs = fail
+    with _client(ALICE) as client:
+        response = _separate(client, {"input_id": _input(ALICE, 1.0)})
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"]["code"] == "out_of_memory"
 
 
 def test_a_history_clip_can_be_separated_and_is_recorded(sep, tmp_path):
@@ -1770,6 +1821,8 @@ def test_the_worker_and_orchestrator_carry_convert_and_the_running_task(monkeypa
         def runtime_fields(self):
             return {"audio_server_task": "vc", "audio_convert_route": None}
 
+        separate_audio = lambda self, **kwargs: []
+
     responses: queue.Queue = queue.Queue()
     convert = {"mode": "speech", "pitch": None, "pitch_auto": False, "style": "source"}
     _handle_generate_audio(
@@ -1787,6 +1840,9 @@ def test_the_worker_and_orchestrator_carry_convert_and_the_running_task(monkeypa
     assert seen[0]["convert"] == convert and seen[0]["workflow"] == "convert"
     done = responses.get_nowait()
     assert done["audio_runtime"] == {"audio_server_task": "vc", "audio_convert_route": None}
+    sep = {"workflow": "separate", "audio_inputs": {"source": "s"}, "output_dir": "o"}
+    _handle_generate_audio(_Backend(), sep, responses, threading.Event())
+    assert responses.get_nowait()["audio_runtime"]["audio_server_task"] == "vc"
 
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
     sent = []
@@ -2066,3 +2122,94 @@ def test_speech_pcm_is_openais_24k_mono_samples(stub, monkeypatch, rate, channel
     assert abs(len(response.content) - 48000) <= 2 * 64
     if (rate, channels) == (24000, 1):
         assert response.content == buf.getvalue()[44:]
+
+
+def _reporting(
+    backend,
+    seed,
+    ignored = (),
+):
+    run = backend.generate_audio_response
+
+    def generate(**kwargs):
+        kwargs["stats_holder"]["stats"] = {"seed": seed, "ignored_options": list(ignored)}
+        return run(**kwargs)
+
+    backend.generate_audio_response = generate
+    return backend
+
+
+def test_seed_round_trip_run_response_and_gallery_settings(stub, tmp_path):
+    _reporting(stub["backend"], 77, ["top_k"])
+    with _client(ALICE) as client:
+        ref = {"reference": {"input_id": _input(ALICE)}, "reference_text": "Hi."}
+        response = _run(client, inputs = ref)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["clips"][0]["seed"] == 77 and body["ignored_options"] == ["top_k"]
+    assert json.loads(_sidecar(tmp_path, body["clips"][0]["id"]))["settings"]["seed"] == 77
+
+
+def test_generate_json_returns_seed_and_persists_settings(stub, tmp_path):
+    _reporting(stub["use"](*_KOKORO), 5, ["mode"])
+    with _client(ALICE) as client:
+        body = _generate(client).json()
+    assert (body["seed"], body["ignored_options"]) == (5, ["mode"])
+    assert json.loads(_sidecar(tmp_path, body["clip_id"]))["settings"] == {"seed": 5}
+
+
+def test_edit_and_convert_report_ignored_options(stub):
+    from test_audio_edit_route import _edit, _load
+
+    _reporting(_load(stub), None, ["top_k"])
+    with _client(ALICE) as client:
+        edited = _edit(client, _input(ALICE))
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["ignored_options"] == ["top_k"]
+    _reporting(_use(stub, "rvc", "RVC-GGUF"), 7, ["top_k"])
+    with _client(ALICE) as client:
+        converted = _convert(
+            client,
+            inputs = {"source": {"input_id": _input(ALICE, seconds = 2.0)}},
+            convert = {"voice": "manthos"},
+        )
+    assert converted.status_code == 200, converted.text
+    assert converted.json()["ignored_options"] == ["top_k"]
+
+
+def test_music_take_persists_group_role_variation_and_take_seed(stub, tmp_path, monkeypatch):
+    backend = stub["use"](STABLE_AUDIO, _music_info())
+    backend.__class__ = _MusicBackend
+    backend.takes, backend.run_dirs = 1, []
+    group = "ab" * 16
+    with _client(ALICE) as client:
+        response = _music(client, take = 2, group_id = group, seed = 40)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert backend.calls[0]["music"]["take"] == 1 and body["group_id"] == group
+    (clip,) = body["clips"]
+    assert (clip["role"], clip["seed"]) == ("variation", 40)
+    meta = json.loads(_sidecar(tmp_path, clip["id"]))
+    assert (meta["group_id"], meta["role"]) == (group, "variation")
+    assert meta["settings"]["variation"] == 2
+    monkeypatch.setattr(inference, "_persist_tts_clip", lambda *a, **k: None)
+    with _client(ALICE) as client:
+        inline = _music(client, take = 1, group_id = group).json()
+    assert (inline["clips"], inline["audio"]["seed"]) == ([], 40)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"workflow": "music", "mode": "song", "take": 1, "variations": 2},
+        {"workflow": "clone", "take": 1},
+        {"workflow": "speak", "group_id": "ab" * 16},
+        {"workflow": "music", "mode": "song", "group_id": "AB" * 16},
+        {"workflow": "music", "mode": "song", "take": 5},
+        {"workflow": "music", "mode": "song", "take": 2},
+    ],
+)
+def test_take_or_group_rejected_outside_single_variation_music(stub, body):
+    with _client(ALICE) as client:
+        response = client.post("/api/inference/audio/run", json = {"text": "x", **body})
+    assert response.status_code == 422, response.text

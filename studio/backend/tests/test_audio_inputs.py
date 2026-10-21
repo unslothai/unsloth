@@ -154,6 +154,15 @@ def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout,
     assert not list(directory.iterdir())
 
 
+def test_an_upload_with_a_damaged_frame_keeps_the_audio_after_it(client):
+    data = bytearray(encode("mp3", "libmp3lame", 44100, "mono", 20.0))
+    middle = len(data) // 2
+    data[middle : middle + 2048] = bytes(range(256)) * 8
+    response = _upload(client, bytes(data), "damaged.mp3")
+    assert response.status_code == 201, response.text
+    assert response.json()["duration_s"] > 19
+
+
 def test_an_oversize_body_is_refused_while_streaming():
     seen: list[int] = []
     with pytest.raises(audio_inputs.AudioInputError) as refused:
@@ -171,7 +180,7 @@ def test_an_oversize_body_is_refused_while_streaming():
         ({"AUDIO_INPUT_MAX_BYTES": 2048}, lambda: wav_bytes(2.0), 413, "Audio is too large."),
         ({"MAX_SECONDS": 1}, lambda: wav_bytes(2.0), 413, "Audio is longer than 0 minutes."),
         ({}, lambda: b"", 400, "Audio is empty."),
-        ({}, lambda: b"not audio " * 120, 400, "This file is not audio Studio can read."),
+        ({}, lambda: b"not audio " * 120, 400, "This file is not audio Unsloth can read."),
         ({}, _video_without_audio, 400, "This file has no audio stream."),
     ],
 )

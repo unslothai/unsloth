@@ -22,6 +22,7 @@ import {
 } from "../api/models-api";
 import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
+import { drafterStateFrom } from "../lib/drafter-config";
 import {
   createDatasetCacheUsabilityIdentity,
   datasetCacheUsabilityIdentitiesEqual,
@@ -44,6 +45,7 @@ import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
 } from "../lib/model-type-capabilities";
+import { runConfigDraftSelections } from "../lib/run-config-draft";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
   DatasetCacheReferenceOptions,
@@ -114,6 +116,12 @@ function canReapplyModelDefaults(modelName: string): boolean {
 }
 
 const DEFAULT_DECISION_CHECKPOINT = "laya-multilingual";
+
+// Saved runs and YAML files carry it, but it is not a model default: switching models keeps it.
+function earlyStoppingPatienceFrom(value: unknown): number {
+  const patience = Number(value);
+  return Number.isFinite(patience) && patience > 0 ? Math.floor(patience) : 0;
+}
 
 // evalSteps is left alone: it follows the chosen eval split, not the model.
 const GENERIC_MODEL_DEFAULTS = Object.fromEntries(
@@ -217,6 +225,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         options?: {
           applyTrainingDefaults?: boolean;
           keepModelSubfolder?: boolean;
+          fillMethodProvenance?: boolean;
         },
       ) => {
         const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
@@ -355,8 +364,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             if (modelDetails.is_lora) {
+              // LoRA / CPT can continue from a saved adapter; full finetune and decision
+              // adapters cannot (#13140).
+              const canContinue =
+                isAdapterMethod(get().trainingMethod) &&
+                !modelDetails.is_decision;
+              // Keep the modality the backend reported even when refusing, so switching the
+              // method afterwards still validates the adapter as what it is.
               set({
-                ...(shouldApplyTrainingDefaults
+                ...(!canContinue && shouldApplyTrainingDefaults
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
@@ -365,22 +381,31 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       },
                     }
                   : {}),
-                modelType: null,
+                modelType: resolveTrainingModelType({
+                  modelType: modelDetails.model_type,
+                  isEmbedding: !!modelDetails.is_embedding,
+                  isDecision: !!modelDetails.is_decision,
+                  isVision: modelDetails.is_vision,
+                  isAudio: modelDetails.is_audio,
+                }),
                 decisionLayout: null,
                 modelFormat: "adapter",
-                isVisionModel: false,
-                isEmbeddingModel: false,
-                isAudioModel: false,
-                audioCapabilityUnknown: false,
+                isVisionModel: modelDetails.is_vision,
+                isEmbeddingModel: !!modelDetails.is_embedding,
+                isAudioModel: !!modelDetails.is_audio,
+                audioCapabilityUnknown: modelDetails.audio_type_known === false,
                 isLoadingModelDefaults: false,
                 isCheckingVision: false,
                 modelDefaultsError: null,
                 modelDefaultsAppliedFor: modelName,
-                maxPositionEmbeddings: null,
+                maxPositionEmbeddings:
+                  modelDetails.max_position_embeddings ?? null,
               });
-              toast.error(translate("studio.modelPicker.cantUseModel"), {
-                description: translate("studio.modelPicker.reasonAdapter"),
-              });
+              if (!canContinue) {
+                toast.error(translate("studio.modelPicker.cantUseModel"), {
+                  description: translate("studio.modelPicker.reasonAdapter"),
+                });
+              }
               return;
             }
 
@@ -549,6 +574,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : {}),
             };
 
+            // Fill a copied CPT run's missing history, but preserve values captured by
+            // any method transition the user made while this request was pending.
+            const fallbackProvenanceRefresh = options?.fillMethodProvenance
+              ? {
+                  modelAdapterLearningRate,
+                  ...(requestState.trainingMethod === "cpt" &&
+                  _trainingMethodEditGeneration === trainingMethodEditGeneration
+                    ? cptProvenanceRefresh
+                    : {}),
+                }
+              : cptFallbackProvenanceRefresh;
+
             const nextStreamingState = {
               ...get(),
               ...patch,
@@ -586,11 +623,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       ...cptProvenanceRefresh,
                     },
                   }
-                : Object.keys(cptFallbackProvenanceRefresh).length > 0
+                : Object.keys(fallbackProvenanceRefresh).length > 0
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
-                        ...cptFallbackProvenanceRefresh,
+                        ...fallbackProvenanceRefresh,
                       },
                     }
                   : {}),
@@ -1572,6 +1609,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
           notifyStreamingCompat(streamingPatch);
         },
+        setEarlyStoppingPatience: (earlyStoppingPatience) =>
+          setUserEdit({ earlyStoppingPatience }),
+        setDrafterEnabled: (drafterEnabled) => setUserEdit({ drafterEnabled }),
+        setDrafterStrategy: (drafterStrategy) =>
+          setUserEdit({ drafterStrategy }),
+        setDrafterDataSource: (drafterDataSource) =>
+          setUserEdit({ drafterDataSource }),
+        setDrafterMaxExamples: (drafterMaxExamples) =>
+          setUserEdit({ drafterMaxExamples }),
+        setDrafterEpochs: (drafterEpochs) => setUserEdit({ drafterEpochs }),
+        setDrafterLearningRate: (drafterLearningRate) =>
+          setUserEdit({ drafterLearningRate }),
+        setDrafterDraftSteps: (drafterDraftSteps) =>
+          setUserEdit({ drafterDraftSteps }),
+        setDrafterCapability: (drafterCapability) =>
+          set({ drafterCapability }),
         setPacking: (packing) => setUserEdit({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
@@ -1584,6 +1637,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
           setUserEdit({ gradientCheckpointing }),
+        setOffloadLayers: (offloadLayers) => setUserEdit({ offloadLayers }),
+        setOffloadVramGb: (offloadVramGb) => setUserEdit({ offloadVramGb }),
+        setOffloadVramGbForDevice: (gpuIndex, value) =>
+          setUserEdit((state) => ({
+            offloadVramGbPerDevice: {
+              ...state.offloadVramGbPerDevice,
+              [String(gpuIndex)]: value,
+            },
+          })),
+        setPrefetchDepth: (prefetchDepth) => setUserEdit({ prefetchDepth }),
         setRandomSeed: (randomSeed) => setUserEdit({ randomSeed }),
         setEnableWandb: (enableWandb) => setUserEdit({ enableWandb }),
         setWandbToken: (wandbToken) => setUserEdit({ wandbToken }),
@@ -1605,6 +1668,33 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ targetModules });
         },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        restoreRunConfig: (config) => {
+          const selections = runConfigDraftSelections(config);
+          const hyperparameters = mapBackendModelConfigToTrainingPatch({
+            training: config,
+            lora: config,
+            logging: config,
+          });
+          _datasetCheckController?.abort();
+          get().reset();
+          _trainingMethodEditGeneration += 1;
+          _trainOnCompletionsManuallySet = true;
+          _trainOnCompletionsExplicitModel = selections.selectedModel;
+          setUserEdit({
+            ...hyperparameters,
+            ...selections,
+            earlyStoppingPatience: earlyStoppingPatienceFrom(
+              config.early_stopping_patience,
+            ),
+            ...drafterStateFrom(config.drafter),
+          });
+          // Fetch capabilities without replacing the saved recipe.
+          loadAndApplyModelDefaults(selections.selectedModel, {
+            applyTrainingDefaults: false,
+            keepModelSubfolder: true,
+            fillMethodProvenance: true,
+          });
+        },
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
@@ -1639,12 +1729,27 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (patch.trainOnCompletions !== undefined) {
             _trainOnCompletionsExplicitModel = get().selectedModel;
           }
+          const importsPatience = Object.hasOwn(
+            config.training ?? {},
+            "early_stopping_patience",
+          );
+          const importsDrafter = Object.hasOwn(config.training ?? {}, "drafter");
           setUserEdit((state) => {
             const importsCompletionsInCpt =
               state.trainingMethod === "cpt" &&
               patch.trainOnCompletions !== undefined;
             return {
               ...patch,
+              ...(importsPatience
+                ? {
+                    earlyStoppingPatience: earlyStoppingPatienceFrom(
+                      config.training?.early_stopping_patience,
+                    ),
+                  }
+                : {}),
+              ...(importsDrafter
+                ? drafterStateFrom(config.training?.drafter)
+                : {}),
               ...(patch.trainOnCompletions !== undefined
                 ? { trainOnCompletionsDefaultPendingFor: null }
                 : {}),

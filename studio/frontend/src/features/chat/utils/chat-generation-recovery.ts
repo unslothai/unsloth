@@ -7,6 +7,9 @@ import {
   extractDeltaText,
   parseAssistantContent,
 } from "./parse-assistant-content";
+import type { ContextUsageMarkers } from "./saved-context-usage";
+import { isExternalModelId } from "../external-providers";
+import { contextUsageReasoningKey, type ContextUsageReasoningFields } from "./context-usage-reasoning";
 
 export type StoredGenerationStatus = ChatGenerationStatus;
 
@@ -48,6 +51,7 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   const chunk = payload as
     | {
         _reasoningDurationMs?: unknown;
+        _contextUsage?: unknown;
         context_truncated?: unknown;
         quote_cut?: unknown;
         usage?: unknown;
@@ -56,7 +60,12 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
     | null
     | undefined;
   if (!chunk || typeof chunk !== "object") return false;
-  if ("_reasoningDurationMs" in chunk || chunk.context_truncated || chunk.quote_cut) {
+  if (
+    "_reasoningDurationMs" in chunk ||
+    "_contextUsage" in chunk ||
+    chunk.context_truncated ||
+    chunk.quote_cut
+  ) {
     return false;
   }
   return !(chunk.usage && Array.isArray(chunk.choices) && chunk.choices.length === 0);
@@ -176,7 +185,7 @@ export function recoveredGenerationFinalMetadata(options: {
   current: Record<string, unknown>;
   run: {
     id: string;
-    requestPayload: { model?: unknown };
+    requestPayload: { model?: unknown } & ContextUsageReasoningFields;
     createdAt: number;
     startedAt: number | null;
     completedAt: number | null;
@@ -186,8 +195,9 @@ export function recoveredGenerationFinalMetadata(options: {
   firstChunkAt?: number;
   totalChunks: number;
   toolCalls?: string[];
+  markers: ContextUsageMarkers;
 }): Record<string, unknown> {
-  const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
+  const { current, run, usage, timings, firstChunkAt, totalChunks, markers } = options;
   const modelId =
     typeof run.requestPayload.model === "string"
       ? run.requestPayload.model
@@ -232,6 +242,14 @@ export function recoveredGenerationFinalMetadata(options: {
           : 0),
       cacheWriteTokens: usageCacheWriteTokens(usage),
       modelId,
+      ...(!isExternalModelId(modelId)
+        ? { reasoningKey: contextUsageReasoningKey(run.requestPayload) }
+        : {}),
+      // Revisions only grow: above zero, an edit may have landed after this run started, so the
+      // count calibrates an estimate instead of being certified for the revised branch.
+      ...(markers.revision > 0
+        ? { messageCount: markers.messageCount, estimatedTokens: markers.estimatedTokens }
+        : markers),
     };
   }
   if (next.responseDetails === undefined) {
@@ -406,7 +424,16 @@ export function requestParsesThinkTags(payload: {
   enable_thinking?: boolean | null;
   reasoning_effort?: string | null;
   thinking?: { type?: string } | null;
+  provider_type?: string | null;
+  external_model?: string | null;
+  model?: string | null;
 }): boolean {
+  const provider = payload.provider_type?.trim().toLowerCase();
+  const model = (payload.external_model ?? payload.model)?.trim().toLowerCase();
+  const sonnet55BetweenTools =
+    provider === "anthropic" &&
+    (model === "claude-sonnet-5-5" || model?.startsWith("claude-sonnet-5-5-") === true);
+  if (sonnet55BetweenTools) return true;
   return !(
     payload.thinking?.type === "disabled" ||
     payload.enable_thinking === false ||
@@ -812,12 +839,17 @@ export function isLiveGenerationRun(runId: string): boolean {
   return liveGenerationRuns.has(runId);
 }
 
-/** Whether `threadId` has a durable run, streaming here or named by the server. A
- *  subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence. */
-export function threadHasDurableGenerationRun(threadId: string): boolean {
+export function threadHasLiveGenerationRun(threadId: string): boolean {
   for (const [runId, owner] of liveGenerationThreads.entries()) {
     if (owner === threadId && !provisionalGenerationRuns.has(runId)) return true;
   }
+  return false;
+}
+
+/** Whether `threadId` has a durable run, streaming here or named by the server. A
+ *  subscriber-owned stream has none, and its periodic checkpoint is its ONLY persistence. */
+export function threadHasDurableGenerationRun(threadId: string): boolean {
+  if (threadHasLiveGenerationRun(threadId)) return true;
   for (const owner of serverActiveGenerationRuns.values()) {
     if (owner === threadId) return true;
   }

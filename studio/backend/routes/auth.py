@@ -4,18 +4,22 @@
 """Authentication API routes."""
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi.security import HTTPAuthorizationCredentials
 
 import base64
+import hashlib
 import importlib.util
 import ipaddress
 import os
 import shlex
+import sqlite3
 import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 from models.auth import (
     ApiKeyListResponse,
@@ -31,6 +35,8 @@ from models.auth import (
 )
 from models.users import Token
 from auth import storage, hashing, policy
+from loggers import get_logger
+from storage import sqlite_gate
 from utils.account_context import OWNER_ACCOUNT_ID
 from auth.authentication import (
     authenticated_via_desktop_jwt,
@@ -40,10 +46,14 @@ from auth.authentication import (
     get_current_credential,
     get_current_subject,
     get_current_subject_allow_password_change,
+    is_keyless,
+    new_refresh_token_value,
     refresh_access_token,
+    security,
 )
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 def _account_id_of(username: str) -> "str | None":
@@ -285,8 +295,15 @@ def _client_ip(request: Request | None) -> str:
     return (request.client.host if request.client else None) or "_unknown"
 
 
+_MAX_BUCKET_USERNAME_CHARS = 256
+
+
 def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
-    return (_client_ip(request), (username or "").casefold())
+    name = (username or "").casefold()
+    # Bound the memory each bucket key holds; real usernames are far shorter and keep their own key.
+    if len(name) > _MAX_BUCKET_USERNAME_CHARS:
+        name = "\x00long:" + hashlib.sha256(name.encode("utf-8", "surrogatepass")).hexdigest()
+    return (_client_ip(request), name)
 
 
 def _unknown_user_key(request: Request | None) -> tuple[str, str]:
@@ -590,6 +607,9 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     # Safe to clear the aggregate as well now that the address is suffixed: it is this route's own entry,
     # not /login's, so a desktop success cannot hand anyone a fresh password-guessing budget.
     _clear_login_bucket(key)
+    # Shell-owned backends never use the seeded password; terminal-started ones keep the web autofill.
+    if getattr(request.app.state, "desktop_owned", False):
+        request.app.state.bootstrap_password = None
 
     from auth.policy import installation_is_multi_user
 
@@ -609,30 +629,37 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     )
 
 
+# Sync def: rotation is one transaction, so a busy auth.db wait must not freeze the event loop.
 @router.post("/refresh", response_model = Token)
-async def refresh(payload: RefreshTokenRequest) -> Token:
+def refresh(payload: RefreshTokenRequest) -> Token:
     """Exchange a refresh token for a new access+refresh pair (single-use)."""
-    consumed = storage.consume_refresh_token(payload.refresh_token)
-    if consumed is None:
+    new_refresh_token, new_expires_at = new_refresh_token_value()
+    try:
+        rotated = storage.rotate_refresh_token(
+            payload.refresh_token, new_refresh_token, new_expires_at
+        )
+    except sqlite3.OperationalError as exc:
+        if not sqlite_gate.is_busy_error(exc):
+            raise
+        logger.warning("Token refresh deferred: auth.db is busy (%s)", exc)
+        raise HTTPException(
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail = "Unsloth Studio is busy. Try again in a moment.",
+            headers = {"Retry-After": "2"},
+        )
+    if rotated is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired refresh token",
         )
-    username, is_desktop, jwt_secret = consumed
-    account = storage.get_account(username)
-    if is_desktop:
-        is_desktop = account is not None and account.is_owner
-    new_access_token = create_access_token(subject = username, desktop = is_desktop, secret = jwt_secret)
-    new_refresh_token = create_refresh_token(
-        subject = username, desktop = is_desktop, secret = jwt_secret
-    )
-
     return Token(
-        access_token = new_access_token,
+        access_token = create_access_token(
+            subject = rotated.username, desktop = rotated.is_desktop, secret = rotated.jwt_secret
+        ),
         refresh_token = new_refresh_token,
         token_type = "bearer",
-        must_change_password = False if is_desktop else storage.requires_password_change(username),
-        account_id = account.account_id if account is not None else None,
+        must_change_password = rotated.must_change_password,
+        account_id = rotated.account_id,
     )
 
 
@@ -804,15 +831,30 @@ def _key_account_scope() -> "str | None":
 async def create_api_key(
     payload: CreateApiKeyRequest,
     credential: tuple = Depends(get_current_credential),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     _own_credential: None = Depends(_require_a_credential_of_its_own("Managing API keys")),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
     current_subject, generation = credential
+    if payload.name == storage.UNSLOTH_START_API_KEY_NAME and not is_desktop:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "This key name is reserved for `unsloth start`.",
+        )
     expires_at = None
     if payload.expires_in_days is not None:
         expires_at = (
             datetime.now(timezone.utc) + timedelta(days = payload.expires_in_days)
         ).isoformat()
+    # A key minted with an expiring key expires no later than it, so a leaked short-lived key cannot
+    # be turned into a permanent one.
+    parent_expires_at = _api_key_caller_expiry(credentials)
+    if parent_expires_at is not None and (
+        expires_at is None
+        or datetime.fromisoformat(expires_at) > datetime.fromisoformat(parent_expires_at)
+    ):
+        expires_at = parent_expires_at
 
     try:
         raw_key, row = storage.create_api_key(
@@ -831,6 +873,23 @@ async def create_api_key(
         key = raw_key,
         api_key = _row_to_api_key_response(row),
     )
+
+
+def _api_key_caller_expiry(credentials: Optional[HTTPAuthorizationCredentials]) -> Optional[str]:
+    """Expiry of the sk-unsloth key that authenticated this request, or None (UI session, keyless
+    caller, or a key that never expires)."""
+    if credentials is None or is_keyless(credentials):
+        return None
+    raw = credentials.credentials or ""
+    if not raw.startswith(storage.API_KEY_PREFIX):
+        return None
+    validated = storage.validate_api_key_account(raw, touch = False)
+    if validated is None:
+        # Expired or revoked since it authenticated: no cap to apply, so refuse rather than mint uncapped.
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED, detail = "Invalid or expired token"
+        )
+    return validated[0].get("expires_at")
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)

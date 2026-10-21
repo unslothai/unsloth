@@ -7,6 +7,8 @@ import { authFetch } from "@/features/auth";
 import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
+import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 
 // One Advanced control's resolved value plus provenance, same shape as the diffusion status.
 // `value` is engaged, `requested` is what the caller asked for (null = left to the backend),
@@ -38,9 +40,15 @@ export interface VideoGenerationDefaults {
   resolution_multiple: number;
   // (width, height) presets the UI offers, default first.
   resolution_presets: Array<[number, number]>;
+  // Bounds a size off the presets must fit; absent on backends that accept only the presets.
+  custom_size_min_pixels?: number | null;
+  custom_size_max_pixels?: number | null;
+  custom_size_max_aspect?: number | null;
   // Backend-owned keyframe canvas rule, or null when unsupported.
   canvas_short_edge?: number | null;
   canvas_max_pixels?: number | null;
+  // Image-to-video families without that rule take the preset nearest the first frame's aspect.
+  canvas_from_presets?: boolean;
   // Released schedule shifts, or null when unsupported.
   flow_shift?: number | null;
   audio_flow_shift?: number | null;
@@ -91,11 +99,17 @@ export interface VideoStatus {
   supports_cfg: boolean;
   // Conditioning supported by the loaded checkpoint.
   supports_keyframes?: boolean;
+  // Per keyframe: every image-to-video family takes a first frame; only MiniMax-H3 a last one.
+  // Absent on older backends, which read supports_keyframes for both.
+  supports_first_frame?: boolean;
+  supports_last_frame?: boolean;
   supports_references?: boolean;
   // Resident MiniMax-H3 denoiser partition, if any.
   h3_task?: string | null;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
+  // One or two sentences on how the loaded model reads prompts; null when it has no tip.
+  prompt_hint?: string | null;
   // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
   // nothing is loaded or the backend does not record it.
   // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
@@ -121,11 +135,19 @@ export interface VideoGenerateProgress {
 }
 
 export interface VideoLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   downloaded_bytes: number;
   // null when the total isn't known yet.
   expected_bytes?: number | null;
   error?: string | null;
+  /** Absent on an older backend. */
+  error_code?: string | null;
 }
 
 export interface VideoLoadRequest {
@@ -167,8 +189,11 @@ export interface VideoLoadRequest {
   // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a
   // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
-  // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
-  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
+  // "none" keeps the dense bf16 encoder. An explicit scheme is refused with a 409 when the host cannot run it.
+  text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
+  allow_oversized_load?: boolean;
 }
 
 /** One reference video, with the soundtrack MiniMax-H3 conditions on alongside it. */
@@ -188,9 +213,9 @@ export interface VideoGenerateRequest {
   live_preview?: boolean;
   negative_prompt?: string;
   // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they
-  // must match that family's rules -- a resolution preset, and num_frames on the
+  // must match that family's rules -- a size near its presets, and num_frames on the
   // k*frame_step+1 lattice -- or the backend answers 422 with the supported shapes.
-  // Width/height must be one of status.defaults.resolution_presets.
+  // Width/height sit on resolution_multiple inside the custom_size_* bounds, or are a preset.
   width?: number;
   height?: number;
   num_frames?: number;
@@ -288,11 +313,11 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
     "video",
     body.model_path,
     async () =>
-      parseJson<VideoStatus>(
+      parseLoadJson<VideoStatus>(
         await authFetch("/api/inference/video/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withAllowOversizedLoad(body)),
         }),
       ),
     async (signal) => (await getVideoLoadProgress(signal)).phase,
@@ -307,7 +332,7 @@ export async function getVideoDownloadPlan(
     await authFetch("/api/inference/video/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withAllowOversizedLoad(body)),
     }),
   );
 }

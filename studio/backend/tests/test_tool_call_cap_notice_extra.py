@@ -282,6 +282,7 @@ def test_skipped_arguments_are_reserved_in_result_budgets(monkeypatch, backend):
     import random
     import string
     from core.inference.context_window import (
+        _reply_floor,
         estimate_messages_tokens_conservative,
         prompt_budget,
     )
@@ -347,4 +348,6 @@ def test_skipped_arguments_are_reserved_in_result_budgets(monkeypatch, backend):
     assert json.dumps({"code": code}) in notice["content"]
     spent = estimate_messages_tokens_conservative(seen[1])
     spent += estimate_messages_tokens_conservative(tools)
-    assert spent <= prompt_budget(4096, 3500)
+    # Compaction off: GGUF prices results to the reply floor (#13784).
+    reply = min(3500, _reply_floor(4096)) if backend == "gguf" else 3500
+    assert spent <= prompt_budget(4096, reply)

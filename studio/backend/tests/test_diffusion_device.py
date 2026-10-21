@@ -196,7 +196,15 @@ def test_rocm_target(monkeypatch):
     t = dd.resolve_diffusion_device_target()
     assert (t.device, t.backend, t.vendor) == ("cuda", "rocm", "amd")
     assert t.dtype == BF16
-    assert t.supports_default_torch_compile is False  # ROCm disables default compile
+    assert t.supports_default_torch_compile is True
+
+
+def test_rocm_target_compile_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    torch = _make_torch(cuda_available = True, bf16_supported = True)
+    _install(monkeypatch, torch, studio_device = "cuda", is_rocm = True)
+    t = dd.resolve_diffusion_device_target()
+    assert t.backend == "rocm" and t.supports_default_torch_compile is False
 
 
 def test_rocm_without_bf16_uses_fp16(monkeypatch):
@@ -313,6 +321,18 @@ def test_from_torch_device_cuda(monkeypatch):
     assert t.is_cuda_torch_device
 
 
+def test_from_torch_device_tag_only_rocm(monkeypatch):
+    # AMD SDK / Radeon wheels: no torch.version.hip, ROCm only in __version__. Must stay ROCm so the
+    # probe and UNSLOTH_DIFFUSION_ROCM_COMPILE apply.
+    torch = _make_torch()
+    torch.__version__ = "2.9.0+rocm7.1.0"
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    t = dd.diffusion_device_target_from_torch_device("cuda:1", BF16)
+    assert (t.backend, t.vendor, t.ordinal) == ("rocm", "amd", 1)
+    assert t.supports_default_torch_compile is False
+
+
 def test_from_torch_device_mps_and_cpu(monkeypatch):
     torch = _make_torch()
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -349,6 +369,15 @@ def test_only_mps_lacks_float64(monkeypatch):
     for device in ("cuda", "xpu", "cpu"):
         assert dd.diffusion_device_target_from_torch_device(device, FP32).supports_float64 is True
     assert dd.diffusion_device_target_from_torch_device("mps", FP32).supports_float64 is False
+
+
+def test_float64_is_built_on_the_device_unless_it_lacks_it():
+    for device in ("cuda", "cuda:1", "xpu", "cpu", "meta"):
+        assert dd.float64_device(device) is device
+    # Callers pass torch.device objects, which only stringify to the device name.
+    mps = type("Device", (), {"__str__": lambda self: "mps:0"})()
+    for device in ("mps", "mps:0", mps):
+        assert dd.float64_device(device) == "cpu"
 
 
 class _RopeModule:
@@ -452,6 +481,58 @@ def test_the_video_loader_demotes_rope():
         "either gone or behind a guard -- and a guard here can only be wrong, since the helper "
         "already no-ops wherever float64 works"
     )
+
+
+# ── Frame padding by concatenation on Metal ───────────────────────────
+
+
+def _frame_pad_pipe(factor_t: int, name: str = "AvgDown3D"):
+    torch = pytest.importorskip("torch")
+
+    class Shortcut(torch.nn.Module):
+        """The diffusers shortcut's padding, recording how much of it ``F.pad`` was left to do."""
+
+        def __init__(self):
+            super().__init__()
+            self.factor_t = factor_t
+            self.padded = []
+
+        def forward(self, x):
+            pad_t = (self.factor_t - x.shape[2] % self.factor_t) % self.factor_t
+            self.padded.append(pad_t)
+            return torch.nn.functional.pad(x, (0, 0, 0, 0, pad_t, 0))
+
+    Shortcut.__name__ = name
+    shortcut = Shortcut()
+    return torch, shortcut, _Pipe(vae = torch.nn.Sequential(shortcut), scheduler = object())
+
+
+@pytest.mark.parametrize("name", ["AvgDown3D", "QwenImage21AvgDown3D"])
+@pytest.mark.parametrize("factor_t, frames", [(2, 1), (2, 3), (4, 5), (2, 4)])
+def test_frame_pad_fix_pads_by_concatenation_on_mps(factor_t, frames, name):
+    torch, shortcut, pipe = _frame_pad_pipe(factor_t, name)
+    x = torch.arange(2 * 3 * frames * 2 * 2, dtype = torch.float32).reshape(2, 3, frames, 2, 2)
+    expected = shortcut(x)
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 1
+    assert dd.install_frame_pad_fix(pipe, _mps_target()) == 0  # one hook, however often a load runs
+    shortcut.padded.clear()
+    assert torch.equal(shortcut(x), expected)
+    assert shortcut.padded == [0]  # nothing left for the pad Metal gets wrong
+
+
+def test_frame_pad_fix_is_metal_only():
+    torch, shortcut, pipe = _frame_pad_pipe(2)
+    assert dd.install_frame_pad_fix(pipe, _cuda_target()) == 0
+    shortcut(torch.zeros(1, 1, 1, 2, 2))
+    assert shortcut.padded == [1]
+
+
+def test_the_image_loader_installs_the_frame_pad_fix():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "core/inference/diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "install_frame_pad_fix(pipe, target, logger = logger)" in src
 
 
 # ── Pressure-gated decoder sync ───────────────────────────────────────
@@ -960,3 +1041,95 @@ def test_a_multi_card_pick_declines_to_rank_when_ranking_is_barred(monkeypatch):
     assert probed == []
     with pytest.raises(ValueError):
         dd.resolve_selected_cuda_ordinal([9], allow_ranking = False)
+
+
+# ── MPS allocation cap ────────────────────────────────────────────────
+
+GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    "recommended_gib, ram_gib, expected_cap_gib",
+    [
+        (5.33, 8, 6.5),  # 8 GB Mac: RAM - 1.5 GiB floor reserve
+        (10.67, 16, 14.4),  # RAM - 10%
+        (96, 128, 115.2),
+        (5.0, 5.5, 5.0),  # reserve would go below the working set: never cap under it
+    ],
+)
+def test_mps_ratio_caps_below_ram_never_below_working_set(
+    recommended_gib, ram_gib, expected_cap_gib
+):
+    ratio = dd.mps_high_watermark_ratio(int(recommended_gib * GIB), int(ram_gib * GIB))
+    cap_gib = ratio * recommended_gib
+    assert cap_gib == pytest.approx(expected_cap_gib, rel = 1e-3)
+    assert cap_gib < ram_gib
+    assert 1.0 <= ratio <= 2.0
+    assert cap_gib < 1.7 * recommended_gib  # tighter than torch's own default, which is above RAM
+
+
+def test_mps_ratio_unknown_readings_mean_no_cap():
+    assert dd.mps_high_watermark_ratio(None, 16 * GIB) is None
+    assert dd.mps_high_watermark_ratio(10 * GIB, 0) is None
+    assert dd.mps_high_watermark_ratio("x", 16 * GIB) is None
+
+
+def _mps_cap_torch(
+    recorded,
+    *,
+    recommended = 10 * GIB,
+    fraction_raises = False,
+):
+    torch = _make_torch(mps_available = True, mps_probe = "pass")
+
+    def _set(fraction):
+        if fraction_raises:
+            raise AttributeError("old torch")
+        recorded.append(fraction)
+
+    torch.mps = types.SimpleNamespace(
+        recommended_max_memory = lambda: recommended, set_per_process_memory_fraction = _set
+    )
+    return torch
+
+
+def test_mps_target_sets_finite_cap(monkeypatch):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    recorded = []
+    _install(monkeypatch, _mps_cap_torch(recorded), studio_device = "mlx")
+    assert dd.resolve_diffusion_device_target().device == "mps"
+    assert recorded == [pytest.approx(14.4 / 10, rel = 1e-3)]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {dd.MPS_HIGH_WATERMARK_ENV: "0.0"},  # explicit "no cap" stays no cap
+        {dd.MPS_HIGH_WATERMARK_ENV: "1.2"},
+        {"UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD": "1"},
+    ],
+)
+def test_mps_cap_respects_user_override(monkeypatch, env):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    recorded = []
+    _install(monkeypatch, _mps_cap_torch(recorded), studio_device = "mlx")
+    assert dd.resolve_diffusion_device_target().device == "mps"
+    assert recorded == []
+    if dd.MPS_HIGH_WATERMARK_ENV in env:
+        import os
+        assert os.environ[dd.MPS_HIGH_WATERMARK_ENV] == env[dd.MPS_HIGH_WATERMARK_ENV]
+
+
+def test_mps_cap_failure_keeps_target(monkeypatch):
+    monkeypatch.delenv(dd.MPS_HIGH_WATERMARK_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", raising = False)
+    monkeypatch.setattr(dd, "_total_ram_bytes", lambda: 16 * GIB)
+    _install(monkeypatch, _mps_cap_torch([], fraction_raises = True), studio_device = "mlx")
+    t = dd.resolve_diffusion_device_target()
+    assert t.device == "mps" and t.dtype == BF16

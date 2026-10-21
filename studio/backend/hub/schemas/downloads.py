@@ -45,6 +45,13 @@ class DownloadModelRequest(BaseModel):
         default_factory = list,
         description = "Exact files to fetch. Required with scope_id, ignored without it.",
     )
+    download_dir: Optional[str] = Field(
+        None,
+        max_length = 4096,
+        description = "Folder to download into instead of the Models folder. It is used like a "
+        "Models folder (files land under its hub/ subfolder) and is added to Custom Folders. "
+        "Omitted -> the Models folder.",
+    )
 
 
 class CancelDownloadRequest(BaseModel):

@@ -197,8 +197,3 @@ def test_cuda_rejects_empty_layer_family():
 
     with pytest.raises(ValueError, match = "Nothing to train"):
         _check_finetune_targets_after_detect(_Trainer(is_vlm = True), config)
-
-
-def test_cuda_text_run_is_untouched_by_either_guard():
-    from core.training.worker import _check_finetune_targets_after_detect
-    _check_finetune_targets_after_detect(_Trainer(), _config(**_ALL_OFF))

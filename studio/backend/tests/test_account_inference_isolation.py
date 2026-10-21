@@ -284,6 +284,16 @@ def test_a_resolved_adapter_base_needs_its_own_grant(monkeypatch, base, expected
     inference._require_resolved_base_access(config)
 
 
+def test_a_named_mlx_drafter_needs_its_own_grant(monkeypatch):
+    monkeypatch.setattr(access, "repo_is_public", lambda repo, *a, **k: repo == "org/public")
+    monkeypatch.setattr(inference, "_mlx_cached_drafters", lambda path: [{"repo_id": "org/d"}])
+    assert run_as(BOB, inference._discoverable_drafters, "org/public") == ["org/d"]
+    assert inference._discoverable_drafters("org/public") is None
+    body = {"model_path": "org/public", "spec_draft_model": "org/private"}
+    with client_for(BOB) as client:
+        assert client.post("/api/inference/estimate-memory", json = body).status_code == 404
+
+
 def test_preview_load_refuses_private_foreign_target_before_gpu_work():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(
@@ -498,6 +508,77 @@ def test_the_local_id_v1_models_publishes_is_usable_by_its_own_account(monkeypat
         with pytest.raises(HTTPException) as refused:
             asyncio.run(resolve(account))
         assert refused.value.status_code == 404
+
+
+@pytest.mark.parametrize("auto_switch", [False, True])
+@pytest.mark.parametrize("public", [False, True])
+def test_an_own_file_listed_under_a_foreign_residents_id_does_not_unlock_it(
+    monkeypatch, auto_switch, public
+):
+    from utils import openai_auto_switch_settings
+    from utils.paths.storage_roots import workspace_root
+
+    own = str(run_as(ALICE, workspace_root) / "sandbox" / "org" / "private.gguf")
+    row = SimpleNamespace(model_id = "org/private", id = own, path = own)
+    monkeypatch.setattr(inference, "_classified_catalog", lambda listed: listed)
+    monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: [row])
+    monkeypatch.setattr(access, "repo_is_public", lambda *a, **k: public)
+    monkeypatch.setattr(
+        openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: auto_switch
+    )
+    monkeypatch.setattr(openai_auto_switch_settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: "org/private")
+    monkeypatch.setattr(inference, "_loaded_satisfies", lambda model: True)
+    monkeypatch.setattr(inference, "_loaded_identity_satisfies", lambda model: True)
+    claimed = []
+    monkeypatch.setattr(inference, "_claim_slot_for_non_preview", claimed.append)
+    request = SimpleNamespace(
+        scope = {},
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+    )
+    switch = arun_as(ALICE, inference._maybe_auto_switch_model("org/private", request, "alice"))
+    if public:
+        asyncio.run(switch)
+        assert claimed
+        return
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(switch)
+    assert refused.value.status_code == 404
+    assert not claimed
+
+
+def test_a_private_hub_resident_the_callers_own_token_can_fetch_is_served(monkeypatch):
+    from utils import openai_auto_switch_settings
+    from utils.paths.storage_roots import workspace_root
+
+    own = str(run_as(ALICE, workspace_root) / "sandbox" / "org" / "private.gguf")
+    row = SimpleNamespace(model_id = "org/private", id = own, path = own)
+    monkeypatch.setattr(inference, "_classified_catalog", lambda listed: listed)
+    monkeypatch.setattr(models, "collect_local_models", lambda *_a, **_kw: [row])
+    monkeypatch.setattr(access, "repo_is_public", lambda *a, **k: False)
+    monkeypatch.setattr(openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(openai_auto_switch_settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(inference, "_loaded_slot_ident", lambda: "org/private")
+    monkeypatch.setattr(inference, "_loaded_satisfies", lambda model: True)
+    monkeypatch.setattr(inference, "_loaded_identity_satisfies", lambda model: True)
+    authorized = []
+
+    async def _token_authorizes(named_model, request):
+        authorized.append(named_model)
+        return named_model == "org/private"
+
+    monkeypatch.setattr(inference, "_caller_token_authorizes_download", _token_authorizes)
+    claimed = []
+    monkeypatch.setattr(inference, "_claim_slot_for_non_preview", claimed.append)
+    request = SimpleNamespace(
+        scope = {},
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/chat/completions"),
+    )
+    asyncio.run(arun_as(ALICE, inference._maybe_auto_switch_model("org/private", request, "alice")))
+    assert claimed
+    assert "org/private" in authorized
 
 
 def test_private_media_index_rows_cannot_bypass_filtered_openai_catalog(monkeypatch):

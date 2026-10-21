@@ -2409,3 +2409,12 @@ def test_the_reserve_holds_for_a_placement_the_fitter_will_not_move():
     assert _placement_is_fitter_proof(["-ngl", "auto"], env = {}) is False
     assert _placement_is_fitter_proof(None, gpu_layers = 0, env = {}) is True
     assert _placement_is_fitter_proof(None, env = {}) is False
+
+
+@pytest.mark.parametrize("platform", ["linux", "windows", "wsl"])
+def test_an_integrated_cuda_soc_is_never_counted_twice(platform, monkeypatch):
+    """A Jetson / DGX Spark row is the host pool too (#4862): 40 GiB does not fit 32 GiB twice."""
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    assert _mode(platform, "nvidia_discrete", 40 * GIB, 32 * 1024, monkeypatch) == FIT_MODE
+    LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = {0}
+    assert _mode(platform, "nvidia_discrete", 40 * GIB, 32 * 1024, monkeypatch) is None

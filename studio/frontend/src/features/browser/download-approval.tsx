@@ -43,7 +43,8 @@ export function DownloadApprovalDialog() {
             </p>
           ) : null}
         </AlertDialogHeader>
-        {request?.origin ? (
+        {/* Files that run code ask every time, so there's nothing to remember. */}
+        {request?.origin && !request.dangerous ? (
           <label htmlFor={checkboxId} className="flex cursor-pointer items-center gap-2 text-sm text-foreground">
             <Checkbox id={checkboxId} checked={remember} onCheckedChange={(checked) => setRemember(checked === true)} />
             {t("browser.downloadPrompt.remember")}

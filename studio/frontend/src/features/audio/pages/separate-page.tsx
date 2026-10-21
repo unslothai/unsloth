@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { AudioWave01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import {
@@ -18,9 +19,8 @@ import {
   fetchAudioBlob,
   setAudioClipFlags,
 } from "../api";
-import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
+import { audioCppModelFor } from "../audio-cpp-catalog";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
-import { macTtsCatalogChoiceIsRunnable } from "../catalog";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
@@ -50,42 +50,6 @@ import {
 import { useAudioSeparateStore } from "../stores/audio-separate-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsRailFields } from "./tts-workspace";
-
-const SEPARATE_MODEL_ORDER = [
-  "HTDemucs-GGUF",
-  "BS-RoFormer-ep368-GGUF",
-  "HTDemucs-6stems-GGUF",
-  "Mel-Band-RoFormer-GGUF",
-];
-
-function separateRank(id: string): number {
-  const index = SEPARATE_MODEL_ORDER.findIndex((name) =>
-    id.endsWith(`/${name}`),
-  );
-  return index === -1 ? SEPARATE_MODEL_ORDER.length : index;
-}
-
-export function separatePageModels(
-  models: ModelOption[],
-  isMac: boolean,
-): ModelOption[] {
-  return models
-    .filter((model) => {
-      const entry = audioCppModelFor(model.id);
-      return (
-        entry !== null &&
-        audioCppWorkflowsFor(entry).includes("separate") &&
-        (!isMac || macTtsCatalogChoiceIsRunnable(model.id))
-      );
-    })
-    .map((model, index) => ({ model, index }))
-    .sort(
-      (a, b) =>
-        separateRank(a.model.id) - separateRank(b.model.id) ||
-        a.index - b.index,
-    )
-    .map(({ model }) => model);
-}
 
 export function separateOutputStems(
   family: string | null | undefined,
@@ -606,7 +570,7 @@ export function SeparateOutput({
                     className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                   >
                     <HugeiconsIcon
-                      icon={AudioWave01Icon}
+                      icon={AiSpeechIcon}
                       className="size-3.5 shrink-0 text-muted-foreground"
                     />
                     <span className="min-w-0 flex-1 truncate">

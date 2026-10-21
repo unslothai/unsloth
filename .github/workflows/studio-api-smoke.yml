@@ -88,11 +88,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -135,7 +134,7 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -237,11 +236,13 @@ jobs:
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # Wait for it to actually exit (was a flat `sleep 2`); SIGKILL after 10 s.
+          for _ in $(seq 1 100); do kill -0 "${STUDIO_PID}" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "${STUDIO_PID}" 2>/dev/null || true
 
       - name: Upload API smoke logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: studio-api-smoke-log
           path: |

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { InferenceStatusResponse } from "@/features/chat";
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
 import {
@@ -11,7 +12,9 @@ import {
   AUDIO_CPP_TTS_AUDIO_TYPE,
   type AudioCppRuntimeStatus,
   audioCppDisplayName,
+  AUDIO_CPP_REPO,
   audioCppModelFor,
+  isAudioCppFolderId,
 } from "./audio-cpp-catalog.ts";
 
 /** Why the installed audio runtime cannot run this recommended speech or music model, or null
@@ -34,42 +37,6 @@ export function audioCppRuntimeProblem(
     );
   }
   return null;
-}
-
-/** setup keeps the old managed runtime when it cannot reach the release. */
-export function audioCppRuntimeUpdate(
-  runtime: AudioCppRuntimeStatus | null | undefined,
-): { installed: string; expected: string } | null {
-  if (!runtime?.available || !runtime.outdated) return null;
-  if (!runtime.release_tag || !runtime.expected_tag) return null;
-  return { installed: runtime.release_tag, expected: runtime.expected_tag };
-}
-
-export type AudioRuntimeNoticeMode =
-  | "update"
-  | "updating"
-  | "checking"
-  | "ask_owner"
-  | "cli";
-
-/** What the outdated-runtime notice offers. The in-app update is owner-only, and the backend
- *  offers it only for a runtime it can replace; otherwise the notice keeps the CLI route. */
-export function audioRuntimeNoticeMode({
-  isOwner,
-  offered,
-  applying,
-  checked,
-}: {
-  isOwner: boolean;
-  offered: boolean;
-  applying: boolean;
-  /** The update status has loaded; before that the offer is unknown, not absent. */
-  checked: boolean;
-}): AudioRuntimeNoticeMode {
-  if (!isOwner) return "ask_owner";
-  if (applying) return "updating";
-  if (!checked) return "checking";
-  return offered ? "update" : "cli";
 }
 
 /** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
@@ -381,6 +348,94 @@ export function canTransitionAudioMode(
   );
 }
 
+/** The main slot's loaded model as the picker rows name it. llama-server reports a custom-folder
+ *  GGUF's file stem as active_model and its path as model_identifier, and that row uses the path;
+ *  a Hub model keeps its repo id, since model_identifier can be a cache snapshot path. */
+export function audioLoadedSelection(
+  status:
+    | {
+        active_model?: string | null;
+        model_identifier?: string | null;
+        gguf_variant?: string | null;
+      }
+    | null
+    | undefined,
+  // The quant a GGUF file name carries (`ggufQuantLabel`); without one a file name stays as is.
+  quantLabel?: (filename: string) => string,
+): { id: string | null; variant: string | null } {
+  const active = status?.active_model ?? null;
+  const id = active
+    ? active.includes("/")
+      ? active
+      : (status?.model_identifier ?? active)
+    : null;
+  return { id, variant: id ? loadedQuantKey(status?.gguf_variant ?? null, quantLabel) : null };
+}
+
+/** llama status echoes the load selector, which is a file name for a pick from the quant list
+ *  (`model-q4_k_m.gguf`); picker rows key that quant `Q4_K_M`, under any directory it sits in. */
+function loadedQuantKey(
+  variant: string | null,
+  quantLabel?: (filename: string) => string,
+): string | null {
+  if (!variant || !quantLabel || !/\.gguf$/i.test(variant.trim())) return variant;
+  const path = variant.trim().replace(/\\/g, "/");
+  const cut = path.lastIndexOf("/") + 1;
+  return `${path.slice(0, cut)}${quantLabel(path.slice(cut)).toUpperCase()}`;
+}
+
+/** A deleted model is gone once the settled inventory no longer lists it; a quant delete leaves
+ *  the model listed. An audio.cpp folder is gone with its package repo, or, once the inventory
+ *  lists folder rows, when its own row is missing. */
+export function rememberedModelIsGone(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  if (!inventory.settled || inventory.error) return false;
+  if (inventory.available.has(id.toLowerCase())) return false;
+  if (!isAudioCppFolderId(id)) return true;
+  return (
+    !inventory.available.has(AUDIO_CPP_REPO.toLowerCase()) ||
+    [...inventory.available].some((listed) => isAudioCppFolderId(listed))
+  );
+}
+
+/** Whether a delete of `deletedRepoId` can have removed the remembered model: the same repo, or
+ *  the audio.cpp package that holds the remembered folder. */
+export function deleteCoversRememberedModel(
+  deletedRepoId: string,
+  rememberedId: string,
+): boolean {
+  const deleted = deletedRepoId.toLowerCase();
+  const remembered = rememberedId.toLowerCase();
+  return remembered === deleted || remembered.startsWith(`${deleted}/`);
+}
+
+/** Delete markers spent by a settled listing whose Hub cache fetches were all sent after the
+ *  delete; the undebounced local listing lands first beside the old cache rows. */
+export function settledDeleteMarkers(
+  markers: ReadonlyMap<string, number>,
+  inventory: { settled: boolean; error: boolean; refreshStartedAt: number | null },
+): string[] {
+  const { refreshStartedAt } = inventory;
+  if (!inventory.settled || inventory.error || refreshStartedAt === null) return [];
+  return [...markers]
+    .filter(([, deletedAt]) => refreshStartedAt > deletedAt)
+    .map(([repoId]) => repoId);
+}
+
+const HUB_REPO_ID_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** A remembered Hub repo the settled inventory no longer lists is not offered, even when it was
+ *  deleted while nothing on this page was listening. Local folders and trained checkpoints are not
+ *  listed by repo id, so they are always offered. Nothing is forgotten here. */
+export function rememberedModelUnavailable(
+  id: string,
+  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+): boolean {
+  return HUB_REPO_ID_RE.test(id) && rememberedModelIsGone(id, inventory);
+}
+
 /** A managed TTS completion owns auto-load only while the same staging generation is selected
  *  in Speak. Downloads continue globally after ownership changes, but their completion must
  *  not mutate the main slot. */
@@ -569,18 +624,66 @@ export function persistedClipForGeneration<T extends { id: string }>(
   return clipId ? (refreshed.find((clip) => clip.id === clipId) ?? null) : null;
 }
 
+/** Compare a picker row with the sidecar's resident name by row id. A legacy dictation key
+ *  (`audiocpp-qwen3-asr-0.6b`) names the same folder as the Transcribe row, and ids differ in case. */
+export function sttSameModel(
+  selectedRepo: string,
+  loadedModel: string,
+  sidecarKeyFor: (repoId: string) => string,
+  engine?: SttEngine | null,
+  repoIdForSidecarKey?: (sidecarKey: string, engine?: SttEngine) => string,
+): boolean {
+  if (loadedModel === sidecarKeyFor(selectedRepo)) return true;
+  if (!repoIdForSidecarKey) return false;
+  const rowId = (id: string) =>
+    repoIdForSidecarKey(id, engine ?? undefined).trim().toLowerCase();
+  return rowId(loadedModel) === rowId(sidecarKeyFor(selectedRepo));
+}
+
 export function sttSelectionReady(
   selectedRepo: string | null,
   loadedModel: string | null,
   sidecarKeyFor: (repoId: string) => string,
   selectedEngine?: SttEngine | null,
   loadedEngine?: SttEngine | null,
+  repoIdForSidecarKey?: (sidecarKey: string, engine?: SttEngine) => string,
 ): boolean {
   return Boolean(
     selectedRepo &&
-      loadedModel === sidecarKeyFor(selectedRepo) &&
+      loadedModel &&
+      sttSameModel(
+        selectedRepo,
+        loadedModel,
+        sidecarKeyFor,
+        loadedEngine ?? selectedEngine,
+        repoIdForSidecarKey,
+      ) &&
       (!selectedEngine || !loadedEngine || selectedEngine === loadedEngine),
   );
+}
+
+/** Eject only what is resident: the selector keeps showing the last Transcribe model after an
+ *  unload, and an Eject there had nothing to release. */
+export function audioEjectAvailable({
+  mode,
+  busy,
+  hasValue,
+  showLastPageModel,
+  sttReady,
+}: {
+  mode: string;
+  busy: AudioBusy;
+  hasValue: boolean;
+  showLastPageModel: boolean;
+  sttReady: boolean;
+}): boolean {
+  if (!hasValue || busy !== null || showLastPageModel) return false;
+  return mode !== "transcribe" || sttReady;
+}
+
+/** Older backends return no `released` flag; treat that as released, like before. */
+export function sttEjectSucceeded(released: boolean | undefined): boolean {
+  return released !== false;
 }
 
 type SttEngineResidency = {
@@ -677,7 +780,13 @@ export function reconcileSttSelection({
   if (loadedModel) {
     if (
       selectedRepo &&
-      sidecarKeyFor(selectedRepo) === loadedModel &&
+      sttSameModel(
+        selectedRepo,
+        loadedModel,
+        sidecarKeyFor,
+        loadedEngine,
+        repoIdForSidecarKey,
+      ) &&
       (!loadedEngine ||
         !engineForRepo ||
         engineForRepo(selectedRepo) === loadedEngine)
@@ -687,4 +796,63 @@ export function reconcileSttSelection({
     return repoIdForSidecarKey(loadedModel, loadedEngine ?? "transformers");
   }
   return preservePending ? selectedRepo : null;
+}
+
+/** The audio model the Audio page shows, generates with and ejects. A kept model is never promoted,
+ *  so each other serving model is probed (GET /status?model=). */
+export async function describeAudioSlot(
+  primary: InferenceStatusResponse,
+  probe: (model: string) => Promise<InferenceStatusResponse>,
+): Promise<{
+  status: InferenceStatusResponse;
+  slotModel: string | null;
+  slotLabel: string | null;
+}> {
+  if (primary.is_audio) {
+    return { status: primary, slotModel: null, slotLabel: null };
+  }
+  const serving = primary.serving ?? [];
+  const checkpoints = primary.serving_checkpoints ?? [];
+  // A kept model can share the active one's short name: compare checkpoints when sent.
+  const primaryId = primary.model_identifier || primary.active_model;
+  for (let i = 0; i < serving.length; i++) {
+    const checkpoint = checkpoints[i];
+    const id = checkpoint || serving[i];
+    const isPrimary =
+      Boolean(primary.active_model) &&
+      (checkpoint ? checkpoint === primaryId : serving[i] === primary.active_model);
+    if (!id || isPrimary) {
+      continue;
+    }
+    // An id not held in a slot answers with the primary (the chat model), so only audio counts.
+    const slot: InferenceStatusResponse | null = await probe(id).catch(
+      () => null,
+    );
+    // Route by the probed id: a local model's status shows only a short name.
+    if (slot?.is_audio && slot.active_model) {
+      return { status: slot, slotModel: id, slotLabel: slot.active_model };
+    }
+  }
+  // No audio model loaded: never let Eject or the header act on the chat model.
+  return {
+    status: {
+      ...primary,
+      active_model: null,
+      model_identifier: null,
+      gguf_variant: null,
+      is_audio: false,
+    },
+    slotModel: null,
+    slotLabel: null,
+  };
+}
+
+/** The audio model a keep-others speech load replaces, by its unload id, else two would stay loaded. */
+export function audioModelToReplace(
+  status: InferenceStatusResponse | null | undefined,
+  target: string,
+): string | null {
+  if (!status?.is_audio || !status.active_model) return null;
+  const current = status.model_identifier || status.active_model;
+  return current !== target && status.active_model !== target ? current : null;
 }

@@ -237,10 +237,18 @@ class _FakeSlot:
         env = None,
         *,
         cancel_event = None,
+        pre_spawn = None,
+        launch_transform = None,
     ):
-        self.got.append((flags, env))
         if self.start_exc is not None:
+            self.got.append((flags, env))
             raise self.start_exc
+        if pre_spawn is not None:
+            # The real slot fits a start under its lock and starts with the flags the fit returns.
+            flags = list(pre_spawn())
+        if launch_transform is not None:
+            self.launched_flags = tuple(launch_transform(tuple(flags or ())))
+        self.got.append((flags, env))
         return self.server
 
     def begin_render(self):
@@ -406,6 +414,7 @@ def test_slot_holds_the_managed_tree_while_its_server_lives(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -447,6 +456,7 @@ def test_slot_respawns_a_dead_server(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -485,6 +495,7 @@ class _LifeSrv:
         files,
         *,
         offload = None,
+        threads = None,
         env = None,
         extra_args = None,
     ):
@@ -862,6 +873,7 @@ def test_cancel_aborts_a_server_start_in_progress(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):
@@ -936,6 +948,7 @@ def test_the_tree_stays_held_until_the_server_has_exited(monkeypatch):
             files,
             *,
             offload = None,
+            threads = None,
             env = None,
             extra_args = None,
         ):

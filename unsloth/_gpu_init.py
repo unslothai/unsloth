@@ -24,9 +24,11 @@ from .import_fixes import (
     fix_message_factory_issue,
     patch_torch_missing_attribute_error,
     check_triton_py_ssize_t_clean,
+    fix_triton_module_cache_python_key,
     check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
+    fix_torchao_pytree_register_constant,
     propagate_torchao_fix_to_subprocesses,
     check_fbgemm_gpu_version,
     check_transformers_dependency_versions,
@@ -45,24 +47,31 @@ from .import_fixes import (
 # transformers / vllm (disable_broken_vllm probes `import vllm`, check_fbgemm_gpu_version imports
 # transformers, fix_huggingface_hub imports huggingface_hub), any of which would freeze Hub's
 # cache constants with the un-redirected paths. hf_cache.py is stdlib-only, so it loads straight
-# from its file without triggering the full unsloth_zoo init this early.
+# from unsloth_zoo_downloads (or, on older zoo, its file) without the full unsloth_zoo init.
 try:
-    import importlib.util as _importlib_util
-    from pathlib import Path as _Path
+    try:
+        from unsloth_zoo_downloads.hf_cache import redirect_hf_cache_if_readonly as _redirect
+    except ImportError:
+        import importlib.util as _importlib_util
+        from pathlib import Path as _Path
 
-    _zoo_spec = _importlib_util.find_spec("unsloth_zoo")
-    if _zoo_spec is not None and _zoo_spec.origin:
-        _hf_cache_file = _Path(_zoo_spec.origin).with_name("hf_cache.py")
-        if _hf_cache_file.is_file():
-            _hf_cache_spec = _importlib_util.spec_from_file_location(
-                "unsloth_zoo._early_hf_cache", _hf_cache_file
-            )
-            _hf_cache = _importlib_util.module_from_spec(_hf_cache_spec)
-            _hf_cache_spec.loader.exec_module(_hf_cache)
-            _hf_cache.redirect_hf_cache_if_readonly()
-            del _hf_cache, _hf_cache_spec
-        del _hf_cache_file
-    del _zoo_spec, _importlib_util, _Path
+        _redirect = None
+        _zoo_spec = _importlib_util.find_spec("unsloth_zoo")
+        if _zoo_spec is not None and _zoo_spec.origin:
+            _hf_cache_file = _Path(_zoo_spec.origin).with_name("hf_cache.py")
+            if _hf_cache_file.is_file():
+                _hf_cache_spec = _importlib_util.spec_from_file_location(
+                    "unsloth_zoo._early_hf_cache", _hf_cache_file
+                )
+                _hf_cache = _importlib_util.module_from_spec(_hf_cache_spec)
+                _hf_cache_spec.loader.exec_module(_hf_cache)
+                _redirect = _hf_cache.redirect_hf_cache_if_readonly
+                del _hf_cache, _hf_cache_spec
+            del _hf_cache_file
+        del _zoo_spec, _importlib_util, _Path
+    if _redirect is not None:
+        _redirect()
+    del _redirect
 except Exception:
     pass
 
@@ -84,6 +93,8 @@ patch_torch_missing_attribute_error()
 fix_bitsandbytes_rocm_arch_detection()
 # Torch-only, so it can run first; torchao 0.18 on torch < 2.10 needs it before any torchao import.
 fix_torchao_torch_symbol_skew()
+# Same skew for torchao 0.17+ on torch 2.6 (no pytree register_constant).
+fix_torchao_pytree_register_constant()
 # Before unsloth_zoo and transformers (and vllm, below): real torchao on a torch without torch.distributed.
 from ._torchao_nodist import fix_torchao_without_torch_distributed
 
@@ -100,6 +111,8 @@ propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 # Same reason: nothing has failed yet, and a run that launches no Triton kernel never will.
 check_triton_py_ssize_t_clean()
+# Before triton's driver first compiles and caches cuda_utils (#2760).
+fix_triton_module_cache_python_key()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 # Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
@@ -118,10 +131,12 @@ del fix_message_factory_issue
 del patch_torch_missing_attribute_error
 del fix_torch_check_is_size
 del fix_torchao_torch_symbol_skew
+del fix_torchao_pytree_register_constant
 del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
 del check_triton_py_ssize_t_clean
+del fix_triton_module_cache_python_key
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
@@ -221,7 +236,17 @@ try:
             "Unsloth: Please update Unsloth and Unsloth-Zoo to the latest version!\n"
             "Do this via `pip install --upgrade --force-reinstall --no-cache-dir --no-deps unsloth unsloth_zoo`"
         )
+    _restore_nccl_debug = None
+    if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
+        # unsloth_zoo's logging switches reset NCCL_DEBUG to WARN on import.
+        from .distributed_debug import keep_debug_nccl_env
+        _restore_nccl_debug = keep_debug_nccl_env()
+        del keep_debug_nccl_env
     import unsloth_zoo
+
+    if _restore_nccl_debug is not None:
+        _restore_nccl_debug()
+    del _restore_nccl_debug
 except PackageNotFoundError:
     raise ImportError(
         f"Unsloth: Please install unsloth_zoo via `pip install unsloth_zoo` then retry!"
@@ -241,6 +266,13 @@ except ModuleNotFoundError:
     )
 except:
     raise
+
+try:
+    from .import_fixes import fix_torch_compiler_disable_unless_decode
+    fix_torch_compiler_disable_unless_decode()
+    del fix_torch_compiler_disable_unless_decode
+except Exception:
+    pass
 
 # Re-assert after unsloth_zoo's patch_torch_compile, which historically popped
 # TORCHINDUCTOR_COMPILE_THREADS.
@@ -297,7 +329,12 @@ try:
         arch_lacks_bf16,
         arch_lacks_buffer_ops,
         apply_gfx101x_triton_workaround,
+        cuda_gate_capabilities,
+        cuda_order_mismatch_names,
+        cuda_visible_capabilities,
         hip_visible_archs,
+        xpu_supports_native_bf16,
+        zoo_shares_xpu_bf16,
     )
 except NotImplementedError as device_type_error:
     _reraise_device_type_error_with_gpu_hint(device_type_error)
@@ -308,10 +345,12 @@ from .import_fixes import (
     fix_transformers5_legacy_config_types,
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
+    fix_transformers_bnb_prequantized_save,
     fix_transformers_fully_masked_rows,
     fix_transformers_flash_attention_mrope_packed_sequence,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
+    fix_transformers_tokenizer_config_vocab_file_override,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
@@ -375,13 +414,16 @@ fix_transformers_fully_masked_rows()
 fix_transformers_flash_attention_mrope_packed_sequence()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
-# CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
+# CVE-2026-4372 / 5241 / 9856 and the tokenizer_config.json vocab path traversal, no-ops once
+# transformers carries the fix; before any config or tokenizer loads.
 fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
+fix_transformers_tokenizer_config_vocab_file_override()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
 fix_transformers_composite_prefix_renaming()
+fix_transformers_bnb_prequantized_save()
 # After the repair above, never before it, and this is the ONLY call: on exactly the releases
 # the repair covers, warning first tells users to downgrade away from a version that now works,
 # and a second call cannot retract a warning already logged. The check reads the live attribute,
@@ -470,7 +512,9 @@ del fix_transformers5_bare_annotation_configs
 del fix_transformers5_legacy_config_types
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
+del fix_transformers_tokenizer_config_vocab_file_override
 del fix_transformers_rope_scaling_drops_theta
+del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
 del fix_transformers_fp8_unscaled_checkpoint_linears
 del fix_transformers_validate_rope_ignore_keys
@@ -525,14 +569,24 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     SUPPORTS_BFLOAT16 = False
     torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
 elif DEVICE_TYPE == "cuda":
-    major_version, minor_version = torch.cuda.get_device_capability()
-    SUPPORTS_BFLOAT16 = major_version >= 8
+    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
+    _cuda_caps = cuda_gate_capabilities()
+    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
+    if not SUPPORTS_BFLOAT16 and any(major >= 8 for major, _ in _cuda_caps):
+        _old = [i for i, (major, _) in cuda_visible_capabilities(with_index = True) if major < 8]
+        print(
+            f"Unsloth: visible GPU(s) {_old} lack bfloat16, so float16 is used on every GPU. "
+            "Hide them with CUDA_VISIBLE_DEVICES to train in bfloat16."
+        )
+        del _old
+    del _cuda_caps
 
     old_is_bf16_supported = torch.cuda.is_bf16_supported
     if "including_emulation" in str(inspect.signature(old_is_bf16_supported)):
 
         def is_bf16_supported(including_emulation = False):
-            return old_is_bf16_supported(including_emulation)
+            supported = old_is_bf16_supported(including_emulation)
+            return supported if including_emulation else (supported and SUPPORTS_BFLOAT16)
 
         torch.cuda.is_bf16_supported = is_bf16_supported
     else:
@@ -541,7 +595,21 @@ elif DEVICE_TYPE == "cuda":
             return SUPPORTS_BFLOAT16
 
         torch.cuda.is_bf16_supported = is_bf16_supported
-    del major_version, minor_version
+
+    _mixed_names = cuda_order_mismatch_names()
+    if _mixed_names:
+        _order_hint = (
+            "$env:CUDA_DEVICE_ORDER = 'PCI_BUS_ID'"
+            if os.name == "nt"
+            else "export CUDA_DEVICE_ORDER=PCI_BUS_ID"
+        )
+        print(
+            f"Unsloth: visible GPUs differ ({', '.join(_mixed_names)}), so CUDA's device indices may "
+            "not match nvidia-smi's and CUDA_VISIBLE_DEVICES can select another card. "
+            f"Run `{_order_hint}` before starting Python to make them match."
+        )
+        del _order_hint
+    del _mixed_names
 elif DEVICE_TYPE == "hip":
     old_is_bf16_supported = torch.cuda.is_bf16_supported
 
@@ -556,9 +624,10 @@ elif DEVICE_TYPE == "hip":
     torch.cuda.is_bf16_supported = is_bf16_supported
     del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
-    # torch.xpu.is_bf16_supported() does not have including_emulation set SUPPORTS_BFLOAT16 as
-    # torch.xpu.is_bf16_supported()
-    SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
+    # Don't patch torch.xpu.is_bf16_supported: Studio reads its strict answer.
+    SUPPORTS_BFLOAT16 = (
+        xpu_supports_native_bf16() if zoo_shares_xpu_bf16() else torch.xpu.is_bf16_supported()
+    )
 elif DEVICE_TYPE == "npu":
     # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
@@ -713,7 +782,20 @@ elif DEVICE_TYPE == "xpu":
         )
         bnb = None
 
-    pass
+    from .import_fixes import patch_bitsandbytes_triton_quantize_fallback
+
+    patch_bitsandbytes_triton_quantize_fallback("xpu")
+    del patch_bitsandbytes_triton_quantize_fallback
+
+# After the bitsandbytes import above, never before: it only patches an already-imported bitsandbytes.
+from .import_fixes import patch_bitsandbytes_paged_optimizer_resume
+
+patch_bitsandbytes_paged_optimizer_resume()
+del patch_bitsandbytes_paged_optimizer_resume
+from .import_fixes import patch_bitsandbytes_optimizer_step_sync
+
+patch_bitsandbytes_optimizer_step_sync()
+del patch_bitsandbytes_optimizer_step_sync
 
 from .models import *
 from .models import __version__
@@ -737,3 +819,6 @@ from unsloth_zoo.rl_environments import (
 # inspect.getsource() and corrupts downstream drift detectors.
 if os.environ.get("UNSLOTH_ALLOW_CPU", "0") != "1":
     _patch_trl_trainer()
+
+    from .context_parallel import patch_sft_trainer
+    patch_sft_trainer()

@@ -257,7 +257,7 @@ def _dynamo_gate_timeout() -> float:
         value = float(os.environ.get(DYNAMO_GATE_TIMEOUT_ENV_VAR, _DEFAULT_DYNAMO_GATE_TIMEOUT_S))
     except ValueError:
         return _DEFAULT_DYNAMO_GATE_TIMEOUT_S
-    return value if value > 0 else _DEFAULT_DYNAMO_GATE_TIMEOUT_S
+    return min(value, threading.TIMEOUT_MAX) if value > 0 else _DEFAULT_DYNAMO_GATE_TIMEOUT_S
 
 
 def gate_torch_stack_import(reason: str, log = None) -> bool:
@@ -267,10 +267,25 @@ def gate_torch_stack_import(reason: str, log = None) -> bool:
     ``torch._inductor``; racing the warm inside ``import torch._dynamo`` takes the two package locks
     in opposite order, and CPython's deadlock detector leaves a half-built module in sys.modules."""
     if _dynamo_done:
+        _prime_cuda_driver()
         return True
     if os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1":
+        _prime_cuda_driver()  # the kill switch skips only the dynamo wait
         return False
-    return ensure_dynamo_imported(log = log or logger, reason = reason, timeout = _dynamo_gate_timeout())
+    imported = ensure_dynamo_imported(
+        log = log or logger, reason = reason, timeout = _dynamo_gate_timeout()
+    )
+    _prime_cuda_driver()
+    return imported
+
+
+def _prime_cuda_driver() -> None:
+    """``cuInit`` off the GIL before the gated importer probes CUDA. See utils/cuda_driver_prime.py."""
+    try:
+        from utils.cuda_driver_prime import prime_cuda_driver  # noqa: PLC0415
+        prime_cuda_driver()
+    except Exception as exc:  # noqa: BLE001 -- never fatal; torch initialises as before
+        logger.debug("cuda driver prime skipped: %r", exc)
 
 
 def ensure_dynamo_imported(
@@ -341,6 +356,8 @@ def close_dynamo_import_window(log) -> bool:
     front of its first one. A warning, not a retry: a process that lost the race does not
     recover. Wrap the IMPORT of this module too, since it reaches a private CPython name."""
     imported = ensure_dynamo_imported(log = log, reason = "diffusers import")
+    # `import diffusers` probes CUDA at module level (diffusers.utils.torch_utils) with the GIL held.
+    _prime_cuda_driver()
     # Not nested in the dynamo gate: the background import it waits on reaches torch._dynamo.
     claim_media_import_window(log)
     if imported:
@@ -395,6 +412,44 @@ def claim_media_import_window(log = None) -> bool:
         _media_import_claimed = True
         return True
     finally:
+        _media_import_lock.release()
+
+
+@contextmanager
+def hold_media_import_window(reason: str, log = None):
+    """Hold the window around a foreground import of the torch compile stack; an expired wait still imports."""
+    global _media_import_owner
+    if (
+        os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1"
+        or _media_import_owner == threading.get_ident()
+    ):
+        yield
+        return
+    held = _media_import_lock.acquire(blocking = False)
+    if not held:
+        waited = time.perf_counter()
+        (log or logger).info("%s: waiting for a background media import to finish", reason)
+        held = _media_import_lock.acquire(timeout = _dynamo_gate_timeout())
+        if held:
+            (log or logger).info(
+                "%s: background media import finished after waiting %.1fs",
+                reason,
+                time.perf_counter() - waited,
+            )
+        else:
+            (log or logger).warning(
+                "%s: gave up waiting for the background media import after %.0fs; importing unguarded",
+                reason,
+                time.perf_counter() - waited,
+            )
+    if not held:
+        yield
+        return
+    _media_import_owner = threading.get_ident()
+    try:
+        yield
+    finally:
+        _media_import_owner = None
         _media_import_lock.release()
 
 
@@ -683,6 +738,7 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             # On Windows ROCm diffusers reaches xformers and torchao, both landing on an
             # absent distributed backend, so any first importer owes these stubs.
             from core._torchao_stub import (  # noqa: PLC0415
+                alias_torchao_fqn_to_config,
                 hide_xformers_built_for_another_torch,
                 install_torchao_windows_rocm_stub,
                 install_xformers_windows_rocm_stub,
@@ -694,6 +750,7 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             install_xformers_windows_rocm_stub()
             hide_xformers_built_for_another_torch()
             install_torchao_windows_rocm_stub()
+            alias_torchao_fqn_to_config()
             install_torchao_int_mm_patch()
         except Exception as exc:  # noqa: BLE001 -- importing unprotected is the hazard; skip
             logger.debug("diffusers prewarm skipped: stubs unavailable: %r", exc)

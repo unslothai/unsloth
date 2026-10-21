@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# _llama_relocatable_rpath_args() from studio/setup.sh (#12392): $ORIGIN RUNPATH on Linux only.
+# _llama_relocatable_rpath_args() from studio/setup.sh: $ORIGIN RUNPATH on Linux only.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,7 +14,6 @@ if [ ! -s "$_FUNC_FILE" ]; then
     exit 1
 fi
 
-# $1 = what `uname -s` answers.
 run_args() {
     UNAME_S="$1" bash -c ". '$_FUNC_FILE'; uname() { printf '%s' \"\$UNAME_S\"; }; _llama_relocatable_rpath_args"
 }

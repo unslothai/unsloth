@@ -158,9 +158,11 @@ def _config(base, dataset, **overrides):
 
 
 # The worker imports unsloth; CI installs unsloth_zoo only for the step that runs this file.
+# Apple Silicon trains with MLX, through unsloth_zoo's decision module.
+_WORKER = "unsloth_zoo.mlx.decision" if sys.platform == "darwin" else "unsloth_zoo"
 needs_worker = pytest.mark.skipif(
-    sys.platform == "darwin" or importlib.util.find_spec("unsloth_zoo") is None,
-    reason = "trains in a worker that imports unsloth (Apple Silicon trains with MLX)",
+    importlib.util.find_spec("unsloth_zoo") is None or importlib.util.find_spec(_WORKER) is None,
+    reason = "trains in a worker that imports unsloth",
 )
 
 
@@ -475,6 +477,26 @@ def _fake_output(
     return folder
 
 
+def test_mlx_runs_report_to_tensorboard_and_wandb(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from core.training.decision_trainer import _mlx_tracking_callback
+
+    # Built first: importing transformers looks for the real reporting packages.
+    callback, state, seen = _mlx_tracking_callback(["tensorboard", "wandb"]), SimpleNamespace(), []
+    state.global_step = 7
+    writer = SimpleNamespace(add_scalar = lambda *row: seen.append(row), close = lambda: None)
+    boards = SimpleNamespace(SummaryWriter = lambda log_dir: seen.append(log_dir) or writer)
+    monkeypatch.setitem(sys.modules, "tensorboardX", boards)
+    wandb = SimpleNamespace(log = lambda scalars, step: seen.append((scalars, step)))
+    monkeypatch.setitem(sys.modules, "wandb", wandb)
+    monkeypatch.setenv("TENSORBOARD_LOGGING_DIR", str(tmp_path))
+    callback.on_train_begin(None, state, None)
+    callback.on_log(None, state, None, logs = {"loss": 0.5, "eval_loss": 0.25, "note": "skipped"})
+    scalars = {"train/loss": 0.5, "eval/loss": 0.25}
+    assert seen == [str(tmp_path), ("train/loss", 0.5, 7), ("eval/loss", 0.25, 7), (scalars, 7)]
+
+
 def test_settings_accept_only_complete_owner_fine_tunes(studio_home, client, tmp_path):
     from utils.paths import outputs_root
 
@@ -734,6 +756,51 @@ def test_a_stop_during_the_s3_download_cancels_the_run(monkeypatch):
     monkeypatch.setattr(s3_dataset, "prepare_s3_dataset_download", download)
     with pytest.raises(_Stopped, match = "Training cancelled"):
         _load(lambda: True, s3_config = {"bucket": "b"})
+
+
+def test_s3_audio_rows_keep_their_clips_after_the_download_is_cleaned_up(monkeypatch, tmp_path):
+    import shutil
+    from types import SimpleNamespace
+
+    from core.training import s3_dataset
+
+    clips = [tmp_path / "a.wav", tmp_path / "b.wav", tmp_path / "c.wav"]
+    for index, clip in enumerate(clips):
+        clip.write_bytes(b"RIFF" + bytes([index]))
+    manifest = tmp_path / "rows.jsonl"
+    rows = [
+        {**_row(0), "audio": {"bytes": None, "path": str(clips[0])}},
+        {**_row(1), "audio": [{"bytes": None, "path": str(clips[1])}]},
+        # A plain path string, as the S3 rewrite leaves a manifest's usual audio cell.
+        {**_row(2), "audio": str(clips[2])},
+        _row(3),
+    ]
+    manifest.write_text("\n".join(json.dumps(row) for row in rows), encoding = "utf-8")
+    copy = tmp_path / "download"
+    copy.mkdir()
+    shutil.copy(manifest, copy)
+
+    def download(s3_config, cancel_callback):
+        return SimpleNamespace(
+            files = [str(copy / "rows.jsonl")], cleanup = lambda: [clip.unlink() for clip in clips]
+        )
+
+    monkeypatch.setattr(s3_dataset, "prepare_s3_dataset_download", download)
+    loaded, _, _ = _load(s3_config = {"bucket": "b"})
+    assert [
+        loaded[0]["audio"]["bytes"],
+        loaded[1]["audio"][0]["bytes"],
+        loaded[2]["audio"]["bytes"],
+    ] == [b"RIFF\x00", b"RIFF\x01", b"RIFF\x02"]
+    assert "audio" not in loaded[3]
+    assert not any(clip.exists() for clip in clips)
+    # A slice reads only the clips of the rows it keeps.
+    for index, clip in enumerate(clips):
+        clip.write_bytes(b"RIFF" + bytes([index]))
+    read, read_bytes = [], Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda path: read.append(path.name) or read_bytes(path))
+    loaded, _, _ = _load(s3_config = {"bucket": "b"}, dataset_slice_start = 1, dataset_slice_end = 1)
+    assert [row["audio"][0]["bytes"] for row in loaded] == [b"RIFF\x01"] and read == ["b.wav"]
 
 
 def test_other_accounts_reach_only_the_configured_fine_tune(studio_home, client):

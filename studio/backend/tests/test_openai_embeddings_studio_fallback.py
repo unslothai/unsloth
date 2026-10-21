@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import copy
 import os
 import sys
 import threading
@@ -227,14 +228,171 @@ def test_invalid_requests_are_400(studio_embedder, body):
     assert _http_error(body).status_code == 400
 
 
-def test_over_length_input_is_rejected_not_truncated(studio_embedder):
+def test_over_length_input_is_truncated_by_default(studio_embedder):
+    encoded = []
+
+    def _encode(texts, **_):
+        encoded.append(list(texts))
+        return _vectors(texts)
+
+    studio_embedder.setattr(rag_embeddings, "encode", _encode)
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
     studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
-    error = _http_error({"input": ["ab", "abcd"]})
+    payload = _call({"input": ["ab", "abcd"]})
+    assert encoded == [["ab", "abc"]]
+    assert len(payload["data"]) == 2
+    assert payload["usage"]["prompt_tokens"] == 5
+
+
+def test_over_length_input_is_rejected_when_truncate_is_false(studio_embedder):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
+    error = _http_error({"input": ["ab", "abcd"], "truncate": False})
     assert error.status_code == 400
     assert "3-token limit" in error.detail
+
+
+def test_non_boolean_truncate_is_400(studio_embedder):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    error = _http_error({"input": "ab", "truncate": "yes"})
+    assert error.status_code == 400
+    assert "'truncate'" in error.detail
+
+
+_CLS, _SEP = 101, 102
+
+
+def _llama_overflow_server(
+    ubatch,
+    n_ctx,
+    can_split = False,
+):
+    import httpx
+
+    embedded, tokenized = [], []
+
+    def _tokens(item):
+        if isinstance(item, list):
+            return item
+        return [_CLS, *(len(word) for word in item.split()), _SEP]
+
+    class _Client:
+        async def post(
+            self,
+            url,
+            *_args,
+            json = None,
+            **_kwargs,
+        ):
+            if url.endswith("/tokenize"):
+                tokenized.append(json["content"])
+                tokens = _tokens(json["content"])
+                return httpx.Response(
+                    200, json = {"tokens": tokens if json["add_special"] else tokens[1:-1]}
+                )
+            # The route reuses the dict.
+            embedded.append(copy.deepcopy(json))
+            items = [json["input"]] if isinstance(json["input"], str) else json["input"]
+            for item in items:
+                n = len(_tokens(item))
+                if can_split and n >= n_ctx:
+                    return httpx.Response(
+                        400,
+                        json = {
+                            "error": {
+                                "message": f"request ({n} tokens) exceeds the available context "
+                                f"size ({n_ctx} tokens), try increasing it"
+                            }
+                        },
+                    )
+                if can_split:
+                    continue
+                if n > ubatch:
+                    return httpx.Response(
+                        500,
+                        json = {
+                            "error": {
+                                "message": f"input ({n} tokens) is too large to process. increase "
+                                f"the physical batch size (current batch size: {ubatch})"
+                            }
+                        },
+                    )
+                if n > n_ctx:
+                    return httpx.Response(
+                        400,
+                        json = {
+                            "error": {
+                                "message": f"input ({n} tokens) is larger than the max context "
+                                f"size ({n_ctx} tokens). skipping"
+                            }
+                        },
+                    )
+            return httpx.Response(200, json = {"data": [{"embedding": [0.5]} for _ in items]})
+
+        async def aclose(self):
+            return None
+
+    return _Client, embedded, tokenized
+
+
+_OVERFLOW_LIMITS = [(4, 512), (512, 4)]
+
+
+def _resident_embedding_gguf(studio_embedder, client):
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+
+
+@pytest.mark.parametrize("ubatch, n_ctx", _OVERFLOW_LIMITS)
+def test_resident_embedding_gguf_truncates_an_oversized_input(studio_embedder, ubatch, n_ctx):
+    client, embedded, _ = _llama_overflow_server(ubatch, n_ctx)
+    _resident_embedding_gguf(studio_embedder, client)
+    payload = _call({"input": ["aa bbb c dddd e", "x y"], "model": "org/E-GGUF"})
+    assert len(payload["data"]) == 2
+    assert len(embedded) == 2
+    assert embedded[1]["input"] == [[_CLS, 2, 3, _SEP], "x y"]
+    assert "truncate" not in embedded[0]
+
+
+def test_resident_embedding_gguf_truncates_for_a_splittable_slot(studio_embedder):
+    client, embedded, _ = _llama_overflow_server(512, 5, can_split = True)
+    _resident_embedding_gguf(studio_embedder, client)
+    payload = _call({"input": ["aa bbb c dddd e", "x y"], "model": "org/E-GGUF"})
+    assert len(payload["data"]) == 2
+    assert embedded[1]["input"] == [[_CLS, 2, 3, _SEP], "x y"]
+
+
+@pytest.mark.parametrize("ubatch, n_ctx", _OVERFLOW_LIMITS)
+def test_resident_embedding_gguf_keeps_the_error_when_truncate_is_false(
+    studio_embedder, ubatch, n_ctx
+):
+    client, embedded, _ = _llama_overflow_server(ubatch, n_ctx)
+    _resident_embedding_gguf(studio_embedder, client)
+    response = asyncio.run(
+        inference_route.openai_embeddings(
+            _Request({"input": "aa bbb c dddd e", "model": "org/E-GGUF", "truncate": False}),
+            "tester",
+        )
+    )
+    assert response.status_code == (500 if ubatch < n_ctx else 400)
+    assert len(embedded) == 1
+    assert "truncate" not in embedded[0]
 
 
 def test_embedder_failure_is_502(studio_embedder):
@@ -1036,7 +1194,7 @@ def test_local_path_models_are_not_exposed(studio_embedder, tmp_path):
     reported = _call({"input": "alpha"})["model"]
     assert reported.startswith("sentence-transformers:bge-") and str(tmp_path) not in reported
     studio_embedder.setattr(rag_embeddings, "max_tokens", lambda model_name = None: 3)
-    error = _http_error({"input": "alphabet"})
+    error = _http_error({"input": "alphabet", "truncate": False})
     assert error.status_code == 400
     assert "bge" in error.detail and str(tmp_path) not in error.detail
 
@@ -1458,3 +1616,59 @@ def test_stashed_gguf_embeds_reads_the_stashed_model_header(monkeypatch, tmp_pat
 
     monkeypatch.setattr(inference_route, "_probe_backend", _Probe)
     assert inference_route._stashed_gguf_embeds() is True
+
+
+def test_resident_embedding_gguf_recuts_for_a_context_below_the_batch(studio_embedder):
+    client, embedded, tokenized = _llama_overflow_server(6, 4)
+    _resident_embedding_gguf(studio_embedder, client)
+    payload = _call({"input": ["aa bbb c dddd e ff gg hh"], "model": "org/E-GGUF"})
+    assert len(payload["data"]) == 1
+    assert [body["input"] for body in embedded[1:]] == [
+        [[_CLS, 2, 3, 1, 4, _SEP]],
+        [[_CLS, 2, 3, _SEP]],
+    ]
+    assert len(tokenized) == 2
+
+
+def test_resident_embedding_gguf_skips_tokenizing_strings_that_cannot_overflow(studio_embedder):
+    client, embedded, tokenized = _llama_overflow_server(20, 512)
+    _resident_embedding_gguf(studio_embedder, client)
+    long = " ".join(["a"] * 30)
+    _call({"input": [long, "x", "y z", "\ufdfa"], "model": "org/E-GGUF"})
+    assert embedded[1]["input"][1:] == ["x", "y z", "\ufdfa"]
+    assert set(tokenized) == {long, "\ufdfa"}
+
+
+def test_resident_embedding_gguf_cancel_during_the_retry_is_499(studio_embedder):
+    from fastapi import HTTPException
+
+    server, _, _ = _llama_overflow_server(4, 512)
+    request = _Request({"input": ["aa bbb c dddd e"], "model": "org/E-GGUF"})
+    disconnected = False
+
+    async def _is_disconnected():
+        return disconnected
+
+    request.is_disconnected = _is_disconnected
+
+    class _Client(server):
+        closed = False
+
+        async def post(self, url, *args, **kwargs):
+            nonlocal disconnected
+            if self.closed:
+                raise RuntimeError("Cannot send a request, as the client has been closed.")
+            response = await super().post(url, *args, **kwargs)
+            if response.status_code == 500:
+                disconnected = True
+                while not self.closed:
+                    await asyncio.sleep(0.05)
+            return response
+
+        async def aclose(self):
+            self.closed = True
+
+    _resident_embedding_gguf(studio_embedder, _Client)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(request, "tester"))
+    assert exc.value.status_code == 499

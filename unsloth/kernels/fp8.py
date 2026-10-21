@@ -18,6 +18,8 @@ import triton.language as tl
 from torch.nn import functional as F
 import math
 from unsloth_zoo.utils import Version
+
+from .indexing import long_indexing
 from unsloth_zoo.log import logger
 from unsloth_zoo.temporary_patches.common import torch_compile
 
@@ -163,7 +165,7 @@ def weight_dequant_block(
         triton.cdiv(N, meta["BLOCK_SIZE"]),
     )
     with _fp8_triton_device_context(x):
-        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
+        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size, enable_fp_fusion = True)
     return y
 
 
@@ -214,9 +216,18 @@ def weight_dequant(
 
 # Copied from huggingface.co/deepseek-ai/DeepSeek-V3 inference/kernel.py
 @triton.jit
-def act_quant_kernel(x_ptr, y_ptr, s_ptr, BLOCK_SIZE: tl.constexpr):
+def act_quant_kernel(
+    x_ptr,
+    y_ptr,
+    s_ptr,
+    BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
+):
     pid = tl.program_id(axis = 0)
-    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    if LONG_INDEXING:
+        offs = pid.to(tl.int64) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE).to(tl.int64)
+    else:
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     x = tl.load(x_ptr + offs).to(tl.float32)
     s = tl.max(tl.abs(x)) / 448.0
     # All-zero row: keep scale at 1 so LoRA's zero dY does not become NaN (a deviation from the original
@@ -246,7 +257,9 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
     with _fp8_triton_device_context(x):
-        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size)
+        act_quant_kernel[grid](
+            x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x), enable_fp_fusion = True
+        )
     return y, s
 
 
@@ -278,6 +291,7 @@ def _w8a8_block_fp8_matmul(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
 ):
     """Triton-accelerated function used to perform linear operations (dot
     product) on input tensors `A` and `B` with block-wise quantization, and
@@ -297,6 +311,9 @@ def _w8a8_block_fp8_matmul(
     offs_am = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
     offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
     offs_k = tl.arange(0, BLOCK_SIZE_K)
+    if LONG_INDEXING:
+        offs_am = offs_am.to(tl.int64)
+        offs_bn = offs_bn.to(tl.int64)
     a_ptrs = A + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)
     b_ptrs = B + (offs_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
 
@@ -327,6 +344,9 @@ def _w8a8_block_fp8_matmul(
 
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    if LONG_INDEXING:
+        offs_cm = offs_cm.to(tl.int64)
+        offs_cn = offs_cn.to(tl.int64)
     c_ptrs = C + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
     tl.store(c_ptrs, c, mask = c_mask)
@@ -399,8 +419,10 @@ def w8a8_block_fp8_matmul_triton(
             BLOCK_SIZE_N = BLOCK_SIZE_N,
             BLOCK_SIZE_K = BLOCK_SIZE_K,
             GROUP_SIZE_M = 8,
+            LONG_INDEXING = long_indexing(A, B, C),
             # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
             num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
+            enable_fp_fusion = True,
         )
     return C
 
@@ -419,6 +441,13 @@ def torchao_block_matmul(
     block_size: list[int],
     output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
+    # torchao's kernel indexes in int32 too, so route launches past 2**31 elements to the int64 one.
+    if long_indexing(act_q, weight_q) or (
+        act_q.numel() // act_q.shape[-1] * weight_q.shape[0] >= 2**31
+    ):
+        return w8a8_block_fp8_matmul_triton(
+            act_q, weight_q, act_scale, weight_scale, block_size, output_dtype = output_dtype
+        )
     with _fp8_triton_device_context(act_q):
         out = torchao_blockwise_gemm(
             act_q.contiguous(),
@@ -438,18 +467,59 @@ fp8_block_matmul = (
 )
 
 
+def _rocm_fp8e4nv_kernel_supported(device):
+    # AMD triton's supported_fp8_dtypes (third_party/amd/backend/compiler.py): no fp8e4nv before 3.3;
+    # 3.3 adds gfx940-942 / gfx950, 3.4 gfx942 / gfx950 / gfx12*, and 3.5+ lists it on every arch
+    # (software-emulated without OCP fp8 hardware; ran correctly on gfx1151 with triton 3.6).
+    try:
+        version = Version(triton.__version__).release[:2]
+        if version >= (3, 5):
+            return True
+        if version < (3, 3):
+            return False
+        arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0].lower()
+    except Exception:
+        return False
+    if version >= (3, 4):
+        return arch in ("gfx942", "gfx950") or arch.startswith("gfx12")
+    return arch in ("gfx940", "gfx941", "gfx942", "gfx950")
+
+
+def _triton_release():
+    # Compiled decode steps trace the gates below; torch 2.7 dynamo graph breaks inside packaging's Version.
+    try:
+        major, minor = triton.__version__.split(".")[:2]
+        return int(major), int(minor)
+    except Exception:
+        return Version(triton.__version__).release[:2]
+
+
+@functools.lru_cache(maxsize = None)
+def _fp8_gemv_miscompiles(device):
+    # Triton 3.3 miscompiles this GEMV on Blackwell (garbage rows at BLOCK_N 4/8); 3.4 is exact.
+    if torch.version.hip is not None:
+        return False
+    try:
+        return torch.cuda.get_device_capability(device) >= (10, 0) and _triton_release() < (3, 4)
+    except Exception:
+        return True
+
+
 @functools.lru_cache(maxsize = None)
 def _fp8_device_lacks_kernel(device):
     # A device's capability cannot change, so look it up once. Tests that simulate another
     # card must call _fp8_device_lacks_kernel.cache_clear().
-    return torch.version.hip is None and torch.cuda.get_device_capability(device) < (8, 9)
+    if torch.version.hip is not None:
+        return not _rocm_fp8e4nv_kernel_supported(device)
+    return torch.cuda.get_device_capability(device) < (8, 9)
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
     """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
 
     triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
-    L40S, L4) does support it. ROCm lists fp8e4nv always and its capability is gfx-derived.
+    L40S, L4) does support it. ROCm's capability is gfx-derived, so it is gated on the gfx arch
+    and triton version instead (_rocm_fp8e4nv_kernel_supported).
 
     kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
     which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn
@@ -464,9 +534,22 @@ def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
 
 @triton.jit
 def _fp8_rowwise_gemv_kernel(
-    x_ptr, w_ptr, s_ptr, y_ptr, N, K, stride_wn, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr
+    x_ptr,
+    w_ptr,
+    s_ptr,
+    y_ptr,
+    N,
+    K,
+    stride_wn,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+    LONG_INDEXING: tl.constexpr = False,
 ):
-    offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    pid = tl.program_id(0)
+    # Widen before the multiply: row * stride_wn overflows int32 past 2^31 weight elements.
+    if LONG_INDEXING:
+        pid = pid.to(tl.int64)
+    offs_n = pid * BLOCK_N + tl.arange(0, BLOCK_N)
     acc = tl.zeros((BLOCK_N, BLOCK_K), dtype = tl.float32)
     for k0 in range(0, K, BLOCK_K):
         offs_k = k0 + tl.arange(0, BLOCK_K)
@@ -497,7 +580,22 @@ def can_use_fp8_rowwise_gemv(X, weight, weight_scale):
         return False
     if torch.is_grad_enabled() and (X.requires_grad or weight.requires_grad):
         return False
-    return not _fp8_kernel_unsupported(weight)
+    if _fp8_kernel_unsupported(weight):
+        return False
+    if not _fp8_gemv_miscompiles(weight.device):
+        return True
+    # Triton 3.3 is exact at BLOCK_N 1 (N <= 4096); beats dequant + matmul when N >= 256 or K <= 4096 (RTX PRO 6000).
+    N, K = weight.shape
+    return N <= 4096 and (N >= 256 or K <= 4096) and _triton_builds_blackwell()
+
+
+@functools.lru_cache(maxsize = None)
+def _triton_builds_blackwell():
+    # Triton 3.2 bundles a ptxas without sm_100 / sm_120.
+    try:
+        return _triton_release() >= (3, 3)
+    except Exception:
+        return False
 
 
 def fp8_rowwise_gemv(X, weight, weight_scale):
@@ -510,7 +608,18 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
-            X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2
+            X,
+            weight,
+            scale,
+            out,
+            N,
+            K,
+            weight.stride(0),
+            BLOCK_N = block_n,
+            BLOCK_K = 512,
+            LONG_INDEXING = long_indexing(weight),
+            num_warps = 2,
+            enable_fp_fusion = True,
         )
     return out
 
@@ -539,6 +648,98 @@ def _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype):
         return out
 
 
+@triton.jit
+def _e4m3fn_byte_to_float(b):
+    # No fp8e4nv before sm_89: decode E4M3FN bytes exactly (bias 7, exp 0 subnormal, 0x7F/0xFF NaN).
+    exp = (b >> 3) & 15
+    man = b & 7
+    normal = (((exp + 120) << 23) | (man << 20)).to(tl.float32, bitcast = True)
+    value = tl.where(exp == 0, man.to(tl.float32) * 0.001953125, normal)
+    value = tl.where((b & 127) == 127, float("nan"), value)
+    # Sign as a bit, not a negation: -x can lower to 0 - x, which turns code 0x80 (-0.0) into +0.0.
+    return (value.to(tl.int32, bitcast = True) | ((b & 128) << 24)).to(tl.float32, bitcast = True)
+
+
+@triton.jit
+def _e4m3fn_bytes_dequant_kernel(
+    x_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    stride_xm,
+    stride_xn,
+    stride_sm,
+    stride_sn,
+    BLOCK_M_Q: tl.constexpr,
+    BLOCK_N_Q: tl.constexpr,
+    BLOCK_R: tl.constexpr,
+    BLOCK_C: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,
+):
+    pid_r = tl.program_id(0)
+    pid_c = tl.program_id(1)
+    if LONG_INDEXING:
+        pid_r = pid_r.to(tl.int64)
+        pid_c = pid_c.to(tl.int64)
+    r = pid_r * BLOCK_R + tl.arange(0, BLOCK_R)
+    c = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
+    mask = (r[:, None] < M) & (c[None, :] < N)
+    b = tl.load(x_ptr + r[:, None] * stride_xm + c[None, :] * stride_xn, mask = mask, other = 0)
+    # Per-element scale gather: a tile spans several quant blocks (also covers ragged / rectangular ones).
+    s = tl.load(
+        s_ptr + (r // BLOCK_M_Q)[:, None] * stride_sm + (c // BLOCK_N_Q)[None, :] * stride_sn,
+        mask = mask,
+        other = 0.0,
+    ).to(tl.float32)
+    # One fp32 multiply then one round to the output dtype, as the torch fallback does.
+    y = _e4m3fn_byte_to_float(b.to(tl.int32)) * s
+    tl.store(y_ptr + r[:, None] * N + c[None, :], y.to(y_ptr.dtype.element_ty), mask = mask)
+
+
+# (rows, cols, num_warps) per program, from a tile sweep on T4 and A100.
+_BYTES_DEQUANT_TILE = (8, 512, 4)
+
+
+@_opaque_under_compile(
+    "fp8_e4m3fn_bytes_dequant",
+    lambda weight, weight_scale, block_m, block_n, dtype: torch.empty(
+        weight.shape, dtype = dtype, device = weight.device
+    ),
+)
+def _e4m3fn_bytes_dequant(
+    weight: torch.Tensor, weight_scale: torch.Tensor, block_m: int, block_n: int, dtype: torch.dtype
+) -> torch.Tensor:
+    # Raw bytes, as triton has no fp8e4nv below sm89; bit-identical to _torch_blockwise_dequant.
+    m, n = weight.shape
+    out = torch.empty((m, n), dtype = dtype, device = weight.device)
+    if out.numel() == 0:
+        return out
+    x = weight.view(torch.uint8)
+    BLOCK_R, BLOCK_C, num_warps = _BYTES_DEQUANT_TILE
+    grid = (triton.cdiv(m, BLOCK_R), triton.cdiv(n, BLOCK_C))
+    with _fp8_triton_device_context(weight):
+        _e4m3fn_bytes_dequant_kernel[grid](
+            x,
+            weight_scale,
+            out,
+            m,
+            n,
+            x.stride(0),
+            x.stride(1),
+            weight_scale.stride(0),
+            weight_scale.stride(1),
+            BLOCK_M_Q = block_m,
+            BLOCK_N_Q = block_n,
+            BLOCK_R = BLOCK_R,
+            BLOCK_C = BLOCK_C,
+            LONG_INDEXING = long_indexing(x, weight_scale, out),
+            enable_fp_fusion = True,
+            num_warps = num_warps,
+        )
+    return out
+
+
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
     """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
     evenly into block_size and this GPU can compile its fp8 dtype, else a
@@ -561,6 +762,11 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
     ):
         # Uneven tiling, rectangular blocks, or an uncompilable fp8 dtype: the triton kernel uses one
         # BLOCK_SIZE for both axes, so it mis-indexes when block_size[0] != [1].
+        if kernel_fp8_unsupported and torch.version.hip is None and weight_scale.ndim == 2:
+            # NVIDIA below sm89: one triton pass over the e4m3fn bytes, bit-identical to the torch loop.
+            return _e4m3fn_bytes_dequant(
+                weight, weight_scale, int(block_size[0]), int(block_size[1]), out_dtype
+            )
         return _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype)
     # Even tiling with square blocks: pass the real block size, since weight_dequant would silently
     # default to 128 and dequantize wrongly.

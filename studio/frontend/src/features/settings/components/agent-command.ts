@@ -7,6 +7,8 @@
 // the default local server. For a non-default port or tunnel/remote base, emit the
 // URL (plus a key for non-loopback) so the copy targets what the UI shows.
 
+import { NOT_AUTO_PICKED_AGENTS } from "./coding-agent-list.ts";
+
 const DEFAULT_STUDIO_PORT = "8888";
 const DEFAULT_AGENT = "claude";
 const SAFE_SHELL_ARG_PATTERN = /^[A-Za-z0-9_./:@%+=,-]+$/;
@@ -167,8 +169,10 @@ export function pickCompatibleAgent(
   isGguf: boolean,
   offered: readonly string[] = [],
 ): string | null {
-  const preferred = detectedAgents.find((agent) =>
-    agentRunsOnActiveModel(agent, isGguf),
+  const preferred = detectedAgents.find(
+    (agent) =>
+      !NOT_AUTO_PICKED_AGENTS.has(agent) &&
+      agentRunsOnActiveModel(agent, isGguf),
   );
   if (preferred) {
     return preferred;
