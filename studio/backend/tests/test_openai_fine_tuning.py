@@ -346,3 +346,23 @@ def test_cancel_before_the_run_row_sticks(studio):
         return await client.fine_tuning.jobs.retrieve("ftjob_20261021_101500_ab12cd34")
 
     assert _run(flow()).status == "cancelled"
+
+
+def test_an_overflowed_grad_norm_keeps_events_readable(studio, tmp_path):
+    client, _calls, _live = studio
+    run_id = _finished_run(
+        tmp_path, tmp_path / ("0123456789abcdef0123456789abcdef" + "_chats.jsonl")
+    )
+    studio_db.insert_metrics_batch(
+        run_id, [{"step": 2, "loss": float("nan"), "grad_norm": float("inf")}]
+    )
+
+    async def flow():
+        events = await client.fine_tuning.jobs.list_events(f"ft{run_id}", limit = 100)
+        checkpoints = await client.fine_tuning.jobs.checkpoints.list(f"ft{run_id}")
+        return events, checkpoints
+
+    events, checkpoints = _run(flow())
+    [step2] = [e for e in events.data if e.type == "metrics" and e.data["step"] == 2]
+    assert step2.data["grad_norm"] is None
+    assert checkpoints.data[0].step_number == 2

@@ -529,7 +529,10 @@ def _events(run: dict[str, Any], via_api_key: bool) -> list[dict[str, Any]]:
         }
 
     events = [event("start", started, "Fine-tuning job started")]
-    for step, loss, lr, grad_norm, eval_loss, epoch, elapsed in rows:
+    # An fp16 overflow logs an inf grad norm, which the JSON response cannot carry.
+    for step, loss, lr, grad_norm, eval_loss, epoch, elapsed in drop_non_finite(
+        [tuple(row) for row in rows]
+    ):
         data = {
             "step": step,
             "total_steps": total,
@@ -590,9 +593,15 @@ def _checkpoints(run: dict[str, Any]) -> list[dict[str, Any]]:
     try:
         metrics = {
             step: (loss, eval_loss)
-            for step, loss, eval_loss in conn.execute(
-                "SELECT step, loss, eval_loss FROM training_metrics WHERE run_id = ?", (run_id,)
-            ).fetchall()
+            for step, loss, eval_loss in drop_non_finite(
+                [
+                    tuple(row)
+                    for row in conn.execute(
+                        "SELECT step, loss, eval_loss FROM training_metrics WHERE run_id = ?",
+                        (run_id,),
+                    ).fetchall()
+                ]
+            )
         }
     finally:
         conn.close()
