@@ -1259,6 +1259,9 @@ def _reject_untrainable_model_request(
                         "training_remote_model_not_decision",
                         f"{request.model_name} is not a decision model (Laya or Clef).",
                     )
+                if _is_decision_checkpoint(request) and managed_account():
+                    # A Hub decision adapter loads its base as well: authorize it like any adapter.
+                    _authorize_adapter_base(request.model_name, hf_token)
                 return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
                 raise _training_start_error(

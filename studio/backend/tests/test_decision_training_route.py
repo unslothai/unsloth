@@ -704,3 +704,13 @@ def test_a_managed_decision_adapter_authorizes_and_pins_its_base(route, tmp_path
 
     assert checked == [str(adapter.resolve())]
     assert result.adapter_base_pin == "owner/private-model"
+
+
+def test_a_managed_hub_decision_adapter_authorizes_its_base(route, monkeypatch):
+    checked = []
+    monkeypatch.setattr(route, "managed_account", lambda: True)
+    monkeypatch.setattr(route, "is_decision_model", lambda *a, **k: True)
+    monkeypatch.setattr(route, "_authorize_adapter_base", lambda name, token: checked.append(name))
+    with patch.object(route, "_remote_untrainable_model_format", return_value = None):
+        route._reject_untrainable_model_request(_request(model_name = "org/clef-adapter"))
+    assert checked == ["org/clef-adapter"]

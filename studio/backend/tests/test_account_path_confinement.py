@@ -156,6 +156,12 @@ def _write(folder, files):
             "config.json": {"transformers_weights": "custom.safetensors.index.json"},
             "custom.safetensors.index.json": {"weight_map": {"w": "../victim/model.safetensors"}},
         },
+        {
+            "modules.json": [{"idx": 0, "name": "0", "path": "0_Transformer"}],
+            "0_Transformer/model.safetensors.index.json": {
+                "weight_map": {"w": "D:\\victim\\model.safetensors"}
+            },
+        },
     ],
     ids = [
         "safetensors_dotdot",
@@ -163,6 +169,7 @@ def _write(folder, files):
         "transformers_weights",
         "bicodec_llm_subfolder",
         "custom_index",
+        "module_shard_on_a_drive",
     ],
 )
 def test_escaping_weight_references_flagged(tmp_path, files):

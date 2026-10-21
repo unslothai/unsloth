@@ -74,6 +74,14 @@ def _escapes_folder(name: str) -> bool:
     return normalized == ".." or normalized.startswith("../")
 
 
+def _in_subfolder(sub: str, name: str) -> str:
+    # A rooted or drive-qualified name ignores the subfolder it is joined onto.
+    spelled = name.replace("\\", "/")
+    if spelled.startswith("/") or name[1:2] == ":":
+        return name
+    return posixpath.join(sub.replace("\\", "/"), name)
+
+
 def _weight_names(folder: Path) -> list:
     names = []
     for index_name in _TORCH_INDEX_FILES:
@@ -130,12 +138,10 @@ def escaping_weight_references(folder) -> list:
         if _escapes_folder(sub):
             names.append(sub)
             continue
-        names.extend(
-            posixpath.join(sub.replace("\\", "/"), name) for name in _weight_names(folder / sub)
-        )
+        names.extend(_in_subfolder(sub, name) for name in _weight_names(folder / sub))
     # Spark-TTS / BiCodec load their transformers model from LLM/.
     if (folder / "LLM").is_dir():
-        names.extend(posixpath.join("LLM", name) for name in _weight_names(folder / "LLM"))
+        names.extend(_in_subfolder("LLM", name) for name in _weight_names(folder / "LLM"))
     return [name for name in dict.fromkeys(names) if _escapes_folder(name)]
 
 
