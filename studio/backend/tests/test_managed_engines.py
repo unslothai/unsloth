@@ -577,7 +577,7 @@ def test_runtime_lease_blocks_removal(isolated):
     marker = active(isolated)
     with install.engine_lease("vllm"):
         assert install.status("vllm")["in_use"] is True
-        with pytest.raises(RuntimeError, match = "another Studio"):
+        with pytest.raises(RuntimeError, match = "another Unsloth"):
             install.remove("vllm")
     assert marker.exists()
     install.remove("vllm")
@@ -998,7 +998,7 @@ def test_busy_install_does_not_overwrite_another_job(isolated):
     job = {"state": "running", "phase": "installing", "message": "Downloading"}
     (isolated / "vllm.job.json").write_text(json.dumps(job))
     with install.engine_lease("vllm", exclusive = True):
-        with pytest.raises(RuntimeError, match = "another Studio"):
+        with pytest.raises(RuntimeError, match = "another Unsloth"):
             install.start_install("vllm")
         assert install.status("vllm")["job"] == job
 

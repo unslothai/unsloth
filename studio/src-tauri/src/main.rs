@@ -2349,6 +2349,7 @@ fn main() {
             show_main_window(app);
         }))
         .plugin(webview_cache_plugin())
+        .plugin(browser_webview::page_guard_plugin())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -2380,7 +2381,7 @@ fn main() {
         .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(|invoke| {
             if invoke.message.webview().label() != "main" || invoke.message.webview().window().label() != "main" {
-                invoke.resolver.reject("Studio commands are only available to the main webview");
+                invoke.resolver.reject("Unsloth Studio commands are only available to the main webview");
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![

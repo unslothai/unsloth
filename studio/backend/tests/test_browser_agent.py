@@ -320,7 +320,7 @@ def test_bad_arguments_never_reach_the_tab():
 
 
 def test_without_a_chat_tab_the_tool_says_so():
-    assert "only available in a Studio chat" in tools_mod.execute_tool("browser_snapshot", {})
+    assert "only available in an Unsloth chat" in tools_mod.execute_tool("browser_snapshot", {})
 
 
 def test_another_session_or_account_cannot_answer():
