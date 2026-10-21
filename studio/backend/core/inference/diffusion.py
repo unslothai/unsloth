@@ -10097,8 +10097,10 @@ class DiffusionBackend:
         *,
         lora: bool = False,
         fp8_storage: bool = False,
+        offload: bool = False,
     ) -> Optional[int]:
-        """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
+        """``comfy_resident_mib`` for a ComfyUI-quantized single file, else None. ``offload`` prices the backends an
+        offloaded load keeps (the loader probes them the same way)."""
         try:
             from .diffusion_comfy_quant import comfy_resident_mib, scan_comfy_quant
             from .diffusion_transformer_quant import (
@@ -10116,8 +10118,8 @@ class DiffusionBackend:
             return comfy_resident_mib(
                 single_file_path,
                 scan,
-                keep_int8 = comfy_int8_backend(target, name, base) is not None,
-                keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+                keep_int8 = comfy_int8_backend(target, name, base, offload = offload) is not None,
+                keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
@@ -11206,6 +11208,10 @@ class DiffusionBackend:
         """
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
         single_file_fp8_stored_mib: Optional[int] = None
+        single_file_resident_at: Any = (
+            None  # (fp8_storage, offload) -> MiB, set for a single-file DiT
+        )
+        single_file_stored_at: Any = None
         device_memory = (
             device_memory_override
             if device_memory_override is not None
@@ -11325,7 +11331,9 @@ class DiffusionBackend:
                 transformer_resident = transformer_resident_override_mib
             elif kind == "single_file":
 
-                def _single_file_resident(fp8_storage: bool) -> Optional[int]:
+                def _single_file_resident(
+                    fp8_storage: bool, offload: bool = False
+                ) -> Optional[int]:
                     fp8_upcast = _single_file_fp8_upcast(single_file_path, fam)
                     if fp8_upcast and fp8_storage and fam.name == KREA2_FAMILY_NAME:
                         # storage keeps only OCP fp8 codes; FNUZ ones still widen
@@ -11344,20 +11352,24 @@ class DiffusionBackend:
                             base,
                             lora = lora,
                             fp8_storage = fp8_storage,
+                            offload = offload,
                         )
                         if _comfy_mib is not None:
                             mib = _comfy_mib
                     return mib
 
+                def _stored_mib(widened: Optional[int], offload: bool = False) -> Optional[int]:
+                    if not (comfy_fp8_storage(target, lora = lora) and single_file_path):
+                        return None
+                    stored = _single_file_resident(True, offload)
+                    if stored is not None and widened is not None and stored < widened:
+                        return stored
+                    return None
+
                 transformer_resident = _single_file_resident(False)
-                if comfy_fp8_storage(target, lora = lora) and single_file_path:
-                    stored_resident = _single_file_resident(True)
-                    if (
-                        stored_resident is not None
-                        and transformer_resident is not None
-                        and stored_resident < transformer_resident
-                    ):
-                        single_file_fp8_stored_mib = stored_resident
+                single_file_fp8_stored_mib = _stored_mib(transformer_resident)
+                single_file_resident_at = _single_file_resident
+                single_file_stored_at = _stored_mib
             elif getattr(fam, "single_file_is_pipeline", False):
                 # Only the denoiser's linears stay packed; the text encoders, VAE and the rest load dense.
                 transformer_resident = whole_pipeline_gguf_resident_mib(
@@ -11470,6 +11482,20 @@ class DiffusionBackend:
             )
 
         plan = _plan(model_dense_mib)
+        if (
+            single_file_resident_at is not None
+            and model_dense_mib is not None
+            and transformer_resident is not None
+            and not plan_keeps_transformer_resident(plan)
+        ):
+            # Offloaded: the loader probes the backends with offload=True (torchao fp8 does not survive the hooks), so
+            # price what that load builds, widened and fp8-stored, before choosing storage.
+            offloaded = single_file_resident_at(False, True)
+            if offloaded is not None and offloaded != transformer_resident:
+                model_dense_mib = model_dense_mib - int(transformer_resident) + int(offloaded)
+                transformer_resident = offloaded
+                single_file_fp8_stored_mib = single_file_stored_at(offloaded, True)
+                plan = _plan(model_dense_mib)
         if single_file_fp8_stored_mib is not None and model_dense_mib is not None:
             # Re-plan at the fp8-stored size: a widened load that had to offload may now stay resident.
             from .diffusion_memory import _available_system_memory_mib

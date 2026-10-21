@@ -1114,6 +1114,107 @@ def _plan_harness(
     return backend, final, seen, str(resident_at or path)
 
 
+def test_offloaded_plan_prices_fp8_with_the_offloaded_backend_and_picks_storage(
+    monkeypatch, tmp_path
+):
+    """torchao fp8 prices the codes at 1 byte resident, but an offloaded load loses it: the plan must re-price under
+    offload (widened 2000 vs stored 1000) and pick storage, not hand the loader an fp8-sized plan it widens."""
+    calls = []
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        calls.append((fp8_storage, offload))
+        if not offload:
+            return 1000  # torchao keeps the codes either way
+        return 1000 if fp8_storage else 2000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    # fits_mib below 1000: the plan offloads at every size
+    backend, final, seen, path = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 500, comfy_mib = comfy_mib
+    )
+    assert (False, True) in calls and (True, True) in calls
+    assert backend._fp8_storage_picks[path] is True
+    assert seen[-1] == 1000 and 2000 in seen
+    assert final.resident is False
+
+
+def test_offloaded_plan_without_storage_is_priced_widened(monkeypatch, tmp_path):
+    """No storage possible (LoRA / kill switch): the offloaded plan carries the widened size the loader builds."""
+    from core.inference import diffusion as d
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        return 2000 if offload and not fp8_storage else 1000
+
+    real_harness_storage = []
+    monkeypatch.setattr(
+        d.DiffusionBackend,
+        "_fp8_storage_off",
+        True,
+        raising = False,
+    )
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    orig_setattr = monkeypatch.setattr
+
+    def setattr_no_storage(target, name, value, *a, **k):
+        if target is d and name == "comfy_fp8_storage":
+            value = lambda target, lora = False: False  # noqa: E731
+        real_harness_storage.append(name)
+        return orig_setattr(target, name, value, *a, **k)
+
+    monkeypatch.setattr = setattr_no_storage
+    try:
+        backend, final, seen, path = _plan_harness(
+            monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 500, comfy_mib = comfy_mib
+        )
+    finally:
+        monkeypatch.setattr = orig_setattr
+    assert seen[-1] == 2000
+    assert backend._fp8_storage_picks[path] is False
+
+
+def test_a_resident_plan_keeps_the_resident_backend_price(monkeypatch, tmp_path):
+    """Resident torchao fp8: no offload re-price, no storage."""
+    calls = []
+
+    def comfy_mib(
+        path,
+        fam,
+        target,
+        base,
+        *,
+        lora = False,
+        fp8_storage = False,
+        offload = False,
+    ):
+        calls.append(offload)
+        return 1000 if not offload else 2000
+
+    fam = types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False)
+    backend, final, seen, path = _plan_harness(
+        monkeypatch, tmp_path, fam = fam, resident_at = None, fits_mib = 5000, comfy_mib = comfy_mib
+    )
+    assert True not in calls and seen == [1000]
+    assert backend._fp8_storage_picks[path] is False and final.resident is True
+
+
 def test_fnuz_krea2_file_is_not_planned_at_the_stored_size(monkeypatch, tmp_path):
     """A Krea 2 FNUZ file widens under storage too, so the planner records no storage pick for it."""
     from safetensors.torch import save_file
