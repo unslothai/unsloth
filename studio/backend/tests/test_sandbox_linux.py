@@ -1459,7 +1459,7 @@ def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, mo
     link.symlink_to(real)
     monkeypatch.setattr(sys, "executable", str(link))
 
-    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Studio"):
+    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Unsloth"):
         sandbox_linux._runtime_paths_under(str(workdir))
 
 

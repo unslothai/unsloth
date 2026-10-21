@@ -226,6 +226,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "ExportLoRAAdapterRequest",
         "LlmCompressorExportProbeResponse",
         "ExportDecisionInfoResponse",
+        "MoeInfoResponse",
     ):
         setattr(models_pkg, name, object)
     models_pkg.LocalModelInfo = _LocalModelInfo
