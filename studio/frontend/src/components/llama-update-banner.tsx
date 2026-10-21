@@ -196,7 +196,7 @@ export function LlamaUpdateBanner({
     });
   // whisper.cpp rides along with llama.cpp and audio.cpp; it opens the card only to retry its own failed phase.
   const whisperRetry =
-    status?.job.state === "error" && status.component === "whisper.cpp";
+    status?.job.state === "error" && status.job.whisperFailed;
   const due: UpdateComponentFlags = {
     llama: llamaDue,
     whisper: whisperRetry,

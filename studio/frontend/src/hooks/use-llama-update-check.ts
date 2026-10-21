@@ -40,6 +40,7 @@ export interface LlamaUpdateJob {
   finished_at: string | null;
   // The chained phase installing right now, when the backend reports phases.
   runningPhase: "llama" | "whisper" | "audio" | null;
+  whisperFailed: boolean;
 }
 
 export interface ComponentOffer {
@@ -104,6 +105,9 @@ function parseJob(value: unknown): LlamaUpdateJob {
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
     runningPhase: parseRunningPhase(job.phases),
+    whisperFailed:
+      (job.phases as Record<string, { state?: unknown } | null> | null)?.whisper
+        ?.state === "error",
   };
 }
 
@@ -182,7 +186,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
         typeof s.llama_update_available === "boolean"
           ? s.llama_update_available
           : s.update_available === true && component === "llama.cpp",
-      installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
+      installed_tag:
+        typeof s.installed_tag === "string" ? s.installed_tag : null,
       latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
       update_size_bytes:
         typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,

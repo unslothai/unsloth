@@ -433,7 +433,7 @@ test("whisper.cpp is listed in the update card but never opens it", () => {
   assert.match(banner, /const muted: UpdateComponentFlags = \{[^}]*whisper: !whisperRetry,/);
   assert.match(
     banner,
-    /const whisperRetry =\s*status\?\.job\.state === "error" && status\.component === "whisper\.cpp";/,
+    /const whisperRetry =\s*status\?\.job\.state === "error" && status\.job\.whisperFailed;/,
   );
   const general = readSrc("features/settings/tabs/general-tab.tsx");
   assert.doesNotMatch(general, /channel="whisper"/);
