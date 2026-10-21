@@ -369,6 +369,7 @@ from .diffusion_comfy_block import (
     comfy_nvfp4_runtime_possible,
 )
 from .diffusion_comfy_quant import (
+    header_has_fp8_weights,
     comfy_fp8_backend,
     comfy_fp8_storage,
     comfy_int8_backend,
@@ -3103,6 +3104,15 @@ def _prequant_bakes_auto_accumulate(source: Any) -> bool:
         return path_in_cache(getattr(source, "location", None) or "")
     except Exception:  # noqa: BLE001
         return False
+
+
+def _single_file_fp8_upcast(single_file_path: Any, fam: Any) -> bool:
+    """Whether a single-file denoiser stores fp8 weights a widened load upcasts (~2x resident). Read from the header
+    (the basename only when it is unreadable); SDXL single-file pipelines are already bf16."""
+    if not single_file_path or getattr(fam, "single_file_is_pipeline", False):
+        return False
+    stored = header_has_fp8_weights(str(single_file_path))
+    return "fp8" in Path(single_file_path).name.lower() if stored is None else stored
 
 
 class DiffusionBackend:
@@ -11316,11 +11326,7 @@ class DiffusionBackend:
             elif kind == "single_file":
 
                 def _single_file_resident(fp8_storage: bool) -> Optional[int]:
-                    # An fp8 checkpoint upcasts to bf16 on load (~2x resident); detect from the basename. SDXL
-                    # single-file is already bf16.
-                    fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
-                        "fp8" in Path(single_file_path).name.lower() if single_file_path else False
-                    )
+                    fp8_upcast = _single_file_fp8_upcast(single_file_path, fam)
                     if fp8_upcast and fp8_storage and fam.name == KREA2_FAMILY_NAME:
                         fp8_upcast = False
                     mib = estimate_safetensors_dense_mib(

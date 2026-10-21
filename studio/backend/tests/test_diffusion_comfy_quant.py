@@ -1004,3 +1004,28 @@ def test_fp8_storage_default_rule_is_offload_or_host_ram(monkeypatch):
     assert want(types.SimpleNamespace(device = "mps"), offload = True) is False
     monkeypatch.setenv(cq.FP8_STORAGE_ENV, "1")
     assert want(cuda) is True
+
+
+def test_fp8_upcast_is_read_from_the_header_not_the_basename(tmp_path):
+    """A plain fp8 file named without 'fp8' still widens ~2x (and so can be stored); a bf16 one named 'fp8' does not."""
+    from safetensors.torch import save_file
+
+    from core.inference import diffusion as d
+
+    fam = types.SimpleNamespace(single_file_is_pipeline = False)
+    plain = tmp_path / "krea2.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fn)}, str(plain))
+    dense = tmp_path / "krea2_fp8.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.bfloat16)}, str(dense))
+    assert cq.header_has_fp8_weights(str(plain)) is True
+    assert cq.header_has_fp8_weights(str(dense)) is False
+    assert d._single_file_fp8_upcast(str(plain), fam) is True
+    assert d._single_file_fp8_upcast(str(dense), fam) is False
+    broken = tmp_path / "broken_fp8.safetensors"
+    broken.write_bytes(b"\x00" * 4)
+    assert cq.header_has_fp8_weights(str(broken)) is None
+    assert d._single_file_fp8_upcast(str(broken), fam) is True
+    assert (
+        d._single_file_fp8_upcast(str(plain), types.SimpleNamespace(single_file_is_pipeline = True))
+        is False
+    )

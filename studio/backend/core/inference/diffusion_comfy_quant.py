@@ -137,6 +137,22 @@ def _layer_conf(raw: Any) -> tuple[Optional[str], bool, int]:
     return (fmt if isinstance(fmt, str) else None), convrot, group
 
 
+def header_has_fp8_weights(path: Optional[str]) -> Optional[bool]:
+    """Whether a safetensors file stores any fp8 ``.weight`` (plain or scaled), or None if its header is unreadable."""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        header, _base = _read_header(str(path))
+    except Exception:  # noqa: BLE001
+        return None
+    return any(
+        key.endswith(".weight")
+        and isinstance(entry, dict)
+        and entry.get("dtype") in FP8_FORMATS.values()
+        for key, entry in header.items()
+    )
+
+
 def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
     """The ComfyUI quantization a safetensors single file declares, or None for a plain checkpoint.
 
