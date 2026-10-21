@@ -116,10 +116,7 @@ def test_a_missing_peer_directory_is_reported_not_attempted(monkeypatch, tmp_pat
     assert not results["failed"], results["failed"]
 
 
-# ── the GPU probe's fail-closed contract ──────────────────────────────────────── A row that cannot
-# be read is not an absent process. nvidia-smi reports `[N/A]` for used_memory in real situations,
-# and skipping such a row and then declaring the peer idle inverts the whole point of the probe:
-# provisioning would overwrite a venv the process behind that row is running out of.
+# ── GPU probe fails closed: an unreadable [N/A] row is not an absent process ──
 
 
 def _probe(cluster, monkeypatch, stdout: str):
@@ -163,8 +160,7 @@ def test_a_readable_busy_peer_is_still_busy(monkeypatch) -> None:
     assert out["processes"] == [{"pid": 4242, "used_mib": 40000}], out
 
 
-# ── the NCCL probe must not leave a rank running on the peer ──────────────────── The peer rank is
-# launched detached with setsid/nohup.
+# ── the NCCL probe must not leave a rank running on the peer ──
 
 
 class _Probe:
@@ -245,8 +241,7 @@ def test_the_launch_records_a_pid_to_stop(monkeypatch, tmp_path) -> None:
     assert any(f"cat {launched[0]}" in t and "kill" in t for t in texts)
 
 
-# ── which host is the peer ────────────────────────────────────────────────────── Setup assigns
-# NODE_BASE_OCTET + node_index, so node 0 is .12 and node 1 is .13.
+# ── which host is the peer: node 0 is .12, node 1 is .13 ──
 
 
 @pytest.mark.parametrize(
@@ -284,9 +279,7 @@ def test_the_status_path_does_not_keep_its_own_copy_of_the_rule() -> None:
     assert source.count("peer_address_of(addr)") >= 2, "the status path does not use the rule"
 
 
-# ── plaintext bulk transfer belongs on a point-to-point cable only ────────────── The fast path's
-# own SECURITY note says the unencrypted rsync daemon is acceptable ONLY because the rail is a cable
-# with no other host on it.
+# ── plaintext bulk transfer belongs on a point-to-point cable only ──
 
 
 def _fast(cluster, monkeypatch, config: dict):

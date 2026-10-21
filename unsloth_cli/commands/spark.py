@@ -16,8 +16,6 @@ spark_app = typer.Typer(
 )
 
 
-# Every planner number printed by `plan` comes from studio.spark_cluster via expected_gain(), so
-# nothing here can drift from the planner.
 PREFILL_KERNEL_SPEEDUP = 6.2  # CUTLASS 309 TF/s vs Marlin 50 TF/s at M=4096
 
 PREFILL_TOKS = (166, 643)  # tok/s, 3.87x
@@ -28,11 +26,9 @@ TPOT_TP2_MS = 162.4  # decode, 2.09x
 MARKETED_GIB = 128.0
 USABLE_GIB_FALLBACK = 121.69
 
-# nvidia-cutlass-dsl 4.7.0 fails the b12x family with an internal DSL compiler error, which disables
-# the kernel family built for this GPU, so a wrong version is flagged separately.
+# nvidia-cutlass-dsl 4.7.0 breaks the b12x kernels for this GPU.
 CUTLASS_PIN = "4.6.2"
-# Without flashinfer-jit-cache, FlashInfer JIT-compiles on first use and the compile itself OOMs on
-# a Spark unless MAX_JOBS is throttled.
+# Without flashinfer-jit-cache, the first-use JIT compile OOMs on a Spark.
 KERNEL_INSTALL = (
     'pip install flashinfer-python "nvidia-cutlass-dsl==4.6.2" && '
     "pip install flashinfer-jit-cache --extra-index-url https://flashinfer.ai/whl/cu130/"
@@ -53,8 +49,7 @@ def _field(name: str, value: str) -> None:
     _say(f"  {name:<14} {value}")
 
 
-# studio.spark_cluster is read through getattr and signature inspection throughout, so this file
-# works against both its pair-only and its N-node API and never imports a missing symbol.
+# studio.spark_cluster is read via getattr: works against pair-only and N-node APIs.
 
 
 def _cluster():
@@ -181,8 +176,7 @@ def _kernel_state() -> dict:
         "pin_wrong": bool(cutlass) and cutlass != CUTLASS_PIN,
         "jit_cache_missing": bool(flashinfer) and not jit_cache,
     }
-    # cutlass == pin, not "not pin_wrong": an ABSENT cutlass leaves pin_wrong false, which reported
-    # the prefill kernel ready while the fast path could not run.
+    # An ABSENT cutlass leaves pin_wrong false.
     state["ok"] = bool(flashinfer) and cutlass == CUTLASS_PIN and bool(jit_cache)
     return state
 
@@ -257,8 +251,7 @@ def _peer_has_venv(host: str, timeout: float = 12.0) -> bool | None:
     if not shutil.which("ssh"):  # Windows, or a stripped image
         return None
     user = os.environ.get("USER") or os.environ.get("USERNAME") or "nvidia"
-    # Resolved, not assumed: UNSLOTH_STUDIO_HOME moves the venv, so the default path reports the
-    # peer unprovisioned when it is fine, or fine when it is not.
+    # UNSLOTH_STUDIO_HOME moves the venv.
     try:
         from studio.spark_cluster import venv_activate
         _venv = venv_activate().rsplit("/bin/activate", 1)[0]
@@ -838,8 +831,7 @@ def train(
         typer.echo("give exactly one of --script <train.py> (DDP) or --layer-split <model>.")
         raise typer.Exit(2)
     if layer_split:
-        # Before the modulo: `--microbatches 0` raised ZeroDivisionError out of this line, so the
-        # user saw a traceback instead of the pipeline's own "must be >= 1".
+        # Before the modulo: `--microbatches 0` would raise ZeroDivisionError.
         if microbatches < 1:
             typer.echo(f"--microbatches ({microbatches}) must be at least 1.")
             raise typer.Exit(2)
@@ -862,8 +854,6 @@ def train(
             f"--batch {batch}",
             f"--seq {seq}",
         ]
-        # Unset, spark_pipeline picks the backend's own default (1f1b on torch, gpipe on legacy,
-        # whose 1f1b deadlocks).
         if schedule:
             extra.append(f"--schedule {schedule}")
         if data:
@@ -930,8 +920,7 @@ def doctor(
         parity_rc = check_parity(peer_ip, deep = deep)
     fastpath_rc = 0
     if peer_ip and not skip_fastpath:
-        # Same ordering as `unsloth doctor`: --parity-only says no GPU work, so the runtime imports
-        # wait for --deep while the package comparison still runs.
+        # Same as `unsloth doctor`: runtime imports wait for --deep.
         fastpath_rc = check_fastpath(peer_ip, runtime = deep or not parity_only)
     if parity_only:
         _workload_guidance()
@@ -1070,16 +1059,12 @@ def plan(
     except Exception:
         size = None
 
-    # "auto" resolves here: latency is what an unthought-about request usually means, and capacity
-    # is the only honest answer when the model does not fit at all.
     budget = _serve_budget(sc)
     resolved = choice
     if resolved == "auto":
         resolved = "latency" if (size is not None and size <= budget) else "capacity"
 
-    # The planner grew a KV input and this path was still handing it zero, so `plan` recommended
-    # replicas for a model whose weights fit and whose KV for the requested concurrency does not --
-    # exactly the case the KV term exists to catch.
+    # Pass the KV term: weights may fit while the requested concurrency's KV does not.
     kv = {"gib": None, "why": "not computed"}
     try:
         kv = sc.serving_kv_gib_per_user(model, ctx)
@@ -1151,8 +1136,7 @@ def plan(
     for line in _expected_line(result.get("expected")):
         _say(line)
 
-    # Every cross-node figure here came from a model that does NOT fit on one Spark, so quoting it
-    # for a model that does fit would apply a different regime's measurement.
+    # Cross-node figures were measured on models that do NOT fit on one Spark.
     if result.get("axis") == "tensor-parallel" and result.get("fits_one_node"):
         _say("")
         _print_wrapped(
