@@ -1815,7 +1815,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     file.name,
     new Uint8Array(buffer),
   );
-  const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked)));
+  const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(repacked, MAX_OPEN_DOCUMENT_XML_BYTES)));
   const { value } = await mammoth.extractRawText({
     arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
   });

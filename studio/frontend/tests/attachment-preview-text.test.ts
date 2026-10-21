@@ -1319,10 +1319,33 @@ test("writeDocxSymbols keeps Insert > Symbol characters in the body, equations a
   globals.DOMParser = XmlDomParser;
   globals.XMLSerializer = XmlSerializer;
   try {
-    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(archive)));
+    const marked = markDocxNotes(linearizeDocxMath(writeDocxSymbols(archive, 10 * 1024 * 1024)));
     const { default: mammoth } = await import("mammoth");
     const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
     assert.equal(marked.label(value), "Smoker: 🗹 Yes[1]\n\nLimit ∞✓±\n\nx≥1±e\n\nFootnotes\n[1] Above ≥°∞☒✓ C");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("writeDocxSymbols follows a main document target without an .xml name, as mammoth does", async () => {
+  const archive = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/body.bin"]]),
+    "word/body.bin": strToU8(
+      '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p>' +
+        '<w:r><w:t xml:space="preserve">Limit </w:t><w:sym w:font="Symbol" w:char="221E"/><w:sym w:font="Arial" w:char="2713"/></w:r>' +
+        "</w:p></w:body></w:document>",
+    ),
+  });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxSymbols(archive, 10 * 1024 * 1024)) });
+    assert.equal(value.trim(), "Limit ∞✓");
   } finally {
     Object.assign(globals, original);
   }

@@ -29,10 +29,11 @@ function docxSymbolText(element: Element, w: string): string {
   return char === " " || !UNPRINTABLE_RE.test(char) ? char : "";
 }
 
-/** Each w:sym becomes the text it shows, so the body, equation and note readers all see it. */
-export function writeDocxSymbols(archive: Uint8Array): Uint8Array {
+/** Each w:sym becomes the text it shows, so the body, equation and note readers all see it.
+ *  Parts are picked by size, not name: mammoth reaches them through relationships. */
+export function writeDocxSymbols(archive: Uint8Array, maxPartBytes: number): Uint8Array {
   const rewritten: Record<string, Uint8Array> = {};
-  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  const parts = unzipSync(archive, { filter: (entry) => entry.originalSize <= maxPartBytes });
   for (const [name, bytes] of Object.entries(parts)) {
     const xml = strFromU8(bytes);
     if (!xml.includes("sym")) continue;
