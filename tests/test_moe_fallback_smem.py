@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The heuristic (UNSLOTH_MOE_DISABLE_AUTOTUNE=1) and default (autotune failed) MoE kernel configs
-were sized for 16-bit operands. With float32 X / dY (full finetuning reads float32 X in gate_up, and
-UNSLOTH_MOE_TRITON_FP32=1 keeps every GEMM float32) the default dX needs 163,840 B of shared memory,
-over the 101,376 B of an L4, and raised OutOfResources. The configs now step down per kernel to fit
-the device for the operand dtypes, and 16-bit configs stay exactly as they were.
+"""Fallback MoE configs fit shared memory for float32 X / dY (default dX needed 163,840 B > L4's 101,376 B).
 
-The compiled numbers below are Triton metadata.shared, cross-compiled for each target on CPU
-(identical on Triton 3.6, 3.7 and 3.8). test_estimate_matches_compiled_kernels recompiles a sample."""
+Byte counts are Triton metadata.shared cross-compiled on CPU (Triton 3.6-3.8)."""
 
 import importlib
 import inspect
@@ -37,7 +32,6 @@ GPUS = {
     "RTX5090": ((12, 0), 101376),
 }
 F32, BF16, F16 = torch.float32, torch.bfloat16, torch.float16
-# (activation dtype, weight dtype passed, weight dtype the kernel sees)
 DTYPES = [
     (BF16, None, BF16),
     (F16, None, F16),
@@ -46,13 +40,12 @@ DTYPES = [
     (F32, None, F32),
     (F32, F32, F32),
 ]
-# (hidden, moe_intermediate): Qwen3-30B-A3B, DeepSeek-V2-Lite, a 352 intermediate, tiny-but-wide.
+# (hidden, moe_intermediate)
 SHAPES = [(2048, 768), (2048, 1408), (1024, 352), (768, 2048)]
 OLD_HEURISTIC = ((64, 128, 128, 8, 3), (64, 64, 256, 8, 4), (64, 64, 256, 8, 4))
 OLD_DEFAULT = ((128, 128, 64, 8, 3),) * 3
 
-# Compiled metadata.shared of the configs main picks for float32 activations:
-# (capability major, kind, activation, weight, (M, N, K, num_stages)) -> bytes.
+# Main's float32-activation configs: (capability major, kind, activation, weight, (M, N, K, num_stages)) -> bytes.
 MAIN_FLOAT32_COMPILED = {
     (8, "dX", "fp32", "bf16", (128, 128, 64, 3)): 163840,  # default dX, the L4 crash
     (8, "fwd", "fp32", "bf16", (64, 128, 128, 3)): 131072,  # heuristic forward
@@ -66,7 +59,6 @@ MAIN_FLOAT32_COMPILED = {
 
 @pytest.fixture
 def ac(monkeypatch):
-    # Import autotune_cache without running unsloth/__init__.py (needs a GPU).
     for name, path in (
         ("unsloth", ROOT / "unsloth"),
         ("unsloth.kernels", ROOT / "unsloth" / "kernels"),
@@ -92,7 +84,6 @@ def _device(ac, monkeypatch, capability, smem):
 
 
 def _gemm_dims(hidden, inter):
-    # (n_dim, k_dim) as get_or_autotune_moe_kernels passes them for gate_up and down.
     return [(2 * inter, hidden), (hidden, inter)]
 
 
@@ -194,7 +185,6 @@ def test_get_or_autotune_passes_dtypes(ac, monkeypatch, env):
     for kind, c in zip(("fwd", "dX", "dW"), configs):
         assert ac._estimate_smem(kind, c, 4, 2, (8, 9)) <= 101376
     if env == "0":
-        # gate_up is tuned with the bf16 weights it will read.
         assert seen["args"][4] == F32 and seen["args"][-1] == BF16
 
 
@@ -206,7 +196,7 @@ def test_cache_key_unchanged_without_a_distinct_weight_dtype(ac):
     assert ac._get_cache_key(8, 2048, 768, 2, F32, (9, 0), 8192, BF16) != f32
 
 
-# --- recompile a sample for the real targets (CPU only, needs Triton's CUDA backend + ptxas) ---
+# Recompile a sample (CPU only, needs Triton's CUDA backend + ptxas).
 
 
 def _compile_shared(fn, ptr_types, consts, arch, num_warps, num_stages):
@@ -284,7 +274,6 @@ def test_estimate_matches_compiled_kernels(ac, monkeypatch, gpu):
                         consts, arch, c.num_warps, c.num_stages,
                     )
                 else:
-                    # The launcher runs the per-expert dW single stage for float32 X.
                     compiled = _compile_shared(
                         backward._grouped_gemm_dW_per_expert_kernel,
                         dict(x_ptr = a, dY_ptr = a, dW_ptr = w, m_sizes_ptr = "*i32",

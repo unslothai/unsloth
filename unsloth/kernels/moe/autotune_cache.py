@@ -258,7 +258,6 @@ def _run_moe_autotuning(
 
     hidden_states = torch.randn(num_tokens, hidden_dim, device = device, dtype = dtype)
 
-    # Tune on the weight dtype the kernels will read (bf16 experts under float32 activations).
     gate_up_weights = torch.randn(
         num_experts,
         2 * intermediate_dim,
@@ -444,51 +443,40 @@ def _itemsize(dtype: Optional[torch.dtype], default: int = 2) -> int:
 def _estimate_smem(
     kind: str, config: Any, act_bytes: int, weight_bytes: int, capability: Tuple[int, int]
 ) -> int:
-    """Shared memory (B) Triton allocates for one kernel launch with this config.
-
-    Checked against compiled metadata.shared (Triton 3.6 to 3.8; sm_75, 80, 86, 89, 90, 100, 120) for
-    every config the fallback step-down can reach: equal, or above by at most 1 KiB.
-    Tiles stay in the dtype they were loaded in; the cast to the dot dtype happens in registers.
-    """
+    """Shared memory (B) per launch; matches compiled metadata.shared (Triton 3.6-3.8, sm_75..120) or exceeds it by <= 1 KiB."""
     M, N, K = config.BLOCK_SIZE_M, config.BLOCK_SIZE_N, config.BLOCK_SIZE_K
     stages = max(int(config.num_stages), 1)
     if kind == "fwd":
-        # X [M, K] (cast to W's dtype) and W [N, K], looping over K.
         a, b, a_cast = M * K * act_bytes, N * K * weight_bytes, act_bytes != weight_bytes
     elif kind == "dX":
-        # dY [M, N] (cast to W's dtype) and W [N, K], looping over N.
         a, b, a_cast = M * N * act_bytes, N * K * weight_bytes, act_bytes != weight_bytes
     else:
-        # dY [M, N] and X [M, K], looping over M. The launcher runs float32 X single stage.
+        # The launcher runs float32 X single stage.
         a, b, a_cast = M * N * act_bytes, M * K * act_bytes, False
         if act_bytes >= 4:
             stages = 1
     major = capability[0]
     if major < 8:
-        # No cp.async, so no multi-buffering. 16-bit dot operands also take a scratch of twice the
-        # larger tile.
+        # No cp.async multi-buffering; 16-bit dot operands add a 2x larger-tile scratch.
         dot_bytes = act_bytes if kind == "dW" else weight_bytes
         if dot_bytes >= 4:
             return a + b
         return max(a + b, 2 * max(a * dot_bytes // act_bytes, b))
     hopper_like = major in (9, 10, 11)
     if kind == "dW":
-        # The dW loops run at most double buffered for num_stages <= 4.
         if stages > 4:
             buffers = stages if hopper_like else stages - 1
         else:
             buffers = min(stages, 2) if hopper_like else 1
         return buffers * (a + b) + (2048 if hopper_like else 1024)
     if hopper_like:
-        # wgmma / tcgen05 read operands from shared memory in num_stages buffers. A cast operand keeps
-        # num_stages - 1 buffers and may be stored back once in the dot dtype.
+        # A cast operand keeps num_stages - 1 buffers plus one copy in the dot dtype.
         if a_cast:
             return max(stages - 1, 1) * a + stages * b + a * weight_bytes // act_bytes + 64
         return stages * (a + b) + 64
     return max(stages - 1, 1) * (a + b)
 
 
-# The loop (reduction) dimension of each kernel: halving it halves both tiles.
 _LOOP_DIM = {"fwd": "BLOCK_SIZE_K", "dX": "BLOCK_SIZE_N", "dW": "BLOCK_SIZE_M"}
 _MIN_SMEM_BLOCK = 16
 
@@ -501,8 +489,7 @@ def _fit_config_to_smem(
     capability: Tuple[int, int],
     smem: int,
 ) -> Any:
-    # Step down until it fits: stages to 3, the loop tile to 32, stages to 2, the largest tile to 16,
-    # one stage. Halving a power-of-two tile keeps it dividing N / K.
+    # Halving a power-of-two tile keeps it dividing N / K.
     def fits():
         return _estimate_smem(kind, config, act_bytes, weight_bytes, capability) <= smem
 
@@ -536,7 +523,6 @@ def _fit_configs_to_smem(
     dtype: Optional[torch.dtype] = None,
     weight_dtype: Optional[torch.dtype] = None,
 ) -> Tuple[Any, Any, Any]:
-    # dtype: activations (X, dY); weight_dtype: W, default dtype. None means 16-bit.
     try:
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
             return configs
