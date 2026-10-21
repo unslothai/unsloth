@@ -285,31 +285,57 @@ def format_rl_dataset(
     return dataset.map(convert, **kwargs), roles
 
 
-def render_prompts_without_thinking(
+def _has_null_fields(dataset) -> bool:
+    prompts = (
+        dataset["prompt"] if "prompt" in (getattr(dataset, "column_names", None) or []) else []
+    )
+    return any(
+        isinstance(m, dict) and any(v is None for k, v in m.items() if k != "content")
+        for p in prompts
+        if isinstance(p, list)
+        for m in p
+    )
+
+
+def render_grpo_prompts(
     dataset,
     tokenizer,
-    enable_thinking: bool,
+    enable_thinking: Optional[bool],
     num_proc: Optional[int] = None,
 ):
-    """TRL's GRPOTrainer applies the chat template with no kwargs, so a Qwen3-style template always
-    opens a thinking block and short completion budgets run out inside it. Render the prompts to
-    text here with ``enable_thinking`` set; TRL then passes the strings through untouched."""
+    """Render GRPO prompts to text when TRL's own templating would get them wrong. TRL applies the
+    chat template with no kwargs, so a Qwen3-style template always opens a thinking block; and
+    Arrow gives a message every key another row's message has, as None, which templates such as
+    GPT-OSS's read as set. TRL passes text prompts through untouched."""
     template = getattr(tokenizer, "chat_template", None) or ""
-    if "enable_thinking" not in template:
+    thinking = enable_thinking is not None and "enable_thinking" in template
+    columns = getattr(dataset, "column_names", None) or []
+    nulls = not {"image", "images"} & set(columns) and _has_null_fields(dataset)
+    if not (thinking or nulls):
         return dataset, False
+    kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
 
     def render(row: dict) -> dict:
         return {
             "prompt": tokenizer.apply_chat_template(
-                row["prompt"],
+                _without_nulls(row["prompt"]),
                 tokenize = False,
                 add_generation_prompt = True,
-                enable_thinking = enable_thinking,
+                **kwargs,
             )
         }
 
-    kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
-    return dataset.map(render, **kwargs), True
+    map_kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
+    return dataset.map(render, **map_kwargs), True
+
+
+def render_prompts_without_thinking(
+    dataset,
+    tokenizer,
+    enable_thinking: bool,
+    num_proc = None,
+):
+    return render_grpo_prompts(dataset, tokenizer, enable_thinking, num_proc)
 
 
 def _row_tools(row: dict):
@@ -407,7 +433,7 @@ def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
             if tools:
                 kwargs["tools"] = tools
             prompt = tokenizer.apply_chat_template(
-                prompt, tokenize = False, add_generation_prompt = True, **kwargs
+                _without_nulls(prompt), tokenize = False, add_generation_prompt = True, **kwargs
             )
         return (
             len(text_tokenizer(prompt, add_special_tokens = False)["input_ids"]) <= max_prompt_length
@@ -574,13 +600,13 @@ def build_rl_trainer(
 
         if not reward_specs:
             raise ValueError("GRPO needs at least one reward selected.")
-        if settings.get("enable_thinking") is not None:
-            train_dataset, _ = render_prompts_without_thinking(
-                train_dataset, tokenizer, bool(settings["enable_thinking"])
+        if tokenizer is not None:
+            train_dataset, _ = render_grpo_prompts(
+                train_dataset, tokenizer, settings.get("enable_thinking")
             )
             if eval_dataset is not None:
-                eval_dataset, _ = render_prompts_without_thinking(
-                    eval_dataset, tokenizer, bool(settings["enable_thinking"])
+                eval_dataset, _ = render_grpo_prompts(
+                    eval_dataset, tokenizer, settings.get("enable_thinking")
                 )
         loss_type, sampling_level = GRPO_VARIANTS.get(
             settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"]
@@ -602,7 +628,13 @@ def build_rl_trainer(
                 "loss_type": loss_type,
                 "importance_sampling_level": sampling_level,
                 "mask_truncated_completions": bool(settings.get("mask_truncated_completions")),
-                "epsilon_high": settings.get("epsilon_high"),
+                # Empty means the regular clip: Unsloth reads an explicit dapo with None as DAPO's 0.28.
+                "epsilon_high": settings.get("epsilon_high")
+                or settings.get("epsilon")
+                or next(
+                    (f.default for f in dataclasses.fields(trl.GRPOConfig) if f.name == "epsilon"),
+                    0.2,
+                ),
             },
         )
         # TRL 0.24+ (with Unsloth's generate rewrite) no longer truncates GRPO prompts at all.

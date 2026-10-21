@@ -134,6 +134,7 @@ class _FakeGRPOConfig:
     loss_type: str = "dapo"
     importance_sampling_level: str = "token"
     mask_truncated_completions: bool = False
+    epsilon: float = 0.2
     epsilon_high: float = None
 
 
@@ -168,6 +169,29 @@ def test_grpo_variant_reaches_the_trl_config(monkeypatch, variant, loss_type, le
     assert (args.loss_type, args.importance_sampling_level) == (loss_type, level)
     assert args.mask_truncated_completions is True and args.epsilon_high == 0.28
     assert args.reward_weights == [2.0] and args.use_vllm is False
+
+
+def test_an_empty_clip_high_is_the_regular_clip_not_dapos(monkeypatch):
+    # Unsloth reads an explicit dapo with epsilon_high None as the DAPO paper's 0.28.
+    fake = types.SimpleNamespace(GRPOConfig = _FakeGRPOConfig, GRPOTrainer = lambda **kw: kw)
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024, "packing": False},
+        settings = {},
+        reward_specs = [
+            {
+                "name": "r",
+                "weight": 1.0,
+                "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+            }
+        ],
+    )
+    assert kw["args"].loss_type == "dapo" and kw["args"].epsilon_high == 0.2
 
 
 def test_gspo_is_refused_on_trl_without_sequence_sampling(monkeypatch):
@@ -1162,3 +1186,58 @@ def test_a_mapped_prompt_opening_with_an_assistant_greeting_is_stripped_from_bot
     assert out[0]["prompt"] == [greet, ask]
     assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
     assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
+
+
+def test_grpo_prompts_with_arrow_filled_null_fields_render_without_them():
+    from datasets import Dataset
+
+    from core.training.rl import drop_long_prompts, render_grpo_prompts
+
+    class _Tok:
+        chat_template = "{{ m.thinking }}"
+
+        def __call__(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return {"input_ids": text.split()}
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            # GPT-OSS's template tests `"x" in message.thinking` whenever the key exists.
+            return " ".join(
+                m["content"] + ("" if "thinking" not in m else " t:" + m["thinking"])
+                for m in messages
+            )
+
+    turn = lambda **extra: {"role": "assistant", "content": "a", **extra}
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [
+                    {"role": "user", "content": "q"},
+                    turn(thinking = "hm"),
+                    {"role": "user", "content": "q2"},
+                ]
+            },
+            {
+                "prompt": [
+                    {"role": "user", "content": "q"},
+                    turn(),
+                    {"role": "user", "content": "q2"},
+                ]
+            },
+        ]
+    )
+    assert ds[1]["prompt"][1]["thinking"] is None  # Arrow's struct fill
+    assert len(drop_long_prompts(ds, _Tok(), 64)) == 2
+    out, rendered = render_grpo_prompts(ds, _Tok(), None)
+    assert rendered and out[0]["prompt"] == "q a t:hm q2" and out[1]["prompt"] == "q a q2"
+    clean = Dataset.from_list([{"prompt": [{"role": "user", "content": "q"}]}])
+    assert render_grpo_prompts(clean, _Tok(), None) == (clean, False)
