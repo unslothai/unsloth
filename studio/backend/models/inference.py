@@ -5092,6 +5092,26 @@ class DiffusionGenerateRequest(BaseModel):
         description = "ComfyUI ModelSamplingFlux `max_shift` (default 1.15), applied at the output "
         "size, for models whose status `shift_control.node` is 'flux'.",
     )
+    mask_blur: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 64,
+        description = "Inpaint only: Gaussian blur radius (px) applied to the mask before inpainting "
+        "(AUTOMATIC1111 'Mask blur'). Omitted or 0 uses the mask as painted.",
+    )
+    inpaint_only_masked: Optional[bool] = Field(
+        None,
+        description = "Inpaint only: render just the masked region (plus `inpaint_padding`) at full "
+        "resolution and paste it back (AUTOMATIC1111 'Inpaint area: Only masked', diffusers "
+        "padding_mask_crop). Requires status `supports_inpaint_only_masked`; omitted or false "
+        "inpaints the whole picture.",
+    )
+    inpaint_padding: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 256,
+        description = "Padding (px) around the mask when `inpaint_only_masked` is set; omitted = 32.",
+    )
     provider_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
@@ -5295,6 +5315,16 @@ class GalleryImage(BaseModel):
     )
     embeddings: Optional[list[str]] = Field(
         None, description = "Textual-inversion embeddings the prompts used (filename stems)"
+    )
+    mask_blur: Optional[int] = Field(
+        None, description = "Inpaint mask blur radius (px) applied; null = none"
+    )
+    inpaint_only_masked: Optional[bool] = Field(
+        None,
+        description = "True when the inpaint rendered only the masked area; null = whole picture",
+    )
+    inpaint_padding: Optional[int] = Field(
+        None, description = "Padding (px) around the mask for an only-masked inpaint"
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
@@ -5726,6 +5756,12 @@ class DiffusionStatusResponse(BaseModel):
         description = "Whether the loaded model can apply a ControlNet (drives the ControlNet "
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
+    )
+    supports_inpaint_only_masked: bool = Field(
+        False,
+        description = "Whether the loaded model's inpaint pipeline can render only the masked area "
+        "(`inpaint_only_masked`, diffusers padding_mask_crop). Diffusers only; False for the "
+        "native and MLX engines and when nothing is loaded.",
     )
     supports_negative_prompt: bool = Field(
         True,

@@ -91,6 +91,8 @@ export interface DiffusionStatus {
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).
+  supports_inpaint_only_masked?: boolean;
   // The guidance a negative prompt is used above; null when guidance does not gate it, absent on older backends.
   negative_prompt_min_guidance?: number | null;
   // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
@@ -247,6 +249,10 @@ export interface DiffusionGenerateRequest {
   init_image?: string;
   mask_image?: string;
   strength?: number;
+  // Absent = today's behaviour; only_masked is refused (400) unless supports_inpaint_only_masked.
+  mask_blur?: number;
+  inpaint_only_masked?: boolean;
+  inpaint_padding?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
   allow_oversized?: boolean;
@@ -359,9 +365,18 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
+  // Flow shift override the run used; null = the model's own schedule.
+  shift?: number | null;
+  base_shift?: number | null;
+  max_shift?: number | null;
+  // Textual-inversion embeddings the prompts used (file stems).
+  embeddings?: string[] | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
   prompt_enhancement?: PromptEnhancement | null;
+  mask_blur?: number | null;
+  inpaint_only_masked?: boolean | null;
+  inpaint_padding?: number | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
@@ -374,7 +389,7 @@ export interface DiffusionGenerateResponse {
   images: GalleryImage[];
 }
 
-async function parseJson<T>(response: Response): Promise<T> {
+export async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(await readFastApiError(response));
   }
@@ -562,25 +577,6 @@ export async function listDiffusionLoras(family?: string): Promise<DiffusionLora
     await authFetch(`/api/models/diffusion-loras${qs}`),
   );
   return data.loras ?? [];
-}
-
-// A textual-inversion embedding file (from GET /api/models/diffusion-embeddings); `trigger` is the file stem.
-export interface DiffusionEmbeddingInfo {
-  id: string;
-  trigger: string;
-  kind: string | null;
-  vectors: number;
-  size_bytes: number;
-}
-
-/** List textual-inversion embeddings usable by a model family. */
-export async function listDiffusionEmbeddings(
-  family: string,
-): Promise<{ embeddings: DiffusionEmbeddingInfo[]; embeddings_dir?: string }> {
-  const data = await parseJson<{ embeddings: DiffusionEmbeddingInfo[]; embeddings_dir?: string }>(
-    await authFetch(`/api/models/diffusion-embeddings?family=${encodeURIComponent(family)}`),
-  );
-  return { embeddings: data.embeddings ?? [], embeddings_dir: data.embeddings_dir };
 }
 
 /** List diffusion ControlNet models, optionally filtered to a model family. */

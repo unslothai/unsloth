@@ -1,14 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import type { AudioOptionSpec } from "../audio-options";
 import { AudioOptionFields } from "../audio-options-fields";
 import { formatVibeVoiceScript } from "../clone-policy";
 import { VoicePicker } from "../components/voice-picker";
 import {
+  SUPERTONIC_LANGUAGES,
   type SpeakVoiceValue,
   speakVoiceLogic,
+  supertonicLanguageLogic,
   usesSavedVoice,
   vibeVoiceDialogueLogic,
 } from "./panel-logic";
@@ -107,7 +116,48 @@ const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
   },
 };
 
+const LANGUAGE_NAMES = new Intl.DisplayNames(["en"], { type: "language" });
+// Radix Select cannot hold an empty value.
+const DEFAULT_LANGUAGE = "__default__";
+
+const supertonicLanguagePanel: AudioToolPanel<string> = {
+  ...supertonicLanguageLogic,
+  Component: ({ value, onChange, disabled }) => (
+    <div className="grid gap-1.5">
+      <label
+        className="text-ui-13 font-medium text-foreground"
+        htmlFor="supertonic-language"
+      >
+        Language
+      </label>
+      <Select
+        value={value || DEFAULT_LANGUAGE}
+        onValueChange={(next) =>
+          onChange(next === DEFAULT_LANGUAGE ? "" : next)
+        }
+        disabled={disabled}
+      >
+        <SelectTrigger id="supertonic-language" size="sm" className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={DEFAULT_LANGUAGE}>English (default)</SelectItem>
+          {SUPERTONIC_LANGUAGES.filter((code) => code !== "en").map((code) => (
+            <SelectItem key={code} value={code}>
+              {LANGUAGE_NAMES.of(code) ?? code}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-ui-11p5 leading-snug text-muted-foreground">
+        The language of the text, so it is pronounced right.
+      </p>
+    </div>
+  ),
+};
+
 export const SPEAK_TOOL_PANELS = [
   speakVoicePanel,
   vibeVoiceDialoguePanel,
+  supertonicLanguagePanel,
 ] as const;

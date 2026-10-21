@@ -1818,9 +1818,6 @@ export const hi = {
         showLoadedModels: "लोड किए गए मॉडल का संकेतक",
         showLoadedModelsDescription:
           "नीचे दाएं कोने में एक छोटा कार्ड दिखाएं जिसमें वर्तमान में मेमोरी में मौजूद हर मॉडल (चैट, स्पीच, इमेज, वीडियो) सूचीबद्ध हो, और हर एक को हटाने के लिए एक बटन हो।",
-        showWhisperUpdates: "whisper.cpp अपडेट सूचनाएं",
-        showWhisperUpdatesDescription:
-          "स्पीच-टू-टेक्स्ट मॉडल के लिए जब कोई नया whisper.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप ऑडियो ट्रांसक्राइब नहीं करते हैं तो बंद कर दें।",
         showAudioCppUpdates: "audio.cpp अपडेट सूचनाएं",
         showAudioCppUpdatesDescription:
           "जब ऑडियो पेजों के लिए audio.cpp रनटाइम को अपडेट की ज़रूरत हो तो सूचित करें। यदि आप कभी ऑडियो का उपयोग नहीं करते हैं तो बंद कर दें।",
@@ -2771,6 +2768,22 @@ export const hi = {
         visibility: "थिंकिंग",
         visibilityDescription:
           "रीज़निंग कैसे खुलती है। आप किसी भी ब्लॉक को खुद विस्तृत या संक्षिप्त कर सकते हैं।",
+      },
+      memory: {
+        title: "मेमोरी",
+        description: "ऐसे नोट्स जिन्हें हर चैट पढ़ती है, हर मॉडल के लिए, लोकल या क्लाउड। किसी प्रोजेक्ट की चैट उस प्रोजेक्ट की AGENTS.md भी पढ़ती हैं।",
+        enable: "चैट में मेमोरी का उपयोग करें",
+        enableDescription: "ये नोट्स हर चैट के साथ भेजें।",
+        locked: "UNSLOTH_STUDIO_AGENTS_MD ने इस इंस्टॉल के लिए इसे बंद कर दिया है।",
+        editor: "मेमोरी नोट्स",
+        placeholder: "उदाहरण:\n- मैं Python लिखता हूँ और uv का उपयोग करता हूँ।\n- जवाब छोटे रखें।",
+        hint: "{path} में सेव होता है। आप इस फ़ाइल को किसी भी टेक्स्ट एडिटर में भी बदल सकते हैं।",
+        size: "{used} / {max} KB",
+        save: "सेव करें",
+        saved: "मेमोरी सेव हो गई",
+        loadError: "मेमोरी लोड नहीं हो सकी।",
+        saveError: "मेमोरी सेव नहीं हो सकी।",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md मेमोरी याद पर्सनलाइज़ेशन प्रोफ़ाइल नोट्स",
       },
       currentDate: {
         label: "मॉडल को आज की तारीख बताएँ",

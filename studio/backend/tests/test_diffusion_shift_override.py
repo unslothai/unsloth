@@ -315,3 +315,24 @@ def test_the_resolved_shift_is_not_rebuilt():
     resolved = _flow_euler(shift = 3.1, use_dynamic_shifting = False)
     assert scheduler_with_flow_shift(resolved, 3.1) is resolved
     assert scheduler_with_flow_shift(resolved, 3.2) is not resolved
+
+
+def test_parameters_text_carries_the_shift_the_run_used():
+    """The A1111 parameters text names a requested static shift, so pasting it back restores Shift."""
+    from core.inference import image_gallery as gallery
+
+    meta = {
+        "prompt": "a cat",
+        "width": 64,
+        "height": 64,
+        "steps": 4,
+        "guidance": 3.5,
+        "seed": 1,
+        "model": "m",
+    }
+    assert "Shift:" not in gallery._params_text(meta)
+    assert ", Shift: 3.1" in gallery._params_text({**meta, "shift": 3.1})
+    # base / max shift have no infotext key; the recipe chunk keeps them.
+    assert (
+        "shift" not in gallery._params_text({**meta, "base_shift": 0.5, "max_shift": 1.15}).lower()
+    )

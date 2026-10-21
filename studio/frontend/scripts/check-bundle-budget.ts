@@ -341,8 +341,15 @@ export const BUDGET = {
   // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
   // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
   // 96 chunks). Raised by that.
-  transferBytes: 2_070_999,
-  rawBytes: 6_877_089,
+  // Floating panels remembering their dropped spot (#14355) add 701 B raw / 211 B transfer. Raised by that.
+  // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
+  // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
+  // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
+  // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
+  // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
+  // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
+  transferBytes: 2_071_693,
+  rawBytes: 6_879_150,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

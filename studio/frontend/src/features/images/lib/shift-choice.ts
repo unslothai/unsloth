@@ -60,3 +60,47 @@ export function withEmbeddingTrigger(prompt: string, trigger: string): string {
   if (!trimmed) return trigger;
   return /[,(]$/.test(trimmed) ? `${trimmed} ${trigger}` : `${trimmed}, ${trigger}`;
 }
+
+/** The Shift boxes a gallery record or imported recipe restores; absent values leave the model's schedule. */
+export function shiftFromRecipe(r: {
+  shift?: number | null;
+  base_shift?: number | null;
+  max_shift?: number | null;
+}): ShiftValue {
+  const text = (n: number | null | undefined) => (typeof n === "number" && Number.isFinite(n) ? String(n) : "");
+  return { shift: text(r.shift), baseShift: text(r.base_shift), maxShift: text(r.max_shift) };
+}
+
+/** Imported Shift values the loaded model cannot take (no Shift control, or the other ComfyUI node's fields). */
+export function shiftNotApplied(
+  r: Readonly<Record<string, unknown>>,
+  control: ShiftControl | null | undefined,
+): string[] {
+  const out: string[] = [];
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const shift = num(r.shift);
+  const base = num(r.base_shift);
+  const max = num(r.max_shift);
+  // The request's bounds: shift in (0, SHIFT_MAX], base / max shift in [0, SHIFT_MAX].
+  const name = (label: string, v: number, ok: boolean) =>
+    out.push(ok ? `${label} ${v}` : `${label} ${v} (out of range)`);
+  if (shift !== undefined && !(control?.node === "sd3" && shift > 0 && shift <= SHIFT_MAX))
+    name("shift", shift, control?.node !== "sd3");
+  if (base !== undefined && !(control?.node === "flux" && base >= 0 && base <= SHIFT_MAX))
+    name("base shift", base, control?.node !== "flux");
+  if (max !== undefined && !(control?.node === "flux" && max >= 0 && max <= SHIFT_MAX))
+    name("max shift", max, control?.node !== "flux");
+  return out;
+}
+
+/** Split imported textual-inversion names by whether an installed embedding (its trigger, any case) matches. */
+export function splitInstalledEmbeddings(
+  names: readonly string[],
+  triggers: readonly string[],
+): { installed: string[]; missing: string[] } {
+  const known = new Set(triggers.map((t) => t.toLowerCase()));
+  const installed: string[] = [];
+  const missing: string[] = [];
+  for (const name of names) (known.has(name.toLowerCase()) ? installed : missing).push(name);
+  return { installed, missing };
+}

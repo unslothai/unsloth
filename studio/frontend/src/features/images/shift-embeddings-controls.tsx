@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { InfoHint } from "@/components/ui/info-hint";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { listDiffusionEmbeddings, type DiffusionEmbeddingInfo } from "./api";
+import { listDiffusionEmbeddings, type DiffusionEmbeddingInfo } from "./embeddings-api";
 import { shiftFieldInvalid, type ShiftControl, type ShiftValue } from "./lib/shift-choice";
 
 // The resolved defaults can be e.g. ln(e^0.69); show them the way a user would type them.
