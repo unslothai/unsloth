@@ -14,7 +14,10 @@ from pathlib import Path
 import pytest
 
 torch = pytest.importorskip("torch")
-pytest.importorskip("triton")
+triton = pytest.importorskip("triton")
+if triton.__name__ != "triton":
+    # unsloth_zoo's macOS stub answers every attribute, so the TMA API cannot be hidden.
+    pytest.skip("triton is a stub", allow_module_level = True)
 import torch._dynamo  # noqa: E402,F401  # import before custom_op is stubbed out below
 from torch._subclasses.fake_tensor import FakeTensorMode  # noqa: E402
 
@@ -71,10 +74,17 @@ def _load(
         "get_device_capability",
         lambda device = None: caps[state["current"] if device is None else device],
     )
+    def get_device_properties(device = None):
+        index = state["current"] if device is None else getattr(device, "index", device)
+        major, minor = caps[index]
+        return types.SimpleNamespace(
+            name = f"sm{major}{minor}", major = major, minor = minor, multi_processor_count = 4
+        )
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", get_device_properties)
+    # FakeTensorMode opens a real context on a fake tensor's device (cuda:1 is absent on one-GPU hosts).
     monkeypatch.setattr(
-        torch.cuda,
-        "get_device_properties",
-        lambda device = None: types.SimpleNamespace(multi_processor_count = 4),
+        "torch._subclasses.fake_tensor.init_gpu_context", lambda device: None, raising = False
     )
     # No custom-op registration from the spoofed module.
     monkeypatch.setattr(torch.library, "custom_op", None, raising = False)
@@ -202,6 +212,25 @@ def test_each_card_autotunes_its_own_copy(monkeypatch):
     assert tuner0 is not tuner1 and tuner0.cache == {} and tuner1.cache == {}
     assert module._autotuner_for(base, torch.device("cuda", 1)) is tuner1
     assert base.cache == {"shape": "h100-config"}
+
+
+def test_identical_cards_share_one_autotuner(monkeypatch):
+    # device_map="auto" over identical cards: tune once, as with one shared tuner.
+    module, _ = _load(monkeypatch, [H100, H100, A100])
+    base = _Tuner()
+    tuner0 = module._autotuner_for(base, torch.device("cuda", 0))
+    assert module._autotuner_for(base, torch.device("cuda", 1)) is tuner0
+    assert module._autotuner_for(base, torch.device("cuda", 2)) is not tuner0
+
+
+def test_per_card_autotuner_follows_reassigned_configs(monkeypatch):
+    module, _ = _load(monkeypatch, [H100, A100])
+    base = _Tuner()
+    base.configs = ["a", "b", "c"]
+    tuner = module._autotuner_for(base, torch.device("cuda", 1))
+    base.configs = base.configs[:1]
+    assert module._autotuner_for(base, torch.device("cuda", 1)).configs == ["a"]
+    assert tuner.cache == {}
 
 
 def test_single_card_keeps_the_shared_autotuner(monkeypatch):
