@@ -20,6 +20,7 @@ VARIABLE = (
     "QwenImage21Transformer2DModel",
     "ZImageTransformer2DModel",
     "MiniMaxH3Transformer3DModel",
+    "MOSSImageTransformer",
 )
 
 
@@ -68,6 +69,8 @@ def test_the_compile_arms_only_its_own_sources():
         "QwenImage21Transformer2DModel",
         "QwenImageTransformer2DModel",
         "MiniMaxH3Transformer3DModel",
+        # MOSS-Image never pads its prompt (true text length per branch), so it is armed from day one.
+        "MOSSImageTransformer",
     }
     for name, sources in dt._FAMILY_SOURCES.items():
         assert dt.PROMPT_LENGTH_POLICY[name] == sources, name

@@ -303,3 +303,17 @@ test("an explicit FLUX.3 family decides the recipe over a name that reads as the
     "flux.3-klein-base",
   );
 });
+
+test("MOSS-Image SFT and Base get ComfyUI's MOSS recipe", () => {
+  for (const id of [
+    "OpenMOSS-Team/MOSS-Image-SFT",
+    "OpenMOSS-Team/MOSS-Image-Base",
+    "someone/moss_image_sft_merge",
+    "moss-image",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 50, guidance: 3 }, id);
+  }
+  const key = defaultsKeyFor("/models/my-model", "moss-image");
+  assert.equal(key, "moss-image");
+  assert.deepEqual(defaultsFor(key), { steps: 50, guidance: 3 });
+});
