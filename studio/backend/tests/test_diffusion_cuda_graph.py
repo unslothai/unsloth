@@ -14,6 +14,7 @@ import contextlib
 import inspect
 import json
 import sys
+import threading
 import types
 import weakref
 
@@ -1645,3 +1646,34 @@ def test_a_refused_capture_runs_eager_and_records_on_a_later_call(stub_torch, mo
     assert handle.poisoned is False and handle.stats["captures"] == 1
     assert module.calls == calls + cg.WARMUP_ITERS + 1
     assert retired == []
+
+
+def test_capture_warmups_wait_for_held_replica_work(stub_torch):
+    # The warm-ups may compile, and up to torch 2.13 FX tracing is flagged process-wide: a compile on one thread fails
+    # any compiled call another thread makes meanwhile, so held replica work drains before the warm-ups too.
+    seen = []
+
+    class Dit(_FakeDiT):
+        def forward(self, *args, **kwargs):
+            seen.append(cg._OUTSIDE_JOBS)
+            return super().forward(*args, **kwargs)
+
+    handle = _armed(Dit())
+    held, release = threading.Event(), threading.Event()
+
+    def replica_job():
+        with cg.outside_capture():
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target = replica_job)
+    worker.start()
+    assert held.wait(5)
+    timer = threading.Timer(0.3, release.set)
+    timer.start()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    worker.join(5)
+    timer.join(5)
+    assert handle.stats["captures"] == 1
+    assert seen == [0] * (cg.WARMUP_ITERS + 1)
+    assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0

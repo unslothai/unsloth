@@ -177,6 +177,40 @@ def capture_refused_now() -> bool:
         return _OUTSIDE_STUCK[0] and _other_holds(own, _OUTSIDE_PARKED[0]) > 0
 
 
+def _wait_outside_drained(own: int) -> None:
+    """Under ``_CAPTURE_IDLE``: wait for replica-side holds to drain, else raise ``CaptureRefused``.
+
+    Replica-side recording (inside this thread's own held work) discounts only this thread's holds: another
+    worker's held work still running must drain first, or the global capture would forbid its CUDA calls."""
+    drained = _other_holds(own, _OUTSIDE_PARKED[0]) <= 0
+    if not drained and not _OUTSIDE_STUCK[0]:
+        if own:
+            _OUTSIDE_PARKED[0] += own
+            _CAPTURE_IDLE.notify_all()
+        try:
+            drained = _CAPTURE_IDLE.wait_for(
+                lambda: _other_holds(own, _OUTSIDE_PARKED[0] - own) <= 0,
+                timeout = OUTSIDE_WAIT_S,
+            )
+        finally:
+            if own:
+                _OUTSIDE_PARKED[0] -= own
+                _CAPTURE_IDLE.notify_all()
+    if not drained:
+        _OUTSIDE_STUCK[0] = True
+        raise CaptureRefused(
+            f"replica-side CUDA work still running after {OUTSIDE_WAIT_S:g}s; capture refused"
+        )
+
+
+def await_outside_drained() -> None:
+    """Wait as a capture does, without starting one: for the warm-ups, which may compile. Up to torch 2.13 FX tracing is
+    flagged process-wide, so a compile on one thread fails any compiled call another thread makes meanwhile."""
+    own = getattr(_OUTSIDE_LOCAL, "depth", 0)
+    with _CAPTURE_IDLE:
+        _wait_outside_drained(own)
+
+
 @contextlib.contextmanager
 def _capturing():
     """Mark a capture as recording for the duration of the block.
@@ -186,29 +220,9 @@ def _capturing():
     ``CaptureRefused`` (depth untouched, nothing recorded) when replica-side work did not drain in time.
     """
     global _CAPTURE_DEPTH
-    # Replica-side recording (inside this thread's own held work) discounts only this thread's holds: another
-    # worker's held work still running must drain first, or the global capture would forbid its CUDA calls.
     own = getattr(_OUTSIDE_LOCAL, "depth", 0)
     with _CAPTURE_IDLE:
-        drained = _other_holds(own, _OUTSIDE_PARKED[0]) <= 0
-        if not drained and not _OUTSIDE_STUCK[0]:
-            if own:
-                _OUTSIDE_PARKED[0] += own
-                _CAPTURE_IDLE.notify_all()
-            try:
-                drained = _CAPTURE_IDLE.wait_for(
-                    lambda: _other_holds(own, _OUTSIDE_PARKED[0] - own) <= 0,
-                    timeout = OUTSIDE_WAIT_S,
-                )
-            finally:
-                if own:
-                    _OUTSIDE_PARKED[0] -= own
-                    _CAPTURE_IDLE.notify_all()
-        if not drained:
-            _OUTSIDE_STUCK[0] = True
-            raise CaptureRefused(
-                f"replica-side CUDA work still running after {OUTSIDE_WAIT_S:g}s; capture refused"
-            )
+        _wait_outside_drained(own)
         _CAPTURE_DEPTH += 1
     try:
         yield
@@ -1577,6 +1591,7 @@ class GraphedForward:
         )  # before the warm-ups, and before the step skip's counters are saved
         if capture_refused_now():
             raise CaptureRefused("replica-side CUDA work still running; capture refused")
+        await_outside_drained()
         # Under an offload placement the capture also records the copy-stream onloads (OffloadPlacement.record).
         record = call if self.placement is None else self.placement.recorder(call)
         # Side stream: a workspace first created DURING capture is only valid while recording.

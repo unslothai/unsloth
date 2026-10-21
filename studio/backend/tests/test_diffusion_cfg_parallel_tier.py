@@ -789,3 +789,120 @@ def test_a_held_capture_alone_records_at_once_and_two_record_one_after_the_other
     assert errors == [] and overlap == [1, 1]
     assert __import__("time").perf_counter() - t0 < 2.0
     assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0 and cg._OUTSIDE_PARKED == [0]
+
+
+class _FxTrace:
+    """torch <= 2.13's FX tracing flag, one per process: the first call per (side, shapes) "compiles" and holds it until
+    the other side enters a compiled call (or a short timeout); a compiled call entered meanwhile raises as
+    eval_frame does. ``waiter``'s warm calls first wait for a compile to start, which forces the overlap."""
+
+    def __init__(
+        self,
+        compiled = (),
+        waiter = None,
+    ):
+        self.owner = None
+        self.compiled = set(compiled)
+        self.waiter = waiter
+        self.started = threading.Event()
+        self.entered = threading.Event()
+        self.errors: list = []
+
+    def enter(self, side, key):
+        if side == self.waiter and key in self.compiled:
+            self.started.wait(0.5)
+        if self.owner not in (None, threading.get_ident()):
+            self.entered.set()
+            self.errors.append((side, key))
+            raise RuntimeError(
+                "Detected that you are using FX to symbolically trace a dynamo-optimized function. "
+                "This is not supported at the moment."
+            )
+        if key in self.compiled:
+            return
+        self.owner = threading.get_ident()
+        self.started.set()
+        self.entered.wait(0.3)
+        self.compiled.add(key)
+        self.owner = None
+
+
+_FX: list = [None]
+
+
+class _TracedDit(_Dit):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
+        side = (
+            "replica"
+            if threading.current_thread().name.startswith("unsloth-cfg-replica")
+            else "primary"
+        )
+        key = (side, tuple(hidden_states.shape), tuple(encoder_hidden_states.shape))
+        _FX[0].enter(side, key)
+        return super().forward(hidden_states, timestep, encoder_hidden_states, return_dict)
+
+
+def _expected(dit, x, t, enc):
+    return _Dit.forward(dit, hidden_states = x, timestep = t, encoder_hidden_states = enc)[0]
+
+
+def _pairs(dit, router, x, cond, uncond, steps):
+    outs = []
+    with torch.no_grad():
+        for i in range(steps):
+            t = torch.tensor(1.0 - i / steps)
+            kw = dict(hidden_states = x, timestep = t, encoder_hidden_states = uncond)
+            pair = router.run_pair(
+                lambda: dit(hidden_states = x, timestep = t, encoder_hidden_states = cond), (), kw
+            )
+            assert pair is not None and pair[1] is not None, router.disabled_reason
+            assert torch.equal(pair[0][0], _expected(dit, x, t, cond))
+            assert torch.equal(pair[1][0], _expected(dit, x, t, uncond))
+            outs.append(pair)
+    return outs
+
+
+def test_a_pair_new_to_the_replica_never_overlaps_the_primary_half():
+    torch.manual_seed(0)
+    dit = _TracedDit()
+    x, cond, uncond = torch.randn(2, 4), torch.randn(3, 4), torch.randn(5, 4)
+    _FX[0] = _FxTrace(compiled = {("primary", (2, 4), (3, 4))}, waiter = "primary")
+    router, _replicas = _router(dit)
+    _pairs(dit, router, x, cond, uncond, 3)
+    assert _FX[0].errors == [] and router.disabled_reason is None
+    assert ("replica", (2, 4), (5, 4)) in _FX[0].compiled
+    assert router.stats["pairs_parallel"] == 3
+
+
+def test_a_pair_new_to_the_primary_never_overlaps_the_replica_half():
+    torch.manual_seed(0)
+    dit = _TracedDit()
+    x, uncond = torch.randn(2, 4), torch.randn(5, 4)
+    _FX[0] = _FxTrace(compiled = {("primary", (2, 4), (3, 4)), ("replica", (2, 4), (5, 4))})
+    router, _replicas = _router(dit)
+    _pairs(dit, router, x, torch.randn(3, 4), uncond, 2)  # both halves warm, on both sides
+    _FX[0].waiter = "replica"
+    _pairs(dit, router, x, torch.randn(7, 4), uncond, 2)  # a new primary-side length: it compiles
+    assert _FX[0].errors == [] and router.disabled_reason is None
+    assert ("primary", (2, 4), (7, 4)) in _FX[0].compiled
+    assert router.stats["pairs_parallel"] == 4
+
+
+def test_a_prediction_new_to_the_replica_is_not_launched_beside_the_primary_branch():
+    torch.manual_seed(0)
+    dit = _TracedDit()
+    latents = torch.randn(2, 4)
+    _FX[0] = _FxTrace(compiled = {("primary", (2, 4), (3, 4))})
+    reference = _cfg_loop(dit, latents.clone(), steps = 5)
+    _FX[0].waiter = "primary"
+    router, _replicas = _router(dit)
+    out = _cfg_loop(dit, latents.clone(), steps = 5)
+    assert torch.equal(out, reference)
+    assert _FX[0].errors == [] and router.disabled_reason is None
+    assert router.stats["replica_calls"] == 4 and router.stats["predicted_hits"] == 3
