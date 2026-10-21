@@ -1033,7 +1033,7 @@ export function importNotApplied(
     const groups = r.prompt_emphasis.filter((g): g is string => typeof g === "string");
     const shown = groups.slice(0, 3).join(", ") + (groups.length > 3 ? ", ..." : "");
     out.push(`prompt emphasis (${shown}) is passed as plain text`);
-  }
+  } else if (!parsesEmphasis && r.prompt_weighting === true) out.push("prompt weighting");
   if (
     !parsesEmphasis &&
     Array.isArray(r.prompt_escaped_brackets) &&

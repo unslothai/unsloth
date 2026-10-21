@@ -234,6 +234,11 @@ test("pasted A1111 Clip skip, CFG Rescale and Variation seed restore into the SD
   const img2img = { ...r, workflow: "img2img" };
   assert.equal(variationApplies(img2img, SDXL), false);
   assert.deepEqual(importNotApplied(img2img, "sdxl", false, SDXL), ["variation seed 99 (strength 0.3)"]);
+  // A structured Unsloth recipe records prompt_weighting: true, not the parser-only prompt_emphasis.
+  const weighted = { prompt: "a (fox:1.5)", prompt_weighting: true };
+  assert.deepEqual(importNotApplied(weighted, "flux", false, null), ["prompt weighting"]);
+  assert.deepEqual(importNotApplied(weighted, "sdxl", true, null), []);
+  assert.deepEqual(importNotApplied(weighted, "sdxl", false, SDXL), []);
   const src = readSrc("features/images/images-page.tsx");
   assert.match(src, /if \(!variationApplies\(merged, sdCaps\)\)/);
   assert.match(src, /isNativeEngineStatus\(status\)\),\n\s+sdCaps,/);
