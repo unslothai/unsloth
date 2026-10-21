@@ -202,6 +202,9 @@ class _Tuner:
     def __init__(self):
         self.cache = {}
 
+    def run(self, *args, **kwargs):
+        return self.cache
+
 
 def test_each_card_autotunes_its_own_copy(monkeypatch):
     module, _ = _load(monkeypatch, [H100, A100])
@@ -322,3 +325,29 @@ def test_benchmark_postprocesses_the_per_card_tuner():
         for a in c.args[:1]
     }
     assert kernels and all(id(n) in wrapped for n in kernels)
+
+
+def test_identical_cards_tune_a_cold_shape_once(monkeypatch):
+    # Two cards of one model missing the same shape at once: the second waits for the first's result.
+    import threading
+    import time
+
+    module, _ = _load(monkeypatch, [H100, H100])
+    tuned = []
+
+    class Tuner(_Tuner):
+        def run(self, key = "shape"):
+            if key not in self.cache:
+                tuned.append(key)
+                time.sleep(0.2)
+                self.cache[key] = "config"
+            return self.cache[key]
+
+    base = Tuner()
+    tuners = [module._autotuner_for(base, torch.device("cuda", i)) for i in (0, 1)]
+    threads = [threading.Thread(target = t.run) for t in tuners]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert tuned == ["shape"]

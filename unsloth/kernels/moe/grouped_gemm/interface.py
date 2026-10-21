@@ -5,6 +5,7 @@ import copy
 import functools
 import inspect
 import logging
+import threading
 import warnings
 from typing import Optional
 from dataclasses import asdict
@@ -60,6 +61,7 @@ _SUPPORTS_TMA = _check_tma_support()
 
 _DEVICE_AUTOTUNERS = {}
 _MODEL_AUTOTUNE_CACHES = {}
+_MODEL_AUTOTUNE_LOCKS = {}
 _DEVICE_MODELS = {}
 
 
@@ -95,7 +97,19 @@ def _autotuner_for(kernel, device):
     tuner = _DEVICE_AUTOTUNERS.get(key)
     if tuner is None:
         tuner = copy.copy(kernel)
-        tuner.cache = _MODEL_AUTOTUNE_CACHES.setdefault((id(kernel), _device_model(device)), {})
+        model_key = (id(kernel), _device_model(device))
+        tuner.cache = _MODEL_AUTOTUNE_CACHES.setdefault(model_key, {})
+        # One tuning per shape per model: a second card waits, then reads the first card's result
+        # (concurrent benchmarking would also skew both timings). A cached launch holds it briefly.
+        lock = _MODEL_AUTOTUNE_LOCKS.setdefault(model_key, threading.Lock())
+        run = getattr(tuner, "run", None)
+        if run is not None:
+
+            def _run_single_flight(*args, _run = run, _lock = lock, **kwargs):
+                with _lock:
+                    return _run(*args, **kwargs)
+
+            tuner.run = _run_single_flight
         _DEVICE_AUTOTUNERS[key] = tuner
     # Callers reassign kernel.configs (benchmarks, tests): follow it like the shared tuner would.
     configs = getattr(kernel, "configs", None)
