@@ -19,12 +19,15 @@ from unsloth.models.loader_utils import _fp8_dequantize_quantization_config
 
 try:
     from transformers import FineGrainedFP8Config
-
     _HAS_DEQUANTIZE = "dequantize" in inspect.signature(FineGrainedFP8Config).parameters
 except Exception:
     _HAS_DEQUANTIZE = False
 
-_BLOCK_FP8 = {"quant_method": "fp8", "activation_scheme": "dynamic", "weight_block_size": [128, 128]}
+_BLOCK_FP8 = {
+    "quant_method": "fp8",
+    "activation_scheme": "dynamic",
+    "weight_block_size": [128, 128],
+}
 
 
 @pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
