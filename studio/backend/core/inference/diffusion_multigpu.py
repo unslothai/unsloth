@@ -1143,7 +1143,7 @@ def _hooks_present(module: Any) -> Optional[str]:
                 if name and not _trusted_hook(hook):
                     return f"{name}.{attr}"
                 if not name and not _hook_origin(hook).startswith(_TRUSTED_HOOK_MODULES):
-                    return f"<root>.{attr} (a hook outside Studio: its per-call state cannot be mirrored)"
+                    return f"<root>.{attr} (a hook outside Unsloth: its per-call state cannot be mirrored)"
         override = sub.__dict__.get("forward")
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
             continue

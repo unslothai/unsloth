@@ -4526,7 +4526,7 @@ async def create_artifact_preview_page(
 
 @studio_router.get("/artifact-preview-page/{token}", include_in_schema = False)
 async def artifact_preview_page(token: str):
-    """Unauthenticated: an outside browser has no Studio session, so the token is the capability."""
+    """Unauthenticated: an outside browser has no Unsloth session, so the token is the capability."""
     entry = _artifact_pages.get(token)
     if entry is None or time.monotonic() - entry[0] > _ARTIFACT_PAGE_TTL_SECONDS:
         _artifact_pages.pop(token, None)
@@ -6283,7 +6283,7 @@ def _skill_tool_tip(
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
         "helpful, then call read_skill before following its instructions unless the complete "
-        "SKILL.md is already in context. Studio loads explicit @skill-name mentions before "
+        "SKILL.md is already in context. Unsloth loads explicit @skill-name mentions before "
         "generation when permitted; do not read an already loaded manifest again or claim a "
         "failed/denied load succeeded."
         + create_tip
@@ -19445,7 +19445,7 @@ def _reject_unsupported_managed_kind(request, config) -> None:
         status_code = 400,
         detail = (
             f"This model was detected as {detected_kind}. "
-            f"The Studio {request.engine} integration currently supports text and vision checkpoints. "
+            f"The Unsloth {request.engine} integration currently supports text and vision checkpoints. "
             "Choose Default for this model, or select a supported text checkpoint."
         ),
     )
@@ -37685,7 +37685,7 @@ async def open_sandbox_file(
         await run_in_threadpool(open_in_default_app, Path(path), Path(root))
     except PermissionError:
         raise HTTPException(
-            status_code = 415, detail = "This kind of file does not open outside Studio"
+            status_code = 415, detail = "This kind of file does not open outside Unsloth"
         ) from None
     except FileNotFoundError:
         raise HTTPException(status_code = 404, detail = "Not found") from None
@@ -40495,7 +40495,7 @@ def _embeddings_input_present(body: dict) -> bool:
 @account_access.gpu_busy_route
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
-    else Studio's configured embedding model."""
+    else Unsloth's configured embedding model."""
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))

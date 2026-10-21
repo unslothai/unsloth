@@ -9,6 +9,7 @@ import { openChatItemById, useChatNavigationStore, visibleChatItems } from "@/fe
 import { getLocale, translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { isTauri } from "@/lib/api-base";
+import { unwrapRedirect } from "../address";
 import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
@@ -629,6 +630,20 @@ function navigationContext(action: BrowserAction, context: Run) {
   };
 }
 
+/** Where a search engine's redirect link lands: the tab opens that page, so that page is the one gated. */
+/** Every URL a redirect link passes through, the link first and its landing page last. */
+function redirectChain(url: string): string[] {
+  const chain = [url];
+  // Each hop's target is a strictly shorter part of the link, so this ends.
+  for (let next = unwrapRedirect(url); next !== chain[chain.length - 1]; next = unwrapRedirect(next)) chain.push(next);
+  return chain;
+}
+
+function redirectEnd(url: string): string {
+  const chain = redirectChain(url);
+  return chain[chain.length - 1];
+}
+
 async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const { signal, session } = context;
   const { chat, reachedHosts } = session;
@@ -651,7 +666,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   patchAgentChat(chat, { working: true, runKey: context.runKey });
 
   if (action.op === "navigate") {
-    const url = action.url ?? "";
+    const url = redirectEnd(action.url ?? "");
     const gate = gateNavigation(url, navigationContext(action, context));
     const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };
@@ -800,8 +815,14 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     /^https?:/i.test(info.href) &&
     info.href.split("#")[0] !== here.split("#")[0] &&
     ((action.op === "click" && useNativeBrowser.getState().enabled) || (activates && info.role === "link"));
-  const linkGate = followsLink ? gateNavigation(info.href, navigationContext(action, context)) : null;
+  // A search engine's redirect link is gated at the page it lands on, as a navigate would be.
+  const linkEnd = followsLink ? redirectEnd(info.href) : "";
+  const linkGate = followsLink ? gateNavigation(linkEnd, navigationContext(action, context)) : null;
   if (linkGate) gates.push(linkGate);
+  // The page itself still loads the wrapper first, so the wrapper keeps its own checks too.
+  const wrappers = followsLink ? redirectChain(info.href).slice(0, -1) : [];
+  const wrapperGates = wrappers.map((url) => gateNavigation(url, navigationContext(action, context)));
+  gates.push(...wrapperGates);
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
   const formAction = submits && info.formAction ? info.formAction : "";
   const formGate =
@@ -825,7 +846,8 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     if (signal?.aborted) return { ok: false, error: STOPPED };
   }
   if (formGate) admit(formAction, formGate, context);
-  if (linkGate) admit(info.href, linkGate, context);
+  if (linkGate) admit(linkEnd, linkGate, context);
+  wrappers.forEach((url, index) => admit(url, wrapperGates[index], context));
 
   // Before the action goes out, after any question: a request its handler starts at once is the action's too.
   const since = Date.now();
@@ -842,19 +864,21 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       const pressedAt = Date.now();
       // A link: opened in this tab, under the same rules as any other address. Its href is read
       // now, so it may not be one the last snapshot listed.
-      const gate = gateNavigation(clicked.navigate, navigationContext(action, context));
+      const end = redirectEnd(clicked.navigate);
+      const gate = gateNavigation(end, navigationContext(action, context));
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
-      admit(clicked.navigate, gate, context);
+      admit(end, gate, context);
       // The page goes the moment the tab navigates, taking the cursor with it: let its press show first.
       if (useBrowserAgentStore.getState().showCursor) {
         await sleep(Math.max(0, LINK_PRESS_MS - (Date.now() - pressedAt)));
         if (signal?.aborted) return { ok: false, error: STOPPED };
       }
       const sent = Date.now();
-      useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: here }, { replace: false });
+      // Straight to the landing page that was gated: the store unwraps only one redirect hop.
+      useBrowserStore.getState().navigate(ready.id, { url: end, from: here }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
-      return loaded ? arrive(loaded, clicked.navigate, action, context, sent) : { ok: false, error: "the browser tab closed." };
+      return loaded ? arrive(loaded, end, action, context, sent) : { ok: false, error: "the browser tab closed." };
     }
     note = clicked.note;
   } else if (action.op === "type") {
