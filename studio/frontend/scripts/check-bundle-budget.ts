@@ -328,10 +328,12 @@ export const BUDGET = {
   // Browser store sync across windows (#14277) adds 545 B raw / 288 B transfer on top (6,872,325 B raw, 2,069,596 B
   // transfer merged with main at 4962983b0, Node 24, 97 chunks). Raised to that plus the same margin.
   // The runtime update card's skip and Undo (#14436) add 1,706 B raw / 424 B transfer against 444f63275c.
-  // The browser panel's page history (#14283) on top measures 6,874,376 B raw / 2,070,199 B transfer (merged with
-  // main at 2af56e135, Node 24, 97 chunks). Raised to that plus the same margin.
-  transferBytes: 2_070_388,
-  rawBytes: 6_874_536,
+  // Finished chat replies render lone markdown markers as written, cut ones keep the repair (#14391): +179 B raw /
+  // +52 B transfer measured against main (6,870,298 -> 6,870,477 B raw, one machine and build). Raised by that.
+  // The browser panel's page history (#14283) on top measures 6,874,560 B raw / 2,070,211 B transfer (merged with
+  // main at acb31d909, Node 24, 97 chunks). Raised to that plus the same margin.
+  transferBytes: 2_070_400,
+  rawBytes: 6_874_720,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
