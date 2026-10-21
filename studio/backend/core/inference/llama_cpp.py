@@ -28003,37 +28003,29 @@ class LlamaCppBackend:
                                 _auto_ctx_priced = not _auto_ctx or self._can_estimate_kv()
                                 _auto_kv_bytes = 0
                                 _auto_cc_mib = 0.0
-                                if _auto_ctx and _auto_ctx_priced:
-                                    _auto_tp_fa = _replanned_flash_attn(True)
-                                    _auto_kv_bytes = self._estimate_kv_cache_bytes(
-                                        _auto_ctx,
-                                        cache_type_kv,
-                                        n_parallel = n_parallel,
-                                        swa_full = swa_full,
-                                        kv_unified = planned_kv_unified,
-                                        n_ubatch = _effective_ubatch,
-                                        flash_attn = _auto_tp_fa,
-                                    )
-                                    _auto_cc_mib = self._compute_buffer_ctx_bytes(
-                                        _auto_ctx,
-                                        _effective_ubatch,
-                                        _scratch_cache_type_kv,
-                                        flash_attn = _auto_tp_fa,
-                                        n_parallel = n_parallel,
-                                    ) / (1024 * 1024)
                                 _auto_mtp_floor = 0
-                                if _mtp_will_engage or mtp_overhead_fn is not None:
-                                    _auto_mtp_floor = max(
-                                        2 * 1024**3,
-                                        _mtp_bytes(
-                                            _auto_ctx
-                                            or (
-                                                min(2048, effective_ctx)
-                                                if effective_ctx > 0
-                                                else 2048
-                                            )
-                                        ),
-                                    )
+                                # Priced through the load's own closures under the tensor
+                                # attention plan, the one this pair would launch with.
+                                _auto_layer_fa = planned_flash_attn
+                                planned_flash_attn = _replanned_flash_attn(True)
+                                try:
+                                    if _auto_ctx and _auto_ctx_priced:
+                                        _auto_kv_bytes = _kv_bytes(_auto_ctx)
+                                        _auto_cc_mib = _cc_bytes(_auto_ctx) / (1024 * 1024)
+                                    if _mtp_will_engage or mtp_overhead_fn is not None:
+                                        _auto_mtp_floor = max(
+                                            2 * 1024**3,
+                                            _mtp_bytes(
+                                                _auto_ctx
+                                                or (
+                                                    min(2048, effective_ctx)
+                                                    if effective_ctx > 0
+                                                    else 2048
+                                                )
+                                            ),
+                                        )
+                                finally:
+                                    planned_flash_attn = _auto_layer_fa
                                 _auto_soft = self._CUDA_CONTEXT_RESERVE_BYTES
                                 if effective_is_vision and mmproj_size > 0:
                                     _auto_soft += int(
@@ -33421,13 +33413,6 @@ class LlamaCppBackend:
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident, _did_rocm_retry
                     nonlocal _sched_abort_seen
-                    # Every relaunch passes here with a label (and every in-place respawn
-                    # through the attempt loop below): an auto tensor attempt never runs
-                    # one. It is abandoned and the whole load redone without the policy,
-                    # so each recovery only ever runs as it does on main.
-                    if label and _auto.engaged:
-                        self._kill_process()
-                        raise _AutoSplitAbandoned(f"recovery relaunch ({label.lstrip('-')})")
                     # One revocation point for the tensor-spill plan instead of a
                     # strip per retry site. `label` is empty ONLY on the first
                     # spawn, so a retry added later is covered automatically. The
@@ -33440,6 +33425,13 @@ class LlamaCppBackend:
                         run_cmd = self._drop_moe_cache(
                             run_cmd, f"{label.lstrip('-') or 'unpinned'} launch"
                         )
+                    # Every relaunch passes here with a label (and every in-place respawn
+                    # through the attempt loop below): an auto tensor attempt never runs
+                    # one. It is abandoned and the whole load redone without the policy,
+                    # so each recovery only ever runs as it does on main.
+                    if label and _auto.engaged:
+                        self._kill_process()
+                        raise _AutoSplitAbandoned(f"recovery relaunch ({label.lstrip('-')})")
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
                     _did_moe_cache_retry = False
