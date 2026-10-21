@@ -4,7 +4,9 @@
 """SDXL generation controls (diffusers engine): A1111 prompt weighting, CLIP skip, CFG rescale, variation seeds.
 
 CLIP skip uses A1111 numbering: A1111 N = diffusers N - 1 on SD 1.x and N - 2 on SDXL (diffusers already reads
-the penultimate layer there; matches webui-forge minimal_clip_skip). Variation seeds follow webui modules/rng.py;
+the penultimate layer there; matches webui-forge minimal_clip_skip). On SDXL it moves CLIP-L and OpenCLIP-G
+together, as ComfyUI's CLIPSetLastLayer (sdxl_clip.SDXLClipModel.set_clip_options) and Forge's
+StableDiffusionXL.set_clip_skip do. Variation seeds follow webui modules/rng.py;
 the base noise is still drawn by prepare_latents, so the generator advances exactly as before.
 """
 
