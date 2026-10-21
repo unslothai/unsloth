@@ -6,6 +6,7 @@ import functools
 import inspect
 import logging
 import os
+import threading
 import warnings
 from typing import Optional
 from dataclasses import asdict
@@ -18,8 +19,10 @@ import triton
 
 from .kernels.backward import (
     _autotuned_grouped_gemm_dW_kernel,
+    _autotuned_grouped_gemm_dW_per_expert_kernel,
     _autotuned_grouped_gemm_dX_kernel,
     _grouped_gemm_dW_kernel,
+    _grouped_gemm_dW_per_expert_kernel,
     _grouped_gemm_dX_kernel,
 )
 from .kernels.forward import (
@@ -59,18 +62,67 @@ def _check_tma_support():
 _SUPPORTS_TMA = _check_tma_support()
 
 _DEVICE_AUTOTUNERS = {}
+_MODEL_AUTOTUNE_CACHES = {}
+_MODEL_AUTOTUNE_LOCKS = {}
+_DEVICE_MODELS = {}
+
+
+def _device_index(device):
+    return device.index if device.index is not None else torch.cuda.current_device()
+
+
+def _device_model(device):
+    index = _device_index(device)
+    model = _DEVICE_MODELS.get(index)
+    if model is None:
+        try:
+            p = torch.cuda.get_device_properties(index)
+            model = (
+                getattr(p, "name", None),
+                getattr(p, "major", None),
+                getattr(p, "minor", None),
+                getattr(p, "multi_processor_count", None),
+            )
+        except Exception:
+            model = index
+        _DEVICE_MODELS[index] = model
+    return model
 
 
 def _autotuner_for(kernel, device):
-    """Triton's autotune key omits the device, so on several GPUs each card tunes its own copy."""
+    """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
+    the same GPU model share one results cache, so identical cards tune once; a run's scratch state
+    (nargs) stays per card, since backward runs one autograd thread per device."""
     if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
         return kernel
-    key = (id(kernel), device.index)
-    if key not in _DEVICE_AUTOTUNERS:
+    key = (id(kernel), _device_index(device))
+    tuner = _DEVICE_AUTOTUNERS.get(key)
+    if tuner is None:
         tuner = copy.copy(kernel)
-        tuner.cache = {}
+        model_key = (id(kernel), _device_model(device))
+        tuner.cache = _MODEL_AUTOTUNE_CACHES.setdefault(model_key, {})
+        # One tuning per shape per model: a second card waits, then reads the first card's result
+        # (concurrent benchmarking would also skew both timings). A cached launch holds it briefly.
+        lock = _MODEL_AUTOTUNE_LOCKS.setdefault(model_key, threading.Lock())
+        run = getattr(tuner, "run", None)
+        if run is not None:
+
+            def _run_single_flight(
+                *args,
+                _run = run,
+                _lock = lock,
+                **kwargs,
+            ):
+                with _lock:
+                    return _run(*args, **kwargs)
+
+            tuner.run = _run_single_flight
         _DEVICE_AUTOTUNERS[key] = tuner
-    return _DEVICE_AUTOTUNERS[key]
+    # Callers reassign kernel.configs (benchmarks, tests): follow it like the shared tuner would.
+    configs = getattr(kernel, "configs", None)
+    if configs is not None and getattr(tuner, "configs", None) is not configs:
+        tuner.configs = configs
+    return tuner
 
 
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
@@ -441,6 +493,13 @@ def _grouped_gemm_dX_impl(
     return dX
 
 
+def _use_per_expert_dW_kernel():
+    """Per-expert dW grid (one program per (expert, n, k) tile); UNSLOTH_MOE_DW_KERNEL=legacy restores the
+    kernel that walks every expert inside each (n, k) program. Measured faster on every shape, dtype and GPU
+    tried (A100, L4, RTX PRO 6000, B200), so there is no shape routing."""
+    return os.environ.get("UNSLOTH_MOE_DW_KERNEL", "").strip().lower() != "legacy"
+
+
 def _launch_grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
@@ -517,6 +576,7 @@ def _launch_grouped_gemm_dW(
     M_grad, N = dY.shape
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
+    per_expert = _use_per_expert_dW_kernel()
 
     if accumulate:
         # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.
@@ -526,7 +586,8 @@ def _launch_grouped_gemm_dW(
         assert dW_out.is_contiguous() and dW_out.device == X.device
         dW = dW_out
     else:
-        dW = torch.zeros(
+        # The per-expert kernel writes every tile (zeros for an empty expert); the legacy one skips them.
+        dW = (torch.empty if per_expert else torch.zeros)(
             (num_experts, N, K), device = X.device, dtype = X.dtype if dW_dtype is None else dW_dtype
         )
     if use_tma_store and (dW.element_size() > X.element_size() or dW.data_ptr() % 16 != 0):
@@ -538,6 +599,12 @@ def _launch_grouped_gemm_dW(
         pass
 
     def grid(META):
+        if per_expert:
+            return (
+                num_experts
+                * triton.cdiv(N, META["BLOCK_SIZE_N"])
+                * triton.cdiv(K, META["BLOCK_SIZE_K"]),
+            )
         return (NUM_SMS,)
 
     if debug:
@@ -577,6 +644,13 @@ def _launch_grouped_gemm_dW(
     }
     if accumulate:
         kernel_args["ACCUMULATE"] = True
+    if per_expert:
+        kernel_args["EXPERTS_POW2"] = triton.next_power_of_2(num_experts)
+        if X.element_size() >= 4:
+            # fp32 operands (fp32 RMSNorm outputs in a bf16 full finetune): the tf32 dot reads both tiles
+            # M-major, and a multi-stage pipeline doubles shared memory and halves occupancy; one stage is
+            # faster for every tile measured. The legacy kernel never pipelines this loop either.
+            num_stages = 1
 
     if not autotune:
         kernel_args.update(
@@ -592,11 +666,18 @@ def _launch_grouped_gemm_dW(
             }
         )
 
-    kernel = (
-        _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device)
-        if autotune
-        else _grouped_gemm_dW_kernel
-    )
+    if per_expert:
+        kernel = (
+            _autotuner_for(_autotuned_grouped_gemm_dW_per_expert_kernel, X.device)
+            if autotune
+            else _grouped_gemm_dW_per_expert_kernel
+        )
+    else:
+        kernel = (
+            _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device)
+            if autotune
+            else _grouped_gemm_dW_kernel
+        )
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:

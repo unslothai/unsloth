@@ -8311,7 +8311,19 @@ def patch_hf_quantizer():
 patch_hf_quantizer()
 
 
-def verify_fp8_support_if_applicable(model_config):
+def _fp8_checkpoint_dequantizes_below_sm89():
+    # transformers 5.x dequantizes FP8 below sm89 (same release added `dequantize`); 4.57.x raises.
+    try:
+        from transformers.utils.quantization_config import FineGrainedFP8Config
+    except Exception:
+        return False
+    try:
+        return "dequantize" in inspect.signature(FineGrainedFP8Config.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def verify_fp8_support_if_applicable(model_config, fast_inference = False):
     quant_method = get_quant_type(model_config)
     if quant_method in ["fbgemm_fp8", "fp8"] and DEVICE_TYPE not in ("cuda", "xpu"):
         # In case of block quantized, we allow L4 because we fall back to torchao kernels.
@@ -8327,6 +8339,12 @@ def verify_fp8_support_if_applicable(model_config):
                 f"Unsloth: FBGEMM FP8 quantization is only supported on H100 and higher GPUs. L4 is not supported. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
             )
         if quant_method == "fp8" and major_version * 10 + minor_version < 89:
+            # Only vLLM keeps FP8 weights; transformers dequantizes them.
+            if not fast_inference and _fp8_checkpoint_dequantizes_below_sm89():
+                logger.warning_once(
+                    f"Unsloth: {torch.cuda.get_device_name()} has no FP8 compute (compute capability 8.9 or higher), so this FP8 checkpoint is dequantized to 16-bit on load."
+                )
+                return
             raise ValueError(
                 f"Unsloth: FP8 quantization is only supported on L4 and higher GPUs with compute capability 8.9 or higher. You are using {torch.cuda.get_device_name()}. Refer to https://developer.nvidia.com/cuda-gpus for more details."
             )
