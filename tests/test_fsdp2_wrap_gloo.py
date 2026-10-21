@@ -16,7 +16,6 @@ What Unsloth adds after accelerate shards the model (unsloth/models/fsdp2.py):
 from __future__ import annotations
 
 import os
-import socket
 import types
 
 import pytest
@@ -34,9 +33,8 @@ N_LAYERS = 3
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _spy_mlp(self, X):

@@ -389,6 +389,9 @@ _FRAME_HTML = r"""<!doctype html>
   <body>
     <script>
       const boot = (cfg) => {
+        const inputChannel = new MessageChannel();
+        const edited = inputChannel.port1.postMessage.bind(inputChannel.port1);
+        parent.postMessage({ source: "unsloth-browser-input" }, "*", [inputChannel.port2]);
         // Captured before the page's scripts run, so they can't swap it.
         const compile = Function;
         // about:srcdoc has an opaque origin, and data: and blob: URLs share it.
@@ -411,6 +414,7 @@ _FRAME_HTML = r"""<!doctype html>
               const base = args.length > 1 ? String(args[1]) : "";
               if (base === "null") args = [args[0], new NativeURL(pageUrl).origin];
               else if (/^about:srcdoc(?=[?#]|$)/.test(base)) args = [args[0], pageUrl];
+              else if (args.length === 1 && args[0] === "null") args = [new NativeURL(pageUrl).origin];
               return Reflect.construct(target, args, newTarget);
             },
           });
@@ -525,6 +529,7 @@ _FRAME_HTML = r"""<!doctype html>
             try { original.call(this, state, title, next ? shellPath(next) : undefined); }
             catch { original.call(this, state, title); }
             if (next) {
+              if (!samePage(next)) edited(false);
               pageUrl = next;
               routedBase?.setAttribute("href", pageUrl);
               reportUrl();
@@ -626,6 +631,25 @@ _FRAME_HTML = r"""<!doctype html>
           unlessCancelled(event, () => submitForm(target, submitter));
         }, true);
         HTMLFormElement.prototype.submit = function () { submitForm(this, null); };
+        let scriptedEdit = 0;
+        let editingKey = false;
+        // execCommand produces trusted input even when a page calls it on load.
+        const execCommand = Function.prototype.call.bind(Document.prototype.execCommand);
+        Document.prototype.execCommand = function (...args) {
+          scriptedEdit += 1;
+          try { return execCommand(this, ...args); }
+          finally { scriptedEdit -= 1; }
+        };
+        document.addEventListener("keydown", (event) => {
+          const target = event.composedPath()[0];
+          if (!event.isTrusted || !(target instanceof Element) || !(target.matches("input, textarea") || target.isContentEditable)) return;
+          if (event.key.length !== 1 && !["Backspace", "Delete", "Enter"].includes(event.key)) return;
+          editingKey = true;
+          setTimeout(() => { editingKey = false; });
+        }, true);
+        for (const type of ["input", "paste", "cut"]) document.addEventListener(type, (event) => {
+          if (event.isTrusted && (!scriptedEdit || editingKey)) edited(true);
+        }, true);
 
         const report = () => {
           const icon = document.querySelector("link[rel~='icon'][href], link[rel='shortcut icon'][href], link[rel='apple-touch-icon'][href]");
@@ -943,21 +967,30 @@ _FRAME_HTML = r"""<!doctype html>
       };
       const escapeAttr = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
       const inject = (html, tags) => {
-        const at = (match) => match.index + match[0].length;
-        const head = /<head\b[^<>]*>/i.exec(html);
-        if (head) return html.slice(0, at(head)) + tags + html.slice(at(head));
-        const root = /<html\b[^<>]*>/i.exec(html) || /^\s*<!doctype[^>]*>/i.exec(html);
-        if (root) return html.slice(0, at(root)) + "<head>" + tags + "</head>" + html.slice(at(root));
-        return "<head>" + tags + "</head>" + html;
+        // Bootstrap before even malformed pages' scripts, preserving their document mode.
+        const doctype = /^(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i.exec(html)?.[0] || "";
+        return doctype + "<html><head>" + tags + "</head>" + html.slice(doctype.length);
       };
       const FOLLOW_CLICK_MS = 3000;
       const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return false; } };
       let page = null;
+      let inputPort = null;
+      let lastInput = -Infinity;
       let clicked = null;
       window.addEventListener("message", (event) => {
         // Relay the page's messages; the panel only trusts this window.
         if (page && event.source === page.contentWindow) {
-          if (!event.data || event.data.source !== "unsloth-browser") return;
+          if (event.data?.source === "unsloth-browser-input" && !inputPort && event.ports.length === 1) {
+            inputPort = event.ports[0];
+            inputPort.onmessage = ({ data }) => {
+              if (typeof data !== "boolean") return;
+              const now = performance.now();
+              if (data && now - lastInput < 1000) return;
+              lastInput = data ? now : -Infinity;
+              parent.postMessage({ source: "unsloth-browser", type: "typed", reset: !data }, "*");
+            };
+          }
+          if (!event.data || event.data.source !== "unsloth-browser" || event.data.type === "typed") return;
           if (event.data.type === "linkClick") clicked = { url: event.data.url, at: Date.now() };
           else parent.postMessage(event.data, "*");
           return;
@@ -975,6 +1008,7 @@ _FRAME_HTML = r"""<!doctype html>
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
         page.setAttribute("sandbox", "allow-scripts allow-forms");
+        page.setAttribute("allow", "clipboard-write");
         page.setAttribute("allowfullscreen", "");
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);
@@ -2126,6 +2160,8 @@ async def _run_in_pool(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+        # Drain late failures without cancelling queued work, which must release its slot.
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
 @router.post("/fetch")

@@ -2968,7 +2968,7 @@ class ChatCompletionRequest(BaseModel):
     )
     bypass_permissions: Optional[bool] = Field(
         False,
-        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). edit_file is likewise unconfined: an absolute path resolves as written and edits the real file there, instead of being held to the conversation's working directory. Secret env vars are still stripped. Takes precedence over confirm_tool_calls. Refused (400) for API keys and keyless API access unless the server sets UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1.",
     )
     permission_mode: Optional[str] = Field(
         None,
@@ -3461,6 +3461,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
+    max_tokens: Optional[int] = Field(None, ge = 1)
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = None
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = None
+    compaction_headroom_ratio: Optional[float] = Field(None, ge = 0.0, le = 0.9)
     tools: Optional[list[dict]] = Field(
         None,
         description = "Optional OpenAI tool definitions included in the prompt",
@@ -4668,6 +4672,13 @@ class DiffusionLoadRequest(BaseModel):
         "cut), low_vram (offload every component, lowest VRAM, slower). "
         "Overrides cpu_offload when set.",
     )
+    allow_oversized_load: bool = Field(
+        False,
+        description = "Attempt the load even when the unified-memory check (Apple Silicon, integrated "
+        "GPUs) estimates its weights will not fit. The check stays on by default; an oversized load "
+        "can exhaust memory, swap heavily, stop the server or make the computer unresponsive. Same "
+        "effect as the server's UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1, for this load only.",
+    )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
@@ -5490,6 +5501,11 @@ class DiffusionLoadProgressResponse(BaseModel):
     bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
     fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+    error_code: Optional[str] = Field(
+        None,
+        description = "Stable code for error: 'unified-memory-load' when the unified-memory check refused "
+        "the load (retry with allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class DiffusionResolvedControl(BaseModel):
@@ -5592,11 +5608,22 @@ class DiffusionDownloadPlanResponse(BaseModel):
         "nothing is known to be wrong -- the check reads metadata only and stays silent on an "
         "unreadable header, an unmapped base or an offline host.",
     )
+    incompatible_code: Optional[str] = Field(
+        None,
+        description = "Stable code for incompatible_reason: 'unified-memory-load' when the unified-memory "
+        "check refused the pick (send allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class DiffusionStatusResponse(BaseModel):
     """Current diffusion backend state."""
 
+    multi_gpu: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
+        "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
+        "everything on its primary card reports why it declined.",
+    )
     loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
     evicted: List[str] = Field(
         default_factory = list,
@@ -5837,6 +5864,39 @@ class ImageGenerationRequest(BaseModel):
     stream: Optional[bool] = Field(
         None, description = "Streaming image generation is not supported; omit or set false."
     )
+    width: Optional[int] = Field(
+        None,
+        ge = 256,
+        le = 2048,
+        description = "[x-unsloth] Image width in pixels (multiple of 16); send with height "
+        "instead of size.",
+    )
+    height: Optional[int] = Field(
+        None,
+        ge = 256,
+        le = 2048,
+        description = "[x-unsloth] Image height in pixels (multiple of 16); send with width "
+        "instead of size.",
+    )
+    steps: Optional[int] = Field(
+        None, ge = 1, le = 100, description = "[x-unsloth] Denoising steps (default per model)."
+    )
+    guidance: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 20.0,
+        description = "[x-unsloth] Classifier-free guidance scale (default per model).",
+    )
+    seed: Optional[int] = Field(
+        None,
+        ge = 0,
+        le = 2**53 - 1,
+        description = "[x-unsloth] Seed for a repeatable image (random if omitted). With n > 1 "
+        "each image derives its own seed from it.",
+    )
+    negative_prompt: Optional[str] = Field(
+        None, description = "[x-unsloth] What to avoid, on models that take a negative prompt."
+    )
 
     @field_validator("n", "size", "response_format", mode = "before")
     @classmethod
@@ -5845,6 +5905,12 @@ class ImageGenerationRequest(BaseModel):
         if value is None:
             return cls.model_fields[info.field_name].default
         return value
+
+    @field_validator("seed", mode = "before")
+    @classmethod
+    def _minus_one_seed_means_random(cls, value):
+        # -1 = random (A1111, sd.cpp); seed was ignored here before, so -1 must not start 400ing.
+        return None if value == -1 else value
 
 
 class ImageGenerationData(BaseModel):
@@ -6649,6 +6715,13 @@ class VideoLoadRequest(BaseModel):
         "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
         "(offload every component, lowest VRAM, slower).",
     )
+    allow_oversized_load: bool = Field(
+        False,
+        description = "Attempt the load even when the unified-memory check (Apple Silicon, integrated "
+        "GPUs) estimates its weights will not fit. The check stays on by default; an oversized load "
+        "can exhaust memory, swap heavily, stop the server or make the computer unresponsive. Same "
+        "effect as the server's UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1, for this load only.",
+    )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
@@ -7084,6 +7157,11 @@ class VideoLoadProgressResponse(BaseModel):
         None, description = "Estimated total bytes to download (null = unknown)"
     )
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+    error_code: Optional[str] = Field(
+        None,
+        description = "Stable code for error: 'unified-memory-load' when the unified-memory check refused "
+        "the load (retry with allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class VideoGenerationDefaults(BaseModel):
@@ -7149,6 +7227,12 @@ class VideoGenerationDefaults(BaseModel):
 class VideoStatusResponse(BaseModel):
     """Current video backend state."""
 
+    multi_gpu: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Multi-GPU placement (component -> card, primary, secondary) and CFG-parallel state (armed, "
+        "call counts, or why it declined); null when the load had one card to use. A multi-card load that kept "
+        "everything on its primary card reports why it declined.",
+    )
     loaded: bool = Field(False, description = "Whether a video model is loaded")
     evicted: List[str] = Field(
         default_factory = list,

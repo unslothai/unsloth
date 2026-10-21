@@ -291,12 +291,34 @@ export const BUDGET = {
   // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
   // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
   // to that build plus the same 160 B raw / 189 B transfer margin.
-  // The MLX PLE and expert offload controls add 7,439 B raw / 1,869 B transfer (6,844,622 -> 6,852,061 B raw,
-  // 2,056,229 -> 2,058,098 B transfer against b6effa301b, one machine and build, Node 26, 96 chunks): the per-model
-  // fields, their load, status and estimate plumbing and the Run settings Disk Offload row sit in the eager chat and
-  // model-picker chunks. Raised by that growth.
-  transferBytes: 2_063_098,
-  rawBytes: 6_852_221,
+  // The modern toggles (#14322) add 449 B raw / 86 B transfer (6,844,459 -> 6,844,908 B raw, 2,061,006 ->
+  // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
+  // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
+  // same 160 B raw / 189 B transfer margin.
+  // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
+  // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
+  // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Explicit browser download names retain the prior startup margin.
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
+  // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
+  // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The MLX PLE and expert offload controls (#14326) put the per-model fields, their load, status and estimate
+  // plumbing and the Run settings Disk Offload row in the eager chat and model-picker chunks: 7,440 B raw / 1,765 B
+  // transfer (6,862,706 -> 6,870,146 B raw, 2,062,029 -> 2,063,794 B transfer against b916ee8e6c, one machine and
+  // build, 96 chunks). Raised raw to that build plus the same 160 B margin; transfer stays within budget.
+  transferBytes: 2_066_583,
+  rawBytes: 6_870_306,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

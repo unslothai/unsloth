@@ -146,11 +146,12 @@ def test_roster_skips_a_filename_that_collapses_to_nothing(rag_conn):
     assert '""' not in out
 
 
-def test_kb_scope_excludes_other_scopes(rag_conn):
+def test_kb_scope_replaces_thread_but_keeps_project(rag_conn):
     _doc(rag_conn, "kb_k1", "d1", "kb.pdf")
     _doc(rag_conn, "project_p1", "d2", "project.pdf")
-    out = _nudge({"kb_id": "k1", "project_id": "p1"})
-    assert "kb.pdf" in out and "project.pdf" not in out
+    _doc(rag_conn, "thread_t1", "d3", "thread.pdf")
+    out = _nudge({"kb_id": "k1", "project_id": "p1", "thread_id": "t1"})
+    assert "kb.pdf" in out and "project.pdf" in out and "thread.pdf" not in out
 
 
 def test_roster_truncates_with_exact_remainder(rag_conn):

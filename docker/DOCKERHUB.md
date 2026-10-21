@@ -2,7 +2,7 @@
 
 Fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the training stack (PyTorch 2.11 with CUDA 12.8, [Unsloth](https://github.com/unslothai/unsloth), unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks), and prebuilt llama.cpp. The `latest` image adds whisper.cpp for Unsloth Studio's speech-to-text and audio.cpp (CUDA build on `linux/amd64`) for its text-to-speech, music and transcription models.
 
-Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
+Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker). Guide: [unsloth.ai/docs](https://unsloth.ai/docs/get-started/install/docker).
 
 ## Quick start
 
@@ -194,7 +194,7 @@ Both images refresh the notebooks from GitHub on each start, which costs 10 to 2
 
 ## Help
 
-- [Documentation](https://docs.unsloth.ai)
+- [Documentation](https://unsloth.ai/docs)
 - [r/unsloth](https://reddit.com/r/unsloth)
 - [Issues](https://github.com/unslothai/unsloth/issues)
 
