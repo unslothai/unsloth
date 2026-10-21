@@ -1759,6 +1759,12 @@ from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
 
 app.add_middleware(ModelAliasMiddleware)
 
+# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
+# Added before MaxBodyMiddleware so only requests whose body has fully arrived are counted.
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
+
+app.add_middleware(LlamaKeepWarmMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
@@ -1770,11 +1776,6 @@ app.add_middleware(
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
     upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
-
-# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
-from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
-
-app.add_middleware(LlamaKeepWarmMiddleware)
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 
 import base64
+import hashlib
 import importlib.util
 import ipaddress
 import os
@@ -294,8 +295,15 @@ def _client_ip(request: Request | None) -> str:
     return (request.client.host if request.client else None) or "_unknown"
 
 
+_MAX_BUCKET_USERNAME_CHARS = 256
+
+
 def _bucket_key(request: Request | None, username: str) -> tuple[str, str]:
-    return (_client_ip(request), (username or "").casefold())
+    name = (username or "").casefold()
+    # Bound the memory each bucket key holds; real usernames are far shorter and keep their own key.
+    if len(name) > _MAX_BUCKET_USERNAME_CHARS:
+        name = "\x00long:" + hashlib.sha256(name.encode("utf-8", "surrogatepass")).hexdigest()
+    return (_client_ip(request), name)
 
 
 def _unknown_user_key(request: Request | None) -> tuple[str, str]:
