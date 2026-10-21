@@ -345,17 +345,20 @@ export const BUDGET = {
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
+  // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
+  // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
+  // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
   // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
-  // budget, which keeps main's margin (re-added on top of main at 46c3bbbdf).
+  // budget, which keeps main's margin (re-added on top of main at acc10af9d).
   // The reward editor and the stepped Train page (#14074) add 14,122 B raw / 5,047 B transfer over #12601 at
   // 0be041016 (6,871,896 -> 6,886,018 B raw, 2,069,487 -> 2,074,534 B transfer, one machine and build, 96 chunks):
   // the editor, wizard and explanation strings join the eager English catalog and the step state sits in the
   // eager training store. Raised to the measured build plus a 160 B raw / 189 B transfer margin.
-  transferBytes: 2_085_206,
-  rawBytes: 6_920_697,
+  transferBytes: 2_085_325,
+  rawBytes: 6_921_068,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
