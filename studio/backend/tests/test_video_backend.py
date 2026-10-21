@@ -2196,6 +2196,46 @@ def test_wan_ti2v_does_not_thread_cfg2(fake_runtime):
     assert "guidance_scale_2" not in call
 
 
+_REAL_ENCODE_MP4 = VideoBackend.__dict__["_encode_mp4"].__func__
+
+
+def test_a_streamed_clip_still_goes_through_encode_mp4(fake_runtime, monkeypatch):
+    # The streamed mp4 is handed out by _encode_mp4 itself, so a wrapper around it (the in-process bench captures the
+    # frames there) still sees every clip; the session is consumed once and closed after the render.
+    import core.inference.video as vid
+
+    class _Session:
+        def __init__(self):
+            self.took, self.closed = [], 0
+
+        def hooks(self):
+            return contextlib.nullcontext()
+
+        def take(self, frames, fps):
+            self.took.append(fps)
+            return b"STREAMED"
+
+        def close(self):
+            self.closed += 1
+
+    session = _Session()
+    monkeypatch.setattr(vid, "open_stream_encode", lambda *_a, **_k: session)
+    seen = []
+
+    def grab(frames, fps, audio, pipe, **kwargs):
+        data = _REAL_ENCODE_MP4(frames, fps, audio, pipe, **kwargs)
+        seen.append((frames, fps))
+        return data
+
+    monkeypatch.setattr(VideoBackend, "_encode_mp4", staticmethod(grab))
+    backend = VideoBackend()
+    backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    res = backend.generate(prompt = "a sloth")
+    assert res["mp4_bytes"] == b"STREAMED"
+    assert len(seen) == 1 and seen[0][0] is not None
+    assert session.took == [seen[0][1]] and session.closed == 1
+
+
 def test_wan_a14b_dual_dit_pipeline_loads(fake_runtime):
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", model_kind = "pipeline")
@@ -13377,3 +13417,48 @@ def test_an_automatic_encoder_pick_that_does_not_engage_loads_dense_without_a_re
         VideoBackend().load_pipeline(
             "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
         )
+
+
+@pytest.mark.parametrize(
+    "split_expected, hooked, moved",
+    [
+        (
+            True,
+            True,
+            True,
+        ),  # the split fell back to a hooked one-card placement: the compile moves below the hooks
+        (True, False, False),  # the split landed resident: nothing to move
+        (False, True, False),  # planned offloaded: the speed layer already compiled for the hooks
+    ],
+)
+def test_a_layer_split_fallback_moves_the_compile_below_the_offload_hooks(
+    fake_runtime, tmp_path, monkeypatch, split_expected, hooked, moved
+):
+    import core.inference.video as video_mod
+
+    _shared_setup_7(monkeypatch, video_mod)
+    _stub_apply_memory_plan(monkeypatch, video_mod, policy = "model")
+    monkeypatch.setattr(
+        video_mod, "_layer_split_expected", lambda pipe, plan, refine = None: split_expected
+    )
+    monkeypatch.setattr(video_mod, "_video_denoiser_hooked", lambda pipe: hooked)
+    seen = []
+    monkeypatch.setattr(
+        video_mod,
+        "compile_pipe_below_offload_hooks",
+        lambda pipe, logger = None: seen.append(pipe) or 0,
+    )
+    speed_offload = []
+    from core.inference import diffusion_autoopt as autoopt
+
+    real_speed = autoopt.run_speed_layer
+
+    def _speed(view, target, **kw):
+        speed_offload.append(kw.get("offload_active"))
+        return real_speed(view, target, **kw)
+
+    monkeypatch.setattr(autoopt, "run_speed_layer", _speed)
+    backend = VideoBackend()
+    _load_gguf(backend, tmp_path)
+    assert speed_offload and set(speed_offload) == {not split_expected}
+    assert (seen == [backend._state.pipe]) if moved else (seen == [])

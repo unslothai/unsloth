@@ -776,6 +776,7 @@ def fit_rolling_context(
     keeps_boundary: bool = False,
     headroom_ratio: Optional[float] = None,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
+    replay_only: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """sticky_dropped re-applies the last compacted boundary, else the stateless fit slides each reply."""
     if context_length <= 1:
@@ -800,6 +801,16 @@ def fit_rolling_context(
             dropped_total = dropped
             current_tokens = count_tokens(fitted)
 
+    if replay_only:
+        return fitted, {
+            "dropped_messages": dropped_total,
+            "prompt_tokens_before": initial_tokens,
+            "prompt_tokens_after": current_tokens,
+            "context_length": context_length,
+            "fits": current_tokens <= prompt_target,
+        }
+
+    # Phase two: take a chunk out rather than skimming to the brim, so the boundary can stay put.
     trim_target = prompt_target
     # Keyed on the ratio: `headroom` is zeroed for threadless and incognito requests.
     min_bite = True

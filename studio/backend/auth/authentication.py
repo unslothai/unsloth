@@ -11,7 +11,7 @@ from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 from starlette.concurrency import run_in_threadpool
 
-from utils.account_context import OWNER, AccountContext, bind_account
+from utils.account_context import OWNER, AccountContext, as_api_caller, bind_account
 
 from .storage import (
     get_account,
@@ -179,8 +179,8 @@ class _BearerOrKeyless(HTTPBearer):
 security = _BearerOrKeyless(scheme_name = "HTTPBearer")
 
 
-def _bind_owner() -> None:
-    bind_account(OWNER)
+def _bind_owner(*, via_api_key: bool = False) -> None:
+    bind_account(as_api_caller(OWNER) if via_api_key else OWNER)
 
 
 def _get_secret_for_subject(subject: str) -> str:
@@ -442,7 +442,7 @@ async def _get_current_credential(
 ) -> Tuple[str, Optional[str]]:
     """Routes that persist credentials must bind to this generation, or a reset mid-request blesses them."""
     if credentials.scheme == KEYLESS_SCHEME:
-        _bind_owner()
+        _bind_owner(via_api_key = True)
         return await run_in_threadpool(_admin_credential)
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
@@ -453,7 +453,7 @@ async def _get_current_credential(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid authentication credentials",
             )
-        _bind_owner()
+        _bind_owner(via_api_key = True)
         return await run_in_threadpool(_admin_credential)
 
     token = credentials.credentials
@@ -467,7 +467,11 @@ async def _get_current_credential(
             )
         record, secret = verified
         # A second lookup by username would bind whoever owns that name after a delete and re-create.
-        bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
+        bind_account(
+            AccountContext(
+                record["account_id"], record["username"], record["role"], via_api_key = True
+            )
+        )
         return record["username"], credential_generation(secret)
 
     subject = _decode_subject_without_verification(token)

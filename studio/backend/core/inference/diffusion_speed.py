@@ -859,6 +859,7 @@ def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
             logger.info("diffusion.speed: channels_last skipped for %s: %s", name, reason)
         return False
     relaid = 0
+    touched: list = []
     for part in (getattr(vae, "post_quant_conv", None), getattr(vae, "decoder", None)):
         if part is None or not callable(getattr(part, "modules", None)):
             continue
@@ -871,7 +872,12 @@ def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
             fmt = torch.channels_last if weight.dim() == 4 else torch.channels_last_3d
             if not weight.is_contiguous(memory_format = fmt):
                 weight.data = weight.data.contiguous(memory_format = fmt)
+                touched.append(module)
             relaid += 1
+    if touched:
+        # Relaid because fusion is planned; fusion matched by structure may still be rejected at its first decode,
+        # which restores these weights' layout (diffusion_vae_fused._restore_contiguous_layout).
+        vae.__dict__.setdefault("_unsloth_channels_last_modules", []).extend(touched)
     if logger is not None:
         logger.info(
             "diffusion.speed: channels_last(_3d) decode weights on %s (%d convs)", name, relaid
@@ -1111,6 +1117,12 @@ def _compile_repeated_blocks(
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             compile_config.set_knob(_INDUCTOR_MODULE, "emulate_precision_casts", True)
+            # Before the first compiled forward: otherwise every restart misses the FX graph cache on libdevice.
+            try:
+                from . import diffusion_aot_cache
+                diffusion_aot_cache.pin_triton_libdevice(logger)
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "libdevice pin", exc)
         # One R0_BLOCK per reduction: see diffusion_compile_config.DYNAMIC_SCALE_RBLOCK_ENV.
         if (
             inductor_cfg is not None
@@ -1337,6 +1349,11 @@ def is_compile_failure(exc: BaseException) -> bool:
     return bool(kinds) and isinstance(exc, tuple(kinds))
 
 
+def _drop_tracebacks(exc: BaseException) -> None:
+    from .diffusion_vae_oom import drop_tracebacks  # noqa: PLC0415
+    drop_tracebacks(exc)
+
+
 class _CompileGuard:
     """Per-DiT record of a compile that failed at runtime. The first failure flips every guarded block of that DiT to
     eager (one shared decision: a half-compiled stack would retry the same broken lowering per block)."""
@@ -1376,8 +1393,8 @@ class _CompileGuard:
                     if not is_compile_failure(exc):
                         raise
                     guard.fail(exc, owner)
-                    # The handled exception pins inductor's frames through the retry.
-                    exc.__traceback__ = None
+                    # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
+                    _drop_tracebacks(exc)
             return eager(*args, **kwargs)
 
         guarded._unsloth_compile_guard = guard
@@ -1621,6 +1638,9 @@ def _guard_compiled_decode(
     def guarded(*args: Any, **kwargs: Any) -> Any:
         if eager_when_tiled and getattr(vae, "use_tiling", False):
             return eager(*args, **kwargs)
+        # the one force-eager signal (a background compile in flight, the OOM scope's eager retry)
+        if _bg_eager_forced():
+            return eager(*args, **kwargs)
         if not failed:
             try:
                 return compiled(*args, **kwargs)
@@ -1634,10 +1654,13 @@ def _guard_compiled_decode(
                 try:
                     vae._unsloth_compile_decode_error = error
                     vae._unsloth_compiled_decode = False
-                    if had_own:
-                        owner.decode = eager
-                    else:
-                        del owner.decode
+                    # Only while the slot still holds this guard: a layer installed over it since (the OOM scope)
+                    # stays, and this guard (``failed``) runs eager under it from now on.
+                    if getattr(owner, "__dict__", {}).get("decode") is guarded:
+                        if had_own:
+                            owner.decode = eager
+                        else:
+                            del owner.decode
                 except Exception:  # noqa: BLE001 - `failed` still routes this wrapper to eager
                     pass
                 if getattr(vae, "_unsloth_eager_contiguous", False):
@@ -1651,11 +1674,29 @@ def _guard_compiled_decode(
                         "diffusion.speed: torch.compile failed on the VAE decode (%s); decoding eager",
                         error,
                     )
-                # The handled exception pins inductor's frames through the retry.
-                exc.__traceback__ = None
+                # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
+                _drop_tracebacks(exc)
         return eager(*args, **kwargs)
 
+    # diffusion_vae_oom reads these to retry a runtime OOM of the compiled decode on the eager path
+    guarded._unsloth_compiled_decode = True
+    guarded._unsloth_eager_decode = eager
     return guarded
+
+
+def _decode_slot_owner(fn: Any) -> Any:
+    """The mutable slot an eager outer wrapper (fp16 non-finite check, ROCm bf16 cast) calls through, found under
+    any layer installed over it since (the OOM scope), or None."""
+    from .decode_layers import next_layer  # noqa: PLC0415
+
+    for _ in range(32):
+        if fn is None:
+            return None
+        slot = getattr(fn, "_unsloth_decode_slot", None)
+        if slot is not None:
+            return slot
+        fn = next_layer(fn)
+    return None
 
 
 def _compile_vae_decode(
@@ -1668,7 +1709,7 @@ def _compile_vae_decode(
     vae = getattr(pipe, "vae", None)
     # An outer wrapper that must stay eager exposes the slot it calls through.
     outer = getattr(vae, "__dict__", {}).get("decode") if vae is not None else None
-    owner = getattr(outer, "_unsloth_decode_slot", None) or vae
+    owner = _decode_slot_owner(outer) or vae
     decode = getattr(owner, "decode", None) if vae is not None else None
     if not callable(decode):
         return False

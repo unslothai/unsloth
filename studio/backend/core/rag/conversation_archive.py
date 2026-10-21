@@ -994,22 +994,64 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     calls = [bool(message.get("tool_calls")) for message in group]
 
     def _same(stored: str, live: str, is_call: bool) -> bool:
-        # Tool calls compared as needle in haystack (stored args are an object, live a raw string);
-        # split once since _probe_text inserts the second spelling mid-string.
-        if is_call:
-            if not live:
-                return False
-            if live in stored:
-                return True
-            words = live.split(" ")
-            for cut in range(1, len(words)):
-                head = " ".join(words[:cut])
-                tail = " ".join(words[cut:])
-                at = stored.find(head)
-                if at >= 0 and stored.find(tail, at + len(head)) >= 0:
-                    return True
+        # A tool call is compared as needle in haystack, never for equality: the store keeps arguments as an OBJECT
+        # and the request carries the model's raw string, so `_probe_text` offers both JSON spellings for the stored
+        # copy and one for the live one. Every other message is compared exactly.
+        # In two pieces when the whole needle does not fit, since the second spelling is inserted BETWEEN the
+        # arguments and what followed them: a call with a preamble renders live as name/args/text and stored as
+        # name/args/args/text, so the live string is no longer contiguous. One split point, so this tolerates exactly
+        # the one insertion `_probe_text` makes.
+        # Space offsets keep split(" ") semantics. Head presence only falls and tail presence only rises as the cut
+        # moves right, so both bounds are binary-searched; the ordered match is not monotone, so every cut between
+        # them is still checked against the earliest head and the latest tail.
+        if not is_call:
+            return stored == live
+
+        if not live:
             return False
-        return stored == live
+
+        if live in stored:
+            return True
+
+        # Splitting removes one space; the remaining characters must fit without overlap.
+        if len(stored) < len(live) - 1:
+            return False
+
+        cuts = [index for index, char in enumerate(live) if char == " "]
+        if not cuts:
+            return False
+
+        # Find the exclusive upper bound of splits whose head occurs in stored.
+        left, right = 0, len(cuts)
+        while left < right:
+            mid = (left + right) // 2
+            if live[: cuts[mid]] in stored:
+                left = mid + 1
+            else:
+                right = mid
+
+        prefix_stop = left
+        if prefix_stop == 0:
+            return False
+
+        # Within that range, find the first split whose tail occurs in stored.
+        left, right = 0, prefix_stop
+        while left < right:
+            mid = (left + right) // 2
+            if live[cuts[mid] + 1 :] in stored:
+                right = mid
+            else:
+                left = mid + 1
+
+        for index in range(left, prefix_stop):
+            cut = cuts[index]
+            head_at = stored.find(live[:cut])
+            tail_at = stored.rfind(live[cut + 1 :])
+
+            if tail_at >= head_at + cut:
+                return True
+
+        return False
 
     return [
         index

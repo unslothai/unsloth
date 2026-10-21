@@ -41,6 +41,7 @@ def test_build_usage_chunk_anthropic_shape():
     assert usage["cache_creation_input_tokens"] == 1367
     assert usage["cache_read_input_tokens"] == 18901
     assert usage["prompt_tokens_details"]["cached_tokens"] == 18901
+    assert usage["context_tokens"] == 8 + 1367 + 18901 + 862
 
 
 def test_build_usage_chunk_anthropic_includes_compaction_iteration_tokens():
@@ -61,6 +62,33 @@ def test_build_usage_chunk_anthropic_includes_compaction_iteration_tokens():
     assert usage["total_tokens"] == 207_500
     assert usage["compaction_input_tokens"] == 180_000
     assert usage["compaction_output_tokens"] == 3_500
+    assert usage["context_tokens"] == 24_000
+
+
+def test_build_usage_chunk_anthropic_context_is_the_last_message_iteration():
+    line = _build_usage_chunk(
+        "chatcmpl-iterations",
+        "anthropic",
+        {
+            "input_tokens": 4_400,
+            "output_tokens": 400,
+            "iterations": [
+                {"type": "message", "input_tokens": 2_000, "output_tokens": 100},
+                {"type": "compaction", "input_tokens": 9_000, "output_tokens": 300},
+                {
+                    "type": "message",
+                    "input_tokens": 2_400,
+                    "cache_read_input_tokens": 0,
+                    "output_tokens": 300,
+                },
+                {"type": "advisor_message", "input_tokens": 50_000, "output_tokens": 10},
+            ],
+        },
+    )
+    usage = json.loads(line[len("data: ") :])["usage"]
+    assert usage["prompt_tokens"] == 4_400
+    assert usage["completion_tokens"] == 400
+    assert usage["context_tokens"] == 2_700
 
 
 def test_build_usage_chunk_openai_shape():
@@ -478,6 +506,61 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
     assert "model ID" in result.message
 
 
+def test_anthropic_stream_keeps_input_counts_a_delta_reports_as_null(monkeypatch):
+    sse_events = [
+        {
+            "type": "message_start",
+            "message": {
+                "usage": {
+                    "input_tokens": 500,
+                    "output_tokens": 0,
+                    "cache_creation_input_tokens": 100,
+                    "cache_read_input_tokens": 4000,
+                }
+            },
+        },
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {
+                "input_tokens": None,
+                "cache_creation_input_tokens": None,
+                "cache_read_input_tokens": None,
+                "output_tokens": 70,
+            },
+        },
+        {"type": "message_stop"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_anthropic_client()
+        return await _collect(
+            client._stream_anthropic(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 64,
+            )
+        )
+
+    usages = _usage_chunks(_drive(run()))
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 4600
+    assert usages[0]["completion_tokens"] == 70
+    assert usages[0]["context_tokens"] == 4670
+    assert usages[0]["cache_read_input_tokens"] == 4000
+
+
 def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     sse_events = [
         {
@@ -530,6 +613,7 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     assert u["cache_creation_input_tokens"] == 6253
     assert u["cache_read_input_tokens"] == 5713
     assert u["prompt_tokens_details"]["cached_tokens"] == 5713
+    assert u["context_tokens"] == 7 + 6253 + 5713 + 1066
 
     data_lines = [ln for ln in lines if ln.startswith("data:")]
     done_idx = next(i for i, ln in enumerate(data_lines) if ln.strip().endswith("[DONE]"))

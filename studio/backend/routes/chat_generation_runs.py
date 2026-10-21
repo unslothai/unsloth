@@ -163,12 +163,14 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = safe_validation_errors(exc.errors()),
         ) from exc
     from routes.inference import (
+        _admit_tool_access,
         _messages_have_embedded_image,
         _messages_have_input_audio,
         _reject_unsupported_content_parts,
         _request_has_video,
     )
 
+    _admit_tool_access(request)
     _reject_unsupported_content_parts(request)
 
     # Message content is user data; scan every other persisted field for credentials.

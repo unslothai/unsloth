@@ -950,3 +950,32 @@ def test_an_opaque_local_load_with_a_shipped_grid_runs_its_step_count():
     # A name still decides first, and no grid keeps the fallback.
     assert generation_params_with_grid(grid, "Qwen/Qwen-Image-2.1-Turbo") == (8, 1.0)
     assert generation_params_with_grid(None, "/models/opaque") == (9, 0.0)
+
+
+@pytest.mark.parametrize(
+    "parent",
+    [
+        "/home/flux.1/models",
+        "/data/sdxl_backup",
+        "D:\\qwen-image\\archive",
+        "/srv/2.14_flux.1/test0",
+    ],
+)
+def test_a_parent_folder_keyword_does_not_pick_the_image_family(parent):
+    sep = "\\" if "\\" in parent else "/"
+    assert detect_family(sep.join([parent, "plain"])) is None
+    assert detect_family(sep.join([parent, "plain", "model.safetensors"])) is None
+    assert detect_family(sep.join([parent, "plain", "transformer", "model.safetensors"])) is None
+    assert default_generation_params(sep.join([parent, "plain", "model.safetensors"])) == (
+        default_generation_params("/data/plain/model.safetensors")
+    )
+    fam = detect_family(sep.join([parent, "FLUX.1-dev"]))
+    assert fam is not None and fam.name == "flux.1"
+    fam = detect_family(sep.join([parent, "plain", "flux1-schnell-Q4_K_M.gguf"]))
+    assert fam is not None and fam.name == "flux.1"
+    for sub in ("weights", "checkpoints", "models", "ckpt"):
+        nested = sep.join([parent, "Qwen-Image-Edit", sub, "model.safetensors"])
+        assert detect_family(nested).name == "qwen-image-edit"
+    hf = "/home/sdxl/.cache/huggingface/hub/models--black-forest-labs--FLUX.1-dev/snapshots/0123abc"
+    assert detect_family(hf).name == "flux.1"
+    assert detect_family(hf + "/flux1-dev.safetensors").name == "flux.1"

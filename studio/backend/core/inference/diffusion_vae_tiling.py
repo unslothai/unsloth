@@ -19,6 +19,8 @@ import types
 from typing import Any, Optional
 
 from .diffusion_device import float64_device
+from .diffusion_vae_oom import clear_partial_decode
+from .diffusion_vae_oom import free_first as oom_free_first
 
 WIDE_TILES_ENV = "UNSLOTH_DIFFUSION_VAE_WIDE_TILES"
 
@@ -267,8 +269,10 @@ def _free_mib(
 
 
 def _fused(vae: Any) -> bool:
-    return bool(getattr(vae, "_unsloth_vae_fused_installed", 0)) and not getattr(
-        vae, "_unsloth_vae_fused_failed", False
+    return (
+        bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
+        and not getattr(vae, "_unsloth_vae_fused_failed", False)
+        and not getattr(vae, "_unsloth_vae_fused_structural", False)
     )
 
 
@@ -535,6 +539,10 @@ def _release_cache(z: Any) -> None:
         pass
 
 
+def _clear_partial(vae: Any, z: Any) -> None:
+    clear_partial_decode(vae, z)
+
+
 def _log_stock_fallback(vae: Any, reason: str) -> None:
     logger = vae.__dict__.get("_unsloth_wide_logger")
     seen = vae.__dict__.setdefault("_unsloth_wide_fallback_logged", set())
@@ -575,23 +583,27 @@ def install(vae: Any, logger: Any = None) -> bool:
     ) -> Any:
         if wide_tiles_disabled() or stock_layout_ok(geometry, z.shape[-2], z.shape[-1]):
             return _stock(z, return_dict)
-        # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles.
-        reason = floor_shortfall(self, z)
-        if reason is None:
-            for max_area in ("auto", 0):
-                try:
-                    return tiled_decode(self, z, return_dict = return_dict, max_area = max_area)
-                except Exception as exc:  # noqa: BLE001
-                    if not _is_oom(exc):
-                        raise
-                    reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
-                    tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
-                # outside the except block, so the failed attempt's tensors are freed
-                _release_cache(z)
-                ratio, tile, _ = _geometry(self)
-                if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
-                    break
+        # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles. Before
+        # settling for them, the OOM retry frees the card (rest of the pipeline off it) and the wide tiles go again.
+        for _round in range(2):
+            reason = floor_shortfall(self, z)
+            if reason is None:
+                for max_area in ("auto", 0):
+                    try:
+                        return tiled_decode(self, z, return_dict = return_dict, max_area = max_area)
+                    except Exception as exc:  # noqa: BLE001
+                        if not _is_oom(exc):
+                            raise
+                        reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
+                        tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
+                    _clear_partial(self, z)
+                    ratio, tile, _ = _geometry(self)
+                    if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
+                        break
+            if _round or not oom_free_first(self, z):
+                break
         _log_stock_fallback(self, reason)
+        _clear_partial(self, z)
         return _stock(z, return_dict)
 
     def _tiled_encode(self: Any, x: Any) -> Any:

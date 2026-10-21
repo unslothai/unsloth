@@ -230,7 +230,10 @@ def ensure_audio_decoding() -> bool:
         if _installed:
             return True
         _ORIGINAL_ENCODE = Audio.encode_example
-        Audio.decode_example = _decode_with_soundfile
+        # Behind the same account check as the decoder it replaces.
+        from utils.security.dataset_media import guard_decoder
+
+        Audio.decode_example = guard_decoder(_decode_with_soundfile)
         Audio.encode_example = _encode_with_soundfile
         _installed = True
     logger.info("torchcodec is unusable; decoding dataset audio with soundfile and PyAV")

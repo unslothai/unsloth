@@ -748,7 +748,6 @@ def _swap(
     logger: Any = None,
     device: Any = None,
 ) -> int:
-    global _OP_HANDLE
     from .diffusion_int8_fused import resident_cuda_device
 
     import torch
@@ -766,12 +765,50 @@ def _swap(
             return 0
     else:
         dev = resident_cuda_device(transformer)
+        if dev is None:
+            cards = _split_cards(transformer)
+            if cards:
+                count = sum(_swap_on(transformer, logger, index) for index in cards)
+                return count
     if dev is None:
         return 0
 
     index = dev.index if dev.index is not None else torch.cuda.current_device()
+    return _swap_on(transformer, logger, index)
+
+
+def _split_cards(transformer: Any) -> tuple:
+    """The CUDA ordinals of a layer-split denoiser whose every weight sits on a card (NVIDIA), else ()."""
+    try:
+        import torch
+
+        from .diffusion_layer_split import is_layer_split
+
+        if getattr(torch.version, "hip", None) or not is_layer_split(transformer):
+            return ()
+        devices = {p.device for p in transformer.parameters()}
+    except Exception:  # noqa: BLE001
+        return ()
+    if not devices or any(d.type != "cuda" or d.index is None for d in devices):
+        return ()
+    return tuple(sorted(d.index for d in devices))
+
+
+def _weight_card(module: Any) -> Optional[int]:
+    weight = getattr(module, "weight", None)
+    dev = getattr(weight, "device", None)
+    return dev.index if dev is not None and dev.type == "cuda" else None
+
+
+def _swap_on(transformer: Any, logger: Any, index: int) -> int:
+    """Swap the eligible int8 Linears of ``transformer`` against card ``index``'s probed kernels. On a layer split
+    (several cards) only the Linears whose weight sits on ``index``."""
+    global _OP_HANDLE
+    import torch
+
+    multi = len(_split_cards(transformer)) > 1
     recs = [(m, _eligible(m)) for m in transformer.modules()]
-    recs = [(m, r) for m, r in recs if r is not None]
+    recs = [(m, r) for m, r in recs if r is not None and (not multi or _weight_card(m) == index)]
     if not recs:
         return 0
     from .diffusion_convrot_quant import rotquant_device_config
@@ -792,6 +829,14 @@ def _swap(
                 return 0
         for module, rec in recs:
             if _MARK in module.__dict__:
+                if multi:
+                    module.__dict__[_REC] = (
+                        rec[0],
+                        rec[1],
+                        bool(rotq and rec[1] is not None),
+                        rec[3],
+                        gemm,
+                    )
                 count += 1
                 continue
             # kind, rotation group, fused rotation + act quant on, the Parameter (no payload alias), fused GEMM on
@@ -814,6 +859,45 @@ def _swap(
             ", ConvRot rotation fused into the act quant" if rotq else "",
         )
     return count
+
+
+def after_layer_split(transformer: Any, logger: Any = None) -> dict:
+    """Run once a layer split placed ``transformer``'s blocks, before its first forward: re-home the fused int8 / QKV
+    records built while it sat on one card (``diffusion_int8_fused.relocate_after_layer_split``), and probe each card's
+    GEMM tiles so the int8 Linears swapped before the split run their own card's kernel; each RoPE patch's probe map
+    covers every card. Idempotent; a no-op on a denoiser that is not split."""
+    out: dict = {"cards": (), "gemm": 0}
+    cards = _split_cards(transformer)
+    if len(cards) < 2:
+        return out
+    out["cards"] = cards
+    try:
+        from .diffusion_int8_fused import relocate_after_layer_split
+        out.update(relocate_after_layer_split(transformer, logger))
+    except Exception as exc:  # noqa: BLE001 - the stock paths stay correct
+        if logger is not None:
+            logger.warning(
+                "diffusion.int8_gemm: fused record re-home after the layer split failed (%s)", exc
+            )
+    try:
+        from .diffusion_qwenimage21_rope import probe_split_cards
+        out["rope_cards"] = probe_split_cards(cards)
+    except Exception:  # noqa: BLE001 - an unprobed card keeps the complex RoPE
+        pass
+    try:
+        from .diffusion_zimage_fused import probe_split_cards as zimage_probe
+        out["zimage_rope_cards"] = zimage_probe(cards)
+    except Exception:  # noqa: BLE001 - an unprobed card keeps the complex RoPE
+        pass
+    if int8_gemm_mode() != "off" and any(_MARK in m.__dict__ for m in transformer.modules()):
+        try:
+            out["gemm"] = sum(_swap_on(transformer, logger, index) for index in cards)
+        except Exception as exc:  # noqa: BLE001
+            if logger is not None:
+                logger.warning(
+                    "diffusion.int8_gemm: per-card swap after the layer split failed (%s)", exc
+                )
+    return out
 
 
 def uninstall(transformer: Any = None) -> None:

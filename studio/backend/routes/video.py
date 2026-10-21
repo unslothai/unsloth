@@ -421,6 +421,7 @@ async def load_video_model_gated(
                 gpu_ids = request.gpu_ids,
                 # The already-ranked card, so free VRAM drift cannot change the pick.
                 gpu_ordinal = gpu_ordinal,
+                allow_oversized_load = request.allow_oversized_load,
             )
 
         def _begin_load():

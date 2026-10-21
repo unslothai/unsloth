@@ -24,6 +24,7 @@ from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
 from .family_name_match import (
+    model_identity,
     name_key_in,
     normalize_family_name,
     token_in_name,
@@ -87,6 +88,8 @@ class DiffusionFamily:
     cfg_kwarg: str = "guidance_scale"
     # False when the diffusers pipeline ignores a negative prompt; the native engine decides on its own.
     uses_negative_prompt: bool = True
+    # False when the diffusers pipeline takes no guidance (FLUX.3 distilled); FLUX.2 klein is per checkpoint.
+    uses_guidance: bool = True
     # One or two sentences on how this family reads prompts; None when it has no quirks.
     prompt_hint: Optional[str] = None
     # The pipe attribute holding the denoiser: ``pipe.transformer`` for DiT families, ``pipe.unet`` for SDXL.
@@ -198,6 +201,8 @@ class DiffusionFamily:
 
 # Near-tied norm-reduction configs, benchmarked per process, made renders nondeterministic.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
+# Qwen-Image races on B200 too (torch 2.14): fresh processes rendered one seed 26 dB apart; with the filter 6/6 matched bitwise.
+_QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 
 # --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
 
@@ -443,6 +448,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # Every keep-set measured 0.09-0.12 LPIPS against bf16 on NVFP4, as did BFL's own nvfp4 package. A passing
             # NVFP4 gate record for a base still lifts it.
             scheme_deny = frozenset({"nvfp4"}),
+            # The FLUX.2 VAE and the same 2x2 packed 128-channel tokens, so FLUX.2's fitted map applies.
+            preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
@@ -495,6 +502,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # Every keep-set measured 0.09-0.12 LPIPS against bf16 on NVFP4, as did BFL's own nvfp4 package. A passing
             # NVFP4 gate record for a base still lifts it.
             scheme_deny = frozenset({"nvfp4"}),
+            # The FLUX.2 VAE and the same 2x2 packed 128-channel tokens, so FLUX.2's fitted map applies.
+            preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
@@ -504,6 +513,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("fp8", "unsloth/flux-3-image-klein-FP8"),
         ),
         uses_negative_prompt = False,
+        uses_guidance = False,
         transformer_class = "Flux3Transformer2DModel",
         # Qwen3-VL-4B pre-cast fp8, the int8 ConvRot encoder's fallback (diffusion_te_prequant.TE_INT8_CONVROT_FILES).
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/flux-3-image-klein-FP8"),),
@@ -535,6 +545,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.2-dev",
         profile = FamilyProfile(te_int8_skip = (3, 0), preview_factors = "flux2"),
         pipeline_class = "Flux2Pipeline",
+        # cudnn.benchmark's per-process VAE conv pick rendered 5 variants of one seed over 7 fresh B200 processes.
+        cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-dev",
@@ -605,7 +617,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
             preview_factors = "qwen_image",
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         comfy_flow_shift_variants = (
             ("qwen-image-edit-2511", 3.1),
@@ -677,7 +689,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             scheme_deny = _QWENIMAGE_SCHEME_DENY,
             te_int8_skip = _QWENIMAGE_TE_INT8_SKIP,
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        # ComfyUI's Image to Layers template: ModelSamplingAuraFlow 1, 2 layers, the input scaled to 640.
         comfy_flow_shift = 1.0,
         layer_count = 2,
         layer_resolution = 640,
@@ -723,8 +736,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "qwen_image",
             auto_static_skip = (("qwen/qwen-image", (("default", 2), ("max", 3), ("steps", 20))),),
         ),
-        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
-        comfy_flow_shift = 3.1,
+        filter_reduction_configs_archs = _QWEN_REDUCTION_RACE_ARCHS,
+        comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
@@ -1160,7 +1173,7 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
-    needle = repo_id.lower()
+    needle = model_identity(repo_id).lower()
     match = _best_family_match(needle)
     if match is not None:
         # Scoped to the last path component so a parent folder named edit does not reject a file.
@@ -1273,7 +1286,9 @@ def _family_from_content(
     if not path:
         return fam
     needles = [repo_id] + ([f"{repo_id}/{gguf_filename}"] if gguf_filename else [])
-    vetoed = fam is None and any(_best_family_match(n.lower()) is not None for n in needles)
+    vetoed = fam is None and any(
+        _best_family_match(model_identity(n).lower()) is not None for n in needles
+    )
     name, _ = resolve_family_with_content(fam.name if fam else None, path, "image", vetoed)
     if name is None:
         return None
@@ -1781,7 +1796,7 @@ def transformer_variant_differs_from_base(
 def named_generation_params(*identifiers: Optional[str]) -> Optional[tuple[int, float]]:
     """``(steps, guidance)`` of the first identifier naming a known model (a local path resolves via its base), or None."""
     for identifier in identifiers:
-        needle = (identifier or "").lower()
+        needle = model_identity(identifier).lower()
         for key, steps, guidance in _GENERATION_DEFAULTS:
             if name_key_in(key, needle):
                 return steps, guidance

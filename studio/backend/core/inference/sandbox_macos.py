@@ -463,7 +463,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             ):
                 # A replaceable interpreter alias would let the next host probe execute tool code.
                 raise WorkdirUnsafeError(
-                    "the session workdir holds a link to the Python that runs Studio: "
+                    "the session workdir holds a link to the Python that runs Unsloth: "
                     f"{posixpath.abspath(candidate)}"
                 )
             continue

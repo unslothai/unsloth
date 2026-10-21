@@ -66,6 +66,7 @@ from core.research.prompts import (
     _system_prompt_with_instructions,
 )
 from loggers import get_logger
+from state.tool_policy import get_tool_policy
 from storage import providers_db
 from storage import research_runs_db as db
 from storage.studio_db import (
@@ -2164,6 +2165,10 @@ class ResearchSupervisor:
         run.update(result)
 
     async def _research(self, run: dict) -> None:
+        # The routes refuse to start a run while tools are off; a durable run approved before a
+        # restart under `--disable-tools` is still claimed here.
+        if get_tool_policy() is False:
+            raise RuntimeError("Tools are disabled on this server")
         # Completed steps on a queued run are ones a Retry kept (a fresh plan's steps are all pending).
         resuming = run.get("claimedFromStatus") == "running" or any(
             step.get("status") == "completed" for step in run.get("steps") or ()

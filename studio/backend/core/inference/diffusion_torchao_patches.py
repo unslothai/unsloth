@@ -350,7 +350,7 @@ def _guard_peft_torchao_dispatcher(original):
                 f"{' and '.join(missing) or 'a tensor subclass'}, which peft's "
                 f"torchao LoRA dispatcher imports to run one isinstance check "
                 f"({message}), so that dispatcher raised for every LoRA layer. "
-                f"Studio now runs the same check against the subclasses this "
+                f"Unsloth now runs the same check against the subclasses this "
                 f"torchao does ship ({kept}), so weights of those types still get "
                 f"peft's torchao LoRA layer and everything else gets an ordinary "
                 f"one. Only weights of the removed subclass cannot be matched; "

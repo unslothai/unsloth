@@ -927,7 +927,7 @@ HUB_TOKEN_REJECTED_WARNING = (
 
 def hub_refused_cached_copy_warning(repo_id: str) -> str:
     return (
-        f"Hugging Face refused {repo_id}, so Studio is running the copy already downloaded on "
+        f"Hugging Face refused {repo_id}, so Unsloth is running the copy already downloaded on "
         "this machine. It will not receive updates until access is restored."
     )
 

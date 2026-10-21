@@ -102,6 +102,10 @@ def test_type_select_scroll_and_keys():
         "submit": True,
     }
     assert _request("browser_select", {"ref": "r4", "value": "Large"})["value"] == "Large"
+    assert _request("browser_select", {"ref": "r4", "value": False})["value"] == "false"
+    assert _request("browser_select", {"ref": "r4", "value": 0})["value"] == "0"
+    assert _request("browser_select", {"ref": "r4"})["value"] == ""
+    assert _request("browser_select", {"ref": "r4", "value": True})["value"] == "true"
     assert _request("browser_scroll", {}) == {"op": "scroll", "direction": "down"}
     assert _request("browser_press_key", {"key": "enter"}) == {"op": "press", "key": "Enter"}
     with pytest.raises(ValueError):
@@ -217,6 +221,11 @@ def test_errors_and_long_pages():
     assert browser_agent.format_result(
         "browser_click", {"ok": False, "error": "stale ref r9"}, None
     ) == ("Error: stale ref r9")
+    error = 'r4 is a radio; value must be "true", "false" or its own label. Pick the ref of the option to choose.'
+    assert (
+        browser_agent.format_result("browser_select", {"ok": False, "error": error}, None)
+        == f"Error: {error}"
+    )
     long = browser_agent.format_result(
         "browser_snapshot", {"ok": True, "url": "", "text": "x" * 50_000}, None
     )
@@ -311,7 +320,7 @@ def test_bad_arguments_never_reach_the_tab():
 
 
 def test_without_a_chat_tab_the_tool_says_so():
-    assert "only available in a Studio chat" in tools_mod.execute_tool("browser_snapshot", {})
+    assert "only available in an Unsloth chat" in tools_mod.execute_tool("browser_snapshot", {})
 
 
 def test_another_session_or_account_cannot_answer():
@@ -422,3 +431,42 @@ def test_repeated_browser_calls_run_again_and_keep_the_tools():
         assert decision.action == "execute"
         controller.record_result(decision, "Done.")
     assert not controller.force_final_answer and controller.active_tools()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.google.com/url?q=http://127.0.0.1:8888/api/auth/me",
+        "https://duckduckgo.com/l/?uddg=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data",
+        "https://www.google.com/url?q=https://www.google.com/url?q%3Dhttp://10.0.0.1/",
+        # The tab resolves dot segments before it matches the redirect path.
+        "https://www.google.com/foo/../url?q=http://127.0.0.1:8888/private",
+        "https://duckduckgo.com/x/%2e%2e/l/?uddg=http%3A%2F%2F10.0.0.1%2F",
+        # ... and reads a backslash in the path as a slash.
+        "https://www.google.com/foo\\..\\url?q=http://127.0.0.1:8888/private",
+        "https://www.google.com//.././url?q=http://127.0.0.1/private",
+        # ... and maps the host the way IDNA does.
+        "https://www.google\u3002com/url?q=http://127.0.0.1/private",
+    ],
+)
+def test_redirect_target_is_checked_like_the_link(url):
+    # The tab opens the redirect's target, so a local target is refused like a direct link to it.
+    with pytest.raises(ValueError):
+        _request("browser_navigate", {"url": url})
+
+
+def test_redirect_target_honours_the_website_policy():
+    policy = {"allowedDomains": [], "blockedDomains": ["collector.example"]}
+    with pytest.raises(ValueError):
+        _request(
+            "browser_navigate",
+            {"url": "https://www.google.com/url?q=https://collector.example/x"},
+            policy,
+        )
+    # A redirect to an allowed site still opens, with the link as given.
+    assert _request(
+        "browser_navigate", {"url": "https://www.google.com/url?q=https://unsloth.ai/"}, policy
+    ) == {
+        "op": "navigate",
+        "url": "https://www.google.com/url?q=https://unsloth.ai/",
+    }

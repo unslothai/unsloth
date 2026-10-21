@@ -414,10 +414,10 @@ def comfy_quant_error(scan: Optional[ComfyQuantScan], filename: str = "") -> Opt
     shown = "; ".join(scan.problems[:4])
     more = f" (and {len(scan.problems) - 4} more)" if len(scan.problems) > 4 else ""
     return (
-        f"{filename or 'This checkpoint'} is a ComfyUI-quantized checkpoint Studio cannot run "
+        f"{filename or 'This checkpoint'} is a ComfyUI-quantized checkpoint Unsloth cannot run "
         f"faithfully: {shown}{more}. Supported ComfyUI formats are int8_tensorwise (with or "
         "without ConvRot), float8_e4m3fn, float8_e5m2, nvfp4 and mxfp8; use the bf16 file, a GGUF, "
-        "or Studio's own int8 / fp8 transformer quantization instead."
+        "or Unsloth's own int8 / fp8 transformer quantization instead."
     )
 
 
@@ -874,7 +874,7 @@ def load_comfy_prequant(
     import torch
 
     if scheme == "fp8" and dtype is not torch.bfloat16:
-        raise ValueError(f"{name}: Studio's fp8 runtime needs a bfloat16 pipeline, not {dtype}")
+        raise ValueError(f"{name}: Unsloth's fp8 runtime needs a bfloat16 pipeline, not {dtype}")
     model = load_comfy_quant_transformer(
         transformer_cls,
         path,

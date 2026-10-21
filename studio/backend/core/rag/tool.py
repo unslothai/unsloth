@@ -56,15 +56,19 @@ def _resolve_scope(
     scope_project_id: str | None = None,
     scope_conversation_id: str | None = None,
 ) -> str | list[str] | None:
-    """The archive is exclusive and wins over KB; project and thread scopes combine."""
+    """A KB pick replaces the thread scope but keeps the project's (#9485).
+
+    The conversation archive is exclusive too, and takes precedence: it is a different
+    corpus (this chat's evicted turns), so sharing a top-K would have old turns and
+    document passages crowd each other out."""
     if scope_conversation_id:
         return conversation_archive_scope(scope_conversation_id)
-    if scope_kb_id:
-        return kb_scope(scope_kb_id)
     scopes = []
+    if scope_kb_id:
+        scopes.append(kb_scope(scope_kb_id))
     if scope_project_id:
         scopes.append(project_scope(scope_project_id))
-    if scope_thread_id:
+    if scope_thread_id and not scope_kb_id:
         scopes.append(thread_scope(scope_thread_id))
     if not scopes:
         return None

@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 import ctypes
+import errno
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -43,6 +45,56 @@ _MAX_PROBE_BASE_LEN = 59
 
 # A stale PASS is served while one background re-probe runs; a FAIL never is.
 _STALE_GRACE_SECONDS = 3600.0
+
+# Tool code can exhaust these from the jail: undecided, never cached, and auto refuses rather than falls back.
+_RESOURCE_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in ("ENOSPC", "EDQUOT", "EMFILE", "ENFILE", "ENOMEM", "ENOBUFS", "EAGAIN")
+    )
+    if code is not None
+)
+_RESOURCE_TEXTS = tuple(os.strerror(code) for code in _RESOURCE_ERRNOS)
+# bwrap reports a user-namespace limit as ENOSPC: a host without a sandbox only when the quota is zero.
+_NAMESPACE_LIMIT = re.compile(
+    r"bwrap: .*(?:namespace|unshare).*" + re.escape(os.strerror(errno.ENOSPC)), re.I
+)
+
+
+def _user_namespaces_disabled() -> bool:
+    """A zero quota is a host without a sandbox; a used-up one is exhaustion."""
+    try:
+        with open("/proc/sys/user/max_user_namespaces", encoding = "ascii") as handle:
+            return int(handle.read().strip() or "0") == 0
+    except (OSError, ValueError):
+        return True
+
+
+class UndecidedReason(str):
+    """A probe failure caused by host resource exhaustion rather than by the backend."""
+
+
+def _exhausted(exc: BaseException | None) -> bool:
+    seen = 0
+    while exc is not None and seen < 8:
+        if isinstance(exc, MemoryError) or (
+            isinstance(exc, OSError) and exc.errno in _RESOURCE_ERRNOS
+        ):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
+
+
+def _classified(reason: str, exc: BaseException | None = None) -> str:
+    """By errno when there is an exception; by strerror text only for the host-side control's own output."""
+    if exc is not None:
+        exhausted = _exhausted(exc)
+    else:
+        exhausted = any(text in reason for text in _RESOURCE_TEXTS)
+    return UndecidedReason(reason) if exhausted else reason
+
 
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[float, bool, str]] = {}
@@ -121,7 +173,8 @@ def _refresh_in_background(backend: Any, key: tuple[str, str]) -> None:
         try:
             from .os_sandbox import ToolLaunchPlan
             available, reason = _run_probe(backend, key[0], ToolLaunchPlan)
-            _cache_put(key, available, reason, generation = generation)
+            if not isinstance(reason, UndecidedReason):
+                _cache_put(key, available, reason, generation = generation)
         except Exception as exc:  # noqa: BLE001 - the stale PASS just ages out
             logger.debug("background sandbox re-probe failed: %s", exc)
         finally:
@@ -312,13 +365,15 @@ def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict
             if handle.read() != _SENTINEL_TOKEN:
                 return "the probe sentinel did not contain what was written to it"
     except OSError as exc:
-        return f"the host itself could not read the probe sentinel ({exc})"
+        return _classified(f"the host itself could not read the probe sentinel ({exc})", exc)
     try:
         with open(outside, "w", encoding = "utf-8") as handle:
             handle.write("host-write-ok")
         os.unlink(outside)
     except OSError as exc:
-        return f"the host itself could not write outside the probe workdir ({exc})"
+        return _classified(
+            f"the host itself could not write outside the probe workdir ({exc})", exc
+        )
     try:
         completed = subprocess.run(
             (sys.executable, "-I", "-S", "-c", _host_payload(workdir)),
@@ -330,10 +385,12 @@ def _host_positive_controls(workdir: str, sentinel: str, outside: str, env: dict
             timeout = PROBE_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"the host itself could not run the probe's positive controls ({exc})"
+        return _classified(
+            f"the host itself could not run the probe's positive controls ({exc})", exc
+        )
     if completed.returncode != 0 or completed.stdout.strip() != PROBE_TOKEN.encode():
         detail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]
-        return (
+        return _classified(
             "the host itself could not pass the probe's positive controls "
             f"(exit {completed.returncode}): {detail or 'no output'}"
         )
@@ -362,6 +419,9 @@ def probe(backend: Any, *, force: bool = False) -> tuple[bool, str]:
     with _cache_lock:
         generation = _generation
     available, reason = _run_probe(backend, backend_name, ToolLaunchPlan)
+    if isinstance(reason, UndecidedReason):
+        # Re-probed on the next call: the resource may be freed by then.
+        return False, reason
     _cache_put(key, available, reason, generation = generation)
     return available, reason
 
@@ -432,10 +492,14 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             detail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]
             if not detail:
                 detail = (completed.stdout or b"").decode("utf-8", "replace").strip()[-300:]
-            return False, (
+            reason = (
                 f"the {backend_name} live probe failed "
                 f"(exit {completed.returncode}): {detail or 'no output'}"
             )
+            namespaces_off = _NAMESPACE_LIMIT.search(detail) and _user_namespaces_disabled()
+            if any(text in detail for text in _RESOURCE_TEXTS) and not namespaces_off:
+                return False, UndecidedReason(reason)
+            return False, reason
         if _host_saw_the_write(outside):
             return False, (
                 f"the {backend_name} live probe wrote through to the host: a file created "
@@ -451,7 +515,9 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
         return False, f"the {backend_name} live probe timed out after {PROBE_TIMEOUT_SECONDS:.0f}s"
     except Exception as exc:  # noqa: BLE001 - see the docstring on probe()
         logger.debug("sandbox probe for %s could not run", backend_name, exc_info = True)
-        return False, f"the {backend_name} live probe could not run: {type(exc).__name__}: {exc}"
+        return False, _classified(
+            f"the {backend_name} live probe could not run: {type(exc).__name__}: {exc}", exc
+        )
     finally:
         if abstract_listener is not None:
             abstract_listener.close()

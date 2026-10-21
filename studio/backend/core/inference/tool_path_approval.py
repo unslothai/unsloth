@@ -88,8 +88,28 @@ _SYSTEM_READ_SILENT_ROOTS = (
     "/var/lib",
     "/proc",
     "/sys",
-    "/dev",
-    # Mirrors tool_confinement._SYSTEM_READ_ROOTS; secret subdirs are caught by the credential check.
+    # Named pseudo-devices and accelerator nodes only: a raw disk or /dev/mem read is the host's data
+    # and asks. Mirrors tool_confinement._DEVICE_NODES / _ACCELERATOR_NODES.
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+    "/dev/pts",
+    "/dev/stdin",
+    "/dev/stdout",
+    "/dev/stderr",
+    "/dev/nvidiactl",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-caps",
+    *(f"/dev/nvidia{index}" for index in range(64)),
+    "/dev/dri",
+    "/dev/kfd",
+    # Runtime state (pid files, sockets). /run/secrets and /run/credentials are covered by the credential check that
+    # runs first. Mirrors tool_confinement._SYSTEM_READ_ROOTS.
     "/run",
     # On macOS the REAL location is /private/var/run, not /var/run.
     "/var/run",
@@ -106,8 +126,19 @@ _SYSTEM_READ_SILENT_ROOTS = (
 # Carved out of the system roots: user-owned tmpfs holds user data, not machine state.
 _WRITABLE_RUNTIME_SUBTREES = tuple(
     os.path.normcase(part)
-    # `/dev/fd/<n>` reaches whatever the descriptor was opened on, like `/proc/self/fd/<n>`.
-    for part in ("/dev/shm", "/dev/mqueue", "/dev/fd", "/run/user", "/run/lock")
+    # `/dev/fd/<n>` is the same kernel link `/proc/self/fd/<n>` is, and it reaches whatever the
+    # descriptor was opened on, so it is no more a property of /dev than the /proc spellings are.
+    # /run/media, /run/mount and /run/host are user storage (removable drives, a container's host root).
+    for part in (
+        "/dev/shm",
+        "/dev/mqueue",
+        "/dev/fd",
+        "/run/user",
+        "/run/lock",
+        "/run/media",
+        "/run/mount",
+        "/run/host",
+    )
 )
 
 
@@ -123,6 +154,9 @@ _WRITE_SILENT_DEVICE_NODES = (
 
 # A stale entry only costs or spares one prompt, so a short TTL beats invalidation.
 _SILENT_ROOT_TTL_S = 60.0
+
+# Listing /dev yields node names only, like listing the filesystem root.
+_DEV_DIR = os.path.normcase(os.path.normpath("/dev"))
 
 
 _silent_roots_cache = None
@@ -426,8 +460,11 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
         candidate = _normalized_fs_text(text)
     except Exception:  # noqa: BLE001
         return True
-    # The filesystem root itself: listing it reveals only top-level names. Exact match only.
-    if not writing and candidate == os.sep:
+    # The filesystem root ITSELF, which no silent root can cover (`_silent_root_list` drops a root
+    # that folds to `os.sep`, or everything would be silent). Reading it yields the top-level names
+    # and nothing else, so `ls /` asked for approval while `ls /usr` did not. Exact match only:
+    # anything UNDER it is still decided by the roots below.
+    if not writing and candidate in (os.sep, _DEV_DIR):
         return False
     # Kernel magic symlinks: `/proc/self/root/home/x` opens `/home/x` while looking like /proc.
     if _PROC_MAGIC_LINK_RE.match(candidate.replace(os.sep, "/")):

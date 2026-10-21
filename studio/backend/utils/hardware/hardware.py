@@ -46,9 +46,8 @@ class DeviceType(str, Enum):
 
 
 DEVICE: Optional[DeviceType] = None
-CHAT_ONLY: bool = True
-# Why CHAT_ONLY is True, None when training is enabled. torch_cpu_build and
-# torch_cuda_unavailable mean GPUs exist but this PyTorch cannot use them.
+CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # Only mlx_unavailable sets it, naming the offending MLX package.
 CHAT_ONLY_DETAIL: Optional[str] = None
@@ -152,7 +151,32 @@ def is_apple_silicon() -> bool:
     return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
-# torch installed but its import failed; reported as a detection failure, not no GPU.
+_ROSETTA: Optional[bool] = None
+
+
+def _running_under_rosetta() -> bool:
+    """True for an x86_64 Python on an Apple Silicon Mac (``hw.optional.arm64``, as install.sh). Cached; never raises."""
+    global _ROSETTA
+    if _ROSETTA is None:
+        answer = False
+        if platform.system() == "Darwin" and platform.machine() == "x86_64":
+            try:
+                out = subprocess.run(
+                    ["sysctl", "-n", "hw.optional.arm64"],
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = 2,
+                )
+                answer = out.returncode == 0 and out.stdout.strip() == "1"
+            except Exception:
+                answer = False
+        _ROSETTA = answer
+    return _ROSETTA
+
+
+# Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA libs); the CPU fallback reports that as a detection failure, not as "no GPU".
 TORCH_IMPORT_ERROR: Optional[str] = None
 
 
@@ -842,6 +866,11 @@ def _expected_cpu_flavor_was_chosen() -> bool:
         return True
     # setup.ps1 records an auto-selected cpu exactly like a pinned one.
     recorded, pinned = _recorded_install_flavor()
+    if recorded == "cpu" and not pinned:
+        # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
+        from utils.tegra import tegra_before_cuda13
+        return tegra_before_cuda13()
     return recorded == "cpu" and pinned
 
 
@@ -1611,6 +1640,9 @@ def _detect_hardware_locked() -> DeviceType:
         _build_reason, _build_detail = _mismatch_verdict_for_this_host(_disk_reason)
         if _build_reason is not None:
             CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        # MLX needs a native arm64 Python; "Intel Mac" would be wrong.
+        CHAT_ONLY_REASON = "rosetta"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"
     else:
@@ -1629,6 +1661,9 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
+        elif _installed_without_torch():
+            # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            CHAT_ONLY_REASON = "no_torch"
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -1879,6 +1914,12 @@ def export_capability() -> dict:
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
             "`unsloth studio update` to restore MLX and enable export."
         )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Unsloth is running under Rosetta (x86_64 Python), so export is disabled. Re-run the installer from a "
+            "native arm64 terminal to enable export."
+        )
     elif _gpu_present_but_unusable_message("export", verdict) is not None:
         # Before _has_torch(), which re-runs the slow failing import.
         reason = verdict[0]
@@ -1973,6 +2014,12 @@ def _video_capability_verdict() -> dict:
                 "This PyTorch build exposes no Metal (MPS) device, so the video pipelines have "
                 "nowhere to run. Reinstall PyTorch with MPS support to enable video generation."
             )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Unsloth is running under Rosetta (x86_64 Python), which has no Metal (MPS) device for the "
+            "video pipelines. Re-run the installer from a native arm64 terminal to enable video generation."
+        )
     elif platform.system() == "Darwin":
         # Neither torch nor a GPU enables video on an Intel Mac.
         reason = "macos_unsupported"
@@ -4714,8 +4761,18 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
-def get_visible_gpu_utilization() -> Dict[str, Any]:
+def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
+    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
+    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
     device = get_device()
+    if no_context and IS_ROCM and device == DeviceType.CUDA:
+        return {
+            "available": False,
+            "backend": _backend_label(device),
+            "parent_visible_gpu_ids": [],
+            "devices": [],
+            "index_kind": "relative",
+        }
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -4814,7 +4871,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "index_kind": index_kind,
                 }
 
-        torch_devices = _torch_get_per_device_info(torch_indices)
+        torch_devices = [] if no_context else _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = []
             for td in torch_devices:

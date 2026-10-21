@@ -56,6 +56,7 @@ version is deliberately NOT bumped, since bumping it is what would invalidate th
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import json
@@ -248,6 +249,12 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
+        # torch keys artifacts on this tag (set by diffusion_fp8_unit_scale); a bundle from another tag would load,
+        # miss, recompile and never be rewritten. Only a set tag joins the key, so untagged bundles stay valid.
+        tag = getattr(getattr(torch, "compiler", None), "config", None)
+        tag = getattr(tag, "cache_key_tag", None)
+        if isinstance(tag, str) and tag:
+            fp["torch_cache_key_tag"] = tag
     except Exception:  # noqa: BLE001 - best-effort
         pass
     return fp
@@ -272,6 +279,8 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_STATIC_STREAM_MERGE_DETECT": "off",
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
+    "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
+    "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
     # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
     "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
 }
@@ -284,6 +293,13 @@ def _switch_value(name: str, default: str) -> Optional[str]:
     raw = (os.environ.get(name) or "").strip().lower()
     if not raw:
         return None
+    if default.startswith("rows:"):
+        # A row threshold keys on the value the reader uses (max(1, int)); junk falls back to the default there.
+        try:
+            rows = str(max(1, int(raw)))
+        except ValueError:
+            return None
+        return None if rows == default.partition(":")[2] else rows
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
@@ -813,6 +829,58 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
     return removed
 
 
+def _compile_lock() -> Any:
+    try:
+        from torch._dynamo.convert_frame import compile_lock  # noqa: PLC0415
+        return compile_lock
+    except Exception:  # noqa: BLE001 - no dynamo lock on this build: save unlocked, as before
+        return contextlib.nullcontext()
+
+
+def _one_group_per_type(data: bytes, logger: Any) -> bytes:
+    """One ``(type, artifacts)`` group per type: torch appends a group per save and loads them with ``dict(...)``,
+    so a re-saved bundle kept only the newest group of each type."""
+    try:
+        from torch.compiler._cache import (  # noqa: PLC0415
+            CacheArtifactManager,
+            _deserialize_single_cache,
+            _serialize_single_cache,
+        )
+        from torch.utils._appending_byte_serializer import AppendingByteSerializer  # noqa: PLC0415
+    except ImportError:
+        # torch 2.7 writes one flat artifact list and loads it without dict(), so there is nothing to merge
+        return data
+    try:
+        CacheArtifactManager._ensure_cache_artifacts_registered()
+        groups = AppendingByteSerializer.to_list(data, deserialize_fn = _deserialize_single_cache)
+        # Dedupe on (key, content) only: Inductor / AOT entries sharing a key are distinct guarded candidates
+        # (stored under a content hash), and a repeat moves to its latest position so a single-slot type
+        # (autotune) still applies its newest bytes last, as torch's in-order load would.
+        merged: dict[str, dict] = {}
+        for kind, artifacts in groups:
+            bucket = merged.setdefault(kind, {})
+            for artifact in artifacts:
+                content = artifact.content
+                if not isinstance(content, (bytes, bytearray, memoryview)):
+                    content = json.dumps(
+                        content, sort_keys = True, default = repr
+                    ).encode()  # autotune: JSON
+                ident = (artifact.key, hashlib.sha256(content).digest())
+                bucket.pop(ident, None)
+                bucket[ident] = artifact
+        if len(merged) == len(groups):
+            return data
+        out = AppendingByteSerializer(serialize_fn = _serialize_single_cache)
+        out.extend((kind, list(bucket.values())) for kind, bucket in merged.items())
+        return out.to_bytes()
+    except Exception as exc:  # noqa: BLE001 - keep torch's own bytes
+        _warn(
+            logger,
+            f"compile-cache: could not merge artifact groups ({exc}); saving torch's bundle as is",
+        )
+        return data
+
+
 def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     """The save itself. Runs on the caller's thread (``save``) or the worker (``save_async``)."""
     if not _save_enabled(ctx.mode) or ctx.saved:
@@ -823,7 +891,10 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         shapes = sorted(list(s) for s in ctx.shapes)
     try:
         import torch  # noqa: PLC0415
-        result = torch.compiler.save_cache_artifacts()
+
+        # an artifact recorded mid-serialise is dropped from pending but stays "seen", so it would never be saved
+        with _compile_lock():
+            result = torch.compiler.save_cache_artifacts()
     except Exception as exc:  # noqa: BLE001
         _warn(logger, f"compile-cache: save_cache_artifacts failed: {exc}")
         return False
@@ -831,7 +902,7 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         _warn(logger, "compile-cache: nothing to save (empty artifacts)")
         return False
 
-    data = result[0]
+    data = _one_group_per_type(result[0], logger)
     try:
         ctx.dir.mkdir(parents = True, exist_ok = True)
         digest = hashlib.sha256(data).hexdigest()

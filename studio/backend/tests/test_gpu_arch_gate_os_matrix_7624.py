@@ -2343,6 +2343,14 @@ class TestArchCrashRetryReplacesTheCrashedSelectionsWarning:
         self, tmp_path, monkeypatch, probe_env
     ):
         torch = self._apu_then_dgpu(monkeypatch, dgpu_free_mib = 30000)
+        # Auto now pins a dGPU that holds the model before the APU; drop that tier so
+        # the crashed-APU-first selection whose verdict is under test still happens.
+        _select = LlamaCppBackend._select_gpus
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_select_gpus",
+            staticmethod(lambda *a, integrated = frozenset(), **k: _select(*a, **k)),
+        )
         calls: list = []
         capture: dict = {}
         launches = _run_auto_load(
@@ -2472,8 +2480,10 @@ class TestAnInstallFromBeforeThisPr:
         assert len(launches) == 1
         _cmd, env = launches[0]
         assert env.get("HIP_VISIBLE_DEVICES") != "-1", "an old install was gated onto the CPU"
-        # CUDA_VISIBLE_DEVICES is 0 because ROCr re-indexes visible agents from zero.
-        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "1", "CUDA_VISIBLE_DEVICES": "0"}
+        # Not gated, and auto now prefers the dGPU that holds the model over the
+        # shared-pool iGPU (#7624). CUDA_VISIBLE_DEVICES is 0 because ROCr re-indexes
+        # the visible agents from zero; the physical pick is ROCR's.
+        assert _visibility(env) == {"ROCR_VISIBLE_DEVICES": "0", "CUDA_VISIBLE_DEVICES": "0"}
 
 
 class TestArchForcedCpuFlagLifecycle:

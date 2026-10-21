@@ -173,7 +173,7 @@ def _probe(
     cancel_event = None,
 ) -> tuple[bool, str]:
     if sys.platform != "win32":
-        return False, "MXC is enabled only for native Windows Studio"
+        return False, "MXC is enabled only for native Windows Unsloth"
     if sys.getwindowsversion().build < 26100:
         return False, "Windows 11 build 26100 or newer is required for the MXC Preview"
     try:

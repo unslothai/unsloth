@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
-from .family_name_match import normalize_family_name, token_in_name, token_length
+from .family_name_match import model_identity, normalize_family_name, token_in_name, token_length
 from .family_profile import AutoPrefer, ConvRotSpec, FamilyProfile, UntiledVae
 
 # num_frames ceiling; VideoGenerateRequest imports it for its `le` so gate and bound cannot drift.
@@ -80,7 +80,7 @@ def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
 
 def unsupported_ltx_message(version: str, subject: str) -> str:
     return (
-        f"{subject} is LTX-{version}, which Studio does not support yet. Studio runs LTX-2.0 / LTX-2.3 "
+        f"{subject} is LTX-{version}, which Unsloth does not support yet. Unsloth runs LTX-2.0 / LTX-2.3 "
         "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers or "
         "unsloth/LTX-2.5-GGUF)."
     )
@@ -209,7 +209,7 @@ def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> 
 
 def ltx25_training_message(subject: str) -> str:
     return (
-        f"{subject} is LTX-2.5, which Studio can run on the Video page but cannot train yet. "
+        f"{subject} is LTX-2.5, which Unsloth can run on the Video page but cannot train yet. "
         "Train on LTX-2 (Lightricks/LTX-2) instead."
     )
 
@@ -341,14 +341,31 @@ _LTX_VIDEO_09_RE = (
     r"(?=.*(?<![a-z0-9])ltx(?:[-_ ]?video|v)(?:$|[-_ /.](?!2(?:$|[-_ /.]|\.\d))))"
 )
 _LTX_VIDEO_09_REFUSAL = (
-    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Studio does not "
+    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Unsloth does not "
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
 # Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+# MiniMax-H3 PDD files Studio cannot run. A "without_heads" bake keeps the single original output heads and needs the
+# external PDD head bank applied per step by a custom node; loaded as a plain denoiser it renders wrong output with no
+# error. The custom-node LoRA files hold a trunk LoRA plus that bank, not a denoiser. A "with_heads" bake carries its
+# 32-head bank in the file and runs natively (video_minimax_h3_pdd). An unnamed without-heads file is caught at load
+# from its header (pdd_acc_baked metadata with single heads).
+_H3_PDD_WITHOUT_HEADS_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*without[-_ ]?heads"
+H3_PDD_WITHOUT_HEADS_REFUSAL = (
+    "This MiniMax-H3 PDD checkpoint has no head bank: it keeps the single original output heads and needs the "
+    "external PDD head bank applied per step by a custom node, which Unsloth does not have, so it would render "
+    "wrong output. Load the matching '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead, which carries "
+    "the 32 video and audio heads in the file."
+)
+_H3_PDD_BANK_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*(?:lora|_comfyui\.safetensors$)"
+_H3_PDD_BANK_REFUSAL = (
+    "This is a MiniMax-H3 PDD acceleration LoRA with an external head bank for a companion custom node, not a "
+    "denoiser Unsloth can load. Load a '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead."
+)
 _HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 _HV15_I2V_REFUSAL = (
     "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
-    "transformer and SigLIP image encoder, which Studio does not load yet. Load a HunyuanVideo-1.5 "
+    "transformer and SigLIP image encoder, which Unsloth does not load yet. Load a HunyuanVideo-1.5 "
     "text-to-video checkpoint (hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v or "
     "720p_t2v) instead."
 )
@@ -483,6 +500,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_audio_flow_shift = 3.0,
         supports_keyframes = True,
         supports_references = True,
+        unsupported_checkpoints = (
+            (_H3_PDD_WITHOUT_HEADS_RE, H3_PDD_WITHOUT_HEADS_REFUSAL),
+            (_H3_PDD_BANK_RE, _H3_PDD_BANK_REFUSAL),
+        ),
         supports_cfg = False,
     ),
     # LTX-2.5 (diffusers >= 0.40): the 22B LTX-2.3 DiT without the video FFN bias plus a keyframe position embedding,
@@ -860,14 +881,14 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])fastwan(?![a-z]))[^/\\]*[/\\]*$",
         "This is a FastVideo FastWan checkpoint. FastWan is distilled for FastVideo's own few-step "
         "sampler and sparse attention (its repos declare WanDMDPipeline, which Diffusers does not "
-        "ship), so Studio cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
+        "ship), so Unsloth cannot run it faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
         "Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
         r"(?:^|[/\\])(?=[^/\\]*(?<![a-z0-9])anyflow(?![a-z]))[^/\\]*[/\\]*$",
         "This is an NVIDIA AnyFlow checkpoint. AnyFlow is a flow-map distillation of Wan2.1 whose "
         "transformer takes a second (delta) timestep and samples through AnyFlowPipeline with "
-        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Studio loads cannot run it "
+        "FlowMapEulerDiscreteScheduler, so the Wan text-to-video pipeline Unsloth loads cannot run it "
         "faithfully. Load Wan-AI/Wan2.1-T2V-1.3B-Diffusers or Wan-AI/Wan2.1-T2V-14B-Diffusers instead.",
     ),
     (
@@ -877,7 +898,7 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"[^/\\]*[/\\]*$",
         "This is a Wan2.1 image-to-video checkpoint (I2V-14B 480P / 720P or FLF2V). It generates "
         "from a start frame through its own image-conditioned transformer and a CLIP vision "
-        "encoder, which Studio does not load yet; image-to-video support is coming. Load a Wan2.1 "
+        "encoder, which Unsloth does not load yet; image-to-video support is coming. Load a Wan2.1 "
         "text-to-video checkpoint (Wan-AI/Wan2.1-T2V-1.3B-Diffusers or "
         "Wan-AI/Wan2.1-T2V-14B-Diffusers) instead.",
     ),
@@ -889,7 +910,7 @@ _UNSUPPORTED_VIDEO_CHECKPOINTS: tuple[tuple[str, str], ...] = (
         r"(?![a-z0-9]))[^/\\]*[/\\]*$",
         "This is a Wan2.1 conditioning variant (VACE, Fun, MAGREF, Phantom, talking-head, "
         "ControlNet or ReCamMaster). Its transformer takes extra control inputs the text-to-video "
-        "pipeline does not provide, so Studio cannot run it. Load a plain Wan2.1 text-to-video "
+        "pipeline does not provide, so Unsloth cannot run it. Load a plain Wan2.1 text-to-video "
         "checkpoint instead.",
     ),
 )
@@ -940,7 +961,7 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
     # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None
-    needle = repo_id.lower()
+    needle = model_identity(repo_id).lower()
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
@@ -1446,6 +1467,9 @@ def validate_video_reference_conditioning(
 
 # (steps, guidance) per variant, matched by substring, most specific first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
+    # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
+    # are the family defaults). Its head bank was distilled for that partition.
+    ("pdd", 8, 1.0),
     ("distilled", 8, 1.0),
     # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
     ("fusionx", 8, 1.0),
@@ -1466,8 +1490,10 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 # The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
 # checkpoint itself names.
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
-    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx"))
+    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx", "pdd"))
 )
+# A PDD recipe on another family's checkpoint (a Wan file under /models/pdd/) would silently run 8 steps at CFG 1.
+_FAMILY_SCOPED_DEFAULT_KEYS = {"pdd": "minimax-h3"}
 
 
 def default_video_generation_params(
@@ -1483,7 +1509,7 @@ def default_video_generation_params(
     if family == LTX25_FAMILY:
         # The generic table's "ltx" key is the LTX-2 dev recipe, and 2.5's Diffusers pack names no variant at all.
         return LTX25_DEV_DEFAULTS if ltx25_is_dev(*identifiers) else LTX25_DISTILLED_DEFAULTS
-    variant = video_generation_variant(*identifiers)
+    variant = video_generation_variant(*identifiers, family = family)
     for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
         if key == variant:
             return steps, guidance
@@ -1510,13 +1536,19 @@ def ltx25_is_dev(*identifiers: Optional[str]) -> bool:
     return False
 
 
-def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
+def video_generation_variant(
+    *identifiers: Optional[str], family: Optional[str] = None
+) -> Optional[str]:
     """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
-    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
+    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults. Family-scoped
+    keys (``_FAMILY_SCOPED_DEFAULT_KEYS``) match only for their own family."""
     for identifier in identifiers:
-        whole = (identifier or "").lower()
+        whole = model_identity(identifier).lower()
         name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
+            scope = _FAMILY_SCOPED_DEFAULT_KEYS.get(key)
+            if scope is not None and family != scope:
+                continue
             needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".

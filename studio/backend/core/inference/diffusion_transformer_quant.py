@@ -1556,6 +1556,16 @@ def _quiet_config(cls: Any, **kwargs: Any) -> Any:
     return cls(**kwargs)
 
 
+def _install_fp8_unit_scale() -> None:
+    try:
+        import logging
+
+        from .diffusion_fp8_unit_scale import install
+        install(logger = logging.getLogger(__name__))
+    except Exception:  # noqa: BLE001 - never block a load on a speed path
+        pass
+
+
 def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     """The torchao dynamic-activation config for ``scheme`` (lazy imports per branch).
     ``fast_accum`` applies to fp8 only: None auto-detects by GPU class, True/False force it."""
@@ -1571,6 +1581,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         # activation_value_lb floors the scale: an all-zero row otherwise gives NaN.
         from torchao.quantization import PerRow
 
+        _install_fp8_unit_scale()
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
@@ -1732,7 +1743,9 @@ def quantize_transformer(
             require_bf16 = scheme in _REQUIRE_BF16_SCHEMES,
             require_divisible = divisible,
         )
-        apply_runtime_convrot(transformer, scheme, family, filter_fn, target = target, logger = logger)
+        rotated = apply_runtime_convrot(
+            transformer, scheme, family, filter_fn, target = target, logger = logger
+        )
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
@@ -1743,6 +1756,19 @@ def quantize_transformer(
         apply_zero_row_guard(transformer, scheme, family, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
+            # What diffusion_prequant_cache needs to persist this exact build.
+            transformer._unsloth_runtime_quant_info = {
+                "scheme": scheme,
+                "family": family,
+                "min_features": int(min_features),
+                "exclude_name_tokens": list(exclude),
+                "require_bf16": scheme in _REQUIRE_BF16_SCHEMES,
+                "require_divisible": divisible,
+                "fast_accum": fast_accum,
+                "convrot_group": convrot_spec_for_scheme(scheme, family)[0] if rotated else None,
+                "convrot_fqns": list(rotated or ()),
+                "dtype": str(getattr(target, "dtype", None) or _first_weight_dtype(transformer)),
+            }
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme
@@ -1789,12 +1815,28 @@ def _quantize_native(
             probe_mps_int8pack(transformer, scale_dtype, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
+            transformer._unsloth_runtime_quant_info = {"scheme": scheme, "native": True}
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
         return scheme
     except Exception as exc:  # noqa: BLE001 - a partial swap is reported by transformer_is_quantised
         _warn(logger, f"{scheme} (weight-only)", exc)
         return None
+
+
+def _first_weight_dtype(module: Any) -> Any:
+    """The dtype the dense model was loaded in: a parameter left high precision by the quant filter (norms, embeds)."""
+    try:
+        import torch
+        for param in module.parameters():
+            if (
+                type(param.data) in (torch.Tensor, torch.nn.Parameter)
+                and param.dtype.is_floating_point
+            ):
+                return param.dtype
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

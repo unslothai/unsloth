@@ -66,7 +66,7 @@ def probe_llm_compressor_for_compressed_export() -> Dict[str, Any]:
         ready = False
         consent_kind = "workspace"
         install_summary = (
-            "Unsloth will install a pinned llm-compressor into this Studio Python "
+            "Unsloth will install a pinned llm-compressor into this Unsloth Studio Python "
             "environment (torch and transformers stay pinned to your current versions)."
         )
     else:

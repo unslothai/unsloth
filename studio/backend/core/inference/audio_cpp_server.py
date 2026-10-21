@@ -19,6 +19,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -425,6 +426,25 @@ def _cpu_threads() -> Optional[int]:
     return value if value > 0 else None
 
 
+# The port is reserved, released, then bound by the server; another process can bind it in between.
+_START_ATTEMPTS = 3
+# The same pattern as lemonade_server._PORT_TAKEN (a test keeps the two equal).
+_PORT_TAKEN = re.compile(
+    r"address already in use|eaddrinuse|only one usage of each socket address|errno 98\b|errno 48\b"
+    r"|(?:winerror|errno|error)\s*:?\s*10048\b",
+    re.IGNORECASE,
+)
+
+
+class _LostPortError(Exception):
+    """The server exited because another process bound its port first."""
+
+    def __init__(self, port: int, failure: AudioCppUnavailableError):
+        super().__init__(f"port {port} was taken")
+        self.port = port
+        self.failure = failure
+
+
 def _reserve_free_port() -> tuple[socket.socket, int]:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -489,6 +509,36 @@ class AudioCppServer:
             "mode": "offline",
         }
         entry.update(model.model_options)
+        for attempt in range(1, _START_ATTEMPTS + 1):
+            try:
+                return cls._start_once(
+                    model, model_id, backend, binary, entry, cancel_event, on_process
+                )
+            except _LostPortError as lost:
+                if (
+                    attempt == _START_ATTEMPTS
+                    or is_process_shutting_down()
+                    or (cancel_event is not None and cancel_event.is_set())
+                ):
+                    raise lost.failure from None
+                logger.warning(
+                    "audiocpp_server lost port %s to another process; retrying on a new one.",
+                    lost.port,
+                )
+        raise AssertionError("unreachable: the last attempt returns or raises")
+
+    @classmethod
+    def _start_once(
+        cls,
+        model: AudioCppModel,
+        model_id: str,
+        backend: str,
+        binary: str,
+        entry: dict[str, Any],
+        cancel_event: Optional[threading.Event],
+        on_process: Optional[Any],
+    ) -> "AudioCppServer":
+        """One launch on a fresh port and config dir; ``_LostPortError`` if another process took the port."""
         config_dir = Path(tempfile.mkdtemp(prefix = "unsloth-audiocpp-"))
         reservation, port = _reserve_free_port()
         config = {
@@ -554,6 +604,13 @@ class AudioCppServer:
                     "Unsloth is shutting down; not starting audiocpp_server."
                 )
             server._wait_until_ready(cancel_event)
+        except AudioCppUnavailableError as exc:
+            # Only an exit that names the collision; read before stop() removes the log.
+            lost = not server.alive() and bool(_PORT_TAKEN.search(server.log_tail()))
+            server.stop()
+            if lost:
+                raise _LostPortError(port, exc) from exc
+            raise
         except BaseException:
             server.stop()
             raise

@@ -405,7 +405,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "llama_cpp": {
         "display_name": "llama.cpp",
-        "base_url": "http://localhost:8080/v1",
+        "base_url": "http://localhost:9931/v1",
         "default_models": [],
         "supports_streaming": True,
         "supports_vision": True,

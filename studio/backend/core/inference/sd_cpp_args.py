@@ -365,6 +365,160 @@ GRAPH_CUT_VRAM_FLAGS: tuple[str, ...] = ("--max-vram", "-1")
 GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
+# The committed "-1" is a placeholder (live server signatures compare on it); a launch swaps it for an explicit GiB
+# budget read before the spawn, so the 2 GiB reserve also covers the child's own CUDA context and cuBLAS workspaces.
+# Other negative values (UMA pinned-weight reserve) are applied by sd.cpp itself and never replaced.
+GRAPH_CUT_BUDGET_RESERVE_BYTES = 2 << 30
+GRAPH_CUT_MIN_BUDGET_BYTES = 1 << 30
+GRAPH_CUT_RETRY_SCALE = 0.75
+GRAPH_CUT_EXPLICIT_BUDGET_ENV = "UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET"
+
+
+def explicit_vram_budget_enabled(env: Optional[dict] = None) -> bool:
+    """Kill switch: ``UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET=0`` keeps sd.cpp's own "-1" free-VRAM reading."""
+    import os
+
+    environ = os.environ if env is None else env
+    return str(environ.get(GRAPH_CUT_EXPLICIT_BUDGET_ENV, "")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def graph_cut_budget_gib(
+    free_bytes: Optional[int],
+    *,
+    reserve_bytes: int = GRAPH_CUT_BUDGET_RESERVE_BYTES,
+    scale: float = 1.0,
+) -> Optional[float]:
+    """``--max-vram`` GiB for ``free_bytes`` free, or None (keep "-1"). Rounded DOWN so it never exceeds the plan."""
+    if free_bytes is None:
+        return None
+    budget = (int(free_bytes) - int(reserve_bytes)) * float(scale)
+    if budget < GRAPH_CUT_MIN_BUDGET_BYTES:
+        return None
+    return int(budget / float(1 << 30) * 100) / 100.0
+
+
+def _format_gib(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def max_vram_value(flags: Sequence[str]) -> Optional[str]:
+    items = list(flags)
+    for i, flag in enumerate(items):
+        if flag == "--max-vram":
+            return items[i + 1] if i + 1 < len(items) else None
+    return None
+
+
+def max_vram_is_auto(value: Optional[str]) -> bool:
+    if value is None or "=" in value or "," in value:
+        return False
+    try:
+        return float(value) < 0
+    except ValueError:
+        return False
+
+
+def max_vram_is_placeholder(value: Optional[str]) -> bool:
+    """Only the committed ``-1``; a computed UMA reserve (``-17.05``) is sd.cpp's to apply, not a placeholder."""
+    if not max_vram_is_auto(value):
+        return False
+    return float(value) == float(GRAPH_CUT_VRAM_FLAGS[1])  # type: ignore[arg-type]
+
+
+def with_max_vram_budget(
+    flags: Sequence[str], budget: "Optional[float | dict[str, float]]"
+) -> list[str]:
+    """Replace only the ``-1`` placeholder (dict -> ``cuda0=6.25,cuda1=12.50``), never a user or UMA-fit value."""
+    out = list(flags)
+    if not budget:
+        return out
+    for i, flag in enumerate(out):
+        if flag != "--max-vram" or i + 1 >= len(out) or not max_vram_is_placeholder(out[i + 1]):
+            continue
+        if isinstance(budget, dict):
+            out[i + 1] = ",".join(f"{name}={_format_gib(gib)}" for name, gib in budget.items())
+        else:
+            out[i + 1] = _format_gib(float(budget))
+    return out
+
+
+def explicit_max_vram_gib(flags: Sequence[str]) -> "Optional[float | dict[str, float]]":
+    value = max_vram_value(flags)
+    if value is None or max_vram_is_auto(value):
+        return None
+    try:
+        if "=" in value:
+            out: dict[str, float] = {}
+            for part in value.split(","):
+                name, _, gib = part.partition("=")
+                out[name.strip()] = float(gib)
+            return out
+        gib = float(value)
+    except ValueError:
+        return None
+    return gib if gib > 0 else None
+
+
+def scaled_vram_budget(
+    budget: "float | dict[str, float]", scale: float
+) -> "Optional[float | dict[str, float]]":
+    """``budget * scale`` per device, or None once any device falls below ``GRAPH_CUT_MIN_BUDGET_BYTES``."""
+    floor_gib = GRAPH_CUT_MIN_BUDGET_BYTES / float(1 << 30)
+
+    def one(gib: float) -> Optional[float]:
+        value = int(float(gib) * float(scale) * 100) / 100.0
+        return value if value >= floor_gib else None
+
+    if isinstance(budget, dict):
+        out = {name: one(gib) for name, gib in budget.items()}
+        if not out or any(v is None for v in out.values()):
+            return None
+        return out  # type: ignore[return-value]
+    return one(float(budget))
+
+
+# Not the model manager's "cannot make enough memory available": completed renders print it too.
+_DEVICE_OOM_MARKERS: tuple[str, ...] = (
+    "erroroutofdevicememory",
+    "out_of_device_memory",
+    "cudaerrormemoryallocation",
+    "hiperroroutofmemory",
+    "failed to allocate cuda",
+    "failed to allocate rocm",
+    "failed to allocate vulkan",
+    "failed to allocate metal",
+    "failed during workspace capacity check",
+    "failed during workspace allocation",
+    "failed during allocated capacity check",
+)
+# Bare "out of memory" counts only beside a device API name; host OOM is not cured by a smaller VRAM budget.
+_DEVICE_OOM_CONTEXT: tuple[str, ...] = ("cuda", "hip", "rocm", "vulkan", "metal", "ggml_backend")
+_HOST_OOM_MARKERS: tuple[str, ...] = (
+    "host malloc",
+    "host memory",
+    "out_of_host_memory",
+    "bad_alloc",
+    "cannot allocate memory",
+)
+
+
+def is_device_oom_text(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    for line in str(text).lower().splitlines():
+        if any(marker in line for marker in _HOST_OOM_MARKERS):
+            continue
+        if any(marker in line for marker in _DEVICE_OOM_MARKERS):
+            return True
+        if "out of memory" in line and any(word in line for word in _DEVICE_OOM_CONTEXT):
+            return True
+    return False
+
 
 def device_backend_flags(
     device_name: Optional[str], offload: Optional[list[str]] = None
@@ -530,6 +684,7 @@ def build_sd_cpp_video_command(
     *,
     output_path: str,
     offload: Optional[list[str]] = None,
+    threads: Optional[int] = None,
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
@@ -603,6 +758,8 @@ def build_sd_cpp_video_command(
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     cmd += ["--output", output_path]
+    if threads is not None:
+        cmd += ["--threads", str(int(threads))]
     offload = list(offload or [])
     if offload:
         cmd += offload

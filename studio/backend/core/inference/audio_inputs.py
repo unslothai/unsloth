@@ -176,7 +176,7 @@ def transcode(
         try:
             container = _av_open(av, str(src))
         except Exception as exc:  # noqa: BLE001 - not a container PyAV knows
-            raise AudioInputError(400, "This file is not audio Studio can read.") from exc
+            raise AudioInputError(400, "This file is not audio Unsloth can read.") from exc
         with container:
             if not container.streams.audio:
                 raise AudioInputError(400, "This file has no audio stream.")
@@ -209,7 +209,7 @@ def transcode(
                 raise
             except Exception as exc:  # noqa: BLE001 - a corrupt stream mid-file keeps what decoded
                 if not frames:
-                    raise AudioInputError(400, "This file is not audio Studio can read.") from exc
+                    raise AudioInputError(400, "This file is not audio Unsloth can read.") from exc
                 logger.info("audio_inputs: decode stopped early after %d frames: %s", frames, exc)
         if out is not None:
             out.close()
