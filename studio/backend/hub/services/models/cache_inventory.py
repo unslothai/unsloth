@@ -51,6 +51,7 @@ from utils.hidden_models import (
     is_audio_cpp_repo_id,
     is_curated_stt_repo_id,
     is_curated_tts_repo_id,
+    is_decision_api_model,
     is_hidden_model,
 )
 
@@ -637,8 +638,13 @@ def _scan_cached_gguf(
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
                 is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
-                # Hide infra repos unless the user downloaded a variant: variant state only exists for user downloads, and curated STT repos are still emitted as management rows.
-                if is_hidden_infra and not is_curated_stt and not has_variant_state:
+                # Hide infra repos unless the user downloaded a variant: variant state only exists for user downloads, and curated STT and Decision API repos are still emitted as management rows.
+                if (
+                    is_hidden_infra
+                    and not is_curated_stt
+                    and not has_variant_state
+                    and not is_decision_api_model(repo_id)
+                ):
                     continue
                 if total_size == 0 and not has_variant_state:
                     continue
@@ -1210,7 +1216,12 @@ def _scan_cached_models(
                 is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
                 snapshot_metadata = _cached_model_local_metadata(repo_path, snapshot_path)
                 is_whisper_stt = bool(snapshot_metadata.get("_hidden_stt"))
-                if is_hidden_infra and not is_curated_stt and not is_whisper_stt:
+                if (
+                    is_hidden_infra
+                    and not is_curated_stt
+                    and not is_whisper_stt
+                    and not is_decision_api_model(repo_id)
+                ):
                     continue
                 has_main_gguf = _repo_has_gguf_files(repo_info)
                 payload = _repo_non_gguf_model_payload(repo_info)

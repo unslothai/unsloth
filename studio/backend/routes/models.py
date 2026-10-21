@@ -144,6 +144,7 @@ from utils.hidden_models import (
     _HF_REPO_ID_RE,
     _existing_resolved_path,
     _safe_resolve,
+    decision_api_repo_ids,
     is_hidden_model as _is_hidden_model,
 )
 
@@ -160,7 +161,7 @@ def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
         "ggml-org/models",
         "stories260k.gguf",
     ]
-    exact_ids: list[str] = []
+    exact_ids = sorted(decision_api_repo_ids())
     exact_paths: list[str] = []
     for model in (
         rag_config.effective_embedding_model(),

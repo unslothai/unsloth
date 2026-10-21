@@ -76,6 +76,26 @@ def is_audio_cpp_repo_id(value: str | None) -> bool:
     return bool(value and value.strip().lower() in _HIDDEN_AUDIO_CPP_REPO_IDS_LOWER)
 
 
+def decision_api_repo_ids() -> set[str]:
+    from core.systemone.catalog import CHECKPOINTS, GGUF_COMPANIONS
+    return {c.source.lower() for c in CHECKPOINTS.values()} | {
+        c.repo.lower() for c in GGUF_COMPANIONS.values()
+    }
+
+
+def is_decision_api_model(*values: str | None) -> bool:
+    repo_ids = decision_api_repo_ids()
+    for value in values:
+        if not value:
+            continue
+        if _HF_REPO_ID_RE.match(value):
+            if value.lower() in repo_ids:
+                return True
+        elif _path_contains_repo_id(value, repo_ids):
+            return True
+    return False
+
+
 def is_curated_stt_repo_id(value: str | None) -> bool:
     """True only for Unsloth's exact curated STT Hub repositories. Still hidden from chat, but task-scoped inventory consumers need the real cache rows so the Audio page need not reimplement size, format, variants and lifecycle."""
     return bool(value and value.strip().lower() in _HIDDEN_STT_REPO_IDS_LOWER)
@@ -173,6 +193,7 @@ def is_hidden_model(*values: str | None) -> bool:
         *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
         *_HIDDEN_STT_REPO_IDS_LOWER,
         *_HIDDEN_AUDIO_CPP_REPO_IDS_LOWER,
+        *decision_api_repo_ids(),
     }
     exact_paths: list[str] = []
     for model in {

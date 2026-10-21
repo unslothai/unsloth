@@ -88,6 +88,7 @@ from utils.api_errors import (
     openai_error_body,
 )
 from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
+from utils.hidden_models import is_decision_api_model
 from utils.first_token_timeout import (
     finish_first_token_wait,
     socket_timeout,
@@ -18894,6 +18895,14 @@ async def load_model_gated(
     return mid-load and hide a late failure in an unread body. This blocks until the
     model is resident and raises the real exception.
     """
+    if is_decision_api_model(request.model_path):
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "This is a Decision API model, not a chat model. "
+                "Use it from Settings > API > Decision API (POST /v1/systemone)."
+            ),
+        )
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
