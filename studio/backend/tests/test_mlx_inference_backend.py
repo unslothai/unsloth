@@ -1216,8 +1216,8 @@ def test_a_load_falling_back_to_mlx_lm_plans_auto_offload_again(monkeypatch, dec
 
     def resolve(model_dir, knobs, **kw):
         plans.append((knobs, kw["vision"]))
-        # Pricing the mlx-vlm route fails as its load did; mlx-lm needs every expert on disk.
-        return (None, None) if kw["vision"] else (None, 1.0)
+        # A plan for the mlx-vlm route differs from the one mlx-lm needs, so a reused plan shows.
+        return (None, 0.25) if kw["vision"] else (None, 1.0)
 
     loader = types.ModuleType("unsloth_zoo.mlx.loader")
     loader.FastMLXModel = _Loader

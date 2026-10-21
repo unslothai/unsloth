@@ -5160,7 +5160,6 @@ class MLXInferenceBackend:
             use_vlm = False
             load_kwargs["text_only"] = True
             # Auto planned on the mlx-vlm route, and decide() consumed its knobs: plan this route afresh.
-            load_kwargs.pop("offload", None)
             offload = offload_request()
             load_kwargs.update(offload["kwargs"])
             model, tokenizer_or_processor = _load_offloading(
