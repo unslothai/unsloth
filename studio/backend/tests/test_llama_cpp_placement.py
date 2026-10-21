@@ -6110,7 +6110,8 @@ def test_discrete_tier_subset_is_not_charged_host_checkpoints(tmp_path, monkeypa
     )
     assert got == "1"
     # The APU candidate makes the pool pay; the dGPU-only subset does not.
-    assert seen and seen[-1][1] == 0 and seen[-1][0] < 16_384
+    dgpu = [ckpts for budget, ckpts in seen if budget < 16_384]
+    assert dgpu and all(ckpts == 0 for ckpts in dgpu)
 
 
 def _host_projector_launch(tmp_path, monkeypatch, memory, rocm, gguf_gb):
