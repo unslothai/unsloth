@@ -1839,6 +1839,49 @@ def get_model_name(
     return new_model_name
 
 
+def _refuse_unless_private(path, what):
+    """On POSIX, refuse a path that is a symlink, not ours, or writable by group/other."""
+    import stat
+
+    if not hasattr(os, "getuid"):
+        return
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+        raise RuntimeError(
+            f"Unsloth: refusing {what} that is a symlink or owned by another user: {path}"
+        )
+    if stat.S_IMODE(info.st_mode) & 0o022:
+        raise RuntimeError(
+            f"Unsloth: refusing a group- or world-writable {what} "
+            f"(mode {stat.S_IMODE(info.st_mode):04o}): {path}"
+        )
+
+
+def _private_fp8_cache_dir():
+    """Per-user 0700 root for fp8 artifacts. The shared /tmp lets another account pre-create
+    a predictable artifact name and have it loaded (with trust_remote_code) as this user."""
+    if hasattr(os, "getuid"):
+        directory = os.path.join(tempfile.gettempdir(), "unsloth-fp8-%d" % os.getuid())
+    else:
+        # No owner check on Windows, and TEMP can be shared (services, build agents), so use the
+        # profile's LocalAppData, which Windows ACLs to this account.
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), "AppData", "Local"
+        )
+        directory = os.path.join(base, "unsloth", "fp8-cache")
+    os.makedirs(directory, mode = 0o700, exist_ok = True)
+    if hasattr(os, "getuid"):
+        info = os.lstat(directory)
+        # exist_ok does not apply mode, so tighten one of ours; anyone else's is refused below.
+        if not os.path.islink(directory) and info.st_uid == os.getuid() and info.st_mode & 0o077:
+            try:
+                os.chmod(directory, 0o700)
+            except OSError:
+                pass
+    _refuse_unless_private(directory, "an fp8 cache directory")
+    return directory
+
+
 def _offline_quantize_to_fp8(
     model_name: str,
     fp8_mode: str,
@@ -1884,7 +1927,8 @@ def _offline_quantize_to_fp8(
             text_config = candidate
             is_vlm = False
 
-    temp_dir = tempfile.gettempdir()
+    temp_dir = _private_fp8_cache_dir()
+    # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
     # The basename alone would let org-a/model and org-b/model share one artifact.
     source = os.path.abspath(model_name) if os.path.isdir(model_name) else model_name
@@ -1898,6 +1942,8 @@ def _offline_quantize_to_fp8(
         cache_name += "-text-only"
     new_model_name = os.path.join(temp_dir, cache_name)
     print(f"Unsloth: Quantizing '{model_name}' to fp8, using model_name='{new_model_name}' instead")
+    if os.path.lexists(new_model_name):
+        _refuse_unless_private(new_model_name, "a cached fp8 artifact")
 
     if not os.path.isdir(new_model_name):
         from ._utils import _apply_text_only_key_mapping
