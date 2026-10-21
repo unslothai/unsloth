@@ -27714,10 +27714,55 @@ class LlamaCppBackend:
                     _cpu_draft_path = _mtp_draft_for_budget if _draft_on_cpu else None
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
+
                     # A drafter partly off the card (a positive -ngld below its depth, or a
                     # draft tensor override) has an unpriced card share: the sidecar reserve
                     # and the Metal Auto drop both read this one answer, so neither charges
                     # the whole file for it.
+                    def _sidecar_planned_device_count() -> int:
+                        # The child's devices as planned now: the selected GPUs, unless
+                        # surviving --device extras or LLAMA_ARG_DEVICE name them.
+                        count = len(gpu_indices if gpu_indices is not None else _detected_gpus)
+                        if not _gpu_ids_own_device_flags:
+                            named = _extra_args_main_device(extra_args) or os.environ.get(
+                                "LLAMA_ARG_DEVICE"
+                            )
+                            if named:
+                                count = _distinct_device_count(named)
+                        return count
+
+                    def _draft_on_target_device_now(apple_budget_mib: Optional[int] = None) -> bool:
+                        # A draft pinned to another device allocates there: only a pin naming
+                        # the target's device (MTL0, or Vulkan0 under MoltenVK, on Apple
+                        # Silicon) is charged to it. Read when called: GPU selection moves.
+                        pin = _extra_args_draft_device_pin(extra_args)
+                        if pin is None:
+                            return True
+                        # Passed by a caller ahead of the unified-memory budget (discrete: 0).
+                        apple = _apple_budget_mib if apple_budget_mib is None else apple_budget_mib
+                        # The picker strips competing --device extras at emission.
+                        main = _extra_args_main_device(
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        if main is None and not _gpu_ids_own_device_flags:
+                            main = os.environ.get("LLAMA_ARG_DEVICE") or None
+                        if main is None and is_vulkan_backend:
+                            ids = (
+                                gpu_indices
+                                if gpu_indices is not None
+                                else [g[0] for g in _detected_gpus]
+                            )
+                            main = f"Vulkan{ids[0]}" if ids else ("Vulkan0" if apple > 0 else None)
+                        elif main is None and apple > 0:
+                            main = "MTL0"
+                        elif main is None and _CUDA_LIKE_DEVICE_RE.match(pin.strip()):
+                            # CUDA / ROCm: the picker remaps pins into the child's mask, so
+                            # only the spawned argv can tell (_spawn_draft_on_target).
+                            return True
+                        return bool(main) and pin.strip().lower() == main.strip().lower()
+
                     _draft_share_unknown = bool(
                         _mtp_draft_for_budget
                         and _draft_card_share_unknown(
@@ -28353,6 +28398,8 @@ class LlamaCppBackend:
                         and not _draft_cpu_no_embedded
                         # A partly offloaded drafter's card share is unpriced (as below).
                         and not _draft_share_unknown
+                        # A drafter pinned to another device does not crowd this one.
+                        and _draft_on_target_device_now(apple_budget_mib = 0)
                         and not tensor_parallel
                         and gpus
                         and effective_ctx > 0
@@ -28790,52 +28837,6 @@ class LlamaCppBackend:
 
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
-
-                    def _sidecar_planned_device_count() -> int:
-                        # The child's devices as planned now: the selected GPUs, unless
-                        # surviving --device extras or LLAMA_ARG_DEVICE name them.
-                        count = len(gpu_indices if gpu_indices is not None else _detected_gpus)
-                        if not _gpu_ids_own_device_flags:
-                            named = _extra_args_main_device(extra_args) or os.environ.get(
-                                "LLAMA_ARG_DEVICE"
-                            )
-                            if named:
-                                count = _distinct_device_count(named)
-                        return count
-
-                    def _draft_on_target_device_now() -> bool:
-                        # A draft pinned to another device allocates there: only a pin naming
-                        # the target's device (MTL0, or Vulkan0 under MoltenVK, on Apple
-                        # Silicon) is charged to it. Read when called: GPU selection moves.
-                        pin = _extra_args_draft_device_pin(extra_args)
-                        if pin is None:
-                            return True
-                        # The picker strips competing --device extras at emission.
-                        main = _extra_args_main_device(
-                            self._strip_device_extra_args(extra_args)
-                            if _gpu_ids_own_device_flags
-                            else extra_args
-                        )
-                        if main is None and not _gpu_ids_own_device_flags:
-                            main = os.environ.get("LLAMA_ARG_DEVICE") or None
-                        if main is None and is_vulkan_backend:
-                            ids = (
-                                gpu_indices
-                                if gpu_indices is not None
-                                else [g[0] for g in _detected_gpus]
-                            )
-                            main = (
-                                f"Vulkan{ids[0]}"
-                                if ids
-                                else ("Vulkan0" if _apple_budget_mib > 0 else None)
-                            )
-                        elif main is None and _apple_budget_mib > 0:
-                            main = "MTL0"
-                        elif main is None and _CUDA_LIKE_DEVICE_RE.match(pin.strip()):
-                            # CUDA / ROCm: the picker remaps pins into the child's mask, so
-                            # only the spawned argv can tell (_spawn_draft_on_target).
-                            return True
-                        return bool(main) and pin.strip().lower() == main.strip().lower()
 
                     if tensor_parallel and tp_gpus:
                         # Pooled usable budget (after each device's compute buffer)
@@ -30280,7 +30281,14 @@ class LlamaCppBackend:
                                 )
                             except ValueError:
                                 pass  # a malformed -c is the launch's error to report, not this
-                            _ub = _draft_n_ubatch(run_args, child_env) or _ub
+                            # llama_context caps every context's micro-batch at its batch, and
+                            # the draft context inherits the target's --batch-size.
+                            _draft_ub = _draft_n_ubatch(run_args, child_env)
+                            if _draft_ub:
+                                _ub = min(
+                                    _draft_ub,
+                                    _named_batch_sizes(run_args, child_env)[0] & 0xFFFFFFFF,
+                                )
                             _v = self._estimate_mtp_overhead_bytes(
                                 _ctx,
                                 spec_draft_n_max = _n,
@@ -33084,6 +33092,8 @@ class LlamaCppBackend:
                 _companion_added_device: Optional[list[str]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
+                # The parent's own view when no mask is written; a mask replaces the tuple.
+                _parent_view_gpu_ids = _child_gpu_physical_ids
 
                 # The CUDA SM gate goes here, where the child's GPU visibility is
                 # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so no
@@ -33644,15 +33654,15 @@ class LlamaCppBackend:
                         _spawn_devices = _extra_args_main_device(run_cmd) or env.get(
                             "LLAMA_ARG_DEVICE"
                         )
-                        # No mask (None) means the child sees every detected card.
+                        # Unmasked (no tuple, or still the parent's view) the child sees every
+                        # detected card; a written mask is exact.
                         _spawn_device_count = (
                             _distinct_device_count(_spawn_devices)
                             if _spawn_devices
-                            else len(
-                                _child_gpu_physical_ids
-                                if _child_gpu_physical_ids is not None
-                                else _detected_gpus
-                            )
+                            else max(len(_child_gpu_physical_ids or ()), len(_detected_gpus))
+                            if _child_gpu_physical_ids is None
+                            or _child_gpu_physical_ids is _parent_view_gpu_ids
+                            else len(_child_gpu_physical_ids)
                         )
                         if _sidecar_fit_reserve_eligible_mib:
                             # Re-derived each spawn, so it can fall as well as rise: drop

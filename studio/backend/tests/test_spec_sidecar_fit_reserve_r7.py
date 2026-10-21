@@ -37,6 +37,12 @@ def _studio_home(tmp_path, monkeypatch):
     monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
 
 
+@pytest.fixture
+def _discrete(monkeypatch):
+    # A discrete CUDA host on every runner: macOS would otherwise take the Metal path.
+    monkeypatch.setattr(_lc, "_metal_capable_host", lambda: False)
+
+
 def _dspark(backend, gguf, tmp_path, **kw):
     return _placement._launch(
         backend,
@@ -47,20 +53,22 @@ def _dspark(backend, gguf, tmp_path, **kw):
     )["cmd"]
 
 
-def test_a_launch_the_arch_gate_narrows_to_one_card_gets_the_reserve(tmp_path):
+def test_a_launch_the_arch_gate_narrows_to_one_card_gets_the_reserve(tmp_path, _discrete):
     backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
     backend._arch_gate_survivors = lambda binary = None: [1]
     assert _r4._margin(_dspark(backend, gguf, tmp_path)) >= _FLOOR
 
 
-def test_a_launch_left_on_two_cards_gets_no_reserve(tmp_path):
+def test_a_launch_left_on_two_cards_gets_no_reserve(tmp_path, _discrete):
     backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
     backend._arch_gate_survivors = lambda binary = None: []
     assert _r4._margin(_dspark(backend, gguf, tmp_path)) < _FLOOR
 
 
 @pytest.mark.parametrize("pin, reserved", [("CUDA1", True), ("CUDA0", False)])
-def test_an_inherited_target_device_decides_the_draft_pin(tmp_path, monkeypatch, pin, reserved):
+def test_an_inherited_target_device_decides_the_draft_pin(
+    tmp_path, monkeypatch, _discrete, pin, reserved
+):
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA1")
     backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
     cmd = _dspark(backend, gguf, tmp_path, extra_args = ["--spec-draft-device", pin])
@@ -85,7 +93,7 @@ def test_the_spawned_argv_decides_a_cuda_draft_pin(argv, devices, on_target):
     assert _lc._spawn_draft_on_target(argv, devices) is on_target
 
 
-def test_a_trailing_zero_context_is_priced_at_the_native_length(tmp_path):
+def test_a_trailing_zero_context_is_priced_at_the_native_length(tmp_path, _discrete):
     backend, gguf = _r2._cuda_backend(tmp_path)
     backend._context_length = 131072
     per_token = 64 * 1024  # 8 GiB of draft KV at the native 131072
@@ -102,8 +110,8 @@ def test_a_trailing_zero_context_is_priced_at_the_native_length(tmp_path):
         n_ctx = 4096,
         extra_args = ["-c", "0"],
     )
-    assert _r2._last(cmd, "-c") == "0"
-    assert _r4._margin(cmd) >= 16 * 1024
+    assert _r2._last(cmd, "-c") == "0", cmd
+    assert _r4._margin(cmd) >= 16 * 1024, cmd
 
 
 def test_a_repeated_cleanup_keeps_the_users_identical_margin():
@@ -163,7 +171,7 @@ def test_an_unread_native_length_prices_the_fitters_minimum_context():
 
 
 @pytest.mark.parametrize("extras", [("-ngld", "1"), ("-otd", "blk\\.0\\.=CPU")])
-def test_a_partly_placed_drafter_keeps_its_compute_floor(tmp_path, extras):
+def test_a_partly_placed_drafter_keeps_its_compute_floor(tmp_path, _discrete, extras):
     backend, gguf = _r2._cuda_backend(tmp_path)
     margin = _r4._margin(_dspark(backend, gguf, tmp_path, extra_args = list(extras)))
     floor = math.ceil(_lc.LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024))

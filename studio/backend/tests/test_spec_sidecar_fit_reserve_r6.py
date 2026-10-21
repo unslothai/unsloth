@@ -489,7 +489,10 @@ def test_fewer_final_slots_lower_the_reserve(tmp_path):
 
 @pytest.mark.parametrize(
     "extras, env",
-    [(("--spec-draft-n-ubatch", "4096"), {}), ((), {"LLAMA_ARG_SPEC_DRAFT_N_UBATCH": "4096"})],
+    [
+        (("--batch-size", "4096", "--spec-draft-n-ubatch", "4096"), {}),
+        ((), {"LLAMA_ARG_BATCH": "4096", "LLAMA_ARG_SPEC_DRAFT_N_UBATCH": "4096"}),
+    ],
     ids = ["flag", "env"],
 )
 def test_the_draft_micro_batch_is_priced(tmp_path, monkeypatch, extras, env):
@@ -514,6 +517,23 @@ def test_the_draft_micro_batch_is_priced(tmp_path, monkeypatch, extras, env):
         extra_args = extras,
     )["cmd"]
     assert _r4._margin(cmd) >= _FLOOR + 4096
+
+
+def test_the_draft_micro_batch_is_capped_at_the_batch(tmp_path):
+    """llama_context caps n_ubatch at n_batch; the draft context inherits the target's 2048."""
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    backend._estimate_mtp_overhead_bytes = lambda n_ctx, n_ubatch = None, **kw: (
+        8 * _GIB + int(n_ubatch or 512) * 1024 * 1024
+    )
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        n_ctx = 4096,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = ["--spec-draft-n-ubatch", "8192"],
+    )["cmd"]
+    assert _FLOOR + 2048 <= _r4._margin(cmd) < _FLOOR + 4096
 
 
 def test_a_zero_draft_micro_batch_follows_the_target():
