@@ -11,6 +11,7 @@ import {
   loadedEngineChoice,
   nativeLoadAdvanced,
   nativeReloadTarget,
+  offersCompiledLoraReload,
   offersNativeLoraReload,
   reapplyChangesEngine,
   reapplyTarget,
@@ -89,6 +90,16 @@ test("the loaded build's select value follows the backend's engine provenance", 
   assert.equal(loadedEngineChoice(resolved({ source: "auto", requested: null, value: "diffusers" })), "auto");
   assert.equal(loadedEngineChoice(ggufOnDiffusers), "auto");
   assert.equal(loadedEngineChoice({ loaded: false, resolved: { engine: { source: "explicit", requested: "sd_cpp" } } }), "auto");
+});
+
+test("the LoRA note offers a plain reload once Speed=Auto compiled LoRA off", () => {
+  const compiled = { loaded: true, engine: "diffusers", supports_lora: false, lora_after_reload: true };
+  assert.equal(offersCompiledLoraReload(compiled), true);
+  assert.equal(offersCompiledLoraReload({ ...compiled, lora_after_reload: false }), false);
+  assert.equal(offersCompiledLoraReload({ ...compiled, supports_lora: true }), false);
+  // An older backend sends no field.
+  assert.equal(offersCompiledLoraReload({ loaded: true, supports_lora: false }), false);
+  assert.equal(offersCompiledLoraReload({ loaded: false, lora_after_reload: true }), false);
 });
 
 test("the LoRA note offers a native reload only where it would turn LoRA on", () => {

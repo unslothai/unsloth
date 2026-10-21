@@ -3487,7 +3487,7 @@ def _gguf_repo_unreadable_message(
 ) -> str:
     if error is None:
         return (
-            f"Could not load the GGUF repo '{repo_id}': Studio is offline and the repo is not "
+            f"Could not load the GGUF repo '{repo_id}': Unsloth is offline and the repo is not "
             "in the local cache. Connect to the internet once to download it, then try again."
         )
     status = getattr(getattr(error, "response", None), "status_code", None)
@@ -3501,7 +3501,7 @@ def _gguf_repo_unreadable_message(
         # Anonymous access could not answer either: private, gated or missing without it.
         return (
             f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
-            f"{HUB_TOKEN_REJECTED_ERROR} If Studio reaches the Hub through a proxy, mirror "
+            f"{HUB_TOKEN_REJECTED_ERROR} If Unsloth reaches the Hub through a proxy, mirror "
             "or HF_ENDPOINT, check that as well."
         )
     return (
