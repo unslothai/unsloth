@@ -7,8 +7,9 @@ Order of preference on a multi-card selection: companion split (diffusion_multig
 one-card offload plan. A layer split is only considered when the one-card plan offloads the DENOISER itself and the
 companion assignment found nothing; it is priced with the same per-card reserves as the companion split. The VAE and
 every non-text-encoder companion stay on the primary (the decode and its tile verdict stay where today's guard reads
-them); the text encoders may move to any used card. One card, Keep multiple models loaded, ROCm and the kill switches
-keep today's plan unchanged.
+them); the text encoders may move to any used card. One card, Keep multiple models loaded and the kill switches keep
+today's plan unchanged. ROCm splits across discrete cards only (an APU's memory is the host's: a split across "cards"
+sharing one pool frees nothing), and a per-gfx-target attention kernel keeps blocks on cards of the primary's target.
 
 The engine (block placement + device-crossing hooks) is a separate piece; this module only defines the interface it
 must provide (``split_blocks``, ``engine_available``, ``place_layer_split``, ``undo_layer_split``) with stubs that keep
@@ -545,11 +546,67 @@ def _record_decline(pipe: Any, reason: str, logger: Any) -> None:
 
 
 def _is_rocm() -> bool:
+    from .diffusion_multigpu import _rocm_torch
+    return _rocm_torch()
+
+
+UNIFIED_DECLINE = "unified memory"
+
+
+def _rocm_card_unified(ordinal: int) -> Optional[bool]:
+    """True for a ROCm APU (Strix Halo / Point, Phoenix: the GPU's memory is the host's), False for a discrete card,
+    None when unreadable. Studio's own classifier (the driver's integrated flag, then the gfx target)."""
     try:
         import torch
-        return bool(getattr(torch.version, "hip", None))
+
+        from utils.hardware.hardware import _rocm_props_unified_status
+        return _rocm_props_unified_status(torch.cuda.get_device_properties(int(ordinal)))
     except Exception:  # noqa: BLE001
-        return False
+        return None
+
+
+def _unified_reason(cards: Sequence[int]) -> str:
+    names = ", ".join(f"cuda:{int(o)}" for o in cards)
+    what = "is an integrated GPU (APU)" if len(cards) == 1 else "are integrated GPUs (APUs)"
+    return (
+        f"{UNIFIED_DECLINE}: {names} {what} sharing system memory, so cutting the denoiser across cards frees no "
+        "memory"
+    )
+
+
+def note_unified_primary(
+    pipe: Any,
+    selection: Any,
+    logger: Any = None,
+) -> None:
+    """``refine_plan_for_multigpu`` stopped on a unified-memory primary: on ROCm say why in the layer split status (a
+    multi-APU selection is otherwise silent). CUDA keeps today's silent no-op."""
+    if selection is None or layer_split_mode() == "off" or not _is_rocm():
+        return
+    _record_decline(pipe, _unified_reason((int(selection.primary),)), logger)
+
+
+def _rocm_discrete_secondaries(
+    pipe: Any, primary: int, secondaries: Sequence[int], logger: Any
+) -> Optional[tuple[int, ...]]:
+    """ROCm: the secondaries a split may use (discrete cards); None after recording a decline. A unified primary
+    declines (its blocks and the host share one pool); a unified secondary is dropped (its blocks would sit in host
+    memory). An unreadable card is kept: the per-card budgets below still price it."""
+    if _rocm_card_unified(primary) is True:
+        _record_decline(pipe, _unified_reason((int(primary),)), logger)
+        return None
+    unified = tuple(int(o) for o in secondaries if _rocm_card_unified(int(o)) is True)
+    kept = tuple(int(o) for o in secondaries if int(o) not in unified)
+    if not kept:
+        _record_decline(pipe, _unified_reason(unified), logger)
+        return None
+    if unified and logger is not None:
+        logger.info(
+            "diffusion.multigpu: layer split skips %s (%s)",
+            ", ".join(f"cuda:{o}" for o in unified),
+            UNIFIED_DECLINE,
+        )
+    return kept
 
 
 def plan_offloads_denoiser(plan: Any) -> bool:
@@ -630,12 +687,80 @@ def _backend_cards(
                 backend = tag
                 break
     cards = tuple(int(o) for o in secondaries)
+    if _is_rocm():
+        return _rocm_backend_cards(pipe, primary, cards)
     if backend is None:
         return cards, None
     need = mg._capability(primary)
     if need is None:
         return cards, backend
     return tuple(o for o in cards if (mg._capability(o) or need) == need), backend
+
+
+# ROCm kernels built per gfx target: ROCm flash_attn (CK / Triton, #13792) and AITER.
+_ROCM_ARCH_BACKENDS = frozenset({"flash", "aiter"})
+
+
+def _rocm_gfx(ordinal: int) -> str:
+    try:
+        import torch
+
+        from .rocm_bf16 import _device_gfx_arch
+        return _device_gfx_arch(torch, int(ordinal))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _denoiser_dtype(module: Any) -> Any:
+    try:
+        return next(module.parameters()).dtype
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _rocm_flash_runs_on(ordinal: int, dtype: Any) -> bool:
+    try:
+        from types import SimpleNamespace
+
+        from .diffusion_attention import _rocm_flash_attn_runs
+        return bool(
+            _rocm_flash_attn_runs(
+                SimpleNamespace(device = "cuda", torch_device = f"cuda:{int(ordinal)}", dtype = dtype)
+            )
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _rocm_backend_cards(
+    pipe: Any, primary: int, cards: tuple[int, ...]
+) -> tuple[tuple[int, ...], Optional[str]]:
+    """ROCm: native SDPA runs on any gfx target (the load dtype is already matched by ``make_selection``), so every
+    card is kept. A per-target kernel (flash_attn, AITER) the primary verified keeps only cards of the primary's gfx
+    target, and flash only where its own probe runs and matches on that card (as the primary's did at load)."""
+    from . import diffusion_multigpu as mg
+
+    backend = module = None
+    with contextlib.suppress(Exception):
+        from .diffusion_attention import ATTENTION_BACKEND_ATTR
+        for name in mg.DENOISER_ATTRS:
+            candidate = getattr(pipe, name, None)
+            tag = (
+                getattr(candidate, ATTENTION_BACKEND_ATTR, None) if candidate is not None else None
+            )
+            if tag in _ROCM_ARCH_BACKENDS:
+                backend, module = tag, candidate
+                break
+    if backend is None:
+        return cards, None
+    need = _rocm_gfx(primary)
+    if not need:
+        return (), backend
+    kept = tuple(o for o in cards if _rocm_gfx(o) == need)
+    if backend == "flash":
+        dtype = _denoiser_dtype(module)
+        kept = tuple(o for o in kept if _rocm_flash_runs_on(o, dtype))
+    return kept, backend
 
 
 def refine_plan_for_layer_split(
@@ -658,15 +783,17 @@ def refine_plan_for_layer_split(
         return plan
     if not plan_offloads_denoiser(plan) and mode != "force":
         return plan
+    candidates: Sequence[int] = selection.secondaries
     if _is_rocm():
-        _record_decline(pipe, "ROCm (layer split is CUDA only)", logger)
-        return plan
+        candidates = _rocm_discrete_secondaries(pipe, int(selection.primary), candidates, logger)
+        if candidates is None:
+            return plan
     layouts = _denoiser_layouts(pipe)
     if layouts is None:
         _record_decline(pipe, f"denoiser cannot be split ({_layout_refusal(pipe)})", logger)
         return plan
     limits: dict[int, int] = {int(selection.primary): int(primary_limit_mib)}
-    secondaries, backend = _backend_cards(pipe, int(selection.primary), selection.secondaries)
+    secondaries, backend = _backend_cards(pipe, int(selection.primary), candidates)
     if not secondaries:
         _record_decline(
             pipe,

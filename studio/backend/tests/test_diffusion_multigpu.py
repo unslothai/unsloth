@@ -39,6 +39,7 @@ def _env(monkeypatch):
     # Keep make_selection's real-host filters from collapsing fake [0, 1] selections on a one-GPU host.
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
     monkeypatch.setattr(mg, "_capability", lambda o: None)
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
     yield
 
 
@@ -1846,6 +1847,8 @@ def test_two_discrete_rocm_cards_split_like_cuda(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     monkeypatch.setattr(mg, "_capability", lambda o: (11, 0))  # gfx1100, as ROCm reports it
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: True)
+    monkeypatch.setattr(mg, "_rocm_bf16", lambda o: True)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
     selection = mg.make_selection(0, [0, 1])
     assert selection == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
