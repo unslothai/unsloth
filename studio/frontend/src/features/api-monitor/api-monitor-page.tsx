@@ -27,6 +27,7 @@ import type { ApiMonitorResponse } from "@/features/chat/types/api";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {
+  ApiExampleContext,
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
@@ -1105,6 +1106,7 @@ export function ApiMonitorPage(): ReactElement {
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const activeModel = data?.active_model ?? null;
+  const apiExample = useMemo(() => ({ baseUrl }), [baseUrl]);
   const now = useServerNow(data?.server_time);
   const served = useMemo(
     () => servedModels(loadedModels, activeModel),
@@ -1323,43 +1325,45 @@ export function ApiMonitorPage(): ReactElement {
             </div>
           </div>
           <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
-            <ApiModelLoadControls
-              runtime={runtime}
-              activeModel={data?.active_model}
-              residencyKey={residencyKey}
-              onSettled={refresh}
-              onUnloadActive={unloadActiveModel}
-              unloading={ejecting}
-              configRequest={configRequest}
-              onConfigRequestAdopted={() => setConfigRequest(null)}
-              onEjectAll={() => void ejectAll()}
-            >
-              <ToolbarTooltip label={ejectLabel}>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() =>
-                    void (served.length > 1
-                      ? ejectAll()
-                      : ejectServed(served[0]))
-                  }
-                  disabled={ejecting || modelLoading || served.length === 0}
-                  className="h-9 gap-1.5 rounded-full px-3.5"
-                >
-                  <HugeiconsIcon
-                    icon={RemoveCircleIcon}
-                    strokeWidth={1.75}
-                    className={cn("size-4", ejecting && "animate-pulse")}
-                  />
-                  {ejecting
-                    ? "Ejecting"
-                    : served.length > 1
-                      ? "Eject all"
-                      : "Eject"}
-                </Button>
-              </ToolbarTooltip>
-            </ApiModelLoadControls>
+            <ApiExampleContext.Provider value={apiExample}>
+              <ApiModelLoadControls
+                runtime={runtime}
+                activeModel={data?.active_model}
+                residencyKey={residencyKey}
+                onSettled={refresh}
+                onUnloadActive={unloadActiveModel}
+                unloading={ejecting}
+                configRequest={configRequest}
+                onConfigRequestAdopted={() => setConfigRequest(null)}
+                onEjectAll={() => void ejectAll()}
+              >
+                <ToolbarTooltip label={ejectLabel}>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void (served.length > 1
+                        ? ejectAll()
+                        : ejectServed(served[0]))
+                    }
+                    disabled={ejecting || modelLoading || served.length === 0}
+                    className="h-9 gap-1.5 rounded-full px-3.5"
+                  >
+                    <HugeiconsIcon
+                      icon={RemoveCircleIcon}
+                      strokeWidth={1.75}
+                      className={cn("size-4", ejecting && "animate-pulse")}
+                    />
+                    {ejecting
+                      ? "Ejecting"
+                      : served.length > 1
+                        ? "Eject all"
+                        : "Eject"}
+                  </Button>
+                </ToolbarTooltip>
+              </ApiModelLoadControls>
+            </ApiExampleContext.Provider>
           </div>
         </div>
         <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>

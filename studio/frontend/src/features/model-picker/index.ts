@@ -25,6 +25,7 @@ export {
   snapToStep,
 } from "./components/numeric-value-input";
 export { ModelConfigPage } from "./components/model-config-page";
+export { ApiExampleContext } from "./components/api-sampling-example";
 export { SidebarModelConfig } from "./components/sidebar-model-config";
 export type { ModelPickTarget } from "./components/model-selector/types";
 export {

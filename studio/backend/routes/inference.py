@@ -23092,6 +23092,21 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     }
 
 
+@studio_router.get("/sampling-defaults")
+async def get_sampling_defaults(
+    model: str, current_subject: str = Depends(get_current_subject)
+):
+    """The sampling a /v1 request naming ``model`` gets for every field it leaves out.
+
+    The same resolution the request path applies (operator ``UNSLOTH_SAMPLING_*`` pins, then the
+    model's recommendation, then the schema default), so the API page's example request shows the
+    values a client would actually get. Off-loop: the first read of a model loads its YAML.
+    """
+    from utils.inference.inference_config import resolve_effective_sampling
+
+    return await asyncio.to_thread(resolve_effective_sampling, model, {})
+
+
 @studio_router.delete("/monitor")
 async def clear_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Drop this caller's recorded API history so a debugging session starts clean.
