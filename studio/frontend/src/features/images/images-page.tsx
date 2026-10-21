@@ -5115,6 +5115,9 @@ export function ImagesPage({
           galleryCache.hasMore,
           knownIds,
         );
+        // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
+        // would regenerate batch-mates.
+        const runBaseSeed = baseSeed + i * batchSize;
         let res: DiffusionGenerateResponse;
         try {
           res = await generateDiffusionImage({
@@ -5125,9 +5128,7 @@ export function ImagesPage({
             height: h,
             steps,
             guidance: effectiveGuidance,
-            // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
-            // would regenerate batch-mates.
-            seed: baseSeed + i * batchSize,
+            seed: runBaseSeed,
             batch_size: batchSize,
             // Transform/Inpaint/Extend send the source image (and mask) with a strength; the backend
             // derives output size from the image.
@@ -5174,6 +5175,8 @@ export function ImagesPage({
           // loadGallery refreshes the module cache synchronously, so this run's records are folded in
           // before the next run.
           galleryCache.images.forEach((image) => knownIds.add(image.id));
+          // The run landed without its records, so Reuse last seed takes the seed it was sent.
+          if (!external) setSessionSeed(runBaseSeed);
           setGenDone(i + 1);
           continue;
         }

@@ -167,3 +167,13 @@ test("restoring an inpaint record resets mask options it omitted at their defaul
     /const maskOptions = restoredInpaintMaskOptions\(image\);\n\s+if \(maskOptions\.maskBlur !== undefined\) setMaskBlur\(maskOptions\.maskBlur\);/,
   );
 });
+
+test("a run whose response was lost still becomes the seed Reuse last seed picks", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /const runBaseSeed = baseSeed \+ i \* batchSize;/);
+  assert.match(page, /seed: runBaseSeed,/);
+  assert.match(
+    page,
+    /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\(runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
+  );
+});
