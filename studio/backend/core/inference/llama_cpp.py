@@ -35535,14 +35535,13 @@ class LlamaCppBackend:
                 # watch this load for a mid-generation crash. The verified-cache hint is
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
                 # re-resolves the file instead of trusting a path this request verified.
-                _committed_intent = replace(intent, verified_gguf = None)
-                if self._metal_oom_is_terminal(_committed_intent):
+                self._last_load_intent = replace(intent, verified_gguf = None)
+                if self._metal_oom_is_terminal(self._last_load_intent):
                     # Automatic recovery refuses a terminal intent, so a load that got
                     # here is the user's explicit retry: it starts a fresh OOM episode.
-                    # Checked on the snapshot being committed, the one recovery replays.
+                    # Checked on the snapshot just committed, the one recovery replays.
                     self._metal_oom_strikes = None
                     self._metal_oom_terminal_key = None
-                self._last_load_intent = _committed_intent
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
