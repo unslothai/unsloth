@@ -11,6 +11,7 @@ import pytest
 
 from core.inference.diffusion_prompt_weighting import (
     CHUNK_TOKENS,
+    MAX_CHUNKS,
     apply_emphasis,
     has_prompt_syntax,
     parse_prompt_attention,
@@ -147,6 +148,15 @@ def test_long_prompt_chunks_instead_of_truncating():
     assert all(len(ids) == CHUNK_TOKENS + 2 for ids, _ in chunks)
     body = [t for ids, _ in chunks for t in ids if t not in (1, 2)]
     assert len(body) == 160
+
+
+def test_chunk_count_is_capped():
+    tok = _WordTokenizer(pad = 2)
+    words = " ".join(f"w{i}" for i in range(CHUNK_TOKENS * (MAX_CHUNKS + 5)))
+    assert len(tokenize_chunks(words, tok)) == MAX_CHUNKS
+    assert len(tokenize_chunks(" BREAK ".join(["a"] * (MAX_CHUNKS * 3)), tok)) == MAX_CHUNKS
+    at_cap = " ".join(f"w{i}" for i in range(CHUNK_TOKENS * MAX_CHUNKS))
+    assert len(tokenize_chunks(at_cap, tok)) == MAX_CHUNKS
 
 
 def test_break_starts_a_new_chunk():

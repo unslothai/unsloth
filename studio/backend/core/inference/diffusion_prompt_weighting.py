@@ -12,6 +12,10 @@ from __future__ import annotations
 import re
 from typing import Any, Optional, Sequence
 
+from loggers import get_logger
+
+logger = get_logger(__name__)
+
 _ATTENTION_RE = re.compile(
     r"""
 \\\(|
@@ -37,6 +41,8 @@ SQUARE_MULTIPLIER = 1 / 1.1
 BREAK_WEIGHT = -1.0
 CHUNK_TOKENS = 75
 COMMA_BACKTRACK = 20
+# webui and ComfyUI chunk without a limit; 32 chunks (2400 tokens) bounds what one request can encode.
+MAX_CHUNKS = 32
 
 
 def parse_prompt_attention(text: str) -> list[list[Any]]:
@@ -189,6 +195,14 @@ def tokenize_chunks(
             weights.append(float(weight))
     if tokens or not chunks:
         close_chunk()
+    if len(chunks) > MAX_CHUNKS:
+        logger.warning(
+            "Prompt spans %d chunks of %d tokens; encoding the first %d and dropping the rest.",
+            len(chunks),
+            CHUNK_TOKENS,
+            MAX_CHUNKS,
+        )
+        del chunks[MAX_CHUNKS:]
     return chunks
 
 
