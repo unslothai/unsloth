@@ -1767,6 +1767,34 @@ def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
     return out
 
 
+def drop_stranded_fused_records(transformer: Any) -> int:
+    """A failed layer split placement moved some blocks before giving up: each off-tree fused Linear whose parts left
+    its card still owns the original (shared) allocation there, which neither ``pipe.to("cpu")`` nor
+    ``empty_cache()`` reaches. Drop those records (the module runs its stock path) so the one-card fallback gets the
+    memory back. Returns how many were dropped."""
+    dropped = 0
+    with _LOCK:
+        for module in transformer.modules():
+            for attr, kind in _OFF_TREE_RECORDS:
+                rec = module.__dict__.get(attr)
+                if rec is None:
+                    continue
+                if kind == "swiglu":
+                    parts = [m for _n, m in rec[1][:2]] if len(rec[1]) == 3 else None
+                else:
+                    parts = list(rec[1:4])
+                if parts is None:
+                    continue  # the in-projection is the module's own Linear: it moved with the block
+                try:
+                    stranded = any(p.weight.device != rec[0].weight.device for p in parts)
+                except Exception:  # noqa: BLE001 - an unreadable record cannot be trusted either
+                    stranded = True
+                if stranded:
+                    module.__dict__.pop(attr, None)
+                    dropped += 1
+    return dropped
+
+
 def _hooked_forward_slot(module: Any) -> Optional[tuple]:
     """(fn_ref, attribute) holding the module's own forward in the innermost ``HookFunctionReference``, else None."""
     registry = getattr(module, "_diffusers_hook", None)

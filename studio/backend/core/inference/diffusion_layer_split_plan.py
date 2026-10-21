@@ -700,6 +700,8 @@ def apply_layer_split_plan(
         forget_applied_layer_split(pipe)
         with contextlib.suppress(Exception):
             pipe.to("cpu")
+        _drop_stranded_fused_records(pipe)
+        with contextlib.suppress(Exception):
             import torch
             torch.cuda.empty_cache()
         _record_decline(pipe, f"placement failed ({exc})", None)
@@ -714,6 +716,18 @@ def apply_layer_split_plan(
 
 
 _RECORD_ATTR = "_unsloth_layer_split_record"
+
+
+def _drop_stranded_fused_records(pipe: Any) -> None:
+    """The fused records a failed placement left owning a card's memory (``diffusion_int8_fused``). Never raises."""
+    from .diffusion_multigpu import DENOISER_ATTRS
+    for name in DENOISER_ATTRS:
+        module = getattr(pipe, name, None)
+        if module is None:
+            continue
+        with contextlib.suppress(Exception):
+            from .diffusion_int8_fused import drop_stranded_fused_records
+            drop_stranded_fused_records(module)
 
 
 def applied_layer_split(pipe: Any) -> Optional[LayerSplit]:

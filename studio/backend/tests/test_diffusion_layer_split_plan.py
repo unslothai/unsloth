@@ -892,3 +892,38 @@ def test_dual_denoisers_may_keep_one_wholly_on_the_primary():
         ("transformer", 0),
         ("transformer_2", 1),
     }
+
+
+def test_failed_placement_drops_fused_records_left_on_another_card(monkeypatch):
+    # the fused QKV owned the shared allocation on the card it was built on; once its parts moved, pipe.to("cpu")
+    # cannot reach it, so the one-card fallback would OOM beside it
+    from types import SimpleNamespace
+
+    from torch import nn
+
+    def attn(fused_device):
+        a = nn.Module()
+        a.to_q, a.to_k, a.to_v = nn.Linear(4, 4), nn.Linear(4, 4), nn.Linear(4, 4)
+        a.__dict__["_unsloth_fused_qkv"] = (
+            nn.Linear(4, 12, device = fused_device),
+            a.to_q,
+            a.to_k,
+            a.to_v,
+        )
+        return a
+
+    dit = nn.Module()
+    dit.stale, dit.intact = attn("meta"), attn("cpu")
+    pipe = SimpleNamespace(transformer = dit, to = lambda *a, **k: None)
+
+    def boom(*a, **k):
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(lsp, "place_layer_split", boom)
+    monkeypatch.setattr(lsp, "undo_layer_split", lambda p: None)
+    assert (
+        lsp.apply_layer_split_plan(pipe, SimpleNamespace(layer_split = object()), placement = "cuda:0")
+        is False
+    )
+    assert "_unsloth_fused_qkv" not in dit.stale.__dict__
+    assert "_unsloth_fused_qkv" in dit.intact.__dict__  # still on its parts' device: kept
