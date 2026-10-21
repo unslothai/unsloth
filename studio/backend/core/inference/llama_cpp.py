@@ -12973,6 +12973,72 @@ class LlamaCppBackend:
             return {}
 
     @staticmethod
+    def _auto_tensor_platform_reason() -> Optional[str]:
+        """None on the platform the auto tensor split was measured on (Linux, NVIDIA
+        CUDA torch), else why not. The HIP prebuilt and Windows were not measured, so
+        the auto policy stays off there; the Tensor Parallelism toggle still works."""
+        try:
+            if not sys.platform.startswith("linux"):
+                return f"measured on Linux only (this host is {sys.platform})"
+            import torch
+
+            if getattr(torch.version, "hip", None) is not None:
+                return "measured on NVIDIA CUDA only (this is a ROCm / HIP build)"
+            if not getattr(torch.version, "cuda", None):
+                return "measured on NVIDIA CUDA only (no CUDA torch)"
+            return None
+        except Exception as e:
+            return f"platform check failed ({type(e).__name__})"
+
+    @staticmethod
+    def _gpu_utilization_by_physical_id(
+        samples: int = 2, interval_s: float = 0.15
+    ) -> dict[int, float]:
+        """nvidia-smi index -> compute utilisation percent, the max over ``samples``
+        readings ``interval_s`` apart, so a card mid-job between kernels is not read
+        as idle. Only returned when the GPU ids Studio plans with ARE nvidia-smi (PCI)
+        indices; empty otherwise or on any error (the split policy then relies on the
+        free-memory check alone)."""
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True:
+            return {}
+        try:
+            from utils.hardware import gpu_query
+
+            util: dict[int, float] = {}
+            for i in range(max(1, samples)):
+                if i:
+                    time.sleep(interval_s)
+                result = gpu_query.run_nvidia_smi(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=index,utilization.gpu",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    cache = False,
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = 5,
+                    env = child_env_without_native_path_secret(),
+                    **_windows_hidden_subprocess_kwargs(),
+                )
+                if result.returncode != 0:
+                    return {}
+                for line in (result.stdout or "").splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) < 2:
+                        continue
+                    try:
+                        idx, pct = int(parts[0]), float(parts[1])
+                    except ValueError:
+                        continue
+                    util[idx] = max(util.get(idx, 0.0), pct)
+            return util
+        except Exception:
+            return {}
+
+    @staticmethod
     def _is_datacenter_gpu(gpu_indices = None) -> bool:
         """True iff every selected GPU qualifies for the FP32-accum tuning. Mask
         handling: _all_selected_gpus_match. Peer-copy safety: _p2p_veto_reason."""
@@ -27145,7 +27211,13 @@ class LlamaCppBackend:
                         and _spec_canon != "dflash"
                     ):
                         try:
-                            _split_names = self._gpu_names_by_physical_id()
+                            _split_platform = self._auto_tensor_platform_reason()
+                            _split_names = (
+                                {} if _split_platform else self._gpu_names_by_physical_id()
+                            )
+                            _split_util = (
+                                {} if _split_platform else self._gpu_utilization_by_physical_id()
+                            )
                             _single_pick, _single_fit = self._select_gpus(
                                 model_size,
                                 gpus,
@@ -27164,6 +27236,7 @@ class LlamaCppBackend:
                                     name = _split_names.get(idx),
                                     total_mib = int(total_by_idx.get(idx, 0) or 0),
                                     free_mib = int(free),
+                                    util_pct = _split_util.get(idx),
                                 )
                                 for idx, free in gpus
                             ]
@@ -27201,6 +27274,7 @@ class LlamaCppBackend:
                                 ),
                                 split_mode_override = split_mode_override,
                                 shared_gpus = _shared_gpus,
+                                platform_reason = _split_platform,
                             )
                         except Exception as _split_exc:
                             logger.debug(f"auto split-mode policy failed: {_split_exc}")

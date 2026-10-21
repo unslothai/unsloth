@@ -312,6 +312,9 @@ def _wired_backend(
     backend._get_gguf_size_bytes = lambda _path: int(model_gib * GIB)
     backend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 256
     backend._gpu_names_by_physical_id = lambda: dict(names)
+    # The measured platform (Linux + NVIDIA CUDA) and no utilisation reading, unless a cell says otherwise.
+    backend._auto_tensor_platform_reason = lambda: None
+    backend._gpu_utilization_by_physical_id = lambda: {}
     real_probe = LlamaCppBackend.probe_server_capabilities
 
     def probe(binary = None):
@@ -443,3 +446,155 @@ def test_wired_moe_with_mtp_head_resident_is_tensor(tmp_path, monkeypatch):
     _launch(backend, gguf, model_identifier = _MTP_MODEL, gpu_memory_mode = "auto", n_ctx = 4096)
     assert backend._auto_split_decision.mode == "tensor"
     assert "MoE" in backend._auto_split_decision.reason
+
+
+# --------------------------------------------------------------------------
+# 4. Risk gates: idle measurement, the 2-GPU cap, capability probe, platform, P2P
+# --------------------------------------------------------------------------
+
+
+def test_busy_by_utilisation_blocks_the_pair():
+    gpus = [
+        sp.GpuInfo(0, T4, 15_360, 15_000, util_pct = 0.0),
+        sp.GpuInfo(1, T4, 15_360, 15_000, util_pct = 85.0),
+    ]
+    d = _decide(gpus = gpus)
+    assert d.mode == "layer" and "busy" in d.reason
+
+
+def test_unknown_utilisation_falls_back_to_the_memory_check():
+    gpus = [sp.GpuInfo(i, T4, 15_360, 15_000, util_pct = None) for i in range(2)]
+    assert _decide(gpus = gpus).mode == "tensor"
+
+
+def test_utilisation_check_can_be_switched_off():
+    gpus = [sp.GpuInfo(i, T4, 15_360, 15_000, util_pct = 90.0) for i in range(2)]
+    th = sp.SplitPolicyThresholds(max_util_pct = None)
+    assert _decide(gpus = gpus, thresholds = th).mode == "tensor"
+
+
+def test_auto_never_asks_for_more_than_two_gpus_even_if_thresholds_say_so():
+    gpus = _gpus(*[(T4, 15_360, 15_000)] * 4)
+    d = _decide(gpus = gpus, thresholds = sp.SplitPolicyThresholds(max_gpus = 4))
+    assert d.mode == "tensor" and len(d.gpu_indices) == 2
+    d = _decide(gpus = gpus, thresholds = sp.SplitPolicyThresholds(min_gpus = 3, max_gpus = 4))
+    assert d.mode != "tensor"
+
+
+@pytest.mark.parametrize(
+    "desc, ok",
+    [
+        ("how to split the model across multiple GPUs, one of: none, layer, row", False),
+        ("one of:\n- none: one GPU\n- layer (default)\n- row: rows, see --tensor-split", False),
+        ("one of: none, layer, row, tensor", True),
+        ("- tensor: split tensors across GPUs", True),
+    ],
+)
+def test_capability_probe_only_matches_a_listed_tensor_value(desc, ok):
+    assert sp.binary_supports_tensor_split({"flags": {"--split-mode": desc}}) is ok
+
+
+def test_platform_outside_the_measured_one_keeps_todays_behaviour():
+    d = _decide(platform_reason = "measured on NVIDIA CUDA only (this is a ROCm / HIP build)")
+    assert d.mode == "layer" and not d.auto and "ROCm" in d.reason
+
+
+def test_platform_gate_does_not_override_the_user_toggle():
+    d = _decide(platform_reason = "measured on Linux only", user_tensor_parallel = True)
+    assert d.mode == "tensor"
+
+
+def test_platform_reason_helper(monkeypatch):
+    import sys as _sys
+
+    import torch
+
+    monkeypatch.setattr(_sys, "platform", "win32")
+    assert "Linux" in LlamaCppBackend._auto_tensor_platform_reason()
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setattr(torch.version, "hip", "6.2", raising = False)
+    assert "HIP" in LlamaCppBackend._auto_tensor_platform_reason()
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.version, "cuda", "12.8", raising = False)
+    assert LlamaCppBackend._auto_tensor_platform_reason() is None
+
+
+def test_utilisation_helper_needs_pci_indices(monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", None)
+    assert LlamaCppBackend._gpu_utilization_by_physical_id() == {}
+
+
+def test_utilisation_helper_takes_the_max_sample(monkeypatch):
+    from types import SimpleNamespace
+
+    from utils.hardware import gpu_query
+
+    outs = iter(["0, 0\n1, 3\n", "0, 2\n1, 77\n"])
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(
+        gpu_query,
+        "run_nvidia_smi",
+        lambda *a, **k: SimpleNamespace(returncode = 0, stdout = next(outs)),
+    )
+    got = LlamaCppBackend._gpu_utilization_by_physical_id(samples = 2, interval_s = 0)
+    assert got == {0: 2.0, 1: 77.0}
+
+
+def test_wired_other_studio_model_on_gpu1_blocks_the_pair(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    # A small model another Studio backend serves on GPU 1: below the free-memory bar on its own.
+    backend._other_planned_vram_mib = lambda: {1: 100}
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+    assert backend._auto_split_decision.mode != "tensor"
+    assert "busy" in backend._auto_split_decision.reason
+
+
+def test_wired_busy_gpu1_by_utilisation_blocks_the_pair(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    backend._gpu_utilization_by_physical_id = lambda: {0: 0.0, 1: 95.0}
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+
+
+def test_wired_rocm_or_windows_keeps_layer(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    backend._auto_tensor_platform_reason = lambda: "measured on NVIDIA CUDA only (ROCm / HIP)"
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+    assert not backend._auto_split_decision.auto
+
+
+@pytest.mark.parametrize("veto, p2p", [("no NVLink between GPUs 0 and 1", None), (None, "1")])
+def test_wired_p2p_veto_still_gates_ggml_cuda_p2p_on_an_auto_tensor_pair(
+    tmp_path, monkeypatch, veto, p2p
+):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    for var in ("GGML_CUDA_P2P", "UNSLOTH_DISABLE_DC_TUNING", "UNSLOTH_DISABLE_DC_P2P"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "_is_datacenter_gpu", staticmethod(lambda *_a, **_k: True))
+    seen = []
+
+    def fake_veto(
+        cls,
+        gpu_indices = None,
+        *_a,
+        **_k,
+    ):
+        seen.append(sorted(gpu_indices or []))
+        return veto
+
+    monkeypatch.setattr(LlamaCppBackend, "_p2p_veto_reason", classmethod(fake_veto))
+    got = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
+    assert _split_flag(got["cmd"]) == "tensor"
+    assert got["env"].get("GGML_CUDA_P2P") == p2p
+    # The launch gate ran on the auto pair itself.
+    assert [0, 1] in seen

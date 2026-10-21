@@ -15,6 +15,7 @@ is read as "not chosen"; a user who wants layer split passes ``--split-mode laye
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Sequence
 
@@ -26,6 +27,9 @@ AUTO_TENSOR_SPLIT_ENV = "UNSLOTH_STUDIO_AUTO_TENSOR_SPLIT"
 # Kaggle 2x T4 (plans/multi_gpu_dense.md): Qwen3.5-9B Q8_0 decode 18.8 -> 41.5 tok/s (one GPU -> tensor over two),
 # 2k prompt 934 -> 1388 tok/s. Only idle cards are taken (SPLIT_POLICY.min_free_frac / refuse_shared_gpus).
 TP_WIDEN_FITS_ONE_GPU = True
+# Hard ceiling on the GPUs an AUTO tensor split asks for, whatever the thresholds say: the internal AllReduce in the
+# shipped prebuilt (no NCCL) covers exactly 2 GPUs. An explicit toggle / --split-mode tensor is not capped here.
+AUTO_TENSOR_MAX_GPUS = 2
 
 
 @dataclass(frozen = True)
@@ -50,6 +54,9 @@ class SplitPolicyThresholds:
     # Each GPU must have at least this fraction of its total memory free (idle enough: tensor split synchronises
     # every layer, so one busy card stalls all of them). 0 disables the check.
     min_free_frac: float = 0.80
+    # ... and, when the driver reports it, at most this compute utilisation (percent, the max over a short sample
+    # window). Catches a card running someone else's job whose memory footprint is small. None disables the check.
+    max_util_pct: Optional[float] = 10.0
     # Cards another loaded model already runs on are not idle.
     refuse_shared_gpus: bool = True
 
@@ -72,6 +79,8 @@ class GpuInfo:
     name: Optional[str]
     total_mib: int
     free_mib: int
+    # Compute utilisation in percent, None when unknown (the memory check still applies).
+    util_pct: Optional[float] = None
 
 
 @dataclass(frozen = True)
@@ -103,7 +112,8 @@ def binary_supports_tensor_split(caps: Optional[Mapping[str, object]]) -> bool:
     if not isinstance(flags, Mapping):
         return False
     desc = flags.get("--split-mode") or flags.get("-sm") or ""
-    return "tensor" in str(desc).lower()
+    # "tensor" as a listed value, not part of "--tensor-split" / "tensor-split" prose.
+    return re.search(r"(?<![-\w])tensor(?![-\w])", str(desc).lower()) is not None
 
 
 def _gpus_match(gpus: Sequence[GpuInfo], thresholds: SplitPolicyThresholds) -> Optional[str]:
@@ -139,13 +149,16 @@ def choose_split_mode(
     thresholds: SplitPolicyThresholds = SPLIT_POLICY,
     widen_fits_one_gpu: Optional[bool] = None,
     fits_on: Optional[Callable[[tuple], bool]] = None,
+    platform_reason: Optional[str] = None,
 ) -> SplitDecision:
     """Decide the split mode for an Auto GPU placement.
 
     ``gpus``: the candidate GPUs the placement may use (after any GPU picker filter). ``fits_one_gpu``: the
     fewest-GPUs selection would put the model on one card. ``p2p_veto``: _p2p_veto_reason's answer; it does NOT
     block tensor (the internal AllReduce stages through pinned host memory and NCCL picks its own transport), it is
-    only recorded in the reason. ``draft_active``: a draft model / MTP head will run (only the depth depends on it).
+    only recorded in the reason; the GGML_CUDA_P2P gate at launch still uses it. ``draft_active``: a draft model /
+    MTP head will run. ``platform_reason``: why this host is outside the measured platform (Linux + NVIDIA CUDA), None
+    when inside; the auto policy then keeps today's behaviour.
     """
     env = env if env is not None else os.environ
     n = len(gpus)
@@ -170,6 +183,10 @@ def choose_split_mode(
     if not auto_tensor_split_enabled(env):
         return SplitDecision(
             single, False, f"auto tensor split off ({AUTO_TENSOR_SPLIT_ENV}=0 or default off)"
+        )
+    if platform_reason:
+        return SplitDecision(
+            single, False, f"auto tensor split not enabled here: {platform_reason}"
         )
     if n < max(2, thresholds.min_gpus):
         return SplitDecision(
@@ -212,7 +229,8 @@ def choose_split_mode(
             "layer",
             True,
             f"layer split: the model needs more than {len(pair)} GPUs "
-            f"(tensor split is capped at {thresholds.max_gpus}: the internal AllReduce covers 2)",
+            f"(tensor split is capped at {min(AUTO_TENSOR_MAX_GPUS, thresholds.max_gpus)}: "
+            "the internal AllReduce covers 2)",
         )
     if is_moe:
         reason = (
@@ -237,6 +255,13 @@ def _pick_pair(
     idle = []
     busy = []
     for g in gpus:
+        if (
+            thresholds.max_util_pct is not None
+            and g.util_pct is not None
+            and g.util_pct > thresholds.max_util_pct
+        ):
+            busy.append(g.index)
+            continue
         if thresholds.refuse_shared_gpus and g.index in shared_gpus:
             busy.append(g.index)
             continue
@@ -251,7 +276,8 @@ def _pick_pair(
     need = max(2, thresholds.min_gpus)
     if len(idle) < need:
         return None, (
-            f"GPU(s) {sorted(busy)} are busy (another model, or under {thresholds.min_free_frac:.0%} free)"
+            f"GPU(s) {sorted(busy)} are busy (another model, under {thresholds.min_free_frac:.0%} free, "
+            f"or over {thresholds.max_util_pct}% utilisation)"
             if busy
             else f"{len(idle)} idle GPU(s), tensor split needs {need}"
         )
@@ -266,10 +292,14 @@ def _pick_pair(
     groups = [grp for grp in groups if len(grp) >= need]
     if not groups:
         return None, (_gpus_match(idle, thresholds) or "no two idle GPUs match")
-    best = max(
-        groups, key = lambda grp: sum(g.free_mib for g in grp[: max(need, thresholds.max_gpus)])
-    )
-    return best[: max(need, thresholds.max_gpus)], ""
+    take = min(AUTO_TENSOR_MAX_GPUS, max(need, thresholds.max_gpus))
+    if take < need:
+        return (
+            None,
+            f"tensor split needs {need} GPUs, the auto policy is capped at {AUTO_TENSOR_MAX_GPUS}",
+        )
+    best = max(groups, key = lambda grp: sum(g.free_mib for g in grp[:take]))
+    return best[:take], ""
 
 
 def mtp_draft_depth_for_split(split_mode: Optional[str], default: int) -> int:
