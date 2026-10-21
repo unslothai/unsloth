@@ -186,6 +186,7 @@ export function FileView({
   scale = 1,
   tabId,
   reloadNonce = 0,
+  saved = false,
 }: {
   blob: Blob;
   name: string;
@@ -194,19 +195,33 @@ export function FileView({
   scale?: number;
   tabId?: string;
   reloadNonce?: number;
+  saved?: boolean;
 }) {
   const t = useT();
-  const media = plainText ? null : mediaKind(name, contentType);
-  const docKind = plainText ? null : documentKind(name, contentType);
+  const media = plainText || saved ? null : mediaKind(name, contentType);
+  const docKind = plainText || saved ? null : documentKind(name, contentType);
   const svg = media === "image" && (/^image\/svg\+xml\b/i.test(contentType) || /\.svg$/i.test(name));
   const src = useObjectUrl(blob, media !== null, svg);
   const [failed, setFailed] = useState(false);
+  const pageTarget = useBrowserStore((state) => (tabId ? state.fileViews[tabId]?.pageTarget : undefined));
+  const dropPageTarget = useCallback(
+    () => tabId && useBrowserStore.getState().setFileView(tabId, { pageTarget: null }),
+    [tabId],
+  );
 
   if (docKind) {
     if (blob.size > MAX_DOCUMENT_PREVIEW_BYTES) return <Unavailable message={t("library.preview.cannotPreview")} />;
     return (
       <div className="flex size-full min-h-0 flex-col">
-        <DocumentView file={blob} kind={docKind} name={name} contentType={contentType} scale={scale} />
+        <DocumentView
+          file={blob}
+          kind={docKind}
+          name={name}
+          contentType={contentType}
+          scale={scale}
+          pageTarget={pageTarget ?? undefined}
+          onPageTargetDone={dropPageTarget}
+        />
       </div>
     );
   }
@@ -236,7 +251,7 @@ export function FileView({
       </div>
     );
   }
-  if (plainText || canShowFile(name, contentType)) {
+  if (!saved && (plainText || canShowFile(name, contentType))) {
     return (
       <TextFile
         blob={blob}

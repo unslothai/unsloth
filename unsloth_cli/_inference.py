@@ -430,6 +430,38 @@ class ChatBackend:
         model_id = getattr(
             self._backend, "model_identifier" if self._kind == "gguf" else "active_model_name", None
         )
+        if self._kind == "gguf":
+            from core.inference.llama_cpp import _extra_args_set_any_flag
+
+            # These pass-throughs render a template the flags were not read from.
+            supports_reasoning = getattr(
+                self._backend, "supports_reasoning", False
+            ) and not _extra_args_set_any_flag(
+                getattr(self._backend, "extra_args", None),
+                {"--chat-template", "--chat-template-file", "--no-jinja"},
+            )
+            style = getattr(self._backend, "reasoning_style", None)
+            always_on = getattr(self._backend, "reasoning_always_on", False)
+        else:
+            from core.inference.chat_template_helpers import _selected_template_strings_from_value
+            from core.inference.llama_cpp import detect_reasoning_flags
+
+            info = (getattr(self._backend, "models", {}).get(model_id) or {}).get(
+                "chat_template_info"
+            ) or {}
+            selected = _selected_template_strings_from_value(info.get("template"))
+            flags = detect_reasoning_flags(
+                selected[0] if selected else None, model_id, log_level = "debug"
+            )
+            supports_reasoning = flags["supports_reasoning"]
+            style = flags["reasoning_style"]
+            always_on = flags["reasoning_always_on"]
+        # An effort-only template has no off switch: thinking off still renders a low effort.
+        always_on = always_on or style == "reasoning_effort"
+        thinking = (always_on or enable_thinking) if supports_reasoning else None
+        # Instruct-2507 never reasons (its template still parses <think>); -GGUF ids miss its defaults.
+        if re.search(r"qwen3[-_].*instruct[-_]2507", (model_id or "").lower()):
+            thinking = False
         sampling = resolve_effective_sampling(
             model_id,
             dict(
@@ -438,6 +470,7 @@ class ChatBackend:
                 top_k = top_k,
                 repetition_penalty = repetition_penalty,
             ),
+            thinking = thinking,
         )
         if self._kind == "gguf":
             # llama-server takes the system prompt as the first message.
@@ -1119,6 +1152,23 @@ def connect_studio_server(
     if not token:
         return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
+    from unsloth_cli._npu import npu_model_path, prepare_npu_model
+
+    npu_path = npu_model_path(model)
+    if npu_path:
+        # `unsloth inference` passes the bare id the picker shows; load it by its model path.
+        model = npu_path
+        try:
+            prepare_npu_model(
+                lambda method, path, payload, timeout: backend._request(
+                    method, path, payload, timeout = timeout
+                ),
+                model,
+                lambda line: typer.echo(line, err = True),
+            )
+        except RuntimeError as exc:
+            typer.echo(f"Error: {exc}", err = True)
+            raise typer.Exit(code = 1)
     backend.ensure_loaded(
         model,
         hf_token = hf_token,

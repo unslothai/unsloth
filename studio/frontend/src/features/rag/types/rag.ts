@@ -157,6 +157,23 @@ export interface FolderSyncJob {
   error?: string | null;
 }
 
+export interface ReembedJob {
+  id: string;
+  status: Exclude<JobStatus, "pending">;
+  done: number;
+  failed: number;
+  remaining: number;
+  clippedChunks: number;
+  progress: number;
+  error: string | null;
+}
+
+export interface ReembedStatus {
+  staleDocuments: number;
+  staleArchived: number;
+  job: ReembedJob | null;
+}
+
 /** Missing counts (older backends) count as a change. */
 export function jobChangedSources(job: FolderSyncJob): boolean {
   if (
@@ -190,24 +207,6 @@ export function retainActiveFolderJobs(
 }
 
 /** Coords 0..1, top-left origin. */
-export interface PdfRegion {
-  pageIndex: number;
-  pageNumber: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-export interface PreviewTarget {
-  documentId: string;
-  filename: string;
-  mediaKind: "pdf" | "text";
-  targetPage?: number | null;
-  pdfRegions: PdfRegion[];
-  text?: string | null;
-}
-
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
 
 /** Mirrors backend `DOCUMENT_UPLOAD_EXTS`. */

@@ -32,6 +32,8 @@ import {
 } from "@/components/assistant-ui/sandbox-files";
 import { SandboxFiles } from "@/components/assistant-ui/sandbox-files-view";
 import { useChatProjectScope } from "@/features/chat/chat-project-scope";
+// eslint-disable-next-line no-restricted-imports -- the feature barrel imports this component
+import { useToolAwaitingApproval } from "@/features/chat/tool-approval";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
@@ -183,6 +185,7 @@ function ToolFallbackTrigger({
   mcpTool,
   status,
   icon: ToolIcon,
+  singleLine = false,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
@@ -194,7 +197,10 @@ function ToolFallbackTrigger({
   mcpTool?: string;
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
+  /** Keep the label to one line when open, for a label that repeats an argument the content shows in full. */
+  singleLine?: boolean;
 }) {
+  const wrapWhenOpen = !singleLine;
   const statusType = status?.type ?? "complete";
   const isRunning = isToolCallRunning(status);
   const isCancelled = isToolCallCancelled(status);
@@ -242,7 +248,8 @@ function ToolFallbackTrigger({
         <span
           className={cn(
             "block truncate leading-normal",
-            "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
+            wrapWhenOpen &&
+              "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
           )}
         >
           {label}:{" "}
@@ -254,6 +261,7 @@ function ToolFallbackTrigger({
             data-slot="tool-fallback-trigger-shimmer"
             className={cn(
               "aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate leading-normal motion-reduce:animate-none",
+              wrapWhenOpen &&
               "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
             )}
           >
@@ -470,6 +478,7 @@ function ToolFallbackError({
 }
 
 const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+  toolCallId,
   toolName,
   argsText,
   result,
@@ -494,10 +503,14 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
       ? { text: widget.text, images: widget.images }
       : (widget?.text ?? result);
 
+  // Open while it waits on Allow / Deny, so what is being approved is readable.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+
   return (
     <ToolFallbackRoot
       className={cn(isCancelled && "bg-muted/30")}
       defaultOpen={isToolCallRunning(status)}
+      awaitingApproval={awaitingApproval}
     >
       <ToolFallbackTrigger
         toolName={toolName}

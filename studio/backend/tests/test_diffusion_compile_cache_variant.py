@@ -125,14 +125,21 @@ def test_an_instance_forward_swap_keys_apart():
 def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, default, quant):
     m = _int8() if quant else _model()
     k0 = _key(m, quant)
+    rows = default.partition(":")[2] if default.startswith("rows:") else None
     for same in (
         ("",)
         + (() if default == "raw" else ("auto",))
         + ((default,) if default in ("on", "off") else ())
+        + ((rows,) if rows else ())
     ):
         monkeypatch.setenv(name, same)
         assert _key(m, quant) == k0, same
-    flipped = {"on": "0", "off": "1", "auto": "0", "raw": "torchao", "raw:auto": "torchao"}[default]
+    if rows:
+        flipped = "1"
+    else:
+        flipped = {"on": "0", "off": "1", "auto": "0", "raw": "torchao", "raw:auto": "torchao"}[
+            default
+        ]
     monkeypatch.setenv(name, flipped)
     assert _key(m, quant) != k0
     assert name in cc.model_fingerprint(transformer = m, quant = quant, **_FP_KW)["switches"]

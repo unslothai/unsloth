@@ -405,6 +405,77 @@ def test_diffusers_apply_rejects_unsupported_quant():
     assert pipe.loaded == []  # rejected before touching the pipe
 
 
+def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
+    # Turning one of two baked adapters off arrives as the other alone: a weight change, not a new selection.
+    # Every alias collides here, so a subset resolves to other names than the bake: adapters match by file.
+    import threading
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, "style", f"/{i}.safetensors", "safetensors", w) for i, w in specs
+        ],
+    )
+    b = _backend()
+    pipe = _FakePipe()
+    state = _fake_state(pipe, quant = "int8")
+    pipe._unsloth_loras = b._resolve_lora_set(
+        [("styleA", 1.0), ("styleB", 1.0)], family = "flux.1", hf_token = None
+    )
+    pipe._unsloth_loras_baked = True
+    assert [n for (n, _p, _w) in pipe._unsloth_loras] == ["style", "style_2"]
+
+    b._apply_loras(state, [("styleA", 1.0), ("styleB", 0.0)], threading.Event())
+    assert pipe.active == (["style", "style_2"], [1.0, 0.0])
+    b._apply_loras(state, [("styleB", 0.5)], threading.Event())
+    assert pipe.active == (["style", "style_2"], [0.0, 0.5])
+    b._apply_loras(state, [("styleB", 1.0), ("styleA", 0.7)], threading.Event())
+    assert pipe.active == (["style", "style_2"], [0.7, 1.0])
+    assert pipe.loaded == []  # never reloaded or re-attached
+    # A file the bake does not hold still needs a reload with the new selection.
+    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+        b._apply_loras(state, [("styleA", 1.0), ("styleC", 1.0)], threading.Event())
+    assert pipe.active == (["style", "style_2"], [0.7, 1.0])
+
+
+@pytest.mark.parametrize("mode, refused", [("group", True), ("resident", False), ("model", False)])
+def test_baked_weights_stay_fixed_under_a_block_streamed_graph(monkeypatch, mode, refused):
+    # Resetting a block-streamed graph for new LoRA scales left every later generate failing. Refuse the change.
+    import threading
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    b = _backend()
+    pipe = _FakePipe()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = (
+        types.SimpleNamespace(placement = types.SimpleNamespace(mode = mode), reset = lambda: None),
+    )
+    pipe._unsloth_loras = b._resolve_lora_set(
+        [("styleA", 1.0), ("styleB", 1.0)], family = "flux.1", hf_token = None
+    )
+    pipe._unsloth_loras_baked = True
+    baked = pipe._unsloth_loras
+    # The baked weights themselves never touch the graph.
+    b._apply_loras(state, [("styleA", 1.0), ("styleB", 1.0)], threading.Event())
+    for loras in ([("styleA", 1.0)], [("styleA", 0.5), ("styleB", 1.0)], []):
+        if refused:
+            with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+                b._apply_loras(state, loras, threading.Event())
+            assert pipe._unsloth_loras == baked and pipe.active is None
+        else:
+            b._apply_loras(state, loras, threading.Event())
+    if not refused:
+        assert pipe.active == (["styleA", "styleB"], [0.0, 0.0])
+
+
 def test_diffusers_apply_rejects_gguf_adapter(monkeypatch):
     # A .gguf adapter (discoverable in the shared catalog) cannot load on the diffusers engine, so it is a clean 400 before touching the pipe.
     import threading

@@ -191,6 +191,7 @@ For Windows instructions and more information, read our [Unsloth Docker Guide](h
 docker run -d --name unsloth --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -v "$PWD":/workspace/host \
+  -v unsloth-workspace:/workspace \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth && docker logs -f unsloth

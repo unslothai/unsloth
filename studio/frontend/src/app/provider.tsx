@@ -15,6 +15,7 @@ import {
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
+import { TitleTooltipLayer } from "@/components/ui/title-tooltip";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WebUpdateBanner } from "@/components/web/update-banner";
 import { fetchDeviceType } from "@/config/env";
@@ -52,6 +53,7 @@ import { useDocumentFlag } from "@/lib/document-flag";
 import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
+  COMPOSER_CLEARANCE_VAR,
   cornerInsetScope,
   getToastOffsets,
   insetPastChatSettings,
@@ -85,8 +87,10 @@ import {
 } from "./window-layout";
 import {
   type MeasuredWindowLayout,
+  type MinimumSizeApplier,
   type PixelRatioSource,
   type WindowLayoutGuard,
+  createMinimumSizeApplier,
   finalizeAppWindowLayout,
   measureWindowLayout,
   observeDevicePixelRatio,
@@ -120,6 +124,7 @@ const STACK_SHADOW_GUTTER_LEFT = 28;
 const STACK_CARD_INSET_RIGHT = 16;
 // Rail stays flush with the corner; only its padding grows past the open Run settings panel.
 const STACK_CARD_INSET_RIGHT_PAST_PANEL = `calc(${STACK_CARD_INSET_RIGHT}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px))`;
+const STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER = `calc(${STACK_SHADOW_GUTTER_BOTTOM}px + var(${COMPOSER_CLEARANCE_VAR}, 0px))`;
 
 function BlockingScreenFlag() {
   useDocumentFlag("data-blocking-screen-open", true);
@@ -222,6 +227,29 @@ function measureTauriWindowLayout(
   );
 }
 
+let minimumSizeApplier: MinimumSizeApplier | null = null;
+
+// One per app: the main window is the only one sized here.
+function windowMinimumSize(win: TauriWindow): MinimumSizeApplier {
+  minimumSizeApplier ??= createMinimumSizeApplier({
+    isRestored: async () => {
+      const [maximized, fullscreen, minimized] = await Promise.all([
+        win.isMaximized(),
+        win.isFullscreen(),
+        win.isMinimized(),
+      ]);
+      return !maximized && !fullscreen && !minimized;
+    },
+    onResized: (handler) => win.onResized(handler),
+    applyFloor: (minimum) =>
+      win.setSizeConstraints({
+        minWidth: minimum.width,
+        minHeight: minimum.height,
+      }),
+  });
+  return minimumSizeApplier;
+}
+
 async function placeWindow(
   win: TauriWindow,
   { LogicalSize, PhysicalPosition }: WindowModule,
@@ -274,10 +302,7 @@ async function reapplyWindowSizeConstraints(
   if (!measured || !isCurrent()) return;
 
   const { minimum } = measured.bounds;
-  await win.setSizeConstraints({
-    minWidth: minimum.width,
-    minHeight: minimum.height,
-  });
+  await windowMinimumSize(win).apply(minimum);
   if (!isCurrent()) return;
   // Grows a window now under the floor. No maximum: the work area has not
   // changed, and capping here would fight a user's own larger size.
@@ -296,7 +321,10 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
     !(await prepareSetupWindow({
       resetLayout: () => invoke("reset_app_window_layout_initialized"),
       unmaximize: () => win.unmaximize(),
-      clearConstraints: () => win.setSizeConstraints(null),
+      clearConstraints: () => {
+        windowMinimumSize(win).cancel();
+        return win.setSizeConstraints(null);
+      },
       enableResize: () => win.setResizable(true),
       resizeForSetup: async () => {
         const measured = await measureTauriWindowLayout(
@@ -421,11 +449,7 @@ async function applyAppWindowLayout(
         ? undefined
         : layoutObserver?.waitForSettled,
       measure: () => measureTauriWindowLayout(windowModule, win, isCurrent),
-      setMinimumConstraints: (minimum) =>
-        win.setSizeConstraints({
-          minWidth: minimum.width,
-          minHeight: minimum.height,
-        }),
+      setMinimumConstraints: (minimum) => windowMinimumSize(win).apply(minimum),
       enforceBounds: (bounds) =>
         enforceWindowSizeBounds(
           win,
@@ -533,7 +557,7 @@ function TauriUpdateLayer({
       // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
       style={{
         paddingTop: STACK_SHADOW_GUTTER_TOP,
-        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+        paddingBottom: STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER,
         paddingLeft: STACK_SHADOW_GUTTER_LEFT,
         paddingRight: STACK_CARD_INSET_RIGHT_PAST_PANEL,
         zIndex: Z_LAYER.OVERLAY_STACK,
@@ -911,7 +935,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
           // Gutters in px, never a spacing utility: those are rem, and the cards would drift off the corner.
           style={{
             paddingTop: STACK_SHADOW_GUTTER_TOP,
-            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM,
+            paddingBottom: STACK_SHADOW_GUTTER_BOTTOM_PAST_COMPOSER,
             paddingLeft: STACK_SHADOW_GUTTER_LEFT,
             paddingRight: STACK_CARD_INSET_RIGHT_PAST_PANEL,
             zIndex: Z_LAYER.OVERLAY_STACK,
@@ -1158,6 +1182,7 @@ export function AppProvider({ children }: AppProviderProps) {
   return (
     <MotionConfig reducedMotion={REDUCED_MOTION_MAP[reduceMotion]}>
       <TooltipProvider>
+        <TitleTooltipLayer />
         <AppearanceCustomizationEffect />
         <LowDeviceScaleEffect />
         <DeepLinkHandler onOpenUrls={receiveSharedRunConfigUrls} />

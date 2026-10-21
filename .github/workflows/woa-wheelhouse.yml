@@ -29,9 +29,15 @@ on:
       arrow_tag:
         description: "apache/arrow tag to build pyarrow from"
         default: "apache-arrow-25.0.1"
+      arrow_commit:
+        description: "commit that arrow_tag must resolve to (a tag can be moved under a signed build)"
+        default: "beccec0d0c451b7aa3e4530416ac431b3c035c69"
       sqlite_vec_tag:
         description: "asg017/sqlite-vec tag"
         default: "v0.1.9"
+      sqlite_vec_commit:
+        description: "commit that sqlite_vec_tag must resolve to"
+        default: "e9f598abfa0c06b328d8fe5da9c3760cce74be10"
       release_tag:
         description: "release tag to publish under"
         default: "Windows-ARM64"
@@ -67,7 +73,7 @@ jobs:
       ARCH: ARM64
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -76,6 +82,24 @@ jobs:
           repository: apache/arrow
           ref: ${{ inputs.arrow_tag }}
           path: arrow
+
+      - name: Confirm the Arrow tag is the pinned commit
+        shell: pwsh
+        env:
+          PINNED_COMMIT: ${{ inputs.arrow_commit }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pin = $env:PINNED_COMMIT
+          if ($pin -notmatch '^[0-9a-f]{40}$') {
+            Write-Output "::error::arrow_commit must be a full commit SHA, got '$pin'."
+            exit 1
+          }
+          $head = (git -C arrow rev-parse HEAD).Trim()
+          if ($head -ne $pin) {
+            Write-Output "::error::arrow checkout is $head, expected the pinned $pin. Did the tag move?"
+            exit 1
+          }
+          Write-Host "arrow @ $head"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -276,7 +300,7 @@ jobs:
           "@
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: unsigned-pyarrow-cp${{ matrix.python }}
           path: arrow/python/repaired_wheels/*.whl
@@ -288,7 +312,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -298,6 +322,24 @@ jobs:
           ref: ${{ inputs.sqlite_vec_tag }}
           path: sv
           fetch-depth: 0
+
+      - name: Confirm the sqlite-vec tag is the pinned commit
+        shell: pwsh
+        env:
+          PINNED_COMMIT: ${{ inputs.sqlite_vec_commit }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pin = $env:PINNED_COMMIT
+          if ($pin -notmatch '^[0-9a-f]{40}$') {
+            Write-Output "::error::sqlite_vec_commit must be a full commit SHA, got '$pin'."
+            exit 1
+          }
+          $head = (git -C sv rev-parse HEAD).Trim()
+          if ($head -ne $pin) {
+            Write-Output "::error::sv checkout is $head, expected the pinned $pin. Did the tag move?"
+            exit 1
+          }
+          Write-Host "sv @ $head"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -402,7 +444,7 @@ jobs:
           "@
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: unsigned-sqlite-vec
           path: wheel/*.whl
@@ -423,13 +465,13 @@ jobs:
     environment: release-signing
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           pattern: unsigned-*
           merge-multiple: true
@@ -580,7 +622,7 @@ jobs:
           Get-Content signed/index.txt
           Get-Content signed/SHA256SUMS
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: woa-wheelhouse-signed
           path: |
@@ -599,11 +641,11 @@ jobs:
       contents: write
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: woa-wheelhouse-signed
           path: wheelhouse

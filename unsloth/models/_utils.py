@@ -71,6 +71,7 @@ __all__ = [
     "unsloth_compile_transformers",
     "resolve_model_class",
     "resolve_attention_implementation",
+    "fall_back_from_flash_attention_on_pre_ampere",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
     "set_task_config_attr",
@@ -118,6 +119,7 @@ __all__ = [
     "get_moe_expert_submodule_leaves",
     "moe_expert_submodule_regex",
     "widen_target_regex_to_expert_submodules",
+    "native_expert_only_regex",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
@@ -140,7 +142,7 @@ __all__ = [
 
 
 import torch
-from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
+from typing import Union, Optional, List, Any, Callable, Dict, Tuple, Iterator
 from platform import system as platform_system
 
 platform_system = platform_system()
@@ -165,7 +167,10 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
     apply_gfx101x_triton_workaround,
+    cuda_gate_capabilities,
     gfx101x_triton_workaround_applied,
+    xpu_supports_native_bf16,
+    zoo_shares_xpu_bf16,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
 from unsloth_zoo.log import logger
@@ -1612,6 +1617,127 @@ def _set_attn_impl(config, impl):
         return impl
     _write_attn_impl(config, impl)
     return impl
+
+
+def _cuda_index(placement):
+    """CUDA index of a device-map placement, or None for cpu / disk offload."""
+    if isinstance(placement, int):
+        return placement
+    try:
+        device = torch.device(placement)
+    except (RuntimeError, TypeError):
+        return None
+    if device.type != "cuda":
+        return None
+    # A bare "cuda" means the current device, which a framework may have moved off device 0.
+    return torch.cuda.current_device() if device.index is None else device.index
+
+
+def _attention_placements(model, device_map):
+    """Device-map keys that run attention: each attention module's longest-prefix entry, plus entries inside
+    one (a fine-grained map can place q_proj alone). An unresolvable key counts."""
+    keys = sorted((k for k in device_map if isinstance(k, str)), key = len, reverse = True)
+    out = set()
+    for key in keys:
+        try:
+            model.get_submodule(key)
+        except Exception:
+            out.add(key)
+    for name, module in model.named_modules():
+        if not name or "attention" not in type(module).__name__.lower():
+            continue
+        owner = next((k for k in keys if k == "" or name == k or name.startswith(k + ".")), None)
+        if owner is not None:
+            out.add(owner)
+        out.update(k for k in keys if k.startswith(name + "."))
+    return out
+
+
+def _pre_ampere_cuda_devices(model):
+    """CUDA indices that Flash Attention 2 cannot run on (sm < 80) and that the loaded `hf_device_map`
+    puts attention layers on. An `lm_head` or embedding alone there never calls flash."""
+    device_map = getattr(model, "hf_device_map", None)
+    if DEVICE_TYPE != "cuda" or not isinstance(device_map, dict):
+        return []
+    try:
+        indices = {k: _cuda_index(v) for k, v in device_map.items()}
+        pre_ampere = {
+            i
+            for i in set(indices.values())
+            if i is not None and torch.cuda.get_device_capability(i)[0] < 8
+        }
+    except Exception:
+        return []
+    if not pre_ampere:
+        return []  # same-generation hosts never walk the modules
+    attention = _attention_placements(model, device_map)
+    return sorted({indices[k] for k in attention if indices.get(k) in pre_ampere})
+
+
+def fall_back_from_flash_attention_on_pre_ampere(model):
+    """Device 0 chose Flash Attention 2; switch to SDPA (or eager) when the device map also put attention
+    layers on a pre-Ampere card, where every flash call would raise. Same-generation hosts never change."""
+    if not HAS_FLASH_ATTENTION:
+        return False
+    pre_ampere = _pre_ampere_cuda_devices(model)
+    if not pre_ampere:
+        return False
+    model_class = type(model)
+    # Same SDPA eligibility as resolve_attention_implementation: a known-wrong SDPA stays on eager.
+    class_sdpa = getattr(model_class, "_supports_sdpa", False) and not _declares_no_sdpa(
+        model_class
+    )
+    configs, seen = [], set()
+
+    def _collect(config):
+        if config is None or id(config) in seen:
+            return
+        seen.add(id(config))
+        configs.append(config)
+        for key in getattr(config, "sub_configs", None) or ():
+            _collect(getattr(config, key, None))
+
+    for module in model.modules():
+        _collect(getattr(module, "config", None))
+    flash = [
+        config
+        for config in configs
+        if str(_config_get(config, "_attn_implementation", None) or "").startswith(
+            "flash_attention"
+        )
+    ]
+    if not flash:
+        return False
+
+    def _sdpa_ok(config):
+        model_type = (_config_get(config, "model_type", "") or "").lower()
+        # SDPA cannot apply an attention-logit softcap (Gemma 2), so those stay exact on eager.
+        softcap = _config_get(config, "attn_logit_softcapping", None)
+        # A tower already on eager (no SDPA, e.g. DonutSwin) must keep it.
+        eager = _config_get(config, "_attn_implementation", None) == "eager"
+        return not _is_sdpa_excluded(model_type) and not softcap and not eager
+
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        PreTrainedModel = ()
+    towers_sdpa = all(
+        getattr(type(m), "_supports_sdpa", False) and not _declares_no_sdpa(type(m))
+        for m in model.modules()
+        if isinstance(m, PreTrainedModel)
+    )
+    # One answer for the whole tree, decided before any write: a composite's setter recurses into
+    # its children, so a parent rewritten to sdpa would carry a softcapped child with it.
+    ok = class_sdpa and towers_sdpa and all(_sdpa_ok(c) for c in configs)
+    changed = "sdpa" if ok else "eager"
+    for config in flash:
+        _write_attn_impl(config, changed)
+    if changed:
+        print(
+            f"Unsloth: Layers were placed on cuda:{pre_ampere[0]}, which cannot run Flash Attention 2 "
+            f"(compute capability below 8.0), so the model uses {changed} attention instead."
+        )
+    return bool(changed)
 
 
 _REMOTE_CODE_HUB_KWARGS = (
@@ -3534,8 +3660,18 @@ def extract_quant_model_param_count(model):
     """Quantized model param count, from the difference in param class."""
     count: int = 0
     for name, p in model.named_parameters():
-        if p.__class__.__name__ == "Params4bit":
-            count += 2 * p.numel()
+        # Under FSDP2 the parameter is a DTensor that carries the Params4bit quant attributes
+        # (fsdp2_qlora), so its class name alone does not identify it. Only a bitsandbytes quant
+        # state counts: compressed-tensors packed weights also carry one, at 2, 4 or 8 bits.
+        quant_state = getattr(p, "quant_state", None)
+        is_4bit = p.__class__.__name__ == "Params4bit" or (
+            quant_state is not None and type(quant_state).__module__.split(".")[0] == "bitsandbytes"
+        )
+        if is_4bit and getattr(p, "bnb_quantized", True) is not False:
+            # Two 4-bit weights per packed byte. FSDP2 QLoRA stores the bytes in a float dtype
+            # (bnb_4bit_quant_storage), where one element holds element_size() bytes. Before its
+            # first quantizing move a Params4bit still holds dense values: counted as they are.
+            count += 2 * p.numel() * p.element_size()
         else:
             count += p.numel()
     return count
@@ -3723,6 +3859,48 @@ def _package_available(pkg_name: str) -> bool:
     return bool(result)
 
 
+def _cache_device_capability(get_device_capability):
+    """Cache per resolved device index: a no-arg call means the current device, so caching the
+    call itself returned device 0's answer after torch.cuda.set_device(1)."""
+    if getattr(get_device_capability, "_unsloth_per_device_cache", False):
+        return get_device_capability
+
+    # One visible device: every spelling names it, so the plain C-level cache is exact and fastest.
+    try:
+        single_device = torch.cuda.device_count() <= 1
+    except Exception:
+        single_device = False
+    if single_device:
+        cached = functools.cache(get_device_capability)
+        cached._unsloth_per_device_cache = True
+        return cached
+
+    cache = {}
+
+    @functools.wraps(get_device_capability)
+    def cached_get_device_capability(device = None):
+        if device is None:
+            index = torch.cuda.current_device()
+        elif isinstance(device, int):
+            index = device
+        else:
+            # torch.device, not torch.cuda._utils._get_device_index: Dynamo traces it (fullgraph).
+            try:
+                device = torch.device(device)
+            except Exception:
+                return get_device_capability(device)
+            if device.type != "cuda":
+                return get_device_capability(device)
+            index = torch.cuda.current_device() if device.index is None else device.index
+        capability = cache.get(index)
+        if capability is None:
+            capability = cache[index] = get_device_capability(index)
+        return capability
+
+    cached_get_device_capability._unsloth_per_device_cache = True
+    return cached_get_device_capability
+
+
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
@@ -3734,10 +3912,13 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     HAS_FLASH_ATTENTION_SOFTCAPPING = False
 elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
-    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
+    torch.cuda.get_device_capability = _cache_device_capability(torch.cuda.get_device_capability)
+    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
+    _cuda_caps = cuda_gate_capabilities()
+    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
+    del _cuda_caps
 
     if major_version >= 8:
-        SUPPORTS_BFLOAT16 = True
         if _package_available("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl" and for softcapping; see #1437.
             try:
@@ -3817,10 +3998,27 @@ elif DEVICE_TYPE == "hip":
 
             HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "xpu":
-    SUPPORTS_BFLOAT16 = True
+    SUPPORTS_BFLOAT16 = xpu_supports_native_bf16() if zoo_shares_xpu_bf16() else True
 elif DEVICE_TYPE == "npu":
     # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
+
+
+def _xformers_fa3_lacks_sm90a(build_info, capability, flash3) -> bool:
+    # Bundled FA3 is compiled for TORCH_CUDA_ARCH_LIST verbatim; without "9.0a" (conda-forge) its wgmma
+    # kernels trap on H100 and poison the CUDA context (#3963). Unset list = xformers' "8.0 9.0a" default.
+    if tuple(capability) != (9, 0):
+        return False
+    if getattr(flash3, "_C_flashattention3", None) is None:
+        return False
+    if getattr(flash3, "FLASH_VERSION", None) == "pip_pkg":
+        return False
+    try:
+        arch_list = str(build_info.build_env.get("TORCH_CUDA_ARCH_LIST") or "")
+    except Exception:
+        return False
+    return bool(arch_list) and "9.0a" not in arch_list
+
 
 try:
     _xformers_logger = logging.getLogger("xformers")
@@ -3883,7 +4081,7 @@ try:
     from xformers._cpp_lib import _register_extensions
 
     try:
-        _register_extensions()
+        _xformers_build = _register_extensions()
     except Exception as error:
         raise ImportError(
             "Unsloth: Xformers was not installed correctly.\n"
@@ -3893,6 +4091,17 @@ try:
             "Longer error message:\n" + str(error)
         ) from error
     import xformers.ops.fmha as xformers
+
+    if (
+        DEVICE_TYPE == "cuda"
+        and torch.cuda.is_available()
+        and hasattr(xformers, "_set_use_fa3")
+        and _xformers_fa3_lacks_sm90a(
+            _xformers_build, torch.cuda.get_device_capability(), getattr(xformers, "flash3", None)
+        )
+    ):
+        xformers._set_use_fa3(False)
+    del _xformers_build
 
     xformers_attention = xformers.memory_efficient_attention
 except ModuleNotFoundError:
@@ -4113,9 +4322,10 @@ def has_internet(
     if os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in OFFLINE_TRUE:
         return False
     try:
-        socket.setdefaulttimeout(timeout)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
+            # Per socket: setdefaulttimeout would cap every later socket in the process at `timeout`.
+            sock.settimeout(timeout)
             sock.connect((host, port))
             return True
         finally:
@@ -4328,8 +4538,17 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
+
+    # DeepSpeed keeps its type even on one device: reporting NO turns on accelerate's native AMP, whose
+    # dtype-less autocast under DeepSpeed is float16 and breaks a bfloat16 model (#225).
+    def _single_device_distributed_type(self):
+        real = getattr(self.__dict__.get("state"), "distributed_type", None)
+        return (
+            DistributedType.DEEPSPEED if real == DistributedType.DEEPSPEED else DistributedType.NO
+        )
+
     # Must be a property: a bare function binds as a method, inverting every `!= DistributedType.NO` guard in accelerate (#10016).
-    accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
+    accelerate.accelerator.Accelerator.distributed_type = property(_single_device_distributed_type)
 
 
 _PER_LAYER_DEVICE_MISSING = object()
@@ -5339,7 +5558,36 @@ def patch_gradient_accumulation_fix(Trainer):
                     apply_accepts_loss_kwargs_fix(model)
                 except Exception:
                     pass
+            try:
+                from .fsdp2 import install_fsdp2_policy_provenance
+                install_fsdp2_policy_provenance()
+            except Exception:
+                pass
+            from ..fsdp2_launch import unsloth_fsdp2_native_requested
+
+            # Env reads only; fsdp2_native (and torch.distributed.fsdp) is imported only under the flag.
+            native_fsdp2 = unsloth_fsdp2_native_requested()
+            if native_fsdp2:
+                from .fsdp2_native import (
+                    native_fsdp2_trainer_init_arguments,
+                    native_fsdp2_trainer_setup,
+                )
+
+                # UNSLOTH_FSDP2=1 under torchrun: Unsloth shards the model itself (fully_shard per block
+                # + root) before the optimizer and accelerate exist; accelerate then skips its wrap.
+                # Arguments by keyword or position, so a positional optimizer is refused too.
+                bound = native_fsdp2_trainer_init_arguments(_original_trainer_init, args, kwargs)
+                native_fsdp2_trainer_setup(
+                    model = bound["model"],
+                    phase = "pre",
+                    optimizers = bound["optimizers"],
+                    training_args = bound["args"],
+                    model_init = bound["model_init"],
+                    optimizer_cls_and_kwargs = bound["optimizer_cls_and_kwargs"],
+                )
             _original_trainer_init(self, *args, **kwargs)
+            if native_fsdp2:
+                native_fsdp2_trainer_setup(self, phase = "post")
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
@@ -5356,11 +5604,23 @@ def patch_gradient_accumulation_fix(Trainer):
             except Exception:
                 pass
             if getattr(self, "is_fsdp_enabled", False):
-                from .llama import _decline_fused_lora_for_fsdp
-                _decline_fused_lora_for_fsdp(getattr(self, "model", None))
+                # FSDP2 keeps the fused LoRA kernels when each decoder block is its own unit (checked
+                # again once accelerate has wrapped); FSDP1 and a root-only wrap decline them here.
+                from .fsdp2 import fsdp2_trainer_setup
+                keep_fused, reason = fsdp2_trainer_setup(self)
+                if not keep_fused:
+                    from .llama import _decline_fused_lora_for_fsdp
+                    _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
             _replan_auto_offload_safely(self)
+            _size_auto_checkpoint_skip_for_trainer(self)
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
+            from ._ddp_defaults import install_unsloth_ddp_comm_defaults
+
+            install_unsloth_ddp_comm_defaults(self)
+            if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
+                from ..optimizers.state_offload import install_optimizer_state_offload
+                install_optimizer_state_offload(self)
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init
@@ -7135,7 +7395,9 @@ def validate_loftq_config(
     signature = str(inspect.signature(LoraConfig))
     SUPPORTS_LOFTQ = "loftq_config" in signature
 
-    if lora_dropout != 0:
+    from ..kernels.fast_lora import FUSED_LORA_DROPOUT
+
+    if lora_dropout != 0 and not FUSED_LORA_DROPOUT:
         logger.warning_once(
             f"Unsloth: Dropout = 0 is supported for fast patching. You are using dropout = {lora_dropout}.\n"
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
@@ -7186,8 +7448,20 @@ def fast_inference_setup(model_name, model_config):
                 f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"
                 f"we do not yet support fast inference for {model_name}"
             )
-            model_name = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
+            model_name = _vllm_plain_bnb_or_16bit(model_name)
     return fast_inference, model_name
+
+
+def _vllm_plain_bnb_or_16bit(model_name):
+    """`-unsloth-bnb-4bit` -> `-bnb-4bit` when that repo is published, else the 16-bit original (quantized on load)."""
+    from .mapper import FLOAT_TO_INT_MAPPER, INT_TO_FLOAT_MAPPER
+
+    plain = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
+    lower = model_name.lower()
+    key = lower if lower in INT_TO_FLOAT_MAPPER else FLOAT_TO_INT_MAPPER.get(lower)
+    if key is None or (FLOAT_TO_INT_MAPPER.get(plain.lower()) or "").lower() == key.lower():
+        return plain
+    return INT_TO_FLOAT_MAPPER.get(key) or plain
 
 
 def save_lora_adapter(model, save_directory, *args, **kwargs):
@@ -7257,7 +7531,9 @@ class TorchAOConfig:
         default_factory = lambda: [
             (
                 Int4WeightOnlyConfig(group_size = 128),
-                lambda m, _: isinstance(m, torch.nn.Linear) and getattr(m, "in_features", 0) >= 128,
+                lambda m, _: isinstance(m, torch.nn.Linear)
+                and getattr(m, "in_features", 0) >= 128
+                and m.in_features % 128 == 0,
             ),
         ]
     )
@@ -7293,6 +7569,104 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     model.tie_weights = _no_tie.__get__(model, model.__class__)
 
     assert out_proj.weight.data_ptr() != in_emb.weight.data_ptr(), "Embeddings still tied!"
+
+
+def _embedding_subclasses(model: torch.nn.Module) -> Dict[str, torch.nn.Module]:
+    """nn.Embedding subclasses with their own forward (Gemma3TextScaledWordEmbedding scales by embed_scale)."""
+    try:
+        from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+    except ImportError:
+        return {}
+    return {
+        fqn: module
+        for fqn, module in model.named_modules()
+        if isinstance(module, torch.nn.Embedding)
+        and type(module) is not torch.nn.Embedding
+        and not isinstance(module, FakeQuantizedEmbedding)
+    }
+
+
+def _copy_embedding_subclass_state(dst: torch.nn.Module, src: torch.nn.Module) -> None:
+    """Copy the parameters, submodules, buffers and plain attributes an Embedding subclass adds (e.g.
+    Gemma3's embed_scale, T5Gemma2's eoi_embedding) onto dst."""
+    for name, param in src._parameters.items():
+        if name not in dst._parameters:
+            dst.register_parameter(name, param)
+    for name, module in src._modules.items():
+        if name not in dst._modules:
+            dst.add_module(name, module)
+    for name, buffer in src._buffers.items():
+        if name not in dst._buffers:
+            dst.register_buffer(
+                name, buffer, persistent = name not in src._non_persistent_buffers_set
+            )
+    for name, value in vars(src).items():
+        if name.startswith("_") or name in vars(dst) or isinstance(value, torch.nn.Module):
+            continue
+        setattr(dst, name, value)
+
+
+_FAKE_QUANTIZED_EMBEDDING_CLASSES = {}
+
+
+def _fake_quantized_embedding_class(original_cls):
+    """FakeQuantizedEmbedding that keeps original_cls.forward: its super().forward() is the fake-quantized lookup."""
+    from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+
+    cls = _FAKE_QUANTIZED_EMBEDDING_CLASSES.get(original_cls)
+    if cls is not None:
+        return cls
+
+    def to_embedding(self):
+        # QATConfig(step = "convert") swaps back to a plain nn.Embedding; restore the subclass and its scale.
+        embedding = FakeQuantizedEmbedding.to_embedding(self)
+        embedding.__class__ = original_cls
+        _copy_embedding_subclass_state(embedding, self)
+        return embedding
+
+    def __reduce_ex__(self, protocol):
+        # Pickle by the original class, so a fresh process (torch.load, spawn workers) rebuilds this one.
+        return (_rebuild_fake_quantized_embedding, (original_cls,), self.__getstate__())
+
+    name = "_FakeQuantized_" + re.sub(
+        r"\W", "_", f"{original_cls.__module__}.{original_cls.__qualname__}"
+    )
+    cls = type(
+        name,
+        (original_cls, FakeQuantizedEmbedding),
+        {
+            "to_embedding": to_embedding,
+            "__reduce_ex__": __reduce_ex__,
+            "__module__": __name__,
+            "__qualname__": name,
+        },
+    )
+    _FAKE_QUANTIZED_EMBEDDING_CLASSES[original_cls] = cls
+    return cls
+
+
+def _rebuild_fake_quantized_embedding(original_cls):
+    cls = _fake_quantized_embedding_class(original_cls)
+    return cls.__new__(cls)
+
+
+def _restore_fake_quantized_embedding_subclasses(
+    model: torch.nn.Module, originals: Dict[str, torch.nn.Module]
+) -> None:
+    """QAT prepare swaps in a plain FakeQuantizedEmbedding, dropping e.g. Gemma3's embed_scale; restore it."""
+    if not originals:
+        return
+    from torchao.quantization.qat.embedding import FakeQuantizedEmbedding
+
+    for fqn, original in originals.items():
+        try:
+            module = model.get_submodule(fqn)
+        except AttributeError:
+            continue
+        if type(module) is not FakeQuantizedEmbedding:
+            continue
+        module.__class__ = _fake_quantized_embedding_class(type(original))
+        _copy_embedding_subclass_state(module, original)
 
 
 def _filter_fn_to_fqns(
@@ -7463,6 +7837,54 @@ def _convert_torchao_model(model):
     model.config.quantization_config = quantization_config
 
 
+def _group_size_linear_filter(model, group_size, qat_scheme):
+    """PerGroup filter: in_features not divisible by group_size breaks the fake quantizer's reshape."""
+    filter_fn = lambda m, _: (
+        isinstance(m, torch.nn.Linear)
+        and m.in_features >= group_size
+        and m.in_features % group_size == 0
+    )
+    skipped = [
+        name
+        for name, module in model.named_modules()
+        if isinstance(module, torch.nn.Linear)
+        and module.in_features >= group_size
+        and module.in_features % group_size != 0
+        and not _is_lora_adapter_name(name)
+    ]
+    if skipped:
+        warnings.warn(
+            f"Unsloth: qat_scheme='{qat_scheme}' uses group_size {group_size}; these Linear layers have "
+            f"in_features not divisible by {group_size} and stay in full precision: "
+            + ", ".join(skipped[:8])
+            + (f", ... ({len(skipped) - 8} more)" if len(skipped) > 8 else ""),
+            stacklevel = 3,
+        )
+    return filter_fn
+
+
+def _is_lora_adapter_name(fqn: str) -> bool:
+    return any(part.startswith("lora_") for part in fqn.split("."))
+
+
+def _exclude_lora_adapters_from_qat(model, torchao_config) -> None:
+    """Adapters are merged before quantization, so only base weights are fake-quantized."""
+    if os.environ.get("UNSLOTH_QAT_FAKE_QUANTIZE_LORA", "0") == "1":
+        return
+    if not any(_is_lora_adapter_name(name) for name, _ in model.named_modules()):
+        return
+    from torchao.quantization.quant_api import _is_linear
+
+    def _skip_lora(filter_fn):
+        filter_fn = filter_fn or _is_linear
+        return lambda m, fqn: not _is_lora_adapter_name(fqn) and filter_fn(m, fqn)
+
+    torchao_config.base_config_and_filter_fns = [
+        (base_config, _skip_lora(filter_fn))
+        for base_config, filter_fn in torchao_config.base_config_and_filter_fns
+    ]
+
+
 def _prepare_model_for_qat(
     model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]
 ) -> torch.nn.Module:
@@ -7474,16 +7896,9 @@ def _prepare_model_for_qat(
     except ImportError:
         raise ImportError(TORCHAO_MSG)
 
-    # Gemma3 int8 embedding quantization struggles with its 262144-token vocabulary, so auto-switch to int4 weight-only.
-    if qat_scheme == "int8-int4":
-        model_types = get_transformers_model_type(model.config)
-        is_gemma3 = any("gemma3" in mt or "gemma_3" in mt for mt in model_types)
-        if is_gemma3:
-            print(
-                "Unsloth: Gemma3 has a large vocabulary causing int8 embedding issues. "
-                "Switching to int4 weight-only QAT for training stability."
-            )
-            qat_scheme = "int4"
+    # get_peft_model passes the scheme straight here, unaliased.
+    if qat_scheme == "phone-deployment":
+        qat_scheme = "int8-int4"
 
     if not isinstance(qat_scheme, TorchAOConfig):
         torchao_config: Optional[TorchAOConfig] = None
@@ -7494,7 +7909,7 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Float8DynamicActivationInt4WeightConfig()
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+            filter_fn = _group_size_linear_filter(model, group_size, qat_scheme)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -7561,7 +7976,7 @@ def _prepare_model_for_qat(
                 raise ImportError(TORCHAO_MSG)
             group_size = 128
             base_config = Int4WeightOnlyConfig(group_size = group_size)
-            filter_fn = lambda m, _: isinstance(m, torch.nn.Linear) and m.in_features >= group_size
+            filter_fn = _group_size_linear_filter(model, group_size, qat_scheme)
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [(base_config, filter_fn)],
@@ -7625,6 +8040,9 @@ def _prepare_model_for_qat(
         else:
             raise ValueError(f"Unexpected QAT scheme {qat_scheme}")
         assert torchao_config is not None, f"TorchAOConfig was not set for {qat_scheme}"
+        # Built here from the scheme name, so save-time export hints may assume its exact recipe.
+        torchao_config._unsloth_builtin_recipe = True
+        _exclude_lora_adapters_from_qat(model, torchao_config)
     else:
         torchao_config = qat_scheme
 
@@ -7636,8 +8054,10 @@ def _prepare_model_for_qat(
 
     if torchao_config.prequantization_transform is not None:
         torchao_config.prequantization_transform(model)
+    embedding_subclasses = _embedding_subclasses(model)
     for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "prepare"), filter_fn = filter_fn)
+    _restore_fake_quantized_embedding_subclasses(model, embedding_subclasses)
 
     return model
 
@@ -7708,11 +8128,36 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         return torch.no_grad()
     if os.environ.get("FSDP_VERSION", "").strip() not in ("", "0"):
         return torch.no_grad()
+    # Unsloth's native FSDP2 (UNSLOTH_FSDP2=1 under torchrun) exports neither variable, so accelerate
+    # does not wrap the model again: read its launch flag, and the mark shard_model leaves on the root.
+    _fsdp2 = os.environ.get("UNSLOTH_FSDP2", "").strip().lower()
+    if _fsdp2 in ("1", "true", "yes", "on", "native"):
+        try:
+            if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+                return torch.no_grad()
+        except ValueError:
+            pass
+    for _m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None)):
+        if _m is not None and getattr(_m, "_unsloth_fsdp2_native", False) is True:
+            return torch.no_grad()
     accelerate_state = sys.modules.get("accelerate.state", None)
     shared_state = getattr(
         getattr(accelerate_state, "AcceleratorState", None), "_shared_state", None
     )
     if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
+        return torch.no_grad()
+    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies.
+    if os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in ("1", "true", "yes", "on"):
+        return torch.no_grad()
+    if isinstance(shared_state, dict) and "DEEPSPEED" in str(
+        shared_state.get("distributed_type", "")
+    ):
+        return torch.no_grad()
+    try:
+        first = next(iter(model.parameters()), None)
+    except Exception:
+        first = None
+    if first is not None and hasattr(first, "ds_id"):
         return torch.no_grad()
     return torch.inference_mode()
 
@@ -7963,7 +8408,9 @@ def _skip_aware_flag(cls):
         return
 
     def _get(self):
-        if self.__dict__.get("_unsloth_skip_checkpoint", False):
+        if self.__dict__.get("_unsloth_skip_checkpoint", False) or self.__dict__.get(
+            "_unsloth_every_n_skip", False
+        ):
             return False
         # Unmarked layers of the class still hold the flag in their own dict.
         return self.__dict__.get(
@@ -7977,16 +8424,328 @@ def _skip_aware_flag(cls):
     cls._unsloth_skip_aware = True
 
 
+def _gc_keep_layers_env():
+    value = os.environ.get("UNSLOTH_GC_KEEP_LAYERS", "").strip().lower()
+    if value in ("", "0"):
+        return 0
+    if value in ("auto", "max"):
+        return value
+    try:
+        return max(0, int(value))
+    except ValueError:
+        logger.warning(
+            f"Unsloth: UNSLOTH_GC_KEEP_LAYERS = {value!r} is not K, max or auto; ignored."
+        )
+        return 0
+
+
+class _AutoCheckpointSkip:
+    """checkpoint_skip_layers = "auto": once, after step 1, un-checkpoint as many layers as fit.
+    Per-layer cost = the largest allocation any eligible layer's reentrant recompute leaves in the
+    first backward (hybrid stacks mix attention and Mamba blocks); AdamW state is reserved for every
+    trainable param the optimizer has no state for yet. Sized for the trainer batch at the longest of
+    max_length, max_seq_length and the measured length: inputs a collator expands past that (images,
+    audio) need max_seq_length set to their bound. Single process only: under torchrun each rank
+    would pick its own K."""
+
+    MARGIN = 1 << 30
+    FRACTION = 0.75
+    _warned_no_cuda = False
+
+    def __init__(self, model, layers, probe):
+        self.model = model
+        self.layers = layers
+        self.probe = probe
+        self.handles = []
+        self.started = None
+        self.no_grad_forward = False
+        self.before = None
+        self.measured = set()
+        self.layer_bytes = None
+        self.layer_rows = 1
+        self.layer_batch = 1
+        self.target_batch = None
+        self.target_seq = None
+        self.kept = None
+        self.step_peak = None
+        self.stepped = False
+        self.optimizers = []
+        self.fresh_grads = None
+        self.grad_bytes = None
+
+    @classmethod
+    def _no_cuda(cls):
+        if not cls._warned_no_cuda:
+            cls._warned_no_cuda = True
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" needs a CUDA GPU; every layer stays checkpointed.'
+            )
+        return None
+
+    @classmethod
+    def install(cls, model):
+        if not torch.cuda.is_available():
+            return cls._no_cuda()
+        try:
+            from .loader_utils import is_distributed
+            distributed = is_distributed()
+        except Exception:
+            distributed = False
+        if distributed:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" is single process only; every layer stays checkpointed.'
+            )
+            return None
+        previous = getattr(model, "_unsloth_auto_skip", None)
+        if previous is not None:
+            previous.remove()
+        layers = find_decoder_layers(model) if find_decoder_layers is not None else []
+        swapper = getattr(model, "_unsloth_block_swap", None)
+        swapped = set(getattr(swapper, "indices", None) or ())
+        eligible = [
+            i
+            for i, layer in enumerate(layers)
+            if i not in swapped and hasattr(layer, "gradient_checkpointing")
+        ]
+        if not eligible:
+            return None
+        devices = {p.device for layer in layers for p in layer.parameters() if p.is_cuda}
+        if not devices:
+            # Model on CPU / XPU on a CUDA host: the hooks would never run (and keep the model alive).
+            return cls._no_cuda()
+        if len(devices) > 1:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" sizes one GPU; the layers span several, so every layer stays checkpointed.'
+            )
+            return None
+        import functools, weakref
+
+        self = cls(model, layers, layers[eligible[-1]])
+        self.device = next(iter(devices))
+        self.handles.append(model.register_forward_pre_hook(self._model_pre_hook))
+        for i in eligible:
+            layer = layers[i]
+            self.handles.append(
+                layer.register_forward_pre_hook(functools.partial(self._probe_pre_hook, i))
+            )
+            self.handles.append(layer.register_forward_hook(functools.partial(self._probe_hook, i)))
+        try:
+            from torch.optim.optimizer import register_optimizer_step_pre_hook
+        except ImportError:
+            register_optimizer_step_pre_hook = None
+        if register_optimizer_step_pre_hook is not None:
+            # The global registry must not keep the planner (and so the model) alive if plan() never runs.
+            planner_ref = weakref.ref(self)
+
+            def _optimizer_pre_hook(optimizer, args, kwargs):
+                planner = planner_ref()
+                if planner is not None:
+                    planner._optimizer_pre_hook(optimizer, args, kwargs)
+
+            handle = register_optimizer_step_pre_hook(_optimizer_pre_hook)
+            self.handles.append(handle)
+            weakref.finalize(self, handle.remove)
+        model._unsloth_auto_skip = self
+        return self
+
+    def remove(self):
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+        if getattr(self.model, "_unsloth_auto_skip", None) is self:
+            del self.model._unsloth_auto_skip
+
+    def _plan_device(self):
+        # Not one layer's: offload_layers = "auto" may re-plan after install and move any layer to host.
+        for layer in self.layers:
+            for p in layer.parameters():
+                if p.is_cuda:
+                    return p.device
+        return None
+
+    def _model_pre_hook(self, module, args):
+        if not module.training or not torch.is_grad_enabled():
+            return
+        device = self._plan_device()
+        if device is None:
+            return
+        if self.started is None:
+            # Step-local peak: a model-loading spike must not count as activations.
+            torch.cuda.reset_peak_memory_stats(device)
+            self.started = torch.cuda.memory_allocated(device)
+            # Grads the first backward allocates persist: they are not sequence-dependent.
+            self.fresh_grads = [
+                p for p in self.model.parameters() if p.requires_grad and p.grad is None
+            ]
+            return
+        if self.layer_bytes is not None:
+            self.plan(device)
+
+    def _probe_pre_hook(self, index, module, args):
+        if self.started is None or index in self.measured or not module.training:
+            return
+        if not torch.is_grad_enabled():
+            # The reentrant checkpoint's own forward: the next grad-mode call is its recompute.
+            self.no_grad_forward = True
+            return
+        if not self.no_grad_forward:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" needs reentrant gradient checkpointing; unchanged.'
+            )
+            self.remove()
+            return
+        hidden = args[0] if args and torch.is_tensor(args[0]) else None
+        if hidden is not None and hidden.is_cuda:
+            self.layer_rows = hidden.shape[-2] if hidden.dim() >= 3 else hidden.shape[0]
+            self.layer_batch = math.prod(hidden.shape[:-2]) if hidden.dim() >= 3 else 1
+            self.before = (index, torch.cuda.memory_allocated(hidden.device), hidden.device)
+
+    def _probe_hook(self, index, module, args, output):
+        if self.before is None or self.before[0] != index or index in self.measured:
+            return
+        device = self.before[2]
+        cost = max(0, torch.cuda.memory_allocated(device) - self.before[1])
+        self.measured.add(index)
+        # Conservative: the most expensive layer type sizes every kept layer.
+        self.layer_bytes = max(self.layer_bytes or 0, cost)
+        self.before = None
+
+    def _seq_exponent(self):
+        """Activation growth with sequence length: 1 for SDPA / flash / flex, 2 for anything that
+        materialises the attention matrix (eager) or cannot be identified."""
+        config = getattr(self.model, "config", None)
+        text_config = config
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                text_config = get_text_config()
+            except Exception:
+                text_config = config
+        impl = getattr(text_config, "_attn_implementation", None) or getattr(
+            config, "_attn_implementation", None
+        )
+        if isinstance(impl, str) and any(k in impl for k in ("sdpa", "flash", "flex")):
+            return 1
+        return 2
+
+    def _optimizer_pre_hook(self, optimizer, args, kwargs):
+        if self.started is None or self.stepped:
+            return
+        trainable = {id(p) for p in self.model.parameters() if p.requires_grad}
+        if not any(id(p) in trainable for group in optimizer.param_groups for p in group["params"]):
+            return
+        if not any(o() is optimizer for o in self.optimizers):
+            import weakref
+            self.optimizers.append(weakref.ref(optimizer))
+        # Forward + backward peak, before the optimizer allocates its state and temporaries.
+        device = self._plan_device()
+        if self.grad_bytes is None:
+            self.grad_bytes = self._fresh_grad_bytes(device)
+        if device is not None:
+            self.step_peak = torch.cuda.max_memory_allocated(device)
+        self.stepped = True
+
+    def _fresh_grad_bytes(self, device):
+        # Only grads on the planned card are in its step peak (a vision tower may sit on another GPU).
+        return sum(
+            p.grad.numel() * p.grad.element_size()
+            for p in (self.fresh_grads or ())
+            if p.grad is not None and p.grad.is_cuda and p.grad.device == device
+        )
+
+    def _has_optimizer_state(self, param):
+        for ref in self.optimizers:
+            optimizer = ref()
+            if optimizer is not None and optimizer.state.get(param):
+                return True
+        return False
+
+    def plan(self, device):
+        self.remove()
+        allocated_start = self.started
+        peak = (
+            self.step_peak
+            if self.step_peak is not None
+            else torch.cuda.max_memory_allocated(device)
+        )
+        # A short or small first batch (dynamic padding, packing, token-budget batches) under-measures:
+        # size for the trainer's batch x max length tokens, else the measured batch at max_seq_length.
+        rows = max(1, self.layer_rows)
+        # Never below the measured length (multimodal collators can expand past max_seq_length).
+        max_seq = max(rows, self.target_seq or getattr(self.model, "max_seq_length", None) or rows)
+        batch = max(self.target_batch or 0, self.layer_batch)
+        tokens = max(1.0, batch * max_seq / (self.layer_batch * rows))
+        # Eager attention keeps a seq x seq matrix per layer: one more length factor (over-estimates the rest).
+        scale = tokens * max(1.0, max_seq / rows) ** (self._seq_exponent() - 1)
+        # Persistent grads from the first backward are in the peak too; only the rest grows with length.
+        step_bytes = max(0, peak - allocated_start)
+        grad_bytes = (
+            self.grad_bytes if self.grad_bytes is not None else self._fresh_grad_bytes(device)
+        )
+        grad_bytes = min(step_bytes, grad_bytes)
+        # Grads still resident (gradient accumulation) are already outside usable_cuda_bytes.
+        resident = self._fresh_grad_bytes(device) if self.fresh_grads else 0
+        activation_peak = (step_bytes - grad_bytes) * scale + max(0, grad_bytes - resident)
+        self.fresh_grads = None
+        # State an optimizer step already allocated is excluded by usable_cuda_bytes; reserve the rest
+        # (sparse MoE experts, unused towers and gradient accumulation have none yet).
+        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        optimizer = sum(
+            p.numel() * 8
+            for p in trainable
+            if p.device == device and not self._has_optimizer_state(p)
+        )
+        # foreach AdamW allocates about one fp32 copy of the params (sqrt of exp_avg_sq) every step,
+        # on each param's own card.
+        optimizer += sum(p.numel() * 4 for p in trainable if p.device == device)
+        self.optimizers = []
+        headroom = usable_cuda_bytes(device) - activation_peak - optimizer
+        budget = headroom * self.FRACTION - self.MARGIN
+        per_layer = self.layer_bytes * scale
+        count = int(budget // per_layer) if per_layer > 0 and budget > 0 else 0
+        self.kept = skip_checkpointing(self.model, count) if count > 0 else []
+        if self.kept:
+            # Smart offloading learnt the checkpointed-call count in the first step; recount it.
+            try:
+                import unsloth_zoo.gradient_checkpointing as zoo_gc
+                if zoo_gc.CURRENT_GC_INDEX == 0:
+                    zoo_gc.FIRST_PASS = True
+                    zoo_gc.LAST_GC_INDEX = 0
+            except Exception:
+                pass
+        print(
+            f'Unsloth: checkpoint_skip_layers = "auto" keeps {len(self.kept)} of {len(self.layers)} '
+            f"decoder layers un-checkpointed ({per_layer / 2**30:.2f} GB each, "
+            f"{max(0, headroom) / 2**30:.1f} GB headroom)."
+        )
+        return self.kept
+
+
 def skip_checkpointing(model, layers = 0):
     """get_peft_model(checkpoint_skip_layers = K | "max"): K decoder layers (evenly spaced; "max" =
     all) keep their activations instead of recomputing them in backward. Faster, at the cost of
-    each layer's activations on the card. Block-swapped layers keep checkpointing."""
+    each layer's activations on the card. Block-swapped layers keep checkpointing. "auto" (or
+    UNSLOTH_GC_KEEP_LAYERS when 0): _AutoCheckpointSkip."""
     if not layers:
+        layers = _gc_keep_layers_env()
+    if layers != "auto":
+        # An explicit value replaces an earlier "auto" planner on the same model.
+        planner = getattr(model, "_unsloth_auto_skip", None)
+        if planner is not None:
+            planner.remove()
+    if not layers:
+        return []
+    if layers == "auto":
+        _AutoCheckpointSkip.install(model)
         return []
     layer_list = find_decoder_layers(model)
     swapper = getattr(model, "_unsloth_block_swap", None)
     swapped = set(getattr(swapper, "indices", None) or ())
-    eligible = [i for i in range(len(layer_list)) if i not in swapped]
+    eligible = [
+        i
+        for i, layer in enumerate(layer_list)
+        if i not in swapped and hasattr(layer, "gradient_checkpointing")
+    ]
     if layers == "max":
         chosen = eligible
     else:
@@ -8004,6 +8763,136 @@ def skip_checkpointing(model, layers = 0):
             layer.__dict__["_unsloth_gc_flag"] = current
         layer.__dict__["_unsloth_skip_checkpoint"] = True
     return chosen
+
+
+def _apply_every_n_layers(model, every_n_layers):
+    """Checkpoint GradientCheckpointingLayer 0, N, 2N...; held by the skip-aware flag so for_training keeps it."""
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except Exception:
+        return []
+    layers = [
+        m
+        for m in model.modules()
+        if isinstance(m, GradientCheckpointingLayer)
+        or "_unsloth_gradient_checkpointing_holder" in m.__dict__
+    ]
+    skipped = []
+    for i, layer in enumerate(layers):
+        if every_n_layers > 1 and i % every_n_layers != 0:
+            if not isinstance(layer, GradientCheckpointingLayer):
+                layer.__dict__["_unsloth_every_n_skip"] = True
+                skipped.append(i)
+                continue
+            if not hasattr(layer, "gradient_checkpointing"):
+                continue
+            current = layer.__dict__.pop("gradient_checkpointing", None)
+            _skip_aware_flag(type(layer))
+            if current is not None:
+                layer.__dict__["_unsloth_gc_flag"] = current
+            layer.__dict__["_unsloth_every_n_skip"] = True
+            skipped.append(i)
+        else:
+            layer.__dict__.pop("_unsloth_every_n_skip", None)
+    return skipped
+
+
+_OFFLOADING_CHECKPOINT_SHIMS = frozenset(
+    {"unsloth_checkpoint", "unsloth_offloaded_gradient_checkpoint"}
+)
+
+
+def _checkpoint_offloads(fn):
+    # Unsloth checkpoint functions that offload set `_unsloth_offloads`; the zoo shims are known by name.
+    return bool(getattr(fn, "_unsloth_offloads", False)) or (
+        getattr(fn, "__name__", "") in _OFFLOADING_CHECKPOINT_SHIMS
+    )
+
+
+_GC_KWARGS_WARNED = set()
+
+
+def _gc_kwargs_note(key, message):
+    if key not in _GC_KWARGS_WARNED:
+        _GC_KWARGS_WARNED.add(key)
+        print(message)
+
+
+def patch_gradient_checkpointing_enable_kwargs():
+    """Pop every_n_layers / offload from gradient_checkpointing_kwargs; offload under Unsloth's offloading shim would double-offload."""
+    try:
+        from transformers import PreTrainedModel
+        import transformers.modeling_utils as hf_modeling_utils
+    except Exception:
+        return
+    original = PreTrainedModel.gradient_checkpointing_enable
+    if getattr(original, "_unsloth_gc_kwargs", False):
+        return
+    try:
+        params = list(inspect.signature(original).parameters)
+    except Exception:
+        return
+    positional = [p for p in params if p not in ("self", "gradient_checkpointing_kwargs")]
+    native_every = "every_n_layers" in params
+    native_offload = "offload" in params
+
+    @functools.wraps(original)
+    def gradient_checkpointing_enable(
+        self,
+        gradient_checkpointing_kwargs = None,
+        *args,
+        **kwargs,
+    ):
+        kwargs.update(zip(positional, args))
+        every = kwargs.pop("every_n_layers", None)
+        offload = kwargs.pop("offload", None)
+        if gradient_checkpointing_kwargs is not None:
+            gc_kwargs = dict(gradient_checkpointing_kwargs)
+            dict_every = gc_kwargs.pop("every_n_layers", None)
+            dict_offload = gc_kwargs.pop("offload", None)
+            every = dict_every if every is None else every
+            offload = dict_offload if offload is None else offload
+            if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
+                gradient_checkpointing_kwargs = gc_kwargs or None
+        every = 1 if every is None else int(every)
+        if every < 1:
+            raise ValueError(f"Unsloth: every_n_layers must be >= 1, got {every}.")
+        if offload:
+            shim = getattr(hf_modeling_utils, "checkpoint", None)
+            if _checkpoint_offloads(shim):
+                _gc_kwargs_note(
+                    "offload",
+                    "Unsloth: gradient checkpointing already offloads activations to host memory, "
+                    "so transformers' offload=True is ignored.",
+                )
+                offload = False
+            elif not native_offload:
+                _gc_kwargs_note(
+                    "offload_native",
+                    "Unsloth: gradient checkpointing offload=True needs transformers >= 5.17; ignored. "
+                    'use_gradient_checkpointing = "unsloth" offloads activations on any version.',
+                )
+                offload = False
+        if native_offload and offload:
+            kwargs["offload"] = True
+        if native_every:
+            kwargs["every_n_layers"] = 1
+        out = original(self, gradient_checkpointing_kwargs, **kwargs)
+        if every > 1 or any("_unsloth_every_n_skip" in m.__dict__ for m in self.modules()):
+            skipped = _apply_every_n_layers(self, every)
+            if every > 1 and not skipped:
+                _gc_kwargs_note(
+                    "every_n_layers",
+                    f"Unsloth: every_n_layers = {every} found no GradientCheckpointingLayer to skip; "
+                    "every layer stays checkpointed.",
+                )
+        return out
+
+    gradient_checkpointing_enable._unsloth_gc_kwargs = True
+    PreTrainedModel.gradient_checkpointing_enable = gradient_checkpointing_enable
+
+
+patch_gradient_checkpointing_enable_kwargs()
 
 
 def usable_cuda_bytes(device):
@@ -8325,11 +9214,19 @@ def _ignore_block_swap_params_for_ddp(model):
 
 
 def _block_swap_for_trainer_backend(trainer):
-    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load, so "auto" planned for DDP):
-    refuse, since sharding would flatten the 0-element placeholders."""
+    """DDP: ignore swapped weights. FSDP / DeepSpeed (invisible at load): refuse any block swap, since
+    sharding flattens the 0-element placeholders the swap later rebinds."""
     model = getattr(trainer, "model", None)
+    # Native FSDP2 (UNSLOTH_FSDP2=1) shards in Trainer.__init__ but leaves is_fsdp_enabled False.
+    native = model is not None and any(
+        getattr(m, "_unsloth_fsdp2_native", False) is True
+        for m in (model, getattr(model, "module", None), getattr(model, "_orig_mod", None))
+        if m is not None
+    )
     backend = (
-        "FSDP"
+        "native FSDP2"
+        if native
+        else "FSDP"
         if getattr(trainer, "is_fsdp_enabled", False)
         else "DeepSpeed"
         if getattr(trainer, "is_deepspeed_enabled", False)
@@ -8349,6 +9246,14 @@ def _block_swap_for_trainer_backend(trainer):
             f"Unsloth: offload_layers = 'auto' (this rank swapped {swapped} decoder layers to host "
             f"RAM) cannot be combined with {backend}, which shards the weights itself and cannot wrap "
             "swapped layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
+            f"or launch without {backend}."
+        )
+    # An explicit count swaps the same layers on every rank, so every rank refuses alike.
+    if swapped:
+        raise ValueError(
+            f"Unsloth: offload_layers = {swapped} (decoder layers swapped to host RAM) cannot be "
+            f"combined with {backend}, which shards the weights itself and cannot wrap swapped "
+            "layers. Load with offload_layers = 0 (and get_peft_model(offload_layers = 0)), "
             f"or launch without {backend}."
         )
     return []
@@ -8371,6 +9276,22 @@ def _trainer_offload_replan_skip(trainer):
     if not torch.cuda.is_available():
         return "cuda"
     return None
+
+
+def _size_auto_checkpoint_skip_for_trainer(trainer):
+    """checkpoint_skip_layers = "auto" sizes for the trainer's full batch, not only the first one."""
+    model = getattr(trainer, "model", None)
+    planner = getattr(model, "_unsloth_auto_skip", None)
+    if not isinstance(planner, _AutoCheckpointSkip):
+        return
+    args = getattr(trainer, "args", None)
+    batch_size = getattr(args, "per_device_train_batch_size", None)
+    if isinstance(batch_size, int) and batch_size > 0:
+        pairs = any(c.__name__.endswith(_PAIRED_FORWARD_TRAINERS) for c in type(trainer).__mro__)
+        planner.target_batch = batch_size * (2 if pairs else 1)
+    seq_len = getattr(args, "max_length", None) or getattr(args, "max_seq_length", None)
+    if isinstance(seq_len, int) and seq_len > 0:
+        planner.target_seq = max(seq_len, getattr(model, "max_seq_length", None) or 0)
 
 
 def replan_auto_offload_for_trainer(trainer):
@@ -9037,17 +9958,118 @@ def _remote_expert_parents(model):
     return parents
 
 
+def _native_expert_parents(model, target_modules, requested):
+    """(parents, requested leaves) of native ``experts.<i>`` blocks inside the regex's language scope."""
+    try:
+        pattern = re.compile(target_modules)
+    except re.error:
+        return set(), set()
+    modules = list(model.named_modules())
+    reached_layers = {
+        name.rsplit(".", 2)[0]
+        for name, _ in modules
+        if ".experts." not in name and pattern.fullmatch(name)
+    }
+    in_scope, parents, leaves = {}, set(), set()
+    for name, module in modules:
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is None or not name[matched.start() :].lstrip(".").startswith("experts."):
+            continue
+        parent, leaf = name[: matched.start()], matched.group(1)
+        if not parent:
+            continue
+        key = (parent, leaf)
+        if key not in in_scope:
+            layer = parent.rpartition(".")[0]
+            # Mixtral's block_sparse_moe has no MLP keyword; this keeps vision towers out.
+            in_scope[key] = any(
+                pattern.fullmatch(f"{parent}.{t}") for t in requested | {leaf}
+            ) or bool(
+                layer and any(r == layer or r.startswith(layer + ".") for r in reached_layers)
+            )
+        if not in_scope[key]:
+            continue
+        parents.add(
+            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in parent.split("."))
+        )
+        if leaf in requested and (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        ):
+            leaves.add(leaf)
+    return parents, leaves
+
+
+def native_expert_only_regex(model, target_modules):
+    """Regex for the explicit leaves found in the language decoder's native ``experts.<i>`` blocks, or None."""
+    try:
+        decoder = model.get_decoder()
+    except Exception:
+        return None
+    prefix = next((name for name, module in model.named_modules() if module is decoder), None)
+    if prefix is None:
+        return None
+    requested = {t for t in target_modules if isinstance(t, str) and "." not in t}
+    if "gate_up_proj" in requested:  # the shorthand reaches split gate / up experts too
+        requested |= {"gate_proj", "up_proj"}
+
+    def generic(path):
+        return r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in path.split("."))
+
+    linears = [
+        name
+        for name, module in model.named_modules()
+        if (not prefix or name.startswith(prefix + "."))
+        and (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        )
+    ]
+    blocks, leaves = set(), set()
+    for name in linears:
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is not None and matched.group(1) in requested:
+            if name[matched.start() :].lstrip(".").startswith("experts."):
+                blocks.add(name[: matched.start()])
+                leaves.add(matched.group(1))
+    if not leaves:
+        return None
+    parents = {generic(block) for block in blocks}
+    # Requested expert siblings (router) too, as PEFT suffix matching would.
+    others = {
+        generic(name)
+        for name in linears
+        if name.rpartition(".")[0] in blocks and name.rpartition(".")[2] in requested
+    }
+    regex = moe_expert_submodule_regex(sorted(leaves), parents)
+    return f"(?:{regex})|(?:{'|'.join(sorted(others))})" if others else regex
+
+
 def widen_target_regex_to_expert_submodules(
-    model, target_modules, detect_targets, auto_regex: bool
+    model,
+    target_modules,
+    detect_targets,
+    auto_regex: bool,
+    explicit_leaves: bool = False,
 ):
-    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened."""
+    """Widen a generated regex to ``experts.<i>.<leaf>``; a user-written regex is never widened.
+    explicit_leaves: the caller's list went through get_peft_regex, which skips native experts
+    that plain PEFT would match, so widen those too."""
     if not auto_regex or not isinstance(target_modules, str):
         return target_modules, detect_targets, []
     # Remote expert blocks only: widening native ones (Qwen3-MoE on 4.x) LoRAs every routed expert.
     parents = _remote_expert_parents(model)
+    named_leaves = set()
+    if explicit_leaves:
+        requested = set()
+        if isinstance(detect_targets, (list, tuple, set)):
+            requested = {t for t in detect_targets if isinstance(t, str) and "." not in t}
+        native, named_leaves = _native_expert_parents(model, target_modules, requested)
+        parents = parents | native
     if not parents:
         return target_modules, detect_targets, []
-    leaves = get_moe_expert_submodule_leaves(model, detect_targets)
+    # Requested names used as-is too, as plain PEFT does (Mixtral's w1 / w2 / w3).
+    leaves = sorted(set(get_moe_expert_submodule_leaves(model, detect_targets)) | named_leaves)
     if not leaves:
         return target_modules, detect_targets, []
     if any(

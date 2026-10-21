@@ -259,6 +259,10 @@ export function RemoteAccessSection() {
       if (pollSuppressed.current) {
         return;
       }
+      if (document.hidden) {
+        schedule(null);
+        return;
+      }
       const epoch = mutationEpoch.current;
       loadRemoteAccess()
         .then((next) => {

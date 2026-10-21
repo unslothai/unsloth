@@ -6,7 +6,7 @@
 from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Literal, Dict, Any, Union
+from typing import Annotated, List, Optional, Literal, Dict, Any, Union
 
 
 def _validate_save_directory(value: str) -> str:
@@ -46,6 +46,11 @@ class LoadCheckpointRequest(BaseModel):
     load_in_4bit: bool = Field(
         True,
         description = "Whether to load the model in 4-bit quantization",
+    )
+    offload_layers: Union[Literal["auto"], Annotated[int, Field(ge = 0, le = 1024)]] = Field(
+        "auto",
+        description = "Decoder layers kept in host RAM and streamed to the GPU during export "
+        "(0 = off; 'auto' = only when a 4-bit load does not fit in GPU memory).",
     )
     trust_remote_code: bool = Field(
         False,
