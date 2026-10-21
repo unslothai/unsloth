@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
 import {
   Command,
@@ -50,7 +51,14 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { ArrowUpRight01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { loadCodingAgents } from "../api/coding-agents";
 import {
   buildAgentShellCommands,
@@ -453,6 +461,7 @@ function SubagentSection({
 
 export function AgentsTab() {
   const t = useT();
+  const pillId = useId();
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const hfToken = useHfTokenStore((s) => s.token);
   const hfAccessToken = hfApiToken(hfToken);
@@ -1151,12 +1160,15 @@ export function AgentsTab() {
             }}
             aria-pressed={commandOs === "unix"}
             className={cn(
-              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               commandOs === "unix"
-                ? "hub-tab-toggle-pill text-foreground"
+                ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {commandOs === "unix" && (
+              <SegmentedPill group={`${pillId}-shell`} />
+            )}
             {t("settings.apiKeys.osUnix")}
           </button>
           <button
@@ -1168,12 +1180,15 @@ export function AgentsTab() {
             }}
             aria-pressed={commandOs === "windows"}
             className={cn(
-              "inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              "relative inline-flex h-8 items-center rounded-full px-3.5 text-ui-12 font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               commandOs === "windows"
-                ? "hub-tab-toggle-pill text-foreground"
+                ? "text-foreground"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >
+            {commandOs === "windows" && (
+              <SegmentedPill group={`${pillId}-shell`} />
+            )}
             {t("settings.apiKeys.osWindows")}
           </button>
         </div>

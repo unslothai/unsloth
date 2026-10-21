@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# verify_fp8_support_if_applicable admits FP8 checkpoints on CUDA and XPU only.
 from types import SimpleNamespace
 
 import pytest

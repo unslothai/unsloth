@@ -183,10 +183,21 @@ class BlockDiffusionProfile(DiffusionProfile):
         """-> noisy ids, masked bool [B, L], p [B] mask probability per row."""
         batch, length = clean.shape
         low, high = self.noise_range(args)
-        p = low + (high - low) * torch.rand(batch, device = clean.device)
-        masked = (torch.rand(batch, length, device = clean.device) < p[:, None]) & maskable
-        if self.defaults.get("ensure_masked", False):
-            # Rescue draw taken every step (fixed shape, no host sync); it only changes rows left empty.
+        if not self.defaults.get("ensure_masked", False):
+            p = low + (high - low) * torch.rand(batch, device = clean.device)
+            masked = (torch.rand(batch, length, device = clean.device) < p[:, None]) & maskable
+        else:
+            # SDAR redraws (p, mask) jointly up to ten times, then forces a token with the last p. All ten
+            # draws at once (fixed shape, no host sync); each row keeps its first non-empty one.
+            tries = 10
+            ps = low + (high - low) * torch.rand(tries, batch, device = clean.device)
+            draws = (
+                torch.rand(tries, batch, length, device = clean.device) < ps[..., None]
+            ) & maskable
+            hit = draws.any(dim = 2)
+            pick_try = torch.where(hit.any(dim = 0), hit.int().argmax(dim = 0), tries - 1)
+            rows = torch.arange(batch, device = clean.device)
+            p, masked = ps[pick_try, rows], draws[pick_try, rows]
             empty = maskable.any(dim = 1) & ~masked.any(dim = 1)
             scores = torch.rand(batch, length, device = clean.device).masked_fill(~maskable, -1.0)
             pick = F.one_hot(scores.argmax(dim = 1), length).bool()

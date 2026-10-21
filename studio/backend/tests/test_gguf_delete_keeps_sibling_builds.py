@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF listings expose one build per quant (#13327), but deletion must preserve cached siblings."""
+"""HF cache GGUF listings expose one build per quant (#13327), but deletion must preserve cached siblings."""
 
 from __future__ import annotations
 
@@ -60,13 +60,302 @@ def test_only_a_different_build_leaves_the_key():
 
 
 def test_the_listing_still_offers_one_build_per_quant(tmp_path):
-    snapshot = tmp_path / "snap"
-    snapshot.mkdir()
-    for name in BUILDS:
-        (snapshot / name).write_bytes(b"x" * 64)
-    (snapshot / "config.json").write_text("{}")
+    _repo, snapshot = _cache_repo(tmp_path, BUILDS)
     variants, _ = list_local_gguf_variants(str(snapshot))
     assert [(v.quant, v.filename) for v in variants] == [("IQ3_S", LISTED)]
+
+
+def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
+    from routes.models import _resolve_quant_gguf
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    # custom folders have no remote listing to constrain their keys, so every build keeps a row (#13926).
+    folder = tmp_path / "esatapedico" / "Qwen3.8-27B-NVFP4-MTP-GGUF"
+    folder.mkdir(parents = True)
+    names = [f"Qwen3.8-27B-NVFP4-MTP-{build}.gguf" for build in ("HIGHEST", "LOW", "MID-HIGH_enru")]
+    for name in names:
+        (folder / name).write_bytes(b"x" * 64)
+    variants, _ = list_local_gguf_variants(str(folder))
+    listed = {v.quant: v.filename for v in variants}
+    # the first build keeps the bare quant so existing pins still name the same file
+    assert listed == {"NVFP4": names[0], **{name[: -len(".gguf")]: name for name in names[1:]}}
+    for quant, filename in listed.items():
+        assert Path(_find_local_gguf_by_variant(str(folder), quant)).name == filename
+        assert Path(_resolve_quant_gguf(str(folder), quant, True)[0]).name == filename
+    assert {v.display_label for v in variants} == {
+        f"NVFP4 · {name[: -len('.gguf')]}" for name in names
+    }
+
+
+def test_each_custom_build_reads_context_from_its_own_file(tmp_path, monkeypatch):
+    import asyncio
+
+    from routes import models as models_route
+
+    names = ["alpha-Q4_K_M.gguf", "beta-Q4_K_M.gguf"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"x")
+    contexts = {names[0]: 4096, names[1]: 8192}
+    reads = []
+
+    async def read_context(model, _is_local):
+        source = Path(model)
+        reads.append(source)
+        return contexts.get(source.name, 1024)
+
+    monkeypatch.setattr(models_route, "_read_native_context_length_bounded", read_context)
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(tmp_path),
+            prefer_local_cache = True,
+            hf_token = None,
+            hf_token_header = None,
+            current_subject = "test-user",
+            via_api_key = False,
+        )
+    )
+
+    assert {variant.filename: variant.context_length for variant in response.variants} == contexts
+    assert set(reads) == {tmp_path, *(tmp_path / name for name in names)}
+
+
+def test_direct_file_reads_context_from_the_chosen_file_only(tmp_path, monkeypatch):
+    import asyncio
+
+    from routes import models as models_route
+
+    (tmp_path / "config.json").write_text("{}")
+    names = ["alpha-Q4_K_M.gguf", "beta-Q4_K_M.gguf"]
+    for name in names:
+        (tmp_path / name).write_bytes(b"x")
+    contexts = {names[0]: 4096, names[1]: 8192}
+    reads = []
+
+    async def read_context(model, _is_local):
+        source = Path(model)
+        reads.append(source)
+        return contexts[source.name]
+
+    monkeypatch.setattr(models_route, "_read_native_context_length_bounded", read_context)
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(tmp_path / names[0]),
+            prefer_local_cache = True,
+            hf_token = None,
+            hf_token_header = None,
+            current_subject = "test-user",
+            via_api_key = False,
+        )
+    )
+
+    # the loader opens a direct file whatever variant is named, so its same-quant sibling is not offered
+    assert {variant.filename: variant.context_length for variant in response.variants} == {
+        names[0]: contexts[names[0]]
+    }
+    assert tmp_path / names[1] not in set(reads)
+
+
+def test_ready_sibling_keeps_its_context_when_the_other_build_is_partial(tmp_path, monkeypatch):
+    import asyncio
+
+    from routes import models as models_route
+
+    partial = "alpha-Q4_K_M-00001-of-00002.gguf"
+    ready = "beta-Q4_K_M.gguf"
+    for name in (partial, ready):
+        (tmp_path / name).write_bytes(b"x")
+    contexts = {partial: 4096, ready: 8192}
+    reads = []
+
+    async def read_context(model, _is_local):
+        source = Path(model)
+        reads.append(source)
+        return contexts.get(source.name, 1024)
+
+    monkeypatch.setattr(models_route, "_read_native_context_length_bounded", read_context)
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = str(tmp_path),
+            prefer_local_cache = True,
+            hf_token = None,
+            hf_token_header = None,
+            current_subject = "test-user",
+            via_api_key = False,
+        )
+    )
+
+    rows = {variant.filename: variant for variant in response.variants}
+    assert rows[partial].downloaded is False
+    assert rows[ready].downloaded is True
+    assert rows[ready].context_length == contexts[ready]
+    assert set(reads) == {tmp_path, tmp_path / ready}
+
+
+def test_default_build_matches_variantless_local_file_ranking(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    alpha = "alpha-Q4_K_M.gguf"
+    beta = "beta-Q4_K_M-00001-of-00002.gguf"
+    (tmp_path / alpha).write_bytes(b"x" * 100)
+    (tmp_path / beta).write_bytes(b"x" * 60)
+    (tmp_path / "beta-Q4_K_M-00002-of-00002.gguf").write_bytes(b"x" * 60)
+
+    response = asyncio.run(get_gguf_variants_response(str(tmp_path), prefer_local_cache = True))
+
+    assert response.default_variant == "Q4_K_M"
+
+
+def test_default_build_matches_variantless_ranking_for_a_relative_folder(tmp_path, monkeypatch):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    folder = tmp_path / "custom"
+    folder.mkdir()
+    (folder / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (folder / "beta-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 60)
+    (folder / "beta-Q4_K_M-00002-of-00002.gguf").write_bytes(b"x" * 60)
+    monkeypatch.chdir(tmp_path)
+
+    response = asyncio.run(get_gguf_variants_response("custom", prefer_local_cache = True))
+
+    assert response.default_variant == "Q4_K_M"
+
+
+def test_the_detected_build_does_not_leave_a_curated_default_scope(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    folder = tmp_path / "unsloth" / "LTX-2.5-GGUF"
+    (folder / "distilled").mkdir(parents = True)
+    (folder / "a-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (folder / "b-Q4_K_M.gguf").write_bytes(b"x" * 90)
+    (folder / "distilled" / "model-Q4_K_M.gguf").write_bytes(b"x" * 80)
+
+    response = asyncio.run(get_gguf_variants_response(str(folder), prefer_local_cache = True))
+
+    assert response.default_variant == "distilled/model-Q4_K_M"
+
+
+def test_a_larger_sibling_build_does_not_override_the_preferred_default(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x" * 50)
+    (tmp_path / "alpha-F16.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-F16.gguf").write_bytes(b"x" * 120)
+
+    response = asyncio.run(get_gguf_variants_response(str(tmp_path), prefer_local_cache = True))
+
+    assert response.default_variant == "Q4_K_M"
+
+
+def test_a_direct_file_listing_offers_no_same_quant_sibling_build(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "alpha-Q4_K_M.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+    (tmp_path / "gamma-Q8_0.gguf").write_bytes(b"x" * 80)
+
+    response = asyncio.run(
+        get_gguf_variants_response(str(tmp_path / "alpha-Q4_K_M.gguf"), prefer_local_cache = True)
+    )
+
+    files = {v.filename for v in response.variants}
+    assert "beta-Q4_K_M.gguf" not in files
+    assert {"alpha-Q4_K_M.gguf", "gamma-Q8_0.gguf"} <= files
+
+
+def test_a_direct_non_first_shard_lists_no_same_quant_sibling(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "alpha-Q4_K_M-00001-of-00002.gguf").write_bytes(b"x" * 60)
+    (tmp_path / "alpha-Q4_K_M-00002-of-00002.gguf").write_bytes(b"x" * 60)
+    (tmp_path / "beta-Q4_K_M.gguf").write_bytes(b"x" * 90)
+
+    response = asyncio.run(
+        get_gguf_variants_response(
+            str(tmp_path / "alpha-Q4_K_M-00002-of-00002.gguf"), prefer_local_cache = True
+        )
+    )
+
+    assert "beta-Q4_K_M.gguf" not in {v.filename for v in response.variants}
+
+
+def test_a_bare_named_sibling_cannot_collide_with_the_legacy_quant_key(tmp_path):
+    import asyncio
+
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+    from routes.models import _delete_gguf_variant_files, _resolve_quant_gguf
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    names = [
+        "0-model-Q4_K_M.gguf",
+        "Q4_K_M-00001-of-00002.gguf",
+        "Q4_K_M-00002-of-00002.gguf",
+    ]
+    for index, name in enumerate(names, 1):
+        (tmp_path / name).write_bytes(b"x" * (index * 16))
+
+    variants, _ = list_local_gguf_variants(str(tmp_path))
+    listed = {v.quant: (v.filename, v.size_bytes) for v in variants}
+    sibling_key = names[1]
+    assert listed == {"Q4_K_M": (names[0], 16), sibling_key: (names[1], 80)}
+    assert Path(_find_local_gguf_by_variant(str(tmp_path), "Q4_K_M")).name == names[0]
+    assert Path(_find_local_gguf_by_variant(str(tmp_path), sibling_key)).name == names[1]
+    resolved, size = _resolve_quant_gguf(str(tmp_path), sibling_key, True)
+    assert Path(resolved).name == names[1]
+    assert size == 80
+    response = asyncio.run(get_gguf_variants_response(str(tmp_path), prefer_local_cache = True))
+    assert response.default_variant == sibling_key
+    assert response.loadable_variants[:2] == [sibling_key, "Q4_K_M"]
+    assert _delete_gguf_variant_files(tmp_path, sibling_key)[0] == 2
+    assert (tmp_path / names[0]).exists()
+    assert not (tmp_path / names[1]).exists()
+    assert not (tmp_path / names[2]).exists()
+
+
+def test_an_ordinary_models_prefixed_folder_is_not_an_hf_snapshot(tmp_path):
+    folder = tmp_path / "models--custom-collections" / "ordinary-folder"
+    folder.mkdir(parents = True)
+    names = ["alpha-Q4_K_M.gguf", "beta-Q4_K_M.gguf"]
+    for name in names:
+        (folder / name).write_bytes(b"x")
+
+    variants, _ = list_local_gguf_variants(str(folder))
+    assert {variant.filename for variant in variants} == set(names)
+
+
+def test_split_build_labels_leave_other_rows_alone(tmp_path):
+    for rel in ("model-Q6_K.gguf", "other-Q6_K.gguf", "distilled/model-Q6_K.gguf", "m-Q8_0.gguf"):
+        (tmp_path / rel).parent.mkdir(parents = True, exist_ok = True)
+        (tmp_path / rel).write_bytes(b"x" * 64)
+    labels = {v.filename: v.display_label for v in list_local_gguf_variants(str(tmp_path))[0]}
+    assert labels == {
+        "model-Q6_K.gguf": "Q6_K · model-Q6_K",
+        "other-Q6_K.gguf": "Q6_K · other-Q6_K",
+        # a directory already tells this checkpoint apart, and an unsplit quant needs no name
+        "distilled/model-Q6_K.gguf": "Q6_K · distilled",
+        "m-Q8_0.gguf": None,
+    }
+
+    # two builds in one quant folder cannot be distinguished by the folder alone
+    quant_dir = tmp_path / "quant-dir" / "Q4_K_M"
+    quant_dir.mkdir(parents = True)
+    for name in ("a-Q4_K_M.gguf", "b-Q4_K_M.gguf"):
+        (quant_dir / name).write_bytes(b"x" * 64)
+    labels = {v.display_label for v in list_local_gguf_variants(str(quant_dir.parent))[0]}
+    assert labels == {"Q4_K_M · Q4_K_M/a-Q4_K_M", "Q4_K_M · Q4_K_M/b-Q4_K_M"}
 
 
 def test_quant_key_case_exposes_and_deletes_the_same_build(tmp_path):
@@ -76,19 +365,14 @@ def test_quant_key_case_exposes_and_deletes_the_same_build(tmp_path):
 
     alpha = "alpha-Q4_K_M.gguf"
     beta = "beta-q4_k_m.gguf"
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    for name in (alpha, beta):
-        (snapshot / name).write_bytes(b"x" * 64)
-    (snapshot / "config.json").write_text("{}")
+    repo, cache_snapshot = _cache_repo(tmp_path / "cache", [alpha, beta])
 
-    variants, _ = list_local_gguf_variants(str(snapshot))
+    variants, _ = list_local_gguf_variants(str(cache_snapshot))
     assert [(variant.quant, variant.filename) for variant in variants] == [("Q4_K_M", alpha)]
     hub_grouped = group_gguf_variant_files([(alpha, 64), (beta, 128)])
     inference_grouped = _group_gguf_variant_files([(alpha, "Q4_K_M", 64), (beta, "q4_k_m", 128)])
     assert inference_grouped == hub_grouped == {"Q4_K_M": (alpha, 64)}
 
-    repo, cache_snapshot = _cache_repo(tmp_path / "cache", [alpha, beta])
     _delete_gguf_variant_from_repos(repo.repo_id, variants[0].quant, [repo], None, root = tmp_path)
     assert not (cache_snapshot / alpha).is_symlink()
     assert (cache_snapshot / beta).is_symlink()

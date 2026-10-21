@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The GRPO loss must not divide an eval pass by the training accumulation window.
-
-Every GRPO loss type except dapo/cispo/vespo ends with
-
-    loss = loss / current_gradient_accumulation_steps
-
-and TRL sets that divisor to `self.current_gradient_accumulation_steps` in train mode and to
-1.0 in eval, because an eval pass accumulates nothing. `Trainer` assigns the attribute inside
-the training loop and never clears it, so during an in-training evaluation it still holds the
-training window's size: reading it unconditionally makes the reported `eval_loss` smaller than
-the train loss by exactly `gradient_accumulation_steps`, and moves it when that setting changes.
-
-The helper is lifted from `unsloth/models/rl_replacements.py` with `ast` so the test tracks the
-shipped source without importing unsloth, the same trick as `tests/_grpo_dispatch_source.py`.
-"""
+"""Eval must not divide by current_gradient_accumulation_steps, which Trainer leaves stale in eval."""
 
 from __future__ import annotations
 
@@ -62,16 +48,13 @@ class _Trainer:
 @pytest.mark.parametrize(
     ("training", "steps", "expected"),
     [
-        # Training: the accumulation window is the divisor, as before.
         (True, 4, 4),
         (True, 1, 1),
         # Evaluating mid-run: the stale training window must not reach the loss.
         (False, 4, 1),
         (False, 16, 1),
-        # Standalone evaluate(): the attribute never existed (#2464).
         (False, None, 1),
         (True, None, 1),
-        # No model to ask: keep reading the attribute rather than guessing.
         (None, 4, 4),
     ],
 )

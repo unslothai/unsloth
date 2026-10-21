@@ -12,6 +12,8 @@ import pytest
 from core.inference import os_sandbox, sandbox_setup_plan as plan_mod
 from utils import client_ip
 
+_REAL_BWRAP_STATE = plan_mod._bwrap_state
+
 
 @pytest.fixture(autouse = True)
 def _fresh():
@@ -174,6 +176,27 @@ def test_bwrap_state_follows_the_launchers_trust_check(monkeypatch, tmp_path):
     monkeypatch.setattr(plan_mod, "trusted_system_binary", lambda name: "/usr/bin/bwrap")
     if os.geteuid() != 0:
         assert plan_mod._bwrap_state() == "shadowed"
+
+
+@pytest.mark.parametrize("pinned", [False, True], ids = ["namespace-hidden", "pinned"])
+def test_a_refused_bwrap_installing_cannot_fix_gets_no_install(linux, monkeypatch, pinned):
+    from core.inference import sandbox_linux
+
+    linux["tool"]("apt-get", "bwrap")
+    monkeypatch.setattr(plan_mod, "_bwrap_state", _REAL_BWRAP_STATE)
+
+    def refuse():
+        raise sandbox_linux.BwrapUntrustedError(
+            f"set {sandbox_linux.BWRAP_PATH_ENV}=/usr/bin/bwrap",
+            pinned = pinned,
+            hidden_root = not pinned,
+        )
+
+    monkeypatch.setattr(sandbox_linux, "_trusted_bwrap_path", refuse)
+    plan = plan_mod.detect(False)
+    assert plan.action is None and plan.manual_command == ""
+    assert sandbox_linux.BWRAP_PATH_ENV in plan.reason
+    assert "not installed" not in plan.reason
 
 
 def test_an_unblocked_host_with_bwrap_needs_nothing(linux):
@@ -347,8 +370,11 @@ def windows(monkeypatch):
     from core.inference import mxc_policy, mxc_probe, mxc_runtime
     from utils import mxc_isolation_settings
 
+    from core.inference import wsl_host
+
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86_64")
     state = {
         "installed": True,
         "missing": ("prepare-null-device",),
@@ -418,11 +444,22 @@ def test_windows_opt_in_locked_off_by_the_environment_is_not_offered(windows):
     assert "--prepare-host" in plan.manual_command
 
 
-def test_windows_arm64_is_not_offered_a_runtime_it_cannot_run(windows, monkeypatch):
+def test_windows_arm64_is_offered_its_runtime(windows, monkeypatch):
+    from core.inference import wsl_host
+
     windows["installed"] = False
-    monkeypatch.setattr(platform, "machine", lambda: "ARM64")
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "arm64")
+    assert plan_mod.windows_runtime_unsupported() is None
+    assert plan_mod.windows_runtime_plan().action == plan_mod.WINDOWS_RUNTIME
+
+
+def test_windows_x86_is_not_offered_a_runtime_it_cannot_run(windows, monkeypatch):
+    from core.inference import wsl_host
+
+    windows["installed"] = False
+    monkeypatch.setattr(wsl_host, "native_machine", lambda: "x86")
     plan = plan_mod.detect(False)
-    assert plan.action is None and "x64" in plan.reason
+    assert plan.action is None and "ARM64" in plan.reason
     assert plan_mod.windows_runtime_plan().action is None
 
 

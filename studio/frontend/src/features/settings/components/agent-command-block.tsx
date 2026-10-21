@@ -113,8 +113,10 @@ export function CommandBlock({ command }: { command: string }) {
 
   return (
     <div className="group relative overflow-hidden rounded-xl border border-border bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]">
-      <pre className="hover-scrollbar overflow-x-auto py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
-        <code className="font-mono whitespace-pre">{command}</code>
+      <pre className="py-3 pr-11 pl-4 text-xs leading-relaxed text-foreground">
+        <code className="block font-mono whitespace-pre-wrap break-all">
+          {command}
+        </code>
       </pre>
       <button
         type="button"

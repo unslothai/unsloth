@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reopen a dismissed research plan through the real message and activity panel.
-
-Run: python tests/studio/playwright_research_review.py
-Starts and stops Vite unless SMOKE_BASE_URL is supplied. SMOKE_PORT overrides
-the local port; SMOKE_BROWSER selects chromium (CI/default) or webkit.
-"""
+"""Reopen a dismissed research plan in the real panel; starts Vite unless SMOKE_BASE_URL is set."""
 
 import os
 from urllib.parse import urlparse

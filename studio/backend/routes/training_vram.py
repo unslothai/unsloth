@@ -5,6 +5,7 @@
 models when they fit. STT is evicted before chat when training needs memory.
 """
 
+import sys
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hub.utils.hf_tokens import HfTokenArg, normalize_token
@@ -668,10 +669,35 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     return freed
 
 
+def free_prompt_upsampler_for_training(reason: str) -> List[str]:
+    """Stop the FLUX.3 prompt upsampler's llama-server, only if Images ever started it. Never raises."""
+    upsampler_module = sys.modules.get("core.inference.flux3_prompt_upsampler")
+    if upsampler_module is None:
+        return []
+    try:
+        # A run still decoding its references has not reached the sidecar: stopped here, it never starts one.
+        upsampler_module.cancel_active()
+        upsampler = upsampler_module.get_sidecar()
+        # Loaded, not only on the GPU: a -ngl 0 server still holds ~6 GB of host RAM and the CPU through training.
+        if upsampler.loaded or upsampler.is_loading():
+            logger.info("Unloading the FLUX.3 prompt upsampler for training (%s)", reason)
+            upsampler.unload()
+            return ["image:prompt-upsampler"]
+    except Exception as e:
+        logger.warning("Could not unload the FLUX.3 prompt upsampler: %s", e)
+    return []
+
+
 def coordinate_models_for_training(
     can_keep: Callable[[], Tuple[bool, Dict[str, Any]]],
 ) -> List[str]:
     """Keep resident models when they fit, evicting STT before chat."""
+    # The upsampler restarts on demand, so it never holds memory through training.
+    freed = free_prompt_upsampler_for_training(reason = "training start")
+    return freed + _coordinate_resident_models(can_keep)
+
+
+def _coordinate_resident_models(can_keep: Callable[[], Tuple[bool, Dict[str, Any]]]) -> List[str]:
     resident_chat = summarize_resident_chat()
     resident_stt = summarize_resident_stt()
     if not resident_chat["any"] and not resident_stt["any"]:

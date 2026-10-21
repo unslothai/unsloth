@@ -327,6 +327,31 @@ def QUANT_STATE(W):
     return getattr(W, "quant_state", None)
 
 
+# Only an FSDP2 all-gathered 4-bit weight loses quant_state, and its packed bytes are (N, 1): the getters
+# gate _base_quant_state on that shape, per weight. Never on a process-global flag: dynamo guards on a
+# global it reads, so preparing one FSDP2 QLoRA model recompiled every compiled dense LoRA forward (#13880).
+
+
+def _base_quant_state(base_layer, W):
+    """W's quant state, else its bitsandbytes Linear4bit's own copy of it. FSDP2 all-gathers the packed
+    bytes into a plain Parameter that drops `quant_state`; read without it, the packed (N, 1) buffer
+    would be taken for a dense weight."""
+    W_quant = getattr(W, "quant_state", None)
+    if W_quant is not None:
+        return W_quant
+    # Linear4bit keeps its copy as a plain attribute. getattr would go through nn.Module.__getattr__,
+    # which raises and catches for every dense weight: 10x this function's cost on each LoRA forward.
+    W_quant = base_layer.__dict__.get("quant_state", None)
+    if (
+        W_quant is None
+        or getattr(W, "ndim", 0) != 2
+        or W.shape[1] != 1
+        or not any(cls.__name__ == "Linear4bit" for cls in type(base_layer).__mro__)
+    ):
+        return None
+    return W_quant
+
+
 # fp8 weight dtypes: a weight_scale / weight_scale_inv is only a quant state while the weight
 # itself is still fp8. compressed-tensors layers expose an already-dequantized bf16 weight at
 # forward time while keeping a weight_scale, and reading that as a quant state routes it into
@@ -432,13 +457,16 @@ def get_lora_parameters(proj):
         if weight_fake_quantizer is not None:
             W = weight_fake_quantizer(W)
 
-    # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
-    # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
-        W_quant = getattr(base_layer, "weight_scale_inv", None)
-        if W_quant is None:
-            W_quant = getattr(base_layer, "weight_scale", None)
+    if W_quant is None:
+        if getattr(W, "ndim", 0) == 2 and W.shape[1] == 1:
+            W_quant = _base_quant_state(base_layer, W)
+        # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
+        # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
+        if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
+            W_quant = getattr(base_layer, "weight_scale_inv", None)
+            if W_quant is None:
+                W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
@@ -490,13 +518,16 @@ def get_lora_parameters_bias(proj):
     packed = _packed_base(base_layer)
     W = base_layer.weight if packed is None else packed[0]
 
-    # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
-    # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
     W_quant = getattr(W, "quant_state", None)
-    if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
-        W_quant = getattr(base_layer, "weight_scale_inv", None)
-        if W_quant is None:
-            W_quant = getattr(base_layer, "weight_scale", None)
+    if W_quant is None:
+        if getattr(W, "ndim", 0) == 2 and W.shape[1] == 1:
+            W_quant = _base_quant_state(base_layer, W)
+        # Only fall back to a weight_scale(_inv) when the weight is still fp8; a bf16 weight (a decompressed
+        # compressed-tensors layer) must not carry a scale as its quant state or fast_gemv crashes.
+        if W_quant is None and W.dtype in _FP8_WEIGHT_DTYPES:
+            W_quant = getattr(base_layer, "weight_scale_inv", None)
+            if W_quant is None:
+                W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
         W.block_size = getattr(base_layer, "block_size", [128, 128])
@@ -1451,6 +1482,70 @@ def _gemv_rows_cap(device):
     return cap
 
 
+# bitsandbytes >= 0.50 fused 4-bit GEMM above the GEMV cap: faster end to end only where the GPU, not the
+# launch loop, bounds decode (T4; slower on A100). UNSLOTH_BNB_GEMM_4BIT=0 off, =1 any arch and dtype.
+_BNB_GEMM_4BIT_MAX_ROWS = 16
+_BNB_GEMM_4BIT_ARCHS = {(7, 5)}
+# sm75 has fp16 MMA only: bitsandbytes itself dequantizes bf16 batches of 8+ there.
+_BNB_GEMM_4BIT_DTYPES = (torch.float16,)
+# None = undecided; False lets fast_linear_forward skip the check.
+_BNB_GEMM_4BIT = None
+_BNB_GEMM_4BIT_DEVICE = {}
+
+
+def _bnb_gemm_4bit_arch_ok(device):
+    return (
+        os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1"
+        or torch.cuda.get_device_capability(device) in _BNB_GEMM_4BIT_ARCHS
+    )
+
+
+def _bnb_gemm_4bit_device_ok(device):
+    index = device.index
+    ok = _BNB_GEMM_4BIT_DEVICE.get(index)
+    if ok is None:
+        try:
+            ok = _bnb_gemm_4bit_arch_ok(device)
+        except Exception:
+            ok = False
+        _BNB_GEMM_4BIT_DEVICE[index] = ok
+    return ok
+
+
+def _bnb_gemm_4bit_ok(X, W, quant_state):
+    global _BNB_GEMM_4BIT, _BNB_GEMM_4BIT_DTYPES
+    if _BNB_GEMM_4BIT is None:
+        if os.environ.get("UNSLOTH_BNB_GEMM_4BIT") == "1":
+            _BNB_GEMM_4BIT_DTYPES = (torch.float16, torch.bfloat16)
+        try:
+            _BNB_GEMM_4BIT = (
+                bnb is not None
+                and torch.version.hip is None
+                and os.environ.get("UNSLOTH_BNB_GEMM_4BIT") != "0"
+                and hasattr(torch.ops.bitsandbytes, "gemm_4bit")
+                and any(_bnb_gemm_4bit_arch_ok(i) for i in range(torch.cuda.device_count()))
+            )
+        except Exception:
+            _BNB_GEMM_4BIT = False
+    return (
+        _BNB_GEMM_4BIT
+        and X.dtype in _BNB_GEMM_4BIT_DTYPES
+        and X.is_cuda
+        and _bnb_gemm_4bit_device_ok(X.device)
+        # bitsandbytes passes raw pointers to the kernel on X's device.
+        and W.device == X.device
+        and type(quant_state) is not list
+        and quant_state.absmax.device == X.device
+        and getattr(quant_state, "quant_type", None) in ("nf4", "fp4")
+        # bitsandbytes dequantizes (and warns) itself when K is not a multiple of the blocksize.
+        and quant_state.shape[-1] % quant_state.blocksize == 0
+        # matmul_4bit raises for any other nested blocksize.
+        and (not quant_state.nested or quant_state.state2.blocksize == 256)
+        and not torch.is_grad_enabled()
+        and not _is_compiling()
+    )
+
+
 def _gemv_rows(X, W, quant_state, out):
     """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
     M = X.shape[0]
@@ -1600,6 +1695,12 @@ def fast_linear_forward(
         and (rows := _gemv_rows(X, W, W_quant, out)) is not None
     ):
         out = rows
+    elif (
+        _BNB_GEMM_4BIT is not False
+        and bsz <= _BNB_GEMM_4BIT_MAX_ROWS
+        and _bnb_gemm_4bit_ok(X, W, W_quant)
+    ):
+        out = bnb.matmul_4bit(X, W.t(), quant_state = W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)
@@ -1665,6 +1766,7 @@ def matmul_lora(
     B,
     s,
     out = None,
+    use_global_buffer = True,
 ):
     dtype = X.dtype
 
@@ -1691,7 +1793,7 @@ def matmul_lora(
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     else:
-        W = fast_dequantize(W, W_quant, use_global_buffer = True)
+        W = fast_dequantize(W, W_quant, use_global_buffer = use_global_buffer)
         out = torch_matmul(X, W.t(), out = out)
     if W_quant is not None:
         del W

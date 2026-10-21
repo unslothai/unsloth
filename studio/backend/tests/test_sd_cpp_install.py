@@ -1474,8 +1474,8 @@ def test_the_shipped_pin_falls_back_to_an_upstream_release_that_runs_qwen_image_
     assert repo == sdmod.UPSTREAM_FALLBACK_REPO
     assert chosen.endswith("-win-cuda12-x64.zip")
     assert release["tag_name"] == upstream_tag_for(DEFAULT_TAG)
-    # Qwen-Image-2.1 landed upstream in master-883, its reference-alpha fix in master-896.
-    assert int(release["tag_name"].split("-")[1]) >= 896
+    # Qwen-Image-2.1 landed upstream in master-883, its reference-alpha fix in master-896, FLUX.3 in master-968.
+    assert int(release["tag_name"].split("-")[1]) >= 968
 
 
 # ── mirror -> upstream fallback in install() ─────────────────────────────────

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The native Safari leg retries opening its session, and nothing else.
-
-`Composer (macos-latest, safari)` failed on unrelated pull requests with
-`SessionNotCreatedException: The session timed out while connecting to a Safari instance`,
-raised by `webdriver.Safari()` before a page was loaded. That is the hosted runner. The
-retry is bounded, covers only session creation, and re-raises the last failure, so a Safari
-that never starts still fails the leg.
-"""
+"""Retries only Safari session creation, bounded; the last error re-raises, so a dead Safari fails."""
 
 from __future__ import annotations
 

@@ -250,6 +250,26 @@ def test_structured_call_executes_and_continues(executed):
     assert follow_up[-1]["content"] == "RESULT<web_search>"
 
 
+@pytest.mark.parametrize(
+    "policy", [None, {"allowedDomains": ["docs.python.org"], "blockedDomains": []}]
+)
+def test_web_search_domain_limits_reach_execute_tool(executed, policy):
+    call = {
+        "index": 0,
+        "id": "call_a",
+        "function": {"name": "web_search", "arguments": '{"query":"asyncio"}'},
+    }
+    transport = FakeTransport(
+        [
+            [_sse({"tool_calls": [call]}), _sse(finish = "tool_calls"), _DONE],
+            [_sse({"content": "Done."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, website_policy = policy)
+    [call] = executed
+    assert call.get("website_policy") == policy and ("website_policy" in call) == bool(policy)
+
+
 def test_provider_compaction_replaces_history_before_tool_follow_up(executed):
     transport = FakeTransport(
         [
@@ -1007,6 +1027,366 @@ def test_usage_is_summed_into_one_chunk(executed):
     assert usages[0]["completion_tokens"] == 12
     assert usages[0]["total_tokens"] == 42
     assert usages[0]["prompt_tokens_details"]["cached_tokens"] == 10
+    assert usages[0]["context_tokens"] == 27
+
+
+def _usage_line(prompt, completion, **extra):
+    usage = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
+    usage.update(extra)
+    return "data: " + json.dumps({"choices": [], "usage": usage})
+
+
+def _usage_payloads(lines):
+    found = []
+    for line in lines:
+        raw = line[6:] if line.startswith("data: ") else ""
+        if not raw or raw == "[DONE]":
+            continue
+        payload = json.loads(raw)
+        if "usage" in payload:
+            found.append(payload["usage"])
+    return found
+
+
+_WEB_SEARCH_CALL = _sse(
+    {
+        "tool_calls": [
+            {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": "{}"}}
+        ]
+    }
+)
+
+
+def test_usage_snapshots_sum_once_per_turn_while_context_uses_the_last_turn(executed):
+    transport = FakeTransport(
+        [
+            [
+                _WEB_SEARCH_CALL,
+                _usage_line(
+                    10,
+                    2,
+                    prompt_tokens_details = {"cached_tokens": 4},
+                    completion_tokens_details = {"reasoning_tokens": 1},
+                    cache_creation_input_tokens = 3,
+                    cache_read_input_tokens = 4,
+                ),
+                _sse(finish = "tool_calls"),
+                _usage_line(
+                    10,
+                    5,
+                    prompt_tokens_details = {"cached_tokens": 6},
+                    completion_tokens_details = {"reasoning_tokens": 2},
+                    cache_creation_input_tokens = 5,
+                    cache_read_input_tokens = 6,
+                ),
+                _DONE,
+            ],
+            [
+                _sse({"content": "done"}),
+                _sse(finish = "stop"),
+                _usage_line(
+                    20,
+                    7,
+                    prompt_tokens_details = {"cached_tokens": 8},
+                    completion_tokens_details = {"reasoning_tokens": 3},
+                    cache_creation_input_tokens = 7,
+                    cache_read_input_tokens = 8,
+                ),
+                _DONE,
+            ],
+        ]
+    )
+    usages = _usage_payloads(_run(transport))
+
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 30
+    assert usages[0]["completion_tokens"] == 12
+    assert usages[0]["total_tokens"] == 42
+    assert usages[0]["prompt_tokens_details"] == {"cached_tokens": 14}
+    assert usages[0]["completion_tokens_details"] == {"reasoning_tokens": 5}
+    assert usages[0]["cache_creation_input_tokens"] == 12
+    assert usages[0]["cache_read_input_tokens"] == 14
+    assert usages[0]["context_tokens"] == 27
+
+
+def test_a_turn_reporting_its_own_context_keeps_it_while_billing_sums(executed):
+    transport = FakeTransport(
+        [
+            [_WEB_SEARCH_CALL, _sse(finish = "tool_calls"), _usage_line(50, 3), _DONE],
+            [
+                _sse({"content": "done"}),
+                _sse(finish = "stop"),
+                _usage_line(203_000, 4_500, context_tokens = 24_000),
+                _DONE,
+            ],
+        ]
+    )
+    usages = _usage_payloads(_run(transport))
+
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 203_050
+    assert usages[0]["completion_tokens"] == 4_503
+    assert usages[0]["total_tokens"] == 207_553
+    assert usages[0]["context_tokens"] == 24_000
+
+
+@pytest.mark.parametrize("last_usage", [None, {}, {"total_tokens": 0}])
+def test_a_final_turn_without_context_usage_keeps_the_latest_reported_context(executed, last_usage):
+    final_turn = [_sse({"content": "done"}), _sse(finish = "stop")]
+    if last_usage is not None:
+        final_turn.append("data: " + json.dumps({"choices": [], "usage": last_usage}))
+    final_turn.append(_DONE)
+    transport = FakeTransport(
+        [
+            [_WEB_SEARCH_CALL, _sse(finish = "tool_calls"), _usage_line(100, 5), _DONE],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c2",
+                                "function": {
+                                    "name": "web_search",
+                                    "arguments": '{"query":"follow-up"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _usage_line(200, 10),
+                _DONE,
+            ],
+            final_turn,
+        ]
+    )
+
+    usages = _usage_payloads(_run(transport))
+
+    assert len(transport.requests) == 3
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 300
+    assert usages[0]["completion_tokens"] == 15
+    assert usages[0]["total_tokens"] == 315
+    assert usages[0]["context_tokens"] == 210
+
+
+def test_a_partial_report_after_a_full_one_keeps_the_fields_it_omits(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "done"}),
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                        "usage": {
+                            "prompt_tokens": 100,
+                            "completion_tokens": 20,
+                            "total_tokens": 120,
+                        },
+                    }
+                ),
+                "data: "
+                + json.dumps(
+                    {"choices": [], "usage": {"completion_tokens": 20, "total_tokens": None}}
+                ),
+                _DONE,
+            ],
+        ]
+    )
+    usages = _usage_payloads(_run(transport))
+
+    assert len(usages) == 1
+    assert usages[0]["prompt_tokens"] == 100
+    assert usages[0]["completion_tokens"] == 20
+    assert usages[0]["total_tokens"] == 120
+    assert usages[0]["context_tokens"] == 120
+
+
+@pytest.mark.parametrize("finish", ["stop", "length"])
+def test_one_response_cumulative_usage_is_not_billed_per_chunk(executed, finish):
+    chunks = [
+        _sse(
+            {"content": "answer "},
+            usage = {
+                "prompt_tokens": 2_000,
+                "completion_tokens": output,
+                "total_tokens": 2_000 + output,
+                "completion_tokens_details": {"reasoning_tokens": min(output, 12_000)},
+            },
+        )
+        for output in range(1_000, 20_001, 1_000)
+    ]
+    chunks.extend(
+        [
+            _sse(finish = finish),
+            _usage_line(2_000, 20_000, completion_tokens_details = {"reasoning_tokens": 12_000}),
+            _DONE,
+        ]
+    )
+    transport = FakeTransport([chunks])
+
+    lines = _run(transport)
+
+    assert len(transport.requests) == 1
+    assert executed == []
+    assert _visible_text(lines) == "answer " * 20
+    assert _usage_payloads(lines) == [
+        {
+            "prompt_tokens": 2_000,
+            "completion_tokens": 20_000,
+            "total_tokens": 22_000,
+            "completion_tokens_details": {"reasoning_tokens": 12_000},
+            "context_tokens": 22_000,
+        }
+    ]
+
+
+def test_partial_usage_preserves_nested_counts_and_reconciles_the_total(executed):
+    reports = [
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "prompt_tokens_details": {"cached_tokens": 60, "audio_tokens": 10},
+            "completion_tokens_details": {"reasoning_tokens": 12, "audio_tokens": 3},
+            "cache_creation": {"ephemeral_5m_input_tokens": 50, "ephemeral_1h_input_tokens": 20},
+        },
+        {
+            "prompt_tokens": None,
+            "completion_tokens": 25,
+            "total_tokens": None,
+            "prompt_tokens_details": {"cached_tokens": 70, "audio_tokens": None},
+            "completion_tokens_details": {"reasoning_tokens": None, "audio_tokens": 4},
+            "cache_creation": {"ephemeral_5m_input_tokens": None, "ephemeral_1h_input_tokens": 30},
+        },
+        None,
+        {},
+        {"prompt_tokens": None, "completion_tokens_details": None, "cache_creation": {}},
+    ]
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "done"}),
+                *("data: " + json.dumps({"choices": [], "usage": report}) for report in reports),
+                _sse(finish = "stop"),
+                _DONE,
+            ]
+        ]
+    )
+
+    assert _usage_payloads(_run(transport)) == [
+        {
+            "prompt_tokens": 100,
+            "completion_tokens": 25,
+            "total_tokens": 125,
+            "prompt_tokens_details": {"cached_tokens": 70, "audio_tokens": 10},
+            "completion_tokens_details": {"reasoning_tokens": 12, "audio_tokens": 4},
+            "cache_creation": {"ephemeral_5m_input_tokens": 50, "ephemeral_1h_input_tokens": 30},
+            "context_tokens": 125,
+        }
+    ]
+
+
+def test_final_usage_corrections_can_lower_or_zero_counts(executed):
+    transport = FakeTransport(
+        [
+            [
+                _sse({"content": "done"}),
+                _usage_line(
+                    100,
+                    20,
+                    prompt_tokens_details = {"cached_tokens": 60},
+                    completion_tokens_details = {"reasoning_tokens": 12},
+                ),
+                _usage_line(
+                    80,
+                    0,
+                    prompt_tokens_details = {"cached_tokens": 0},
+                    completion_tokens_details = {"reasoning_tokens": 0},
+                ),
+                _sse(finish = "stop"),
+                _DONE,
+            ]
+        ]
+    )
+
+    assert _usage_payloads(_run(transport)) == [
+        {
+            "prompt_tokens": 80,
+            "completion_tokens": 0,
+            "total_tokens": 80,
+            "prompt_tokens_details": {"cached_tokens": 0},
+            "completion_tokens_details": {"reasoning_tokens": 0},
+            "context_tokens": 80,
+        }
+    ]
+
+
+@pytest.mark.parametrize("ending", ["cancel", "error_event", "exception"])
+def test_interrupted_usage_is_not_counted_repeatedly(executed, ending):
+    class InterruptedTransport(FakeTransport):
+        def stream(self, *, cancel_event, **kwargs):
+            async def generate():
+                yield _sse({"content": "partial"})
+                yield _usage_line(100, 2)
+                yield _usage_line(100, 5)
+                if ending == "cancel":
+                    cancel_event.set()
+                elif ending == "error_event":
+                    yield 'data: {"error":{"message":"provider stopped"}}'
+                else:
+                    raise RuntimeError("provider stopped")
+
+            return generate()
+
+    transport = InterruptedTransport([])
+    if ending == "exception":
+        with pytest.raises(RuntimeError, match = "provider stopped"):
+            _run(transport)
+    else:
+        lines = _run(transport)
+        assert _usage_payloads(lines) == [
+            {
+                "prompt_tokens": 100,
+                "completion_tokens": 5,
+                "total_tokens": 105,
+                "context_tokens": 105,
+            }
+        ]
+        if ending == "error_event":
+            assert any('"error"' in line for line in lines)
+    assert executed == []
+
+
+@pytest.mark.parametrize(
+    "last_usage",
+    [{"total_tokens": 300}, {"completion_tokens": 50, "total_tokens": 300}],
+    ids = ["total_only", "total_above_its_parts"],
+)
+def test_a_turn_whose_total_exceeds_its_parts_prices_the_context_from_it(executed, last_usage):
+    transport = FakeTransport(
+        [
+            [_WEB_SEARCH_CALL, _sse(finish = "tool_calls"), _usage_line(100, 5), _DONE],
+            [
+                _sse({"content": "done"}),
+                _sse(finish = "stop"),
+                "data: " + json.dumps({"choices": [], "usage": last_usage}),
+                _DONE,
+            ],
+        ]
+    )
+    usages = _usage_payloads(_run(transport))
+
+    assert len(usages) == 1
+    assert usages[0]["total_tokens"] == 405
+    assert usages[0]["context_tokens"] == 300
 
 
 def test_a_repeated_identical_call_does_not_re_execute(executed):

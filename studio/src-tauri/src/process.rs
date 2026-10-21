@@ -515,9 +515,46 @@ fn current_windows_user_sid() -> Result<String, String> {
 }
 
 #[cfg(windows)]
-fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGuard, String> {
+const STUDIO_MANAGED_RUNTIME_PATH_MUTEX_PREFIX: &str =
+    "Global\\UnslothStudioManagedEnvironmentPath-";
+
+/// Mirrors `_resolved_windows_path` in unsloth_cli/_studio_runtime_gate.py.
+#[cfg(windows)]
+fn resolved_windows_path_text(path: &std::path::Path) -> String {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut text = resolved.to_string_lossy().into_owned();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        text = format!(r"\\{rest}");
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        text = rest.to_string();
+    }
+    let trimmed = text.trim_end_matches(['\\', '/']);
+    if trimmed.len() == 2 && trimmed.ends_with(':') {
+        return format!("{trimmed}\\");
+    }
+    trimmed.to_string()
+}
+
+/// The CLI and install.ps1 lock a custom root by path hash, not SID; take that lock too.
+#[cfg(windows)]
+fn chosen_root_runtime_mutex_name() -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let root = crate::studio_home::chosen_root()?;
+    let digest = Sha256::digest(resolved_windows_path_text(&root).as_bytes());
+    Some(format!(
+        "{STUDIO_MANAGED_RUNTIME_PATH_MUTEX_PREFIX}{}",
+        crate::native_backend_lease::hex_bytes(&digest)
+    ))
+}
+
+#[cfg(windows)]
+fn acquire_studio_runtime_launch_guard() -> Result<Vec<StudioManagedRuntimeLaunchGuard>, String> {
     let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
-    acquire_named_studio_runtime_launch_guard(&name)
+    let mut guards = vec![acquire_named_studio_runtime_launch_guard(&name)?];
+    if let Some(path_name) = chosen_root_runtime_mutex_name() {
+        guards.push(acquire_named_studio_runtime_launch_guard(&path_name)?);
+    }
+    Ok(guards)
 }
 
 #[cfg(unix)]
@@ -552,7 +589,7 @@ fn acquire_studio_runtime_launch_guard() -> Result<StudioManagedRuntimeLaunchGua
 }
 
 /// serialize managed-environment child creation with install and repair.
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn with_named_studio_runtime_launch_guard<T>(
     name: &str,
     operation: impl FnOnce() -> Result<T, String>,
@@ -566,8 +603,8 @@ pub(crate) fn with_studio_runtime_launch_guard<T>(
 ) -> Result<T, String> {
     #[cfg(windows)]
     {
-        let name = studio_runtime_mutex_name_for_sid(&current_windows_user_sid()?);
-        return with_named_studio_runtime_launch_guard(&name, operation);
+        let _runtime_launch_guards = acquire_studio_runtime_launch_guard()?;
+        return operation();
     }
     #[cfg(unix)]
     {
@@ -1688,10 +1725,7 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
 }
 
 pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
-    let home = dirs::home_dir()?;
-    let studio = home.join(".unsloth").join("studio");
-
-    find_unsloth_binary_in_studio_dir(&studio)
+    find_unsloth_binary_in_studio_dir(&crate::studio_home::studio_root()?)
 }
 
 /// The Windows console script is a generated, unsigned PE wrapper. Application
@@ -2903,6 +2937,9 @@ fn apply_managed_cli_context_inner(
     for name in skipped {
         cmd.env_remove(name);
     }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
 }
@@ -2922,6 +2959,9 @@ pub(crate) fn apply_managed_cli_context_tokio(
     }
     for name in &skipped {
         cmd.env_remove(name);
+    }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
     }
     cmd.env(DESKTOP_MANAGED_ENV, "1");
     Ok(())
@@ -3722,12 +3762,15 @@ pub fn start_backend(
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
 
-    // Tauri uses the legacy root whatever the environment says; scrub so the
+    // Tauri uses its own root whatever the environment says; scrub so the
     // spawned Python backend can't diverge. Off the shared list, so a name added
     // there cannot be honoured by the backend and missed here.
     // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
     for name in MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
+    }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
     }
 
     // read_output_stream decodes as UTF-8; without these, Python encodes its

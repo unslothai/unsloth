@@ -4239,6 +4239,18 @@ def _local_snapshot(repo):
     return os.path.dirname(hits[0])
 
 
+@_NEEDS_MLX
+@pytest.mark.parametrize("module", ["mlx_lm.models.cache", "mlx_vlm.models.cache"])
+def test_a_linear_attention_cache_reports_its_convolution_width(module):
+    import importlib
+
+    import mlx.core as mx
+
+    cache = importlib.import_module(module).ArraysCache(2)
+    cache[0], cache[1] = mx.zeros((1, 3, 8192)), mx.zeros((1, 32, 128, 128))
+    assert mm._conv_width(cache) == 8192
+
+
 def _on_bfloat16_chip():
     import mlx.core as mx
     if mm._runtime_dtype() is not mx.bfloat16:
@@ -4289,6 +4301,63 @@ class TestCacheWidthName:
             "f16",
             "f32",
         ]
+
+
+@_NEEDS_MLX
+def test_a_weightless_probe_never_runs_the_evaluations_its_model_asks_for(monkeypatch):
+    import threading
+
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    elsewhere = []
+
+    def evaluates():
+        before, other = mx.get_active_memory(), mx.ones((16, 1024, 1024))
+        mx.eval(other)
+        elsewhere.append(mx.get_active_memory() - before >= other.nbytes)
+
+    class Tower:
+        def __call__(self, inputs, cache):
+            weights = mx.ones((256, 1024, 1024))  # 1 GiB once evaluated
+            mx.async_eval(weights)
+            mx.eval(weights)
+            thread = threading.Thread(target = evaluates)
+            thread.start()
+            thread.join()
+            keys = mx.zeros((1, 2, inputs.shape[1], 8)) + weights[0, 0, 0]
+            return cache[0].update_and_fetch(keys, keys)[0]
+
+    monkeypatch.setattr(
+        mm, "_probe_models", lambda c, d: iter([(Tower, lambda m: [KVCache()], Tower)])
+    )
+    mx.reset_peak_memory()
+    assert len(mm._cache_plan({}, mx.bfloat16, None)[0]) == 1
+    assert mx.get_peak_memory() < 2**28
+    from core.inference.mlx_inference import mlx_kv_quant_is_refused
+
+    monkeypatch.setattr(mm, "_snapshot_config", lambda d: {})
+    mlx_kv_quant_is_refused("weightless", 8)
+    assert mx.get_peak_memory() < 2**28
+    assert elsewhere and all(elsewhere)
+    mx.eval(mx.ones((64, 1024, 1024)))
+    assert mx.get_peak_memory() >= 2**28
+
+
+@pytest.mark.skipif(not _HAVE_MLX, reason = "resolves an mlx-vlm architecture")
+def test_a_text_model_only_mlx_vlm_builds_is_sized_on_mlx_vlm_and_served_as_text(monkeypatch):
+    zoo, asked = _types.ModuleType("unsloth_zoo.mlx.loader"), []
+    zoo._mlx_vlm_only_text_model = lambda config, model_type: (
+        asked.append(model_type) or "engram_config" in config
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", zoo)
+    refused = {"model_type": "deepseek_v4", "engram_config": {}}
+    assert mm._builds_on_mlx_vlm(refused)
+    assert not mm._builds_on_mlx_vlm({"model_type": "deepseek_v4"})
+    assert asked == ["deepseek_v4", "deepseek_v4"]
+    assert not mm._loads_as_vision(refused)
+    _, make_cache, _ = next(mm._probe_models(refused, None))
+    assert make_cache.__module__ == "mlx_vlm.models.cache"
 
 
 class TestKvBytes:

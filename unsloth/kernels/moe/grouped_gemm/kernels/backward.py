@@ -99,7 +99,7 @@ def _grouped_gemm_dX_kernel(
     n_block_range = tl.arange(0, BLOCK_SIZE_N)
     k_block_range = tl.arange(0, BLOCK_SIZE_K)
 
-    for expert_idx in range(NUM_EXPERTS, flatten = FLATTEN):
+    for expert_idx in tl.range(NUM_EXPERTS, flatten = FLATTEN):
         m_start = m_end
         m_size = tl.load(m_sizes_ptr + expert_idx).to(tl.int32)
         m_end = m_start + m_size
@@ -199,7 +199,6 @@ def _grouped_gemm_dX_kernel(
 
                 dX = accumulator.to(output_dtype)
 
-                # A BLOCK_M x BLOCK_K tile is written out, so stride by K.
                 if USE_TMA_STORE:
                     offset_m = tile_m_idx * BLOCK_SIZE_M
                     offset_k = tile_k_idx * BLOCK_SIZE_K
@@ -213,7 +212,6 @@ def _grouped_gemm_dX_kernel(
 
                 tidx += NUM_SMS
 
-            # Update the total tiles count for the next expert group
             processed_tiles += num_tiles_per_expert
 
 
@@ -266,7 +264,6 @@ def _grouped_gemm_dW_kernel(
     USE_TMA_LOAD_dY: tl.constexpr = False,
     USE_TMA_LOAD_X: tl.constexpr = False,
     USE_TMA_STORE: tl.constexpr = False,
-    FLATTEN: tl.constexpr = True,
     acc_dtype: tl.constexpr = tl.float32,
 ) -> None:
     TOTAL_TOKENS = NUM_TOKENS * TOPK
@@ -290,7 +287,6 @@ def _grouped_gemm_dW_kernel(
             strides = [K, 1],
             block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
         )
-    # Output tiles per expert, since each expert weight matrix is [N, K].
     num_n_tiles = tl.cdiv(N, BLOCK_SIZE_N)
     num_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
     output_tiles_per_expert = num_n_tiles * num_k_tiles
@@ -323,7 +319,6 @@ def _grouped_gemm_dW_kernel(
 
         m_end = 0
         for expert_idx in range(NUM_EXPERTS):
-            # A fresh accumulator per expert.
             accumulator = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K), dtype = acc_dtype)
 
             m_start = m_end
@@ -414,7 +409,6 @@ def _grouped_gemm_dW_kernel(
 
                 y = accumulator.to(output_dtype)
                 if USE_TMA_STORE:
-                    # Expand dims to match the [E, N, K] shape.
                     y = tl.expand_dims(y, 0)
                     dW_desc.store([expert_idx, n_offset, k_offset], y)
                 else:

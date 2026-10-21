@@ -35,6 +35,20 @@ def test_the_shell_is_isolated():
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 
+def test_the_shells_page_may_go_fullscreen_without_leaving_its_sandbox():
+    shell = browser_mod._FRAME_HTML
+    assert 'page.setAttribute("sandbox", "allow-scripts allow-forms");' in shell
+    assert 'page.setAttribute("allowfullscreen", "");' in shell
+    assert "allow-same-origin" not in shell
+
+
+def test_the_shells_page_may_copy_to_the_clipboard_but_not_read_it():
+    shell = browser_mod._FRAME_HTML
+    assert 'page.setAttribute("allow", "clipboard-write");' in shell
+    assert shell.count('setAttribute("allow",') == 1 and "page.allow" not in shell
+    assert "clipboard-read" not in shell
+
+
 def test_the_print_shell_runs_only_its_own_script():
     import base64
     import hashlib
@@ -87,6 +101,39 @@ def test_the_shell_guards():
     assert "requestSubmit = " not in shell
 
 
+def test_trusted_input_uses_a_private_channel():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "if (event.isTrusted && (!scriptedEdit || editingKey)) edited(true);" in boot
+    assert "inputChannel.port1.postMessage.bind(inputChannel.port1)" in boot
+    assert "if (!samePage(next)) edited(false);" in boot
+    assert 'removeEventListener("input"' not in boot
+
+
+def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
+    # Checked in Chromium, Firefox and WebKit, as this suite has no browser to run the shell in.
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert boot.count('post({ type: "needsBrowser" });') == 1
+    for guard in (
+        "if (refused) return;",
+        'for (const name of ["open", "deleteDatabase", "databases"])',
+        "IDBFactory.prototype[name] = function (...args) {",
+        'if (error?.name !== "SecurityError") return false;',
+        "refusals.add(error);",
+        'return name === "databases" ? result.catch(',
+        "if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused();",
+        "if (refusals.has(event.reason)) tellRefused();",
+        'for (const type of ["fullscreenerror", "webkitfullscreenerror"])',
+        "if (!document.fullscreenEnabled) tellRefused();",
+    ):
+        assert guard in boot, guard
+    assert boot.index("IDBFactory.prototype[name] = ") < boot.index("const shellPathname")
+    assert "securityError(" not in boot
+    # The page may replace DOMException or Promise before it touches IndexedDB.
+    assert "instanceof DOMException" not in boot and "instanceof Promise" not in boot
+
+
 def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
     shell = browser_mod._FRAME_HTML
     # Inside boot, where cfg and post exist, before any page script can capture fetch.
@@ -111,6 +158,40 @@ def test_the_shells_base_follows_the_router_only_without_a_page_base():
     assert shell.index("pageUrl = next;") < shell.index(
         'routedBase?.setAttribute("href", pageUrl);'
     )
+
+
+def test_paths_resolved_against_the_shells_location_land_on_the_page():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "window.URL = new Proxy(NativeURL, {" in boot
+    assert 'if (base === "null") args = [args[0], new NativeURL(pageUrl).origin];' in boot
+    assert "else if (/^about:srcdoc(?=[?#]|$)/.test(base)) args = [args[0], pageUrl];" in boot
+    assert "return Reflect.construct(target, args, newTarget);" in boot
+    assert boot.index("window.URL = ") < boot.index("const nativeFetch")
+
+
+def test_a_clicked_link_the_page_loads_in_full_is_followed():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (!raw.startsWith("#")) post({ type: "linkClick", url: resolve(raw) });' in shell
+    assert (
+        'if (event.data.type === "linkClick") clicked = { url: event.data.url, at: Date.now() };'
+        in shell
+    )
+    assert "const FOLLOW_CLICK_MS = 3000;" in shell
+    assert (
+        "Date.now() - clicked.at < FOLLOW_CLICK_MS && sameOrigin(clicked.url, event.blockedURI)"
+        in shell
+    )
+    assert shell.index('type: "navigate", url: clicked.url') < shell.index(
+        'type: "scriptNavigation"'
+    )
+
+
+def test_a_clicked_link_is_followed_after_an_unfollowed_script_navigation():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (event.effectiveDirective !== "frame-src") return;' in shell
+    assert "if (blocked || " not in shell
+    assert shell.index('type: "navigate", url: clicked.url') < shell.index("if (blocked) return;")
 
 
 def test_annotate_code_is_sent_only_when_annotating():
@@ -486,6 +567,7 @@ def test_bot_checks_are_told_apart_from_plain_refusals():
     assert not _is_bot_check(503, headers(Server = "cloudflare"))
     assert not _is_bot_check(404, headers(Server = "cloudflare"))
     assert not _is_bot_check(403, headers(Server = "nginx"))
+    assert not _is_bot_check(403, headers(Server = "cloudflare", cf_cache_status = "DYNAMIC"))
 
 
 def test_a_byte_order_mark_decides_the_encoding():
@@ -852,6 +934,7 @@ def _serve(
     monkeypatch.setattr(
         tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["127.0.0.1"])
     )
+    monkeypatch.setattr(tools, "_explicit_proxy_applies", lambda scheme, host: False)
     return f"http://example.com:{server.getsockname()[1]}/missing"
 
 
