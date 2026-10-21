@@ -279,8 +279,7 @@ def gate_torch_stack_import(reason: str, log = None) -> bool:
 
 
 def _prime_cuda_driver() -> None:
-    """``cuInit`` off the GIL before the importer behind a gate probes CUDA with it held (diffusers does at module
-    level). See utils/cuda_driver_prime.py."""
+    """``cuInit`` off the GIL before the gated importer probes CUDA. See utils/cuda_driver_prime.py."""
     try:
         from utils.cuda_driver_prime import prime_cuda_driver  # noqa: PLC0415
         prime_cuda_driver()

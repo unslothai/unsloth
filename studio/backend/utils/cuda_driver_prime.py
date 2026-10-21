@@ -1,20 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Initialise the CUDA driver without holding the GIL, before torch's first CUDA probe does it with the GIL held.
-
-``torch.cuda.is_available()`` (hardware detection, and ``import diffusers`` at module level) reaches ``cuInit``
-inside ``cudaGetDeviceCount`` while HOLDING the GIL. Driver init takes seconds on a multi-GPU host (2.5-6.8 s
-measured on B200s), and for that long no other thread runs: the event loop stops answering, so a media load's
-``load-progress`` / ``status`` polls come back seconds late or drop their keep-alive connection and the progress bar
-freezes. ``cuInit`` through ctypes releases the GIL, and it is idempotent and process-wide, so torch's own call
-afterwards returns at once with the same answer.
-
-One init per process: the first caller runs it, concurrent callers wait on an Event (GIL released) instead of
-racing into torch's GIL-holding call, which would block on the driver's init lock with the GIL held. Never raises;
-any failure leaves torch to initialise exactly as before. Same process, same moment, same CUDA_VISIBLE_DEVICES, so
-nothing is initialised that torch would not have initialised anyway. ``UNSLOTH_STUDIO_DISABLE_CUDA_PRIME=1`` turns it
-off.
+"""Run ``cuInit`` via ctypes (releases the GIL) before torch's first CUDA probe, which holds the GIL for the
+whole multi-second driver init and freezes the event loop. Idempotent; never raises. Concurrent callers wait on an
+Event rather than entering torch's GIL-holding call. ``UNSLOTH_STUDIO_DISABLE_CUDA_PRIME=1`` disables it.
 """
 
 from __future__ import annotations
