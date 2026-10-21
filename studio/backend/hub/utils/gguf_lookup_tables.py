@@ -18,6 +18,7 @@ import os
 import re
 import struct
 import threading
+import time
 from collections import OrderedDict
 from typing import Callable, Optional
 
@@ -161,8 +162,10 @@ def shard_names(filename: str) -> list[str]:
 
 # Local answers, keyed on every shard's (path, size, mtime_ns).
 _LOCAL_CACHE: "OrderedDict[tuple, tuple[Optional[str], int]]" = OrderedDict()
-# Remote answers, keyed on (repo, filename, revision).
-_REMOTE_CACHE: "OrderedDict[tuple, tuple[Optional[str], int]]" = OrderedDict()
+# Remote answers, keyed on (repo, filename, revision, identity), each with an expiry: the
+# listed size is not content identity, so a same-size re-upload is read again after it.
+_REMOTE_CACHE: "OrderedDict[tuple, tuple[tuple[Optional[str], int], float]]" = OrderedDict()
+_REMOTE_TTL_S = 6 * 3600.0
 _CACHE_LIMIT = 512
 _lock = threading.Lock()
 
@@ -181,9 +184,14 @@ def _remember(cache: OrderedDict, key, value) -> None:
 MAX_SHARDS_READ = 8
 
 
-def _scan_shards(read_header: Callable[[str], tuple], names: list[str]):
-    """(architecture, lazy table bytes) over ``names``, stopping at the first shard that
-    carries the table: llama.cpp's split keeps file order and the table sits near the front."""
+def _scan_shards(
+    read_header: Callable[[str], tuple],
+    names: list[str],
+    mode: str = "auto",
+):
+    """(architecture, lazy table bytes under ``mode``) over ``names``, stopping at the first
+    shard that carries the table: llama.cpp's split keeps file order and the table sits near
+    the front."""
     arch: Optional[str] = None
     for name in names[:MAX_SHARDS_READ]:
         part_arch, named = read_header(name)
@@ -191,20 +199,23 @@ def _scan_shards(read_header: Callable[[str], tuple], names: list[str]):
         if not lazy_architecture(arch):
             # Shard 1 carries the metadata; a non-lazy arch has nothing to find further on.
             return arch, 0
-        found = lazy_read_bytes(arch, named, "auto")
+        found = lazy_read_bytes(arch, named, mode)
         if found or named:
             return arch, found
     return arch, 0
 
 
-def local_lookup_info(path: Optional[str]) -> tuple[Optional[str], int]:
-    """(architecture, lazily read table bytes) for a local GGUF and its sibling shards.
-    ``(None, 0)`` when unreadable or a shard is missing."""
+def local_lookup_info(path: Optional[str], mode: str = "auto") -> tuple[Optional[str], int]:
+    """(architecture, table bytes llama.cpp reads lazily under ``mode``: ``on`` drops the
+    size threshold) for a local GGUF and its sibling shards. ``(None, 0)`` when unreadable
+    or a shard is missing."""
     if not path:
         return None, 0
     try:
         names = shard_names(path)
-        key = tuple((p, st.st_size, st.st_mtime_ns) for p in names for st in (os.stat(p),))
+        key = (mode,) + tuple(
+            (p, st.st_size, st.st_mtime_ns) for p in names for st in (os.stat(p),)
+        )
     except OSError:
         return None, 0
     with _lock:
@@ -212,7 +223,7 @@ def local_lookup_info(path: Optional[str]) -> tuple[Optional[str], int]:
     if hit is not None:
         return hit
     try:
-        answer = _scan_shards(header_of_local, names)
+        answer = _scan_shards(header_of_local, names, mode)
     except Exception:  # noqa: BLE001 -- unreadable header: price the whole file, as before
         answer = (None, 0)
     _remember(_LOCAL_CACHE, key, answer)
@@ -232,7 +243,10 @@ def remote_cached(
     """The cached remote answer, keyed on the file's identity (its listed size by default),
     so a re-upload under the same name is read again."""
     with _lock:
-        return _REMOTE_CACHE.get((repo_id, filename, revision or "", identity))
+        hit = _REMOTE_CACHE.get((repo_id, filename, revision or "", identity))
+    if hit is None or hit[1] <= time.monotonic():
+        return None
+    return hit[0]
 
 
 def remote_lookup_info(
@@ -270,5 +284,5 @@ def remote_lookup_info(
         answer = _scan_shards(read_header, shard_names(filename))
     except Exception:  # noqa: BLE001 -- unreachable or unreadable: today's behaviour
         return None, 0
-    _remember(_REMOTE_CACHE, key, answer)
+    _remember(_REMOTE_CACHE, key, (answer, time.monotonic() + _REMOTE_TTL_S))
     return answer

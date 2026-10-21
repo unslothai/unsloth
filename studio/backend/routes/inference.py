@@ -15467,6 +15467,8 @@ def _gguf_memory_breakdown(
     # the more specific instruction. Without that, a stale "--device none" in the box
     # made a pinned load read as CPU-only and reported no GPU footprint at all.
     device_pin_governs: bool = False,
+    # The physical cards a pin selects: lazy auto resolves off when one lacks mmap support.
+    selected_gpu_ids: Optional[list[int]] = None,
 ) -> Optional[_GgufMemoryBreakdown]:
     """Itemize what loading this GGUF at ``n_ctx`` would cost. None if nothing sizes.
 
@@ -15765,16 +15767,33 @@ def _gguf_memory_breakdown(
     # input embedding is host-pinned in every mode. So it leaves the GPU share always, and
     # the resident total whenever lazy reading engages (not on an iGPU / APU, where
     # llama.cpp resolves auto to off).
-    from core.inference.llama_cpp import _override_places_tensor_on_device
+    from core.inference.llama_cpp import (
+        _effective_lazy_mode,
+        _override_places_tensor_on_device,
+    )
     from hub.utils.gguf_lookup_tables import local_lookup_info
 
-    _lt_arch, _lt_bytes = local_lookup_info(gguf_path)
+    _lt_backend = get_llama_cpp_backend()
+    try:
+        _lt_flag = str(
+            _lt_backend.probe_server_capabilities().get("lazy_mode_flag") or "--lazy-mode"
+        )
+    except Exception:  # noqa: BLE001 -- unknown build: the default spelling
+        _lt_flag = "--lazy-mode"
+    # An explicit "on" streams every flagged table, not only those over the threshold.
+    _lt_arch, _lt_bytes = local_lookup_info(
+        gguf_path,
+        "on" if _effective_lazy_mode(extras, os.environ, flag = _lt_flag) == "on" else "auto",
+    )
     lookup_table_bytes = min(main_bytes, _lt_bytes)
     lookup_table_on_disk = False
     if lookup_table_bytes:
         # Streamed only on a build with a lazy mode whose devices keep it on disk.
-        lookup_table_on_disk = get_llama_cpp_backend().lookup_tables_stream_by_default(
-            extras, os.environ
+        lookup_table_on_disk = _lt_backend.lookup_tables_stream_by_default(
+            extras,
+            os.environ,
+            gpu_ids = selected_gpu_ids,
+            tensor_parallel = tensor_parallel,
         )
         # Read resident, a device override applies to the table (deepseek41's loader
         # still forces it to the host), so it stays in the GPU share.
@@ -22699,6 +22718,7 @@ async def estimate_memory(
             # A pin names the cards, so the launch strips any device flag that says
             # otherwise and this must read the same way.
             device_pin_governs = bool(request.selected_gpu_ids),
+            selected_gpu_ids = pinned_gpu_ids,
         )
         breakdown = price(n_ctx = request.n_ctx or 0)
         if breakdown is None:

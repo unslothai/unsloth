@@ -11537,10 +11537,14 @@ class LlamaCppBackend:
         self,
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
+        *,
+        gpu_ids: Optional[Iterable[int]] = None,
+        tensor_parallel: Optional[bool] = None,
     ) -> bool:
         """Whether a launch on this host leaves lazily read lookup tables on disk: a build
         with a lazy mode that is not off, and (under auto) model devices that support mmap.
-        False when it cannot tell, which prices the tables as resident."""
+        ``gpu_ids``: the physical cards an explicit pick launches on. False when it cannot
+        tell, which prices the tables as resident."""
         _env = os.environ if env is None else env
         try:
             binary = self._find_llama_server_binary()
@@ -11555,15 +11559,18 @@ class LlamaCppBackend:
             vulkan = self._is_vulkan_backend(binary)
             rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
             shared = {idx for idx, _free, total in rows if total <= 0} if vulkan else set()
+            picked = [int(i) for i in gpu_ids] if gpu_ids else None
             return not self._lazy_auto_resolves_off(
-                gpu_indices = None,
+                gpu_indices = picked,
                 detected_gpus = [(idx, free) for idx, free, _total in rows],
                 shared_gpu_ids = shared,
                 is_vulkan_backend = vulkan,
                 probe_integrated_cuda = False,
                 extra_args = extra_args,
                 env = _env,
-                device_list = False,
+                # A pick reaches the child as a --device list on Vulkan, a mask elsewhere.
+                device_list = None if picked else False,
+                tensor_parallel = tensor_parallel,
                 integrated_gpu_ids = shared,
             )
         except Exception:
@@ -30491,6 +30498,14 @@ class LlamaCppBackend:
                         env = _fit_env,
                         lazy_read_bytes = _fit_lazy_bytes,
                     )
+                    # The input tensors the GPU fit left on the host and that are not read
+                    # lazily: host RAM free VRAM may not pay for, charged once.
+                    _resident_inputs = max(0, _host_input_embd - _fit_lazy_bytes)
+                    if _resident_inputs and _fit_load_mode_kwargs["model_size"]:
+                        _fit_load_mode_kwargs["model_size"] = max(
+                            1, _fit_load_mode_kwargs["model_size"] - _resident_inputs
+                        )
+                        _fit_load_mode_kwargs["host_only_bytes"] += _resident_inputs
                     # Resident or streamed lookup table: resident only when the whole
                     # load fits with the table charged to RAM as well (plus the prompt
                     # cache and a margin). Apple decided above, against unified memory.

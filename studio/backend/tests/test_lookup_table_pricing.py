@@ -157,6 +157,16 @@ class TestHeaderScan:
         )
         assert local_lookup_table_bytes(small) == 0
 
+    def test_an_explicit_lazy_mode_on_reads_a_small_table_lazily(self, tmp_path):
+        from hub.utils.gguf_lookup_tables import local_lookup_info
+
+        small = _write(
+            tmp_path / "gemma4-E2B.gguf",
+            _header("gemma4", [("per_layer_token_embd.weight", [8960, 262144], Q5_1)]),
+        )
+        assert local_lookup_info(small) == ("gemma4", 0)
+        assert local_lookup_info(small, "on") == ("gemma4", 8960 * 262144 // 32 * 24)
+
     def test_split_file_finds_the_table_in_a_later_shard(self, tmp_path):
         from hub.utils.gguf_lookup_tables import local_lookup_table_bytes
 
@@ -212,6 +222,17 @@ class TestHeaderScan:
             "unsloth/Flash-Next-GGUF", "Q2/flash-Q2.gguf", identity = 1, fetcher_fn = fetcher
         ) == ("qwen4exp", FLASH_NEXT_TABLE)
         assert not calls
+        # The listed size is not content identity: an expired answer is read again.
+        glt._REMOTE_CACHE.clear()
+        glt._REMOTE_TTL_S, ttl = -1.0, glt._REMOTE_TTL_S
+        try:
+            glt.remote_lookup_info(
+                "unsloth/Flash-Next-GGUF", "Q2/flash-Q2.gguf", identity = 1, fetcher_fn = fetcher
+            )
+            assert glt.remote_cached("unsloth/Flash-Next-GGUF", "Q2/flash-Q2.gguf", None, 1) is None
+        finally:
+            glt._REMOTE_TTL_S = ttl
+        assert calls
 
     def test_remote_failure_is_zero_and_not_cached(self):
         from hub.utils import gguf_lookup_tables as glt
@@ -562,6 +583,38 @@ class TestEstimate:
         b = breakdown()
         assert b.lookup_table_on_disk is False
         assert b.weights_bytes == int(round(self.WEIGHTS))
+
+    def test_a_pin_on_the_integrated_gpu_reads_the_table_resident(self, breakdown, monkeypatch):
+        """A mixed host streams by default (llama.cpp drops the iGPU), not when pinned to it."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gpu_memory",
+            staticmethod(lambda binary = None, **k: [(0, 30000, 0), (1, 22000, 24576)]),
+        )
+        assert breakdown().lookup_table_on_disk is True
+        assert breakdown(selected_gpu_ids = [0]).lookup_table_on_disk is False
+        assert breakdown(selected_gpu_ids = [1]).lookup_table_on_disk is True
+
+    def test_an_explicit_lazy_mode_on_prices_every_flagged_table(self, breakdown, monkeypatch):
+        from hub.utils import gguf_lookup_tables as glt
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        modes = []
+        real = glt.local_lookup_info
+        monkeypatch.setattr(
+            glt,
+            "local_lookup_info",
+            lambda path, mode = "auto": modes.append(mode) or real(path, mode),
+        )
+        breakdown(llama_extra_args = ["-lzm", "on"])
+        breakdown()
+        assert modes == ["on", "auto"]
 
     def test_a_resident_table_moved_to_the_gpu_stays_in_the_gpu_share(self, breakdown, monkeypatch):
         monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)

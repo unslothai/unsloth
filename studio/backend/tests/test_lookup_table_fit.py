@@ -298,6 +298,24 @@ def test_an_override_moving_the_table_to_the_gpu_keeps_it_charged(tmp_path, _moe
     assert cmd[cmd.index("--fit") + 1] == "on", cmd
 
 
+@pytest.mark.parametrize("ram_gib, none_ok", [(2, False), (16, True)])
+def test_resident_input_tables_are_host_ram_in_the_load_mode_fit(
+    tmp_path, _moe_cache_host, ram_gib, none_ok
+):
+    """gemma3n's table is resident (never lazily read) and host-pinned: free VRAM cannot pay
+    for it, so a host whose RAM cannot hold it keeps llama.cpp's mmap fallback."""
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        moe = False,
+        size_gib = GEMMA3N_TOTAL / GIB,
+        memory = [(0, 23_000, 24_576)],
+        lazy = _gemma3n_named(),
+        arch = "gemma3n",
+        ram_gib = ram_gib,
+    )
+    assert ("--load-mode" in cmd and cmd[cmd.index("--load-mode") + 1] == "none") is none_ok, cmd
+
+
 # ------------------------------------------------- item 8: lazy mode as a managed choice
 
 
