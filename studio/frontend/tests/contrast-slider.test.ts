@@ -387,7 +387,7 @@ test("slider tracks move with the slider too", () => {
   );
   assert.match(
     CSS,
-    /--slider-track: rgb\(255 255 255 \/ calc\(0\.045 \* var\(--contrast-wash-gain, 1\)\)\);/,
+    /--slider-track: rgb\(255 255 255 \/ calc\(0\.09 \* var\(--contrast-wash-gain, 1\)\)\);/,
   );
   assert.ok(CSS.includes("--panel-slider-fg: var(--panel-slider-fg-base);"));
   assert.match(

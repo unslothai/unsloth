@@ -362,7 +362,7 @@
 	--slider-track: rgb(0 0 0 / calc(0.065 * var(--contrast-wash-gain, 1)));
 	--slider-thumb: #ffffff;
 	--slider-thumb-shadow: inset 0 0 0 1px #dbdbdb, 0 1.5px 2.5px -0.5px rgb(0 0 0 / 0.08);
-	--slider-track-height: calc(0.1875rem * var(--ui-space-scale, 1));
+	--slider-track-height: calc(0.15625rem * var(--ui-space-scale, 1));
 	--slider-thumb-size: calc(1.375rem * var(--ui-space-scale, 1));
 	/* Chat-message action icons (assistant action bar, branch picker
 	   chevrons + numbers, message-timing token counter, code-block
@@ -568,7 +568,7 @@
 	--panel-slider-fg-base: #b0b0b0;
 	/* Accent softened toward grey; borderless white thumb. */
 	--slider-fill: color-mix(in oklab, var(--control-accent) 75%, #a0a0a0);
-	--slider-track: rgb(255 255 255 / calc(0.045 * var(--contrast-wash-gain, 1)));
+	--slider-track: rgb(255 255 255 / calc(0.09 * var(--contrast-wash-gain, 1)));
 	--slider-thumb-shadow: 0 1px 2px -0.5px rgb(0 0 0 / 0.12);
 	/* Chat action icons: under the ink so they read as controls, not text.
 	   Hover restores full --foreground. */
@@ -5234,12 +5234,17 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		color-mix(in oklab, var(--primary) 9%, var(--background));
 }
 
-/* Whole pixels at any UI scale: a fractional track is snapped to a different
-   device-pixel height per row, so sliders on one panel look unequally thick. */
+/* Whole device pixels at any UI scale: a fractional track is snapped to a
+   different height per row, so sliders on one panel look unequally thick. */
 @supports (width: round(1.5px, 1px)) {
 	:root {
-		--slider-track-height: round(calc(0.1875rem * var(--ui-space-scale, 1)), 1px);
+		--slider-track-height: round(calc(0.15625rem * var(--ui-space-scale, 1)), 1px);
 		--slider-thumb-size: round(calc(1.375rem * var(--ui-space-scale, 1)), 1px);
+	}
+	@media (min-resolution: 2dppx) {
+		:root {
+			--slider-track-height: round(calc(0.15625rem * var(--ui-space-scale, 1)), 0.5px);
+		}
 	}
 }
 

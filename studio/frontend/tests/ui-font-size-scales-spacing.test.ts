@@ -309,7 +309,7 @@ test("the plain stylesheets' controls follow the scale", () => {
     );
   }
   assert.match(CSS, /--slider-thumb-size: calc\(1\.375rem \* var\(--ui-space-scale, 1\)\);/);
-  assert.match(CSS, /--slider-track-height: calc\(0\.1875rem \* var\(--ui-space-scale, 1\)\);/);
+  assert.match(CSS, /--slider-track-height: calc\(0\.15625rem \* var\(--ui-space-scale, 1\)\);/);
 });
 
 test("a scaled minimum never outgrows its own cap", () => {
