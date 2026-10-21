@@ -1498,3 +1498,36 @@ def test_full_conversation_pairs_with_structured_tool_arguments_keep_their_share
     row = out[0]
     assert [m["role"] for m in row["prompt"]] == ["user", "assistant", "tool", "user"]
     assert len(row["chosen"]) == 1 and len(row["rejected"]) == 1
+
+
+def test_grpo_prompts_carry_each_rows_tool_schemas():
+    from core.training.rl import render_grpo_prompts
+
+    schema = {"type": "function", "function": {"name": "weather", "parameters": {}}}
+    ds = Dataset.from_list(
+        [
+            {"question": "Weather in Paris?", "answer": "sunny", "tools": [json.dumps(schema)]},
+            {"question": "2+2?", "answer": "4", "tools": []},
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "grpo")
+    assert "tools" in out.column_names
+
+    class _Tok:
+        chat_template = "plain"
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = False,
+            tools = None,
+            **kw,
+        ):
+            names = ",".join(t["function"]["name"] for t in tools or [])
+            return f"[{names}]" + "|".join(m["content"] for m in messages)
+
+    rendered, done = render_grpo_prompts(out, _Tok(), None)
+    assert done and "tools" not in rendered.column_names
+    assert rendered[0]["prompt"] == "[weather]Weather in Paris?"
+    assert rendered[1]["prompt"] == "[]2+2?"
