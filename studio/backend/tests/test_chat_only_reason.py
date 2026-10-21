@@ -270,7 +270,10 @@ def test_an_automatic_cpu_record_counts_as_chosen_only_on_a_jetson(monkeypatch, 
 
 @pytest.mark.parametrize(
     "var, value",
-    [("UNSLOTH_TORCH_INDEX_FAMILY", "cu126"), ("UNSLOTH_TORCH_INDEX_URL", "https://example.test/whl/cu126")],
+    [
+        ("UNSLOTH_TORCH_INDEX_FAMILY", "cu126"),
+        ("UNSLOTH_TORCH_INDEX_URL", "https://example.test/whl/cu126"),
+    ],
 )
 def test_a_stated_gpu_index_beats_the_jetson_cpu_record(monkeypatch, var, value):
     # An explicit GPU pin wins over the automatic cpu history: the CPU build is reported as before.
