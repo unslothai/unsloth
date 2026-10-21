@@ -178,8 +178,7 @@ def _whole_on(module: Any, device: Any) -> bool:
 
 
 def _same_card(a: Any, b: Any) -> bool:
-    """``a`` and ``b`` name the same card. Unreadable (a fake device, None): True, so a single-card pipeline frees
-    what it always freed; an index-less ``cuda`` is the current card."""
+    """Unreadable devices count as the same card; index-less ``cuda`` is the current card."""
     try:
         import torch
         da, db = torch.device(a), torch.device(b)
@@ -201,9 +200,7 @@ def _same_card(a: Any, b: Any) -> bool:
 
 
 def _graph_on(handle: Any, device: Any) -> bool:
-    """A captured-graph handle sits on ``device``: by the card its graphs recorded on, else its module's card. Unknown:
-    True. Under a component split the VAE decodes on a secondary card while the denoiser's graphs live on the
-    primary: dropping those frees nothing where the decode ran out of memory."""
+    """Graph handle lives on ``device`` (capture card, else module card; unknown: True)."""
     cards = {
         c
         for h in (
@@ -577,15 +574,13 @@ class DecodeSession:
         resident = [
             m for m in (getattr(pipe, "components", {}) or {}).values() if getattr(m, "_unsloth_resident_room", None)
         ]  # fmt: skip
-        # Only groups on the VAE's card free anything for its decode (a component split keeps the denoiser's
-        # resident groups on another card); the deferred return below is then registered for the right card too.
+        # Only groups on the VAE's card free memory for its decode (component split).
         local = [
             m for m in resident if _same_card(getattr(m, "_unsloth_resident_device", None) or self.device, self.device)
         ]  # fmt: skip
         anchor = local[0] if local else None
         if anchor is None:
             return 0
-        # every resident module on this card: the call (and its fakes) stays as before
         on_card = {} if len(local) == len(resident) else {"device": self.device}
 
         def do() -> None:

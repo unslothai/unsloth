@@ -1421,9 +1421,7 @@ _SMALL_TENSOR_NUMEL = 4096
 
 
 def _as_bytes(t: Any) -> Any:
-    """``t``'s elements as one flat uint8 tensor. ``contiguous()`` is a no-op on a one-element tensor whatever its
-    stride, so an expanded scalar (WanPipeline's ``t.expand(batch)``, stride 0) keeps stride 0, which a byte view
-    refuses: that one gets a dense copy."""
+    """Flat uint8 view; a one-element ``t.expand(n)`` keeps stride 0 through ``contiguous()``, so copy it."""
     torch = _torch()
     flat = t.reshape(-1).contiguous()
     if flat.numel() and flat.stride(0) != 1:

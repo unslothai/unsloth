@@ -14,8 +14,7 @@ torch = pytest.importorskip("torch")
 av = pytest.importorskip("av")
 diffusers = pytest.importorskip("diffusers")
 
-# Not importorskip alone: diffusers resolves these lazily, and that import can raise RuntimeError (a broken
-# bitsandbytes), an environment fact that must skip the module rather than abort collection.
+# Lazy diffusers imports can raise RuntimeError (broken bitsandbytes): skip, not abort collection.
 try:
     from diffusers import AutoencoderKLWan  # noqa: E402
     from diffusers.video_processor import VideoProcessor  # noqa: E402

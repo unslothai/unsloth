@@ -930,7 +930,6 @@ def test_the_child_is_pinned_to_the_image_models_card(monkeypatch):
     import torch
 
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
-    # A CUDA torch: ROCm is also read from a "+rocm" __version__ (AMD SDK wheels leave version.hip unset).
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(torch, "__version__", "2.11.0+cu130")
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,5,GPU-abc")

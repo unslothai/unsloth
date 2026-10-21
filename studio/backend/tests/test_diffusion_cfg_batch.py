@@ -160,9 +160,7 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
 
 
 def test_wan_expanded_timesteps_serve_the_second_branch(monkeypatch):
-    """WanPipeline passes ``timestep = t.expand(batch)`` per call: a fresh stride-0 tensor each branch. Equal bytes
-    must count as equal; a byte view of the stride-0 tensor raised, so every step missed and three misses turned
-    batching off."""
+    """WanPipeline's stride-0 ``t.expand(batch)`` timestep must compare equal, not disable batching."""
 
     def loop(model):
         torch.manual_seed(0)

@@ -2661,8 +2661,7 @@ def _split_vae(monkeypatch, events):
 
 
 def test_split_vae_oom_leaves_the_other_cards_graphs_alone(monkeypatch):
-    """A VAE out of memory on cuda:1 dropped the denoiser's cuda:0 graphs and counted that as freed, so the same
-    untiled decode ran again on cuda:1 (and failed) before the tiled one. Only graphs on the VAE's card count."""
+    """Dropping cuda:0 graphs must not count as freed for a cuda:1 VAE OOM."""
     events = []
     vae, pipe = _split_vae(monkeypatch, events)
     pipe._unsloth_cuda_graphs = (_GraphHandle(0),)
@@ -2682,8 +2681,7 @@ def test_split_vae_oom_still_drops_graphs_on_its_own_card(monkeypatch):
 
 
 def test_split_vae_oom_releases_only_groups_on_its_own_card(monkeypatch):
-    """Resident groups on cuda:0 free nothing for a decode on cuda:1: not released, nothing deferred against them;
-    with groups on both cards only the VAE card's are released."""
+    """Only resident groups on the VAE's card are released or deferred."""
     from core.inference import diffusion_memory as M
 
     calls = []

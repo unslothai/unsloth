@@ -36,9 +36,7 @@ def _from_diffusers(module: str, name: str):
 def _env(monkeypatch):
     monkeypatch.delenv(mg.MULTIGPU_ENV, raising = False)
     monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
-    # make_selection drops ordinals torch cannot address and cards of a lower capability than the primary, both read
-    # from the real host. The fake cards here must not depend on it: a one-GPU host (an APU, a single discrete card)
-    # would otherwise see every [0, 1] selection collapse to None. Tests that probe those filters patch them again.
+    # Keep make_selection's real-host filters from collapsing fake [0, 1] selections on a one-GPU host.
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
     monkeypatch.setattr(mg, "_capability", lambda o: None)
     yield
@@ -1018,7 +1016,6 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
 
 
 def test_bitwise_equal_on_an_expanded_scalar():
-    """``t.expand(1)`` keeps stride 0 through ``contiguous()`` (one element), which a byte view refuses."""
     t = torch.tensor(941).expand(1)
     assert t.stride() == (0,)
     assert mg._bitwise_equal(t, t.clone())

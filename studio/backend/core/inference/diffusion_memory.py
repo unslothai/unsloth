@@ -1164,7 +1164,6 @@ def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
     free, #7072); unknown readings answer False."""
     if (
         memory.memory_kind != "unified_memory"
-        # The amdgpu GTT pool is a HIP device's: an mps / cpu snapshot keeps the unified reserve on any torch.
         or str(getattr(memory, "device", None) or "").split(":")[0] != "cuda"
         or not sys.platform.startswith("linux")
         or memory.free_mib is None
@@ -3412,7 +3411,7 @@ def release_resident_groups(
     blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
     A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
     the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them).
-    ``device``: only modules whose groups are resident on that card (a VAE decode on a secondary card)."""
+    ``device``: only modules resident on that card."""
     released: list = []
     streamed: set = set()
 
