@@ -129,6 +129,13 @@ _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
 }
 
+_ARMED_WHEN_DYNAMIC: frozenset[str] = frozenset({"QwenImageTransformer2DModel"})
+
+
+def _armed_when_dynamic(transformer: Any) -> bool:
+    return type(transformer).__name__ in _ARMED_WHEN_DYNAMIC
+
+
 # Unbacked: a backed symbol specialises size 1, and H3's temb has 1 row on step 1, 2 after (a second compile).
 _FAMILY_UNBACKED: dict[str, tuple[str, ...]] = {
     "MiniMaxH3Transformer3DModel": ("L['temb']",),
@@ -182,11 +189,11 @@ def sources_for(transformer: Any) -> tuple[str, ...]:
 
 
 def fingerprint(transformer: Any, dynamic: Any) -> Optional[str]:
-    if dynamic is True:
+    if dynamic is True and not _armed_when_dynamic(transformer):
         # dynamic=True already makes every dim dynamic; only the unbacked sources are armed (see install).
         unbacked = unbacked_sources_for(transformer)
         return "unbacked:" + ",".join(unbacked) if unbacked else None
-    if dynamic is not None:
+    if dynamic is not None and dynamic is not True:
         return None
     sources = sources_for(transformer)
     if not sources or not supported():
@@ -273,7 +280,8 @@ def install(
     *,
     dynamic: Any = None,
 ) -> bool:
-    """Arm sources for a ``dynamic`` compile: None arms dynamic + unbacked, True only unbacked, False nothing."""
+    """Arm sources for a ``dynamic`` compile: None arms dynamic + unbacked, True only unbacked (dynamic + unbacked
+    for :data:`_ARMED_WHEN_DYNAMIC`), False nothing."""
     if dynamic is False:
         return False
     if getattr(transformer, "_unsloth_dynamic_text", None) is not None:
@@ -286,7 +294,9 @@ def install(
             if logger is not None:
                 logger.warning("diffusion.dynamic_text: slice identity fix failed: %s", exc)
     unbacked = unbacked_sources_for(transformer)
-    sources = sources_for(transformer) if dynamic is None else ()
+    sources = (
+        sources_for(transformer) if dynamic is None or _armed_when_dynamic(transformer) else ()
+    )
     cfg = _compiler_config()
     if not (sources or unbacked) or cfg is None:
         return False
