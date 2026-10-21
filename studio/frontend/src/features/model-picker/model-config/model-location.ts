@@ -5,20 +5,12 @@ import { looksLikeLocalPath } from "@/lib/local-path";
 import type { ModelPickTarget } from "../components/model-selector/types";
 import { isOllamaModelId } from "./model-identity";
 
-/** Where a model's load settings can say the model lives on disk. */
 export type ModelDiskLocation =
   | { kind: "path"; path: string }
   /** The id names a managed-cache repo: the server resolves id (+ quant) to a path. */
   | { kind: "cachedRepo"; repoId: string; variant?: string };
 
-/**
- * The on-disk location to show for a load-settings target.
- *
- * A pick from the local inventory carries its path in the meta; a standalone GGUF or a snapshot
- * load is keyed by the path itself; anything else that could live in the managed cache keys by
- * its repo id and is resolved by the caller through /api/models/cached-model-path. Null means
- * there is nothing to show (external providers, undownloaded repos, Ollama stores).
- */
+/** On-disk location for a load-settings target; null when nothing on disk backs it. */
 export function resolveModelLocation(
   target: ModelPickTarget,
 ): ModelDiskLocation | null {
