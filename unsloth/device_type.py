@@ -237,9 +237,10 @@ def cuda_order_mismatch_names():
 
 
 def xpu_supports_native_bf16():
-    """Judge the current XPU only, not unused visible ones. Without libocloc (absent in torch-xpu
-    wheels) every aspect reads False, so trust the probe only once some aspect reads True on that
-    same device. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
+    """Process-wide like CUDA: any visible XPU proven to lack native bf16 turns it off, since the
+    load target is not known here. Each device is judged by its own aspects: without libocloc
+    (absent in torch-xpu wheels) every aspect reads False, so trust the probe only once some
+    aspect reads True on that device. Must match unsloth_zoo.device_type._xpu_bf16_supported."""
     aspects = (
         "has_bfloat16_conversions",
         "has_subgroup_matrix_multiply_accumulate",
@@ -247,13 +248,18 @@ def xpu_supports_native_bf16():
         "has_subgroup_2d_block_io",
     )
     try:
-        index = 0 if torch.xpu.device_count() <= 1 else torch.xpu.current_device()
-        props = torch.xpu.get_device_properties(index)
+        count = torch.xpu.device_count()
     except Exception:
         return True
-    lacks_bf16 = getattr(props, "has_bfloat16_conversions", True) is False
-    probe_works = any(getattr(props, name, False) is True for name in aspects)
-    return not (lacks_bf16 and probe_works)
+    for index in range(count):
+        try:
+            props = torch.xpu.get_device_properties(index)
+        except Exception:
+            continue
+        lacks_bf16 = getattr(props, "has_bfloat16_conversions", True) is False
+        if lacks_bf16 and any(getattr(props, name, False) is True for name in aspects):
+            return False
+    return True
 
 
 def zoo_shares_xpu_bf16():

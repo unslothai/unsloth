@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""XPU bf16 must be native on the current XPU (torch's default probe counts emulation)."""
+"""XPU bf16 must be native on every visible XPU, each judged by its own aspects (torch's default
+probe counts emulation)."""
 
 import re
 import types
@@ -35,16 +36,18 @@ CASES = [
     pytest.param(["old"], 0, True, id = "1dev-old-torch"),
     pytest.param([None], 0, True, id = "1dev-unreadable"),
     pytest.param([NATIVE, NATIVE], 0, True, id = "2dev-native"),
-    pytest.param([NATIVE, EMULATED], 0, True, id = "2dev-mixed-unused-igpu"),
-    pytest.param([EMULATED, NATIVE], 1, True, id = "2dev-mixed-rev-unused-igpu"),
-    pytest.param([NATIVE, EMULATED], 1, False, id = "2dev-mixed-uses-igpu"),
-    pytest.param([EMULATED, NATIVE], 0, False, id = "2dev-mixed-rev-uses-igpu"),
+    pytest.param([NATIVE, EMULATED], 0, False, id = "2dev-mixed"),
+    pytest.param([EMULATED, NATIVE], 1, False, id = "2dev-mixed-rev"),
+    pytest.param([NATIVE, EMULATED], 1, False, id = "2dev-mixed-current-emulated"),
+    pytest.param([EMULATED, NATIVE], 0, False, id = "2dev-mixed-rev-current-emulated"),
     pytest.param([EMULATED, EMULATED], 0, False, id = "2dev-emulated"),
     pytest.param([EMULATED, EMULATED], 1, False, id = "2dev-emulated-dev1"),
     pytest.param([NO_OCLOC, NO_OCLOC], 0, True, id = "2dev-no-libocloc"),
-    pytest.param([EMULATED, NO_OCLOC], 1, True, id = "2dev-used-dev-unproven"),
+    pytest.param([EMULATED, NO_OCLOC], 1, False, id = "2dev-emulated+no-libocloc"),
+    pytest.param([NATIVE, NO_OCLOC], 0, True, id = "2dev-native+no-libocloc"),
+    pytest.param([NO_OCLOC, NATIVE], 1, True, id = "2dev-no-libocloc+native"),
     pytest.param(["old", "old"], 0, True, id = "2dev-old-torch"),
-    pytest.param(["old", EMULATED], 0, True, id = "2dev-old-attr+unused-emulated"),
+    pytest.param(["old", EMULATED], 0, False, id = "2dev-old-attr+emulated"),
     pytest.param([None, NO_OCLOC], 0, True, id = "2dev-unreadable+no-libocloc"),
 ]
 
@@ -101,7 +104,7 @@ def _run(
 
 
 @pytest.mark.parametrize("devices,current,bf16", CASES)
-def test_gpu_init_xpu_bf16_is_native_on_the_current_device(monkeypatch, devices, current, bf16):
+def test_gpu_init_xpu_bf16_is_native_on_every_device(monkeypatch, devices, current, bf16):
     import unsloth._gpu_init as gpu_init
 
     fake = _fake_torch(devices, current)
@@ -111,7 +114,7 @@ def test_gpu_init_xpu_bf16_is_native_on_the_current_device(monkeypatch, devices,
 
 
 @pytest.mark.parametrize("devices,current,bf16", CASES)
-def test_model_utils_xpu_bf16_is_native_on_the_current_device(monkeypatch, devices, current, bf16):
+def test_model_utils_xpu_bf16_is_native_on_every_device(monkeypatch, devices, current, bf16):
     import unsloth.models._utils as model_utils
     namespace = _run(MODEL_UTILS, model_utils, _fake_torch(devices, current), monkeypatch)
     assert namespace["SUPPORTS_BFLOAT16"] is bf16
