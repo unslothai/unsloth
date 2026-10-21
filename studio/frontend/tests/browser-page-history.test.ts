@@ -21,8 +21,7 @@ test("a page's own Back and Forward reach the panel as two flags", () => {
 });
 
 test("a page's Back or Forward that the panel cannot follow leaves its links working", () => {
-  // history.forward() at the newest page, or history.back() on a tab's first page, moves nothing: the
-  // frame stays, so it must not count as left.
+  // Back on a tab's first page (or Forward at its last) moves nothing, so the frame has not left.
   const source = readSrc("features/browser/page-frame.tsx");
   const latch = source.slice(source.indexOf('if (message.type === "loaded") {'), source.indexOf("onMessageRef.current(message);"));
   assert.ok(latch.includes('(message.type === "navigate" && !message.newTab) || message.type === "reload"'));

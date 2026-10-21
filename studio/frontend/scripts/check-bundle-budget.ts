@@ -322,9 +322,8 @@ export const BUDGET = {
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
   // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
-  // The API page redesign (#14455) landed without a raise: main at 97d38c788 measures 6,870,290 B raw / 2,068,951 B
-  // transfer (Node 24, 97 chunks). The browser panel's page history and scroll restore (#14283) add 349 B raw / 34 B
-  // transfer on top (6,870,639 B raw / 2,068,985 B transfer merged). Raised to that build plus the same margin.
+  // Main at 97d38c788 (#14455, no raise) measures 6,870,290 B raw / 2,068,951 B transfer; the browser panel's page
+  // history (#14283) adds 349 B / 34 B (Node 24, 97 chunks). Raised to that build plus the same margin.
   transferBytes: 2_069_174,
   rawBytes: 6_870_799,
 };
