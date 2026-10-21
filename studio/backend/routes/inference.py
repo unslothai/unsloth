@@ -5280,6 +5280,7 @@ def _admit_tool_access(payload) -> None:
         getattr(payload, "permission_mode", None),
         bypass_permissions = bool(getattr(payload, "bypass_permissions", False)),
         disable_sandbox = bool(getattr(payload, "disable_sandbox", False)),
+        sandbox_level = getattr(payload, "sandbox_level", None),
     )
 
 
@@ -11634,12 +11635,23 @@ async def _maybe_auto_switch_model(
         return
 
     async def _refuse_foreign_resident() -> None:
-        """Serve a named model only if the resident is the caller's own or answers to the name."""
+        """Serve a named model only if the resident is the caller's own, or answers to the name
+        and is itself a model the caller may load."""
         if not named_model or not account_access.managed_account():
             return
         if not account_access.resident_hidden("chat", _loaded_slot_ident()):
             return
         if await asyncio.to_thread(_loaded_identity_satisfies, named_model):
+            # The name was authorized, not the resident: a caller's own file can carry any id.
+            resident = _loaded_slot_ident()
+            try:
+                await asyncio.to_thread(account_access.require_model_access, resident)
+            except HTTPException as refusal:
+                # A Hub resident the caller's own token can fetch is theirs to use as well.
+                if refusal.status_code != 404 or not await _caller_token_authorizes_download(
+                    str(resident or ""), fastapi_request
+                ):
+                    raise
             return
         raise HTTPException(status_code = 404, detail = "Model not found")
 
@@ -11746,6 +11758,7 @@ async def _maybe_auto_switch_model(
     # from resident state before consulting the filesystem index: rebuilding a stale
     # multi-root index here used to hold the request for seconds before streaming.
     if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
+        await _refuse_foreign_resident()
         warm_index_soon()
         if claim_resident:
             _claim_slot_for_non_preview(fastapi_request)
@@ -28729,8 +28742,28 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
     finds the same way, honouring ``file://`` under ``--media-path``. Forwarding such a clip as
     opaque payload is therefore still a local file read, so refuse it by name instead.
     """
-    if not clip or clip[:5].lower() == "data:" or _is_remote_video(clip):
+    if not clip or _is_remote_video(clip):
         return None
+    if clip[:5].lower() == "data:":
+        # Skip every data: header (bounded) and judge what follows like any other clip.
+        pos = 0
+        while clip[pos : pos + 5].lower() == "data:":
+            comma = clip.find(",", pos, pos + 256)
+            if comma < 0:
+                # No payload separator within a real header's length: never forward it as data.
+                return (400, "Unsupported video payload in data URI. Send the clip as base64 data.")
+            pos = comma + 1
+        rest = clip[pos : pos + _MAX_VIDEO_SCHEME_CHARS + 1]
+        if ":" not in rest:
+            return None
+        return (
+            _REMOTE_VIDEO_REFUSAL
+            if _is_remote_video(rest)
+            else (
+                400,
+                "Unsupported video payload in data URI. Send the clip as base64 data.",
+            )
+        )
     # ':' is not in the base64 alphabet, so an early colon marks a URL, not payload.
     head = clip[: _MAX_VIDEO_SCHEME_CHARS + 1]
     if ":" not in head:
@@ -34101,9 +34134,10 @@ async def produce_openai_chat_completions(
                             _tool_decode_finished = True
                             break
 
-                        # Anything after the gated tool_start means the user answered.
+                        # Anything after the gated tool_start is the answer, except the context meter sent before the wait.
                         if not (
                             (event["type"] == "tool_start" and event.get("awaiting_confirmation"))
+                            or event["type"] == "context_usage"
                             or (
                                 event["type"] == "skill_load"
                                 and event.get("status") == "awaiting_approval"
@@ -40552,6 +40586,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
     # llama-server ignores `dimensions`; checked against the returned width below.
     body = dict(body)
+    if account_access.managed_account():
+        # llama-server fetches media URLs inside multimodal items; a managed account sends text or tokens only.
+        _embeddings_items(body, tokens_ok = True)
     dimensions = body.pop("dimensions", None)
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
