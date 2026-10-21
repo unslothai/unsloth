@@ -14,6 +14,7 @@ import {
   INPAINT_PADDING_DEFAULT,
   inpaintMaskRequestFields,
   MASK_BLUR_DEFAULT,
+  inpaintOptionsNotApplied,
   restoredInpaintMaskOptions,
 } from "../src/features/images/lib/inpaint-options.ts";
 import {
@@ -208,4 +209,26 @@ test("with only pinned images on the first page, no older pinned seed is offered
   assert.equal(reusableSeed(3, pinned, true), 3);
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /reusableSeed\(sessionSeed, images, hasMore\)/);
+});
+
+test("an imported Only masked the loaded pipeline cannot crop is reported as not applied", () => {
+  assert.deepEqual(
+    inpaintOptionsNotApplied({ inpaint_only_masked: true, inpaint_padding: 48 }, false),
+    ["inpaint area only masked (padding 48)"],
+  );
+  assert.deepEqual(
+    inpaintOptionsNotApplied({ inpaint_only_masked: true }, false),
+    [`inpaint area only masked (padding ${INPAINT_PADDING_DEFAULT})`],
+  );
+  assert.deepEqual(
+    inpaintOptionsNotApplied({ inpaint_only_masked: true, inpaint_padding: 48 }, true),
+    [],
+  );
+  assert.deepEqual(inpaintOptionsNotApplied({ inpaint_only_masked: false }, false), []);
+  assert.deepEqual(inpaintOptionsNotApplied({}, false), []);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(
+    page,
+    /\.\.\.inpaintOptionsNotApplied\(settings, status\.supports_inpaint_only_masked === true\),/,
+  );
 });

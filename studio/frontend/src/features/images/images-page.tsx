@@ -311,6 +311,7 @@ import {
   inpaintMaskRequestFields,
   MASK_BLUR_DEFAULT,
   MASK_BLUR_MAX,
+  inpaintOptionsNotApplied,
   restoredInpaintMaskOptions,
 } from "./lib/inpaint-options";
 import {
@@ -2853,6 +2854,11 @@ export function ImagesPage({
       }
       if (status?.loaded && status.supports_lora === false && settings.loras.length > 0) {
         notApplied.unshift("LoRAs");
+      }
+      if (status?.loaded) {
+        notApplied.unshift(
+          ...inpaintOptionsNotApplied(settings, status.supports_inpaint_only_masked === true),
+        );
       }
       if (status?.supports_negative_prompt === false && settings.negative_prompt && settings.guidance > 0) {
         notApplied.unshift("negative prompt");

@@ -64,3 +64,16 @@ export function restoredInpaintMaskOptions(
   else if (inpaint) out.padding = INPAINT_PADDING_DEFAULT;
   return out;
 }
+
+/** A restored "Only masked" a pipeline that cannot crop will silently drop, for the not-applied toast. */
+export function inpaintOptionsNotApplied(
+  settings: { inpaint_only_masked?: boolean | null; inpaint_padding?: number | null },
+  supportsOnlyMasked: boolean,
+): string[] {
+  if (settings.inpaint_only_masked !== true || supportsOnlyMasked) return [];
+  const padding =
+    typeof settings.inpaint_padding === "number"
+      ? settings.inpaint_padding
+      : INPAINT_PADDING_DEFAULT;
+  return [`inpaint area only masked (padding ${padding})`];
+}
