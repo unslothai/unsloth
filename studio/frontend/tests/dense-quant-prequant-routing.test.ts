@@ -361,3 +361,25 @@ test("the Wan2.1 rows are sized by the bf16 weights the backend keeps resident",
   assert.equal(curatedArtifactFitsDevice(WAN21_1_3B, VIDEO_CATALOG, onCard(24)), true);
   assert.equal(curatedArtifactFitsDevice(WAN21_1_3B, VIDEO_CATALOG, onCard(16)), false);
 });
+
+test("the Cosmos3 Edge row is sized by the bf16 weights the backend keeps resident", () => {
+  // Backend bf16_components_gb: 6.7 + 0.0 + 1.4 (no text encoder), not the repo download. Measured at 832x480x121 on
+  // a GB300: 13.3 GiB whole-GPU peak at speed off, 14.3 GiB at the default speed, under a 16 GB card, over a 12 GB one.
+  const EDGE = "nvidia/Cosmos3-Edge";
+  assert.equal(artifactForRepoId(EDGE, VIDEO_CATALOG)?.artifact.approxSizeGb, 9);
+  assert.equal(curatedArtifactFitsDevice(EDGE, VIDEO_CATALOG, onCard(16)), true);
+  assert.equal(curatedArtifactFitsDevice(EDGE, VIDEO_CATALOG, onCard(12)), false);
+});
+
+test("the Cosmos3 rows are sized as Studio can run them", () => {
+  // Edge: 6.7 + 0.0 + 1.4 GB of bf16 weights (no text encoder), listed at 9 GB, not the 9.2 GB download (the
+  // vision encoder the pipeline ignores). The card's 832x480x121 clip peaked at 13.3 GiB whole-GPU at speed off on a
+  // GB300, so it is offered on a 16 GB card and not on a 12 GB one, though the weights alone would fit there. Nano is
+  // not listed until Studio installs the Cosmos guardrail its checkpoint enables.
+  const COSMOS3_NANO = "nvidia/Cosmos3-Nano";
+  const COSMOS3_EDGE = "nvidia/Cosmos3-Edge";
+  assert.equal(artifactForRepoId(COSMOS3_NANO, VIDEO_CATALOG), null);
+  assert.equal(curatedArtifactFitsDevice(COSMOS3_EDGE, VIDEO_CATALOG, onCard(16)), true);
+  assert.equal(curatedArtifactFitsDevice(COSMOS3_EDGE, VIDEO_CATALOG, onCard(12)), false);
+  assert.equal(curatedArtifactFitsDevice(COSMOS3_EDGE, VIDEO_CATALOG, onCard(10)), false);
+});

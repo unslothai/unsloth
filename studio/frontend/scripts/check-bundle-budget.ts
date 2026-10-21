@@ -348,8 +348,11 @@ export const BUDGET = {
   // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
   // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
-  transferBytes: 2_071_693,
-  rawBytes: 6_879_150,
+  // Cosmos3 on the Video page adds 466 B raw / 218 B transfer (6,878,900 -> 6,879,366 B raw, 2,071,669 -> 2,071,887 B
+  // transfer against ce1ab5b6a, one machine and build, Node 24, 97 chunks): its picker rows and family labels sit in
+  // the eager chat chunk, the Hub's Video gen id rule and Video page repos in the eager settings chunk. Raised by that.
+  transferBytes: 2_071_911,
+  rawBytes: 6_879_616,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

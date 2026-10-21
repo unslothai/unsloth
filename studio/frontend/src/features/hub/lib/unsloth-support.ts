@@ -155,6 +155,11 @@ const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
   "image-text-to-video",
 ]);
 
+// Repos the Video page runs whose Hub card names no pipeline task and tags diffusers, which alone reads as unsupported
+// (Cosmos3's library_name is "cosmos"). Exact ids the backend trusts for a pipeline load. Not nvidia/Cosmos3-Nano: its
+// checkpoint enables the Cosmos guardrail, whose package Studio does not install, so a default install refuses it.
+const VIDEO_PAGE_REPOS: ReadonlySet<string> = new Set(["nvidia/cosmos3-edge"]);
+
 /** Which Unsloth page runs this pipeline task, if any. */
 export function studioPageForTask(
   pipelineTag?: string | null,
@@ -284,11 +289,17 @@ export function classifyUnslothSupport({
       supportedIn: studioPageForTask(pipeline),
     };
   }
+  // Not chat-loadable either, but the Video page runs it.
+  const videoPage =
+    modelId && VIDEO_PAGE_REPOS.has(modelId.trim().toLowerCase())
+      ? { supportedIn: "video" as const }
+      : {};
   for (const tag of lowerTags) {
     if (UNSUPPORTED_LIBRARY_TAGS.has(tag)) {
       return {
         status: "unsupported",
         reason: `Library: ${tag}.`,
+        ...videoPage,
       };
     }
   }
@@ -296,6 +307,7 @@ export function classifyUnslothSupport({
     return {
       status: "unsupported",
       reason: `Library: ${library}.`,
+      ...videoPage,
     };
   }
   const formatKey = detectUnsupportedFormatKey(modelId, lowerTags, formatTags);

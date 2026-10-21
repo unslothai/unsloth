@@ -45,8 +45,10 @@ const VIDEO_GEN_TAGS = new Set([
   "image-to-video",
   "image-text-to-video",
 ]);
+// Cosmos3 counts only as its Nano and Edge generators: the Reasoner, Policy, Sim / Transfer and FP8 repos carry the
+// same name, and the backend refuses them on the Video page by those markers.
 const VIDEO_GEN_ID_RE =
-  /(?:^|[-_.])wan2|hunyuan[-_]?video|\bltx(?:[-_]?video|v|[-_]?\d)|minimax[-_]?h\d|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
+  /(?:^|[-_.])wan2|hunyuan[-_]?video|\bltx(?:[-_]?video|v|[-_]?\d)|minimax[-_]?h\d|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b|(?:^|[-_.])cosmos3[-_.](?:nano|edge)(?![a-z0-9]|[-_.](?:reasoner|policy|sim|transfer|fp8)(?![a-z0-9]))/;
 
 const NEITHER_GEN_TASKS = new Set([
   "video-to-video",

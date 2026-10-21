@@ -115,6 +115,13 @@ test("the other families keep their recipes", () => {
     ["fusionx-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
     ["/models/FusionX/wan2.1-t2v-14b-Q4_K_M.gguf", 20, 6],
     ["/home/user/ComfyUI/models/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors", 20, 5],
+    // A Cosmos3 folder keeps its card recipe when a parent folder spells the generic ltx, distilled, fusionx, a14b or
+    // hunyuanvideo key.
+    ["/models/ltx/Cosmos3-Nano", 35, 6],
+    ["/home/distilled/Cosmos3-Nano", 35, 6],
+    ["/data/fusionx/Cosmos3-Edge", 20, 6],
+    ["/models/a14b/Cosmos3-Edge", 20, 6],
+    ["/models/hunyuanvideo/Cosmos3-Nano", 35, 6],
   ];
   for (const [id, steps, guidance] of cases) {
     assert.deepEqual(defaultsFor(id), { steps, guidance }, id);
@@ -127,3 +134,83 @@ test("an explicit LTX-2.5 family still reads the variant from the file and repo 
   assert.deepEqual(defaultsFor("/models/opaque/model.safetensors", "ltx-2.5"), { steps: 8, guidance: 1 });
   assert.deepEqual(defaultsFor("/models/opaque/model.safetensors"), { steps: 8, guidance: 1 });
 });
+
+test("Cosmos3 seeds the recipe its backend family reports once loaded: Nano 35 steps, Edge 20, CFG 6", () => {
+  const families = readText("../../backend/core/inference/video_families.py");
+  const backend = (constant: string) => {
+    const row = families.slice(families.indexOf(`name = "${constant}",`));
+    const steps = row.match(/default_steps = (\d+),/);
+    const guidance = row.match(/default_guidance = ([\d.]+),/);
+    assert.ok(steps && guidance, constant);
+    return { steps: Number(steps[1]), guidance: Number(guidance[1]) };
+  };
+  const nano = backend("cosmos3-nano");
+  const edge = backend("cosmos3-edge");
+  assert.deepEqual(
+    [nano, edge],
+    [
+      { steps: 35, guidance: 6 },
+      { steps: 20, guidance: 6 },
+    ],
+  );
+  for (const [id, recipe] of [
+    ["nvidia/Cosmos3-Nano", nano],
+    ["nvidia/Cosmos3-Edge", edge],
+    ["Cosmos3_Edge", edge],
+    ["/models/cosmos3-nano/", nano],
+    [
+      "/home/u/.cache/huggingface/hub/models--nvidia--Cosmos3-Edge/snapshots/344d602b128d1bbdacb43b08d0a3626f46343e29",
+      edge,
+    ],
+    // An opaque folder loaded under an explicit family is keyed by the family name.
+    ["cosmos3-nano", nano],
+  ] as const) {
+    assert.deepEqual(defaultsFor(id), recipe, id);
+  }
+});
+
+test("every Cosmos3 spelling seeds its card recipe", () => {
+  // The cards' Diffusers examples: Nano 35 steps, Edge 20, both guidance 6 (README.md:895-896 of
+  // nvidia/Cosmos3-Nano@e59a53c2, README.md:771-772 of nvidia/Cosmos3-Edge@344d602b). The spellings the
+  // backend's family matcher folds together, an HF-cache snapshot at those revisions, local folders, and the
+  // family name itself, which the page keys an opaque pick by under a family override (defaultsKeyFor).
+  for (const id of [
+    "nvidia/Cosmos3-Nano",
+    "NVIDIA/COSMOS3-NANO",
+    "someone/Cosmos3_Nano",
+    "Cosmos3 Nano",
+    "/home/me/.cache/huggingface/hub/models--nvidia--Cosmos3-Nano/snapshots/e59a53c25979a090fa8706c9acc0c254a6e89b92",
+    "/data/models/Cosmos3-Nano/",
+    "~/models/cosmos3_nano",
+    "cosmos3-nano",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 35, guidance: 6 }, id);
+  }
+  for (const id of [
+    "nvidia/Cosmos3-Edge",
+    "someone/cosmos3_edge",
+    "COSMOS3.EDGE",
+    "/home/me/.cache/huggingface/hub/models--nvidia--Cosmos3-Edge/snapshots/344d602b128d1bbdacb43b08d0a3626f46343e29",
+    "C:\\models\\Cosmos3-Edge",
+    "cosmos3-edge",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 20, guidance: 6 }, id);
+  }
+});
+
+test(
+  "a Cosmos3 owner or folder name does not outrank the family the checkpoint names",
+  () => {
+    // As for the Wan and FusionX rows, the Cosmos3 rows count only in the model name (the backend's Cosmos3 keys too),
+    // so these ids get the recipe of the family their model or file name names.
+    const cases: Array<[string, number, number]> = [
+      ["cosmos3-nano-lab/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
+      ["/home/cosmos3-nano/models/HunyuanVideo-1.5-Diffusers-480p_t2v", 20, 6],
+      ["/models/Cosmos3-Nano/wan2.1_t2v_14B_bf16.safetensors", 20, 6],
+      ["cosmos3-edge-lab/Wan2.1-T2V-1.3B-Diffusers", 30, 6],
+    ];
+    for (const [id, steps, guidance] of cases) {
+      assert.deepEqual(defaultsFor(id), { steps, guidance }, id);
+    }
+  },
+);

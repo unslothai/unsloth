@@ -697,6 +697,17 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
+  // Cosmos3 Nano is not listed: its checkpoint enables NVIDIA's Cosmos guardrail, whose cosmos_guardrail package Studio
+  // does not install, so the backend refuses every Nano pipeline load on a default install.
+  {
+    canonicalId: "nvidia/Cosmos3-Edge",
+    displayName: "Cosmos3 Edge",
+    description: "Text and image to video 480p, small",
+    scope: "video",
+    // Resident bf16, as the Wan2.1 rows: transformer 6.7 GB (also the text model, no text encoder) + VAE 1.4 GB, rounded
+    // up; the 9.2 GB download adds the vision encoder video does not load. totalParams is the Hub's (the card's 4B).
+    artifacts: [bf16Pipeline("nvidia/Cosmos3-Edge", 9, { totalParams: 3858999728 })],
+  },
 ];
 
 // The Audio page's curated list. tts groups load into the main slot via /api/inference/load (Orpheus
