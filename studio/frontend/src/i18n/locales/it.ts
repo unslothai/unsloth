@@ -4319,7 +4319,7 @@ export const it = {
       modelMissing: "{model} (non su questo dispositivo)",
       allowLoad: "Cambia automaticamente quando non ci sono",
       allowLoadHint:
-        "Quando questa attività è in scadenza e non usi Studio da 5 minuti, carica questo modello senza chiedere, esegue l'attività e poi torna al modello che avevi. Se in quel momento stai usando Studio o è in corso un addestramento, l'esecuzione viene saltata e il tuo modello resta com'è. Se è disattivato, Studio chiede prima di caricarlo.",
+        "Quando questa attività è in scadenza e non usi Unsloth da 5 minuti, carica questo modello senza chiedere, esegue l'attività e poi torna al modello che avevi. Se in quel momento stai usando Unsloth o è in corso un addestramento, l'esecuzione viene saltata e il tuo modello resta com'è. Se è disattivato, Unsloth chiede prima di caricarlo.",
       reasoning: "Sforzo di ragionamento",
       reasoningDefault: "Predefinito",
       reasoningOff: "Disattivato",

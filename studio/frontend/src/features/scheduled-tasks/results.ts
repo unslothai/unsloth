@@ -188,7 +188,7 @@ export function runsToNotify<T extends { status: string; taskNotify: string }>(
 }
 
 /** A run that stopped only because its task's model was not loaded, and is waiting for a yes. Not
- *  `model_busy`: that task already switches by itself and was skipped while Studio was in use, so
+ *  `model_busy`: that task already switches by itself and was skipped while Unsloth was in use, so
  *  it is reported like any other skipped run instead of asking. */
 export function asksToLoadModel(run: { errorCode: string | null; taskModel?: string | null }): boolean {
   return run.errorCode === "model_not_loaded" && Boolean(run.taskModel);

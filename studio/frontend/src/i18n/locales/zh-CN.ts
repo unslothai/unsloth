@@ -4145,7 +4145,7 @@ export const zhCN = {
       modelMissing: "{model}（不在此设备上）",
       allowLoad: "离开时自动切换",
       allowLoadHint:
-        "到了任务时间且你已 5 分钟未使用 Studio 时，它会直接加载此模型、运行任务，然后切换回你原来的模型。如果当时你正在使用 Studio 或正在训练，本次运行会被跳过，你的模型保持不变。关闭时，Studio 会在加载前询问。",
+        "到了任务时间且你已 5 分钟未使用 Unsloth 时，它会直接加载此模型、运行任务，然后切换回你原来的模型。如果当时你正在使用 Unsloth 或正在训练，本次运行会被跳过，你的模型保持不变。关闭时，Unsloth 会在加载前询问。",
       reasoning: "思考强度",
       reasoningDefault: "默认",
       reasoningOff: "关闭",

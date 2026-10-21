@@ -4277,7 +4277,7 @@ export const ptBR = {
       modelMissing: "{model} (não está neste dispositivo)",
       allowLoad: "Trocar automaticamente quando eu estiver fora",
       allowLoadHint:
-        "Quando esta tarefa vence e você não usa o Studio há 5 minutos, ela carrega este modelo sem perguntar, executa a tarefa e depois volta para o modelo que você tinha. Se você estiver usando o Studio ou treinando nesse momento, a execução é pulada e seu modelo fica como está. Desativado, o Studio pergunta antes de carregar.",
+        "Quando esta tarefa vence e você não usa o Unsloth há 5 minutos, ela carrega este modelo sem perguntar, executa a tarefa e depois volta para o modelo que você tinha. Se você estiver usando o Unsloth ou treinando nesse momento, a execução é pulada e seu modelo fica como está. Desativado, o Unsloth pergunta antes de carregar.",
       reasoning: "Esforço de raciocínio",
       reasoningDefault: "Padrão",
       reasoningOff: "Desligado",

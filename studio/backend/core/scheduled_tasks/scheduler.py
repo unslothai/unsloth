@@ -304,7 +304,7 @@ def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[
 
 async def _plan_swap(task: dict, model: str, unattended: bool, carried: Optional[_Swap]) -> _Swap:
     """What a load must put back. An unattended run swaps only a GGUF it can restore, and only
-    while nobody is using Studio or training; otherwise it asks, and the user, there now, decides.
+    while nobody is using Unsloth or training; otherwise it asks, and the user, there now, decides.
     A swap carried over from the run before keeps that run's earlier model as the one to restore."""
     from core.inference.llama_keepwarm import attended_stamp, idle_for, loaded_identity
     from routes.inference import (
@@ -464,7 +464,7 @@ async def generate_answer(
     request = _producer_request(app, run["id"], cancel_event, task["timezone"])
     if allow_switch:
         allow_model_switch_for_request(request.scope)
-    # Studio's own work: it does not count as someone using Studio (see _plan_swap).
+    # Unsloth's own work: it does not count as someone using Unsloth (see _plan_swap).
     with unattended_activity():
         activity = InferenceActivityReservation()
         activity.reserve()
@@ -531,7 +531,7 @@ async def generate_answer(
             activity.finish()
             answered = response is not None and int(getattr(response, "status_code", 200)) < 400
             end_in_process_request(request.scope, answered = answered)
-            # Not while Studio shuts down or the run is stopped: a reload would only be torn down.
+            # Not while Unsloth shuts down or the run is stopped: a reload would only be torn down.
             if holder is None and swap is not None and not cancel_event.is_set():
                 await _restore_after_swap(swap, app)
     if cancel_event.is_set():

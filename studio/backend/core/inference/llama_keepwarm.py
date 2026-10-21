@@ -257,7 +257,7 @@ def inference_in_flight() -> bool:
 
 @contextlib.contextmanager
 def unattended_activity():
-    """Mark the inference and loads made inside as Studio's own, for idle_for(). The mark follows
+    """Mark the inference and loads made inside as Unsloth's own, for idle_for(). The mark follows
     the context into to_thread() and the tasks created in it."""
     token = _unattended.set(True)
     try:

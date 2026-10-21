@@ -4329,7 +4329,7 @@ export const fr = {
       modelMissing: "{model} (absent de cet appareil)",
       allowLoad: "Changer automatiquement en mon absence",
       allowLoadHint:
-        "Quand cette tâche arrive à échéance et que vous n'avez pas utilisé Studio depuis 5 minutes, elle charge ce modèle sans demander, exécute la tâche, puis revient au modèle que vous aviez. Si vous utilisez Studio ou qu'un entraînement est en cours, l'exécution est ignorée et votre modèle n'est pas touché. Désactivé, Studio demande avant de charger.",
+        "Quand cette tâche arrive à échéance et que vous n'avez pas utilisé Unsloth depuis 5 minutes, elle charge ce modèle sans demander, exécute la tâche, puis revient au modèle que vous aviez. Si vous utilisez Unsloth ou qu'un entraînement est en cours, l'exécution est ignorée et votre modèle n'est pas touché. Désactivé, Unsloth demande avant de charger.",
       reasoning: "Effort de réflexion",
       reasoningDefault: "Par défaut",
       reasoningOff: "Désactivé",

@@ -4318,7 +4318,7 @@ export const de = {
       modelMissing: "{model} (nicht auf diesem Gerät)",
       allowLoad: "Automatisch wechseln, wenn ich weg bin",
       allowLoadHint:
-        "Wenn diese Aufgabe fällig ist und du Studio seit 5 Minuten nicht benutzt hast, lädt sie dieses Modell ohne Nachfrage, führt die Aufgabe aus und wechselt dann zurück zu deinem vorherigen Modell. Benutzt du Studio gerade oder läuft ein Training, wird der Lauf übersprungen und dein Modell bleibt unverändert. Ist die Option aus, fragt Studio vor dem Laden.",
+        "Wenn diese Aufgabe fällig ist und du Unsloth seit 5 Minuten nicht benutzt hast, lädt sie dieses Modell ohne Nachfrage, führt die Aufgabe aus und wechselt dann zurück zu deinem vorherigen Modell. Benutzt du Unsloth gerade oder läuft ein Training, wird der Lauf übersprungen und dein Modell bleibt unverändert. Ist die Option aus, fragt Unsloth vor dem Laden.",
       reasoning: "Denkaufwand",
       reasoningDefault: "Standard",
       reasoningOff: "Aus",

@@ -4497,7 +4497,7 @@ export const sv = {
       modelMissing: "{model} (finns inte på den här enheten)",
       allowLoad: "Byt automatiskt när jag är borta",
       allowLoadHint:
-        "När uppgiften ska köras och du inte har använt Studio på 5 minuter läser den in den här modellen utan att fråga, kör uppgiften och byter sedan tillbaka till modellen du hade. Om du använder Studio eller tränar just då hoppas körningen över och din modell lämnas orörd. Avstängt frågar Studio innan modellen läses in.",
+        "När uppgiften ska köras och du inte har använt Unsloth på 5 minuter läser den in den här modellen utan att fråga, kör uppgiften och byter sedan tillbaka till modellen du hade. Om du använder Unsloth eller tränar just då hoppas körningen över och din modell lämnas orörd. Avstängt frågar Unsloth innan modellen läses in.",
       reasoning: "Tankeinsats",
       reasoningDefault: "Standard",
       reasoningOff: "Av",
