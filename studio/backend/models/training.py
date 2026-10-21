@@ -857,6 +857,14 @@ class TrainingStartRequest(BaseModel):
         return self
 
     @model_validator(mode = "after")
+    def _check_preference_beta(self) -> "TrainingStartRequest":
+        # Zero turns DPO's loss constant (no gradient) and drops ORPO's preference term; only
+        # GRPO's KL coefficient may be zero.
+        if self.objective in ("dpo", "orpo") and self.rl_beta == 0:
+            raise ValueError(f"{self.objective.upper()} needs a beta above 0.")
+        return self
+
+    @model_validator(mode = "after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
