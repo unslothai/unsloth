@@ -15,6 +15,7 @@ from .test_account_tool_confinement import ALICE, isolated  # noqa: F401
 @pytest.mark.skipif(sys.platform != "darwin", reason = "diag")
 def test_diag(monkeypatch):
     import tempfile
+
     home = tempfile.mkdtemp(dir = os.path.expanduser("~"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", os.path.join(home, "studio"))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", os.path.join(home, "projects"))
