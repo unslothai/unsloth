@@ -190,6 +190,7 @@ def test_the_chat_instance_drops_exactly_the_denylist_and_mcp_keeps_every_tool()
         "cancel",
         "start_training",
         "export_model",
+        "run_recipe",
     }
     assert CHAT_DENYLIST <= set(everything)
     assert chat == [name for name in everything if name not in CHAT_DENYLIST]

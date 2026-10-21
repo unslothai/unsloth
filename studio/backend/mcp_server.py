@@ -74,8 +74,9 @@ def tool_names() -> tuple[str, ...]:
 
 # Never offered to an Unsloth Studio chat: they would evict, restart, cancel or re-enter the chat that calls them.
 # export_model also keeps working after the call returns, past the chat's per-call key, and loads a checkpoint.
+# run_recipe can send host env credentials and host files to a provider endpoint the recipe names.
 CHAT_DENYLIST = frozenset(
-    {"chat", "load_model", "unload_model", "cancel", "start_training", "export_model"}
+    {"chat", "load_model", "unload_model", "cancel", "start_training", "export_model", "run_recipe"}
 )
 
 

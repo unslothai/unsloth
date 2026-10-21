@@ -25241,8 +25241,12 @@ async def _dispatch_audio_run(
             raise HTTPException(
                 status_code = 409, detail = "Another audio run is using this cancel_id."
             )
+    from core.inference.generation_ticket import bind_generation_cancel
+
     token = _AUDIO_RUN_CANCEL_ID.set(body.cancel_id)
     cancel = threading.Event()
+    # A chat tools call that is stopped stops this run too.
+    bind_generation_cancel(cancel)
     event_token = _AUDIO_RUN_CANCEL.set(cancel)
     created: list[str] = []
     created_token = _AUDIO_RUN_CREATED.set(created)
