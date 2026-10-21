@@ -64,7 +64,11 @@ def krea2(monkeypatch):
     return cls
 
 
-def _host(monkeypatch, available_mib, total_mib = 32768):
+def _host(
+    monkeypatch,
+    available_mib,
+    total_mib = 32768,
+):
     monkeypatch.setattr(small_host, "host_ram_mib", lambda: (total_mib, available_mib))
 
 

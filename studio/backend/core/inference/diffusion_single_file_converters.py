@@ -412,7 +412,12 @@ def converted_host_bytes(
     return total
 
 
-def refuse_host_ram_shortfall(path: str, need_bytes: int, why: str, logger: Any = None) -> None:
+def refuse_host_ram_shortfall(
+    path: str,
+    need_bytes: int,
+    why: str,
+    logger: Any = None,
+) -> None:
     """Raise ``HostRamShortfallError`` if ``need_bytes`` plus the reserve exceed free host RAM (an OOM
     kills the whole server). ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the check."""
     import os
