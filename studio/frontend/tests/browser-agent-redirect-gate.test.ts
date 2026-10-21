@@ -83,3 +83,26 @@ test("a redirect link the open page shows is asked about before it loads, not af
   links = [];
   assert.deepEqual(await askedBy(navigate("d3", context, wrapped), "result.example"), { host: "result.example", openedFirst: false });
 });
+
+test("a clicked redirect link is asked about at its target before the tab loads it", async () => {
+  const context = run("e");
+  show("e");
+  assert.equal(await askedBy(navigate("e1", context, "https://www.google.com/search?q=qwen"), "google.com"), null);
+  const wrapped = "https://www.google.com/url?q=https://clicked.example/page&sa=U";
+  const link = { role: "link", name: "Result", tag: "a", href: wrapped, formMethod: "", formAction: "", formHasPassword: false, submits: false };
+  const original = globals.__frameAgent;
+  links = [wrapped];
+  globals.__frameAgent = async (tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "describe") return { installed: true, result: { ok: true, info: link, hit: "r5", sig: "s" } };
+    if (op.op === "click") return { installed: true, result: { ok: true, navigate: wrapped } };
+    return (original as (t: string, o: Record<string, unknown>) => unknown)(tabId, op);
+  };
+  try {
+    await snapshot("e2", context);
+    const click = runBrowserAction({ id: "e3", sessionId: "s", op: "click", ref: "r5", direction: "down", policy }, context);
+    assert.deepEqual(await askedBy(click, "clicked.example"), { host: "clicked.example", openedFirst: false });
+  } finally {
+    globals.__frameAgent = original;
+    links = [];
+  }
+});

@@ -439,6 +439,9 @@ def test_repeated_browser_calls_run_again_and_keep_the_tools():
         "https://www.google.com/url?q=http://127.0.0.1:8888/api/auth/me",
         "https://duckduckgo.com/l/?uddg=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data",
         "https://www.google.com/url?q=https://www.google.com/url?q%3Dhttp://10.0.0.1/",
+        # The tab resolves dot segments before it matches the redirect path.
+        "https://www.google.com/foo/../url?q=http://127.0.0.1:8888/private",
+        "https://duckduckgo.com/x/%2e%2e/l/?uddg=http%3A%2F%2F10.0.0.1%2F",
     ],
 )
 def test_redirect_target_is_checked_like_the_link(url):

@@ -22,6 +22,15 @@ const FETCHING_TAG =
 const STYLE_LINE = /^[ \t]*(?:classDef|style|linkStyle)\b.*$/gim;
 const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import/i;
 
+// An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
+const STYLED_TAG = /<([a-z][^<>]*\bstyle\s*=[^<>]*)/gi;
+// Numeric character references, which mermaid (`#117;`) and the browser (`&#117;`) both decode.
+const CHAR_REF = /(?:&#|#)(x[0-9a-f]+|\d+);?/gi;
+const CSS_FETCH = /url|image|cross-fade|element\s*\(|@import|\\/i;
+
+// Mermaid drops a whole line starting with `%%` before parsing (an `%%{init}%%` directive stays).
+const COMMENT_LINE = /^[ \t]*%%(?!\{).*$/gm;
+
 // `properties Actor: {json}` in a sequence diagram, where `icon` is drawn as an <image>.
 const ACTOR_PROPERTIES = /(^|;)([ \t]*properties\b[^:\n;#]*:)([^#\n;]*)/gim;
 
@@ -87,7 +96,9 @@ function withoutRemoteIcon(json: string): string | null {
 export function stripRemoteDiagramImages(source: string): string {
   let out = "";
   let at = 0;
-  for (const block of shapeDataBlocks(source)) {
+  // Comments are blanked to the same length, so a `@{` or `"` in one cannot hide a later block.
+  const scanned = source.replace(COMMENT_LINE, (line) => " ".repeat(line.length));
+  for (const block of shapeDataBlocks(scanned)) {
     const replaced = withoutRemoteImage(block.body);
     if (replaced === null) continue;
     out += source.slice(at, block.start) + replaced;
@@ -96,6 +107,13 @@ export function stripRemoteDiagramImages(source: string): string {
   out += source.slice(at);
   return out
     .replace(FETCHING_TAG, "#lt;")
+    .replace(STYLED_TAG, (whole, tag: string) => {
+      const decoded = tag.replace(CHAR_REF, (_ref, code: string) => {
+        const point = code[0].toLowerCase() === "x" ? parseInt(code.slice(1), 16) : Number(code);
+        return point <= 0x10ffff ? String.fromCodePoint(point) : "";
+      });
+      return CSS_FETCH.test(decoded) ? `#lt;${tag}` : whole;
+    })
     .replace(STYLE_LINE, (line) => (STYLE_FETCH.test(line) ? "" : line))
     .replace(ACTOR_PROPERTIES, (whole, lead: string, head: string, json: string) => {
       const replaced = withoutRemoteIcon(json);

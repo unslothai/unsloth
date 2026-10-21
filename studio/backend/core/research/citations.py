@@ -241,10 +241,16 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
     if heading:
         report = report[: heading.start()]
 
+    def catalog_url(url: str) -> str | None:
+        # The scheme is case-insensitive; the catalog spells it in lower case.
+        lowered = re.sub(r"^https?://", lambda m: m.group(0).lower(), url, flags = re.IGNORECASE)
+        return url if url in source_by_url else lowered if lowered in source_by_url else None
+
     def citation(url: str) -> str | None:
-        source = source_by_url.get(url)
-        if source is None:
+        url = catalog_url(url)
+        if url is None:
             return None
+        source = source_by_url[url]
         title = re.sub(r"(\\*)\|", r"\1\1\\|", _citation_title(source, url))
         token = _placeholder("research-citation", len(placeholders))
         placeholders[token] = f"[{title}]({_escape_link_destination(url)})"
@@ -327,7 +333,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
         # Cite whole source URLs; drop other raw URLs. Whole-match avoids prefix collisions.
         raw = match.group(0)
         core = _trim_url_tail(raw)
-        if core in source_by_url:
+        if catalog_url(core):
             return (citation(core) or core) + raw[len(core) :]
         # Keep the trimmed tail so dropping the URL cannot unbalance the prose.
         return raw[len(core) :]

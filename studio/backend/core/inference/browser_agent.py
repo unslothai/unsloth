@@ -20,7 +20,7 @@ import json
 import re
 import unicodedata
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 from loggers import get_logger
 
@@ -409,10 +409,14 @@ def _redirect_target(url: str) -> Optional[str]:
     except ValueError:
         return None
     query = parse_qs(parsed.query)
+    # The tab's URL parser resolves dot segments (%2e included) before the path is compared.
+    path = urlsplit(
+        urljoin("http://h/", re.sub(r"%2e", ".", parsed.path, flags = re.IGNORECASE))
+    ).path
     target = None
-    if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and parsed.path == "/l/":
+    if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and path == "/l/":
         target = (query.get("uddg") or [None])[0]
-    elif re.fullmatch(r"google\.[a-z.]+", host) and parsed.path == "/url":
+    elif re.fullmatch(r"google\.[a-z.]+", host) and path == "/url":
         target = (query.get("q") or query.get("url") or [None])[0]
     return target if target and re.match(r"^https?://", target, re.IGNORECASE) else None
 

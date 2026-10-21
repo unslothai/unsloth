@@ -23,6 +23,10 @@ const HOSTILE = [
   "flowchart LR\n  A --> B\n  style A background:u\\72l(https://attacker.example/c)",
   'sequenceDiagram\n  participant Alice\n  properties Alice: {"icon": "https://attacker.example/c"}\n  Alice->>Bob: hi',
   'sequenceDiagram\n  participant Alice\n  properties Alice: {"\\u0069con": "\\u0068ttps://attacker.example/c"}\n  Alice->>Bob: hi',
+  'flowchart LR\n%% @{ "\n  A@{ img: "https://attacker.example/c" }',
+  "flowchart LR\n  A[\"<span style='background-image:url(https://attacker.example/c)'>x</span>\"]",
+  "flowchart LR\n  A[\"<span style='background:#117;rl(https://attacker.example/c)'>x</span>\"]",
+  "flowchart LR\n  A[\"<b style='background:&#x75;rl(https://attacker.example/c)'>x</b>\"]",
 ];
 
 for (const source of HOSTILE) {
@@ -35,6 +39,8 @@ for (const source of HOSTILE) {
 }
 
 const ORDINARY = [
+  "flowchart LR\n  A[\"<span style='color:#000;font-weight:bold'>dark</span>\"] --> B",
+  '%%{init: {"theme": "dark"}}%%\nflowchart LR\n  %% a note about @{ the layout\n  A --> B',
   "flowchart TD\n  A[Start] --> B{Is it?}\n  B -->|Yes| C[OK]\n  C --> D[Rethink]\n  D --> B\n  B ---->|No| E[End]",
   "sequenceDiagram\n  Alice->>John: Hello John, how are you?\n  John-->>Alice: Great!\n  Alice-)John: See you later!",
   "flowchart LR\n  A@{ shape: rounded, label: \"Load model\" } --> B@{ shape: diamond }\n  classDef hot fill:#f96,stroke:#333\n  class A hot\n  style B fill:#bbf,stroke-width:2px",

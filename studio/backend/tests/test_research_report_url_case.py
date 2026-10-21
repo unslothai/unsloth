@@ -31,3 +31,12 @@ def test_a_catalogued_source_is_still_cited():
         _validate_report("Read https://unsloth.ai/docs today.", sources, [])
         == "Read [Docs](https://unsloth.ai/docs) today."
     )
+
+
+@pytest.mark.parametrize(
+    "report",
+    ["Read HTTPS://unsloth.ai/docs today.", "Read [the docs](Https://unsloth.ai/docs) today."],
+)
+def test_a_catalogued_source_with_an_uppercase_scheme_is_cited(report):
+    sources = [{"url": "https://unsloth.ai/docs", "title": "Docs"}]
+    assert _validate_report(report, sources, []) == "Read [Docs](https://unsloth.ai/docs) today."
