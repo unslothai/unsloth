@@ -5,7 +5,11 @@
 // without taking over the window, and links through to the full page.
 
 import { getApiMonitor } from "@/features/chat/api/chat-api";
-import type { ApiMonitorEntry } from "@/features/chat/types/api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import type {
+  ApiMonitorEntry,
+  ApiMonitorResponse,
+} from "@/features/chat/types/api";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 import { useMonitorFrameStore, useShortcut } from "@/features/settings";
 import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
@@ -23,8 +27,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { XIcon } from "lucide-react";
 import { AnimatePresence, motion, useIsPresent } from "motion/react";
-import { type ReactElement, useEffect, useRef, useState } from "react";
+import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import { mergeMonitorResponse } from "./monitor-snapshot";
 import {
   type ApiMonitorWatch,
   createWatch,
@@ -65,13 +70,30 @@ function compactEndpoint(endpoint: string): string {
 
 function formatDuration(value?: number | null): string {
   if (value == null) {
-    return "live";
+    return "–";
   }
   if (value < 1000) {
     return `${Math.round(value)}ms`;
   }
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}s`;
 }
+
+// Only a running row is live: a finished one without a duration has none to show.
+function entryDuration(entry: ApiMonitorEntry): string {
+  if (entry.duration_ms == null && entry.status === "running") {
+    return "live";
+  }
+  return formatDuration(entry.duration_ms);
+}
+
+const SERVER_STATUS: Record<
+  ApiMonitorResponse["status"],
+  { label: string; dot: string }
+> = {
+  generating: { label: "Serving", dot: "animate-pulse bg-blue-500" },
+  ready: { label: "Ready", dot: "bg-emerald-500" },
+  idle: { label: "No model", dot: "bg-muted-foreground" },
+};
 
 function statusDotClass(status: ApiMonitorEntry["status"]): string {
   switch (status) {
@@ -121,9 +143,9 @@ export function ApiMonitorOverlay(): ReactElement | null {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const onFullPage = pathname === "/api-monitor";
 
-  const [data, setData] = useState<Awaited<
-    ReturnType<typeof getApiMonitor>
-  > | null>(null);
+  const [data, setData] = useState<ApiMonitorResponse | null>(null);
+  // Kept apart from `data`: a failed poll keeps the last rows instead of blanking them.
+  const [unreachable, setUnreachable] = useState(false);
 
   // The chord lives with the panel: reaching this store from the shell would
   // pull the whole feature index into the root chunk. The full page has
@@ -156,38 +178,60 @@ export function ApiMonitorOverlay(): ReactElement | null {
     }
     let cancelled = false;
     let timer: number | undefined;
+    let inFlight = false;
+    // The first snapshot of each stand up is a fresh object, so the watch folds it even when it
+    // matches the one from before the stand down. Later polls share what did not change, so a
+    // quiet server re-renders nothing.
+    let first = true;
     const intervalMs = isOpen ? OPEN_POLL_MS : IDLE_POLL_MS;
 
     // Anchor the watch here, not at mount: the first snapshot can arrive much later
     // (a hidden tab skips its poll), and everything terminal would read as history.
     startWatching(watchRef.current, performance.now());
 
+    // A hidden tab has nobody to show the panel to, so it stops until the tab shows again.
     function schedule(): void {
-      timer = window.setTimeout(poll, intervalMs);
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        if (!document.hidden) poll();
+      }, intervalMs);
     }
 
     function poll(): void {
-      // A hidden tab has nobody to show the panel to.
-      if (document.hidden) {
-        schedule();
-        return;
-      }
+      inFlight = true;
       getApiMonitor()
         .then((next) => {
-          if (!cancelled) setData(next);
+          if (cancelled) return;
+          const fresh = first;
+          first = false;
+          setData((previous) =>
+            fresh ? next : mergeMonitorResponse(previous, next),
+          );
+          setUnreachable(false);
         })
         .catch(() => {
-          // An unreachable server is the full page's story to tell.
-          if (!cancelled) setData(null);
+          if (!cancelled) setUnreachable(true);
         })
         .finally(() => {
+          inFlight = false;
           if (!cancelled) schedule();
         });
     }
 
-    poll();
+    function onVisibilityChange(): void {
+      if (document.hidden || inFlight || cancelled) return;
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        timer = undefined;
+      }
+      poll();
+    }
+
+    if (!document.hidden) poll();
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [isOpen, onFullPage, autoOpen]);
@@ -241,6 +285,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
         <ApiMonitorPanel
           key={panelKey}
           data={data}
+          unreachable={unreachable}
           close={close}
           setAutoOpen={setAutoOpen}
         />
@@ -251,17 +296,44 @@ export function ApiMonitorOverlay(): ReactElement | null {
 
 function ApiMonitorPanel({
   data,
+  unreachable,
   close,
   setAutoOpen,
 }: {
-  data: Awaited<ReturnType<typeof getApiMonitor>> | null;
+  data: ApiMonitorResponse | null;
+  unreachable: boolean;
   close: () => void;
   setAutoOpen: (value: boolean) => void;
 }): ReactElement {
   const navigate = useNavigate();
-  const entries = data?.entries ?? [];
-  const stats = computeStats(entries);
-  const serverStatus = data?.status ?? "idle";
+  const focusRequest = useApiMonitorOverlayStore((s) => s.focusRequest);
+  const entries = useMemo(() => data?.entries ?? [], [data]);
+  const stats = useMemo(() => computeStats(entries), [entries]);
+  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  // The monitor names only the primary; Chat's runtime lists every model answering requests,
+  // so a kept model still serving after the primary's eject does not read as "No model".
+  const servedNames = useMemo(() => {
+    const names = loadedModels.map((model) =>
+      model.quant && !model.id.includes(":")
+        ? `${model.id}:${model.quant}`
+        : model.id,
+    );
+    const active = data?.active_model;
+    if (!active) return names;
+    const key = active.toLowerCase();
+    return [active, ...names.filter((name) => name.toLowerCase() !== key)];
+  }, [loadedModels, data?.active_model]);
+  const serverStatus =
+    SERVER_STATUS[
+      data?.status === "idle" && servedNames.length > 0
+        ? "ready"
+        : (data?.status ?? "idle")
+    ];
+  const openApiPage = (requestId?: string): void => {
+    if (requestId) focusRequest(requestId);
+    close();
+    void navigate({ to: "/api-monitor" });
+  };
   const isPresent = useIsPresent();
   const [constraintsElement, setConstraintsElement] =
     useState<HTMLDivElement | null>(null);
@@ -365,17 +437,16 @@ function ApiMonitorPanel({
             <span className="truncate text-ui-13p5 font-semibold tracking-[0.025em] text-nav-fg dark:tracking-[0.04em]">
               API monitor
             </span>
-            <span
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                serverStatus === "generating"
-                  ? "animate-pulse bg-blue-500"
-                  : serverStatus === "ready"
-                    ? "bg-emerald-500"
-                    : "bg-muted-foreground",
-              )}
-              aria-hidden={true}
-            />
+            <span className="flex shrink-0 items-center gap-1.5 text-ui-11 tracking-nav text-muted-foreground">
+              <span
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  unreachable ? "bg-red-500" : serverStatus.dot,
+                )}
+                aria-hidden={true}
+              />
+              {unreachable ? "Offline" : serverStatus.label}
+            </span>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             <div
@@ -407,14 +478,31 @@ function ApiMonitorPanel({
 
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
           <div ref={contentRef}>
-            <p className="truncate px-1.5 pb-2.5 text-ui-11p5 tracking-nav text-muted-foreground">
-              {data?.active_model ?? "No model loaded"}
+            <p
+              className={cn(
+                "flex min-w-0 items-center gap-1.5 px-1.5 pb-2.5 text-ui-11p5 tracking-nav text-muted-foreground",
+                unreachable && "text-red-600 dark:text-red-400",
+              )}
+              title={
+                servedNames.length > 1 ? servedNames.join("\n") : undefined
+              }
+            >
+              <span className="min-w-0 truncate">
+                {unreachable
+                  ? "Can't reach Unsloth. Retrying…"
+                  : (servedNames[0] ?? "No model loaded")}
+              </span>
+              {!unreachable && servedNames.length > 1 ? (
+                <span className="shrink-0 rounded-full bg-muted/60 px-1.5 text-ui-10 tabular-nums dark:bg-background/50">
+                  +{servedNames.length - 1}
+                </span>
+              ) : null}
             </p>
 
             {/* Soft tile, as the Hub and Train pages group readouts. */}
             <div className="grid grid-cols-4 rounded-[14px] bg-muted/45 py-2.5 dark:bg-background/45">
               <StatCell
-                label="Live"
+                label="In flight"
                 value={stats.active.toLocaleString()}
                 tone={stats.active > 0 ? "active" : undefined}
               />
@@ -425,7 +513,7 @@ function ApiMonitorPanel({
                 tone={stats.errors > 0 ? "error" : undefined}
               />
               <StatCell
-                label="Avg"
+                label="Avg time"
                 value={
                   stats.avgDurationMs == null
                     ? "--"
@@ -438,41 +526,67 @@ function ApiMonitorPanel({
             <div className="flex flex-col pb-1 pt-1.5">
               {entries.length === 0 ? (
                 <p className="px-1.5 py-4 text-center text-ui-11p5 tracking-nav text-muted-foreground">
-                  No requests yet.
+                  No API requests yet. They show here as they arrive.
                 </p>
               ) : (
-                entries.slice(0, VISIBLE_ENTRIES).map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="flex h-9 min-w-0 items-center gap-2.5 rounded-[12px] px-3 transition-colors hover:bg-nav-surface-hover"
-                  >
-                    <span
-                      className={cn(
-                        "size-1.5 shrink-0 rounded-full",
-                        statusDotClass(entry.status),
-                      )}
-                      aria-hidden={true}
-                    />
-                    <span className="shrink-0 truncate text-ui-12p5 font-medium tracking-nav text-nav-fg">
-                      {isLifecycleEntry(entry)
-                        ? lifecycleLabel(entry)
-                        : compactEndpoint(entry.endpoint)}
-                    </span>
-                    <span
-                      className={cn(
-                        "min-w-0 flex-1 truncate text-ui-11p5 tracking-nav",
-                        entry.error
-                          ? "text-red-600 dark:text-red-400"
-                          : "text-muted-foreground",
-                      )}
+                entries.slice(0, VISIBLE_ENTRIES).map((entry) => {
+                  const lifecycle = isLifecycleEntry(entry);
+                  const cells = (
+                    <>
+                      <span
+                        className={cn(
+                          "size-1.5 shrink-0 rounded-full",
+                          statusDotClass(entry.status),
+                        )}
+                        aria-hidden={true}
+                      />
+                      <span className="shrink-0 truncate text-ui-12p5 font-medium tracking-nav text-nav-fg">
+                        {lifecycle
+                          ? lifecycleLabel(entry)
+                          : compactEndpoint(entry.endpoint)}
+                      </span>
+                      <span
+                        className={cn(
+                          "min-w-0 flex-1 truncate text-ui-11p5 tracking-nav",
+                          entry.error
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        {entry.error ? entry.error : entry.model}
+                      </span>
+                      <span
+                        className={cn(
+                          "shrink-0 text-ui-11 tabular-nums text-muted-foreground",
+                          entry.status === "running" &&
+                            "text-blue-600 dark:text-blue-400",
+                        )}
+                      >
+                        {entryDuration(entry)}
+                      </span>
+                    </>
+                  );
+                  // A load or unload has no payload to inspect, so only requests open the page.
+                  return lifecycle ? (
+                    <div
+                      key={entry.id}
+                      className="flex h-9 min-w-0 items-center gap-2.5 px-3"
                     >
-                      {entry.error ? entry.error : entry.model}
-                    </span>
-                    <span className="shrink-0 text-ui-11 tabular-nums text-muted-foreground">
-                      {formatDuration(entry.duration_ms)}
-                    </span>
-                  </div>
-                ))
+                      {cells}
+                    </div>
+                  ) : (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      data-entry-id={entry.id}
+                      onClick={() => openApiPage(entry.id)}
+                      title="Inspect this request on the API page"
+                      className="flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      {cells}
+                    </button>
+                  );
+                })
               )}
             </div>
           </div>
@@ -480,10 +594,7 @@ function ApiMonitorPanel({
         {/* Through to payloads, filters and per request tokens. */}
         <button
           type="button"
-          onClick={() => {
-            close();
-            void navigate({ to: "/api-monitor" });
-          }}
+          onClick={() => openApiPage()}
           className="mt-1 flex shrink-0 h-[calc(33px*var(--ui-space-scale,1))] w-full items-center justify-center gap-[calc(8.5px*var(--ui-space-scale,1))] rounded-full bg-muted/60 text-ui-13p5 font-medium tracking-nav text-nav-fg transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:bg-background/50"
         >
           <HugeiconsIcon
@@ -491,7 +602,7 @@ function ApiMonitorPanel({
             strokeWidth={1.75}
             className="size-icon shrink-0"
           />
-          Expand to full monitor
+          Open API page
         </button>
 
         {/* Closing silences this burst; this is the permanent off. */}
@@ -501,6 +612,7 @@ function ApiMonitorPanel({
             setAutoOpen(false);
             close();
           }}
+          title="Turn it back on in Settings, under API"
           className="mt-1.5 shrink-0 w-full rounded-[12px] py-1 text-ui-11 tracking-nav text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           Stop opening this automatically

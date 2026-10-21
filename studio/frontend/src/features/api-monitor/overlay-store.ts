@@ -39,9 +39,12 @@ interface ApiMonitorOverlayState {
   suppressed: boolean;
   /** Persisted opt out: when false the panel never opens itself. */
   autoOpen: boolean;
+  /** A request picked in the panel, for the API page to select once it mounts. Session state. */
+  focusRequestId: string | null;
   open: () => void;
   close: () => void;
   setAutoOpen: (autoOpen: boolean) => void;
+  focusRequest: (id: string | null) => void;
 }
 
 /** Only `autoOpen` persists; a dismissal lasts the sitting, not forever. */
@@ -51,9 +54,11 @@ export const useApiMonitorOverlayStore = create<ApiMonitorOverlayState>()(
       isOpen: false,
       suppressed: false,
       autoOpen: true,
+      focusRequestId: null,
       open: () => set({ isOpen: true, suppressed: false }),
       close: () => set({ isOpen: false, suppressed: true }),
       setAutoOpen: (autoOpen) => set({ autoOpen }),
+      focusRequest: (focusRequestId) => set({ focusRequestId }),
     }),
     {
       name: "unsloth_api_monitor_overlay",

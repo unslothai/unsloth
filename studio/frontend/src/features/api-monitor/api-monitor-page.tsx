@@ -75,6 +75,7 @@ import { ApiExampleDialog } from "./components/api-example-dialog";
 import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
+import { useApiMonitorOverlayStore } from "./overlay-store";
 import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
@@ -993,6 +994,19 @@ export function ApiMonitorPage(): ReactElement {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // A row picked in the floating monitor: select it with every filter cleared, so it is listed.
+  const focusRequestId = useApiMonitorOverlayStore((s) => s.focusRequestId);
+  const scrollToSelected = useRef(false);
+  useEffect(() => {
+    if (focusRequestId == null) return;
+    setSelectedId(focusRequestId);
+    setQuery("");
+    setStatusFilter("all");
+    setModelFilter(ALL_MODELS);
+    scrollToSelected.current = true;
+    useApiMonitorOverlayStore.getState().focusRequest(null);
+  }, [focusRequestId]);
+
   // Requests only: a load row's model is a path or repo, not what a client named.
   const loggedModels = useMemo(() => {
     const names = new Set<string>();
@@ -1080,6 +1094,17 @@ export function ApiMonitorPage(): ReactElement {
     retryTick,
     detailInFlight,
   ]);
+
+  // Waits for the row to render: the log may still be loading when the request arrives.
+  useEffect(() => {
+    if (!scrollToSelected.current || selectedId == null) return;
+    const row = listRef.current?.querySelector<HTMLElement>(
+      `[data-entry-id="${CSS.escape(selectedId)}"]`,
+    );
+    if (!row) return;
+    scrollToSelected.current = false;
+    row.scrollIntoView({ block: "nearest" });
+  }, [selectedId, visible]);
 
   const onListKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
