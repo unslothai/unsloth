@@ -887,6 +887,10 @@ class TestPerDeviceFitTarget:
             B, "_host_torch_is_rocm", staticmethod(lambda: attrs.get("rocm", False))
         )
         monkeypatch.setenv("CUDA_DEVICE_ORDER", attrs.get("order", "PCI_BUS_ID"))
+        if attrs.get("mask") is None:
+            monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        else:
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", attrs["mask"])
         return B._fit_target_per_device_ok(
             is_vulkan_backend = attrs.get("vulkan", False),
             extra_args = extra_args,
@@ -895,6 +899,11 @@ class TestPerDeviceFitTarget:
 
     def test_eligible_on_a_plain_cuda_host(self, monkeypatch):
         assert self._ok(monkeypatch)
+        assert self._ok(monkeypatch, mask = "1,0")
+
+    def test_a_resolvable_uuid_mask_is_ineligible(self, monkeypatch):
+        # The child inherits the uuids, which _per_device_fit_target_argv cannot order.
+        assert not self._ok(monkeypatch, mask = "GPU-aaaa,GPU-bbbb")
 
     @pytest.mark.parametrize(
         "attrs",

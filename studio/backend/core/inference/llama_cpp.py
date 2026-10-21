@@ -38421,6 +38421,11 @@ class LlamaCppBackend:
             return False
         if LlamaCppBackend._visibility_mask_is_unmappable():
             return False
+        # A resolvable uuid mask still reaches the child as uuids, which the spawn-time
+        # spelling cannot order, so the pricing keeps the broadcast margin with it.
+        mask = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if mask is not None and not all(t.strip().isdigit() for t in mask.split(",") if t.strip()):
+            return False
         if LlamaCppBackend._SMI_MIG_INDICES:
             return False
         if LlamaCppBackend._host_torch_is_rocm():
