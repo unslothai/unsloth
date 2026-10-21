@@ -330,10 +330,13 @@ export const BUDGET = {
   // The runtime update card's skip and Undo (#14436) add 1,706 B raw / 424 B transfer against 444f63275c.
   // Finished chat replies render lone markdown markers as written, cut ones keep the repair (#14391): +179 B raw /
   // +52 B transfer measured against main (6,870,298 -> 6,870,477 B raw, one machine and build). Raised by that.
-  // The browser panel's page history (#14283) on top measures 6,874,560 B raw / 2,070,211 B transfer (merged with
-  // main at acb31d909, Node 24, 97 chunks). Raised to that plus the same margin.
-  transferBytes: 2_070_400,
-  rawBytes: 6_874_720,
+  // Picking a preset forgetting a model's remembered sampling (#14128) keeps its preset marks in the eager chat
+  // runtime store, about 1,860 B raw / 440 B transfer: merged with main at acb31d909b the build measures
+  // 6,876,062 B raw / 2,070,545 B transfer (Node 24, 97 chunks). Raised to that plus the same margin.
+  // The browser panel's page history (#14283) on top measures 6,876,408 B raw / 2,070,658 B transfer (merged with
+  // main at c1aef2f45, Node 24, 97 chunks). Raised to that plus the same margin.
+  transferBytes: 2_070_847,
+  rawBytes: 6_876_568,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
