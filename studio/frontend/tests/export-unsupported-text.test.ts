@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Export page shows the backend's export verdict in its banner and on the greyed method
-// cards. For a no-torch install that verdict says to reinstall without --no-torch, which a Desktop
-// Chat only user never typed; there, like the Train hint, it points at Repair installation.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 

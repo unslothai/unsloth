@@ -70,11 +70,8 @@ export function videoNavHint(
   return undefined;
 }
 
-/** Why the Export page is disabled. The backend's text is used as is, except for a Desktop Chat
- * only install: its no_torch message says to reinstall without --no-torch, a flag that user never
- * typed, while the manual Repair installation reruns the installer with PyTorch. `canRepair` is
- * the Train hint's test: a repair controller that is not attached to an external server.
- */
+/** Why the Export page is disabled. A Desktop Chat only user never typed the --no-torch that the
+ * backend's no_torch text names, so they get the Train hint's Repair installation advice instead. */
 export function exportUnsupportedText(
   reason: string | null,
   message: string | null,
