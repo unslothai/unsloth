@@ -6795,6 +6795,47 @@ def _draft_card_share_unknown(
     return _draft_is_split_across_host(extra_args, env, n_draft_layers = n_draft_layers)
 
 
+def _sidecar_child_ctx(
+    args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]],
+    native_ctx: Optional[int],
+    n_parallel: Optional[int],
+    kv_unified: bool,
+) -> int:
+    """The context the child allocates, for pricing the sidecar's draft KV: the last
+    positive -c / --ctx-size in ``args``, else a positive inherited LLAMA_ARG_CTX_SIZE,
+    else llama.cpp's own default, the native length per sequence (times the slots
+    unless the KV cache is unified)."""
+    ctx = parse_ctx_override(args)
+    if ctx is None:
+        try:
+            ctx = int(
+                str((os.environ if env is None else env).get("LLAMA_ARG_CTX_SIZE", "")).strip()
+            )
+        except (TypeError, ValueError):
+            ctx = None
+    if ctx and ctx > 0:
+        return ctx
+    bound = int(native_ctx or 0)
+    if not kv_unified:
+        bound *= max(1, int(n_parallel or 1))
+    return bound
+
+
+def _draft_n_ubatch(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """A positive --spec-draft-n-ubatch (last wins over LLAMA_ARG_SPEC_DRAFT_N_UBATCH), or
+    None: 0, the default, means the draft context takes the target's --n-ubatch."""
+    found = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_DRAFT_N_UBATCH")
+    tokens = [str(a) for a in args] if args else []
+    for i, raw in enumerate(tokens):
+        name, eq, inline = raw.partition("=")
+        if name == "--spec-draft-n-ubatch":
+            found = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
+    return int(str(found).strip()) if _is_positive_int(found) else None
+
+
 _SIDECAR_ADAPTER_FLAGS = (
     "--lora",
     "--lora-scaled",
@@ -30101,26 +30142,21 @@ class LlamaCppBackend:
                         # child pick the native context, so price that one;
                         # the draft decode graph is charged beside _mtp_reserve_bytes
                         # (_soft_overhead), so it rides on top here too.
-                        _sidecar_reserve_ctx = effective_ctx
-                        if effective_ctx <= 0:
-                            # With -c omitted a pass-through -c, else a positive
-                            # inherited LLAMA_ARG_CTX_SIZE, is what the child runs at.
-                            _child_ctx = parse_ctx_override(extra_args)
-                            if _child_ctx is None:
-                                try:
-                                    _child_ctx = int(
-                                        str(os.environ.get("LLAMA_ARG_CTX_SIZE", "")).strip()
-                                    )
-                                except (TypeError, ValueError):
-                                    _child_ctx = None
-                            _native_bound = self._context_length or 0
-                            if not planned_kv_unified:
-                                _native_bound *= max(1, n_parallel or 1)
-                            _sidecar_reserve_ctx = (
-                                _child_ctx
-                                if _child_ctx and _child_ctx > 0
-                                else max(effective_ctx, _native_bound)
+                        # With -c omitted (Manual + Auto context) the child runs at a
+                        # pass-through -c, an inherited LLAMA_ARG_CTX_SIZE, or its native
+                        # default; the reprice re-reads that off each spawned argv.
+                        _sidecar_auto_ctx = effective_ctx <= 0
+                        _sidecar_reserve_ctx = (
+                            _sidecar_child_ctx(
+                                extra_args,
+                                os.environ,
+                                self._context_length,
+                                n_parallel,
+                                planned_kv_unified,
                             )
+                            if _sidecar_auto_ctx
+                            else effective_ctx
+                        )
                         _sidecar_compute_mib = math.ceil(
                             self._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024)
                         )
@@ -30154,6 +30190,8 @@ class LlamaCppBackend:
                             _ub: Optional[int] = _effective_ubatch,
                             _fa_default: bool = planned_flash_attn,
                             _floor: int = _sidecar_compute_mib,
+                            _auto_ctx: bool = _sidecar_auto_ctx,
+                            _native: Optional[int] = self._context_length,
                         ) -> int:
                             # A --flash-attn off respawn pads the draft V (and an MLA K)
                             # to f16, so the reserve priced for the first launch is short.
@@ -30164,6 +30202,11 @@ class LlamaCppBackend:
                             _kv_unified = _kv_unified_from_args(
                                 run_args, default = _kv_unified, env = env
                             )
+                            # An automatic context scales with the FINAL slots and layout.
+                            if _auto_ctx:
+                                _ctx = _sidecar_child_ctx(run_args, env, _native, _np, _kv_unified)
+                            # The draft context's own micro-batch sizes its compute graph.
+                            _ub = _draft_n_ubatch(run_args, env) or _ub
                             _v = self._estimate_mtp_overhead_bytes(
                                 _ctx,
                                 spec_draft_n_max = _n,
@@ -33517,7 +33560,11 @@ class LlamaCppBackend:
                             if _spawn_devices
                             else len(_child_gpu_physical_ids or ())
                         )
-                        if _sidecar_fit_reserve_eligible_mib and _spawn_device_count > 1:
+                        if _sidecar_fit_reserve_eligible_mib:
+                            # Re-derived from scratch each spawn, so it can fall as well as
+                            # rise (fewer final slots, a smaller context): Studio's earlier
+                            # reserve-bearing margins go first, the user's stay, the same
+                            # cleanup the drafter-free fallback and one-slot retry do.
                             run_cmd = _drop_sidecar_margins(
                                 list(run_cmd),
                                 _integrity_flags,
@@ -33529,16 +33576,19 @@ class LlamaCppBackend:
                                 _sidecar_override_pairs,
                             )
                             _sidecar_fit_reserve_mib = 0
-                        elif _sidecar_fit_reserve_eligible_mib and server_caps.get(
-                            "supports_fit_target"
+                        if (
+                            _sidecar_fit_reserve_eligible_mib
+                            and _spawn_device_count <= 1
+                            and server_caps.get("supports_fit_target")
                         ):
-                            _spawn_reserve = _sidecar_fit_reserve_eligible_mib
                             # Every spawn, the first included: emitted flags and extras
-                            # (draft cache types, slots, KV layout) are final only here.
-                            if _sidecar_reserve_reprice is not None:
-                                _spawn_reserve = max(
-                                    _spawn_reserve, _sidecar_reserve_reprice(list(run_cmd))
-                                )
+                            # (draft cache types, slots, KV layout, context, draft
+                            # micro-batch) are final only here.
+                            _spawn_reserve = (
+                                _sidecar_reserve_reprice(list(run_cmd))
+                                if _sidecar_reserve_reprice is not None
+                                else _sidecar_fit_reserve_eligible_mib
+                            )
                             _spawn_flags = _sidecar_reserve_margin_flags(
                                 run_cmd,
                                 extra_args,
@@ -33553,7 +33603,8 @@ class LlamaCppBackend:
                             if _spawn_flags:
                                 run_cmd = [*run_cmd, *_spawn_flags]
                                 _sidecar_fit_reserve_mib = _spawn_reserve
-                                _sidecar_override_pairs.append(list(_spawn_flags))
+                                if list(_spawn_flags) not in _sidecar_override_pairs:
+                                    _sidecar_override_pairs.append(list(_spawn_flags))
                         _last_spawn_cmd = list(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
                         # every emitter is covered by construction.

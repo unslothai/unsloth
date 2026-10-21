@@ -435,3 +435,87 @@ def test_a_positive_draft_cpu_moe_count_is_not_undone_by_a_later_zero():
     but removes none either."""
     assert _lc._draft_card_share_unknown(["--spec-draft-n-cpu-moe", "8", "-ncmoed", "0"], {})
     assert not _lc._draft_card_share_unknown(["-ncmoed", "0"], {})
+
+
+# Review round 8.
+
+# (A) An automatic context scales with the FINAL slots and KV layout.
+
+
+def test_an_automatic_context_is_priced_at_the_final_slots(tmp_path):
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    backend._context_length = 32768
+    per_token = 32 * 1024  # 1 GiB of draft KV at 32768, 8 GiB at 8 x 32768
+
+    def estimate(n_ctx, **kw):
+        return 8 * _GIB + max(0, int(n_ctx)) * per_token
+
+    backend._estimate_mtp_overhead_bytes = estimate
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        n_ctx = 0,
+        n_parallel = 1,
+        extra_args = ("--parallel", "8", "--no-kv-unified"),
+    )["cmd"]
+    assert "--fit-target" in cmd
+    assert _r4._margin(cmd) >= 512 + 16 * 1024
+
+
+# (C) The reserve falls when the final argv runs fewer slots than the request.
+
+
+def test_fewer_final_slots_lower_the_reserve(tmp_path):
+    backend, gguf = _slot_priced_backend(tmp_path)
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        n_ctx = 4096,
+        n_parallel = 8,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = ("--parallel", "1"),
+    )["cmd"]
+    assert _FLOOR + 1024 <= _r4._margin(cmd) < _FLOOR + 2 * 1024
+    assert cmd.count("--fit-target") == 1
+
+
+# (D) The draft context's own micro-batch sizes its compute.
+
+
+@pytest.mark.parametrize(
+    "extras, env",
+    [(("--spec-draft-n-ubatch", "4096"), {}), ((), {"LLAMA_ARG_SPEC_DRAFT_N_UBATCH": "4096"})],
+    ids = ["flag", "env"],
+)
+def test_the_draft_micro_batch_is_priced(tmp_path, monkeypatch, extras, env):
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _r2._cuda_backend(tmp_path)
+
+    def estimate(
+        n_ctx,
+        n_ubatch = None,
+        **kw,
+    ):
+        return 8 * _GIB + int(n_ubatch or 512) * 1024 * 1024
+
+    backend._estimate_mtp_overhead_bytes = estimate
+    cmd = _placement._launch(
+        backend,
+        gguf,
+        n_ctx = 4096,
+        speculative_type = "dspark",
+        dspark_draft_path = _r4._sidecar(tmp_path),
+        extra_args = extras,
+    )["cmd"]
+    assert _r4._margin(cmd) >= _FLOOR + 4096
+
+
+def test_a_zero_draft_micro_batch_follows_the_target():
+    assert _lc._draft_n_ubatch(["--spec-draft-n-ubatch", "0"], {}) is None
+    assert _lc._draft_n_ubatch(["--spec-draft-n-ubatch=256"], {}) == 256
