@@ -33679,17 +33679,38 @@ class LlamaCppBackend:
                                 user_args = _sidecar_user_tokens,
                             )
                             _sidecar_fit_reserve_mib = 0
+                        # One device carries the whole reserve. Across several, an unpinned
+                        # drafter is layer-split by free memory like the target, so the one
+                        # --fit-target value (broadcast to every device) must cover the
+                        # largest card's share; unknown cards (named by --device) get none.
+                        _spawn_share: Optional[float] = 1.0
+                        if _spawn_device_count > 1:
+                            _spawn_share = None
+                            if not _spawn_devices and _extra_args_draft_device_pin(run_cmd) is None:
+                                _free_by_idx = dict(gpus or ())
+                                _spawn_ids = (
+                                    [idx for idx, _free in _detected_gpus]
+                                    if _child_gpu_physical_ids is None
+                                    or _child_gpu_physical_ids is _parent_view_gpu_ids
+                                    else list(_child_gpu_physical_ids)
+                                )
+                                _spawn_free = [_free_by_idx.get(i) for i in _spawn_ids]
+                                if _spawn_free and all(f and f > 0 for f in _spawn_free):
+                                    _spawn_share = max(_spawn_free) / sum(_spawn_free)
                         if (
                             _sidecar_fit_reserve_eligible_mib
-                            and _spawn_device_count <= 1
+                            and _spawn_share is not None
                             and _spawn_draft_on_target(run_cmd, _spawn_devices)
                             and server_caps.get("supports_fit_target")
                         ):
                             # Emitted flags and extras are final only here.
-                            _spawn_reserve = (
-                                _sidecar_reserve_reprice(list(run_cmd), env)
-                                if _sidecar_reserve_reprice is not None
-                                else _sidecar_fit_reserve_eligible_mib
+                            _spawn_reserve = math.ceil(
+                                (
+                                    _sidecar_reserve_reprice(list(run_cmd), env)
+                                    if _sidecar_reserve_reprice is not None
+                                    else _sidecar_fit_reserve_eligible_mib
+                                )
+                                * _spawn_share
                             )
                             _spawn_flags = _sidecar_reserve_margin_flags(
                                 run_cmd,

@@ -59,10 +59,21 @@ def test_a_launch_the_arch_gate_narrows_to_one_card_gets_the_reserve(tmp_path, _
     assert _r4._margin(_dspark(backend, gguf, tmp_path)) >= _FLOOR
 
 
-def test_a_launch_left_on_two_cards_gets_no_reserve(tmp_path, _discrete):
+def test_a_launch_left_on_two_cards_keeps_the_larger_cards_share(tmp_path, _discrete):
+    """The unpinned drafter layer-splits by free memory too, so the one broadcast
+    --fit-target carries the largest card's share of it: half on two equal cards."""
     backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
     backend._arch_gate_survivors = lambda binary = None: []
-    assert _r4._margin(_dspark(backend, gguf, tmp_path)) < _FLOOR
+    margin = _r4._margin(_dspark(backend, gguf, tmp_path))
+    assert 1024 + 4 * 1024 <= margin < 1024 + 5 * 1024
+
+
+def test_unequal_cards_carry_the_larger_cards_share(tmp_path, _discrete):
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = ((0, 30_000, 30_000), (1, 10_000, 10_000)))
+    backend._arch_gate_survivors = lambda binary = None: []
+    margin = _r4._margin(_dspark(backend, gguf, tmp_path))
+    # 30,000 of 40,000 MiB free: three quarters of the ~8.3 GiB reserve.
+    assert 1024 + 6 * 1024 <= margin < 1024 + 7 * 1024
 
 
 @pytest.mark.parametrize("pin, reserved", [("CUDA1", True), ("CUDA0", False)])
