@@ -67,7 +67,7 @@ def test_desktop_banner_keeps_the_password_out_of_the_log(monkeypatch):
     assert main.banner_autofill_available(state, {}) is True
 
 
-def _auth_app():
+def _auth_app(*, desktop_owned = True):
     route_path = Path(__file__).resolve().parents[1] / "routes" / "auth.py"
     spec = importlib.util.spec_from_file_location("_desktop_bootstrap_route", route_path)
     auth_route = importlib.util.module_from_spec(spec)
@@ -75,6 +75,7 @@ def _auth_app():
     app = FastAPI()
     app.include_router(auth_route.router, prefix = "/api/auth")
     app.state.bootstrap_password = "seeded-password-123"
+    app.state.desktop_owned = desktop_owned
     return app
 
 
@@ -87,6 +88,15 @@ def test_verified_desktop_login_retires_the_bootstrap_password():
     assert app.state.bootstrap_password is None
     # The web first-run flow is untouched: the account still has to change its password.
     assert storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME) is True
+
+
+def test_desktop_login_to_an_ownerless_backend_keeps_the_web_autofill():
+    raw = storage.create_desktop_secret()
+    app = _auth_app(desktop_owned = False)
+    with TestClient(app) as client:
+        response = client.post("/api/auth/desktop-login", json = {"secret": raw})
+    assert response.status_code == 200, response.text
+    assert app.state.bootstrap_password == "seeded-password-123"
 
 
 def test_failed_desktop_login_probe_keeps_the_bootstrap_password():

@@ -599,11 +599,10 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
     # Safe to clear the aggregate as well now that the address is suffixed: it is this route's own entry,
     # not /login's, so a desktop success cannot hand anyone a fresh password-guessing budget.
     _clear_login_bucket(key)
-    # The shell owns this backend and never uses the seeded password: stop serving it to the page.
-    try:
+    # The shell owns this backend and never uses the seeded password: stop serving it to the page. An
+    # ownerless (terminal-started) backend the shell attached to keeps the web first-run autofill.
+    if getattr(request.app.state, "desktop_owned", False):
         request.app.state.bootstrap_password = None
-    except AttributeError:
-        pass
 
     from auth.policy import installation_is_multi_user
 

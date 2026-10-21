@@ -968,6 +968,8 @@ async def lifespan(app: FastAPI):
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     _created = storage.ensure_default_admin()
     app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
+    # Read by desktop-login, which cannot import this module.
+    app.state.desktop_owned = _desktop_owner() is not None
     # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
     # _created is False there and the whole banner would be skipped on exactly the launch
     # that needs it. requires_password_change: the gate may also have taken a new password
