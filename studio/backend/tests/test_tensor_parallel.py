@@ -1876,7 +1876,7 @@ class TestLegacyBuildQuantizedKvInTensorMode:
                 "Process",
                 (),
                 {
-                    "pid": 123,
+                    "pid": 2**31 - 1,
                     "stdout": (),
                     "returncode": 1 if doomed else None,
                     "poll": lambda _self, _d = doomed: 1 if _d else None,

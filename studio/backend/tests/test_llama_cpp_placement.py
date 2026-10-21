@@ -73,6 +73,8 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend, _loader_pa
 import core.inference.llama_cpp as llama_cpp_module
 
 _REAL_POPEN = subprocess.Popen
+# Above pid_max, so a fake server reaching real kill / cleanup paths names no process.
+_FAKE_SERVER_PID = 2**31 - 1
 
 
 def _write_gguf(path: Path, architecture: str = "llama") -> Path:
@@ -164,7 +166,7 @@ def _launch(
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": _FAKE_SERVER_PID,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
@@ -1270,7 +1272,7 @@ def _launch_with_failing_drafter(
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": _FAKE_SERVER_PID,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
@@ -1378,7 +1380,7 @@ def test_a_drafter_that_fails_to_start_gives_its_slots_back(tmp_path):
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": _FAKE_SERVER_PID,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
@@ -3566,7 +3568,7 @@ def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": _FAKE_SERVER_PID,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
@@ -3793,7 +3795,7 @@ def _launch_with_vulkan_cpu_replay(
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": _FAKE_SERVER_PID,
                 "stdout": (),
                 "returncode": rc,
                 "poll": lambda self: rc,
