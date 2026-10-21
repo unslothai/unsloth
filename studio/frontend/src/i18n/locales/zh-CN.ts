@@ -842,6 +842,7 @@ export const zhCN = {
       byProject: "按项目",
       inOneList: "合并为一个列表",
       sortChatsBy: "对话排序方式",
+      projectsHome: "项目主页",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
       switchedToManual: "已改为手动排序，拖动行即可重新排序",

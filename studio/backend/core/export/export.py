@@ -729,6 +729,22 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         logger.warning(f"Could not publish the model card: {exception}")
 
 
+def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
+    """Why a local checkpoint must not load now: a pinned adapter base it no longer names, or
+    weight entries that point outside the folder."""
+    from core.export.decision import adapter_base_changed
+    from utils.security.file_security import escaping_weight_references
+
+    if pinned_base and adapter_base_changed(checkpoint_path, pinned_base):
+        return "The adapter's base model changed after it was checked. Load it again."
+    if escaping_weight_references(checkpoint_path):
+        return "This checkpoint's weight index names files outside its folder."
+    # A local base loads too: its own index must stay inside its folder as well.
+    if pinned_base and os.path.isdir(pinned_base) and escaping_weight_references(pinned_base):
+        return "The base model's weight index names files outside its folder."
+    return None
+
+
 class ExportBackend:
     # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
     decision: Optional[dict] = None
@@ -822,6 +838,7 @@ class ExportBackend:
         # Loaders only: the probes' cache guards refuse an anonymous read, which offline
         # misreads a cached VLM as a text model.
         probe_token = token or None
+        pinned_base = base_model
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -839,6 +856,11 @@ class ExportBackend:
                     token = token,
                     base_model = base_model,
                 )
+
+            # The decision loader above checks its own base against the pin.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             checkpoint_path_obj = Path(checkpoint_path)
 
@@ -889,6 +911,11 @@ class ExportBackend:
                 if self.diffusion_lm_profile:
                     # DiffusionGemma ships a vision tower; its text-diffusion load is FastModel's.
                     self.is_vision = False
+
+            # Again right before the load: the folder may have been edited during the probes.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -1159,6 +1186,8 @@ class ExportBackend:
         except DecisionExportError as exc:
             return False, str(exc)
         self.decision = {"layout": layout, "adapter_only": adapter_only}
+        # The base is loaded only at export: kept here and rechecked right before that load.
+        self._decision_base_pin = resolved if adapter_only else None
         # An adapter folder loads its base at export time, under the credential of this load.
         self._decision_token = token
         self.is_vision = False
@@ -1184,8 +1213,23 @@ class ExportBackend:
                 "Decision model GGUF export does not support imatrix or Q4NX conversion.",
                 None,
             )
-        from core.export.decision import DecisionExportError, run_decision_gguf_export
+        from core.export.decision import DecisionExportError, adapter_base, run_decision_gguf_export
 
+        pinned = getattr(self, "_decision_base_pin", None)
+        if pinned:
+            try:
+                current = adapter_base(self.current_checkpoint)
+            except DecisionExportError as exc:
+                return False, str(exc), None
+            if current != pinned:
+                return (
+                    False,
+                    "The adapter's base model changed after it was loaded. Load it again.",
+                    None,
+                )
+        refusal = _checkpoint_load_refusal(self.current_checkpoint, pinned)
+        if refusal:
+            return False, refusal, None
         try:
             data = run_decision_gguf_export(
                 self.current_checkpoint,

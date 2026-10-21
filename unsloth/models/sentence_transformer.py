@@ -30,6 +30,7 @@ from ._utils import (
 import inspect
 import json
 import os
+import posixpath
 import threading
 import types
 from huggingface_hub import hf_hub_download
@@ -1899,6 +1900,22 @@ class FastSentenceTransformer(FastModel):
         for module_config in modules_config:
             if not isinstance(module_config, dict):
                 continue
+            folder = module_config.get("path")
+            # modules/../1_Pooling stays inside: only a folder that normalizes above the model escapes.
+            normalized = (
+                posixpath.normpath(folder.replace("\\", "/")) if isinstance(folder, str) else ""
+            )
+            if isinstance(folder, str) and (
+                os.path.isabs(folder)
+                or folder.startswith(("/", "\\"))
+                or folder[1:2] == ":"
+                or normalized == ".."
+                or normalized.startswith("../")
+            ):
+                raise ValueError(
+                    f"Unsloth: {model_name} names the module folder {folder!r}, which is "
+                    f"outside the model. Module folders must stay inside the model folder."
+                )
             class_ref = module_config.get("type")
             if FastSentenceTransformer._is_transformer_module_ref(class_ref):
                 continue

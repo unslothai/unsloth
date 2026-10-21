@@ -848,6 +848,7 @@ export const hi = {
       byProject: "प्रोजेक्ट के अनुसार",
       inOneList: "एक ही सूची में",
       sortChatsBy: "चैट क्रमबद्ध करें",
+      projectsHome: "प्रोजेक्ट होम",
       lastUpdated: "अंतिम अपडेट",
       manualOrder: "मैन्युअल क्रम",
       switchedToManual: "अब मैन्युअल क्रम: पंक्तियाँ खींचकर क्रम बदलें",

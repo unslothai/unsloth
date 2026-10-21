@@ -902,6 +902,7 @@ export const en = {
       byProject: "By project",
       inOneList: "In one list",
       sortChatsBy: "Sort chats by",
+      projectsHome: "Projects home",
       lastUpdated: "Last updated",
       manualOrder: "Manual order",
       switchedToManual: "Sorted manually: drag rows to reorder",
