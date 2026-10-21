@@ -322,11 +322,14 @@ export const BUDGET = {
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
   // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
+  // Main at dcf5c4009 measures 6,870,312 B raw / 2,068,954 B transfer, already over the line above. Browser panel
+  // page downloads add 1,468 B raw / 354 B transfer on top (6,871,780 B raw, 2,069,308 B transfer, one machine and
+  // build, Node 24, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  transferBytes: 2_067_591,
-  rawBytes: 6_865_027,
+  transferBytes: 2_069_861,
+  rawBytes: 6_872_929,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -17,7 +17,14 @@ export type BrowserPage =
       html: string;
       refresh: { delay: number; url: string } | null;
     }
-  | { kind: "raw"; url: string; blob: Blob; contentType: string; /** the server's download name. */ fileName?: string };
+  | {
+      kind: "raw";
+      url: string;
+      blob: Blob;
+      contentType: string;
+      fileName?: string;
+      attachment?: boolean;
+    };
 
 export type BrowserRequest = {
   url: string;
@@ -94,6 +101,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
     blob,
     contentType: response.headers.get("Content-Type") ?? blob.type,
     fileName,
+    ...(response.headers.get("X-Unsloth-Browser-Attachment") === "1" && { attachment: true }),
   };
 }
 
