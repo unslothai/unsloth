@@ -86,8 +86,8 @@ def _prepare_npu_model(
             reason = "no AMD Ryzen AI NPU was found on this machine"
         elif hardware.get("family") == "XDNA2" and hardware.get("enabled") is False:
             reason = (
-                "the NPU is off by default. Start Unsloth Studio with "
-                "UNSLOTH_STUDIO_ENABLE_NPU=1 to use it"
+                "the NPU is turned off by UNSLOTH_STUDIO_ENABLE_NPU=0. Start Unsloth "
+                "Studio without it to use the NPU"
             )
         else:
             reason = (
