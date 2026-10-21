@@ -373,3 +373,14 @@ test("a dynamic-prompts prompt starting with { still parses as A1111 parameters"
   assert.equal(isGenerationParametersPaste(text), true);
   assert.equal(pastedParameters("{not json"), null);
 });
+
+test("a DyLoRA dimension is named as not applied rather than dropped", () => {
+  const positional = extractExtraNetworks("a cat <lora:dy:0.8:0.8:16>");
+  assert.deepEqual(positional.loras, [{ name: "dy", weight: 0.8, dyn_dim: 16 }]);
+  const named = extractExtraNetworks("a cat <lora:dy:te=0.5:unet=0.7:dyn=8>");
+  assert.deepEqual(named.loras, [{ name: "dy", weight: 0.5, unet_weight: 0.7, dyn_dim: 8 }]);
+  assert.deepEqual(extractExtraNetworks("<lora:dy:1>").loras, [{ name: "dy", weight: 1 }]);
+  const m = matchLoraTags(positional.loras, [{ id: "dy", display_name: "dy" }]);
+  assert.deepEqual(m.loras, ["dy:0.8"]);
+  assert.deepEqual(m.notes, ["LoRA dy dynamic dim 16"]);
+});

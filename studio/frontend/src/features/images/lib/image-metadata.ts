@@ -587,6 +587,8 @@ export interface LoraTag {
   weight: number;
   // Set when the U-Net multiplier differs from the text-encoder one: Studio has one weight.
   unet_weight?: number;
+  // DyLoRA's dimension (`<lora:name:te:unet:dyn>` / `dyn=`): Studio cannot choose one.
+  dyn_dim?: number;
 }
 
 function loraTag(body: string): LoraTag | null {
@@ -602,9 +604,13 @@ function loraTag(body: string): LoraTag | null {
   const te = Number(named.te ?? positional[1] ?? 1);
   const weight = Number.isFinite(te) ? te : 1;
   const unet = Number(named.unet ?? positional[2] ?? weight);
-  return Number.isFinite(unet) && unet !== weight
-    ? { name, weight, unet_weight: unet }
-    : { name, weight };
+  const tag: LoraTag =
+    Number.isFinite(unet) && unet !== weight
+      ? { name, weight, unet_weight: unet }
+      : { name, weight };
+  const dyn = Number(named.dyn ?? positional[3]);
+  if (Number.isInteger(dyn) && dyn > 0) tag.dyn_dim = dyn;
+  return tag;
 }
 
 export function extractExtraNetworks(prompt: string): {
@@ -1104,7 +1110,7 @@ export function matchLoraTags(
   );
   for (const tag of tags as unknown[]) {
     if (!tag || typeof tag !== "object") continue;
-    const { name, weight, unet_weight } = tag as Partial<LoraTag>;
+    const { name, weight, unet_weight, dyn_dim } = tag as Partial<LoraTag>;
     if (typeof name !== "string" || typeof weight !== "number") continue;
     const key = loraKey(name);
     const hit = local.find(
@@ -1120,6 +1126,8 @@ export function matchLoraTags(
       notes.push(`LoRA ${name} weight ${weight} (clamped to ${w})`);
     if (typeof unet_weight === "number")
       notes.push(`LoRA ${name} U-Net weight ${unet_weight}`);
+    if (typeof dyn_dim === "number")
+      notes.push(`LoRA ${name} dynamic dim ${dyn_dim}`);
   }
   return { loras, unmatched, notes };
 }
