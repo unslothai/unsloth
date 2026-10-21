@@ -317,6 +317,12 @@ def _wired_backend(
     names,
     tensor_help = True,
 ):
+    import weakref
+
+    import core.inference.llama_cpp as llama_cpp_module
+
+    # Earlier tests' backends stay alive (atexit holds them) and active: each test sees only its own.
+    monkeypatch.setattr(llama_cpp_module, "_owned_backends", weakref.WeakSet())
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
     backend._can_estimate_kv = lambda: True
     backend._estimate_kv_cache_bytes = lambda *a, **k: 0
@@ -829,6 +835,10 @@ def test_wired_four_gpus_never_lose_the_cards_a_layer_split_used(tmp_path, monke
         ["-ot", "blk\\.1\\.=CPU"],
         ["--cpu-moe"],
         ["--n-cpu-moe", "4"],
+        # Companion devices and the MoE cache.
+        ["--mmproj-device", "CUDA1"],
+        ["--device-draft", "CUDA1"],
+        ["--moe-cache-mib", "2048"],
     ],
 )
 def test_wired_user_placement_in_extras_keeps_todays_behaviour(tmp_path, monkeypatch, extra_args):
@@ -848,7 +858,13 @@ def test_wired_user_placement_in_extras_keeps_todays_behaviour(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize(
-    "var, value", [("LLAMA_ARG_N_GPU_LAYERS", "20"), ("LLAMA_ARG_DEVICE", "CUDA0")]
+    "var, value",
+    [
+        ("LLAMA_ARG_N_GPU_LAYERS", "20"),
+        ("LLAMA_ARG_DEVICE", "CUDA0"),
+        ("MTMD_BACKEND_DEVICE", "CUDA1"),
+        ("LLAMA_ARG_MOE_CACHE_MIB", "2048"),
+    ],
 )
 def test_wired_user_placement_in_env_keeps_layer(tmp_path, monkeypatch, var, value):
     backend, gguf = _wired_backend(
@@ -1261,6 +1277,8 @@ def test_wired_scheduler_abort_on_auto_tensor_does_not_block_the_layer_load(tmp_
 
 
 def test_wired_auto_tensor_kernel_crash_reloads_without_the_policy(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
     # The arch-crash rung would narrow the auto pair to one GPU and keep stale auto state.
     # Dirs named as _norm_cmd masks them, so the two argvs compare.
     (tmp_path / "auto_None").mkdir()
@@ -1274,6 +1292,8 @@ def test_wired_auto_tensor_kernel_crash_reloads_without_the_policy(tmp_path, mon
     monkeypatch.setenv(sp.AUTO_TENSOR_SPLIT_ENV, "0")
     off = _launch(off_backend, off_gguf, gpu_memory_mode = "auto", n_ctx = 4096)
     monkeypatch.delenv(sp.AUTO_TENSOR_SPLIT_ENV)
+    # Only the reference argv: its still-live stand-in server is not a resident here.
+    llama_cpp_module._owned_backends.discard(off_backend)
     result, spawns = _launch_scripted(
         backend,
         gguf,
@@ -2159,6 +2179,15 @@ def _decision_worker(device):
     return setup
 
 
+def _segmenter(holds_vram, call_device = None):
+    def setup(monkeypatch):
+        import core.inference.diffusion_segment as diffusion_segment
+        fake = types.SimpleNamespace(holds_vram = lambda: holds_vram, _call_device = call_device)
+        monkeypatch.setattr(diffusion_segment, "_segmenter", fake)
+
+    return setup
+
+
 def _worker(module, attr, **state):
     """A training / export singleton in ``module`` reporting ``state`` (method name -> result)."""
 
@@ -2193,6 +2222,10 @@ def _worker(module, attr, **state):
         # The PyTorch decision worker the arbiter does not track.
         pytest.param(_decision_worker("cuda"), False, id = "decision-worker-gpu"),
         pytest.param(_decision_worker("cpu"), True, id = "decision-worker-cpu"),
+        # The Images mask segmenter, resident or mid-call on a GPU.
+        pytest.param(_segmenter(True), False, id = "segmenter-gpu"),
+        pytest.param(_segmenter(False, "cuda:0"), False, id = "segmenter-call-on-gpu"),
+        pytest.param(_segmenter(False, "cpu"), True, id = "segmenter-cpu"),
         # LLM and diffusion training and export workers, starting or running.
         pytest.param(
             _worker("core.training.training", "_training_backend", is_training_active = True),
@@ -2320,3 +2353,31 @@ def test_wired_resident_source_that_cannot_import_holds_nothing(tmp_path, monkey
         monkeypatch.delattr(inference_package, name.rsplit(".", 1)[1], raising = False)
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
     assert _split_flag(cmd) == "tensor"
+
+
+@pytest.mark.parametrize("child", [(1,), None])
+def test_wired_unregistered_helper_backend_keeps_its_gpus(tmp_path, monkeypatch, child):
+    # A helper load (Hub advisor, dataset assistant) owns a child but never registers to serve.
+    import core.inference.llama_cpp as llama_cpp_module
+
+    backend, gguf = _wired_backend(
+        tmp_path,
+        monkeypatch,
+        memory = [(i, 15_360, 15_360) for i in range(3)],
+        model_gib = 6,
+        names = {i: T4 for i in range(3)},
+    )
+    # Every process-owning backend is tracked from construction.
+    assert backend in llama_cpp_module._owned_backends_snapshot()
+    helper = types.SimpleNamespace(
+        is_active = True, _planned_vram_mib = {}, _child_gpu_physical_ids = child
+    )
+    monkeypatch.setattr(llama_cpp_module, "_serving_backends_snapshot", lambda: [])
+    monkeypatch.setattr(llama_cpp_module, "_owned_backends_snapshot", lambda: [backend, helper])
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    decision = backend._auto_split_decision
+    if child is None:
+        # Unpinned: it may hold any card.
+        assert _split_flag(cmd) != "tensor" and "unknown" in decision.reason
+    else:
+        assert _split_flag(cmd) == "tensor" and tuple(decision.gpu_indices) == (0, 2)

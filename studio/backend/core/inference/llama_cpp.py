@@ -749,6 +749,16 @@ def _serving_backends_snapshot() -> list:
         return list(_serving_backends)
 
 
+# Every backend that owns a llama-server child, registered or not: helper loads (the Hub
+# advisor, the dataset assistants) never join _serving_backends but still hold their cards.
+_owned_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
+
+
+def _owned_backends_snapshot() -> list:
+    with _serving_backends_lock:
+        return list(_owned_backends)
+
+
 class GgufDownloadCancelled(RuntimeError):
     """Expected signal from a cancelled GGUF download."""
 
@@ -787,8 +797,8 @@ def _gpus_held_outside_llama() -> Optional[frozenset]:
     hold a card it does not publish. The one list of them, read before an auto tensor pair:
     image/video/decision models the GPU arbiter tracks (their ids, None when unknown), and, none of
     which publish ids, transformers models, managed engines and surviving inference workers,
-    dictation sidecars, RAG embedders, the decision worker, LLM and diffusion training and export
-    workers, each loaded, loading or running off the CPU. Unknown counts as held."""
+    dictation sidecars, the mask segmenter, RAG embedders, the decision worker, LLM and diffusion
+    training and export workers, each loaded, loading or running off the CPU. Unknown counts as held."""
     try:
         held: set = set()
         gpu_arbiter = _resident_source("core.inference.gpu_arbiter")
@@ -840,6 +850,15 @@ def _gpus_held_outside_llama() -> Optional[frozenset]:
             )
             if not cpu_only:
                 return None
+
+        # The Images text-to-mask segmenter outside any image model's claim: resident on a GPU, or a
+        # call running on one. Lock-free reads, as holds_vram is.
+        segment = sys.modules.get("core.inference.diffusion_segment")
+        segmenter = getattr(segment, "_segmenter", None)
+        if segmenter is not None and (
+            segmenter.holds_vram() or segmenter._call_device not in (None, "cpu")
+        ):
+            return None
 
         # Only once RAG ever loaded an embedder; both locks are held across a load.
         embeddings = sys.modules.get("core.rag.embeddings")
@@ -8584,6 +8603,11 @@ _AUTO_SPLIT_USER_PLACEMENT_FLAGS = (
     | _CPU_PLACEMENT_FLAGS
     | _CPU_FFN_COUNT_FLAGS
     | _VRAM_FIT_VOIDING_FLAGS
+    # A companion's device places part of the load (a pinned projector's card would join the
+    # pair), and the MoE cache refuses a tensor split outright. The drafter's layer count is not
+    # here: the pair probe prices a CPU drafter off the GPU.
+    | frozenset().union(*_COMPANION_DEVICE_FLAG_GROUPS)
+    | frozenset({_MOE_CACHE_AUTO_TOKENS[0]})
 )
 _AUTO_SPLIT_USER_PLACEMENT_ENV = (
     "LLAMA_ARG_SPLIT_MODE",
@@ -8591,6 +8615,8 @@ _AUTO_SPLIT_USER_PLACEMENT_ENV = (
     "LLAMA_ARG_DEVICE",
     "LLAMA_ARG_MAIN_GPU",
     "LLAMA_ARG_N_GPU_LAYERS",
+    "MTMD_BACKEND_DEVICE",
+    "LLAMA_ARG_MOE_CACHE_MIB",
     "LLAMA_ARG_OVERRIDE_TENSOR",
     "LLAMA_ARG_CPU_MOE",
     "LLAMA_ARG_N_CPU_MOE",
@@ -9116,6 +9142,8 @@ class LlamaCppBackend:
                 # waits before ranking GPUs by free memory.
                 self._last_kill_monotonic = time.monotonic()
             atexit.register(self._cleanup)
+            with _serving_backends_lock:
+                _owned_backends.add(self)
 
     # ── Properties ────────────────────────────────────────────────
 
@@ -37416,7 +37444,7 @@ class LlamaCppBackend:
         if outside is None:
             return None
         held = set(self._vram_reserved_by_others_mib()) | outside
-        for backend in _serving_backends_snapshot():
+        for backend in [*_serving_backends_snapshot(), *_owned_backends_snapshot()]:
             if backend is not self and getattr(backend, "is_active", False):
                 child = getattr(backend, "_child_gpu_physical_ids", None)
                 if child is None:
