@@ -1681,6 +1681,20 @@ def test_wired_advisor_load_avoids_a_serving_models_gpu(tmp_path, monkeypatch):
     assert _split_flag(cmd) != "tensor"
 
 
+def test_wired_advisor_load_avoids_a_resident_media_models_gpu(tmp_path, monkeypatch):
+    import core.inference.gpu_residency as gpu_residency
+    import core.inference.llama_cpp as llama_cpp_module
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    # An unregistered helper beside a resident image model reserving GPU 1.
+    monkeypatch.setattr(llama_cpp_module, "_serving_backends_snapshot", lambda: [])
+    monkeypatch.setattr(gpu_residency, "media_held_mib", lambda: {1: 2048})
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) != "tensor"
+
+
 def test_wired_moe_without_draft_runs_no_gpu_probe(tmp_path, monkeypatch):
     backend, gguf = _wired_backend(
         tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES

@@ -28135,12 +28135,9 @@ class LlamaCppBackend:
                                     draft_active = _engaged_is_mtp,
                                     split_mode_override = split_mode_override,
                                     # Unregistered helper loads net no reservations; the
-                                    # pair still avoids every serving model's cards.
+                                    # pair still avoids every card a served model holds.
                                     shared_gpus = _shared_gpus.union(
-                                        idx
-                                        for _b in _serving_backends_snapshot()
-                                        if _b is not self and getattr(_b, "is_active", False)
-                                        for idx in getattr(_b, "_planned_vram_mib", {})
+                                        self._vram_reserved_by_others_mib()
                                     ),
                                     platform_reason = _split_platform,
                                 )
@@ -37166,11 +37163,14 @@ class LlamaCppBackend:
 
     def _other_planned_vram_mib(self) -> dict[int, int]:
         """MiB per GPU the other serving backends' running servers and the resident image/video models hold."""
+        if self not in _serving_backends_snapshot():
+            return {}
+        return self._vram_reserved_by_others_mib()
+
+    def _vram_reserved_by_others_mib(self) -> dict[int, int]:
+        """_other_planned_vram_mib without its registration gate (the auto split's exclusion)."""
         held: dict[int, int] = {}
-        serving = _serving_backends_snapshot()
-        if self not in serving:
-            return held
-        for backend in serving:
+        for backend in _serving_backends_snapshot():
             if backend is self or not getattr(backend, "is_active", False):
                 continue
             for idx, mib in getattr(backend, "_planned_vram_mib", {}).items():
