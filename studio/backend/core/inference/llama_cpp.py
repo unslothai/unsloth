@@ -6711,6 +6711,26 @@ def _draft_is_split_across_host(
     return not (n_draft_layers and count > n_draft_layers)
 
 
+_DRAFT_OVERRIDE_TENSOR_FLAGS = frozenset(
+    {"-otd", "--override-tensor-draft", "--spec-draft-override-tensor"}
+)
+
+
+def _draft_card_share_unknown(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    n_draft_layers: Optional[int] = None,
+) -> bool:
+    """True when the drafter is not wholly on the target's card, so its whole file is not
+    the share to reserve there: a positive -ngld below its depth (split with the host), or
+    a draft tensor override, which llama.cpp applies per weight while picking buffers (the
+    same flags the fit-voiding list treats as placement changes)."""
+    if _extra_args_set_any_flag(extra_args, _DRAFT_OVERRIDE_TENSOR_FLAGS):
+        return True
+    return _draft_is_split_across_host(extra_args, env, n_draft_layers = n_draft_layers)
+
+
 _SIDECAR_ADAPTER_FLAGS = (
     "--lora",
     "--lora-scaled",
@@ -27520,6 +27540,22 @@ class LlamaCppBackend:
                     _cpu_draft_path = _mtp_draft_for_budget if _draft_on_cpu else None
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
+                    # A drafter partly off the card (a positive -ngld below its depth, or a
+                    # draft tensor override) has an unpriced card share: the sidecar reserve
+                    # and the Metal Auto drop both read this one answer, so neither charges
+                    # the whole file for it.
+                    _draft_share_unknown = bool(
+                        _mtp_draft_for_budget
+                        and _draft_card_share_unknown(
+                            extra_args,
+                            os.environ,
+                            n_draft_layers = getattr(
+                                self._draft_backend_for(_mtp_draft_for_budget),
+                                "_n_layers",
+                                None,
+                            ),
+                        )
+                    )
                     _mtp_draft_weights = 0
                     if _mtp_draft_for_budget:
                         try:
@@ -29141,6 +29177,9 @@ class LlamaCppBackend:
                             # dropping it would only free the reserve; same guard as the
                             # discrete-GPU drop.
                             and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                            # Only the share on the card competes with the target; the
+                            # reserve leaves an unpriced share alone, so the drop does too.
+                            and not _draft_share_unknown
                         ):
                             # The un-reserved budget: under the flat fallback
                             # _apple_fit_budget_mib already holds a fraction back for
@@ -29977,21 +30016,10 @@ class LlamaCppBackend:
                         and _mtp_reserves_gpu
                         and _sidecar_kind_for_fit is not None
                         and _draft_on_target_device
-                        # A positive -ngld below the drafter's depth keeps part of it on
-                        # the host; the card-resident share is unpriced, so charging the
-                        # whole file would starve the target (the fit abstains there too).
-                        and not (
-                            _mtp_draft_for_budget
-                            and _draft_is_split_across_host(
-                                extra_args,
-                                os.environ,
-                                n_draft_layers = getattr(
-                                    self._draft_backend_for(_mtp_draft_for_budget),
-                                    "_n_layers",
-                                    None,
-                                ),
-                            )
-                        )
+                        # A positive -ngld below the drafter's depth, or a draft tensor
+                        # override, keeps part of it off the card; that share is
+                        # unpriced, so charging the whole file would starve the target.
+                        and not _draft_share_unknown
                         and (_apple_budget_mib > 0 or _fit_device_count == 1)
                     ):
                         # Priced even under --fit off: a startup-OOM retry turns the
@@ -33381,7 +33409,30 @@ class LlamaCppBackend:
                         # (--fit off -> on, the --flash-attn off flip) next to a sidecar it
                         # cannot size, and a --flash-attn off respawn (labelled) grows the
                         # draft cache, so the margin is read off THIS argv.
-                        if _sidecar_fit_reserve_eligible_mib and server_caps.get(
+                        # The device count too: the arch-crash respawn can re-mask a
+                        # single-GPU launch onto several cards, where the scalar margin
+                        # would be withheld on each, so it goes back to the plain one.
+                        _spawn_devices = _extra_args_main_device(run_cmd) or env.get(
+                            "LLAMA_ARG_DEVICE"
+                        )
+                        _spawn_device_count = (
+                            len([d for d in str(_spawn_devices).split(",") if d.strip()])
+                            if _spawn_devices
+                            else len(_child_gpu_physical_ids or ())
+                        )
+                        if _sidecar_fit_reserve_eligible_mib and _spawn_device_count > 1:
+                            run_cmd = _drop_sidecar_margins(
+                                list(run_cmd),
+                                _integrity_flags,
+                                self._ctx_integrity_flags(
+                                    *_integrity_args,
+                                    fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_floor_mib = _metal_fit_target_floor_mib,
+                                ),
+                                _sidecar_override_pairs,
+                            )
+                            _sidecar_fit_reserve_mib = 0
+                        elif _sidecar_fit_reserve_eligible_mib and server_caps.get(
                             "supports_fit_target"
                         ):
                             _spawn_reserve = _sidecar_fit_reserve_eligible_mib
@@ -34643,6 +34694,26 @@ class LlamaCppBackend:
                         # Read by admission control; left as-is Studio over-admits.
                         n_parallel = 1  # allow-slot-clamp: llama-server refused more
                         kv_cache_unified = False
+                        # The sidecar reserve was priced for the slots and KV layout just
+                        # dropped: take it off and reprice for one sequence, or the stale
+                        # margin (a floor at spawn) keeps memory for slots that never run.
+                        if _sidecar_fit_reserve_eligible_mib and _sidecar_reserve_reprice is not None:
+                            cmd = _drop_sidecar_margins(
+                                cmd,
+                                _integrity_flags,
+                                self._ctx_integrity_flags(
+                                    *_integrity_args,
+                                    fit_target_delta_mib = _fit_target_delta_mib,
+                                    fit_target_floor_mib = _metal_fit_target_floor_mib,
+                                ),
+                                _sidecar_override_pairs,
+                            )
+                            _sidecar_override_pairs.clear()
+                            _sidecar_reserve_reprice = functools.partial(
+                                _sidecar_reserve_reprice, _np = 1, _kv_unified = False
+                            )
+                            _sidecar_fit_reserve_eligible_mib = _sidecar_reserve_reprice(cmd)
+                            _sidecar_fit_reserve_mib = 0
                         # The cap in argv was sized for slots this retry no longer runs;
                         # same re-decide as the arch-crash respawn.
                         if _auto_ckpt_emitted:
@@ -35405,12 +35476,14 @@ class LlamaCppBackend:
                 # watch this load for a mid-generation crash. The verified-cache hint is
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
                 # re-resolves the file instead of trusting a path this request verified.
-                if self._metal_oom_is_terminal(intent):
+                _committed_intent = replace(intent, verified_gguf = None)
+                if self._metal_oom_is_terminal(_committed_intent):
                     # Automatic recovery refuses a terminal intent, so a load that got
                     # here is the user's explicit retry: it starts a fresh OOM episode.
+                    # Checked on the snapshot being committed, the one recovery replays.
                     self._metal_oom_strikes = None
                     self._metal_oom_terminal_key = None
-                self._last_load_intent = replace(intent, verified_gguf = None)
+                self._last_load_intent = _committed_intent
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -39537,9 +39610,11 @@ class LlamaCppBackend:
     @staticmethod
     def _metal_oom_key(intent):
         """The load an OOM strike is charged to: the speculative mode is what the fallback
-        changes, so it is left out and the no-drafter reload keeps the strike count."""
+        changes, so it is left out and the no-drafter reload keeps the strike count. The
+        verified-cache hint is per request (the committed snapshot drops it), so it is left
+        out too, or a hinted explicit reload and the snapshot it commits disagree."""
         try:
-            return replace(intent, speculative_type = None)
+            return replace(intent, speculative_type = None, verified_gguf = None)
         except TypeError:
             return intent
 
