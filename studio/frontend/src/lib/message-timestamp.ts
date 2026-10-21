@@ -19,6 +19,13 @@ export function replyFinishedTimestamp(message: {
 }): number | undefined {
   if (message.status?.type === "running") return undefined;
   const custom = message.metadata?.custom;
+  // Deep Research replies record only their run; completedAt stays null until it ends.
+  const research = custom?.researchRun as { completedAt?: unknown } | undefined;
+  if (research && typeof research === "object") {
+    return typeof research.completedAt === "number" && Number.isFinite(research.completedAt)
+      ? research.completedAt
+      : undefined;
+  }
   const details = custom?.responseDetails as { finishedAt?: unknown } | undefined;
   if (typeof details?.finishedAt === "number" && Number.isFinite(details.finishedAt)) {
     return details.finishedAt;

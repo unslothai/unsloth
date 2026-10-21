@@ -73,6 +73,15 @@ test("prefers the finish time, falls back to creation, hides while running", () 
     }),
     stoppedAt,
   );
+  const researchDone = Date.parse("2026-10-14T07:30:00Z");
+  const research = (completedAt: number | null) => ({
+    createdAt,
+    status: { type: "complete" },
+    metadata: { custom: { researchRun: { status: "completed", completedAt } } },
+  });
+  assert.equal(replyFinishedTimestamp(research(researchDone)), researchDone);
+  // A run still going after a reload is restored as a complete message.
+  assert.equal(replyFinishedTimestamp(research(null)), undefined);
   assert.equal(
     replyFinishedTimestamp({
       createdAt,
