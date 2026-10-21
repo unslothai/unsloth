@@ -1063,6 +1063,8 @@ def reap_prune(
                 setattr(module, key, kept_count)
     model._unsloth_reap_report = report
     model._unsloth_reap_saliency = saliencies
+    dist = torch.distributed
+    multi_rank = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
     if save_directory is not None:
         save_directory = os.path.abspath(save_directory)
         source_model = getattr(model.config, "_name_or_path", None) or None
@@ -1070,8 +1072,6 @@ def reap_prune(
             # This folder may be pushed to the Hub: name a local source without its path.
             source_model = os.path.basename(os.path.normpath(source_model))
         # Every rank pruned the same experts (summed saliency); one writes, the rest wait for it.
-        dist = torch.distributed
-        multi_rank = dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
         error = None
         if not multi_rank or dist.get_rank() == 0:
             try:
@@ -1097,9 +1097,15 @@ def reap_prune(
             model._unsloth_modelscope_snapshot = save_directory
     model._unsloth_reap_saved = save_directory
     if report_path is not None:
-        os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok = True)
-        with open(report_path, "w", encoding = "utf-8") as f:
-            json.dump(report, f)
+        error = None
+        if not multi_rank or dist.get_rank() == 0:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok = True)
+                with open(report_path, "w", encoding = "utf-8") as f:
+                    json.dump(report, f)
+            except Exception as e:
+                error = e
+        _ranks_agree(error, f"write the REAP report to {report_path}")
     print(
         f"Unsloth: REAP kept {kept_count} of {num_experts} experts in {len(report)} MoE layers "
         f"in {time.time() - start:.1f}s ({rebuilt_layers} reused their attention output)."
