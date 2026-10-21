@@ -431,9 +431,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         pipeline_class = "Flux2KleinPipeline",
-        # AutoencoderKLFlux2: cudnn.benchmark's per-process conv pick (it flips under load) rendered 3 variants of one seed
-        # over 12 B200 servers from identical latents; off, 5/5 bit-identical. Both FLUX.3 Klein entries share this VAE.
-        cudnn_benchmark = False,
+        # B200: inductor benchmarks the fused q/k RMSNorm persistent reduction per process; its XBLOCK = 1 pick sums in
+        # another order and rendered another latent (LPIPS up to 0.073), saved for every later start from that home.
+        filter_reduction_configs_archs = ((10, 0),),
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
@@ -520,8 +520,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3ModularPipeline",
-        # The FLUX.2 VAE (as flux.2-klein): cudnn.benchmark stays off so the decode is the same on every server.
-        cudnn_benchmark = False,
         # Same layout as the distilled repo. The INT8 file is BFL's own ComfyUI int8_convrot denoiser
         # (black-forest-labs/flux-3-image-klein-comfy, byte-identical), which scored better than an INT8 built with
         # the keep-list, so the prequant loader reads it through the ComfyUI quant path. The FP8 file is Studio's own.
@@ -576,8 +574,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             preview_factors = "flux2",
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
-        # The FLUX.2 VAE (as flux.2-klein): cudnn.benchmark stays off so the decode is the same on every server.
-        cudnn_benchmark = False,
         # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
         # the loader checks the stored exclude set against it. The base has its own repo.
         prequant_repos = (
