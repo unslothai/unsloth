@@ -9,6 +9,8 @@ register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
 const { stopBrowserAgent } = await import("../src/features/browser/agent/agent-store.ts");
+// Actions without a scope act for the chat on screen.
+const CHAT = "new";
 
 const globals = globalThis as Record<string, unknown>;
 const policy = { allowedDomains: [], blockedDomains: [] };
@@ -105,7 +107,7 @@ test("a drag whose page moves its address without a new document is cancelled, n
 
 test("Stop during the checks before the drop cancels the drag instead of releasing it", async () => {
   const { sent, result } = await drag("p2", "r", (op, sent) => {
-    if (op.op === "describe" && sent.includes("pointer:move")) stopBrowserAgent();
+    if (op.op === "describe" && sent.includes("pointer:move")) stopBrowserAgent(CHAT);
   });
   assert.equal(result?.ok, false);
   assert.ok(sent.includes("pointer:cancel"), sent.join(", "));

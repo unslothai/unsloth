@@ -11,6 +11,7 @@
 
 from .llama import *
 from .llama import (
+    _decode_rotary_seq_len,
     original_apply_qkv,
     original_apply_o,
     _gqa_decode_scores,
@@ -173,8 +174,8 @@ def Gemma2Attention_fast_forward(
         kv_seq_len += past_key_value[0].shape[-2]
 
     device_index = Q.device.index
-    cos = self.rotary_emb.multi_gpu_cos_cached[device_index]
-    sin = self.rotary_emb.multi_gpu_sin_cached[device_index]
+    # get_cached builds this device's cache on first use.
+    cos, sin = self.rotary_emb.get_cached(kv_seq_len, device_index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if rope_position_ids is not None:
@@ -315,7 +316,9 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
+        hidden_states = fast_rms_layernorm(
+            self.input_layernorm, hidden_states, gemma = True, save_output = True
+        )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states = hidden_states,
             causal_mask = causal_mask,
@@ -332,7 +335,7 @@ def Gemma2DecoderLayer_fast_forward(
 
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
-            self.pre_feedforward_layernorm, hidden_states, gemma = True
+            self.pre_feedforward_layernorm, hidden_states, gemma = True, save_output = True
         )
         hidden_states = self.mlp(hidden_states)
         hidden_states = fast_rms_layernorm(
@@ -431,7 +434,13 @@ def Gemma2Attention_fast_forward_inference(
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
 
-    cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
+    # rotary_seq_len (once per step from the decode loop) covers explicit positions past the KV length.
+    rotary_seq_len = kwargs.get("rotary_seq_len")
+    if rotary_seq_len is not None and rotary_seq_len > kv_seq_len:
+        self.rotary_emb.extend_rope_embedding(Vn, rotary_seq_len + 1)
+        cos, sin = self.rotary_emb.get_cached(rotary_seq_len, Qn.device.index)
+    else:
+        cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last.
     if position_ids.dim() >= 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
@@ -566,6 +575,12 @@ def Gemma2Model_fast_forward_inference(
         # One row has no padding; the raw 2D mask cannot be sliced to the sliding window.
         SWA = None
         GA = None
+    # Once per step for every layer, never per layer (one host sync at most).
+    rotary_seq_len = _decode_rotary_seq_len(
+        getattr(getattr(self.model.layers[0], "self_attn", None), "rotary_emb", None),
+        seq_len + 1,
+        position_ids,
+    )
     next_decoder_cache = []
     block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
@@ -597,6 +612,7 @@ def Gemma2Model_fast_forward_inference(
             use_sliding_window = use_sliding_window,
             flash_decode = flash_decode,
             leftpad = leftpad,
+            rotary_seq_len = rotary_seq_len,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(
             decoder_layer.post_attention_layernorm,

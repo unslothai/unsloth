@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from contextlib import aclosing
@@ -316,6 +317,7 @@ async def managed_tool_chat(
                         or api._off_mode_sandbox_gate(payload, ui_events),
                         bypass_permissions = bool(payload.bypass_permissions),
                         rag_scope = payload.rag_scope,
+                        website_policy = getattr(payload, "_website_policy", None),
                         auto_heal = payload.auto_heal_tool_calls,
                         nudge_tool_calls = payload.nudge_tool_calls,
                         deduplicate_tool_calls = payload.deduplicate_tool_calls,
@@ -476,3 +478,132 @@ async def managed_tool_chat(
                 if choice.get("finish_reason"):
                     result["choices"][0]["finish_reason"] = choice["finish_reason"]
     return JSONResponse(result)
+
+
+async def managed_engine_completions(request, current_subject, backend, body):
+    from routes import inference as api
+    from core.inference.llama_keepwarm import mark_response_failed
+
+    engine = backend._managed_engine
+    public = api._orchestrator_public_model_id(backend) or engine.model
+    stream = bool(body.get("stream"))
+    include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+    upstream = {**body, "model": engine.model}
+    if stream:
+        # Always asked for so the monitor counts tokens; dropped again unless the caller opted in.
+        upstream["stream_options"] = {**(body.get("stream_options") or {}), "include_usage": True}
+    monitor_id = api.api_monitor.start(
+        endpoint = request.url.path,
+        via_api_key = api._request_used_api_key(request),
+        method = request.method,
+        model = public,
+        prompt = api._flatten_monitor_prompt(body.get("prompt", "")),
+        context_length = engine.context,
+        subject = current_subject,
+    )
+    cancel = threading.Event()
+    tracker = api._TrackedCancel(cancel, model = public, kind = "completions")
+    tracker.__enter__()
+    client = httpx.AsyncClient(trust_env = False, timeout = engine_request_timeout())
+    watcher = asyncio.create_task(
+        api._await_cancel_or_disconnect_then_close_client(
+            cancel_event = cancel, request = request, client = client
+        )
+    )
+    scope = getattr(request, "scope", None)
+
+    async def close():
+        try:
+            await api._stop_local_disconnect_cancel_watcher(watcher)
+            await client.aclose()
+        finally:
+            tracker.__exit__(None, None, None)
+
+    url = engine.base_url + "/v1/completions"
+    try:
+        if stream:
+            response = await client.send(
+                client.build_request("POST", url, headers = engine.headers, json = upstream),
+                stream = True,
+            )
+            if response.status_code != 200:
+                await response.aread()
+        else:
+            response = await client.post(url, headers = engine.headers, json = upstream)
+    except asyncio.CancelledError:
+        cancel.set()
+        await close()
+        api.api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        await close()
+        if cancel.is_set():
+            mark_response_failed(scope)
+            api.api_monitor.finish(monitor_id, "cancelled")
+            raise HTTPException(status_code = 499, detail = "Request cancelled.") from exc
+        api.api_monitor.fail(monitor_id, api._friendly_error(exc))
+        raise
+    if response.status_code != 200:
+        await close()
+        api.api_monitor.fail(monitor_id, response.text[:500])
+        raise api._openai_passthrough_error(response.status_code, response.text)
+
+    if not stream:
+        await close()
+        data = response.json()
+        if isinstance(data, dict) and "model" in data:
+            data["model"] = public
+        try:
+            api._monitor_openai_chunk(monitor_id, data, engine.context)
+        except Exception:
+            pass
+        api.api_monitor.finish(monitor_id)
+        return JSONResponse(data)
+
+    async def relay():
+        lines = closing_response_lines(response)
+        try:
+            async for line in lines:
+                if not line.startswith("data:"):
+                    continue
+                if api._monitor_openai_sse_line(monitor_id, line, engine.context) == "error":
+                    mark_response_failed(scope)
+                out = api._cmpl_stream_event_out(_with_model(line, public).encode(), include_usage)
+                if out is not None:
+                    yield out + b"\n\n"
+            if cancel.is_set():
+                mark_response_failed(scope)
+                api.api_monitor.finish(monitor_id, "cancelled")
+            else:
+                api.api_monitor.finish(monitor_id)
+        except asyncio.CancelledError:
+            cancel.set()
+            api.api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except Exception as exc:
+            mark_response_failed(scope)
+            if cancel.is_set():
+                api.api_monitor.finish(monitor_id, "cancelled")
+                return
+            api.api_monitor.fail(monitor_id, api._friendly_error(exc))
+            yield api._openai_stream_error_sse_bytes(api._openai_stream_error_chunk(exc))
+        finally:
+            try:
+                await lines.aclose()
+            finally:
+                await close()
+
+    async def unstarted_cleanup():
+        cancel.set()
+        try:
+            # close() releases the active-generation entry even when aclose fails.
+            try:
+                await response.aclose()
+            finally:
+                await close()
+        finally:
+            api.api_monitor.finish(monitor_id, "cancelled")
+
+    return api._sse_streaming_response(
+        relay(), unstarted_cleanup = unstarted_cleanup, monitor_id = monitor_id
+    )

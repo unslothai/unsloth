@@ -92,8 +92,8 @@ test("name and instructions are saved as separate writes", () => {
   // Nothing edited is not a write at all, just a close.
   assert.match(DIALOG, /if \(!dirty\) \{\n\s*onOpenChange\(false\);/);
   // An empty name is not a rename: it would leave the folder row with nothing to show.
-  assert.match(DIALOG, /if \(busy \|\| !trimmedName\) return;/);
-  assert.match(DIALOG, /disabled=\{busy \|\| !trimmedName\}/);
+  assert.match(DIALOG, /if \(busy \|\| folderBusy \|\| !trimmedName\) return;/);
+  assert.match(DIALOG, /disabled=\{busy \|\| folderBusy \|\| !trimmedName\}/);
 });
 
 // The draft is the open project's. Reseeding on id keeps the last project's text from being saved
@@ -104,7 +104,7 @@ test("the draft follows whichever project is open", () => {
     /if \(\(project\?\.id \?\? null\) !== seededFor\) \{\n\s*setSeededFor\(project\?\.id \?\? null\);\n\s*setName\(project\?\.name \?\? ""\);\n\s*setInstructions\(project\?\.instructions \?\? ""\);/,
   );
   // And a save in flight cannot be escaped out from under.
-  assert.match(DIALOG, /function close\(\) \{\n\s*if \(busy\) return;/);
+  assert.match(DIALOG, /function close\(\) \{\n\s*if \(busy \|\| folderBusy\) return;/);
 });
 
 // Enter commits the name field; the instructions box needs its newlines, so the chord commits
@@ -129,6 +129,6 @@ test("the dialog commits on Enter and on the chord", () => {
 test("delete is a destructive button, and the caller still confirms it", () => {
   assert.match(
     DIALOG,
-    /<Button\n\s*type="button"\n\s*variant="destructive"\n\s*disabled=\{busy\}\n\s*onClick=\{\(\) => \{\n\s*onOpenChange\(false\);\n\s*onDelete\(project\);/,
+    /<Button\n\s*type="button"\n\s*variant="destructive"\n\s*disabled=\{busy \|\| folderBusy\}\n\s*onClick=\{\(\) => \{\n\s*onOpenChange\(false\);\n\s*onDelete\(project\);/,
   );
 });
