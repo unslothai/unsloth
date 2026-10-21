@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ``diffusion_rocm_fused.py``: the switches (auto = ROCm only), install / uninstall wiring, and on a GPU the
-kernels against diffusers (RoPE bit-identical, AdaLN within one rounding of stock) plus a tiny FLUX.1 transformer."""
+"""Tests for ``diffusion_rocm_fused.py``: the switches (auto = RoPE on ROCm and on NVIDIA CUDA under Linux, AdaLN
+opt-in), install / uninstall wiring, and on a GPU the kernels against diffusers (RoPE bit-identical, AdaLN within one
+rounding of stock) plus tiny FLUX.1 / FLUX.2 transformers."""
 
 from __future__ import annotations
 
@@ -54,10 +55,59 @@ def fake_kernels(monkeypatch):
     monkeypatch.setattr(rf, "_adaln_kernel", lambda: (lambda x, scale, shift, eps: None))
 
 
-def test_auto_is_inert_off_rocm(fake_kernels, monkeypatch):
+def _nvidia(monkeypatch, platform = "linux"):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.version, "cuda", "13.0", raising = False)
+    monkeypatch.setattr(rf.sys, "platform", platform)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_auto_engages_rope_only_on_nvidia_linux(fake_kernels, monkeypatch, dtype):
+    # auto = the bit-identical RoPE kernel on NVIDIA too (ComfyUI fuses FLUX RoPE by default); AdaLN stays opt-in.
+    _nvidia(monkeypatch)
+    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda") == {"rope": True, "adaln": 0}
+    assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
+    assert nm.AdaLayerNormZero.forward is _STOCK_FWD["AdaLayerNormZero"]
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_auto_is_inert_on_nvidia_outside_linux(fake_kernels, monkeypatch, platform):
+    # Windows keeps stock: a Triton JIT failure there would be retried on every call.
+    _nvidia(monkeypatch, platform)
     assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
     assert not rf.is_installed()
+
+
+def test_auto_is_inert_without_a_gpu_torch(fake_kernels, monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.version, "cuda", None, raising = False)
+    monkeypatch.setattr(rf.sys, "platform", "linux")
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
+    assert not rf.is_installed()
+
+
+@pytest.mark.parametrize("value", ["0", "off", "false"])
+def test_kill_switch_on_nvidia(fake_kernels, monkeypatch, value):
+    _nvidia(monkeypatch)
+    monkeypatch.setenv(rf.FUSED_ROPE_ENV, value)
+    assert rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda") == {"rope": False, "adaln": 0}
+    assert fmod.apply_rotary_emb is stock_rope
+
+
+def test_flux2_fp16_keeps_its_own_patch_on_nvidia(fake_kernels, monkeypatch):
+    # fp16 FLUX.2 on NVIDIA is diffusion_flux2_rope's (installed first at STAGE_LOAD); the auto RoPE never stacks on it.
+    from core.inference import diffusion_flux2_rope as fr
+
+    f2mod = pytest.importorskip("diffusers.models.transformers.transformer_flux2")
+    _nvidia(monkeypatch)
+    monkeypatch.setattr(fr, "_kernel", lambda: (lambda *a, **k: None))
+    pipe = _PipeLike("diffusers.models.transformers.transformer_flux2")
+    try:
+        assert fr.install_for_pipe(pipe, torch.float16, "cuda")
+        assert rf.install_for_pipe(pipe, torch.float16, "cuda") == {"rope": False, "adaln": 0}
+        assert f2mod.apply_rotary_emb is fr._fused_apply_rotary_emb
+    finally:
+        fr.uninstall()
 
 
 def test_auto_engages_rope_only_on_rocm(fake_kernels, monkeypatch):
@@ -327,6 +377,54 @@ def test_tiny_flux1_transformer_end_to_end(monkeypatch):
     rf.uninstall()
     rel = (got.float() - want.float()).norm() / want.float().norm()
     assert rel < 1e-2, float(rel)
+
+
+@needs_gpu
+def test_tiny_flux2_transformer_default_on(monkeypatch):
+    f2 = pytest.importorskip("diffusers").Flux2Transformer2DModel
+    if not (rf._is_rocm() or rf._is_nvidia_linux()):
+        pytest.skip("auto engages on ROCm and NVIDIA Linux only")
+    dev, dtype = "cuda", torch.bfloat16
+    torch.manual_seed(0)
+    model = (
+        f2(
+            patch_size = 1,
+            in_channels = 16,
+            num_layers = 2,
+            num_single_layers = 2,
+            attention_head_dim = 32,
+            num_attention_heads = 4,
+            joint_attention_dim = 64,
+            timestep_guidance_channels = 32,
+            axes_dims_rope = (8, 8, 8, 8),
+            guidance_embeds = False,
+        )
+        .to(dev, dtype)
+        .eval()
+    )
+    img, txt = 256, 32
+    ids = torch.cartesian_prod(torch.arange(1), torch.arange(16), torch.arange(16), torch.arange(1))
+    inputs = dict(
+        hidden_states = torch.randn(1, img, 16, device = dev, dtype = dtype),
+        encoder_hidden_states = torch.randn(1, txt, 64, device = dev, dtype = dtype),
+        timestep = torch.tensor([0.5], device = dev, dtype = dtype),
+        img_ids = ids.to(dev)[None].float(),
+        txt_ids = torch.cartesian_prod(
+            torch.arange(1), torch.arange(1), torch.arange(1), torch.arange(txt)
+        ).to(dev)[None].float(),
+        return_dict = False,
+    )
+    with torch.no_grad():
+        want = model(**inputs)[0]
+        assert rf.install_for_pipe(type("P", (), {"transformer": model})(), dtype, dev) == {
+            "rope": True,
+            "adaln": 0,
+        }
+        r0 = rf.COUNTS["rope_fused"]
+        got = model(**inputs)[0]
+    # 2 double blocks (image + text streams share one joint RoPE call each for q and k) + 2 single blocks
+    assert rf.COUNTS["rope_fused"] - r0 == 2 * 2 + 2 * 2
+    assert torch.equal(got, want)
 
 
 def test_teardown_survives_a_later_eager_layer(fake_kernels, monkeypatch):
