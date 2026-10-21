@@ -1353,13 +1353,13 @@ export function ApiMonitorPage(): ReactElement {
             size="icon"
             onClick={openApiSettings}
             aria-label="API settings"
-            // The outline only on hover: at rest it sits back beside the title.
-            className="rounded-full border border-transparent hover:border-border"
+            // Bare at rest beside the title; hover fills it a clear step off the page background.
+            className="size-10 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
           >
             <HugeiconsIcon
               icon={Settings02Icon}
               strokeWidth={1.75}
-              className="size-4"
+              className="size-5"
             />
           </Button>
         </ToolbarTooltip>
