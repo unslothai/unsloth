@@ -231,7 +231,11 @@ def without_owner_only_path_args(args: Optional[Iterable[str]]) -> list[str]:
             continue
         i += 1 if "=" in raw else 2
         # The older "--lora-scaled FNAME SCALE" spelling.
-        if flag in _OPTIONAL_SECOND_VALUE_FLAGS and i < len(tokens) and _flag_name(tokens[i]) is None:
+        if (
+            flag in _OPTIONAL_SECOND_VALUE_FLAGS
+            and i < len(tokens)
+            and _flag_name(tokens[i]) is None
+        ):
             i += 1
     return out
 

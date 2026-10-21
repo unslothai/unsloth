@@ -500,10 +500,13 @@ def test_managed_read_of_owner_override_hides_owner_path_flags(client, fresh_ove
     from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
 
     owner_args = [
-        "--mmproj", "C:/Users/owner/secret/mmproj.gguf",
+        "--mmproj",
+        "C:/Users/owner/secret/mmproj.gguf",
         "--lora=C:/Users/owner/private-adapter.gguf",
-        "--rpc", "10.0.0.5:50052",
-        "-c", "8192",
+        "--rpc",
+        "10.0.0.5:50052",
+        "-c",
+        "8192",
     ]
     run_as(OWNER, set_model_override, "org/model:Q4_K_M", owner_args, max_seq_length = 8192)
     query = "/settings/openai-auto-switch/overrides?model_id=org/model&gguf_variant=Q4_K_M"
@@ -520,10 +523,19 @@ def test_managed_read_of_owner_override_hides_owner_path_flags(client, fresh_ove
     owner = client.get(query, headers = {"x-test-account": "unsloth"})
     assert owner.json()["resolved"]["llama_extra_args"] == owner_args
     # The loader still applies the owner's row for a managed load; only the read is narrowed.
-    assert run_as(ALICE, resolve_override_for_load, "org/model", None, "Q4_K_M")[1]["llama_extra_args"] == owner_args
+    assert (
+        run_as(ALICE, resolve_override_for_load, "org/model", None, "Q4_K_M")[1]["llama_extra_args"]
+        == owner_args
+    )
 
     # A row that carries nothing but path flags reads as "no launch flags stored", not an explicit empty list.
-    run_as(OWNER, set_model_override, "org/other", ["--mmproj", "C:/Users/owner/p.gguf"], max_seq_length = 4096)
+    run_as(
+        OWNER,
+        set_model_override,
+        "org/other",
+        ["--mmproj", "C:/Users/owner/p.gguf"],
+        max_seq_length = 4096,
+    )
     other = client.get("/settings/openai-auto-switch/overrides?model_id=org/other").json()
     assert other["resolved"] == {"max_seq_length": 4096}
 
