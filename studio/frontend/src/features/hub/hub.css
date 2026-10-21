@@ -834,6 +834,16 @@
     background-color: var(--accent);
   }
 
+  /* The Train page's cards sit a step from --accent, so its tabs and toggles take the picker's
+     treatment below: the pill lifts toward white and the track sinks below the card. */
+  html.dark .elevated-card {
+    --hub-tab-track: color-mix(in srgb, var(--background) 55%, transparent);
+  }
+  html.dark .elevated-card .hub-tab-toggle-pill,
+  html.dark .elevated-card .hub-tab-toggle-pill:hover {
+    background-color: color-mix(in srgb, var(--accent), white 7.5%);
+  }
+
   /* The picker's panel is --sidebar, a step from --accent: its controls lift toward white to stand off it. */
   html.dark .unsloth-model-selector-menu {
     --picker-control-lit: color-mix(in srgb, var(--accent), white 7.5%);
@@ -1655,4 +1665,16 @@ html.dark .hub-page [data-hub-scroll="true"]::-webkit-scrollbar-thumb {
    this class. */
 body[data-scroll-locked] .hub-modal-pe-guard {
   pointer-events: none !important;
+}
+
+/* Model filter ranges: two thumbs share a track, so smaller than a single slider. */
+.hub-range {
+  --hub-range-thumb: calc(1rem * var(--ui-space-scale, 1));
+  --hub-range-track: calc(0.1875rem * var(--ui-space-scale, 1));
+}
+@supports (width: round(1.5px, 1px)) {
+  .hub-range {
+    --hub-range-thumb: round(calc(1rem * var(--ui-space-scale, 1)), 1px);
+    --hub-range-track: round(calc(0.1875rem * var(--ui-space-scale, 1)), var(--device-px, 1px));
+  }
 }
