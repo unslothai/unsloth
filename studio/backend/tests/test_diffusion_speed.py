@@ -30,6 +30,19 @@ from core.inference.diffusion_speed import (
 )
 
 
+@pytest.fixture(autouse = True)
+def _undo_slice_identity_fix():
+    """apply_speed_optims reaches diffusion_dynamic_text.install, which on torch 2.13+ patches
+    torch._dynamo's SliceVariable for the whole process. Undo a patch a test installed so later
+    tests in the same worker see stock torch."""
+    from core.inference import diffusion_dynamic_text as dt
+
+    was_installed = "original" in dt._SLICE_STATE
+    yield
+    if not was_installed and "original" in dt._SLICE_STATE:
+        dt.uninstall_slice_identity_fix()
+
+
 def _stub_gguf_accel(monkeypatch):
     """Replace the real compiled-dequant installer (which touches torch.compile /
     diffusers) with a recorder, so the tier-gating logic in apply_speed_optims is tested
