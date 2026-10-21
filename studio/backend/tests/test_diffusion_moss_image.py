@@ -503,7 +503,9 @@ def _callback_block_source() -> str:
     import ast
     import textwrap
 
-    tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion_moss_image.py").read_text())
+    tree = ast.parse(
+        (_BACKEND / "core" / "inference" / "diffusion_moss_image.py").read_text(encoding = "utf-8")
+    )
     pipe = next(
         n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "MOSSImagePipeline"
     )
@@ -541,7 +543,9 @@ def test_step_callback_reads_tensors_from_the_call_scope():
 
     import ast
 
-    tree = ast.parse((_BACKEND / "core" / "inference" / "diffusion_moss_image.py").read_text())
+    tree = ast.parse(
+        (_BACKEND / "core" / "inference" / "diffusion_moss_image.py").read_text(encoding = "utf-8")
+    )
     comps = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
     for comp in (n for n in ast.walk(tree) if isinstance(n, comps)):
         calls = [

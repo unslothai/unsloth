@@ -879,6 +879,56 @@
     "use_quant_conv": true
    }
   },
+  "moss-image": {
+   "kind": "image",
+   "repo": "OpenMOSS-Team/MOSS-Image-SFT",
+   "revision": "f972bd4b4b9e3852133cc5da954d87bc32cd8fb9",
+   "config": {
+    "_class_name": "AutoencoderKLFlux2",
+    "_diffusers_version": "0.38.0",
+    "act_fn": "silu",
+    "batch_norm_eps": 0.0001,
+    "batch_norm_momentum": 0.1,
+    "block_out_channels": [
+     128,
+     256,
+     512,
+     512
+    ],
+    "decoder_block_out_channels": [
+     96,
+     192,
+     384,
+     384
+    ],
+    "down_block_types": [
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D",
+     "DownEncoderBlock2D"
+    ],
+    "force_upcast": true,
+    "in_channels": 3,
+    "latent_channels": 32,
+    "layers_per_block": 2,
+    "mid_block_add_attention": true,
+    "norm_num_groups": 32,
+    "out_channels": 3,
+    "patch_size": [
+     2,
+     2
+    ],
+    "sample_size": 1024,
+    "up_block_types": [
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D",
+     "UpDecoderBlock2D"
+    ],
+    "use_post_quant_conv": true,
+    "use_quant_conv": true
+   }
+  },
   "sdxl": {
    "kind": "image",
    "repo": "stabilityai/stable-diffusion-xl-base-1.0",
