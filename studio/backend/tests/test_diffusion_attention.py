@@ -928,8 +928,6 @@ def test_a_fused_launch_that_fails_late_is_not_reported_available(monkeypatch):
     ],
 )
 def test_mps_answers_from_the_torch_build_not_an_execution_probe(version, env, fused, monkeypatch):
-    # MPS ignores sdpa_kernel and the torch.backends.cuda toggles, so a FLASH-only call "runs" and still builds
-    # the score matrix (torch 2.10: 15 GiB for one 8192-token call). Only torch 2.13+'s prefill kernel avoids it.
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch, "__version__", version)
     if env is None:

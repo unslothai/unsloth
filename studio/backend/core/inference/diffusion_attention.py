@@ -250,9 +250,7 @@ MPS_PREFILL_ATTENTION_OFF_ENV = "PYTORCH_MPS_DISABLE_PREFILL_ATTENTION"
 
 
 def _mps_sdpa_kernels(torch: Any) -> tuple[str, ...]:
-    """MPS ignores ``sdpa_kernel``, so every backend "runs" and an execution probe means nothing. Before torch 2.13 MPS
-    SDPA always materialises the score matrix; 2.13 added a flash-style prefill kernel for the head_dims diffusion
-    transformers use (32, 64, 72, 80, 96, 128, 256), which torch turns off when the env var is anything but "0"."""
+    """MPS ignores ``sdpa_kernel``, so answer from the build: only torch 2.13+ has a fused (prefill) kernel."""
     if _version_tuple(torch.__version__)[:2] < (2, 13):
         return (SDPA_MATH,)
     if os.environ.get(MPS_PREFILL_ATTENTION_OFF_ENV, "0") != "0":
