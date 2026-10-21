@@ -318,12 +318,8 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
-# Small DiTs (FLUX.2-klein, Z-Image, FLUX.3-klein: up to ~6B parameters) stay bf16 while it fits: a quantised denoiser
-# moves image detail, and on these sizes bf16 already fits common cards. Colab L4, 3 prompts, against bf16: FP8 LPIPS
-# mean 0.065 / max 0.129 (FLUX.2-klein-4B) and 0.103 / 0.191 (Z-Image-Turbo); FLUX.3-klein INT8 0.027 mean even with
-# its keep-set. An explicit precision is still honoured, and INT8 is still picked when bf16 would offload. A load kept
-# bf16 by this rule compiles from render 1 when speed is unset, as the INT8 default it replaces did (diffusion.py), so
-# follow-up prompts add no compile.
+# Small DiTs (<= ~6B) stay bf16 while it fits: quantising moves detail (L4 vs bf16 LPIPS: FP8 FLUX.2-klein-4B 0.065,
+# Z-Image-Turbo 0.103; FLUX.3-klein INT8 0.027). INT8 still when bf16 would offload; such loads compile from render 1.
 SMALL_DIT_BF16_WHEN_RESIDENT = (
     "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
     "0.103 on Z-Image-Turbo)"

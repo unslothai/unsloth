@@ -9188,8 +9188,7 @@ class DiffusionBackend:
                             "(quantized transformer must be compiled; eager is ~30x slower)"
                         )
                         effective_speed = SPEED_DEFAULT
-                    # A small DiT kept bf16 in place of the INT8 default compiles from render 1, as that INT8 load did:
-                    # deferring it would compile on the 3rd image, a follow-up prompt.
+                    # Small DiT kept bf16 (instead of INT8) compiles from render 1 like INT8 did, not on the 3rd image.
                     if (
                         small_dit_kept_bf16
                         and speed_mode is None

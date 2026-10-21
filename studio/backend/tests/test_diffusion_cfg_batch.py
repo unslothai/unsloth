@@ -291,7 +291,6 @@ def test_switches_are_independent_of_multi_gpu(monkeypatch):
 
 
 def test_a_resident_denoiser_is_armed_by_default(monkeypatch):
-    # ComfyUI batches cond / uncond whether or not the model is resident; the per-shape trial decides.
     resident = _Pipe(Flux2Transformer2DModel())
     assert cb.cfg_batch_decline(resident, offload_policy = "none") is None
     assert cb.install_cfg_batch(resident, offload_policy = "none") is None
@@ -338,8 +337,7 @@ def _timed(monkeypatch, cost):
 def test_the_timing_trial_never_mixes_paths_and_repeats_bit_identically(
     monkeypatch, batched_cost, wins
 ):
-    # Same seed twice in one process: render 1 (which runs the trial) and render 2 (which reads the verdict) give the
-    # same result bit for bit, equal to the batched-only or the plain-only path.
+    # render 1 (trial) and render 2 (verdict) match bit for bit
     model = _timed(monkeypatch, lambda b: 1.0 if b == 1 else batched_cost)
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
@@ -511,8 +509,7 @@ def test_a_doubled_call_that_compiles_a_graph_turns_batching_off(monkeypatch):
 
 
 def test_a_router_traced_by_dynamo_passes_straight_through():
-    # a whole-module compile reaches the router through the module's forward. Its own logic (CUDA syncs, memory stats,
-    # timers) must not enter the trace: on a B200 those were graph breaks. fullgraph=True raises on any break.
+    # the router's own logic must not enter a whole-module compile trace; fullgraph=True raises on any break
     model = _quiet_flux()
     pipe = _Pipe(model)
     assert cb.install_cfg_batch(pipe, offload_policy = "none") is None
@@ -538,8 +535,7 @@ def test_a_router_traced_by_dynamo_passes_straight_through():
 
 @pytest.mark.parametrize("pair_s, gated", [(0.3, True), (0.1, False)])
 def test_a_compute_bound_resident_pair_skips_the_trial(monkeypatch, pair_s, gated):
-    # a slow card (T4: ~4 s per FLUX.2-klein pair) cannot win 8% from one doubled call; the trial's extra calls would
-    # only slow its first render. Step 2's own pair is the measurement, so nothing extra runs.
+    # a compute-bound pair skips the trial: nothing extra runs
     model = _timed(monkeypatch, lambda b: pair_s / 2 if b == 1 else pair_s)
     monkeypatch.setattr(cb, "_RESIDENT_MAX_PAIR_S", 0.25)
     pipe = _Pipe(model)
@@ -564,8 +560,7 @@ def test_an_offloaded_pair_is_never_gated_as_compute_bound(monkeypatch):
 
 
 def test_one_slow_plain_sample_does_not_decide_the_trial(monkeypatch):
-    # a doubled call that costs a full plain pair is no gain, even when the trial's first plain sample was slow (a
-    # shared card): the fastest of each kind decides
+    # the fastest of each kind decides, not one slow plain sample
     seen = {"n": 0}
 
     def cost(b):

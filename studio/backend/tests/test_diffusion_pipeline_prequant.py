@@ -1890,10 +1890,8 @@ def _small_dit_kept_bf16(monkeypatch, reason):
 @pytest.mark.parametrize(
     "reason, speed, expect_speed, expect_deferred",
     [
-        # the small-DiT rule replaced an INT8 load that compiled from render 1: so does the bf16 one, and follow-up
-        # prompts compile nothing (the deferred profile would compile on the 3rd image)
+        # a small DiT kept bf16 compiles from render 1, like the INT8 load it replaced
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, None, "default", False),
-        # an explicit speed is the caller's
         (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, "off", "off", False),
         # every other bf16-kept family keeps the deferred profile
         ("measured: no faster", None, "off", True),

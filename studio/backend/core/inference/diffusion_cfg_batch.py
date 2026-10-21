@@ -15,29 +15,21 @@ them for the classes whose forward keeps no state between calls:
 - the second call is verified against what was batched (every argument bitwise) and gets the kept half; anything
   else (a changed argument, no second call, a third call) reruns that branch plain and counts as a miss.
 
-Priced by measurement, once per request shape and before any batched result is used: steps 1-2 of every render run
-plain (step 1 warms up and teaches the router the second branch's arguments; step 2's own pair is timed). A resident
-pair at or above ``_RESIDENT_MAX_PAIR_S`` is compute-bound and stays plain with nothing extra run (a slow card would pay
-the trial on its first render for nothing). Otherwise, on step 2's arguments, two timed plain pairs interleaved with two
-timed doubled calls, outputs discarded; batching serves steps 3+ of every render of that shape only when the fastest
-doubled call beats the fastest plain pair by ``_MEASURED_FRACTION``. So every render of a shape takes one path for all
-its steps: the same seed twice in one process gives the same image, and a timing trial never mixes paths inside a
-render. Memory: the doubled call is attempted only when the card has room for twice the activations a plain call
-allocated; an out-of-memory turns the shape plain for that render.
+Priced once per request shape, before any batched result is used: steps 1-2 run plain (step 2 is timed); a resident
+pair >= ``_RESIDENT_MAX_PAIR_S`` stays plain untried. Otherwise a discarded trial (plain pairs interleaved with doubled
+calls) batches steps 3+ only if the fastest doubled call beats the fastest plain pair by ``_MEASURED_FRACTION``, so every
+render of a shape takes one path (same seed, same image). The doubled call needs room for twice a plain call's
+activations; an OOM turns the shape plain for that render.
 
-Not always bit-exact: a doubled batch can pick other GEMM / attention tiles. B200, bf16, resident: FLUX.2-klein-base-4B
-batched renders are bitwise equal to two calls at 512 and 1024 px; Wan2.1-T2V-1.3B 832x480 differs (LPIPS 0.019 mean /
-0.023 max over frames); offloaded FLUX.2-klein-base: LPIPS ~0.01. ``UNSLOTH_DIFFUSION_CFG_BATCH=0`` keeps the exact
+Not always bit-exact (other GEMM / attention tiles): B200 bf16 resident FLUX.2-klein-base-4B is bitwise equal,
+Wan2.1-T2V-1.3B LPIPS 0.019 mean; offloaded FLUX.2-klein-base LPIPS ~0.01. ``UNSLOTH_DIFFUSION_CFG_BATCH=0`` keeps the exact
 one-branch-per-call path; ``force`` also batches an unlisted class (the trial's discarded calls must be side-effect
 free). Declined for per-call activation scaling (NVFP4 without frozen global scales), whose scale would change with the
 doubled batch, and for denoisers already wrapped by another forward layer.
 
-Compiled denoisers: a doubled batch is a new input shape, so it compiles a second graph per compiled block. That is
-allowed only inside a shape's trial render (its warm-up): an offloaded compiled denoiser (which saves an upload per
-step) batches from the trial on, a resident compiled one stays plain (nothing to save), and a shape judged before a
-later compile (the deferred profile, a compile moved below an offload hook) stays plain after it. Checked at install
-and at the start of every render. A doubled call that compiles a graph on a follow-up render ends batching for the
-load after that render; a router reached while Dynamo traces passes straight through (nothing of its own to trace).
+Compiled denoisers: the doubled shape compiles a second graph per block, allowed only in a shape's trial render.
+Offloaded compiled denoisers batch; resident compiled ones and shapes judged before a later compile stay plain. A
+follow-up-render compile ends batching for the load; under Dynamo tracing the router passes straight through.
 """
 
 from __future__ import annotations
@@ -68,12 +60,9 @@ _PADDED_TEXT = (("encoder_hidden_states", "encoder_hidden_states_mask"),)
 
 _MEASURED_FRACTION = 0.92
 _BATCHED_SAMPLES = 2
-# Steps of every render that run plain: step 1 warms the shape up and teaches the second branch, step 2 is timed live
-# (free: its own two calls) and runs the trial. Batching serves steps 3+ of every render, so renders share one path.
+# Step 1 warms up and teaches the second branch; step 2 is timed and runs the trial.
 _PLAIN_STEPS = 2
-# A resident plain pair this slow is compute-bound: one doubled call cannot win 8% there, so the trial (two more
-# pairs and two doubled calls, discarded) is skipped. B200 winners measured 0.03-0.06 s per pair; a T4 FLUX.2-klein
-# 1024 px pair takes ~4.2 s, where the trial alone added ~17 s to the first render.
+# Compute-bound resident pair: skip the trial (B200 winners 0.03-0.06 s/pair; T4 FLUX.2-klein ~4.2 s, trial +17 s).
 _RESIDENT_MAX_PAIR_S = 0.25
 _MISS_LIMIT = 3
 _OFF_TRANSIENT = "transient"
@@ -237,11 +226,8 @@ def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
     ):
         return f"{type(denoiser).__name__} is not on the stateless-forward list ({CFG_BATCH_ENV}=force opts it in)"
     if offload_policy == "model":
-        # diffusers rebuilds the model-offload hooks around the denoiser between renders, which takes the router out
-        # of the forward slot after render 1: render 1 would batch and later renders run plain (a different image for
-        # the same seed). Measured on Wan2.1-1.3B low_vram: 7 batched steps on render 1, then no router calls.
+        # diffusers rebuilds model-offload hooks between renders, evicting the router: later renders would differ.
         return "model offload re-hooks the denoiser every render"
-    # Resident denoisers batch too (ComfyUI's default); the per-shape trial keeps the plain path where it is faster.
     return None
 
 
@@ -286,8 +272,7 @@ class CfgBatchRouter:
         logger: Any = None,
     ) -> None:
         self.module_ref = weakref.ref(module)
-        # Traced inside a compiled caller, the router passes straight through (no Python of its own for Dynamo to
-        # break on, and no doubled shape to recompile for).
+        # Under Dynamo tracing: pass straight through (no graph breaks, no doubled-shape recompile).
         self._is_compiling = getattr(getattr(_torch(), "compiler", None), "is_compiling", None) or (
             lambda: False
         )
@@ -391,8 +376,7 @@ class CfgBatchRouter:
         if not self.render_checked:
             # first call of a render: a request-time step cache may have hooked the blocks since install
             module = self.module_ref()
-            # a compile can land after install (the deferred profile on the third image, a compile moved below an
-            # offload hook): checked per render, so batching never meets a compiled block
+            # a compile can land after install (deferred profile, compile below an offload hook): check per render
             self.render_off = _foreign_hook(module) if module is not None else None
             self.render_compiled = compiled_denoiser(module) if module is not None else None
             if self.render_compiled is not None:
@@ -400,8 +384,6 @@ class CfgBatchRouter:
                     self.render_off = f"{self.render_compiled} and resident"
                 for shape in self.shapes.values():
                     if shape.judged and not shape.compiled_at_trial and shape.off is None:
-                        # compiled after this shape's trial (the deferred profile, a compile moved below an offload
-                        # hook): batching now would compile a second graph on a follow-up prompt
                         self._shape_off(shape, "the denoiser was compiled after this shape's trial")
             self.render_checked = True
         if self.render_off is not None:
@@ -433,8 +415,7 @@ class CfgBatchRouter:
                 if out is not None:
                     return out
             if shape.off is not None:
-                # a shape that stays plain needs no prediction: recording one compares small tensors bytewise, a host
-                # sync per step (2.5-3.5% of a resident render on a B200)
+                # skip recording on a plain shape: it is a host sync per step (2.5-3.5% on B200)
                 return self._plain(args, kwargs)
             self._record_template(args, kwargs, latent)
             out = self._plain(args, kwargs)
@@ -504,16 +485,12 @@ class CfgBatchRouter:
         return out
 
     def _trial(self, second: tuple, latent: Any, shape: _Shape) -> None:
-        """Price this shape once, on the step's own (already warm) arguments, before any batched result is used.
-
-        The trial's outputs are discarded, so the render's images come from one path only: step 1 plain, then the
-        verdict's path for every later step of every render of this shape."""
+        """Price this shape once on the step's warm arguments; outputs are discarded so renders keep one path."""
         torch = _torch()
         first = self.b0
         if first is None:
             return
         if not self._sync(latent):
-            # no device timer: batch on the memory gate alone
             self._judge(shape)
             return
         if not self._memory_ok(latent, shape):
@@ -524,8 +501,7 @@ class CfgBatchRouter:
         try:
             b_args, b_kwargs = merge_branches(first, second, batch)
             graphs = _graph_count()
-            # interleaved plain pair / doubled call samples, the fastest of each: one slow sample (a shared card,
-            # a first-call kernel plan) cannot decide the verdict either way
+            # interleaved, fastest of each: one slow sample cannot decide the verdict
             for _ in range(_BATCHED_SAMPLES):
                 t0 = time.perf_counter()
                 self.orig_forward(*first[0], **first[1])
@@ -661,8 +637,7 @@ class CfgBatchRouter:
             self.disable(f"the doubled call failed ({type(exc).__name__}: {exc})")
             return None
         if _graph_count() != graphs and self.renders > shape.trial_render:
-            # a doubled call compiled a graph on a follow-up render (a compile the render-start check did not see):
-            # this render finishes on its one path, every later render runs plain
+            # a doubled call compiled on a follow-up render: finish this render, later renders run plain
             self.pending_disable = "the doubled batch compiled a graph after its warm-up render"
         self.kept = {
             "out": other,

@@ -518,10 +518,8 @@ class _AutoCudnn(str):
 
 
 AUTO_CUDNN = _AutoCudnn("_native_cudnn")
-# Blackwell, torch 2.13, B200, bf16: native SDPA already runs the cuDNN sm100 kernel at head_dim 64 / 128 (bitwise
-# identical), so the pin only adds its per-call sdpa_kernel wrapper: per call 0.4-22% slower eager, within +-4% compiled
-# (exclusive card, FLUX.2-klein / Wan2.1 / Qwen-Image shapes). At head_dim 256 native picks FLASH there, so the probe
-# is per head dim.
+# B200 torch 2.13 bf16: native SDPA already runs cuDNN at head_dim 64/128 (pin = 0.4-22% slower eager wrapper);
+# head_dim 256 picks FLASH, hence the per-head-dim probe.
 BLACKWELL_NATIVE_ATTN_ENV = (
     "UNSLOTH_DIFFUSION_BLACKWELL_NATIVE_ATTN"  # auto (default) | 0 keeps the cuDNN pin
 )
