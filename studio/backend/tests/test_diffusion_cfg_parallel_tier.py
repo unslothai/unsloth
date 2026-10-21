@@ -345,3 +345,31 @@ def test_a_queued_replica_job_holds_captures_off_until_it_has_dropped_its_inputs
     assert dropped == [1]
     assert cg._OUTSIDE_JOBS == 0
     worker.close()
+
+
+def test_a_graph_installs_under_a_router_nested_in_a_static_step_skip():
+    # deferred speed: the auto static skip wraps the router armed at load, then the graph arms
+    from core.inference.diffusion_step_skip import StaticStepSkip
+
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    reference = _cfg_loop(dit, latents.clone(), steps = 4)
+    router, _replicas = _router(dit)
+    pipe = _Pipe(dit)
+    mg._CFG_ROUTERS[pipe] = router
+    skip = StaticStepSkip(dit, inner = router)
+    dit.__dict__["forward"] = skip
+    graph = cg.GraphedForward(dit).install()
+    # the graph goes beneath the router, not over it
+    assert dit.__dict__["forward"] is skip and skip.inner is router and router.inner is graph
+    graph.uninstall()
+    assert router.inner is None and skip.inner is router
+    graph.install()
+    # a replica cannot carry the skip: the router is dropped and the skip keeps the graph
+    assert mg.drop_displaced_cfg_router(pipe, "test")
+    assert mg._CFG_DECLINES[pipe] == "a static step skip wraps the denoiser"
+    assert pipe not in mg._CFG_ROUTERS
+    assert dit.__dict__["forward"] is skip and skip.inner is graph and router.inner is None
+    assert torch.equal(_cfg_loop(dit, latents.clone(), steps = 4), reference)
+

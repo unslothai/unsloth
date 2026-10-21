@@ -690,6 +690,9 @@ def _router_layer(module: Any) -> Any:
         slot = module.__dict__.get("forward")
     except Exception:  # noqa: BLE001
         return None
+    # A static step skip installed after the router wraps it: the router is the skip's inner.
+    if getattr(slot, "_unsloth_outer_forward", False) is True:
+        slot = getattr(slot, "inner", None)
     return slot if getattr(type(slot), "_unsloth_cfg_router_layer", False) is True else None
 
 

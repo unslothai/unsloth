@@ -2321,6 +2321,19 @@ def invalidate_cfg_replica(
     return True
 
 
+def _router_slot(module: Any, router: Any) -> Any:
+    """``module`` when ``router`` is its forward, the outer layer (static step skip) whose inner it is, else None."""
+    slot = module.__dict__.get("forward")
+    if slot is router:
+        return module
+    if (
+        getattr(slot, "_unsloth_outer_forward", False) is True
+        and getattr(slot, "inner", None) is router
+    ):
+        return slot
+    return None
+
+
 def drop_displaced_cfg_router(
     pipe: Any,
     reason: str,
@@ -2335,8 +2348,12 @@ def drop_displaced_cfg_router(
     if router is None:
         return False
     module = router.module_ref()
-    if module is not None and module.__dict__.get("forward") is router:
+    holder = _router_slot(module, router) if module is not None else None
+    if holder is module and module is not None:
         return False
+    if holder is not None:
+        # The replica cannot carry a step skip (it holds the source module), so the router could never build one.
+        reason = "a static step skip wraps the denoiser"
     uninstall_cfg_parallel(pipe)
     with contextlib.suppress(TypeError):
         _CFG_DECLINES[pipe] = reason
@@ -2366,7 +2383,8 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
     router.drop_replica()
     module = router.module_ref()
     if module is not None:
-        if module.__dict__.get("forward") is router:
+        holder = _router_slot(module, router)
+        if holder is module:
             if router.inner is not None:
                 module.__dict__["forward"] = router.inner
                 router.inner = None
@@ -2374,5 +2392,13 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
                 module.__dict__["forward"] = router.orig_forward
             else:
                 del module.__dict__["forward"]
+        elif holder is not None:
+            # under a static step skip: hand the skip what the router wrapped
+            holder.inner = (
+                router.inner
+                if router.inner is not None
+                else (router.orig_forward if router.had_override else None)
+            )
+            router.inner = None
         if module.__dict__.get("_unsloth_cfg_router") is router:
             del module.__dict__["_unsloth_cfg_router"]
