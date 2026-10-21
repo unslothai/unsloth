@@ -126,7 +126,6 @@ def test_peft_save_merges_plain_linears(monkeypatch, tmp_path):
     save_mod._unsloth_save_torchao_with_attached_config(
         model = model, save_directory = str(tmp_path), tokenizer = object()
     )
-    # The 16-bit merge sees plain modules, as for the quantizer-child schemes.
     assert not any(isinstance(m, _mx_linear()) for m in model.modules())
     assert seen["torchao_config"] is not None
 

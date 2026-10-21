@@ -7890,7 +7890,7 @@ def _output_head_module_ids(model):
 
 
 def _block_linear_filter(model, block_size, qat_scheme, skip_output_head):
-    """Microscaling filter: both Linear dims divisible by the scale block, optionally never the output head (or anything under it)."""
+    """Linears with both dims divisible by the scale block, optionally excluding the output head."""
     out_head_ids = _output_head_module_ids(model) if skip_output_head else set()
 
     def eligible(m):
@@ -8060,9 +8060,7 @@ def _prepare_model_for_qat(
                 from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
-            # W4A4: the QAT forward runs torchao's real NVFP4 GEMM (Blackwell); the backward is fake quantized bf16.
-            # use_triton_kernel = False: the default Triton activation quantizer needs the optional MSLK
-            # package, and the saved checkpoint would not run where MSLK is absent.
+            # use_triton_kernel = False: the Triton quantizer needs optional MSLK, also at checkpoint load.
             try:
                 base_config = NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
             except TypeError:  # older torchao without the knob
