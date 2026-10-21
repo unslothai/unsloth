@@ -774,10 +774,17 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
   out.schedule_type ??= legacySchedule;
   const hiresKeys = Object.keys(hires);
   if (hiresKeys.length > 0) out.hires = hires;
-  // txt2img hires fix also writes a denoising strength; without it the strength means img2img.
+  // txt2img hires fix also writes a denoising strength; without it the strength means img2img,
+  // or inpaint when A1111 wrote its mask-only fields.
   if (out.strength !== undefined) {
     if (hiresKeys.length > 0) delete out.strength;
-    else out.workflow ??= "img2img";
+    else
+      out.workflow ??=
+        out.mask_blur !== undefined ||
+        out.inpaint_only_masked !== undefined ||
+        out.inpaint_padding !== undefined
+          ? "inpaint"
+          : "img2img";
   }
   if (notApplied.length > 0) out.parameters_not_applied = notApplied;
   return out.prompt || hasSettings ? out : null;

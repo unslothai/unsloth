@@ -132,6 +132,12 @@ test("inpaint mask blur, only-masked area and padding restore within the request
   assert.equal(r.mask_blur, 4);
   assert.equal(r.inpaint_only_masked, true);
   assert.equal(r.inpaint_padding, 48);
+  assert.equal(r.workflow, "inpaint");
+  assert.equal(
+    parseA1111Parameters("a\nSteps: 20, Seed: 1, Denoising strength: 0.5, Mask blur: 4")
+      ?.workflow,
+    "inpaint",
+  );
   const settings = recipeSettings(r, DEFAULTS);
   assert.equal(settings.mask_blur, 4);
   assert.equal(settings.inpaint_only_masked, true);
