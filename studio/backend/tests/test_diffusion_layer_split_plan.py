@@ -974,6 +974,10 @@ def _rocm_host(monkeypatch, cards):
         )
 
     monkeypatch.setattr(torch.cuda, "get_device_properties", props)
+    # the per-card SDPA probe spawns HIP children; every card has a fused kernel unless a test says otherwise
+    from core.inference import diffusion_attention as da
+
+    monkeypatch.setattr(da, "sdpa_math_only", lambda target: False)
 
 
 def test_rocm_two_discrete_cards_plan_the_same_split_as_cuda(monkeypatch, engine):
@@ -1105,3 +1109,40 @@ def test_rocm_apu_without_the_integrated_flag_gets_no_blocks(monkeypatch, engine
     refined, pipe = _refine(_plan(), ordinals = (0, 1))
     assert refined.layer_split is None
     assert lsp.layer_split_status(pipe)["declined"].startswith(lsp.UNIFIED_DECLINE)
+
+
+def test_rocm_math_only_secondary_gets_no_blocks_beside_a_fused_primary(monkeypatch, engine):
+    # mixed gfx, native SDPA: cuda:1 has no fused kernel at bf16, so math SDPA would hold the full score matrix there
+    _cards(monkeypatch)
+    _rocm_host(monkeypatch, {0: _RX7900, 1: _MI300, 2: _RX7900})
+    pipe = _Pipe()
+    pipe.transformer = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    from core.inference import diffusion_attention as da
+
+    probed = []
+    monkeypatch.setattr(
+        da,
+        "sdpa_math_only",
+        lambda t: probed.append((t.torch_device, t.dtype)) or t.torch_device == "cuda:1",
+    )
+    refined, _ = _refine(_plan(), pipe = pipe, ordinals = (0, 1, 2))
+    assert refined.layer_split is not None and 1 not in refined.layer_split.cards
+    assert 2 in refined.layer_split.cards
+    assert ("cuda:1", torch.bfloat16) in probed  # probed per card at the denoiser's dtype
+    refined, pipe = _refine(_plan(), pipe = pipe, ordinals = (0, 1))
+    assert refined.layer_split is None
+    declined = lsp.layer_split_status(pipe)["declined"]
+    assert declined.startswith(lsp.MATH_ONLY_DECLINE) and "cuda:1" in declined
+    # a math-only primary already priced the quadratic peak: matching cards keep the split
+    monkeypatch.setattr(da, "sdpa_math_only", lambda t: True)
+    refined, _ = _refine(_plan(), pipe = pipe, ordinals = (0, 1))
+    assert refined.layer_split is not None and refined.layer_split.cards == (0, 1)
+
+
+def test_cuda_split_never_runs_the_rocm_sdpa_probe(monkeypatch, engine):
+    _cards(monkeypatch)
+    from core.inference import diffusion_attention as da
+
+    monkeypatch.setattr(da, "sdpa_math_only", lambda t: pytest.fail("ROCm probe on CUDA"))
+    refined, _ = _refine(_plan())
+    assert refined.layer_split is not None

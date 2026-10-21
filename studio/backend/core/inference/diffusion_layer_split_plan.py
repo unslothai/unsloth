@@ -672,7 +672,7 @@ _PRIMARY_ARCH_BACKENDS = frozenset({"_flash_3_hub", "flash_4_hub", "sage", "sage
 
 
 def _backend_cards(
-    pipe: Any, primary: int, secondaries: Sequence[int]
+    pipe: Any, primary: int, secondaries: Sequence[int], logger: Any = None
 ) -> tuple[tuple[int, ...], Optional[str]]:
     """``(secondaries the engaged attention backend runs on, that backend)``; a card of unknown capability is kept."""
     from . import diffusion_multigpu as mg
@@ -688,7 +688,7 @@ def _backend_cards(
                 break
     cards = tuple(int(o) for o in secondaries)
     if _is_rocm():
-        return _rocm_backend_cards(pipe, primary, cards)
+        return _rocm_backend_cards(pipe, primary, cards, logger)
     if backend is None:
         return cards, None
     need = mg._capability(primary)
@@ -732,12 +732,77 @@ def _rocm_flash_runs_on(ordinal: int, dtype: Any) -> bool:
         return False
 
 
+MATH_ONLY_DECLINE = "math-only attention"
+_PROBE_DTYPES = ("torch.float16", "torch.bfloat16", "torch.float32")
+
+
+def _rocm_attention_dtype(pipe: Any) -> Any:
+    """The compute dtype the SDPA probe should run at: the denoiser's, else the pipeline's; None (the probe's fp16
+    default) when only a quantized storage dtype is readable."""
+    from . import diffusion_multigpu as mg
+
+    for name in mg.DENOISER_ATTRS:
+        module = getattr(pipe, name, None)
+        if module is not None:
+            dtype = _denoiser_dtype(module)
+            if str(dtype) in _PROBE_DTYPES:
+                return dtype
+    dtype = getattr(pipe, "dtype", None)
+    return dtype if str(dtype) in _PROBE_DTYPES else None
+
+
+def _rocm_sdpa_math_only(ordinal: int, dtype: Any) -> bool:
+    """diffusion_attention's per-device SDPA probe: True only when math ran and every fused kernel refused on this
+    card at this dtype (an unanswered probe is False)."""
+    try:
+        from types import SimpleNamespace
+
+        from .diffusion_attention import sdpa_math_only
+        return bool(
+            sdpa_math_only(SimpleNamespace(device = "cuda", torch_device = f"cuda:{int(ordinal)}", dtype = dtype))
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _rocm_drop_math_only(
+    pipe: Any, primary: int, cards: tuple[int, ...], logger: Any = None
+) -> tuple[int, ...]:
+    """Drop a secondary whose native SDPA is math-only when the primary's is not: the plan's activation figures were
+    priced for the primary's fused kernel, and math SDPA materialises the full score matrix on the card running the
+    block. A math-only primary priced that peak already, so cards matching it are kept."""
+    if not cards:
+        return cards
+    dtype = _rocm_attention_dtype(pipe)
+    if _rocm_sdpa_math_only(primary, dtype):
+        return cards
+    dropped = tuple(o for o in cards if _rocm_sdpa_math_only(o, dtype))
+    if dropped and logger is not None:
+        logger.info(
+            "diffusion.multigpu: layer split skips %s (%s at %s)",
+            ", ".join(f"cuda:{o}" for o in dropped),
+            MATH_ONLY_DECLINE,
+            dtype,
+        )
+    return tuple(o for o in cards if o not in dropped)
+
+
+def _math_only_reason(primary: int, cards: Sequence[int]) -> str:
+    names = ", ".join(f"cuda:{int(o)}" for o in cards)
+    has = "has" if len(cards) == 1 else "have"
+    return (
+        f"{MATH_ONLY_DECLINE}: {names} {has} no fused SDPA kernel at the model dtype (cuda:{int(primary)} does), so its "
+        "attention would materialise the full score matrix"
+    )
+
+
 def _rocm_backend_cards(
-    pipe: Any, primary: int, cards: tuple[int, ...]
+    pipe: Any, primary: int, cards: tuple[int, ...], logger: Any = None
 ) -> tuple[tuple[int, ...], Optional[str]]:
     """ROCm: native SDPA runs on any gfx target (the load dtype is already matched by ``make_selection``), so every
-    card is kept. A per-target kernel (flash_attn, AITER) the primary verified keeps only cards of the primary's gfx
-    target, and flash only where its own probe runs and matches on that card (as the primary's did at load)."""
+    card whose SDPA is not math-only where the primary's is fused is kept. A per-target kernel (flash_attn, AITER) the
+    primary verified keeps only cards of the primary's gfx target, and flash only where its own probe runs and matches
+    on that card (as the primary's did at load)."""
     from . import diffusion_multigpu as mg
 
     backend = module = None
@@ -752,7 +817,7 @@ def _rocm_backend_cards(
                 backend, module = tag, candidate
                 break
     if backend is None:
-        return cards, None
+        return _rocm_drop_math_only(pipe, primary, cards, logger), None
     need = _rocm_gfx(primary)
     if not need:
         return (), backend
@@ -793,11 +858,13 @@ def refine_plan_for_layer_split(
         _record_decline(pipe, f"denoiser cannot be split ({_layout_refusal(pipe)})", logger)
         return plan
     limits: dict[int, int] = {int(selection.primary): int(primary_limit_mib)}
-    secondaries, backend = _backend_cards(pipe, int(selection.primary), candidates)
+    secondaries, backend = _backend_cards(pipe, int(selection.primary), candidates, logger)
     if not secondaries:
         _record_decline(
             pipe,
-            f"attention backend {backend} was verified for cuda:{int(selection.primary)}'s architecture only",
+            _math_only_reason(int(selection.primary), candidates)
+            if backend is None and _is_rocm()
+            else f"attention backend {backend} was verified for cuda:{int(selection.primary)}'s architecture only",
             logger,
         )
         return plan
