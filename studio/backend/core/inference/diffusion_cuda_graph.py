@@ -31,6 +31,12 @@ CUDA_GRAPHS_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPHS"
 OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_CUDA_GRAPH"
 # =0: a block-streamed whole-step graph records its copies into the graph pool instead of the prefetcher's slot ring.
 STEP_SLOTS_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_SLOTS"
+MODEL_OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_MODEL_OFFLOAD_CUDA_GRAPH"
+# Default off: replay saved ~1% of a step (FLUX.2-klein 4B, 1024^2) but the per-render re-record + ~0.6 GB pool cost more.
+MODEL_OFFLOAD_REASON = (
+    "model offload re-uploads the denoiser every render at new addresses, so its step graph would record again on "
+    "every render; set " + MODEL_OFFLOAD_CUDA_GRAPH_ENV + "=1 to record it anyway"
+)
 
 # Per module. Legitimate second keys exist, but each costs a pool-sized slice of VRAM.
 MAX_GRAPHS_PER_MODULE = 4
@@ -98,6 +104,10 @@ def offload_graphs_enabled() -> bool:
         "false",
         "no",
     )
+
+
+def model_offload_graphs_requested() -> bool:
+    return (os.environ.get(MODEL_OFFLOAD_CUDA_GRAPH_ENV) or "").strip().lower() in _TRUE_TOKENS
 
 
 def cuda_graph_disabled() -> bool:
@@ -1570,8 +1580,9 @@ class OffloadPlacement:
     and the resident groups read in place. The pool holds the in-flight window at fixed addresses, so it plays the
     prefetch ring. Recorded again when a residency change, a release / restore or a host-copy swap moves an address.
 
-    ``model``: whole-module CPU offload (accelerate). The hook moves the module on the eager path first and the replay
-    sits under it, in ``_old_forward``. Recorded again when the onload placed the weights at new addresses; after
+    ``model``: whole-module CPU offload (accelerate), only with ``MODEL_OFFLOAD_CUDA_GRAPH_ENV=1`` (see
+    ``MODEL_OFFLOAD_REASON``). The hook moves the module on the eager path first and the replay sits under it, in
+    ``_old_forward``. Recorded again when the onload placed the weights at new addresses; after
     ``MODEL_MAX_INVALIDATIONS`` re-records the module runs eager (each re-record costs a forward)."""
 
     MODEL_MAX_INVALIDATIONS = 2
@@ -1843,6 +1854,8 @@ def offload_placement(module: Any) -> tuple:
                 None,
                 f"offload hook {type(hf_hook).__name__} moves the weights inside the forward",
             )
+        if not model_offload_graphs_requested():
+            return None, MODEL_OFFLOAD_REASON
         why = _forward_refusal(module, "model")
         if why is not None:
             return None, why
@@ -2430,7 +2443,7 @@ def arm_block_graphs(
         return ()
     try:
         from .diffusion_block_graph import (
-            MODEL_OFFLOAD_REASON,
+            BLOCK_GRAPHS_ENV,
             OPT_IN_REASON,
             block_graphs_disabled,
             block_graphs_requested,
@@ -2459,7 +2472,12 @@ def arm_block_graphs(
         if block_graphs_disabled():
             _set_reason(pipe, "disabled by UNSLOTH_DIFFUSION_BLOCK_GRAPHS=0")
         else:
-            _set_reason(pipe, MODEL_OFFLOAD_REASON if model_offload else OPT_IN_REASON)
+            # Keep the whole step's own refusal visible (its opt-in, or why the opt-in still could not record).
+            if model_offload:
+                whole_why = prior if prior and prior != "offload active" else MODEL_OFFLOAD_REASON
+                _set_reason(pipe, whole_why + "; per block: set " + BLOCK_GRAPHS_ENV + "=1")
+            else:
+                _set_reason(pipe, OPT_IN_REASON)
         return ()
     armed: list = []
     reasons: list = []
