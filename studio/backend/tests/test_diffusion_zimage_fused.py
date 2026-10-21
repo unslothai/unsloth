@@ -256,8 +256,7 @@ def test_model_unload_restores_the_process_global_patches(monkeypatch):
     monkeypatch.setattr(q21, "_addcmul_lowering", lambda: (True, False))
     monkeypatch.setattr(q21, "_FUSION", {})
     monkeypatch.setattr(q21, "probe_fusion", lambda dev: ("x", "x"))
-    # diffusers 0.41.0 patches the ROPE_PER_DEVICE["cuda"] entry; main d42ebf9c dropped the table, so the module
-    # global apply_rotary_emb_qwen is patched instead. Snapshot every slot either layout can touch.
+    # 0.41.0 patches ROPE_PER_DEVICE["cuda"]; diffusers without the table patches apply_rotary_emb_qwen instead.
     table = getattr(qmod, "ROPE_PER_DEVICE", None)
 
     def slots():
