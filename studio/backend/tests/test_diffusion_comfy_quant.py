@@ -1029,3 +1029,103 @@ def test_fp8_upcast_is_read_from_the_header_not_the_basename(tmp_path):
         d._single_file_fp8_upcast(str(plain), types.SimpleNamespace(single_file_is_pipeline = True))
         is False
     )
+
+
+def test_fnuz_fp8_headers_are_priced_widened_and_never_stored(tmp_path):
+    """FNUZ float8 is fp8 on disk that every loader widens: the header predicate must see it, and the Krea 2
+    storage estimate must not drop its upcast (storage keeps only the OCP fp8 codes)."""
+    from safetensors.torch import save_file
+
+    from core.inference import diffusion as d
+
+    fam = types.SimpleNamespace(single_file_is_pipeline = False)
+    fnuz = tmp_path / "krea2.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fnuz)}, str(fnuz))
+    ocp = tmp_path / "krea2_ocp.safetensors"
+    save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fn)}, str(ocp))
+    assert cq.header_has_fp8_weights(str(fnuz)) is True
+    assert d._single_file_fp8_upcast(str(fnuz), fam) is True
+    assert cq.header_has_fp8_weights(str(fnuz), fnuz_only = True) is True
+    assert cq.header_has_fp8_weights(str(ocp), fnuz_only = True) is False
+
+
+def _plan_harness(
+    monkeypatch,
+    tmp_path,
+    *,
+    fam,
+    resident_at,
+    fits_mib,
+    comfy_mib = None,
+):
+    """Run ``_plan_memory`` for a single file with a fake planner (resident iff the DiT fits ``fits_mib``)."""
+    from core.inference import diffusion as d
+    from core.inference import diffusion_memory as dm
+
+    path = tmp_path / "dit.safetensors"
+    if not path.exists():
+        path.write_bytes(b"\x00" * 16)
+    seen: list = []
+
+    def plan(**kwargs):
+        mib = kwargs["model_dense_mib"]
+        seen.append(mib)
+        return types.SimpleNamespace(resident = mib is not None and mib <= fits_mib)
+
+    monkeypatch.setattr(d, "plan_diffusion_memory", plan)
+    monkeypatch.setattr(d, "plan_keeps_transformer_resident", lambda p: p.resident)
+    monkeypatch.setattr(d, "comfy_fp8_storage", lambda target, lora = False: True)
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 10**7)
+    monkeypatch.setattr(
+        d.DiffusionBackend, "_companion_cache_bytes", staticmethod(lambda *a, **k: 0)
+    )
+    monkeypatch.setattr(
+        d.DiffusionBackend, "_text_encoder_cache_bytes", staticmethod(lambda *a, **k: 0)
+    )
+    monkeypatch.setattr(d.DiffusionBackend, "_supplied_component_mib", lambda self, *a, **k: None)
+    if comfy_mib is not None:
+        monkeypatch.setattr(
+            d.DiffusionBackend, "_comfy_single_file_resident_mib", staticmethod(comfy_mib)
+        )
+    else:
+        monkeypatch.setattr(
+            d.DiffusionBackend,
+            "_comfy_single_file_resident_mib",
+            staticmethod(lambda *a, **k: None),
+        )
+    monkeypatch.setattr(d, "file_size_mib", lambda p: 1000)
+    monkeypatch.setattr(
+        d,
+        "estimate_safetensors_dense_mib",
+        lambda size, fp8_upcast = False: size * (2 if fp8_upcast else 1),
+    )
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+
+    backend = d.DiffusionBackend()
+    final = backend._plan_memory(
+        resolve_diffusion_device_target(),
+        str(resident_at or path),
+        "base/repo",
+        fam,
+        None,
+        False,
+        kind = "single_file",
+    )
+    return backend, final, seen, str(resident_at or path)
+
+
+def test_fnuz_krea2_file_is_not_planned_at_the_stored_size(monkeypatch, tmp_path):
+    """A Krea 2 FNUZ file widens under storage too, so the planner records no storage pick for it."""
+    from safetensors.torch import save_file
+
+    from core.inference.diffusion_krea2 import KREA2_FAMILY_NAME
+
+    fam = types.SimpleNamespace(name = KREA2_FAMILY_NAME, single_file_is_pipeline = False)
+    for dtype, picked in ((torch.float8_e4m3fnuz, False), (torch.float8_e4m3fn, True)):
+        path = tmp_path / f"krea2_{str(dtype).split('_')[-1]}.safetensors"
+        save_file({"blocks.0.weight": torch.zeros(4, 4, dtype = dtype)}, str(path))
+        backend, final, seen, p = _plan_harness(
+            monkeypatch, tmp_path, fam = fam, resident_at = path, fits_mib = 500
+        )
+        assert backend._fp8_storage_picks[p] is picked, dtype
+        assert seen[-1] == (1000 if picked else 2000)

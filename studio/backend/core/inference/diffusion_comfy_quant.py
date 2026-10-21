@@ -137,18 +137,22 @@ def _layer_conf(raw: Any) -> tuple[Optional[str], bool, int]:
     return (fmt if isinstance(fmt, str) else None), convrot, group
 
 
-def header_has_fp8_weights(path: Optional[str]) -> Optional[bool]:
-    """Whether a safetensors file stores any fp8 ``.weight`` (plain or scaled), or None if its header is unreadable."""
+# ROCm-style float8 tags: every loader widens them (fp8 storage keeps only the OCP formats above).
+FP8_FNUZ_TAGS = ("F8_E4M3FNUZ", "F8_E5M2FNUZ")
+
+
+def header_has_fp8_weights(path: Optional[str], *, fnuz_only: bool = False) -> Optional[bool]:
+    """Whether a safetensors file stores any fp8 ``.weight`` (plain, scaled or FNUZ; ``fnuz_only``: FNUZ only), or
+    None if its header is unreadable."""
     if not path or not os.path.isfile(path):
         return None
     try:
         header, _base = _read_header(str(path))
     except Exception:  # noqa: BLE001
         return None
+    tags = FP8_FNUZ_TAGS if fnuz_only else (*FP8_FORMATS.values(), *FP8_FNUZ_TAGS)
     return any(
-        key.endswith(".weight")
-        and isinstance(entry, dict)
-        and entry.get("dtype") in FP8_FORMATS.values()
+        key.endswith(".weight") and isinstance(entry, dict) and entry.get("dtype") in tags
         for key, entry in header.items()
     )
 

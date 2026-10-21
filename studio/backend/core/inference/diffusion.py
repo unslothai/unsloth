@@ -11328,7 +11328,10 @@ class DiffusionBackend:
                 def _single_file_resident(fp8_storage: bool) -> Optional[int]:
                     fp8_upcast = _single_file_fp8_upcast(single_file_path, fam)
                     if fp8_upcast and fp8_storage and fam.name == KREA2_FAMILY_NAME:
-                        fp8_upcast = False
+                        # storage keeps only OCP fp8 codes; FNUZ ones still widen
+                        fp8_upcast = bool(
+                            header_has_fp8_weights(str(single_file_path), fnuz_only = True)
+                        )
                     mib = estimate_safetensors_dense_mib(
                         file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                     )
