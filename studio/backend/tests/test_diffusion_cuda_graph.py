@@ -1179,3 +1179,441 @@ def test_graph_eligible_keeps_other_backends(stub_torch, monkeypatch, backend):
     dit = _FakeDiT()
     dit._unsloth_attention_backend = backend
     assert _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit)) == (True, "eligible")
+
+
+def _named_dit(name):
+    return type(name, (_FakeDiT,), {})()
+
+
+def _policy():
+    from core.inference.diffusion_dynamic_text import PROMPT_LENGTH_POLICY
+    return PROMPT_LENGTH_POLICY
+
+
+def _step(
+    handle,
+    text_len,
+    value = 0.0,
+):
+    """One denoiser call whose text stream is ``text_len`` tokens (the graph key follows it)."""
+    return handle(
+        _t((1, 64), value = value), encoder_hidden_states = _t((1, text_len)), return_dict = False
+    )
+
+
+def _render(
+    handle,
+    text_len,
+    steps = 3,
+    negative_len = 7,
+):
+    """A true-CFG render: per step the prompt's call, then the negative prompt's."""
+    for i in range(steps):
+        _step(handle, text_len, value = float(i))
+        _step(handle, negative_len, value = float(i))
+
+
+class _LenDiT:
+    """``_FakeDiT`` that also takes the text stream."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def forward(
+        self,
+        hidden_states,
+        encoder_hidden_states = None,
+        return_dict = True,
+    ):
+        self.calls += 1
+        return (_FakeTensor((1, 64), value = ("out", hidden_states.value), tag = "out"),)
+
+
+def _len_dit(name):
+    return type(name, (_LenDiT,), {})()
+
+
+@pytest.mark.parametrize("name", sorted(_policy()))
+def test_the_wrapper_reads_the_prompt_length_policy(stub_torch, monkeypatch, name):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit(name))
+    assert handle.length_varies is isinstance(_policy()[name], tuple)
+    assert handle.length_sealed is False
+    # whole-step graphs stay eligible for every family: only what they record changes
+    ok, reason = _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = _named_dit(name)))
+    assert (ok, reason) == (True, "eligible")
+
+
+def test_a_new_prompt_length_after_the_first_render_records_nothing(stub_torch, monkeypatch):
+    """Qwen-Image's text length follows the prompt: generation 2 with a new length recorded a graph on that render
+    (seconds of capture). The first render's lengths replay; a new one runs the step ungraphed."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    module = _len_dit("QwenImageTransformer2DModel")
+    handle = _armed(module)
+    _render(handle, 3)
+    assert handle.stats["captures"] == 2 and handle.length_sealed is True
+    calls, replays, graphs = module.calls, handle.stats["replays"], stub_torch._records["graphs"][:]
+
+    _render(handle, 15)
+    assert handle.stats["captures"] == 2
+    assert stub_torch._records["graphs"] == graphs
+    assert handle.stats["length_eager"] == 3
+    assert module.calls == calls + 3
+    assert handle.stats["replays"] == replays + 3
+    assert len(handle.cache) == 2 and handle.stats["evictions"] == 0
+
+    _render(handle, 3)
+    assert handle.stats["captures"] == 2 and handle.stats["replays"] == replays + 9
+    assert handle.stats["length_eager"] == 3
+
+
+def test_the_ungraphed_step_returns_what_the_step_itself_returns(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("ZImageTransformer2DModel"))
+    _render(handle, 32, negative_len = 32)
+    out = _step(handle, 64, value = 5.0)
+    assert out[0].value == ("out", 5.0) and out[0].clone_of is None
+
+
+def test_a_fixed_length_family_records_as_before(stub_torch):
+    handle = _armed(_len_dit("Flux2Transformer2DModel"))
+    _render(handle, 512, negative_len = 512)
+    _render(handle, 300, negative_len = 300)  # (cannot happen for FLUX.2: its text is padded to 512)
+    # what it did before this policy: every new shape records (behaviour only, so it holds on either side)
+    assert handle.stats["captures"] == 2 and handle.stats.get("length_eager", 0) == 0
+    assert not getattr(handle, "length_sealed", False)
+
+
+def test_reset_reopens_the_first_render(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3)
+    handle.reset()  # a LoRA changed the weights: nothing recorded is left to replay
+    assert handle.length_sealed is False
+    _render(handle, 15)
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
+    assert handle.length_sealed is True
+
+
+def test_the_every_length_switch_records_each_new_length(stub_torch, monkeypatch):
+    monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3)
+    _render(handle, 15)
+    assert handle.length_varies is False and handle.stats["captures"] == 3
+
+
+def test_seal_lengths_closes_a_first_render_that_never_replayed(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    varying = _armed(_len_dit("QwenImageTransformer2DModel"))
+    fixed = _armed(_len_dit("Flux2Transformer2DModel"))
+    idle = _armed(_len_dit("Flux3Transformer2DModel"))
+    _step(varying, 3)
+    _step(fixed, 512)
+    assert varying.length_sealed is False
+    cg.seal_lengths((varying, fixed, idle, object()))
+    assert varying.length_sealed is True
+    assert fixed.length_sealed is False
+    assert idle.length_sealed is False
+    _step(varying, 15)
+    assert varying.stats["captures"] == 1 and varying.stats["length_eager"] == 1
+
+
+def test_describe_reports_the_seal(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3)
+    _render(handle, 15)
+    info = handle.describe()
+    assert info["length_sealed"] is True and info["stats"]["length_eager"] == 3
+    json.dumps(info)
+
+
+def test_block_graphs_decline_a_variable_length_denoiser(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    pipe = types.SimpleNamespace(transformer = _named_dit("QwenImageTransformer2DModel"))
+    assert cg.prompt_length_reason(pipe).startswith(cg.PROMPT_LENGTH_REASON)
+    assert (
+        cg.prompt_length_reason(
+            types.SimpleNamespace(transformer = _named_dit("Flux2Transformer2DModel"))
+        )
+        is None
+    )
+    family = types.SimpleNamespace(name = "qwen-image")
+    monkeypatch.setenv(cg.FORCE_FAMILIES_ENV, "qwen-image")
+    assert cg.prompt_length_reason(pipe, family) is None
+
+
+def _render_at(
+    handle,
+    width,
+    text_len,
+    steps = 2,
+    negative_len = 7,
+):
+    """A true-CFG render at latent width ``width`` (the image scope) with a ``text_len``-token prompt."""
+    for i in range(steps):
+        handle(
+            _t((1, width), value = float(i)),
+            encoder_hidden_states = _t((1, text_len)),
+            return_dict = False,
+        )
+        handle(
+            _t((1, width), value = float(i)),
+            encoder_hidden_states = _t((1, negative_len)),
+            return_dict = False,
+        )
+
+
+def test_a_new_resolution_still_records_after_the_seal(stub_torch, monkeypatch):
+    """The seal stops new TEXT lengths only: a later render at a new resolution (or batch) is a new image scope and
+    records its first render, as before; a further new prompt length at that resolution then runs ungraphed."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"), max_graphs = 8)
+    _render_at(handle, 64, 3)
+    assert handle.stats["captures"] == 2 and handle.length_sealed
+    _render_at(handle, 128, 15)
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
+    replays = handle.stats["replays"]
+    _render_at(handle, 128, 40)
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 2
+    assert handle.stats["replays"] == replays + 2
+    _render_at(handle, 64, 40)
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 4
+
+
+def test_a_render_with_no_capture_after_reset_does_not_seal(stub_torch, monkeypatch):
+    """seal_lengths counts captures since the last reset: a first render after reset that recorded nothing (bypassed
+    here, or a planned step that only warmed up) must not seal an empty cache, or its key runs ungraphed forever."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    handle = _armed(_len_dit("QwenImageTransformer2DModel"))
+    _render(handle, 3)
+    handle.reset()
+    handle.set_bypass(True)
+    _render(handle, 15)
+    handle.set_bypass(False)
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is False
+    _render(handle, 15)
+    assert handle.stats["captures"] == 4 and handle.stats["length_eager"] == 0
+
+
+def test_a_step_dependent_key_seals_only_when_the_render_ends(stub_torch, monkeypatch):
+    """A key that also follows the step (NVFP4's protect branch, a pre-hook's branch flag) gets a new variant on a
+    later step of the first render: a replay on step 2 must not seal the scope before that variant records."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    module = _len_dit("QwenImageTransformer2DModel")
+    branch = {"v": "a"}
+    setattr(module, cg.GRAPH_KEY_EXTRA_ATTR, lambda: branch["v"])
+    handle = _armed(module, max_graphs = 8)
+    for i, flag in enumerate(("a", "a", "b", "b")):
+        branch["v"] = flag
+        _step(handle, 3, value = float(i))
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
+    assert handle.length_sealed is False
+    cg.seal_lengths((handle,))
+    assert handle.length_sealed is True
+    _step(handle, 15)
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 1
+
+
+class _RefDiT(_LenDiT):
+    def forward(
+        self,
+        hidden_states,
+        encoder_hidden_states = None,
+        image_cond_hidden_states = None,
+        image_cond_ids = None,
+        return_dict = True,
+    ):
+        return super().forward(hidden_states, encoder_hidden_states, return_dict)
+
+
+def test_separate_reference_images_are_part_of_the_image_scope(stub_torch, monkeypatch):
+    """FLUX.3 passes its reference images apart from the latents: a new reference layout at the same output size is a
+    new scope that records its first render, not a sealed one that runs ungraphed."""
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    module = type("Flux3Transformer2DModel", (_RefDiT,), {})()
+    handle = _armed(module, max_graphs = 8)
+    assert handle.length_varies is True
+
+    def call(
+        text_len,
+        refs,
+        value = 0.0,
+    ):
+        kw = {}
+        if refs:
+            kw = {"image_cond_hidden_states": _t((1, refs)), "image_cond_ids": _t((refs, 3))}
+        return handle(
+            _t((1, 64), value = value),
+            encoder_hidden_states = _t((1, text_len)),
+            return_dict = False,
+            **kw,
+        )
+
+    for i in range(2):
+        call(3, 0, float(i))  # text-only render: records, then replays and seals its scope
+    assert handle.stats["captures"] == 1 and handle.length_sealed
+    for i in range(2):
+        call(3, 16, float(i))
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 0
+    call(9, 16)
+    assert handle.stats["captures"] == 2 and handle.stats["length_eager"] == 1
+
+
+def test_the_every_length_switch_keeps_block_graphs(stub_torch, monkeypatch):
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    pipe = types.SimpleNamespace(transformer = _named_dit("QwenImageTransformer2DModel"))
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    assert cg.prompt_length_reason(pipe) is not None
+    monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
+    assert cg.prompt_length_reason(pipe) is None
+
+
+def test_real_cuda_new_length_eager_step_hands_blocks_the_recorded_tensor_kind():
+    """A new-length eager step must not recompile compiled blocks by passing them inference tensors."""
+    torch = pytest.importorskip("torch")
+    if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    import torch.nn as nn
+    from torch._dynamo.testing import CompileCounter
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+
+    class Block(nn.Module):
+        def forward(self, x, mod):
+            return x * (1 + mod) + mod
+
+    class LenDiT(nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.proj = nn.Linear(dim, dim)
+            self.block = torch.compile(Block(), backend = counter, dynamic = False)
+
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            mod,
+            return_dict = True,
+        ):
+            x = self.proj(hidden_states) + encoder_hidden_states.mean()
+            out = self.block(x, mod)
+            return types.SimpleNamespace(sample = out) if return_dict else (out,)
+
+    dim = 32
+    torch.manual_seed(0)
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})(dim).to("cuda").eval()
+    handle = cg.GraphedForward(module).enable()
+    assert handle.length_varies
+    hidden = torch.randn(1, 16, dim, device = "cuda")
+
+    def render(text_len):
+        outs = []
+        with torch.inference_mode():
+            txt = torch.randn(1, text_len, dim, device = "cuda")
+            mod = torch.randn(1, 16, dim, device = "cuda")
+            x = module.proj(hidden) + txt.mean()
+            want = x * (1 + mod) + mod
+            for _ in range(3):
+                outs.append((module(hidden, txt, mod, return_dict = False)[0], want))
+        cg.seal_lengths([handle])
+        return outs
+
+    try:
+        render(5)
+        assert handle.stats["captures"] == 1 and handle.stats["replays"] == 3
+        frames = counter.frame_count
+        for got, want in render(9):
+            assert torch.allclose(got, want)
+        assert handle.stats["length_eager"] == 3 and handle.stats["captures"] == 1
+        # Before: the block recompiled for an inference ``mod``.
+        assert counter.frame_count == frames
+    finally:
+        cg.uninstall_all([handle])
+
+
+def test_new_length_eager_step_hands_blocks_normal_tensors_on_cpu(monkeypatch):
+    """CPU twin of the CUDA test above, through the real ``__call__``."""
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "_dynamo"):
+        pytest.skip("needs torch._dynamo")
+    import torch.nn as nn
+    from torch._dynamo.testing import CompileCounter
+
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    seen: list = []
+
+    class Block(nn.Module):
+        def forward(self, x, mod):
+            return x * (1 + mod) + mod
+
+    block = torch.compile(Block(), backend = counter, dynamic = False)
+
+    class LenDiT(nn.Module):
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            mod,
+            return_dict = True,
+        ):
+            seen.append(mod.is_inference())
+            return (block(hidden_states + encoder_hidden_states.mean(), mod),)
+
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})()
+    handle = _armed(module)
+    assert handle.length_varies and handle.plan is None
+    hidden = torch.randn(1, 16, 8)
+    try:
+        with torch.inference_mode():
+            txt, mod = torch.randn(1, 9, 8), torch.randn(1, 16, 8)
+            statics = handle._statics([hidden, txt, mod])
+            handle.orig(*statics, return_dict = False)
+            frames = counter.frame_count
+            handle._sealed_scopes.add(cg._image_scope((hidden,), {}))
+            got = module(hidden, txt, mod, return_dict = False)[0]
+        assert handle.stats["length_eager"] == 1 and handle.stats["captures"] == 0
+        # Before: the block recompiled for an inference ``mod``.
+        assert counter.frame_count == frames
+        assert seen == [False, False]
+        assert torch.equal(got, (hidden + txt.mean()) * (1 + mod) + mod)
+    finally:
+        cg.uninstall_all([handle])
+
+
+def test_eager_as_recorded_runs_the_original_call_when_the_copies_do_not_fit(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    seen: list = []
+
+    class LenDiT(nn.Module):
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            return_dict = True,
+        ):
+            seen.append(encoder_hidden_states.is_inference())
+            return (hidden_states + encoder_hidden_states.mean(),)
+
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})()
+    handle = _armed(module)
+
+    def no_room(tensors):
+        raise torch.cuda.OutOfMemoryError("no room")
+
+    monkeypatch.setattr(handle, "_statics", no_room)
+    try:
+        with torch.inference_mode():
+            hidden, txt = torch.randn(1, 4, 8), torch.randn(1, 3, 8)
+            got = handle._eager_as_recorded((hidden, txt), {"return_dict": False})[0]
+        assert seen == [True]
+        assert torch.equal(got, hidden + txt.mean())
+    finally:
+        cg.uninstall_all([handle])

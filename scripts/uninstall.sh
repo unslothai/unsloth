@@ -708,7 +708,7 @@ _unsloth_uninstall_main() {
         [ -n "$_crf_canon" ] || _crf_canon="$_custom_root"
         _crf_master="$_MASTER_ROOT_SAVED"
         if [ -n "$_crf_master" ] && [ "$_crf_canon" = "$_crf_master" ]; then
-            echo "  keeping $_custom_root: UNSLOTH_HOME and the Studio root name the same" >&2
+            echo "  keeping $_custom_root: UNSLOTH_HOME and the Unsloth Studio root name the same" >&2
             echo "  directory, so removing it would take whatever else you keep there." >&2
             echo "  Delete it by hand once you have checked what is in it." >&2
             _set_marker "$_REMOVE_FAILED_FLAG"

@@ -102,15 +102,16 @@ function Resolve-LlamaDir([string] $dir) {
     if (Test-Path -LiteralPath $selection) {
         $sel = Get-Content -LiteralPath $selection -Raw | ConvertFrom-Json
         if ($sel.resolved_binary) {
-            Write-Host ("runtime selected by Studio ({0}): {1}" -f $sel.source, $sel.resolved_binary)
+            Write-Host ("runtime selected by Unsloth Studio ({0}): {1}" -f $sel.source, $sel.resolved_binary)
+            # The selected root, not the binary's directory.
             if ($sel.path -and (Test-Path -LiteralPath $sel.path -PathType Container)) {
                 return $sel.path
             }
             return (Split-Path -Parent $sel.resolved_binary)
         }
-        Write-Warning "Studio reported no resolvable llama-server (source $($sel.source), path $($sel.path)); inventorying $(Get-LlamaDir)"
+        Write-Warning "Unsloth Studio reported no resolvable llama-server (source $($sel.source), path $($sel.path)); inventorying $(Get-LlamaDir)"
     } elseif (-not $env:LLAMA_SERVER_PATH -and -not $env:UNSLOTH_LLAMA_CPP_PATH) {
-        Write-Warning 'no runtime-selection.json from the scenario: a folder selected in Studio settings cannot be seen from here, so the managed default is inventoried'
+        Write-Warning 'no runtime-selection.json from the scenario: a folder selected in Unsloth Studio settings cannot be seen from here, so the managed default is inventoried'
     }
     return (Get-LlamaDir)
 }
@@ -395,10 +396,11 @@ function Install-Studio {
 }
 
 function Start-Studio([string] $python, [int] $port, [string] $logPath) {
-    Write-Host "starting Studio on port $port"
+    Write-Host "starting Unsloth Studio on port $port"
+    # -X utf8 -I -m unsloth_cli is the supported entry point on a locked-down machine, per unsloth_cli/__main__.py.
     $cliArgs = @('-X', 'utf8', '-I', '-m', 'unsloth_cli', 'studio', '-p', "$port")
     if (-not (Stop-ProbeStudio (Get-RunDir))) {
-        throw "the Studio this probe started earlier (see probe-studio.json under $(Get-RunDir)) is still running and could not be stopped; stop it by hand and run this stage again."
+        throw "the Unsloth Studio this probe started earlier (see probe-studio.json under $(Get-RunDir)) is still running and could not be stopped; stop it by hand and run this stage again."
     }
     $proc = Start-Process -FilePath $python -ArgumentList $cliArgs `
         -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err" `
@@ -409,27 +411,28 @@ function Start-Studio([string] $python, [int] $port, [string] $logPath) {
     } catch {
         $recordError = $_
         Stop-ProcessTree $proc.Id
-        throw "could not record the elevated Studio process for revert, so it was stopped rather than left running unrecorded: $recordError"
+        throw "could not record the elevated Unsloth Studio process for revert, so it was stopped rather than left running unrecorded: $recordError"
     }
 
     foreach ($i in 1..60) {
         Start-Sleep -Seconds 5
         if (Test-StudioResponding $port) {
-            Write-Host "Studio answering on port $port after $($i * 5)s"
+            Write-Host "Unsloth Studio answering on port $port after $($i * 5)s"
             return $true
         }
     }
-    Write-Warning "Studio did not answer on port $port within 5 minutes; see $logPath"
+    Write-Warning "Unsloth Studio did not answer on port $port within 5 minutes; see $logPath"
     return $false
 }
 
 function Stop-Studio([int] $port) {
-    # Only listeners that can serve http://127.0.0.1:$port, the endpoint actually verified.
+    <# Stop the Unsloth Studio answering on $port, children (llama-server, workers) first. #>
+    # Only the listeners that can be serving the endpoint Test-StudioResponding actually verified, which is http://127.0.0.1:$port.
     $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
         Where-Object { $_.LocalAddress -eq '127.0.0.1' -or $_.LocalAddress -eq '0.0.0.0' } |
         Select-Object -ExpandProperty OwningProcess -Unique)
     if (-not $owners) {
-        Write-Warning "Studio answers on http://127.0.0.1:$port but no local process listens on 127.0.0.1 or 0.0.0.0 there; it cannot be restarted from here"
+        Write-Warning "Unsloth Studio answers on http://127.0.0.1:$port but no local process listens on 127.0.0.1 or 0.0.0.0 there; it cannot be restarted from here"
         return $false
     }
     foreach ($owner in $owners) {
@@ -441,7 +444,7 @@ function Stop-Studio([int] $port) {
         Start-Sleep -Seconds 1
         if (-not (Test-StudioResponding $port)) { return $true }
     }
-    Write-Warning "Studio is still answering on port $port after being stopped"
+    Write-Warning "Unsloth Studio is still answering on port $port after being stopped"
     return $false
 }
 
@@ -452,6 +455,7 @@ function Stop-ProcessTree([int] $id) {
 }
 
 function Stop-ProbeStudio([string] $dir) {
+    <# Stop the elevated Unsloth Studio this probe started, if it is still that process. Returns $false if it survives. #>
     $record = Join-Path $dir 'probe-studio.json'
     if (-not (Test-Path -LiteralPath $record)) { return $true }
     $r = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
@@ -466,29 +470,31 @@ function Stop-ProbeStudio([string] $dir) {
 }
 
 function Initialize-Studio([string] $dir, [bool] $allowInstall) {
+    <# Only prepare may install. prepare restarts a running Unsloth Studio so its native loads land inside the event window. #>
     Write-Section 'Unsloth Studio'
     if (Test-StudioResponding $Port) {
         if (-not $allowInstall) {
-            Write-Host "Studio already answering on port $Port"
+            Write-Host "Unsloth Studio already answering on port $Port"
             return
         }
-        Write-Host "Studio is already answering on port $Port; restarting it so its startup loads land inside the window"
+        Write-Host "Unsloth Studio is already answering on port $Port; restarting it so its startup loads land inside the window"
         if (-not (Stop-Studio $Port)) {
-            throw "Studio is still answering on port $Port and could not be restarted, so its startup loads cannot be observed in this window. Stop it by hand and run prepare again."
+            throw "Unsloth Studio is still answering on port $Port and could not be restarted, so its startup loads cannot be observed in this window. Stop it by hand and run prepare again."
         }
     }
 
     $python = Get-StudioPython
     if (-not $python) {
         if (-not $allowInstall) {
-            Write-Warning 'Studio is not installed; the run stage does not install it, so there is nothing to drive. Run prepare without -SkipInstall, or install by hand.'
+            Write-Warning 'Unsloth Studio is not installed; the run stage does not install it, so there is nothing to drive. Run prepare without -SkipInstall, or install by hand.'
             return
         }
         if ($SkipInstall) {
-            Write-Warning 'Studio is not installed and -SkipInstall was given; the run stage will have nothing to drive.'
+            Write-Warning 'Unsloth Studio is not installed and -SkipInstall was given; the run stage will have nothing to drive.'
             return
         }
-        Write-Host 'Studio is not installed on this machine.'
+        Write-Host 'Unsloth Studio is not installed on this machine.'
+        # Which of the trees the installer creates did not exist beforehand.
         $unslothHome = Join-Path $env:USERPROFILE '.unsloth'
         $override = Get-StudioHomeOverride
         $installRoots = @($unslothHome, $override, (Split-Path -Parent (Get-LlamaDir))) |
@@ -521,9 +527,9 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         if (-not $python) {
             # prepare cannot go on: no Studio to start, so nothing loads inside the window.
             if ($allowInstall) {
-                throw 'the installer ran but produced no managed interpreter, so there is no Studio to start and this window would observe nothing. Install Studio by hand and run prepare again; the machine is left prepared, so run revert if you stop here.'
+                throw 'the installer ran but produced no managed interpreter, so there is no Unsloth Studio to start and this window would observe nothing. Install Unsloth Studio by hand and run prepare again; the machine is left prepared, so run revert if you stop here.'
             }
-            Write-Warning 'Studio still not found after the installer ran. Install it by hand, then re-run this stage.'
+            Write-Warning 'Unsloth Studio still not found after the installer ran. Install it by hand, then re-run this stage.'
             return
         }
     }
@@ -532,9 +538,9 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
     $startLog = Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log'
     if (-not (Start-Studio $python $Port $startLog)) {
         if ($allowInstall) {
-            throw "Studio did not answer on port $Port within 5 minutes, so its startup loads cannot be observed in this window. See $startLog, fix the cause and run prepare again."
+            throw "Unsloth Studio did not answer on port $Port within 5 minutes, so its startup loads cannot be observed in this window. See $startLog, fix the cause and run prepare again."
         }
-        Write-Warning "Studio did not answer on port $Port; the scenario will have nothing to drive. See $startLog."
+        Write-Warning "Unsloth Studio did not answer on port $Port; the scenario will have nothing to drive. See $startLog."
     }
 }
 
@@ -1094,7 +1100,8 @@ function Invoke-Run {
     $venvInventory | Export-Csv -LiteralPath (Join-Path $dir 'venv-signature-inventory.csv') -NoTypeInformation -Encoding UTF8
     $venvTotal = $venvInventory.Count
     if ($venvTotal -eq 0) {
-        throw "no PE files found under $venvDir; Studio's environment was not found, so the cell is invalid. Check UNSLOTH_STUDIO_HOME or install Studio first"
+        # The venv is where the only enforced block so far landed
+        throw "no PE files found under $venvDir; Unsloth Studio's environment was not found, so the cell is invalid. Check UNSLOTH_STUDIO_HOME or install Unsloth Studio first"
     }
     $venvValid = @($venvInventory | Where-Object { $_.Status -eq 'Valid' }).Count
     Write-Host "$venvValid of $venvTotal PE files in the venv report a valid Authenticode signature"
@@ -1107,9 +1114,9 @@ function Invoke-Run {
 
     $scenarioStatus = [pscustomobject]@{ Ran = $false; ExitCode = $null; Reason = 'skipped' }
     if ($SkipStudio) {
-        Write-Host 'skipping the Studio scenario (-SkipStudio)'
+        Write-Host 'skipping the Unsloth Studio scenario (-SkipStudio)'
     } else {
-        Write-Section 'Studio scenario'
+        Write-Section 'Unsloth Studio scenario'
         $scenario = Join-Path $PSScriptRoot 'studio_scenario.py'
         New-Item -ItemType Directory -Force -Path (Join-Path $dir 'raw-logs') | Out-Null
         $log = Join-Path (Join-Path $dir 'raw-logs') 'studio-scenario.log'
@@ -1338,9 +1345,9 @@ function Invoke-Collect {
     if (-not $scenarioStatus) {
         $scenarioProblem = 'no scenario-status.json: the run stage did not complete for this label, so nothing is known to have loaded inside this window and an empty event list is a NULL result, not an allow'
     } elseif ($scenarioStatus.Reason -eq 'skipped') {
-        $scenarioProblem = 'the Studio scenario was skipped (-SkipStudio), so this zip is a signature inventory only: it does not show whether anything was blocked at load time'
+        $scenarioProblem = 'the Unsloth Studio scenario was skipped (-SkipStudio), so this zip is a signature inventory only: it does not show whether anything was blocked at load time'
     } elseif ($scenarioStatus.ExitCode -ne 0 -and -not $loadOk) {
-        $scenarioProblem = "the Studio scenario did NOT load a model (exit $($scenarioStatus.ExitCode): $($scenarioStatus.Reason); failed steps: $($failedSteps -join ', ')), so an empty event list here is a NULL result, not an allow"
+        $scenarioProblem = "the Unsloth Studio scenario did NOT load a model (exit $($scenarioStatus.ExitCode): $($scenarioStatus.Reason); failed steps: $($failedSteps -join ', ')), so an empty event list here is a NULL result, not an allow"
     }
     if ($scenarioProblem) { $collectionProblems += $scenarioProblem }
 
@@ -1420,8 +1427,9 @@ function Invoke-Collect {
                 }
             }
         } else {
-            $collectionProblems += 'Studio logs were not copied: no managed interpreter to run the redactor, so studio-logs\ is missing from this zip'
-            Write-Warning 'Studio logs were not copied: no managed interpreter to run the redactor'
+            # Same absence, same marker
+            $collectionProblems += 'Unsloth Studio logs were not copied: no managed interpreter to run the redactor, so studio-logs\ is missing from this zip'
+            Write-Warning 'Unsloth Studio logs were not copied: no managed interpreter to run the redactor'
         }
     }
 
@@ -1609,13 +1617,13 @@ function Invoke-Revert {
     else { Write-Warning "$failed Defender preference(s) were not restored; see above" }
     $restoreFailures = $failed
 
-    Write-Section 'Stop the elevated Studio'
+    Write-Section 'Stop the elevated Unsloth Studio'
     $studioStillRunning = -not (Stop-ProbeStudio $dir)
-    if ($studioStillRunning) { Write-Warning 'the Studio prepare/run started as administrator is still running; stop it by hand' }
-    else { Write-Host 'no probe-started Studio left running; start Studio normally (unelevated) to use it' }
+    if ($studioStillRunning) { Write-Warning 'the Unsloth Studio prepare/run started as administrator is still running; stop it by hand' }
+    else { Write-Host 'no probe-started Unsloth Studio left running; start Unsloth Studio normally (unelevated) to use it' }
 
-    Write-Section 'Restore Studio tree access'
-    # Elevated installs leave trees owned by BUILTIN\Administrators.
+    Write-Section 'Restore Unsloth Studio tree access'
+    # Every stage is elevated, so a Studio that prepare installs is installed as administrator, and the trees the installer creates (llama.cpp, whisper.cpp, node, .cache) come out owned by BUILTIN\Administrators.
     $user = "$env:USERDOMAIN\$env:USERNAME"
     $override = Get-StudioHomeOverride
     $allowedRoots = @(
@@ -1644,7 +1652,7 @@ function Invoke-Revert {
     $trees = @($trees | Select-Object -Unique)
     $rejected = @($rejected | Select-Object -Unique)
     if ($trees.Count -eq 0 -and $rejected.Count -eq 0) {
-        Write-Host 'nothing to repair: this run did not install Studio'
+        Write-Host 'nothing to repair: this run did not install Unsloth Studio'
     }
     $aclFailures = $rejected.Count
     foreach ($tree in $trees) {
@@ -1672,7 +1680,7 @@ function Invoke-Revert {
         if ($script:EfiStillMounted) {
             Write-Warning "the EFI system partition is still mounted as S:; run 'mountvol S: /D' by hand"
         }
-        throw "revert did not fully restore this machine: $restoreFailures Defender preference(s), $aclFailures Studio tree ACL repair(s), $(if ($null -ne $ciRestoreError) { 'the CodeIntegrity log settings' } else { 'no log settings' })$(if ($script:EfiStillMounted) { ' and the EFI mount' }) still differ from the baseline. See the warnings above."
+        throw "revert did not fully restore this machine: $restoreFailures Defender preference(s), $aclFailures Unsloth Studio tree ACL repair(s), $(if ($null -ne $ciRestoreError) { 'the CodeIntegrity log settings' } else { 'no log settings' })$(if ($script:EfiStillMounted) { ' and the EFI mount' }) still differ from the baseline. See the warnings above."
     }
     $baseline | Add-Member -NotePropertyName RevertCompletedAt `
         -NotePropertyValue ((Get-Date).ToString('o')) -Force

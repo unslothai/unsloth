@@ -83,4 +83,6 @@ else
 fi
 
 python tests/studio/playwright_loaded_models_indicator.py
+PW_ART_DIR="$artifact_dir/bookmarks" python tests/studio/playwright_browser_bookmarks.py
+# Only after a clean return; see the permission script's comment.
 suite_done=1

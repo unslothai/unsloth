@@ -2619,17 +2619,43 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 )
                 lm_head_bias = None
             _head_log_softmax = chunked_hidden_states_selective_log_softmax
+            # ZeRO-3 released the head after the forward: score with one gathered read-only copy.
+            _zero3_head = None
+            try:
+                from unsloth_zoo.fused_losses.cross_entropy_loss import (
+                    unsloth_zero3_gathered,
+                    unsloth_zero3_partitioned,
+                )
+            except (ImportError, NotImplementedError):
+                # Older zoo, or zoo refusing to import without an accelerator (CPU gloo workers).
+                pass
+            else:
+                if unsloth_zero3_partitioned(lm_head) or unsloth_zero3_partitioned(
+                    getattr(output_embeddings, "bias", None)
+                ):
+                    _zero3_head = (
+                        unsloth_zero3_gathered(lm_head),
+                        unsloth_zero3_gathered(getattr(output_embeddings, "bias", None)),
+                    )
+                    lm_head = _zero3_head[0]
+                    if lm_head_bias is not None:
+                        lm_head_bias = _zero3_head[1]
 
             def chunked_hidden_states_selective_log_softmax(
                 hidden_states, _lm_head, *args, **kwargs
             ):
                 # FSDP2's forward hooks replace Parameters. Read the current head
                 # at projection time, including the bias, instead of retaining a shard.
+                if _zero3_head is not None:
+                    head_weight, head_bias = _zero3_head
+                else:
+                    head_weight = output_embeddings.weight
+                    head_bias = getattr(output_embeddings, "bias", None)
                 if UNSLOTH_ZOO_HAS_HEAD_BIAS:
-                    kwargs["lm_head_bias"] = getattr(output_embeddings, "bias", None)
+                    kwargs["lm_head_bias"] = head_bias
                 return _head_log_softmax(
                     hidden_states,
-                    output_embeddings.weight,
+                    head_weight,
                     *args,
                     **kwargs,
                 )

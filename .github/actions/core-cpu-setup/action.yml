@@ -32,8 +32,15 @@ inputs:
 runs:
   using: composite
   steps:
-    # Node 22 is needed by a test that runs `node --experimental-strip-types`.
-    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+    # Node 22 unblocks tests/studio/test_chat_preset_builtin_invariants.py's
+    # `node --experimental-strip-types` subprocess. Cheap to install; keeps
+    # the consolidated job self-sufficient even if studio-backend-ci.yml
+    # changes its node setup.
+    #
+    # Installed for the zoo job too, which has no node test of its own. A few
+    # seconds against a preamble measured in minutes, and it is what makes
+    # "the two jobs run the same environment" true without qualification.
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
       with:
         node-version: '22'
 

@@ -2457,6 +2457,7 @@ function Get-IntelRegistryAdapterNames {
 function Get-ProbableStudioVenvDir {
     $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
             elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { Join-Path $env:UNSLOTH_HOME.Trim() "studio" }
             else { $null }
     # Expand a leading ~ like the canonical resolver; without it the path stays cwd-relative.
     if ($root -and ($root -eq "~" -or $root -like "~/*" -or $root -like "~\*")) {
@@ -3262,6 +3263,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
             $env:UNSLOTH_STUDIO_HOME.Trim()
         } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
             $env:STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+            $env:UNSLOTH_HOME.Trim()
         } else {
             $_unslothRoot
         }
@@ -3292,6 +3295,9 @@ if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
 } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
     $_studioOverrideVar = "STUDIO_HOME"
     $_studioOverride = $env:STUDIO_HOME.Trim()
+} elseif (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) {
+    $_studioOverrideVar = "UNSLOTH_HOME (studio child)"
+    $_studioOverride = Join-Path $env:UNSLOTH_HOME.Trim() "studio"
 }
 if ($_studioOverride) {
     if ($_studioOverride -eq "~" -or $_studioOverride -like "~/*" -or $_studioOverride -like "~\*") {
@@ -3357,19 +3363,19 @@ function Test-MasterRootNoteIsHonoured {
     # Readers ignore any note inside the legacy Studio tree, so do not write one there.
     $legacyStudio = Get-CanonicalDir -Path (Join-Path $env:USERPROFILE ".unsloth\studio")
     if ($legacyStudio -and ($here -ieq $legacyStudio)) {
-        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio is the" -ForegroundColor Yellow
+        Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio is the" -ForegroundColor Yellow
         Write-StudioLine "        default install at $here, where no reader honours a recorded root." -ForegroundColor Yellow
         Write-StudioLine "        That root cannot be recorded, so a later launch or uninstall will" -ForegroundColor Yellow
         Write-StudioLine "        not find them. Set UNSLOTH_STUDIO_HOME to $norm\studio, or re-set" -ForegroundColor Yellow
         Write-StudioLine "        UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
         return $false
     }
-    # Every reader requires the Studio dir to lie INSIDE the named root.
+    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
     $sep = [System.IO.Path]::DirectorySeparatorChar
     if (($here -ieq $norm) -or $here.StartsWith($norm + $sep, [System.StringComparison]::OrdinalIgnoreCase)) {
         return $true
     }
-    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Studio lives at" -ForegroundColor Yellow
+    Write-StudioLine "  note: the managed runtimes were installed under $norm, but Unsloth Studio lives at" -ForegroundColor Yellow
     Write-StudioLine "        $here, which is outside it. That root cannot be recorded, so a later" -ForegroundColor Yellow
     Write-StudioLine "        launch or uninstall will not find them. Set UNSLOTH_STUDIO_HOME to" -ForegroundColor Yellow
     Write-StudioLine "        $norm\studio, or re-set UNSLOTH_HOME whenever you run Unsloth." -ForegroundColor Yellow
@@ -5103,16 +5109,8 @@ function Resolve-ReusedSetupPython {
         (Test-Path -LiteralPath $env:UNSLOTH_SETUP_PYTHON)) {
         return $env:UNSLOTH_SETUP_PYTHON
     }
-    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
-            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
-            else { Join-Path $env:USERPROFILE ".unsloth\studio" }
-    if ($root -eq "~") {
-        # Join-Path with an empty child throws on 5.1.
-        $root = $env:USERPROFILE
-    } elseif ($root -like "~/*" -or $root -like "~\*") {
-        $root = Join-Path $env:USERPROFILE $root.Substring(1).TrimStart('/', '\')
-    }
-    $venvPy = Join-Path $root "unsloth_studio\Scripts\python.exe"
+    # Root preflight already applied the overrides, including any staged update.
+    $venvPy = Join-Path $VenvDir "Scripts\python.exe"
     if (Test-Path -LiteralPath $venvPy) { return $venvPy }
     return $null
 }
@@ -8447,7 +8445,7 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         } elseif ($_mxcExit -eq 3) {
             step "MXC Preview" "install blocked by an active MXC process; existing runtime kept" "Yellow"
         } else {
-            step "MXC Preview" "prebuilt unavailable; Studio will use software safeguards" "Yellow"
+            step "MXC Preview" "prebuilt unavailable; Unsloth Studio will use software safeguards" "Yellow"
         }
         if ($script:UnslothVerbose -and $_mxcOutput) {
             Write-StudioLine $_mxcOutput.Trim() -ForegroundColor $(if ($_mxcExit -eq 0) { "DarkGray" } else { "Yellow" })

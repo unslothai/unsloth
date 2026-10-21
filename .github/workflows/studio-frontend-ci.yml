@@ -27,6 +27,7 @@ on:
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_project_folders.py'
+      - 'tests/studio/playwright_browser_agent_select.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -68,6 +69,7 @@ on:
       - 'tests/studio/playwright_keyboard_shortcuts.py'
       - 'tests/studio/playwright_find_in_page.py'
       - 'tests/studio/playwright_project_folders.py'
+      - 'tests/studio/playwright_browser_agent_select.py'
       - 'tests/studio/playwright_tool_activity.py'
       - 'tests/studio/playwright_stream_pacing.py'
       - 'tests/studio/playwright_code_block_flicker.py'
@@ -127,7 +129,7 @@ jobs:
           fi
           echo "All assistant-ui packages are pinned exactly."
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -452,6 +454,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         timeout-minutes: 10
         run: python3 tests/studio/playwright_project_folders.py --out "$RUNNER_TEMP/project-folders"
+      - name: Browser agent checks radios and checkboxes by their labels
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        run: python3 tests/studio/playwright_browser_agent_select.py
 
       - name: Icon tooltips follow the pointer between neighbours
         working-directory: ${{ github.workspace }}
@@ -542,7 +548,7 @@ jobs:
       # Also check the stream-pacing outcome: continue-on-error makes failure() false for it.
       - name: Upload browser smoke artifacts
         if: failure() || steps.stream_pacing.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: studio-frontend-smoke-artifacts
           path: |
@@ -562,7 +568,7 @@ jobs:
       - name: Upload built dist
         # Failures only: keeping ~35MB per green run made artifacts the second-largest family, ~3.5GB.
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: studio-frontend-dist
           path: studio/frontend/dist
@@ -584,7 +590,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -640,7 +646,7 @@ jobs:
 
       - name: Upload alignment failure artifacts
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-composer-icons
           path: |

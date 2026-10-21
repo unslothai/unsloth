@@ -142,6 +142,8 @@ from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
     _bnb_bits_requested,
+    vlm_gradient_checkpointing_reentrant,
+    set_deepspeed_moe_leaf_modules,
     fsdp2_requested,
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -3492,6 +3494,7 @@ class FastBaseModel:
             gptq_trainable_quantization_config,
             quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
+            gpt_oss_keeps_checkpoint_quantization,
         )
         from .fp8_to_nf4 import fp8_to_nf4_planner_quantization_config
 
@@ -3536,7 +3539,19 @@ class FastBaseModel:
             keep_task_heads_unquantized(auto_config, auto_model, model_class)
         pop_modelopt_key_mapping(auto_config, kwargs, model_class)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
-        sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
+        sync_unsloth_model_name_bnb_flags(
+            load_in_4bit,
+            load_in_8bit,
+            config = auto_config,
+            model_name = model_name,
+            token = token,
+            revision = _revision,
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = local_files_only,
+            variant = kwargs.get("variant"),
+            use_safetensors = kwargs.get("use_safetensors"),
+        )
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
@@ -3782,7 +3797,7 @@ class FastBaseModel:
         # Cannot be None, since HF now checks for the config.
         if load_in_4bit or load_in_8bit:
             # Ignore load_in_4bit / load_in_8bit for MXFP4; better to get the config file.
-            if "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower():
+            if gpt_oss_keeps_checkpoint_quantization(model_name, auto_config, load_in_4bit):
                 pass
             else:
                 if user_quantization_config is None:
@@ -4062,6 +4077,13 @@ class FastBaseModel:
                     )
 
                 from unsloth_zoo.utils import get_quant_type
+                from .loader_utils import refuse_fast_inference_load_in_8bit
+
+                refuse_fast_inference_load_in_8bit(
+                    load_in_8bit,
+                    model_config,
+                    kwargs.get("quantization_config", None),
+                )
 
                 # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
                 # Every sparse MoE, text ones too: vLLM's MoE LoRA layer rejects the bnb MoE
@@ -4607,6 +4629,8 @@ class FastBaseModel:
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
+            skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
 
@@ -5066,6 +5090,7 @@ class FastBaseModel:
         float32_mixed_precision = None,
     ):
         reject_alora(model)
+        set_deepspeed_moe_leaf_modules(model)
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
@@ -5079,12 +5104,17 @@ class FastBaseModel:
                 float32_mixed_precision = False
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
-        use_reentrant = not is_distributed()
+        # FSDP2 has no DDP reducer to mark twice: each unit reduce-scatters in its own post-backward hook,
+        # recompute included, so it keeps Unsloth's offloaded checkpointing (and unsloth_stream) as 1 GPU does.
+        use_reentrant = vlm_gradient_checkpointing_reentrant()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
         _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
         if _force_non_reentrant:
             use_reentrant = False
+        model._unsloth_vlm_gc_non_reentrant = bool(
+            use_gradient_checkpointing and not use_reentrant and not _force_non_reentrant
+        )
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
@@ -5103,6 +5133,8 @@ class FastBaseModel:
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
+            # Already offloads through _offload_activation_hooks: transformers' offload=True would nest it.
+            _nonre_checkpoint._unsloth_offloads = _offload
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
         else:
