@@ -156,6 +156,9 @@ _ALLOWED_TP_DROP_GUARDS = {
     # to every request here, including one already asking for manual/0 (whose extras can
     # still carry an --override-tensor the route does not strip).
     "_paravirtual_cpu_forced",
+    # The auto split policy's own tensor (no user asked for it) when the placement try
+    # fails into --fit on, which aborts under a tensor split: the load runs as without it.
+    "_auto_tensor_selected",
 }
 
 
@@ -221,7 +224,8 @@ def test_tensor_split_gate_is_self_healing_not_blanket():
 def test_tensor_split_skip_documents_layer_split_fallback():
     """When the skip fires (known-bad binary+model), it states the fallback."""
     src = inspect.getsource(LlamaCppBackend.load_model)
-    gate = src.find("self._tensor_split_aborts(")
+    # The downgrade gate itself, not the auto split policy's up-front check of the same latch.
+    gate = src.find("tensor_parallel and self._tensor_split_aborts(")
     assert gate != -1
     block = src[gate : gate + 600]
     assert "layer split" in block, "the skip should state it falls back to layer split"
