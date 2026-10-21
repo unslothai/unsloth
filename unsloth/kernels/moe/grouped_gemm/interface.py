@@ -105,7 +105,12 @@ def _autotuner_for(kernel, device):
         run = getattr(tuner, "run", None)
         if run is not None:
 
-            def _run_single_flight(*args, _run = run, _lock = lock, **kwargs):
+            def _run_single_flight(
+                *args,
+                _run = run,
+                _lock = lock,
+                **kwargs,
+            ):
                 with _lock:
                     return _run(*args, **kwargs)
 
