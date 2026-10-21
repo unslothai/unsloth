@@ -45,8 +45,19 @@ def require_tool_access(
     *,
     bypass_permissions: bool = False,
     disable_sandbox: bool = False,
+    sandbox_level: Optional[str] = None,
 ) -> None:
     if permission_mode != "full" and not bypass_permissions and not disable_sandbox:
+        if sandbox_level == "low":
+            from auth.policy import api_full_access_refused
+            if api_full_access_refused():
+                from fastapi import HTTPException
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Sandbox Low (sandbox_level 'low') is off for API keys: Python and Terminal "
+                    "run in the OS sandbox. Use sandbox_level 'high', or set "
+                    "UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS=1 on the server to allow it.",
+                )
         return
     from auth.policy import api_full_access_refused, full_access_permitted
     from fastapi import HTTPException

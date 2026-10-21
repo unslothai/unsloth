@@ -1777,3 +1777,80 @@ def test_delete_bodies_and_root_path_are_capped(main_module):
     # The root_path prefix in scope["path"] does not hide the protected prefix.
     assert c.post("/studio/api/models/delete-cached", content = b"x" * 512).status_code == 413
     assert c.post("/studio/api/models/delete-cached", content = b"x" * 64).json() == {"total": 64}
+
+
+def test_a_withheld_body_is_not_counted_as_running_inference(main_module, health_app):
+    """Keep-warm runs inside the body limiter: a request is counted once its body is here.
+
+    A model switch drains the in-flight count with no time limit, holding the gate every chat request needs, and
+    nothing bounds how long a client may withhold a body. Counted from the headers on, an anonymous POST that never
+    sent one stayed in flight until its socket closed: the 401 that uncounts it comes from the route, after the body.
+    """
+    from auth import storage
+    from auth.authentication import create_access_token
+    from core.inference import llama_keepwarm, media_keepwarm
+
+    async def counted_while_withheld(path: str, headers: dict) -> int:
+        waiting, hang_up = asyncio.Event(), asyncio.Event()
+
+        async def receive():
+            waiting.set()
+            await hang_up.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            pass
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode(),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+            "client": ("203.0.113.7", 5555),
+            "server": ("127.0.0.1", 8888),
+        }
+        request = asyncio.ensure_future(main_module.app(scope, receive, send))
+        asked = asyncio.ensure_future(waiting.wait())
+        # Either the body is being waited for, or the route refused the request before asking for one.
+        await asyncio.wait({request, asked}, return_when = asyncio.FIRST_COMPLETED)
+        counted = llama_keepwarm.other_inference_request_count(current_request_counted = False)
+        counted += sum(
+            media_keepwarm.other_request_count(owner)
+            for owner in set(media_keepwarm._TRACKED_PATHS.values())
+        )
+        hang_up.set()
+        asked.cancel()
+        await request
+        return counted
+
+    tracked = {
+        *(
+            prefix.rstrip("/") + suffix
+            for prefix in llama_keepwarm._INFERENCE_PREFIXES
+            for suffix in llama_keepwarm._INFERENCE_SUFFIXES
+        ),
+        *llama_keepwarm._INFERENCE_EXACT_PATHS,
+        *media_keepwarm._TRACKED_PATHS,
+        "/p/run/v1/chat/completions",
+        "/p/run/checkpoint-1/v1/chat/completions",
+    }
+    session = create_access_token(subject = storage.DEFAULT_ADMIN_USERNAME)
+    for path in sorted(tracked):
+        for framing in ({"Content-Length": "2"}, {"Transfer-Encoding": "chunked"}):
+            for credential in ({}, {"Authorization": f"Bearer {session}"}):
+                if (
+                    credential
+                    and "Content-Length" in framing
+                    and path in main_module._VIDEO_MULTIPART_UPLOAD_PATHS
+                ):
+                    # The videos upload passes through on its Content-Length; its route reads the multipart body
+                    # itself, after the auth dependencies, so only a credentialed client can hold it counted.
+                    continue
+                headers = {"Content-Type": "application/json", **framing, **credential}
+                assert asyncio.run(counted_while_withheld(path, headers)) == 0, (path, headers)

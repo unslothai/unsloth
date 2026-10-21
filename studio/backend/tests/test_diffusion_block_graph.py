@@ -172,6 +172,56 @@ def test_a_host_tensor_input_is_never_recorded():
     handle.free()
 
 
+def test_a_block_graph_keys_on_the_roots_branch_flag():
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(masked = False)
+    root._unsloth_graph_key_extra = lambda: root.masked
+
+    def compute(x):
+        y = block.lin(x)
+        return y * 0.5 if root.masked else y
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        root.masked = True
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 2
+
+
+def test_a_block_graph_runs_eager_while_a_step_cache_is_on():
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(_unsloth_step_cache = None)
+
+    def compute(x):
+        y = block.lin(x)
+        return (
+            y * 0.5 if root._unsloth_step_cache else y
+        )  # what the cache hooks change inside the forward
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        replays = graph.stats["replays"]
+        root._unsloth_step_cache = "fbcache@0.12"
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1 and graph.stats["replays"] == replays
+
+
 def test_weight_placement_is_none_while_a_weight_is_on_the_host():
     view = bg._WeightView(Block())
     assert view.placement(None) is None
