@@ -2472,13 +2472,12 @@ def arm_block_graphs(
         if block_graphs_disabled():
             _set_reason(pipe, "disabled by UNSLOTH_DIFFUSION_BLOCK_GRAPHS=0")
         else:
-            # Keep the whole-step opt-in visible: the block layer's own reason names only its switch.
-            _set_reason(
-                pipe,
-                MODEL_OFFLOAD_REASON + ", or " + BLOCK_GRAPHS_ENV + "=1 to record per block"
-                if model_offload
-                else OPT_IN_REASON,
-            )
+            # Keep the whole step's own refusal visible (its opt-in, or why the opt-in still could not record).
+            if model_offload:
+                whole_why = prior if prior and prior != "offload active" else MODEL_OFFLOAD_REASON
+                _set_reason(pipe, whole_why + "; per block: set " + BLOCK_GRAPHS_ENV + "=1")
+            else:
+                _set_reason(pipe, OPT_IN_REASON)
         return ()
     armed: list = []
     reasons: list = []
