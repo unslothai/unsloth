@@ -955,12 +955,19 @@ export function unknownRecipeKeys(r: ImportedRecipe): string[] {
   });
 }
 
+// DiffusionGenerateRequest.steps is 1-100 (STEPS_REQUEST_MAX in image-generation-defaults).
+const RECIPE_STEPS_MAX = 100;
+
 /** `family`: the loaded model's family, when one is loaded. */
 export function importNotApplied(
   r: ImportedRecipe,
   family?: string | null,
 ): string[] {
   const out: string[] = [];
+  const steps = int(r.steps);
+  const stepsSent = clamp(steps, 1, RECIPE_STEPS_MAX);
+  if (steps !== undefined && stepsSent !== steps)
+    out.push(`Steps ${steps} (clamped to ${stepsSent})`);
   const clipSkip = num(r.clip_skip);
   // SDXL already encodes from the penultimate layer, which is what A1111 / Forge render for Clip skip
   // 1 and 2 (Forge minimal_clip_skip=2; A1111 skips CLIP-G never, CLIP-L only with sdxl_clip_l_skip).
@@ -1059,7 +1066,7 @@ export function recipeSettings(
     width: width && width > 0 ? width : d.width,
     height: height && height > 0 ? height : d.height,
     // Clamped to the request's bounds: other tools allow more (AUTOMATIC1111 goes to 150 steps).
-    steps: clamp(int(r.steps), 1, 100) ?? d.steps,
+    steps: clamp(int(r.steps), 1, RECIPE_STEPS_MAX) ?? d.steps,
     guidance: clamp(num(r.guidance), 0, 20) ?? d.guidance,
     seed: seedOf(r.seed),
     batch_seed: seedOf(r.batch_seed),

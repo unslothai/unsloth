@@ -440,3 +440,12 @@ test("LoRA matches from before a model switch during the lookup are not restored
     /if \(seq !== importSeq\.current\) return false;\n[^\n]*\n\s+if \(loadedModelKey\(statusRef\.current\) !== modelBefore\) \{\n\s+tagged = \{\n\s+loras: \[\],\n\s+unmatched: \[\],\n\s+notes: loraTagNames\(recipe\.lora_tags\)\.map\(\(n\) => `LoRA \$\{n\} \(model changed during import\)`\),/,
   );
 });
+
+test("steps past the request limit are reported as clamped", () => {
+  const r = parseA1111Parameters("a cat\nSteps: 150, Seed: 1");
+  assert.ok(r);
+  assert.equal(recipeSettings(r, DEFAULTS).steps, 100);
+  assert.deepEqual(importNotApplied(r, "sdxl"), ["Steps 150 (clamped to 100)"]);
+  assert.deepEqual(importNotApplied({ prompt: "p", steps: 0 }, "sdxl"), ["Steps 0 (clamped to 1)"]);
+  assert.deepEqual(importNotApplied({ prompt: "p", steps: 100 }, "sdxl"), []);
+});
