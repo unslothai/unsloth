@@ -613,7 +613,9 @@ def _prune_rank(
     out,
     fail_save = False,
     bad_shard = False,
+    report = False,
 ):
+    import json
     import os
     import torch.distributed as dist
 
@@ -632,6 +634,22 @@ def _prune_rank(
             return original(*args, **kwargs)
 
         model.save_pretrained = save
+        report_path = None
+        if report:
+            report_path = os.path.join(os.path.dirname(save_dir), "report.json")
+            original_dump = json.dump
+
+            def dump(obj, f, *args, **kwargs):
+                if getattr(f, "name", "") == report_path:
+                    if report == "fail":
+                        raise OSError("Read-only file system")
+                    with open(
+                        os.path.join(os.path.dirname(save_dir), f"report_by_{rank}"), "w"
+                    ) as m:
+                        m.write("1")
+                return original_dump(obj, f, *args, **kwargs)
+
+            json.dump = dump
         if bad_shard == "move" and rank == 1:
 
             def fail_move(*args, **kwargs):
@@ -670,6 +688,7 @@ def _prune_rank(
                 ),
                 device = "cpu",
                 save_directory = save_dir,
+                report_path = report_path,
             )
         except Exception as e:
             out.put((rank, "error", str(e)))
@@ -726,6 +745,37 @@ def test_a_failed_rank_zero_save_stops_every_rank(tmp_path):
         assert p.exitcode == 0
     assert results[0][1] == "error" and "No space left" in results[0][2]
     assert results[1][1] == "error" and "another rank failed to save" in results[1][2]
+
+
+def _run_ranks(tmp_path, **kwargs):
+    import multiprocessing
+
+    ctx = multiprocessing.get_context("spawn")
+    out = ctx.Queue()
+    args = (str(tmp_path / "pg"), str(tmp_path / "pruned"), out)
+    procs = [ctx.Process(target = _prune_rank, args = (r, *args), kwargs = kwargs) for r in range(2)]
+    for p in procs:
+        p.start()
+    results = sorted(out.get(timeout = 300) for _ in procs)
+    for p in procs:
+        p.join(timeout = 60)
+        assert p.exitcode == 0
+    return results
+
+
+def test_ddp_report_is_written_by_rank_zero_only(tmp_path):
+    (_, report0, _), (_, report1, _) = _run_ranks(tmp_path, report = True)
+    assert report0 == report1
+    assert (tmp_path / "report_by_0").exists() and not (tmp_path / "report_by_1").exists()
+    assert json.loads((tmp_path / "report.json").read_text(encoding = "utf-8")) == report0
+
+
+def test_a_failed_rank_zero_report_write_stops_every_rank(tmp_path):
+    results = _run_ranks(tmp_path, report = "fail")
+    assert results[0][1] == "error" and "Read-only file system" in results[0][2]
+    assert (
+        results[1][1] == "error" and "another rank failed to write the REAP report" in results[1][2]
+    )
 
 
 def test_one_bad_calibration_shard_stops_every_rank(tmp_path):
