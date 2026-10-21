@@ -83,31 +83,60 @@ def test_verdict_mlx_reports_missing_device():
     assert "did not report a device" in hints[0]
 
 
+def _broken_studio_gate(monkeypatch):
+    _fake_studio_gate(monkeypatch, True)
+    # A None entry makes the import raise ImportError, like a studio backend missing a dependency.
+    monkeypatch.setitem(sys.modules, "studio.backend.core.training.training", None)
+
+
 def test_mlx_backend_active_honours_force_gpu_path(monkeypatch):
     _fake_studio_gate(monkeypatch, True)
-    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setenv("UNSLOTH_FORCE_GPU_PATH", "1")
     assert doctor_mod.mlx_backend_active() is False
 
 
 def test_mlx_backend_active_on_apple_silicon(monkeypatch):
     _fake_studio_gate(monkeypatch, True)
-    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: object())
     monkeypatch.delenv("UNSLOTH_FORCE_GPU_PATH", raising = False)
     assert doctor_mod.mlx_backend_active() is True
 
 
-def test_mlx_backend_active_false_without_mlx(monkeypatch):
+def test_mlx_backend_active_without_mlx_installed(monkeypatch):
+    # Missing mlx still routes to the MLX checks, whose verdict says how to install it.
     _fake_studio_gate(monkeypatch, True)
-    monkeypatch.setattr(doctor_mod.importlib.util, "find_spec", lambda name: None)
+    monkeypatch.setitem(sys.modules, "mlx", None)
     monkeypatch.delenv("UNSLOTH_FORCE_GPU_PATH", raising = False)
-    assert doctor_mod.mlx_backend_active() is False
+    assert doctor_mod.mlx_backend_active() is True
 
 
 def test_mlx_backend_active_false_off_apple_silicon(monkeypatch):
     _fake_studio_gate(monkeypatch, False)
     monkeypatch.delenv("UNSLOTH_FORCE_GPU_PATH", raising = False)
     assert doctor_mod.mlx_backend_active() is False
+
+
+@pytest.mark.parametrize(
+    "system, machine, expected",
+    [("Darwin", "arm64", True), ("Darwin", "x86_64", False), ("Linux", "x86_64", False)],
+)
+def test_mlx_backend_active_falls_back_to_platform(monkeypatch, system, machine, expected):
+    _broken_studio_gate(monkeypatch)
+    monkeypatch.setattr(doctor_mod.platform, "system", lambda: system)
+    monkeypatch.setattr(doctor_mod.platform, "machine", lambda: machine)
+    monkeypatch.delenv("UNSLOTH_FORCE_GPU_PATH", raising = False)
+    assert doctor_mod.mlx_backend_active() is expected
+
+
+def test_collect_mlx_info_needs_every_zoo_mlx_module(monkeypatch):
+    def fake_import(name):
+        if name == "unsloth_zoo.mlx.trainer":
+            raise ImportError("broken trainer")
+        return types.ModuleType(name)
+
+    monkeypatch.setattr(doctor_mod.importlib, "import_module", fake_import)
+    info = doctor_mod.collect_mlx_info()
+    assert info["zoo_mlx"] is False
+    assert any("unsloth_zoo.mlx.trainer" in e for e in info["errors"])
 
 
 def test_collect_mlx_info_never_raises():
@@ -136,3 +165,13 @@ def test_doctor_keeps_the_cuda_path_when_mlx_is_inactive(monkeypatch):
     monkeypatch.setattr(doctor_mod, "_gpu_checks", _fail)
     result = CliRunner().invoke(unsloth_cli.app, ["doctor"])
     assert result.exit_code == 1
+
+
+def test_doctor_without_mlx_points_at_installing_it(monkeypatch):
+    monkeypatch.setattr(doctor_mod, "mlx_backend_active", lambda: True)
+    info = _healthy_info(mlx = None, metal = False, device = None, zoo_mlx = False)
+    monkeypatch.setattr(doctor_mod, "collect_mlx_info", lambda: info)
+    result = CliRunner().invoke(unsloth_cli.app, ["doctor"])
+    assert result.exit_code == 1
+    assert "mlx is not installed" in result.output
+    assert "nvidia-smi" not in result.output

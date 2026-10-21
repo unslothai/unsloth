@@ -10,7 +10,6 @@ and the settings to try. torch is imported lazily so `unsloth --help` stays fast
 
 import importlib
 import importlib.metadata
-import importlib.util
 import os
 import platform
 import shutil
@@ -546,13 +545,14 @@ def mlx_backend_active() -> bool:
     """
     if os.environ.get("UNSLOTH_FORCE_GPU_PATH") == "1":
         return False
+    # Not gated on mlx being importable: a Mac without it should get the MLX
+    # verdict's install hint, not the CUDA path's nvidia-smi one.
     try:
-        if importlib.util.find_spec("mlx") is None:
-            return False
         from studio.backend.core.training.training import should_use_mlx_training_backend
         return bool(should_use_mlx_training_backend())
     except Exception:
-        return False
+        # The repo gate is a platform check; keep it if the studio backend can't import.
+        return platform.system() == "Darwin" and platform.machine() == "arm64"
 
 
 def collect_mlx_info() -> dict:
@@ -602,13 +602,13 @@ def collect_mlx_info() -> dict:
         info["zoo"] = importlib.metadata.version("unsloth_zoo")
     except Exception as e:
         info["errors"].append(f"unsloth_zoo version: {type(e).__name__}: {e}")
+    info["zoo_mlx"] = True
     for module in ("unsloth_zoo.mlx.trainer", "unsloth_zoo.mlx.loader"):
         try:
             importlib.import_module(module)
         except Exception as e:
             info["errors"].append(f"{module}: {type(e).__name__}: {e}")
-        else:
-            info["zoo_mlx"] = True
+            info["zoo_mlx"] = False
     return info
 
 
