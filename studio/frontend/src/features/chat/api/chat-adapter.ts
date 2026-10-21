@@ -415,6 +415,7 @@ import {
 } from "./chat-api";
 import {
   type AgentsMdRecord,
+  agentsMdEditCount,
   composeChatInstructions,
   EMPTY_AGENTS_MD,
 } from "../utils/agents-md";
@@ -2471,19 +2472,20 @@ async function resolveProjectInstructions(projectId: string | null): Promise<str
 const AGENTS_MD_TTL_MS = 2_000;
 const agentsMdByProject = new Map<
   string,
-  { at: number; value: Promise<AgentsMdRecord> }
+  { at: number; edits: number; value: Promise<AgentsMdRecord> }
 >();
 
 /** The AGENTS.md text for a request; a failed read sends what it would without the file. */
 function resolveAgentsMd(projectId: string | null): Promise<AgentsMdRecord> {
   const key = projectId ?? "";
   const now = Date.now();
+  const edits = agentsMdEditCount();
   const hit = agentsMdByProject.get(key);
-  if (hit && now - hit.at < AGENTS_MD_TTL_MS) {
+  if (hit && hit.edits === edits && now - hit.at < AGENTS_MD_TTL_MS) {
     return hit.value;
   }
   const value = getChatAgentsMd(projectId).catch(() => EMPTY_AGENTS_MD);
-  agentsMdByProject.set(key, { at: now, value });
+  agentsMdByProject.set(key, { at: now, edits, value });
   return value;
 }
 
@@ -7662,7 +7664,7 @@ export function createOpenAIStreamAdapter(
                         body: JSON.stringify({
                           action_id: raw.id,
                           session_id: typeof raw.session_id === "string" ? raw.session_id : "",
-                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Studio." },
+                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Unsloth." },
                         }),
                       }).catch(() => undefined);
                     },
