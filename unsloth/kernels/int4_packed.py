@@ -265,14 +265,24 @@ def _launch_args(packed, qs):
     cached = qs._launch
     if cached is not None and cached[0] == packed.data_ptr():
         return cached[1]
+    args = _make_launch_args(packed, qs, store = True)
+    qs._launch = (packed.data_ptr(), args)
+    qs._launchers = None
+    return args
+
+
+def _make_launch_args(packed, qs, store):
     N, K = qs.shape
     bits = qs.bits
     pf = 32 // bits
     group = qs.group_size if qs.group_size > 0 else K
-    if qs.g_idx is None and group % pf != 0:
+    g_idx = qs.g_idx
+    if g_idx is None and group % pf != 0:
         # A word would straddle two groups: address the groups per column instead.
-        qs.g_idx = torch.arange(K, device = packed.device, dtype = torch.int32) // group
-    zp, g_idx, scale = qs.zero_point, qs.g_idx, qs.scale
+        g_idx = torch.arange(K, device = packed.device, dtype = torch.int32) // group
+        if store:
+            qs.g_idx = g_idx
+    zp, scale = qs.zero_point, qs.scale
     Z = zp if zp is not None else packed
     G = g_idx if g_idx is not None else packed
     args = (
@@ -281,8 +291,6 @@ def _launch_args(packed, qs):
         (packed.stride(0), scale.stride(0), Z.stride(0) if zp is not None else 0),
         dict(BITS = bits, PF = pf, GROUP = group, HAS_Z = zp is not None, HAS_G = g_idx is not None),
     )
-    qs._launch = (packed.data_ptr(), args)
-    qs._launchers = None
     return args
 
 
@@ -338,12 +346,21 @@ def int4_dequantize(
     dtype = dtype or qs.dtype or torch.bfloat16
     if qs.layout is not None:
         return _dequant_repacked(packed, qs, dtype, out)
-    (P, S, Z, G), (N, K, KP), (sp, ss, sz), meta = _launch_args(packed, qs)
+    compiling = torch.compiler.is_compiling()
+    # Traced: data_ptr caches and cached launchers would break the graph.
+    (P, S, Z, G), (N, K, KP), (sp, ss, sz), meta = (
+        _make_launch_args(packed, qs, store = False) if compiling else _launch_args(packed, qs)
+    )
     if out is None:
         out = torch.empty((N, K), dtype = dtype, device = packed.device)
     BLOCK_N, BLOCK_KP = 16, max(1, 512 // meta["PF"])
     grid = (triton.cdiv(N, BLOCK_N), triton.cdiv(KP, BLOCK_KP), 1)
     args = (P, S, Z, G, out, N, K, KP, sp, ss, sz, out.stride(0))
+    if compiling:
+        _dequant_kernel[grid](
+            *args, BLOCK_N = BLOCK_N, BLOCK_KP = BLOCK_KP, num_warps = 4, **meta, enable_fp_fusion = True
+        )
+        return out
     key = (packed.device.index, "dq", out.dtype, out.data_ptr() % 16 == 0, out.stride(0) % 16 == 0)
     launchers = qs._launchers
     if launchers is None:

@@ -7,7 +7,7 @@ import httpx
 import pytest
 from fastmcp.exceptions import ToolError
 
-from studio_mcp.errors import audio_code, raise_for_audio
+from studio_mcp.errors import audio_code, raise_for_audio, raise_for_route
 
 from .mcp_harness import openai_error
 
@@ -70,7 +70,7 @@ def test_an_already_tagged_message_is_not_tagged_twice():
 
 def test_a_gpu_busy_answer_keeps_its_retry_and_gets_no_audio_tag():
     resp = _v1(409, "Busy.", code = "gpu_busy", headers = {"Retry-After": "5"})
-    assert _message(resp) == "GPU busy: Busy. Retry after 5 s."
+    assert _message(resp) == "[gpu_busy retry_after=5] GPU busy: Busy. Retry after 5 s."
 
 
 @pytest.mark.parametrize(
@@ -83,7 +83,10 @@ def test_a_gpu_busy_answer_keeps_its_retry_and_gets_no_audio_tag():
 )
 def test_other_errors_are_unchanged(resp):
     message = _message(resp, hints = {400: "Load one."})
-    assert not message.startswith("[")
+    with pytest.raises(ToolError) as generic:
+        raise_for_route(resp, hints = {400: "Load one."})
+    # No audio code, so the audio path leaves the generic error as it is.
+    assert message == str(generic.value)
     assert audio_code(json.loads(resp.content)) is None
 
 

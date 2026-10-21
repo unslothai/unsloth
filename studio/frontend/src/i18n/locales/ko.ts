@@ -50,6 +50,11 @@ export const ko = {
     removeFromMessage: "메시지에서 제거",
   },
   browser: {
+    drafts: {
+      title: "입력한 텍스트가 있는 페이지를 종료할까요?",
+      description: "채팅의 응답성을 유지하기 위해 입력한 텍스트가 있는 숨겨진 페이지는 세 개까지만 계속 실행됩니다. 계속하면 {pages} 페이지가 종료되며 저장하지 않은 텍스트가 사라질 수 있습니다. 취소하면 이전 탭으로 돌아갑니다.",
+      confirm: "종료하고 계속",
+    },
     agentSettings: {
       title: "브라우저 사용",
       enable: "모델이 브라우저를 사용하도록 허용",
@@ -1611,9 +1616,9 @@ export const ko = {
         autoDescription: "답변이 끝나면 바로 소리 내어 읽습니다",
         engineLabel: "TTS 엔진",
         engineSystemDescription: "기기 내장 음성",
-        engineStudioDescription: "오디오에서 로드된 음성 모델을 사용합니다",
+        engineStudioDescription: "오디오 › 텍스트 음성 변환에서 로드한 모델로 읽어 줍니다",
         engineSystem: "시스템 음성",
-        engineStudio: "TTS 모델 로드",
+        engineStudio: "Unsloth 모델",
         engineCustom: "사용자 지정 엔드포인트",
         engineCustomDescription:
           "연결에 저장된 OpenAI 호환 TTS 서버 (예: Kokoro)",
@@ -1624,8 +1629,11 @@ export const ko = {
         customModelLabel: "모델",
         customVoiceDescription: "엔드포인트가 기대하는 음성 이름 (기본값: alloy)",
         modelLabel: "TTS 모델",
-        modelDescription:
-          "오디오에서 음성 모델을 로드하세요. 채팅 모델을 대체합니다.",
+        modelDescription: "로드된 모델이 없습니다. 오디오 › 텍스트 음성 변환에서 로드하세요.",
+        modelLoaded: "{model} 로드됨",
+        keepBothLabel: "채팅 모델 로드 상태 유지",
+        keepBothDescription: "'여러 모델을 로드된 상태로 유지'가 '끄기'로 설정되어 있어, 음성 모델을 로드하면 채팅 모델이 언로드됩니다.",
+        keepBothAction: "둘 다 로드 상태 유지",
         openAudioAction: "오디오 열기",
         voiceLabel: "음성",
         voiceDescription: "기기에서 사용 가능한 최적의 음성",
@@ -1698,6 +1706,23 @@ export const ko = {
           "백엔드 환경의 UNSLOTH_HELPER_MODEL_DISABLE에 의해 비활성화되었습니다.",
         loadError: "Helper LLM 설정을 불러오지 못했습니다.",
         saveError: "Helper LLM 설정을 저장하지 못했습니다.",
+      },
+      developerMode: {
+        sectionTitle: "개발자 모드",
+        videoCpu: "CPU에서 동영상 생성 허용 (실험적)",
+        videoCpuDescription: "지원되는 GPU가 없는 호스트에서 동영상 페이지를 실행할 수 있게 합니다. 기본값은 꺼짐이며, 지원되지 않고 매우 느립니다.",
+        notApplicable: "이 컴퓨터에서는 효과가 없습니다. 동영상이 이미 GPU에서 실행되고 있거나, CPU로 우회할 수 없는 문제로 차단되어 있습니다.",
+        forcedOnByEnv: "백엔드 환경의 UNSLOTH_VIDEO_ALLOW_CPU에 의해 켜졌습니다.",
+        forcedOffByEnv: "백엔드 환경의 UNSLOTH_VIDEO_ALLOW_CPU에 의해 꺼졌습니다.",
+        confirmTitle: "CPU 동영상 생성을 활성화할까요?",
+        confirmWarning: "CPU 동영상 생성은 몇 시간이 걸릴 수 있고, 많은 RAM을 사용하며, 시스템이 멈출 수 있습니다. 위험을 감수하고 계속하세요.",
+        ramBelowMinimum: "이 컴퓨터의 RAM은 {host} GB로, 가장 작은 동영상 모델이 CPU에서 필요로 하는 {min} GB보다 적습니다. 로드가 실패하거나 시스템이 멈출 가능성이 높습니다.",
+        ramOk: "이 컴퓨터의 RAM은 {host} GB입니다. 가장 작은 동영상 모델은 CPU에서 약 {min} GB가 필요하며, 더 큰 모델은 훨씬 더 많이 필요합니다.",
+        ramUnknown: "가장 작은 동영상 모델은 CPU에서 약 {min} GB의 RAM이 필요하며, 더 큰 모델은 훨씬 더 많이 필요합니다.",
+        performanceEstimate: "노이즈 제거 단계마다 몇 분씩 걸립니다. Wan2.1 1.3B로 3단계, 5프레임 832x480 클립을 만드는 데 16개 CPU 스레드에서 약 4분이 걸렸으며, 기본 설정의 전체 길이 클립은 몇 시간이 걸릴 수 있습니다.",
+        confirmAction: "그래도 활성화",
+        loadError: "개발자 모드 설정을 불러오지 못했습니다.",
+        saveError: "개발자 모드 설정을 저장하지 못했습니다.",
       },
       modelAutoSwitch: {
         sectionTitle: "모델 자동 전환 (OpenAI API)",
@@ -1813,6 +1838,11 @@ export const ko = {
         closeToTrayDescription:
           "기본 창을 닫아도 Unsloth와 서버가 백그라운드에서 계속 실행되도록 합니다.",
         closeToTraySaveError: "시스템 트레이로 닫기 설정을 업데이트하지 못했습니다.",
+
+        menuBarIcon: "메뉴 막대에 표시",
+        menuBarIconDescription:
+          "macOS 메뉴 막대에 Unsloth 아이콘을 표시합니다. 숨기면 로그인 시 시작된 경우를 포함해 Unsloth는 Dock에 남아 있습니다.",
+        menuBarIconSaveError: "메뉴 막대 아이콘 설정을 업데이트하지 못했습니다.",
         loadError: "로그인 시 실행 설정을 불러오지 못했습니다.",
         saveError: "로그인 시 실행 설정을 업데이트하지 못했습니다.",
       },
@@ -1909,8 +1939,8 @@ export const ko = {
         downloadFailed: "다운로드를 시작할 수 없습니다",
         downloadConflict: "Hub에서 이 다운로드를 재개하세요",
         downloadBusy: "이미 다운로드가 진행 중입니다",
-        pin: "RAG 메뉴에 고정",
-        unpin: "RAG 메뉴에서 고정 해제",
+        pin: "Files 메뉴에 고정",
+        unpin: "Files 메뉴에서 고정 해제",
         menuChip: "모델",
         moreModels: "더 많은 모델",
         pinMoreModels: "모델 더 고정하기",
@@ -2018,6 +2048,8 @@ export const ko = {
         subtitle:
           "아래 내용은 모두 본인의 기록을 바탕으로 계산됩니다. 아무것도 수집하거나 Unsloth로 전송하지 않습니다.",
         retry: "다시 시도",
+        exportCsv: "CSV 내보내기",
+        exportError: "토큰 사용량을 내보낼 수 없습니다",
         privacyNote:
           "통계는 Unsloth 설치에 저장된 로컬 채팅, API 사용 및 학습 기록을 바탕으로 계산됩니다. 통계를 위해 API 프롬프트, 응답 또는 키를 저장하지 않습니다. Unsloth나 제3자에게 아무것도 전송하지 않습니다.",
         emptyChats:
@@ -2351,12 +2383,15 @@ export const ko = {
         multiModelOff: "끄기",
         multiModelFit: "공간이 있을 때",
         multiModelAlways: "항상",
-        multiModelDescription: "채팅, 이미지, 동영상 모델을 로드하면 다른 모델은 언로드됩니다.",
+        multiModelDescription: "채팅, 음성, 이미지, 동영상 모델을 로드하면 다른 모델은 언로드됩니다.",
         multiModelDescriptionFit:
           "모델을 로드할 때 공간이 있으면 다른 모델을 유지합니다. 공간이 없으면 사용하지 않는 모델을 먼저 언로드하고, 그다음 활성 모델을 언로드합니다.",
         multiModelDescriptionAlways:
           "모델을 로드해도 다른 모델을 언로드하지 않습니다. 공간이 부족한 모델은 로드되지 않습니다. 유휴 시 자동 언로드와 학습은 여전히 메모리를 확보합니다.",
-        multiModelHint: "채팅, 이미지, 동영상 모델에 적용됩니다. 로드된 각 채팅 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 Unsloth는 다른 모델이 사용하지 않는 GPU에 새 모델을 배치하려고 합니다. '공간이 있을 때'는 약 1GB를 남겨 둡니다. '공간이 있을 때'와 '항상'은 다른 GPU에 있는 모델을 언로드하지 않습니다.",
+        multiModelHint: "채팅, 음성, 이미지, 동영상 모델에 적용됩니다. 로드된 각 채팅 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 Unsloth는 다른 모델이 사용하지 않는 GPU에 새 모델을 배치하려고 합니다. '공간이 있을 때'는 약 1GB를 남겨 둡니다. '공간이 있을 때'와 '항상'은 다른 GPU에 있는 모델을 언로드하지 않습니다.",
+        allowOversizedLoad: "너무 큰 모델 로드 허용",
+        allowOversizedLoadDescription: "메모리 검사에서 맞지 않는다고 판단해도 이미지 및 비디오 모델을 로드합니다.",
+        allowOversizedLoadHint: "CPU와 GPU가 하나의 메모리를 공유하는 경우(Apple Silicon, 내장 GPU)에 적용됩니다. 모델 가중치 추정치가 운영 체제용 공간을 확보한 후 남은 메모리보다 크면 Studio는 로드를 거부합니다. 이 옵션을 켜면 그래도 로드를 시도합니다. 추정치는 어느 방향으로든 틀릴 수 있으며, 너무 큰 로드는 실패하거나, 메모리를 모두 사용하거나, 심한 스와핑 또는 응답 없음을 일으키거나, Studio를 중지시킬 수 있습니다. 기본값은 꺼짐입니다.",
         mediaIdleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
@@ -2369,7 +2404,7 @@ export const ko = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu 메모리 ram 상주 고정 잠금 유지 로드됨 언로드 유휴 mmap no-mmap load-mode 스왑 페이징",
         multiModelKeywords:
-          "여러 모델 동시 함께 전환 공간 언로드 해제 vram gpu 이미지 동영상 채팅 항상 유휴",
+          "여러 모델 동시 함께 전환 공간 언로드 해제 vram gpu 이미지 동영상 채팅 항상 유휴 음성 읽어주기 소리 내어 읽기 tts",
         mediaIdleUnloadKeywords:
           "이미지 동영상 디퓨전 유휴 해제 언로드 ttl 시간 초과 초 확보 vram gpu 메모리",
       },
@@ -3160,6 +3195,7 @@ export const ko = {
       audioCppVersion: "audio.cpp 버전",
       hardware: "하드웨어",
       gpu: "GPU",
+      gpuIntegrated: "내장",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -4294,6 +4330,7 @@ export const ko = {
       moreActions: "추가 작업",
       chatAboutThis: "이 파일로 채팅",
       chatWithModel: "이 모델과 채팅",
+      editImage: "이미지 편집",
       addToFavorites: "즐겨찾기에 추가",
       regenerateTitle: "제목 다시 생성",
       removeFromFavorites: "즐겨찾기에서 제거",
@@ -4489,6 +4526,7 @@ export const ko = {
       skippedOverLimit: "{limit}개 파일 한도를 넘는 {count}개는 제외되었습니다.",
       chatFilesWaiting: "{count}개는 이를 읽을 수 있는 모델이 로드되면 첨부됩니다.",
       openFilesFailed: "파일을 열지 못했습니다",
+      editImageFailed: "편집할 이미지를 열 수 없습니다",
       speechModel: "{name}은(는) 음성 모델입니다",
       speechModelDescription: "오디오 페이지의 모델 메뉴에서 선택하세요.",
       noMediaLink: "서버가 이 파일을 재생할 링크를 반환하지 않았습니다.",

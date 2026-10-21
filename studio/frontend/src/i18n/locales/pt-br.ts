@@ -50,6 +50,11 @@ export const ptBR = {
     removeFromMessage: "Remover da mensagem",
   },
   browser: {
+    drafts: {
+      title: "Descarregar uma página com texto inserido?",
+      description: "Para manter o chat responsivo, apenas três páginas ocultas com texto inserido continuam em execução. Continuar descarregará {pages}, podendo perder texto não salvo. Cancelar volta à aba anterior.",
+      confirm: "Descarregar e continuar",
+    },
     agentSettings: {
       title: "Uso do navegador",
       enable: "Permitir que os modelos usem o navegador",
@@ -1616,9 +1621,9 @@ export const ptBR = {
         autoDescription: "Lê cada resposta em voz alta assim que ela termina",
         engineLabel: "Mecanismo de TTS",
         engineSystemDescription: "Vozes nativas do dispositivo",
-        engineStudioDescription: "Usa o modelo de fala carregado em Áudio",
+        engineStudioDescription: "Fala com um modelo carregado em Áudio › Conversão de texto em fala",
         engineSystem: "Vozes do sistema",
-        engineStudio: "Carregar modelo de TTS",
+        engineStudio: "Modelo do Unsloth",
         engineCustom: "Endpoint personalizado",
         engineCustomDescription:
           "Um servidor TTS compatível com OpenAI das suas conexões (ex.: Kokoro)",
@@ -1630,8 +1635,11 @@ export const ptBR = {
         customVoiceDescription:
           "Nome da voz esperado pelo endpoint; o padrão é alloy",
         modelLabel: "Modelo de TTS",
-        modelDescription:
-          "Carregue um modelo de fala em Áudio. Ele substitui o modelo do chat.",
+        modelDescription: "Nenhum carregado. Carregue um em Áudio › Conversão de texto em fala.",
+        modelLoaded: "{model} está carregado",
+        keepBothLabel: "Manter o modelo do chat carregado",
+        keepBothDescription: "“Manter vários modelos carregados” está em “Desativado”, então carregar um modelo de fala descarrega o modelo do chat.",
+        keepBothAction: "Manter os dois carregados",
         openAudioAction: "Abrir Áudio",
         voiceLabel: "Voz",
         voiceDescription: "As melhores vozes deste dispositivo",
@@ -1706,6 +1714,23 @@ export const ptBR = {
           "Desativado por UNSLOTH_HELPER_MODEL_DISABLE no ambiente de backend.",
         loadError: "Falha ao carregar as configurações do LLM Auxiliar.",
         saveError: "Falha ao salvar as configurações do LLM Auxiliar.",
+      },
+      developerMode: {
+        sectionTitle: "Modo desenvolvedor",
+        videoCpu: "Permitir geração de vídeo na CPU (experimental)",
+        videoCpuDescription: "Permite usar a página de Vídeo em uma máquina sem GPU compatível. Desativado por padrão; sem suporte oficial e muito lento.",
+        notApplicable: "Não tem efeito nesta máquina: o vídeo já roda na GPU ou está bloqueado por algo que a CPU não consegue contornar.",
+        forcedOnByEnv: "Ativado por UNSLOTH_VIDEO_ALLOW_CPU no ambiente do backend.",
+        forcedOffByEnv: "Desativado por UNSLOTH_VIDEO_ALLOW_CPU no ambiente do backend.",
+        confirmTitle: "Ativar geração de vídeo na CPU?",
+        confirmWarning: "A geração de vídeo na CPU pode levar horas, consumir grandes quantidades de RAM e travar seu sistema. Continue por sua conta e risco.",
+        ramBelowMinimum: "Esta máquina tem {host} GB de RAM, abaixo dos {min} GB que o menor modelo de vídeo precisa na CPU. O carregamento provavelmente falhará ou travará o sistema.",
+        ramOk: "Esta máquina tem {host} GB de RAM. O menor modelo de vídeo precisa de cerca de {min} GB na CPU; modelos maiores precisam de muito mais.",
+        ramUnknown: "O menor modelo de vídeo precisa de cerca de {min} GB de RAM na CPU; modelos maiores precisam de muito mais.",
+        performanceEstimate: "Espere minutos por etapa de remoção de ruído: um clipe de 5 quadros em 832x480 do Wan2.1 1.3B com 3 etapas levou cerca de 4 minutos em 16 threads de CPU, e um clipe completo com as configurações padrão pode levar horas.",
+        confirmAction: "Ativar mesmo assim",
+        loadError: "Falha ao carregar as configurações do modo desenvolvedor.",
+        saveError: "Falha ao salvar as configurações do modo desenvolvedor.",
       },
       modelAutoSwitch: {
         sectionTitle: "Troca automática de modelo (API OpenAI)",
@@ -1825,6 +1850,12 @@ export const ptBR = {
           "Mantém o Unsloth e seu servidor em execução em segundo plano ao fechar a janela principal.",
         closeToTraySaveError:
           "Não foi possível atualizar a configuração de fechar para a bandeja do sistema.",
+
+        menuBarIcon: "Mostrar na barra de menus",
+        menuBarIconDescription:
+          "Mostra o ícone do Unsloth na barra de menus do macOS. Quando oculto, o Unsloth permanece no Dock, inclusive quando é iniciado no login.",
+        menuBarIconSaveError:
+          "Não foi possível atualizar a configuração do ícone da barra de menus.",
         loadError:
           "Não foi possível carregar a configuração de inicialização no login.",
         saveError:
@@ -1929,8 +1960,8 @@ export const ptBR = {
         downloadFailed: "Não foi possível iniciar o download",
         downloadConflict: "Retome este download pelo Hub",
         downloadBusy: "Download já em andamento",
-        pin: "Fixar no menu RAG",
-        unpin: "Desafixar do menu RAG",
+        pin: "Fixar no menu Files",
+        unpin: "Desafixar do menu Files",
         menuChip: "Modelo",
         moreModels: "Mais modelos",
         pinMoreModels: "Fixar mais modelos",
@@ -2039,6 +2070,8 @@ export const ptBR = {
         subtitle:
           "Tudo abaixo é calculado a partir do seu próprio histórico. Nada é coletado nem enviado ao Unsloth.",
         retry: "Tentar novamente",
+        exportCsv: "Exportar CSV",
+        exportError: "Não foi possível exportar o uso de tokens",
         privacyNote:
           "As estatísticas são calculadas a partir do histórico local de chats, uso da API e treinos da sua instalação do Unsloth. Prompts, respostas e chaves da API nunca são salvos para as estatísticas. Nada é enviado ao Unsloth ou a terceiros.",
         emptyChats:
@@ -2371,12 +2404,15 @@ export const ptBR = {
         multiModelOff: "Desativado",
         multiModelFit: "Quando couberem",
         multiModelAlways: "Sempre",
-        multiModelDescription: "Carregar um modelo de chat, imagem ou vídeo descarrega os outros.",
+        multiModelDescription: "Carregar um modelo de chat, fala, imagem ou vídeo descarrega os outros.",
         multiModelDescriptionFit:
           "Carregar um modelo mantém os outros quando eles cabem. Quando não cabem, descarrega primeiro os que não estão em uso e depois o ativo.",
         multiModelDescriptionAlways:
           "Carregar um modelo nunca descarrega outro. Um modelo que não cabe não é carregado. A descarga automática por inatividade e o treinamento ainda liberam memória.",
-        multiModelHint: "Vale para modelos de chat, imagem e vídeo. Cada modelo de chat carregado responde às solicitações que o nomeiam. Com várias GPUs, o Unsloth tenta colocar um novo modelo em uma GPU que nenhum outro modelo usa. “Quando couberem” deixa cerca de 1 GB livre. “Quando couberem” e “Sempre” nunca descarregam um modelo em outra GPU.",
+        multiModelHint: "Vale para modelos de chat, fala, imagem e vídeo. Cada modelo de chat carregado responde às solicitações que o nomeiam. Com várias GPUs, o Unsloth tenta colocar um novo modelo em uma GPU que nenhum outro modelo usa. “Quando couberem” deixa cerca de 1 GB livre. “Quando couberem” e “Sempre” nunca descarregam um modelo em outra GPU.",
+        allowOversizedLoad: "Permitir carregar modelos grandes demais",
+        allowOversizedLoadDescription: "Carregar modelos de imagem e vídeo mesmo quando a verificação de memória indica que eles não cabem.",
+        allowOversizedLoadHint: "Vale quando a CPU e a GPU compartilham uma única memória (Apple Silicon, GPUs integradas). O Studio recusa o carregamento quando a estimativa dos pesos do modelo é maior que a memória que sobra depois de reservar espaço para o sistema operacional. Com esta opção ativada, o carregamento é tentado mesmo assim. A estimativa pode errar para os dois lados: um carregamento grande demais pode falhar, esgotar a memória, fazer o computador usar muito a memória de troca ou travar, ou encerrar o Studio. Desativado por padrão.",
         mediaIdleUnloadDescription:
           "Libera a VRAM descarregando os modelos de imagem e vídeo após esta quantidade de segundos de inatividade. 0 os mantém carregados; o mínimo é 60.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
@@ -2389,7 +2425,7 @@ export const ptBR = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente fixar travar manter carregado descarregar ocioso mmap no-mmap load-mode paginacao swap",
         multiModelKeywords:
-          "varios multiplos modelos juntos simultaneos trocar caber descarregar remover vram gpu imagem video chat sempre ocioso",
+          "varios multiplos modelos juntos simultaneos trocar caber descarregar remover vram gpu imagem video chat sempre ocioso fala voz tts ler em voz alta",
         mediaIdleUnloadKeywords:
           "imagem video difusao ocioso descarregar ttl tempo limite segundos liberar vram gpu memoria",
       },
@@ -3191,6 +3227,7 @@ export const ptBR = {
       audioCppVersion: "Versão do audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrada",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -4338,6 +4375,7 @@ export const ptBR = {
       moreActions: "Mais ações",
       chatAboutThis: "Conversar sobre isto",
       chatWithModel: "Conversar com este modelo",
+      editImage: "Editar imagem",
       addToFavorites: "Adicionar aos Favoritos",
       regenerateTitle: "Regenerar título",
       removeFromFavorites: "Remover dos Favoritos",
@@ -4533,6 +4571,7 @@ export const ptBR = {
       skippedOverLimit: "Mais {count} além do limite de {limit} arquivos.",
       chatFilesWaiting: "{count} serão anexados assim que um modelo capaz de lê-los for carregado.",
       openFilesFailed: "Não foi possível abrir os arquivos",
+      editImageFailed: "Não foi possível abrir a imagem para edição",
       speechModel: "{name} é um modelo de fala",
       speechModelDescription: "Escolha-o no menu de modelos da página Áudio.",
       noMediaLink: "O servidor não retornou nenhum link para reproduzir este arquivo.",

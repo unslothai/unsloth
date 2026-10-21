@@ -875,13 +875,22 @@ def test_encode_release_only_for_the_whole_tier(monkeypatch):
 
 
 def test_generate_load_installs_the_encode_release():
+    import ast
+
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    at = src.index("install_encode_release(pipe, plan, logger)")
-    # after the placement is applied and before the int8 GEMM reads the final residency
-    assert src.index("effective_policy, effective_tiling = apply_memory_plan(") < at
-    assert at < src.index("if denoisers_pinned_resident(pipe):", at)
+    calls: dict = {}
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
+            calls.setdefault(name, []).append(node.lineno)
+    (at,) = calls["install_encode_release"]
+    assert any(line < at for line in calls["apply_memory_plan"])
+    pinned = min(line for line in calls["denoisers_pinned_resident"] if line > at)
+    engage = min(line for line in calls["engage_pinned_denoisers"] if line > at)
+    assert at < pinned < engage
 
 
 def _inner_devices(tensor):
@@ -932,7 +941,7 @@ def test_failed_release_keeps_the_copy_stream_wait(monkeypatch):
 
     monkeypatch.setattr(dm, "_release_group", boom)
     pipe = types.SimpleNamespace(components = {"transformer": module})
-    assert dm.release_resident_groups(pipe, 4) is None
+    assert callable(dm.release_resident_groups(pipe, 4))
     assert module._unsloth_stream_state["streamed"] >= 1
 
 
