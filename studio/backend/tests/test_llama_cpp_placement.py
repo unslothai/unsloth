@@ -6045,6 +6045,10 @@ def test_a_mixed_tensor_launch_prices_the_lazy_table(tmp_path, _moe_cache_host, 
     not fit 6 GiB of RAM beside 16 GiB of VRAM, and the host guard must warn and page
     the load. Layer split drops the iGPU and keeps the table lazy, so it fits."""
     _mixed_cuda_soc_host(monkeypatch)
+    # Two cards whatever the runner has: manual tensor needs them.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_effective_gpu_count", staticmethod(lambda gpu_indices = None: 2)
+    )
     lazy = {"per_layer_token_embd.weight": 12 * _GIB}
     no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
     kwargs = dict(
