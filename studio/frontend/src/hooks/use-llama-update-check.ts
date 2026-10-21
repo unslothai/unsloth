@@ -221,32 +221,12 @@ let retainedSuppression: {
 } = { value: null, persisted: true };
 
 export function offerKey(status: LlamaUpdateStatus): string {
-  // whisper.cpp rides along; null matches keys stored before it joined.
-  return offerKeyWith(status, null);
-}
-
-/** Also accepts the previous format, which recorded the whisper.cpp release in the key. */
-export function offerKeyMatches(
-  key: string,
-  status: LlamaUpdateStatus,
-): boolean {
-  if (key === offerKey(status)) return true;
-  const whisper = status.whisper;
-  return Boolean(
-    whisper?.update_available &&
-    key === offerKeyWith(status, [whisper.installed_tag, whisper.latest_tag]),
-  );
-}
-
-function offerKeyWith(
-  status: LlamaUpdateStatus,
-  whisper: [string | null, string | null] | null,
-): string {
   return JSON.stringify({
     llama: status.llama.update_available
       ? [status.llama.installed_tag, status.llama.latest_tag]
       : null,
-    whisper,
+    // whisper.cpp rides along; null matches keys stored before it joined.
+    whisper: null,
     migration: status.backend_migration_available
       ? [
           status.llama.installed_tag,
@@ -260,6 +240,24 @@ function offerKeyWith(
       ? { audio: [status.audio.installed_tag, status.audio.latest_tag] }
       : {}),
   });
+}
+
+/** The previous format recorded the whisper.cpp release in the key; ignore it so a new whisper.cpp release keeps the suppression. */
+export function offerKeyMatches(
+  key: string,
+  status: LlamaUpdateStatus,
+): boolean {
+  const current = offerKey(status);
+  if (key === current) return true;
+  try {
+    const stored: unknown = JSON.parse(key);
+    if (!stored || typeof stored !== "object" || !("whisper" in stored)) {
+      return false;
+    }
+    return JSON.stringify({ ...stored, whisper: null }) === current;
+  } catch {
+    return false;
+  }
 }
 
 function parseOfferSuppression(raw: string | null): OfferSuppression | null {

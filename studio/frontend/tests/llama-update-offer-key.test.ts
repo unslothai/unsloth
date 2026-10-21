@@ -88,6 +88,11 @@ test("a suppression stored with the whisper.cpp release still matches the same o
   });
   assert.equal(offerKeyMatches(stored, withWhisper), true);
   assert.equal(offerKeyMatches(offerKey(withWhisper), withWhisper), true);
+  const newerWhisper = {
+    ...withWhisper,
+    whisper: { ...withWhisper.whisper, latest_tag: "v1.9.5-unsloth.6" },
+  } as unknown as HookModule.LlamaUpdateStatus;
+  assert.equal(offerKeyMatches(stored, newerWhisper), true);
   const newerLlama = { ...withWhisper, llama: { ...withWhisper.llama, latest_tag: "b3" } };
   assert.equal(offerKeyMatches(stored, newerLlama), false);
 });
