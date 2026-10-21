@@ -848,7 +848,13 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         paths = get_hf_cache_paths()
         # datasets/assets live under the real HF home, not the display home (which can be the hub itself).
         home = os.path.abspath(str(effective_cache_home()))
-        resolved = {"hub": str(paths.hub_cache), "xet": str(paths.xet_cache)}
+        resolved = {
+            "hub": str(paths.hub_cache),
+            "xet": str(paths.xet_cache),
+            # Portable installs point these at their own root while HF_HOME stays the default.
+            "datasets": os.environ.get("HF_DATASETS_CACHE", ""),
+            "assets": os.environ.get("HF_ASSETS_CACHE", ""),
+        }
     except Exception:  # noqa: BLE001 - a launch never fails over a cache lookup
         logger.debug("could not resolve the configured Hugging Face cache", exc_info = True)
         user_home = os.path.expanduser("~")

@@ -51,7 +51,7 @@ _RESOURCE_ERRNOS = frozenset(
     code
     for code in (
         getattr(errno, name, None)
-        for name in ("ENOSPC", "EDQUOT", "EMFILE", "ENFILE", "ENOMEM", "ENOBUFS")
+        for name in ("ENOSPC", "EDQUOT", "EMFILE", "ENFILE", "ENOMEM", "ENOBUFS", "EAGAIN")
     )
     if code is not None
 )

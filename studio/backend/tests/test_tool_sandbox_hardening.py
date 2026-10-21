@@ -170,6 +170,44 @@ def test_datasets_and_assets_are_bound_from_the_real_hf_home(tmp_path, monkeypat
     assert binds["assets"] == str(real_home / "assets")
 
 
+def test_portable_datasets_and_assets_caches_are_bound_where_they_point(tmp_path, monkeypatch):
+    """Portable installs set HF_DATASETS_CACHE / HF_ASSETS_CACHE under their root and leave HF_HOME alone."""
+    from core.inference import sandbox_linux
+    import utils.hf_cache_settings as cache_settings
+
+    default_home = tmp_path / "default_hf"
+    portable = tmp_path / "portable" / "huggingface"
+    for path in (
+        default_home / "hub",
+        default_home / "datasets",
+        default_home / "assets",
+        portable / "datasets",
+        portable / "assets",
+    ):
+        path.mkdir(parents = True)
+    monkeypatch.setenv("HF_HOME", str(default_home))
+    monkeypatch.setenv("HF_DATASETS_CACHE", str(portable / "datasets"))
+    monkeypatch.setenv("HF_ASSETS_CACHE", str(portable / "assets"))
+    monkeypatch.setattr(
+        cache_settings,
+        "get_hf_cache_paths",
+        lambda: cache_settings.HuggingFaceCachePaths(
+            cache_home = default_home,
+            hub_cache = default_home / "hub",
+            xet_cache = default_home / "xet",
+            source = "environment",
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_cache_hazard_within_deadline",
+        lambda name, path: None if os.path.isdir(path) else sandbox_linux.CACHE_MISSING,
+    )
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    assert binds["datasets"] == str(portable / "datasets")
+    assert binds["assets"] == str(portable / "assets")
+
+
 def _auto_plan(tmp_path):
     return ToolLaunchPlan(
         argv = (sys.executable, "-c", "print(1)"),
@@ -188,7 +226,7 @@ def fresh_probe_cache():
 
 
 @pytest.mark.skipif(sys.platform not in ("linux", "darwin"), reason = "the probe backends")
-@pytest.mark.parametrize("code", [errno.ENOSPC, errno.EMFILE])
+@pytest.mark.parametrize("code", [errno.ENOSPC, errno.EMFILE, errno.EAGAIN])
 def test_a_probe_out_of_resources_refuses_rather_than_running_on_the_host(
     tmp_path, monkeypatch, fresh_probe_cache, code
 ):
