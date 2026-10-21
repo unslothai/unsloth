@@ -141,6 +141,7 @@ def test_video_data_uri_must_carry_payload_not_a_url():
         "data:video/mp4;base64,HTTPS://10.0.0.1/x.mp4",
         "data:video/mp4;base64,data:video/mp4;base64,http://127.0.0.1:9/x",
         "data:video/mp4;base64,file:///etc/passwd",
+        "data:video/mp4;" + "x" * 300 + ",http://127.0.0.1:9/x.mp4",
     ):
         rejection = reject(clip)
         assert rejection is not None and rejection[0] == 400, clip

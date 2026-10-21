@@ -28738,7 +28738,8 @@ def _video_scheme_rejection(clip: str) -> Optional[tuple[int, str]]:
         while clip[pos : pos + 5].lower() == "data:":
             comma = clip.find(",", pos, pos + 256)
             if comma < 0:
-                return None
+                # No payload separator within a real header's length: never forward it as data.
+                return (400, "Unsupported video payload in data URI. Send the clip as base64 data.")
             pos = comma + 1
         rest = clip[pos : pos + _MAX_VIDEO_SCHEME_CHARS + 1]
         if ":" not in rest:
