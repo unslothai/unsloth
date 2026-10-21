@@ -961,6 +961,10 @@ def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skil
             "Fill PDF forms. Use when: the user attaches\n  a PDF form",
             "Fill PDF forms. Use when: the user attaches a PDF form",
         ),
+        (
+            "Fill PDF forms. Use when: the user attaches\n  a PDF form\n\n  Then check the fields.",
+            "Fill PDF forms. Use when: the user attaches a PDF form\nThen check the fields.",
+        ),
     ],
 )
 def test_unquoted_description_with_a_colon_is_valid(isolated_skills, written, description):
@@ -980,13 +984,15 @@ def test_colon_fallback_keeps_the_other_fields_as_written(isolated_skills):
         "claude",
         "pdf-forms",
         description = "Fill PDF forms. Use when: the user attaches a PDF form",
-        frontmatter = "metadata: {author: someone}\ncompatibility: |\n  Needs Python 3.",
+        frontmatter = (
+            "license: &license MIT\nmetadata: {author: *license}\ncompatibility: |\n  Needs Python 3."
+        ),
     )
 
     record = next(item for item in skills.list_skills(home = home) if item["name"] == "pdf-forms")
 
     assert record["valid"] is True
-    assert record["metadata"] == {"author": "someone"}
+    assert record["metadata"] == {"author": "MIT"}
     assert record["compatibility"] == "Needs Python 3.\n"
 
 

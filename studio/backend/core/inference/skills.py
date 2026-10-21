@@ -51,9 +51,7 @@ _WINDOWS_RESERVED_STEMS = frozenset(
     | {f"lpt{index}" for index in "¹²³"}
 )
 _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
-_FRONTMATTER_SCALAR = re.compile(
-    r"^([a-zA-Z_-]+):[ \t]+(\S[^\r\n]*(?:\r?\n[ \t]+\S[^\r\n]*)*)", re.MULTILINE
-)
+_FRONTMATTER_KEY = re.compile(r"[a-zA-Z_-]+:[ \t]+(?=[^\s\"'])")
 
 
 class SkillError(ValueError):
@@ -288,24 +286,44 @@ def _read_limited(
     return raw
 
 
-def _quote_frontmatter_scalar(match: re.Match) -> str:
-    key, value = match.groups()
-    try:
-        yaml.safe_load(f"{key}: {value}")
-        return match.group(0)
-    except yaml.YAMLError:
-        pass
-    value = " ".join(line.strip() for line in value.splitlines())
+def _quote_frontmatter_value(text: str, line: int) -> Optional[str]:
+    lines = text.splitlines(keepends = True)
+    start = next(
+        (
+            index
+            for index in range(min(line, len(lines) - 1), -1, -1)
+            if lines[index].strip() and not lines[index][0].isspace()
+        ),
+        None,
+    )
+    match = _FRONTMATTER_KEY.match(lines[start]) if start is not None else None
+    if match is None:
+        return None
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][0].isspace()):
+        end += 1
+    while not lines[end - 1].strip():
+        end -= 1
+    block = "".join(lines[start:end])
+    value = block[match.end() :].rstrip()
+    tail = block[match.end() + len(value) :]
     value = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'{key}: "{value}"'
+    lines[start:end] = [f'{block[: match.end()]}"{value}"{tail}']
+    return "".join(lines)
 
 
 def _load_frontmatter(text: str):
-    try:
-        return yaml.safe_load(text)
-    except yaml.YAMLError:
-        # Agent skill loaders accept unquoted values such as `description: Use when: ...`.
-        return yaml.safe_load(_FRONTMATTER_SCALAR.sub(_quote_frontmatter_scalar, text))
+    while True:
+        try:
+            return yaml.safe_load(text)
+        except yaml.MarkedYAMLError as exc:
+            # Agent skill loaders accept unquoted values such as `description: Use when: ...`.
+            repaired = (
+                _quote_frontmatter_value(text, exc.problem_mark.line) if exc.problem_mark else None
+            )
+            if repaired is None:
+                raise
+            text = repaired
 
 
 def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
