@@ -1473,7 +1473,6 @@ def test_an_automatic_replace_fallback_waits_for_the_active_chats(backends, monk
     monkeypatch.setattr(inf, "_wait_for_model_switch_idle", wait)
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
     assert asyncio.run(inf.load_model_gated(request, None, "s", background = True)) == "loaded"
-    # Drained before the active model went.
     assert waited == ["org/A-GGUF"] and primary.model_identifier == "org/C-GGUF"
 
 
@@ -1495,7 +1494,6 @@ def test_an_automatic_replace_fallback_rechecks_the_sidecar_after_the_drain(back
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inf.load_model_gated(request, None, "s", background = True))
-    # Refused before the active model went.
     assert exc.value.status_code == 409 and primary.model_identifier == "org/A-GGUF"
 
 

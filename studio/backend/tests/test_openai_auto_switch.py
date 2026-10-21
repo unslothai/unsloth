@@ -12942,7 +12942,6 @@ def test_a_speech_switch_keeps_the_chat_model_loaded(monkeypatch, mode):
     request, kwargs = gated[0]
     assert request.alongside and request.model_path == "/local/B.gguf"
     assert kwargs["current_request_counted"] is True and kwargs["background"] is True
-    # The kept slot answers to the requested id; the chat model is untouched.
     assert slot.llama._openai_advertised_id == "org/B-GGUF"
     assert backend.model_identifier == "org/A-GGUF"
 
@@ -12997,7 +12996,6 @@ def test_a_kept_slot_unloaded_before_it_is_reserved_refuses_the_request(monkeypa
             )
         )
     assert exc.value.status_code == 503 and len(gated) == 1
-    # The chat model never answers to the speech model's id.
     assert getattr(backend, "_openai_advertised_id", None) != "org/B-GGUF"
 
 
@@ -13034,8 +13032,6 @@ def test_a_background_tracked_load_keeps_the_request_cancel_and_no_user_warnings
             )
         )
         inference_route._finish_load_attempt(attempt)
-        # The load always watches the attempt's event, which /unload and shutdown set too.
         assert seen["load_cancel_event"] is attempt.cancel_event
         assert seen["warnings"] is (not background)
-        # The request's own cancel reaches it.
         assert attempt.cancel_event.is_set() is background

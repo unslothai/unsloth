@@ -11560,12 +11560,7 @@ async def _auto_switch_npu_model(
 
 
 def _switch_loads_beside(target_speaks: Callable[[], bool]) -> bool:
-    """Whether an automatic load keeps the primary: a speech model beside a text one, or the reverse.
-
-    Only under Keep multiple models loaded, as the Audio page and the chat auto-load ask with
-    ``alongside``. Another model of the same kind still replaces the primary. ``target_speaks``
-    probes the target, so it runs only once the mode allows a kept slot.
-    """
+    """Under Keep multiple models loaded, a speech model loads beside a text one (or the reverse); the same kind replaces."""
     from utils.multi_model_settings import get_multi_model_enabled
 
     if not get_multi_model_enabled():
@@ -12212,8 +12207,7 @@ async def _maybe_auto_switch_model(
                 try:
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
-                    # A load kept beside the primary goes through load_model_gated, which takes the
-                    # load gate itself and leaves the primary serving while it loads.
+                    # Beside: load_model_gated takes the load gate itself; the primary keeps serving.
                     beside = await asyncio.to_thread(
                         _switch_loads_beside,
                         # Chat serves a TTS model too, so the target decides, not the endpoint.
@@ -12353,14 +12347,11 @@ async def _maybe_auto_switch_model(
                                     impl_kwargs = load_internal_kw,
                                     background = True,
                                 )
-                                # Routed to the new slot (None when it took the primary after all):
-                                # hold it so this request is served there.
                                 slot = routed_slot.get()
                                 if slot is None:
                                     return
                                 if not model_slots.reserve(slot):
-                                    # Unloaded since (e.g. Keep multiple models turned off): the
-                                    # primary is not the model asked for, so never answer as it.
+                                    # Unloaded since: never answer as the primary.
                                     routed_slot.set(None)
                                     raise HTTPException(
                                         status_code = 503,
@@ -18705,8 +18696,7 @@ async def _run_tracked_load_model_impl(
         _running_load_attempt = attempt
     try:
         if request_cancel is not None:
-            # The load watches the attempt's event, which /unload, shutdown and account
-            # retirement set; the request's own cancel reaches it through this bridge.
+            # /unload, shutdown and account retirement cancel through the attempt's event.
             async def _follow_request_cancel():
                 while not attempt.cancel_event.is_set():
                     if request_cancel.is_set():
@@ -19058,7 +19048,6 @@ async def load_model_gated(
                             )
                             async with inference_lifecycle_gate() if new_slot else nullcontext():
                                 if background:
-                                    # An automatic switch waits for running chats, as it does without a slot.
                                     await _wait_for_model_switch_idle(
                                         current_request_counted = current_request_counted
                                     )
