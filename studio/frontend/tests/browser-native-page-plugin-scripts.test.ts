@@ -10,8 +10,7 @@ const rust = readText("../../src-tauri/src/browser_webview.rs");
 const guard = rust.split('const PAGE_GUARD_SCRIPT: &str = r#"')[1].split('"#;')[0];
 const restore = rust.split('const PAGE_RESTORE_SCRIPT: &str = "')[1].split('";')[0];
 
-// What the init scripts of opener 2.5.4, dialog 2.7.2 and notification 2.3.3 (Cargo.lock) do to
-// a page, wrapped as Tauri wraps a plugin's script.
+// Init scripts of opener 2.5.4, dialog 2.7.2, notification 2.3.3 (Cargo.lock), wrapped as Tauri does.
 const PLUGINS = [
   `window.addEventListener("click",function(e){if(e.defaultPrevented||0!==e.button||e.metaKey||e.altKey)return;const t=e.composedPath().find(e=>e instanceof Node&&"A"===e.nodeName.toUpperCase());if(!t||!t.href||"_blank"!==t.target&&!e.ctrlKey&&!e.shiftKey)return;const n=new URL(t.href);["http:","https:","mailto:","tel:"].every(e=>n.protocol!==e)||(e.preventDefault(),window.__TAURI_INTERNALS__.invoke("plugin:opener|open_url",{url:n}))})`,
   `window.alert=function(i){window.__TAURI_INTERNALS__.invoke("plugin:dialog|message",{message:i.toString()})},window.confirm=async function(i){return await window.__TAURI_INTERNALS__.invoke("plugin:dialog|confirm",{message:i.toString()})}`,
@@ -22,7 +21,6 @@ function nativeFn(name: string) {
   return { [name]() {} }[name];
 }
 
-/** A webview's document as Tauri builds it: core metadata, plugin scripts in order, then the view's own. */
 function loadDocument(label: string, { guarded }: { guarded: boolean }) {
   const target = new EventTarget();
   const invoked: string[] = [];
