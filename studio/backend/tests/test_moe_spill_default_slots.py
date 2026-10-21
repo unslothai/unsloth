@@ -237,3 +237,173 @@ def test_the_switch_restores_the_default_slots(tmp_path, _moe_cache_host, monkey
     assert _flag(cmd, "--spec-type") == "draft-mtp", cmd
     assert _flag(cmd, "--parallel") == "4", cmd
     assert backend.effective_parallel_slots == 4
+
+
+def test_a_chosen_count_does_not_dedupe_against_slots_cut_for_the_spill(tmp_path, _moe_cache_host):
+    """A default four that launched two still matches; four chosen by hand reloads."""
+    import dataclasses
+
+    backend, cmd = _load(tmp_path)
+    assert _flag(cmd, "--parallel") == "2", cmd
+
+    default = backend.last_load_intent
+    assert default.n_parallel_from_default
+    chosen = dataclasses.replace(default, n_parallel_from_default = False)
+    assert backend._runtime_matches_intent(default, None)
+    assert not backend._runtime_matches_intent(chosen, None)
+
+
+def test_a_chosen_count_still_dedupes_when_the_switch_kept_the_slots(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    import dataclasses
+
+    monkeypatch.setenv("UNSLOTH_MOE_SPILL_SLOTS", "off")
+    backend, cmd = _load(tmp_path)
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+    chosen = dataclasses.replace(backend.last_load_intent, n_parallel_from_default = False)
+    assert backend._runtime_matches_intent(chosen, None)
+
+
+@pytest.fixture
+def _failing_drafter(monkeypatch):
+    """Every launch carrying the drafter fails its health check; the rest come up."""
+    cmds = []
+
+    def launch(
+        backend,
+        gguf,
+        model_identifier = "test",
+        **load_kwargs,
+    ):
+        def fake_popen(cmd, **kwargs):
+            if not cmd or str(cmd[0]) != "/fake/llama-server":
+                return placement._REAL_POPEN(cmd, **kwargs)
+            cmds.append(list(cmd))
+            return type(
+                "Process",
+                (),
+                {
+                    "pid": 123,
+                    "stdout": (),
+                    "poll": lambda self: None,
+                    "terminate": lambda self: None,
+                    "wait": lambda self, timeout = None: 0,
+                    "kill": lambda self: None,
+                },
+            )()
+
+        def fake_health(timeout = None, **_kw):
+            backend._stdout_lines = []
+            return "draft-mtp" not in cmds[-1]
+
+        backend._wait_for_health = fake_health
+        with placement.patch.object(placement.subprocess, "Popen", side_effect = fake_popen):
+            assert backend.load_model(
+                placement.GgufLoadIntent(
+                    gguf_path = str(gguf), model_identifier = model_identifier, **load_kwargs
+                )
+            )
+        return {"cmd": cmds[-1]}
+
+    monkeypatch.setattr(placement, "_launch", launch)
+    return cmds
+
+
+def test_a_drafter_that_fails_to_start_gives_the_spill_slots_back(
+    tmp_path, _moe_cache_host, _failing_drafter
+):
+    """The cut needs a drafter; without one the launch is main's, at the asked count
+    (as the drafter's own slot cut does, and as the mid-generation replay does)."""
+    backend, _cmd = _load(tmp_path)
+
+    first, retry = _failing_drafter[0], _failing_drafter[-1]
+    assert _flag(first, "--parallel") == "2", first
+    assert "draft-mtp" not in retry and "--spec-default" in retry, retry
+    assert _flag(retry, "--parallel") == "4", retry
+    assert backend.effective_parallel_slots == 4
+    assert not backend._slots_cut_for_drafter
+
+
+def test_the_mid_generation_replay_runs_at_the_asked_count(tmp_path, _moe_cache_host):
+    """The crash replay is a load with speculation off: no drafter, so no cut."""
+    import dataclasses
+
+    backend, cmd = _load(tmp_path)
+    assert _flag(cmd, "--parallel") == "2", cmd
+
+    replay = dataclasses.replace(backend.last_load_intent, speculative_type = "off")
+    _backend, cmd = _load(tmp_path, drafter = False, speculative_type = "off")
+    assert replay.n_parallel == 4 and replay.n_parallel_from_default
+    assert _flag(cmd, "--spec-type") != "draft-mtp", cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+
+@pytest.fixture
+def _mla_head(monkeypatch):
+    """The MoE fixture read as an MLA model (GLM/DeepSeek style) with an embedded head."""
+    make = placement._moe_backend
+
+    def mla(*args, **kwargs):
+        backend, gguf = make(*args, **kwargs)
+
+        def read_metadata(_path):
+            backend._nextn_predict_layers = 1
+            backend._kv_lora_rank = 512
+
+        backend._read_gguf_metadata = read_metadata
+        return backend, gguf
+
+    monkeypatch.setattr(placement, "_moe_backend", mla)
+
+
+@pytest.mark.parametrize("ngram_mod", [True, False])
+def test_auto_standing_an_mla_head_down_keeps_the_slots(
+    tmp_path, _moe_cache_host, _mla_head, monkeypatch, ngram_mod
+):
+    monkeypatch.delenv("UNSLOTH_MLA_MTP_ENABLED", raising = False)
+    caps = dict(_CAPS, supports_ngram_mod = ngram_mod)
+    backend, cmd = _cache_launch(
+        tmp_path,
+        caps = caps,
+        n_parallel = 4,
+        n_parallel_from_default = True,
+        speculative_type = "auto",
+    )
+
+    assert backend.spec_fallback_reason == "mla_mtp_disabled"
+    assert _flag(cmd, "--spec-type") != "draft-mtp", cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+
+def test_a_forced_mla_head_is_cut(tmp_path, _moe_cache_host, _mla_head):
+    _backend, cmd = _load(tmp_path, drafter = False, speculative_type = "mtp")
+
+    assert _flag(cmd, "--spec-type") == "draft-mtp", cmd
+    assert _flag(cmd, "--parallel") == "2", cmd
+
+
+@pytest.mark.parametrize(
+    "how",
+    [
+        dict(load_mode = "mmap"),
+        dict(extra_args = ["--load-mode", "mmap"]),
+    ],
+)
+def test_a_deep_spill_loading_by_mmap_gets_no_cache_and_keeps_the_slots(
+    tmp_path, _moe_cache_host, monkeypatch, how
+):
+    """The cache only launches pinned, so a user's mmap is a --fit split, not a cache."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    _backend, cmd = _load(tmp_path, memory = _DEEP_SPILL_CARD, **how)
+
+    assert "--moe-cache-mib" not in cmd, cmd
+    assert _flag(cmd, "--parallel") == "4", cmd
+
+
+def test_a_shallow_spill_loading_by_mmap_is_still_cut(tmp_path, _moe_cache_host):
+    """Near the fit edge the cut never needed the cache."""
+    _backend, cmd = _load(tmp_path, load_mode = "mmap")
+
+    assert _flag(cmd, "--parallel") == "2", cmd

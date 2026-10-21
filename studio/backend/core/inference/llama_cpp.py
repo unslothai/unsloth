@@ -29604,13 +29604,25 @@ class LlamaCppBackend:
                     # 24 GB), but over the cache four drafting slots collapse at any share
                     # (Flash-Next with the cache at 24 GB: four chats 59 vs 85, one 89 vs
                     # 94). Unpriceable keeps the ask.
+                    # Auto also drops an embedded MLA head (_auto_mla_embedded_mtp in
+                    # _build_speculative_flags) for ngram-mod or no speculation.
                     _drafter_stands_down = bool(
                         _spec_canon == "auto"
                         and self._nextn_predict_layers
-                        and self._ssm_inner_size is not None
-                        and self._full_attention_interval is not None
                         and not _separate_draft_launches
                         and not _extra_args_set_spec_type(extra_args)
+                        and (
+                            (
+                                self._ssm_inner_size is not None
+                                and self._full_attention_interval is not None
+                            )
+                            or (
+                                getattr(self, "_kv_lora_rank", None) is not None
+                                and not _mla_mtp_auto_enabled()
+                                and not _arch_has_fast_mla_mtp(getattr(self, "_architecture", None))
+                                and not _trained_drafter_sidecar(model_path)[1]
+                            )
+                        )
                     )
                     _slots_switch = _moe_switch(_MOE_SPILL_SLOTS_ENV)
 
@@ -29620,6 +29632,19 @@ class LlamaCppBackend:
                         _share = _moe_resident_share_now()
                         if _share is not None and _share >= _MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE:
                             return True
+                        # The cache launches pinned only (_argv_loads_pinned at its emit), so
+                        # a loader mode the user picked that is not pinned is a --fit split.
+                        # Extras win by last-arg, then the per-model pick, then the env.
+                        if extra_args_select_load_mode(extra_args):
+                            _user_pinned = _argv_loads_pinned(extra_args, os.environ)
+                        elif _normalized_load_mode(load_mode) is not None:
+                            _user_pinned = _normalized_load_mode(load_mode) == self._FIT_LOAD_MODE
+                        elif memory_env_selects_load_mode(os.environ):
+                            _user_pinned = _argv_loads_pinned((), os.environ)
+                        else:
+                            _user_pinned = None
+                        if _user_pinned is False:
+                            return False
                         return bool(
                             self._moe_cache_auto_eligible(
                                 caps = server_caps,
@@ -34522,6 +34547,11 @@ class LlamaCppBackend:
                         )
                     fallback_cmd = cmd[:_spec_at] + ["--spec-default"] + _fb_tail
                     # Restore the cut slots; if they fail (unified KV refused), retry as cut.
+                    # The spilled-MoE cut needs a drafter too, so it goes with it: the
+                    # drafterless retry runs at the ask, as main and the crash replay do.
+                    _fb_slots_asked = (
+                        _mtp_slots_asked if _mtp_slots_asked is not None else _spill_slots_asked
+                    )
                     _fb_cut = (
                         (
                             fallback_cmd,
@@ -34531,16 +34561,11 @@ class LlamaCppBackend:
                             _auto_ctx_checkpoints,
                             _auto_ckpt_emitted,
                         )
-                        if _mtp_slots_asked is not None
+                        if _fb_slots_asked is not None
                         else None
                     )
                     if _fb_cut is not None:
-                        # Not past the spilled-MoE cut: dropping the drafter leaves the spill.
-                        n_parallel = (
-                            _mtp_slots_asked
-                            if _spill_slots_asked is None
-                            else min(_mtp_slots_asked, _MOE_SPILL_DEFAULT_SLOTS)
-                        )
+                        n_parallel = _fb_slots_asked
                         fallback_cmd = _with_parallel_slots(
                             fallback_cmd,
                             n_parallel,
@@ -35012,8 +35037,11 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
-                self._slots_cut_for_drafter = (
-                    _mtp_slots_asked is not None and n_parallel < _mtp_slots_asked
+                # Either cut (the drafter's own, or the spilled-MoE default) is one a
+                # chosen count must not dedupe against.
+                self._slots_cut_for_drafter = any(
+                    _asked is not None and n_parallel < _asked
+                    for _asked in (_mtp_slots_asked, _spill_slots_asked)
                 )
                 # Commit with the rest of the known-good state: only a launch that got
                 # this far replaced the runtime, so a rejected preflight leaves the old
