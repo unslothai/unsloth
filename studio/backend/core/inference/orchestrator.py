@@ -2495,6 +2495,30 @@ class InferenceOrchestrator:
                 return getattr(self, "_managed_engine", None) is None
             return False
 
+    def reap_dead_worker(self) -> bool:
+        proc = self._proc
+        if proc is None or proc.is_alive():
+            return False
+        with self._subprocess_shutdown_lock:
+            if (
+                self._proc is not proc
+                or self._managed_engine is not None
+                or not self.active_model_name
+                or self.loading_models
+                or self._replies_in_flight()
+            ):
+                return False
+            logger.warning(
+                "Inference worker for '%s' exited (exitcode=%s); clearing the loaded model",
+                self.active_model_name,
+                proc.exitcode,
+            )
+            self._retire_stderr_capture()
+            self._shutdown_subprocess_locked(2)
+            self.active_model_name = None
+            self.models.clear()
+            return True
+
     def _load_managed_engine(
         self,
         engine,

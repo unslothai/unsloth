@@ -677,7 +677,7 @@ function unloadKeptModel(keptId: string): Promise<boolean> {
   );
 }
 
-async function syncInferenceStatusToStore(options?: {
+export async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
   preserveIdleUnloaded?: boolean;
@@ -823,7 +823,7 @@ async function syncInferenceStatusToStore(options?: {
         if (wasResident) {
           toast.info(`${wasResident} is no longer loaded`, {
             description:
-              "The server released it, which loading an image, video or audio model does. Pick it again to keep chatting.",
+              "The server released it, as loading an image, video or audio model does, or its process stopped. Pick it again to keep chatting.",
           });
         }
         // Drop the pick too, as a server-side unload does: the name alone reads as "this is my model"

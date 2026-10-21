@@ -12826,6 +12826,15 @@ def reap_dead_managed_engine(backend) -> None:
         account_access.clear_resident("chat")
 
 
+def reap_dead_worker(backend) -> None:
+    """Cleared, never respawned: status is polled, so a respawn after an OOM kill would loop."""
+    from core.inference.gpu_arbiter import CHAT, holds
+    if getattr(backend, "_proc", None) is None:
+        return
+    if backend.reap_dead_worker() and (release_chat_gpu_claim() or not holds(CHAT)):
+        account_access.clear_resident("chat")
+
+
 def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
     """True when the resident slot already serves the preview's checkpoint. Exact string
     match first: it is the fast path and the only comparison that makes sense for a non-path
@@ -20070,6 +20079,7 @@ async def _load_model_impl(
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
+            await asyncio.to_thread(reap_dead_worker, backend)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
@@ -23712,6 +23722,7 @@ def _slot_entries_and_checkpoints() -> "tuple[list[dict], dict[str, str]]":
         if public:
             checkpoints[public] = _llama_status_model_ids(llama)[1] or public
     backend = _peek_inference_backend()
+    reap_dead_worker(backend)
     name = getattr(backend, "active_model_name", None)
     if name:
         checkpoints[_orchestrator_public_model_id(backend) or name] = name
@@ -23727,6 +23738,8 @@ async def _slot_status(current_subject: str):
     backend = _peek_inference_backend()
     if getattr(backend, "_managed_engine", None) is not None:
         await asyncio.to_thread(reap_dead_managed_engine, backend)
+    else:
+        await asyncio.to_thread(reap_dead_worker, backend)
     if on_primary and account_access.resident_hidden("chat"):
         return account_access.hidden_chat_status_response()
     try:
