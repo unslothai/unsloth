@@ -17,6 +17,9 @@ const {
   runSettingsRequest,
   slotsSettingsRequest,
 } = await import("../src/features/api-monitor/slots-settings-request.ts");
+const { modelConfigTarget } = await import(
+  "../src/features/model-picker/model-config/model-config-handoff.ts"
+);
 
 const GGUF: ResidentRunTarget = {
   checkpoint: "unsloth/Qwen3-4B-GGUF",
@@ -171,4 +174,13 @@ test("a kept standalone GGUF opens its saved settings, keyed without the filenam
     ).meta.ggufVariant,
     "Q4_K_M",
   );
+});
+
+test("a kept HF cache snapshot opens the repo's saved settings and still loads the snapshot", () => {
+  const snapshot =
+    "/Users/me/.cache/huggingface/hub/models--unsloth--Qwen3-0.6B/snapshots/abc123";
+  const request = keptRunSettingsRequest({ checkpoint: snapshot, quant: null }, "kept");
+  const target = modelConfigTarget(request.id, request.meta);
+  assert.equal(target.configId, "unsloth/Qwen3-0.6B");
+  assert.equal(target.id, snapshot);
 });

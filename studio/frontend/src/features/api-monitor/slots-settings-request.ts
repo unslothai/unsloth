@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
+import { cachedRepoConfigId } from "@/features/model-picker/model-config/model-identity";
 // eslint-disable-next-line no-restricted-imports -- The barrel pulls in React components, which node tests cannot load.
 import {
   type ModelConfigHandoffRequest,
@@ -83,15 +84,19 @@ export function keptRunSettingsRequest(
 ): ModelConfigHandoffRequest {
   // A standalone .gguf's quant is a filename label; saved without it (residentModelConfigTarget), else a second record.
   const standalone = isStandaloneGgufPath(model.checkpoint);
+  const ggufVariant = standalone ? undefined : (model.quant ?? undefined);
+  // An HF cache snapshot keeps its settings under the repo id: open that record, load the snapshot.
+  const repoId = cachedRepoConfigId(model.checkpoint, ggufVariant);
   return {
     requestId,
-    id: model.checkpoint,
+    id: repoId ?? model.checkpoint,
     focus: "advanced",
     standalone: true,
     meta: {
-      source: "local",
+      source: repoId ? "hub" : "local",
+      ...(repoId ? { loadId: model.checkpoint } : {}),
       isLora: false,
-      ggufVariant: standalone ? undefined : (model.quant ?? undefined),
+      ggufVariant,
       isGguf: standalone || model.quant != null,
       isDownloaded: true,
     },

@@ -23100,6 +23100,9 @@ async def get_sampling_defaults(model: str, current_subject: str = Depends(get_c
     model's recommendation, then the schema default), so the API page's example request shows the
     values a client would actually get. Off-loop: the first read of a model loads its YAML.
     """
+    # A kept model answers its own requests: route as the request path does, so the backend getters
+    # below read that slot rather than the primary.
+    await _route_to_extra_slot(model)
     return await asyncio.to_thread(_sampling_defaults_for, model)
 
 

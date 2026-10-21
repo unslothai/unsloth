@@ -83,3 +83,31 @@ def test_a_resident_hidden_from_the_caller_is_not_resolved_against(monkeypatch):
         )
     )
     assert got == inference_config.resolve_effective_sampling("unsloth/Qwen3-4B-GGUF", {})
+
+
+class _Unloaded:
+    is_loaded = False
+
+
+def test_a_kept_model_resolves_against_its_own_slot(monkeypatch):
+    # The primary holds something else; the request path routes a kept Qwen3 to its slot, and so must this.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(inference_routes, "_llama_cpp_backend", _Unloaded())
+
+    async def route(requested):
+        inference_routes.routed_slot.set(SimpleNamespace(llama = _LoadedQwen()))
+
+    monkeypatch.setattr(inference_routes, "_route_to_extra_slot", route)
+    monkeypatch.setattr(inference_routes, "_sampling_thinking_mode", lambda backend, payload: False)
+    monkeypatch.setattr(
+        inference_routes, "_monitor_active_model", lambda: "unsloth/Qwen3-4B-GGUF:Q4_K_M"
+    )
+    got = asyncio.run(
+        inference_routes.get_sampling_defaults(
+            model = "unsloth/Qwen3-4B-GGUF:Q4_K_M", current_subject = "owner"
+        )
+    )
+    assert got == inference_config.resolve_effective_sampling(
+        "unsloth/Qwen3-4B-GGUF", {}, thinking = False
+    )
