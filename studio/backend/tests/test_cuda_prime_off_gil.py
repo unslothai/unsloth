@@ -176,6 +176,39 @@ def test_concurrent_caller_waits_for_the_init_in_flight(fake_cdll):
     assert calls == [("cuInit", 0), ("is_available",)]
 
 
+@pytest.mark.skipif(not hasattr(os, "fork"), reason = "needs os.fork")
+def test_a_child_forked_during_the_init_does_not_wait_for_it(fake_cdll):
+    calls, _opened, gate = fake_cdll
+    release = threading.Event()
+    gate.append(release)
+    torch = _fake_torch(calls)
+    first = threading.Thread(target = prime.prime_cuda_driver, args = (torch,))
+    first.start()
+    while not prime._claimed:
+        time.sleep(0.001)
+    try:
+        pid = os.fork()
+        if pid == 0:  # child: the parent's init thread is gone; this must return at once
+            started = time.monotonic()
+            ran = prime.prime_cuda_driver(torch)
+            os._exit(0 if (not ran and time.monotonic() - started < 2.0) else 1)
+        deadline = time.monotonic() + 10
+        status = None
+        while time.monotonic() < deadline:
+            done, status = os.waitpid(pid, os.WNOHANG)
+            if done:
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(pid, 9)
+            os.waitpid(pid, 0)
+            pytest.fail("the forked child waited on the parent's cuInit")
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        release.set()
+        first.join(5)
+
+
 def test_detection_primes_before_torch_probe(fake_cdll, monkeypatch):
     calls, _opened, _gate = fake_cdll
     torch = _fake_torch(calls)

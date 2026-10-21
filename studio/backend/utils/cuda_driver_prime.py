@@ -91,6 +91,19 @@ def prime_cuda_driver(torch_module = None) -> bool:
         _done.set()
 
 
+def _after_fork_in_child() -> None:
+    # The thread that would set _done exists only in the parent, and cuInit is not fork-safe: the child never primes.
+    global _claim_lock, _claimed, _done
+    _claim_lock = threading.Lock()
+    _claimed = True
+    _done = threading.Event()
+    _done.set()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child = _after_fork_in_child)
+
+
 def _reset_for_tests() -> None:
     global _claimed
     with _claim_lock:
