@@ -3108,9 +3108,12 @@ def test_a_damaged_cli_beside_a_healthy_server_is_not_a_strike(fake_settings, mo
     assert _recorded_strikes(fake_settings) == 0  # and nothing was held against ROCm
 
 
-def test_one_mask_string_for_rocr_and_hip_keeps_rocrs_repeat_rule():
+def test_one_mask_string_for_rocr_and_hip_keeps_rocrs_repeat_rule(monkeypatch):
     # The same str object in both variables: ROCr still stops at the repeat, HIP still dedupes.
     from core.inference import sd_cpp_backend
+
+    # ROCr is a Linux layer: Windows HIP ignores ROCR_VISIBLE_DEVICES.
+    monkeypatch.setattr(sd_cpp_backend.sys, "platform", "linux")
 
     mask = "0,0,1"
     env = {"ROCR_VISIBLE_DEVICES": mask, "HIP_VISIBLE_DEVICES": mask}
