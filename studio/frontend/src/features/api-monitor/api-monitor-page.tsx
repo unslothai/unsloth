@@ -8,6 +8,7 @@ import { apiMonitorTourSteps } from "./tour";
 // Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
+import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -30,7 +31,6 @@ import {
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
-import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import {
   lanApiUrls,
   loadLanAccess,
@@ -57,10 +57,12 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type CSSProperties,
   type KeyboardEvent,
   type ReactElement,
   type ReactNode,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -115,15 +117,16 @@ const SERVER_STATUS: Record<
 const PANE_HEIGHT =
   "max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(260px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto";
 
-// Tinted in light so a panel is not a white box on a white page; borderless in dark, where the
-// tone step over the page is the edge (as Settings does).
-const SURFACE_FILL =
-  "bg-[color-mix(in_oklab,var(--muted)_45%,var(--background))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
-const SURFACE = `rounded-xl border border-border/60 dark:border-transparent ${SURFACE_FILL}`;
+// The Train page's cards: elevated-card is a soft border and glow in light, borderless in dark.
+const SURFACE = "elevated-card bg-card";
 // A page-colored seam in dark mode instead of a lighter rule.
 const DIVIDER = "border-border/60 dark:border-background";
+// Train's option tiles inside a card (selectableOptionStateClassName, unselected).
 const INSET =
-  "bg-background dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
+  "border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
+// INSET's light fill made opaque, for tiles whose gaps paint the dividers.
+const INSET_OPAQUE =
+  "bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
 function formatTime(value: number): string {
   return new Date(value * 1000).toLocaleTimeString([], {
@@ -250,9 +253,7 @@ function Stat({
   tone?: "default" | "error" | "active";
 }): ReactElement {
   return (
-    <div
-      className={cn("flex min-w-0 flex-col gap-0.5 px-4 py-3", SURFACE_FILL)}
-    >
+    <div className="flex min-w-0 flex-col gap-0.5 bg-card px-5 py-4">
       <span className="truncate text-ui-12 text-muted-foreground">{label}</span>
       <span
         className={cn(
@@ -580,11 +581,14 @@ function MetricGroup({
   return (
     <section className="flex min-w-0 flex-col gap-2">
       <h3 className="text-ui-12 font-medium text-muted-foreground">{title}</h3>
-      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/60 bg-border/60 sm:grid-cols-3 dark:border-transparent dark:bg-background">
+      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/50 bg-border/50 sm:grid-cols-3 dark:border-transparent dark:bg-card">
         {items.map((item) => (
           <div
             key={item.label}
-            className={cn("flex min-w-0 flex-col gap-0.5 px-3 py-2", INSET)}
+            className={cn(
+              "flex min-w-0 flex-col gap-0.5 px-3 py-2",
+              INSET_OPAQUE,
+            )}
           >
             <dt className="truncate text-ui-11 text-muted-foreground">
               {item.label}
@@ -896,6 +900,7 @@ export function ApiMonitorPage(): ReactElement {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const statusPillId = useId();
 
   // Requests only: a load row's model is a path or repo, not what a client named.
   const loggedModels = useMemo(() => {
@@ -1047,13 +1052,6 @@ export function ApiMonitorPage(): ReactElement {
     "tabular-nums",
     queued > 0 && "text-amber-700 dark:text-amber-500",
   );
-  const filterTabs = STATUS_FILTERS.map((option) => ({
-    value: option.value,
-    label:
-      option.value !== "all" && statusCounts[option.value] > 0
-        ? `${option.label} ${formatCount(statusCounts[option.value])}`
-        : option.label,
-  }));
 
   const ejecting = unloading || ejectingKept;
   const ejectServed = async (model: ServedModel): Promise<void> => {
@@ -1135,7 +1133,7 @@ export function ApiMonitorPage(): ReactElement {
             <span
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-ui-12 font-medium text-foreground",
-                SURFACE_FILL,
+                INSET,
               )}
             >
               <span
@@ -1178,18 +1176,18 @@ export function ApiMonitorPage(): ReactElement {
         data-tour="api-endpoint"
         className={cn("flex flex-col", SURFACE)}
       >
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-5 py-4">
           <div className="flex min-w-0 items-center gap-3">
             <span
-              className={cn(
-                "flex size-9 shrink-0 items-center justify-center rounded-lg text-foreground",
-                INSET,
-              )}
+              className="train-section-chip inline-flex size-9 shrink-0 items-center justify-center rounded-full"
+              style={
+                { "--chip-tint": "var(--control-accent)" } as CSSProperties
+              }
             >
               <HugeiconsIcon
                 icon={ApiIcon}
-                strokeWidth={1.75}
-                className="size-4"
+                strokeWidth={1.5}
+                className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
             </span>
             <div className="flex min-w-0 flex-col">
@@ -1249,7 +1247,7 @@ export function ApiMonitorPage(): ReactElement {
             </ApiModelLoadControls>
           </div>
         </div>
-        <div className={cn("border-t px-4 py-2.5", DIVIDER)}>
+        <div className={cn("border-t px-5 py-3", DIVIDER)}>
           {served.length > 1 ? (
             <dl className="flex flex-col gap-1.5">
               <dt className="text-ui-12 text-muted-foreground">
@@ -1323,7 +1321,7 @@ export function ApiMonitorPage(): ReactElement {
 
       <section
         aria-label="Traffic summary"
-        className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60 sm:grid-cols-3 lg:grid-cols-6 dark:border-transparent dark:bg-background"
+        className="elevated-card grid grid-cols-2 gap-px overflow-hidden bg-border/60 sm:grid-cols-3 lg:grid-cols-6 dark:bg-background"
       >
         <Stat
           label="In flight"
@@ -1374,7 +1372,7 @@ export function ApiMonitorPage(): ReactElement {
       <section className={cn("flex min-h-0 flex-col overflow-hidden", SURFACE)}>
         <div
           className={cn(
-            "flex flex-wrap items-center gap-2 border-b px-3 py-2.5",
+            "flex flex-wrap items-center gap-2 border-b px-4 py-3",
             DIVIDER,
           )}
         >
@@ -1391,24 +1389,55 @@ export function ApiMonitorPage(): ReactElement {
               placeholder="Search requests"
               aria-label="Search API requests"
               title="Matches the model, endpoint, prompt, reply or error"
-              className="pl-8"
+              className="h-8 pl-8"
             />
           </div>
-          <PillTabs
-            ariaLabel="Filter by status"
-            tabs={filterTabs}
-            value={statusFilter}
-            onValueChange={(next) =>
-              setStatusFilter(next as MonitorStatusFilter)
-            }
-            fit={true}
-            className="max-w-full overflow-x-auto"
-          />
+          {/* Same markup as Settings' Hugging Face / ModelScope source toggle. */}
+          <div
+            role="radiogroup"
+            aria-label="Filter by status"
+            className="hub-tab-toggle inline-flex h-8 max-w-full items-center rounded-full"
+          >
+            {STATUS_FILTERS.map((option) => {
+              const active = statusFilter === option.value;
+              const count = statusCounts[option.value];
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  // biome-ignore lint/a11y/useSemanticElements: a pill segment, as in the Settings source toggle.
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => setStatusFilter(option.value)}
+                  className={cn(
+                    "relative flex h-8 shrink-0 items-center gap-1 rounded-full px-3 text-xs font-medium transition-colors",
+                    active
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {active && <SegmentedPill group={`${statusPillId}-status`} />}
+                  <span className="relative z-10">{option.label}</span>
+                  {option.value !== "all" && count > 0 ? (
+                    <span
+                      className={cn(
+                        "relative z-10 tabular-nums text-muted-foreground",
+                        option.value === "error" &&
+                          "text-red-600 dark:text-red-400",
+                      )}
+                    >
+                      {formatCount(count)}
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
           {loggedModels.length > 1 ? (
             <Select value={effectiveModelFilter} onValueChange={setModelFilter}>
               <SelectTrigger
                 aria-label="Filter by model"
-                className="h-9 max-w-64 rounded-full"
+                className="h-8 max-w-64 rounded-full text-xs"
               >
                 <SelectValue />
               </SelectTrigger>
@@ -1436,7 +1465,7 @@ export function ApiMonitorPage(): ReactElement {
                 aria-pressed={paused}
                 onClick={() => setPaused(!paused)}
                 className={cn(
-                  "h-9 gap-1.5 rounded-full px-3",
+                  "h-8 gap-1.5 rounded-full px-3",
                   paused && "text-amber-700 dark:text-amber-500",
                 )}
               >
@@ -1452,7 +1481,7 @@ export function ApiMonitorPage(): ReactElement {
               <Button
                 type="button"
                 variant="ghost"
-                size="icon"
+                size="icon-sm"
                 onClick={refresh}
                 disabled={refreshing}
                 aria-label="Refresh"
@@ -1469,7 +1498,7 @@ export function ApiMonitorPage(): ReactElement {
               <Button
                 type="button"
                 variant="ghost"
-                size="icon"
+                size="icon-sm"
                 disabled={entries.length === 0}
                 onClick={() => {
                   setSelectedId(null);

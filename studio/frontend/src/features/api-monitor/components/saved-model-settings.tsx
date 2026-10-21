@@ -219,13 +219,13 @@ export function SavedModelSettingsPanel(): ReactElement {
           a model&apos;s Run settings and API loads will use them too.
         </p>
       ) : (
-        <ul className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-xl border border-border/60 bg-card">
+        <ul className="elevated-card flex flex-col divide-y divide-border/60 overflow-hidden bg-card dark:divide-background">
           {entries.map(([modelId, override]) => {
             const summary = describeOverride(override);
             return (
               <li
                 key={modelId}
-                className="flex min-w-0 items-start gap-3 px-4 py-3"
+                className="flex min-w-0 items-start gap-3 px-5 py-3.5"
               >
                 <div className="flex min-w-0 flex-1 flex-col gap-1">
                   <span className="min-w-0 break-all font-mono text-ui-12 font-medium text-foreground">
