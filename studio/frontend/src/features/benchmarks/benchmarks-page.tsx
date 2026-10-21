@@ -510,19 +510,19 @@ export function BenchmarksPage(): ReactElement {
           )}
 
           <TabsContent value="benchmark" className="mt-0">
-            {/* Setup, the chart, and the run preview side by side. Below 72rem the preview
-                moves under the setup, in the same column, so nothing jumps between rows. */}
+            {/* Setup, chart and run preview stay side by side; the side columns give up width
+                before the preview would drop. Only a phone-width container stacks them. */}
             <div className="@container/bench">
-              <div className="grid grid-cols-1 items-start gap-6 @3xl/bench:grid-cols-[calc(264px*var(--ui-space-scale,1))_minmax(0,1fr)] @6xl/bench:grid-cols-[calc(264px*var(--ui-space-scale,1))_minmax(0,1fr)_calc(264px*var(--ui-space-scale,1))]">
-                <div className="flex min-w-0 flex-col gap-6 @3xl/bench:col-start-1 @3xl/bench:row-start-1 @6xl/bench:sticky @6xl/bench:top-6">
+              <div className="grid grid-cols-1 items-start gap-6 @3xl/bench:grid-cols-[clamp(calc(200px*var(--ui-space-scale,1)),20cqw,calc(264px*var(--ui-space-scale,1)))_minmax(0,1fr)_clamp(calc(200px*var(--ui-space-scale,1)),20cqw,calc(264px*var(--ui-space-scale,1)))]">
+                <div className="flex min-w-0 flex-col gap-6 @3xl/bench:col-start-1 @3xl/bench:row-start-1 @3xl/bench:sticky @3xl/bench:top-6">
                   <SetupPanel
                     maxContext={maxContext}
                     shape={shape}
                     locked={Boolean(live)}
                   />
-                  <div className="@6xl/bench:hidden">{preview}</div>
+                  <div className="@3xl/bench:hidden">{preview}</div>
                 </div>
-                <div className="hidden @6xl/bench:sticky @6xl/bench:top-6 @6xl/bench:col-start-3 @6xl/bench:row-start-1 @6xl/bench:block">
+                <div className="hidden @3xl/bench:sticky @3xl/bench:top-6 @3xl/bench:col-start-3 @3xl/bench:row-start-1 @3xl/bench:block">
                   {preview}
                 </div>
                 <div
