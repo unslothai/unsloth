@@ -796,8 +796,10 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     }
     else if (key === "shift" && n !== undefined) out.shift = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
+    // "None" skips the parser entirely (brackets are prompt text): Studio's prompt weighting off.
     else if (key === "emphasis") {
-      if (value && value.toLowerCase() !== "original")
+      if (value.toLowerCase() === "none") out.prompt_weighting = false;
+      else if (value && value.toLowerCase() !== "original")
         notApplied.push(`${label}: ${value}`);
     } else if (key.startsWith("hires")) hires[label] = value;
     else if (key === "sampler") {
@@ -1042,7 +1044,8 @@ export function importNotApplied(
   const out: string[] = [];
   const literal = literalPromptNotApplied(r, parsesEmphasis, sdControls);
   if (literal) out.push(literal);
-  if (sdControls?.prompt_weighting) parsesEmphasis = true;
+  // Weighting off reads brackets and escapes as typed, which an engine without the parser does too.
+  if (sdControls?.prompt_weighting || r.prompt_weighting === false) parsesEmphasis = true;
   if (!parsesEmphasis && Array.isArray(r.prompt_emphasis) && r.prompt_emphasis.length > 0) {
     const groups = r.prompt_emphasis.filter((g): g is string => typeof g === "string");
     const shown = groups.slice(0, 3).join(", ") + (groups.length > 3 ? ", ..." : "");

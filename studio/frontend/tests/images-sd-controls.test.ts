@@ -307,3 +307,20 @@ test("imported variation values out of the request bounds are named, not randomi
   }
   assert.deepEqual(importNotApplied({ prompt: "x", variation_strength: 3 }, "sdxl", false, SDXL), ["variation strength 3"]);
 });
+
+test("pasted A1111 Emphasis: None restores prompt weighting off, and sd.cpp names it as not applied", async () => {
+  const { importNotApplied, parseA1111Parameters, recipeSettings } = await import(
+    "../src/features/images/lib/image-metadata.ts"
+  );
+  const r = parseA1111Parameters("a (fox:1.5), \\(x\\)\nSteps: 20, Seed: 1, Emphasis: None") ?? { prompt: "" };
+  assert.equal(r.prompt_weighting, false);
+  const settings = recipeSettings(r, { width: 1024, height: 1024, steps: 20, guidance: 7 });
+  assert.equal(settings.prompt_weighting, false);
+  assert.equal(sdControlsFromRecipe(settings).promptWeighting, false);
+  // Diffusers SDXL turns weighting off; diffusers without the control reads it literally already.
+  assert.deepEqual(importNotApplied(r, "sdxl", false, SDXL), []);
+  assert.deepEqual(importNotApplied(r, "sdxl", false, null), []);
+  assert.deepEqual(importNotApplied(r, "sdxl", true, null), [
+    "prompt weighting off (the native sd.cpp engine always reads (word:1.2) syntax)",
+  ]);
+});
