@@ -12829,6 +12829,7 @@ def reap_dead_managed_engine(backend) -> None:
 def reap_dead_worker(backend) -> None:
     """Cleared, never respawned: status is polled, so a respawn after an OOM kill would loop."""
     from core.inference.gpu_arbiter import CHAT, holds
+
     if getattr(backend, "_proc", None) is None:
         return
     if backend.reap_dead_worker() and (release_chat_gpu_claim() or not holds(CHAT)):
