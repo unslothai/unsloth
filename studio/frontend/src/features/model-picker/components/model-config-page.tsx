@@ -866,8 +866,9 @@ function VramBudgetRow() {
               CUDA context on a multi-GPU split, and MoE routing.
             </div>
             <div>
-              Lower it to keep VRAM free for other apps or to spread a model over
+              Lower it to keep VRAM free for other apps or to spread a GGUF over
               more GPUs; whatever no longer fits runs on the CPU, which is slower.
+              vLLM and SGLang cannot offload, so they never go below 80%.
             </div>
             <div>
               Applies to every model, not just this one, and takes effect on the
