@@ -14,9 +14,8 @@ export const AssistantMessageTime: FC = () => {
   return showReplyTimes ? <ReplyTime /> : null;
 };
 
-/** Absolute, not "Today": a thread left open overnight would keep calling yesterday's replies
- *  today, as nothing re-renders them. A native title, not a Tooltip: one per reply on a long
- *  thread would each subscribe to the modal-layer store. */
+/** Absolute, not "Today": nothing re-renders an old reply past midnight. A native title, not a
+ *  Tooltip: one per reply would subscribe to the modal-layer store. */
 const ReplyTime: FC = () => {
   const locale = useLocale();
   const finishedAt = useAuiState(({ message }) => replyFinishedTimestamp(message));
