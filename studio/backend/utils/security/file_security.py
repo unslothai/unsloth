@@ -90,9 +90,20 @@ def _weight_names(folder: Path) -> list:
         config = None
     weights = config.get("transformers_weights") if isinstance(config, dict) else None
     if isinstance(weights, str):
-        names.append(weights)
-    elif isinstance(weights, (list, tuple)):
-        names.extend(v for v in weights if isinstance(v, str))
+        weights = [weights]
+    for name in weights if isinstance(weights, (list, tuple)) else []:
+        if not isinstance(name, str):
+            continue
+        names.append(name)
+        # A custom index named here is read like the standard ones.
+        if name.endswith(".index.json") and not _escapes_folder(name):
+            try:
+                payload = json.loads((folder / name).read_text(encoding = "utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+            weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+            if isinstance(weight_map, dict):
+                names.extend(v for v in weight_map.values() if isinstance(v, str))
     return names
 
 

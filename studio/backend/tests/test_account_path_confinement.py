@@ -152,8 +152,18 @@ def _write(folder, files):
                 "weight_map": {"w": "../../victim/model.safetensors"}
             }
         },
+        {
+            "config.json": {"transformers_weights": "custom.safetensors.index.json"},
+            "custom.safetensors.index.json": {"weight_map": {"w": "../victim/model.safetensors"}},
+        },
     ],
-    ids = ["safetensors_dotdot", "bin_absolute", "transformers_weights", "bicodec_llm_subfolder"],
+    ids = [
+        "safetensors_dotdot",
+        "bin_absolute",
+        "transformers_weights",
+        "bicodec_llm_subfolder",
+        "custom_index",
+    ],
 )
 def test_escaping_weight_references_flagged(tmp_path, files):
     from utils.security.file_security import escaping_weight_references

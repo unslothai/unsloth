@@ -1293,6 +1293,18 @@ def _reject_untrainable_model_request(
                 "needs joint_head.safetensors and joint_head_config.json beside config.json "
                 "(or LoRA adapters).",
             )
+        if managed_account() and _has_adapter_metadata(folder):
+            # FastDecisionModel loads the adapter's base: check and pin it like any adapter.
+            from core.export.decision import DecisionExportError, adapter_base
+
+            try:
+                adapter_base(folder)
+            except DecisionExportError as exc:
+                raise _training_start_error(400, "training_decision_adapter_base", str(exc))
+            base = _authorize_adapter_base(str(folder), hf_token)
+            # The worker re-reads the pin at the model root, so pin only a root adapter.
+            pin = None if request.model_subfolder else base or ""
+            return _ModelPreflightResult(model_name, model_local_path, None, adapter_base_pin = pin)
         return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:

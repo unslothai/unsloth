@@ -674,3 +674,33 @@ def test_clef_training_is_refused_without_an_nvidia_or_amd_gpu(route, device, tm
         request = _request(model_name = str(folder))
         route._validate_decision_request(request)
         assert request.decision_layout == {"c": "clef", "l": "llm"}[folder.name]
+
+
+def _clef_adapter_folder(folder: Path, base: str) -> Path:
+    folder.mkdir(parents = True)
+    files = {
+        "adapter_config.json": {"base_model_name_or_path": base},
+        "joint_head_config.json": {},
+    }
+    for name, content in files.items():
+        (folder / name).write_text(json.dumps(content), encoding = "utf-8")
+    for name in ("adapter_model.safetensors", "joint_head.safetensors"):
+        (folder / name).write_bytes(b"x")
+    return folder
+
+
+def test_a_managed_decision_adapter_authorizes_and_pins_its_base(route, tmp_path, monkeypatch):
+    adapter = _clef_adapter_folder(tmp_path / "clef_adapter", "owner/private-model")
+    checked = []
+    monkeypatch.setattr(route, "managed_account", lambda: True)
+    monkeypatch.setattr(route, "account_path", lambda path, **kwargs: Path(path).resolve())
+    monkeypatch.setattr(
+        route,
+        "_authorize_adapter_base",
+        lambda name, token: checked.append(name) or "owner/private-model",
+    )
+
+    result = route._reject_untrainable_model_request(_request(model_name = str(adapter)))
+
+    assert checked == [str(adapter.resolve())]
+    assert result.adapter_base_pin == "owner/private-model"
