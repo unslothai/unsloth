@@ -128,11 +128,8 @@ def _chunked_evict_policy(device):
     return _chunked_evict_at(device.type, index)
 
 
-# (BLOCK_SIZE, num_warps, max vocab) of the chunked forward (vocab > MAX_FUSED_SIZE), per NVIDIA
-# capability. 16384 / 8 is faster on T4 (sm_75) for Llama-3, Qwen3 and Gemma vocabs, and on A100
-# (sm_80) for Llama-3 and Qwen3; at Gemma's 262144 A100 is mixed (slower on torch 2.10, faster on
-# 2.14), so larger vocabs keep the default there. Every other arch keeps MAX_FUSED_SIZE with 32 warps
-# (16 on CDNA).
+# (BLOCK_SIZE, num_warps, max vocab) for the chunked forward, measured faster on T4 / A100.
+# A100 at Gemma 262144 was mixed across torch versions, so larger vocabs keep the default.
 _CHUNKED_FORWARD_CONFIGS = {
     (7, 5): (16384, 8, None),
     (8, 0): (16384, 8, 163840),

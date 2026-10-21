@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""The chunked (vocab > 65536) cross entropy forward picks (BLOCK_SIZE, num_warps) per GPU arch:
-16384 / 8 on T4 (sm_75) at every vocab and on A100 (sm_80) up to 163840, MAX_FUSED_SIZE / 32
-everywhere else. The launch has to use
-the routed values, and the loss and gradients must not depend on the chunk width."""
+"""Chunked CE forward must launch the per-arch (BLOCK_SIZE, num_warps); loss/grads independent of chunk width."""
 
 import pytest
 import torch
