@@ -313,8 +313,11 @@ export const BUDGET = {
   // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
   // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_066_583,
-  rawBytes: 6_862_784,
+  // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier and model picker adds 681 B raw /
+  // 254 B transfer (6,862,692 -> 6,863,373 B raw, 2,066,405 -> 2,066,659 B transfer against bfaed19a3, one machine
+  // and build, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_066_848,
+  rawBytes: 6_863_533,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
