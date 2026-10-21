@@ -83,10 +83,13 @@ def test_a_saved_to_disk_folder_trains_as_saved(trainer, tmp_path, as_dict):
     assert len(dataset_info["dataset"]) == 3
 
 
-def test_a_folder_with_a_data_file_named_state_json_still_loads_its_rows(trainer, tmp_path):
+@pytest.mark.parametrize("name", ["state.json", "dataset_dict.json"])
+def test_a_folder_with_a_data_file_named_like_a_manifest_still_loads_its_rows(
+    trainer, tmp_path, name
+):
     folder = tmp_path / "rows"
     folder.mkdir()
-    (folder / "state.json").write_text("\n".join(json.dumps(row) for row in _ROWS))
+    (folder / name).write_text("\n".join(json.dumps(row) for row in _ROWS))
 
     result = trainer.load_and_format_dataset(None, local_datasets = [str(folder)])
 
