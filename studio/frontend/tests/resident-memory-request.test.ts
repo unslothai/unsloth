@@ -147,7 +147,6 @@ test("an MLX resident is priced at its served window and loaded cache width", ()
   });
   assert.equal(request?.maxSeqLength, 8192);
   assert.equal(request?.mlxKvQuant, "4");
-  // The resident is priced at the offload it applied, never replanned as Auto.
   assert.equal(request?.mlxPleOffload, "off");
   assert.equal(request?.mlxExpertOffload, "off");
   const offloaded = resolveResidentEstimateRequest(pending, settings, 8192, {

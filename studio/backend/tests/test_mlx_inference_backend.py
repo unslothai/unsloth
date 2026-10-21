@@ -1059,8 +1059,6 @@ def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch
         **kwargs,
     ):
         refused = refusal["on"] and isinstance(offload, dict)
-        # unsloth_zoo hands its planner the checkpoint it downloaded, and turns the planner off
-        # for a load it cannot offload.
         if callable(offload):
             offload = None if refusal["on"] else offload("/snapshot")
         kwargs.update(
@@ -1184,16 +1182,13 @@ def test_auto_offload_is_planned_as_the_load_is_priced(monkeypatch):
     priced = {"pinned": None, "load_in_4bit": False, "retains_history": True, "kv_bits": 2}
     auto = lambda at, *knobs: mi.mlx_resolve_offload(at, knobs, **priced)
     assert auto("/snap", "auto", "auto") == (1.0, 0.5) and plans[-1]["vision"] is None
-    # A KV width the cache refuses is priced at full width.
     assert (plans[-1]["budget_bytes"], plans[-1]["kv_bits"]) == (1 << 40, None)
     mi.mlx_resolve_offload("/snap", ("auto", None), vision = True, **priced)
     assert plans[-1]["vision"] is True
     plans.pop()
-    # Not planned: nothing auto, no checkpoint, no budget.
     assert auto("/snap", 0.5, None) == (0.5, None) and auto(None, "auto", "auto") == (None, None)
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: None)
     assert auto("/snap", "auto", "auto") == (None, None) and len(plans) == 1
-    # An unsloth_zoo that cannot offload (or no MLX at all) is never asked for an MLX budget.
     monkeypatch.setattr(mm, "mlx_offload_planner", lambda: None)
     monkeypatch.setattr(mi, "mlx_memory_budget", lambda retains_history: 1 / 0)
     assert auto("/snap", "auto", 0.5) == (None, 0.5) and len(plans) == 1
@@ -1221,7 +1216,6 @@ def test_offload_knobs_validate_and_reload_on_change():
                     mlx_expert_offload = bad,
                 )
     be = SimpleNamespace(active_model_name = "m", models = {"m": {"mlx_kv_quant_requested": "auto"}})
-    # Auto however it is spelled, and an entry from before these knobs, are the same load.
     assert _mlx_runtime_settings_match(be, req(mlx_ple_offload = "auto", mlx_expert_offload = None))
     assert not _mlx_runtime_settings_match(be, req(mlx_ple_offload = "off"))
     assert not _mlx_runtime_settings_match(be, req(mlx_expert_offload = 0.5))
@@ -1233,7 +1227,6 @@ def test_offload_knobs_validate_and_reload_on_change():
 
     from routes import inference as routes
 
-    # The load and status responses warn when auto put weights on disk, not when the user did.
     part = lambda applied, requested: {"applied": applied, "requested": requested}
     info = {"mlx_offload": {"ple": part(1.0, 1.0), "experts": part(0.6, None)}}
     assert "reads 60% of its MoE experts from disk" in routes._mlx_offload_warning(info)

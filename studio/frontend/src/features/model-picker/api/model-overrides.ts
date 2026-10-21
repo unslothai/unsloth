@@ -45,7 +45,6 @@ export interface ApiModelOverride {
   mlx_kv_bits?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_int8_prefill?: boolean;
-  // Stored as "off" or a fraction; null (sent) clears to Auto.
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_ple_offload?: "off" | number | null;
   // biome-ignore lint/style/useNamingConvention: API schema

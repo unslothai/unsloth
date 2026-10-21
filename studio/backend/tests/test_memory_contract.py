@@ -279,7 +279,6 @@ class TestTheLegacyProjections:
             "experts": 0.6,
             "offloadable": ["experts"],
         }
-        # Only an MLX breakdown has an offload to report.
         assert build_memory_estimate(_BREAKDOWN, quant_file_bytes = 0).mlx_offload is None
 
     def test_the_kv_projection_does_not_borrow_the_planners_kv(self, estimate):

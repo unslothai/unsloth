@@ -79,7 +79,6 @@ class MlxMemoryBreakdown:
     # The fractions of the PLE tables / routed experts the load reads from disk; None for none.
     ple_offload: Optional[float] = None
     expert_offload: Optional[float] = None
-    # What the load could read from disk: "ple", "experts".
     offloadable: tuple = ()
 
 
@@ -1143,8 +1142,7 @@ def _lazy_checkpoint(model_dir: str, config: dict):
     # mlx-vlm imports a checkpoint's own module unasked; pricing must never run it.
     if config.get("model_file"):
         raise ValueError("this checkpoint carries its own model module")
-    # Not strict: unsloth_zoo loads checkpoints carrying known unused tensors (Gemma 4's), and
-    # pricing needs only the module tree.
+    # Not strict: unsloth_zoo loads past known unused tensors (Gemma 4's).
     if _builds_on_mlx_vlm(config):
         from mlx_vlm.utils import load_model
         return load_model(Path(model_dir), lazy = True, strict = False)
@@ -1155,7 +1153,6 @@ def _lazy_checkpoint(model_dir: str, config: dict):
 
 @functools.lru_cache(maxsize = 4)
 def _offloadable_cached(model_dir: str, fingerprint: tuple, cast_dtype, on_mlx_vlm: bool):
-    """``on_mlx_vlm`` keys the cache by the tree ``_lazy_checkpoint`` builds."""
     from unsloth_zoo.mlx.offload import offloadable
     return offloadable(
         _lazy_checkpoint(model_dir, _snapshot_config(model_dir)), model_dir, cast_dtype = cast_dtype
@@ -1175,7 +1172,6 @@ def _offloadable(model_dir: str, config: dict) -> dict:
 
 
 def mlx_offloadable_parts(model_dir: str, vision: Optional[bool] = None) -> tuple:
-    """What unsloth_zoo's offload can read from disk for this checkpoint: "ple", "experts"."""
     if mlx_offload_planner() is None:
         return ()
     with _on_route(vision):
@@ -1505,7 +1501,6 @@ def mlx_offload_plan(
         ceiling = max_ctx,
         minimum = MLX_FIT_MIN_CONTEXT,
         context = context,
-        # Studio prefills in its own chunk.
         prefill_step = sizing.chunk,
         offload = {"ple": ple, "experts": experts},
     )

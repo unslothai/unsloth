@@ -2154,7 +2154,6 @@ def _resident_runtime_payload(status: dict, payload: dict) -> dict:
         if value is None:
             continue
         carried[load_field] = value
-    # The MLX offload knobs, as requested, ride in one nested field.
     offload = status.get("mlx_offload") or {}
     for part, load_field in (("ple", "mlx_ple_offload"), ("experts", "mlx_expert_offload")):
         requested = (offload.get(part) or {}).get("requested")

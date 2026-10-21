@@ -1045,7 +1045,6 @@ def mlx_resolve_offload(
         return fixed
     from core.inference.mlx_memory import mlx_offload_plan, mlx_offload_planner
 
-    # Also keeps the estimate working where MLX is not importable: the budget needs it.
     if mlx_offload_planner() is None:
         return fixed
     budget = mlx_memory_budget(retains_history = retains_history)
@@ -1074,7 +1073,6 @@ def mlx_resolve_offload(
 
 
 def mlx_checkpoint_window(model_dir) -> Optional[int]:
-    """The window *model_dir*'s config declares, held to what a load may be asked for."""
     from types import SimpleNamespace
 
     from core.inference.mlx_memory import _snapshot_config
@@ -1143,7 +1141,6 @@ def _mlx_offload_status(offload, model):
     for part, what in _MLX_OFFLOAD_PARTS:
         applied = offload["wanted"][part] if part in reports else None
         reason = None
-        # An "auto" knob unsloth_zoo never decided was turned off for this load.
         if offload["wanted"][part] not in (None, "auto") and applied is None:
             reason = offload["reason"] or (
                 "unsloth_zoo cannot offload this load (an adapter, a bitsandbytes checkpoint or "
@@ -5189,7 +5186,6 @@ class MLXInferenceBackend:
             self._model, max_seq_length
         )
         _offload = _mlx_offload_status(offload, self._model)
-        # Priced as applied: a knob unsloth_zoo did not apply prices as resident.
         _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
         _priceable = not (is_distributed or is_lora or dtype is not None)

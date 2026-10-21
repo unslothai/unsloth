@@ -1345,17 +1345,14 @@ class TestEstimateMemoryRoute:
         assert price(mlx_ple_offload = "off", mlx_expert_offload = 0.5) == (None, 0.5)
         off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
         assert off.mlx_offload.offloadable == ["experts"]
-        # Auto decides as the load does, at the pinned context.
         assert price(mlx_ple_offload = "off") == (None, 0.6) and planned[-1]["context"] == 4096
         assert planned[-1]["vision"] is None
-        # A speculative load goes through mlx-vlm, so Auto is planned there.
         with monkeypatch.context() as patch:
             patch.setattr(ri, "_mlx_estimate_speculates", lambda request, model_dir: True)
             estimate(mlx_ple_offload = "off")
         assert planned[-1]["vision"] is True and len(planned) == 2
         four_bit["on"] = True  # already quantized: nothing for the load to quantize, so it offloads
         assert price(mlx_ple_offload = 1.0) == (1.0, 0.6)
-        # unsloth_zoo refuses offload when the load quantizes the checkpoint itself.
         (tmp_path / "config.json").write_text("{}")
         assert price(mlx_ple_offload = 1.0) is None and len(planned) == 3
         off = estimate(mlx_ple_offload = "off", mlx_expert_offload = "off")
@@ -4215,7 +4212,6 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     )
     config["quantization"] = {"group_size": 32, "bits": 4}
     (tmp_path / "config.json").write_text(json.dumps(config))
-    # The checkpoint lazily loaded on the load's route, its experts sized as stored.
     experts = sum(v.nbytes for k, v in weights.items() if ".switch_mlp." in k)
     found = offload.offloadable(mm._lazy_checkpoint(str(tmp_path), config), str(tmp_path))
     assert (found["expert_bytes"], found["experts"]) == (experts, None)
@@ -4241,7 +4237,6 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
         assert mm.mlx_offload_planner() is None
     mm.mlx_offload_planner.cache_clear()
 
-    # Priced by the runtime's own verdict, at the width the rest of the weights are priced at.
     mm._clear_sizing_cache()
     seen = []
     kept = {
@@ -4285,7 +4280,6 @@ def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
         lambda d, kv, chunk, four, vision = None: routes.append(("sized", vision))
         or SimpleNamespace(weights = 10, chunk = 512),
     )
-    # Each route's tree is built once, then cached.
     monkeypatch.setattr(mm, "_lazy_checkpoint", lambda d, config: mm._builds_on_mlx_vlm(config))
     found = lambda tree: {
         "ple_bytes": 0,
@@ -5029,7 +5023,6 @@ class TestPricingALoad:
         assert offloaded.weights_bytes == resident.weights_bytes - 1000
         assert offloaded.total_bytes == resident.total_bytes - 1000
         assert (offloaded.ple_offload, offloaded.expert_offload) == (None, 0.5)
-        # Its context is fitted inside unsloth_zoo's offload safety margin.
         monkeypatch.setattr(
             mm, "mlx_offload_planner", lambda: SimpleNamespace(SAFETY_MARGIN = (2 << 30, 0.03))
         )
@@ -5065,14 +5058,12 @@ class TestPricingALoad:
             str(tmp_path), dict(config, **change), q
         )
         config = {"model_type": "deepseek_v41"}
-        # As stored, or re-sized at the width the load gives it: only the gate is priced; quantized
-        # at load, the table becomes a resident one.
+        # Quantized at load, the table becomes a resident one.
         held = 64 * 128 * mm._runtime_dtype().size
         assert price(quantization = {"bits": 2}) == os.path.getsize(path) - 64 * 128 * 4
         assert (price(), price(model_type = "deepseek_v4")) == (held, 2 * held)
         assert price(True) == price(True, model_type = "deepseek_v4")
         assert price(model_type = "deepseek_v4", text_config = {"model_type": "deepseek_v41"}) == held
-        # Priced as stored when the architecture cannot be sized.
         monkeypatch.setattr(mm, "_whole_model", lambda *_: 1 / 0)
         assert (price(), price(True)) == (
             os.path.getsize(path) - 64 * 128 * 4,

@@ -1243,7 +1243,6 @@ const MLX_OFFLOAD_SLIDERS = [
   hint: string;
 }[];
 
-// Default leaves both parts to Auto; Manual pins each shown part, 0% meaning off.
 function MlxOffloadSettings({
   config,
   update,
@@ -1254,11 +1253,9 @@ function MlxOffloadSettings({
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   offloadable: readonly MlxOffloadablePart[];
-  /** The fractions Auto would pick for the current settings, seeding the sliders when Manual is chosen. */
   decided: Record<MlxOffloadablePart, number | null>;
   notes: Record<MlxOffloadablePart, string | null>;
 }) {
-  // A stored choice stays visible so it can be put back to Default.
   const sliders = MLX_OFFLOAD_SLIDERS.filter(
     ({ part, key }) => offloadable.includes(part) || config[key] != null,
   );

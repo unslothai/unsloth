@@ -25,7 +25,6 @@ function appliedFraction(value: unknown): number | null {
   return typeof fraction === "number" ? fraction : null;
 }
 
-/** The offload a load response reports. Exported for the status path, which applies the same fields. */
 export function mlxOffloadStateFrom(resp: Partial<MlxRuntimeResponse>): {
   loadedMlxPleOffloadRequested: MlxOffload;
   loadedMlxExpertOffloadRequested: MlxOffload;

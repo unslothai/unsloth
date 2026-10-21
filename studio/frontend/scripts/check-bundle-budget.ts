@@ -345,10 +345,8 @@ export const BUDGET = {
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  // The MLX PLE and expert offload controls (#14326) put the per-model fields, their load, status and estimate
-  // plumbing and the Run settings Disk Offload row in the eager chat and model-picker chunks: 7,406 B raw / 2,073 B
-  // transfer (6,878,582 -> 6,885,988 B raw, 2,071,471 -> 2,073,544 B transfer merged with main at db0753a7c, one
-  // machine and build, Node 22, 97 chunks). Raised by that.
+  // The MLX PLE and expert offload controls (#14326) add 7,406 B raw / 2,073 B transfer (6,878,582 -> 6,885,988 B
+  // raw, 2,071,471 -> 2,073,544 B transfer merged with main at db0753a7c, Node 22, 97 chunks). Raised by that.
   transferBytes: 2_073_647,
   rawBytes: 6_886_185,
 };
