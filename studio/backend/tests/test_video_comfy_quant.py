@@ -1017,3 +1017,96 @@ def test_a_full_width_tag_retry_that_does_not_fit_is_refused_before_converting(
             int8_backend = "native",
         )
     assert len(calls) == 1  # refused before the full-width conversion ran
+
+
+def test_a_resident_video_dit_that_fits_only_stored_gets_fp8_storage(tmp_path, monkeypatch):
+    """A resident ComfyUI fp8 video DiT whose widened form would leave under the host reserve stores fp8, as an
+    image single file does: free RAM between the stored and the widened need loads, and is refused when
+    UNSLOTH_DIFFUSION_FP8_STORAGE=0 makes the load widen."""
+    import core.inference.diffusion_single_file_converters as conv
+    import core.inference.diffusion_small_host as small_host
+
+    torch.manual_seed(4)
+    dense = _H3Like()
+    tensors = {"head.weight": dense.head.weight.detach(), "head.bias": dense.head.bias.detach()}
+    quantized = {
+        "attn.to_q": dense.attn.to_q.weight,
+        "attn.to_k": dense.attn.to_k.weight,
+        "attn.to_v": dense.attn.to_v.weight,
+        "ff.proj": dense.ff.proj.weight,
+    }
+    for name, w in quantized.items():
+        w = w.detach().float()
+        scale = w.abs().max() / torch.finfo(torch.float8_e4m3fn).max
+        tensors[f"{name}.weight"] = (w / scale).to(torch.float8_e4m3fn)
+        tensors[f"{name}.weight_scale"] = scale.reshape(1)
+        tensors[f"{name}.comfy_quant"] = _conf(format = "float8_e4m3fn")
+    path = _save(tmp_path / "wan_fp8.safetensors", tensors)
+    monkeypatch.setattr(
+        cq,
+        "_mapping",
+        lambda cls: (
+            lambda checkpoint = None, **_kw: checkpoint,
+            types.SimpleNamespace(
+                _should_convert_state_dict_to_diffusers = lambda a, b: False,
+                _get_mapping_function_kwargs = lambda fn, **kw: {},
+            ),
+        ),
+    )
+    monkeypatch.setattr(vid, "plan_keeps_transformer_resident", lambda p: p.resident)
+    monkeypatch.setattr(vid, "comfy_int8_backend", lambda *a, **k: None)
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    # Price in bytes, no reserves: the tiny model's needs are a few hundred KB apart.
+    monkeypatch.setattr(conv, "HOST_RAM_CHECK_MIN_MIB", 0)
+    monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV, raising = False)
+    monkeypatch.setattr(conv, "_MIB", 1)
+    monkeypatch.setattr(small_host, "host_reserve_mib", lambda total: 0)
+    monkeypatch.setattr(cq, "FP8_STORAGE_HOST_RESERVE_MIB", 0)
+    keys = [n + ".weight" for n in quantized]
+    widened = conv.converted_host_bytes(
+        path, torch.bfloat16, dequantized = dict.fromkeys(keys, 1).get
+    )
+    stored = conv.converted_host_bytes(
+        path, torch.bfloat16, dequantized = dict.fromkeys(keys, 0).get
+    ) + 4 * sum(int(tensors[k].shape[0]) for k in keys)
+    assert 0 < stored < widened
+    available = (stored + widened) // 2
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 40, available))
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+
+    def backends(**kw):
+        return vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True), **kw)
+
+    def load(**kw):
+        return cq.load_comfy_quant_transformer(
+            _H3Like,
+            path,
+            cq.refuse_comfy_quant(path),
+            {"torch_dtype": torch.bfloat16, "config": "base/repo"},
+            family = fam.name,
+            **kw,
+        )
+
+    picked = backends(widened_mib = widened)
+    assert picked == {"int8_backend": None, "fp8_backend": None, "fp8_storage": True}
+    model = load(**picked)
+    assert model._unsloth_comfy_quant["fp8_stored"] == 4
+    assert model.attn.to_q.weight_q.dtype == torch.uint8
+    # room to widen: the faster widened load; H3 keeps its torchao-or-dequantize rule
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 40, 4 * widened))
+    assert backends(widened_mib = widened)["fp8_storage"] is False
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 40, available))
+    h3 = types.SimpleNamespace(name = "minimax-h3")
+    assert (
+        vid._video_comfy_backends(h3, "b", None, _plan(True), _plan(True), widened_mib = widened)[
+            "fp8_storage"
+        ]
+        is False
+    )
+    # the kill switch widens, and the host RAM check refuses that load
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    widened_pick = backends(widened_mib = widened)
+    assert widened_pick["fp8_storage"] is False
+    with pytest.raises(RuntimeError, match = "Not enough system RAM"):
+        load(**widened_pick)

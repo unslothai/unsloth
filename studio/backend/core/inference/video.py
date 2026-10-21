@@ -484,11 +484,13 @@ def _video_comfy_backends(
     *,
     keep: bool = True,
     priced_offload: bool = False,
+    widened_mib: Optional[int] = None,
 ) -> dict[str, Optional[str]]:
     """``load_comfy_quant_transformer`` backends for a ComfyUI-quantized video DiT: the ones Studio's own int8 / fp8
     quant would run on this card and plan (int8: torchao resident, the torchao-free twin under offload; fp8: torchao
     resident only; else fp8 storage under offload). ``priced_offload``: the plan was sized with the offloaded
-    backends (``_video_offload_reprice``), so a load that now fits resident keeps them.
+    backends (``_video_offload_reprice``), so a load that now fits resident keeps them. ``widened_mib``: the planned
+    DiT price; a resident load stores fp8 when widening it would leave under the host reserve, as an image does.
     ``keep=False`` (the user asked for the bf16 DiT) dequantizes everything."""
     if not keep:
         return {"int8_backend": None, "fp8_backend": None, "fp8_storage": False}
@@ -497,7 +499,7 @@ def _video_comfy_backends(
     return {
         "int8_backend": comfy_int8_backend(target, name, base, offload = offload),
         "fp8_backend": comfy_fp8_backend(target, name, base, offload = offload),
-        "fp8_storage": _video_fp8_storage(fam, target, offload),
+        "fp8_storage": _video_fp8_storage(fam, target, offload, widened_mib = widened_mib),
     }
 
 
@@ -515,10 +517,23 @@ def _video_offload_reprice(
     return offload_mib, offload_mib < transformer_mib
 
 
-def _video_fp8_storage(fam: Any, target: Any, offload: bool) -> bool:
-    """H3 is excluded: its pin / stream / residency path is built on torchao weights."""
-    return getattr(fam, "name", None) != "minimax-h3" and fp8_storage_wanted(
-        target, offload = offload
+def _video_fp8_storage(
+    fam: Any,
+    target: Any,
+    offload: bool,
+    *,
+    widened_mib: Optional[int] = None,
+) -> bool:
+    """``fp8_storage_wanted`` for a video DiT, with the host RAM the load would widen into when ``widened_mib`` is
+    known. H3 is excluded: its pin / stream / residency path is built on torchao weights."""
+    if getattr(fam, "name", None) == "minimax-h3":
+        return False
+    available = None
+    if widened_mib is not None and not offload:
+        from .diffusion_small_host import host_ram_mib
+        available = host_ram_mib()[1]
+    return fp8_storage_wanted(
+        target, offload = offload, widened_mib = widened_mib, host_available_mib = available
     )
 
 
@@ -8460,6 +8475,8 @@ class VideoBackend:
                 if repriced != transformer_mib:
                     transformer_mib = repriced
                     plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
+        # The DiT as planned: a resident load that would widen it into under the host reserve stores fp8 instead.
+        comfy_widened_mib = transformer_mib if comfy_scan is not None else None
         settled_te_scale = te_scale
 
         # On unified memory the plan's 'none' policy is a placement, not a fit: there is no offload tier left to fall
@@ -8700,6 +8717,7 @@ class VideoBackend:
                             bf16_plan,
                             keep = comfy_keep,
                             priced_offload = comfy_priced_offload,
+                            widened_mib = comfy_widened_mib,
                         ),
                         family = fam.name,
                         target = target,
@@ -8822,6 +8840,7 @@ class VideoBackend:
                             bf16_plan,
                             keep = comfy_keep,
                             priced_offload = comfy_priced_offload,
+                            widened_mib = comfy_widened_mib,
                         ),
                         family = fam.name,
                         target = target,
@@ -8878,6 +8897,7 @@ class VideoBackend:
                                 bf16_plan,
                                 keep = comfy_keep,
                                 priced_offload = comfy_priced_offload,
+                                widened_mib = comfy_widened_mib,
                             ),
                             family = fam.name,
                             target = target,
