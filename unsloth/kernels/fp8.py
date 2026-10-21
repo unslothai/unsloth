@@ -734,6 +734,7 @@ def _e4m3fn_bytes_dequant(
             BLOCK_R = BLOCK_R,
             BLOCK_C = BLOCK_C,
             LONG_INDEXING = long_indexing(x, weight_scale, out),
+            enable_fp_fusion = True,
             num_warps = num_warps,
         )
     return out
