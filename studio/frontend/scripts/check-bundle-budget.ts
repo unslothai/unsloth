@@ -333,13 +333,25 @@ export const BUDGET = {
   // Picking a preset forgetting a model's remembered sampling (#14128) keeps its preset marks in the eager chat
   // runtime store, about 1,860 B raw / 440 B transfer: merged with main at acb31d909b the build measures
   // 6,876,062 B raw / 2,070,545 B transfer (Node 24, 97 chunks). Raised to that plus the same margin.
-  // The model location row in the load settings (#14105) adds 2,162 B raw / 768 B transfer (6,876,062 ->
-  // 6,878,224 B raw, 2,070,545 -> 2,071,313 B transfer against c1aef2f45, one machine and build, Node 24, 97
+  // Sharing a connection with every account adds the shared flags to the eager provider mapping: 180 B raw /
+  // 20 B transfer (6,862,624 -> 6,862,804 B raw, 2,066,394 -> 2,066,414 B transfer against 723a43b02, one
+  // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised by that.
+  // The browser panel's page history (#14283) on top measures 6,876,588 B raw / 2,070,700 B transfer (merged with
+  // main at 04d2beec9, Node 24, 97 chunks). Raised to that plus the same margin.
+  // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
+  // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
+  // 96 chunks). Raised by that.
+  // Floating panels remembering their dropped spot (#14355) add 701 B raw / 211 B transfer. Raised by that.
+  // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
+  // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
+  // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
+  // The model location row under Advanced settings (#14105) adds 3,168 B raw / 1,023 B transfer (6,878,631 ->
+  // 6,881,799 B raw, 2,071,507 -> 2,072,530 B transfer against 9f303b390, one machine and build, Node 24, 97
   // chunks): the picked model's path threads through the local pickers' change meta, and the location helper
   // rides the eager config page (lazy-loading it was measured and lost: an extra eager chunk). Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_071_502,
-  rawBytes: 6_878_384,
+  transferBytes: 2_072_719,
+  rawBytes: 6_881_959,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

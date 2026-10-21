@@ -40,6 +40,7 @@ import {
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useIsAccountOwner, useLoginMode } from "@/features/auth";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
@@ -320,6 +321,9 @@ export function ChatProvidersSettings({
   const [isReasoningModel, setIsReasoningModel] = useState(false);
   const [reasoningConfig, setReasoningConfig] = useState<CustomReasoningConfig | null>(null);
   const [autoReloadModels, setAutoReloadModels] = useState(false);
+  const [sharedDraft, setSharedDraft] = useState(false);
+  const isAccountOwner = useIsAccountOwner();
+  const loginMode = useLoginMode();
   const modelFieldsAtOpenRef = useRef<string | null>(null);
   const reduceMotion = useReducedMotion();
   const connectionsEnabled = useExternalProvidersStore(
@@ -420,6 +424,10 @@ export function ChatProvidersSettings({
     ? providers.find((provider) => provider.id === editingProviderId)
     : undefined;
   const editingProviderHasSavedKey = Boolean(editingProvider?.hasApiKey);
+  const showShareToggle =
+    isAccountOwner &&
+    !usesOAuth &&
+    (loginMode === "multi" || editingProvider?.shared === true);
   const selectedProviderLabel = isCustomProviderType(providerType)
     ? customProviderDisplayName(providerType)
     : selectedProviderContract?.display_name;
@@ -619,6 +627,7 @@ export function ChatProvidersSettings({
     setCustomProviderName(customProviderDisplayName(providerType));
     setIsReasoningModel(false);
     setAutoReloadModels(false);
+    setSharedDraft(false);
     modelFieldsAtOpenRef.current = null;
   }
 
@@ -976,6 +985,7 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        ...(showShareToggle && sharedDraft ? { shared: true } : {}),
         apiKey: apiKey.trim(),
 
       });
@@ -1006,6 +1016,7 @@ export function ChatProvidersSettings({
           : undefined,
 
         hasApiKey: created.has_api_key,
+        shared: created.shared === true,
 
         authKind: created.auth_kind,
         authStatus: created.auth_status,
@@ -1154,6 +1165,9 @@ export function ChatProvidersSettings({
         reasoningConfig: isCustomReasoningConnection
           ? (showCustomReasoning ? reasoningConfig : null)
           : undefined,
+        ...(showShareToggle && sharedDraft !== (existing.shared === true)
+          ? { shared: sharedDraft }
+          : {}),
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
           : credentialEdit.action === "clear"
@@ -1188,6 +1202,7 @@ export function ChatProvidersSettings({
           : undefined,
 
         hasApiKey: updated.has_api_key,
+        shared: updated.shared === true,
         autoReloadModels:
           existing.providerType === "llama_cpp" ? autoReloadModels : undefined,
         isReasoningModel: supportsProviderReasoningToggle(
@@ -1276,6 +1291,10 @@ export function ChatProvidersSettings({
   }
 
   async function editProvider(provider: ExternalProviderConfig) {
+    if (provider.sharedByOwner) {
+      toast.info("This connection is shared by the owner. Only they can change it.");
+      return;
+    }
     // Switching connections retires an in-flight catalog request, including on the branches
     // below that never reach applyCodexSubscriptionModels.
     codexCatalogRequestRef.current += 1;
@@ -1295,6 +1314,7 @@ export function ChatProvidersSettings({
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
     setAutoReloadModels(provider.autoReloadModels === true);
+    setSharedDraft(provider.shared === true);
     modelFieldsAtOpenRef.current = null;
     setApiType(
       provider.decisionsOnly ? "systemone" : (provider.apiType ?? "chat_completions"),
@@ -1842,6 +1862,33 @@ export function ChatProvidersSettings({
                     checked={autoReloadModels}
                     onCheckedChange={setAutoReloadModels}
                     aria-describedby="provider-auto-reload-models-help"
+                  />
+                </div>
+              ) : null}
+              {showShareToggle ? (
+                <div className="flex items-center justify-between gap-4 px-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-shared"
+                      className="text-sm font-medium"
+                    >
+                      Share with all accounts
+                    </Label>
+                    <p
+                      id="provider-shared-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Other accounts can chat with its models using your saved
+                      key, but cannot see the key or change the connection. Model
+                      access in Settings &gt; Accounts limits which models each
+                      account sees.
+                    </p>
+                  </div>
+                  <Switch
+                    id="provider-shared"
+                    checked={sharedDraft}
+                    onCheckedChange={setSharedDraft}
+                    aria-describedby="provider-shared-help"
                   />
                 </div>
               ) : null}
@@ -2401,6 +2448,11 @@ export function ChatProvidersSettings({
                               {t("settings.apiKeys.decisionApi.title")}
                             </span>
                           ) : null}
+                          {provider.shared ? (
+                            <span className="shrink-0 rounded-full border border-border/70 px-1.5 py-0.5 text-ui-10 leading-none text-muted-foreground">
+                              {provider.sharedByOwner ? "Shared by owner" : "Shared"}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="mt-0.5 truncate text-xs text-muted-foreground">
                           <span>{providerLabel}</span>
@@ -2420,6 +2472,7 @@ export function ChatProvidersSettings({
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center justify-end gap-0.5 text-muted-foreground">
+                      {provider.sharedByOwner ? null : (
                       <Button
                         type="button"
                         size="icon-sm"
@@ -2432,6 +2485,7 @@ export function ChatProvidersSettings({
                       >
                         <HugeiconsIcon icon={Edit03Icon} className="size-4" />
                       </Button>
+                      )}
                       <Button
                         type="button"
                         size="icon-sm"
@@ -2444,6 +2498,7 @@ export function ChatProvidersSettings({
                       >
                         <HugeiconsIcon icon={Wifi02Icon} className="size-4" />
                       </Button>
+                      {provider.sharedByOwner ? null : (
                       <Button
                         type="button"
                         size="icon-sm"
@@ -2456,6 +2511,7 @@ export function ChatProvidersSettings({
                       >
                         <HugeiconsIcon icon={Delete02Icon} className="size-4" />
                       </Button>
+                      )}
                     </div>
                   </div>
                 );

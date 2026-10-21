@@ -144,6 +144,9 @@ def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
     for guard in (
         "return nativeFetch(input, init).finally(done);",
         "/^(?:about:)?srcdoc(?=[?#]|$)/",
+        "/^\\/?cdoc(?=[?#]|$)/",
+        # Back to Next.js's first route would otherwise route to /cdoc and crash the page.
+        "if (state?.__N && state.as === raw) state = { ...state, as: path };",
     ):
         assert guard in shell, guard
 
@@ -158,6 +161,112 @@ def test_the_shells_base_follows_the_router_only_without_a_page_base():
     assert shell.index("pageUrl = next;") < shell.index(
         'routedBase?.setAttribute("href", pageUrl);'
     )
+
+
+def test_the_pages_history_stays_out_of_studios():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert "history.pushState" not in boot and "originalPush" not in boot
+    for guard in (
+        'if (method === "pushState") pushRoute(state, title, next);',
+        "history.back = () => history.go(-1);",
+        "history.forward = () => history.go(1);",
+        'post({ type: step < 0 ? "back" : "forward" });',
+        'dispatchEvent(new PopStateEvent("popstate", { state: history.state }));',
+    ):
+        assert guard in boot, guard
+
+
+def test_an_anchor_jump_is_a_back_step_that_returns_to_the_same_spot():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    follow = boot[boot.index("const followHash = ") : boot.index("const navigate = ")]
+    assert 'if (next.href !== pageUrl) pushRoute(null, "", next.href);' in follow
+    assert follow.index("pushRoute(") < follow.index("scrollToHash(hash);")
+    for guard in (
+        "routes[route].scroll = { x: scrollX, y: scrollY };",
+        'if (target.scroll && history.scrollRestoration !== "manual") scrollTo(target.scroll.x, target.scroll.y);',
+        'post({ type: "history", back: Boolean(routes[stepFrom(-1)]), forward: Boolean(routes[stepFrom(1)]) });',
+        "routes[route].skip = navigator.userActivation?.hasBeenActive === false;",
+        "const to = stepFrom(data.delta === -1 ? -1 : 1);",
+        'post({ type: to < route ? "back" : "forward" });',
+    ):
+        assert guard in boot, guard
+
+
+def test_a_fresh_page_reports_its_history_and_skips_entries_only_until_the_reader_acts():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    report = boot[
+        boot.index("const report = () => {") : boot.index('if (document.readyState === "loading")')
+    ]
+    # A remounted frame starts with one route: the panel must not keep the old frame's Back and Forward.
+    assert (
+        report.index('type: "loaded"')
+        < report.index("tellHistory();")
+        < report.index("if (cfg.scroll && ")
+    )
+    # As Chromium's intervention: a gesture at any time makes the page's entries reachable again.
+    assert (
+        "while (routes[to]?.skip && navigator.userActivation?.hasBeenActive === false) to += step;"
+        in boot
+    )
+    assert (
+        "isActive === false"
+        not in boot[boot.index("const routes = ") : boot.index("const moveRoute = ")]
+    )
+
+
+def test_moving_between_fragments_fires_hashchange_for_hash_routers():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert (
+        'dispatchEvent(new HashChangeEvent("hashchange", { oldURL: from, newURL: pageUrl }));'
+        in boot
+    )
+    assert 'location.href.split("#")[0] + new URL(next).hash' in boot
+    move = boot[boot.index("const moveRoute = ") : boot.index("for (const method of")]
+    assert move.index('new PopStateEvent("popstate"') < move.index("tellHashChange(from);")
+    follow = boot[boot.index("const followHash = ") : boot.index("const navigate = ")]
+    assert follow.index("scrollToHash(hash);") < follow.index("tellHashChange(from);")
+
+
+def test_a_scripts_fragment_change_is_a_back_step_of_the_page():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    # location.hash = "..." (AngularJS, hand-rolled hash routers) is a native push: history.back() must undo it.
+    start = boot.index("let nativeLength = history.length;")
+    hashes = boot[start : boot.index("// Catch navigations the click")]
+    for guard in (
+        "if (!event.isTrusted) return;",
+        "const pushed = history.length > nativeLength;",
+        'if (pushed) pushRoute(history.state, "", next.href);',
+        # A location.replace redirect stays one step, so Back cannot land on it and redirect again.
+        'setRoute(history.state, "", next.href);',
+    ):
+        assert guard in hashes, guard
+
+
+def test_a_page_that_manages_its_own_scroll_is_left_where_it_puts_itself():
+    shell = browser_mod._FRAME_HTML
+    assert 'if (cfg.scroll && history.scrollRestoration !== "manual") {' in shell
+
+
+def test_the_shell_reports_and_restores_where_the_page_was_scrolled():
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    for guard in (
+        'post({ type: "scroll", x: scrollX, y: scrollY });',
+        'if (scrollTimer && message.type === "navigate") reportScroll();',
+        "scrollTimer ||= setTimeout(reportScroll, 200);",
+        "const restore = () => scrollTo(cfg.scroll.x, cfg.scroll.y);",
+        'addEventListener("load", () => { if (scrollY === settled) restore(); }, { once: true });',
+    ):
+        assert guard in boot, guard
+    assert boot.index("if (cfg.scroll && ") < boot.index(
+        "} else if (new URL(pageUrl).hash) scrollToHash("
+    )
+    assert "scroll: data.scroll || null" in shell
 
 
 def test_paths_resolved_against_the_shells_location_land_on_the_page():

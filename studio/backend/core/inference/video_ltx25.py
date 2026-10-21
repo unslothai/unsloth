@@ -562,7 +562,9 @@ def ltx25_transformer_config_dir() -> str:
     import json
     import tempfile
 
-    root = Path(tempfile.gettempdir()) / "unsloth_ltx25_config"
+    from utils.paths.private_tmp import private_tmp_dir
+
+    root = private_tmp_dir("unsloth_ltx25_config")
     target = root / "transformer" / "config.json"
     payload = json.dumps(
         {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG},

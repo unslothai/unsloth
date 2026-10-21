@@ -401,7 +401,16 @@ _FRAME_HTML = r"""<!doctype html>
         // Without a <base> of its own a document's base is its URL, so the shell's follows the router:
         // relative links and requests after a pushState resolve as in a browser.
         const routedBase = cfg.url && !cfg.ownBase ? document.querySelector("base") : null;
-        const post = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
+        let scrollTimer = 0;
+        const post = (message) => {
+          if (scrollTimer && message.type === "navigate") reportScroll();
+          parent.postMessage({ source: "unsloth-browser", ...message }, "*");
+        };
+        const reportScroll = () => {
+          clearTimeout(scrollTimer);
+          scrollTimer = 0;
+          post({ type: "scroll", x: scrollX, y: scrollY });
+        };
         // URLs built from location point at this shell; map them to the page's site.
         const toPage = (url) => {
           if (!cfg.url || url.origin !== shellOrigin) return url.href;
@@ -423,12 +432,12 @@ _FRAME_HTML = r"""<!doctype html>
         const resolve = (href) => {
           try { return toPage(new URL(href, document.baseURI)); } catch { return null; }
         };
+        addEventListener("scroll", () => { scrollTimer ||= setTimeout(reportScroll, 200); }, { passive: true });
         const samePage = (url) => {
           const a = new URL(url), b = new URL(pageUrl);
           return a.origin === b.origin && a.pathname === b.pathname && a.search === b.search;
         };
         // Best effort: give routers the page's path. Chromium refuses this for opaque origins.
-        const originalPush = history.pushState;
         const originalReplace = history.replaceState;
         const shellPath = (url) => {
           if (!cfg.url) return undefined;
@@ -445,15 +454,16 @@ _FRAME_HTML = r"""<!doctype html>
           const target = document.getElementById(id) || document.getElementsByName(id)[0];
           target?.scrollIntoView();
         };
-        // An in-page jump: scroll, and show its fragment in the address bar.
+        // An in-page jump: a Back step that scrolls, with its fragment in the address bar.
         const followHash = (hash) => {
-          scrollToHash(hash);
+          const from = pageUrl;
           try {
             const next = new URL(pageUrl);
             next.hash = hash;
-            pageUrl = next.href;
-            reportUrl();
+            if (next.href !== pageUrl) pushRoute(null, "", next.href);
           } catch {}
+          scrollToHash(hash);
+          tellHashChange(from);
         };
         const navigate = (raw, newTab, background) => {
           const url = resolve(raw);
@@ -516,28 +526,98 @@ _FRAME_HTML = r"""<!doctype html>
             post({ type: "url", url: pageUrl });
           }, 200);
         };
-        for (const [method, original] of [["pushState", originalPush], ["replaceState", originalReplace]]) {
+        const setRoute = (state, title, next) => {
+          try { originalReplace.call(history, state, title, next ? shellPath(next) : undefined); }
+          catch {
+            // An opaque frame keeps its URL; carry the fragment, which hash routers read.
+            try { originalReplace.call(history, state, title, location.href.split("#")[0] + new URL(next).hash); }
+            catch { originalReplace.call(history, state, title); }
+          }
+          if (next) {
+            if (!samePage(next)) edited(false);
+            pageUrl = next;
+            routedBase?.setAttribute("href", pageUrl);
+            reportUrl();
+          }
+        };
+        // The frame shares Studio's session history: a native push would add to Studio's own Back.
+        const routes = [{ state: history.state, url: pageUrl }];
+        let route = 0;
+        // As in browsers, the panel's Back and Forward skip entries a page added without the user acting.
+        const stepFrom = (step) => {
+          let to = route + step;
+          while (routes[to]?.skip && navigator.userActivation?.hasBeenActive === false) to += step;
+          return to;
+        };
+        const tellHashChange = (from) => {
+          if (new URL(from).hash !== new URL(pageUrl).hash) dispatchEvent(new HashChangeEvent("hashchange", { oldURL: from, newURL: pageUrl }));
+        };
+        const tellHistory = () => post({ type: "history", back: Boolean(routes[stepFrom(-1)]), forward: Boolean(routes[stepFrom(1)]) });
+        const pushRoute = (state, title, next) => {
+          routes[route].scroll = { x: scrollX, y: scrollY };
+          routes[route].skip = navigator.userActivation?.hasBeenActive === false;
+          setRoute(state, title, next);
+          routes.splice(++route);
+          routes[route] = { state: history.state, url: pageUrl };
+          tellHistory();
+        };
+        const moveRoute = (to) => {
+          const target = routes[to], from = pageUrl;
+          routes[route].scroll = { x: scrollX, y: scrollY };
+          route = to;
+          setRoute(target.state, "", target.url);
+          dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
+          if (target.scroll && history.scrollRestoration !== "manual") scrollTo(target.scroll.x, target.scroll.y);
+          tellHashChange(from);
+          tellHistory();
+        };
+        for (const method of ["pushState", "replaceState"]) {
           history[method] = function (state, title, url) {
             const raw = url != null ? String(url) : null;
             let next = raw !== null ? resolve(raw) : null;
             // A router that builds its URL from location.pathname gets "srcdoc": put the page's path back.
-            const fromShell = raw !== null && /^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw);
+            // Next.js cuts location.href past "about://" and gets "cdoc", which its state keeps for Back.
+            const fromShell = raw !== null && (/^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw) || /^\/?cdoc(?=[?#]|$)/.exec(raw));
             if (fromShell && cfg.url) {
               const page = new URL(pageUrl);
-              next = new URL(page.pathname + raw.slice(fromShell[0].length), page.origin).href;
+              const path = page.pathname + raw.slice(fromShell[0].length);
+              next = new URL(path, page.origin).href;
+              if (state?.__N && state.as === raw) state = { ...state, as: path };
             }
             // A router re-asserting the shell's own path is not a navigation.
             if (next && new URL(next).pathname === shellPathname) next = null;
-            try { original.call(this, state, title, next ? shellPath(next) : undefined); }
-            catch { original.call(this, state, title); }
-            if (next) {
-              if (!samePage(next)) edited(false);
-              pageUrl = next;
-              routedBase?.setAttribute("href", pageUrl);
-              reportUrl();
+            if (method === "pushState") pushRoute(state, title, next);
+            else {
+              setRoute(state, title, next);
+              routes[route] = { state: history.state, url: pageUrl };
             }
           };
         }
+        history.go = function (delta) {
+          const step = Math.trunc(Number(delta)) || 0;
+          setTimeout(() => {
+            if (!step) post({ type: "reload" });
+            else if (!routes[route + step]) post({ type: step < 0 ? "back" : "forward" });
+            else moveRoute(route + step);
+          });
+        };
+        history.back = () => history.go(-1);
+        history.forward = () => history.go(1);
+        // A script's location.hash is a native step (history.length grows): the page's Back takes it too.
+        let nativeLength = history.length;
+        addEventListener("hashchange", (event) => {
+          if (!event.isTrusted) return;
+          const pushed = history.length > nativeLength;
+          nativeLength = history.length;
+          const next = new URL(pageUrl);
+          next.hash = location.hash;
+          if (next.href === pageUrl) return;
+          if (pushed) pushRoute(history.state, "", next.href);
+          else {
+            setRoute(history.state, "", next.href);
+            routes[route] = { state: history.state, url: pageUrl };
+          }
+        });
         // Catch navigations the click and submit handlers miss (location.href, reload).
         if (window.navigation) {
           window.navigation.addEventListener("navigate", (event) => {
@@ -708,7 +788,14 @@ _FRAME_HTML = r"""<!doctype html>
             title: document.title || "",
             favicon: icon ? resolve(icon.getAttribute("href")) : resolve("/favicon.ico"),
           });
-          if (new URL(pageUrl).hash) scrollToHash(new URL(pageUrl).hash);
+          tellHistory();
+          if (cfg.scroll && history.scrollRestoration !== "manual") {
+            const restore = () => scrollTo(cfg.scroll.x, cfg.scroll.y);
+            restore();
+            // Again after images load and grow the page, unless the reader has scrolled.
+            const settled = scrollY;
+            addEventListener("load", () => { if (scrollY === settled) restore(); }, { once: true });
+          } else if (new URL(pageUrl).hash) scrollToHash(new URL(pageUrl).hash);
         };
         if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", report, { once: true });
         else report();
@@ -1003,6 +1090,11 @@ _FRAME_HTML = r"""<!doctype html>
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
           else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
+          else if (data.command === "go") {
+            const to = stepFrom(data.delta === -1 ? -1 : 1);
+            if (routes[to]) moveRoute(to);
+            else post({ type: to < route ? "back" : "forward" });
+          }
           else if (data.command === "agent" && typeof data.id === "string") {
             // Browser use: the panel's agent code (agent/page-agent.ts), installed on first use.
             if (!agent && typeof data.code === "string" && data.code.length <= 262144) {
@@ -1053,7 +1145,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null, scroll: data.scroll || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
