@@ -128,6 +128,31 @@ def _chunked_evict_policy(device):
     return _chunked_evict_at(device.type, index)
 
 
+# (BLOCK_SIZE, num_warps) of the chunked forward (vocab > MAX_FUSED_SIZE), per NVIDIA capability.
+# 16384 / 8 measured faster on T4 (sm_75) and A100 (sm_80) for Llama-3 / Qwen3 / Gemma vocabs at
+# 2K to 16K tokens; every other arch keeps MAX_FUSED_SIZE with 32 warps (16 on CDNA).
+_CHUNKED_FORWARD_CONFIGS = {
+    (7, 5): (16384, 8),
+    (8, 0): (16384, 8),
+}
+
+
+@functools.lru_cache(maxsize = None)
+def _chunked_forward_config_at(device_type, index):
+    if device_type == "cuda" and torch.version.hip is None:
+        capability = tuple(torch.cuda.get_device_capability(index))
+        if capability in _CHUNKED_FORWARD_CONFIGS:
+            return _CHUNKED_FORWARD_CONFIGS[capability]
+    return MAX_FUSED_SIZE, (16 if is_cdna() else 32)
+
+
+def _chunked_forward_config(device):
+    index = device.index
+    if index is None and device.type == "cuda":
+        index = torch.cuda.current_device()
+    return _chunked_forward_config_at(device.type, index)
+
+
 def _chunked_cross_entropy_forward(
     logits_ptr,
     logits_row_stride: tl.constexpr,
@@ -357,6 +382,9 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 )
         else:
             # For large vocabs > 65336 like Gemma 256K
+            BLOCK_SIZE, num_warps = _chunked_forward_config(device)
+            div, mod = divmod(vocab_size, BLOCK_SIZE)
+            n_chunks = div + (mod != 0)
             logsumexp = torch.empty(
                 (
                     n_rows,
@@ -380,13 +408,13 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     labels,
                     VOCAB_SIZE = vocab_size,
                     N_CHUNKS = n_chunks,
-                    BLOCK_SIZE = MAX_FUSED_SIZE,
+                    BLOCK_SIZE = BLOCK_SIZE,
                     DO_SOFTCAPPING = DO_SOFTCAPPING,
                     SOFTCAP = logit_softcapping,
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE = logit_scaling,
                     EVICT = _chunked_evict_policy(device),
-                    num_warps = 32 if not is_cdna() else 16,
+                    num_warps = num_warps,
                     enable_fp_fusion = True,
                 )
             # logsumexp(chunked_logsumexp) - x, with the -x done separately.
