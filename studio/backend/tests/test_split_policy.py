@@ -1151,12 +1151,14 @@ def test_wired_scheduler_abort_on_auto_tensor_does_not_block_the_layer_load(tmp_
 
 def test_wired_auto_tensor_kernel_crash_reloads_without_the_policy(tmp_path, monkeypatch):
     # The arch-crash rung would narrow the auto pair to one GPU and keep stale auto state.
+    # Dirs named as _norm_cmd masks them, so the two argvs compare.
+    (tmp_path / "auto_None").mkdir()
+    (tmp_path / "auto_0").mkdir()
     backend, gguf = _wired_backend(
-        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+        tmp_path / "auto_None", monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
-    (tmp_path / "off").mkdir()
     off_backend, off_gguf = _wired_backend(
-        tmp_path / "off", monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+        tmp_path / "auto_0", monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
     )
     monkeypatch.setenv(sp.AUTO_TENSOR_SPLIT_ENV, "0")
     off = _launch(off_backend, off_gguf, gpu_memory_mode = "auto", n_ctx = 4096)
