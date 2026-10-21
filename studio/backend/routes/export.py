@@ -32,6 +32,7 @@ from auth.authentication import allow_ambient_hf_token, get_current_subject
 from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
+from utils.security.consent import managed_remote_code_refused
 from utils.utils import safe_error_detail
 
 try:
@@ -150,7 +151,8 @@ async def load_checkpoint(
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
             offload_layers = request.offload_layers,
-            trust_remote_code = request.trust_remote_code,
+            # Downgraded, not refused: the Export tab always sends true for local models.
+            trust_remote_code = request.trust_remote_code and not managed_remote_code_refused(),
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,
             # A supplied token cannot say whether it came from a session or an API key.

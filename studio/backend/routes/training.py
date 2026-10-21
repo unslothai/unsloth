@@ -100,6 +100,7 @@ from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
+from utils.security.consent import managed_remote_code_refused
 from utils.utils import (
     canonical_model_repo_id,
     hf_dns_dead,
@@ -2354,7 +2355,8 @@ async def start_training(
             "require_exact_dataset_resource": resume_requires_exact_dataset,
             "require_validated_model_snapshot": cached_model_pin is not None,
             "adapter_base_pin": getattr(model_preflight, "adapter_base_pin", None),
-            "trust_remote_code": request.trust_remote_code,
+            # A managed account never forwards remote code to the worker.
+            "trust_remote_code": request.trust_remote_code and not managed_remote_code_refused(),
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
             "gpu_ids": request.gpu_ids,

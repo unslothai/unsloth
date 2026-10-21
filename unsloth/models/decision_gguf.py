@@ -444,6 +444,9 @@ def _convert(
     env["PYTHONPATH"] = os.pathsep.join(
         [str(converter / "gguf-py")] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
     )
+    # Decision backbones are built-in classes; the converter loads some tokenizers with
+    # trust_remote_code=True, so give it no modules cache to import a folder's auto_map code from.
+    env["HF_MODULES_CACHE"] = os.path.join(os.path.abspath(__file__), "no_remote_code")
     command = [
         sys.executable,
         converter / "convert_hf_to_gguf.py",

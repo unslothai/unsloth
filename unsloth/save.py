@@ -364,6 +364,29 @@ def _loaded_via_remote_code(obj):
     return False
 
 
+@contextmanager
+def _gguf_converter_remote_code(approved):
+    """Keep llama.cpp's converter to the load's trust_remote_code decision for one conversion. The converter loads several architectures' tokenizers with trust_remote_code=True and has no flag for it, so a checkpoint that loaded with built-in classes but declares a tokenizer auto_map would run that code in the converter child. Transformers imports auto_map code only from its HF_MODULES_CACHE copy, so pointing the child at a path no directory can be created at (under a regular file) refuses it. Folders without auto_map never touch the cache and convert identically. Restored on exit, including on an exception."""
+    if approved:
+        yield
+        return
+    key = "HF_MODULES_CACHE"
+    previous = os.environ.get(key, None)
+    os.environ[key] = os.path.join(os.path.abspath(__file__), "no_remote_code")
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
+def _gguf_converter_wanted_remote_code(exc):
+    """Did the converter stop inside transformers' auto_map loader? Under `_gguf_converter_remote_code(False)` it fails there with an OSError about the modules cache, so the module's file name in the child's output is the signal."""
+    return any("dynamic_module_utils" in f"{error}" for error in _iter_exception_chain(exc))
+
+
 def _normalize_compressed_method(save_method):
     """(scheme, needs_calibration, suffix) if `save_method` is an FP8/FP4 compressed export, else None. Near-miss unsupported FP8/FP4 names raise a precise error instead of falling through to the generic "unknown save_method"."""
     if not isinstance(save_method, str):
@@ -2144,8 +2167,9 @@ def save_to_gguf(
     gguf_directory: Optional[Union[str, os.PathLike]] = None,
     merge_is_disposable: bool = False,
     preexisting_weights = None,
+    trust_remote_code: bool = False,
 ):
-    """Orchestrate the HF to GGUF conversion: install, convert, quantize. `imatrix` is a resolved local importance-matrix path, forwarded to llama-quantize and required for the IQ types. `gguf_directory` places outputs separately from the model input directory. `merge_is_disposable` says `model_directory` was written by this export purely to feed the converter, so its weights may be reclaimed if the quants would not otherwise fit; off by default."""
+    """Orchestrate the HF to GGUF conversion: install, convert, quantize. `imatrix` is a resolved local importance-matrix path, forwarded to llama-quantize and required for the IQ types. `gguf_directory` places outputs separately from the model input directory. `merge_is_disposable` says `model_directory` was written by this export purely to feed the converter, so its weights may be reclaimed if the quants would not otherwise fit; off by default. `trust_remote_code` is the load's approved decision: only then may the converter run the checkpoint's auto_map code."""
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
         print_output = True
     else:
@@ -2257,7 +2281,7 @@ def save_to_gguf(
         )
 
     print("Unsloth: Preparing converter script...")
-    with use_local_gguf():
+    with use_local_gguf(), _gguf_converter_remote_code(trust_remote_code):
         converter_path, supported_text_archs, supported_vision_archs = (
             _download_convert_hf_to_gguf()
         )
@@ -4545,6 +4569,9 @@ def unsloth_save_pretrained_gguf(
             for _template_owner, _old_template in old_chat_templates:
                 _template_owner.chat_template = _old_template
 
+        # The converter may run auto_map code only if the load already did (and so passed consent), as on the torchao and compressed paths. Asked of the whole processor, whose components the walk covers.
+        converter_trust = _loaded_via_remote_code(self) or _loaded_via_remote_code(tokenizer)
+
         if is_processor:
             tokenizer = tokenizer.tokenizer
 
@@ -4624,8 +4651,18 @@ def unsloth_save_pretrained_gguf(
             gguf_directory = gguf_directory,
             merge_is_disposable = merge_is_disposable,
             preexisting_weights = preexisting_weights,
+            trust_remote_code = converter_trust,
         )
     except Exception as e:
+        if not converter_trust and _gguf_converter_wanted_remote_code(e):
+            raise RuntimeError(
+                f"Unsloth: llama.cpp's converter loads this model's tokenizer through the "
+                f"checkpoint's `auto_map` custom code, and the model was loaded without "
+                f"`trust_remote_code = True`, so that code was not run.\n"
+                f"If you trust that code, load the model with `trust_remote_code = True` "
+                f"and export again.\n"
+                f"Error: {_describe_exception(e)}"
+            ) from e
         if _gguf_child_was_oom_killed(e):
             raise RuntimeError(
                 f"Unsloth: GGUF conversion was killed by the operating system "

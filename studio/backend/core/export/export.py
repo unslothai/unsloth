@@ -210,6 +210,30 @@ def _llama_cpp_scripts_pin():
         os.environ.pop("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", None)
 
 
+@contextlib.contextmanager
+def _converter_remote_code(approved: bool):
+    """Keep convert_hf_to_gguf.py to the load's consent-gated trust decision for one conversion.
+
+    The converter loads several architectures' tokenizers with trust_remote_code=True, so a
+    checkpoint loaded with built-in classes (never seen by the consent gate) could run its
+    auto_map code there. Transformers imports that code only from its HF_MODULES_CACHE copy,
+    which the converter child inherits: a path no directory can be created at refuses it.
+    Covers the MLX save path too, which has no guard of its own.
+    """
+    if approved:
+        yield
+        return
+    existing = os.environ.get("HF_MODULES_CACHE")
+    os.environ["HF_MODULES_CACHE"] = os.path.join(os.path.abspath(__file__), "no_remote_code")
+    try:
+        yield
+    finally:
+        if existing is None:
+            os.environ.pop("HF_MODULES_CACHE", None)
+        else:
+            os.environ["HF_MODULES_CACHE"] = existing
+
+
 def _multi_gpu_device_map_kwargs() -> dict:
     """``device_map`` kwargs for sharding a checkpoint across every visible GPU.
 
@@ -1725,6 +1749,8 @@ class ExportBackend:
             )
         # Truthiness, as above: a disabled imatrix must not reach an exporter without the kwarg.
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}
+        # True only after the load's consent gate passed; only then may the converter run auto_map code.
+        remote_code_approved = bool(getattr(self, "trust_remote_code", False))
         # Resolution reads a Hub repo, so the local save needs the token; kept out of imatrix_kw, which the
         # push shares and names token= itself.
         local_token_kw = (
@@ -1780,7 +1806,7 @@ class ExportBackend:
                 try:
                     # Pinned to setup.sh's llama.cpp ref so the converter cannot drift past the pinned
                     # llama-quantize gguf API; scoped to the conversion.
-                    with _llama_cpp_scripts_pin():
+                    with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         result = self.current_model.save_pretrained_gguf(
                             _model_tmp,
                             self.current_tokenizer,
@@ -1988,7 +2014,7 @@ class ExportBackend:
                         logger.warning(f"Could not publish the model card: {exception}")
                 else:
                     # Converts as well as pushes, so it needs the same scoped pin.
-                    with _llama_cpp_scripts_pin():
+                    with _llama_cpp_scripts_pin(), _converter_remote_code(remote_code_approved):
                         self.current_model.push_to_hub_gguf(
                             repo_id,
                             self.current_tokenizer,
