@@ -378,8 +378,6 @@ def test_api_system_memory_without_a_limit_is_unchanged(fake_cgroup, host, monke
     assert memory["percent_used"] == 20.0
 
 
-
-
 def _stat(directory: Path, **counters) -> None:
     _write(directory / "memory.stat", "".join(f"{k} {v}\n" for k, v in counters.items()))
 
