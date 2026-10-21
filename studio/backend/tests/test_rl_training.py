@@ -1285,3 +1285,87 @@ def test_sharegpt_turns_and_single_message_cells_become_messages():
     ]
     assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
     assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
+
+
+def test_sharegpt_function_calls_become_tool_calls_not_text():
+    call = '{"name": "weather", "arguments": {"city": "Paris"}}'
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [{"from": "human", "value": "Weather in Paris?"}],
+                "chosen": [{"from": "function_call", "value": call}],
+                "rejected": [{"from": "gpt", "value": "No idea."}],
+            }
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    chosen = out[0]["chosen"][0]
+    assert chosen["role"] == "assistant"
+    assert chosen["tool_calls"][0]["function"]["name"] == "weather"
+    assert json.loads(chosen["tool_calls"][0]["function"]["arguments"]) == {"city": "Paris"}
+
+
+def test_tool_ended_grpo_prompts_are_rendered_for_trl():
+    from datasets import Dataset
+
+    from core.training.rl import render_grpo_prompts
+
+    class _Tok:
+        chat_template = "plain"
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            return "|".join(f"{m['role']}:{m['content']}" for m in messages) + (
+                "|assistant:" if add_generation_prompt else ""
+            )
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [
+                    {"role": "user", "content": "w?"},
+                    {"role": "assistant", "content": "call"},
+                    {"role": "tool", "content": "sunny"},
+                ]
+            }
+        ]
+    )
+    out, rendered = render_grpo_prompts(ds, _Tok(), None)
+    assert rendered and out[0]["prompt"] == "user:w?|assistant:call|tool:sunny|assistant:"
+
+
+def test_tool_ended_preference_rows_never_repeat_the_prompt_in_a_completion():
+    pytest.importorskip("trl")
+    from core.training.rl import render_preference_rows
+
+    class _Tok:
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            text = "".join(f"<{m['role']}>{m['content']}" for m in messages)
+            # Like Qwen3 with thinking off: the generation header carries an empty think block.
+            return text + ("<assistant><think></think>" if add_generation_prompt else "")
+
+    prompt = [{"role": "user", "content": "w?"}, {"role": "tool", "content": "sunny"}]
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": prompt,
+                "chosen": [{"role": "assistant", "content": "Sunny."}],
+                "rejected": [{"role": "assistant", "content": "Rain."}],
+            }
+        ]
+    )
+    row = render_preference_rows(ds, _Tok())[0]
+    assert "w?" not in row["chosen"] and "w?" not in row["rejected"]
+    assert row["prompt"] + row["chosen"] == "<user>w?<tool>sunny<assistant>Sunny."

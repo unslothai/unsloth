@@ -167,13 +167,9 @@ def _content_text(content: Any) -> str:
     return str(content)
 
 
-# ShareGPT speakers, as utils/datasets/format_conversion.py maps them for SFT.
-_SHAREGPT_ROLES = {
-    "human": "user",
-    "gpt": "assistant",
-    "observation": "tool",
-    "function_call": "assistant",
-}
+# ShareGPT speakers, as utils/datasets/format_conversion.py maps them for SFT; function_call and
+# observation stay for _sharegpt_tool_turns, which builds real tool calls from them.
+_SHAREGPT_ROLES = {"human": "user", "gpt": "assistant"}
 
 
 def _as_messages(value: Any, role: str) -> list[dict]:
@@ -184,10 +180,13 @@ def _as_messages(value: Any, role: str) -> list[dict]:
         and value
         and all(isinstance(m, dict) and "from" in m and "value" in m for m in value)
     ):
-        value = [
-            {"role": _SHAREGPT_ROLES.get(str(m["from"]), str(m["from"])), "content": m["value"]}
-            for m in value
-        ]
+        from utils.datasets.chat_templates import _sharegpt_tool_turns
+        value, _ = _sharegpt_tool_turns(
+            [
+                {"role": _SHAREGPT_ROLES.get(str(m["from"]), str(m["from"])), "content": m["value"]}
+                for m in value
+            ]
+        )
     if isinstance(value, list) and all(
         isinstance(m, dict) and ("content" in m or "role" in m) for m in value
     ):
@@ -317,6 +316,17 @@ def format_rl_dataset(
     return dataset.map(convert, **kwargs), roles
 
 
+def _has_tool_ended_prompts(dataset) -> bool:
+    # TRL before 1.x refuses a prompt whose last message is a tool result.
+    prompts = (
+        dataset["prompt"] if "prompt" in (getattr(dataset, "column_names", None) or []) else []
+    )
+    return any(
+        isinstance(p, list) and p and isinstance(p[-1], dict) and p[-1].get("role") == "tool"
+        for p in prompts
+    )
+
+
 def _has_null_fields(dataset) -> bool:
     prompts = (
         dataset["prompt"] if "prompt" in (getattr(dataset, "column_names", None) or []) else []
@@ -343,7 +353,7 @@ def render_grpo_prompts(
     thinking = enable_thinking is not None and "enable_thinking" in template
     columns = getattr(dataset, "column_names", None) or []
     nulls = not {"image", "images"} & set(columns) and _has_null_fields(dataset)
-    if not (thinking or nulls):
+    if not (thinking or nulls or _has_tool_ended_prompts(dataset)):
         return dataset, False
     kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
 
@@ -439,11 +449,15 @@ def render_preference_rows(dataset, tokenizer):
             text = tokenizer.apply_chat_template(
                 prompt, add_generation_prompt = True, **render_kwargs
             )
-            out = {"prompt": text}
-            for key in ("chosen", "rejected"):
-                full = tokenizer.apply_chat_template(prompt + row[key], **render_kwargs)
-                out[key] = full[len(text) :] if full.startswith(text) else full
-            return out
+            full = {
+                key: tokenizer.apply_chat_template(prompt + row[key], **render_kwargs)
+                for key in ("chosen", "rejected")
+            }
+            if not all(f.startswith(text) for f in full.values()):
+                # The generation header differs from the reply's (Qwen3's empty think block):
+                # the prompt is then what both rendered branches share.
+                text = os.path.commonprefix(list(full.values()))
+            return {"prompt": text, **{key: f[len(text) :] for key, f in full.items()}}
         return maybe_apply_chat_template(row, tokenizer, tools = tools, **kwargs)
 
     return dataset.map(render, remove_columns = [c for c in _TRL_ROW_COLUMNS if c in columns])
