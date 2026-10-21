@@ -868,7 +868,7 @@ function VramBudgetRow() {
             <div>
               Lower it to keep VRAM free for other apps or to spread a GGUF over
               more GPUs; whatever no longer fits runs on the CPU, which is slower.
-              vLLM and SGLang cannot offload, so they never go below 80%.
+              vLLM and SGLang cannot offload, so this setting never takes them below 80%.
             </div>
             <div>
               Applies to every model, not just this one, and takes effect on the
