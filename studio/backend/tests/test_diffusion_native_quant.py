@@ -1215,8 +1215,7 @@ def test_a_rotated_layer_passes_an_empty_input_through():
 
 @pytest.mark.parametrize("fmt", ["float8_e4m3fn", "float8_e5m2"])
 def test_fp8_integer_decode_equals_the_cast_bit_for_bit(fmt):
-    """The compiled forward's integer decode (Triton has no e4m3fn convert below sm_89) equals the eager cast on every
-    one of the 256 codes, signed zeros and subnormals included."""
+    """Integer decode equals the eager cast on all 256 codes."""
     from core.inference.diffusion_native_quant import fp8_bits_to_float32
 
     bits = torch.arange(256, dtype = torch.int32).to(torch.uint8)

@@ -446,7 +446,6 @@ def test_fp8_layers_dequantize_with_their_scale(tmp_path, monkeypatch):
     model = _load(path, fp8_storage = False)
     assert torch.equal(model.blocks[0].to_out.weight, codes.float() * scale)
     assert model._unsloth_comfy_quant["dequantized"] == 1
-    # stored as fp8 instead: the same weight, rebuilt per forward from the codes the file holds
     stored = _load(path, fp8_storage = True)
     assert stored._unsloth_comfy_quant["dequantized"] == 0
     assert stored._unsloth_comfy_quant["fp8_stored"] == 1
@@ -640,8 +639,7 @@ def _linear_bytes(model) -> int:
 def test_fp8_without_a_runtime_stays_fp8_and_matches_the_dequant_exactly(
     tmp_path, monkeypatch, fmt, dtype, per_row
 ):
-    """No fp8 GEMM (older GPU, fp16 / fp32 pipeline, e5m2, offload): the codes stay 1 byte per weight and the
-    forward rebuilds the very weight the load-time dequant held, so every output is bit-identical."""
+    """No fp8 GEMM: codes stay 1 byte per weight and outputs are bit-identical to the load-time dequant."""
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     path, _dense, tensors = _fp8_file(tmp_path, fmt = fmt, per_row = per_row)
 
@@ -706,8 +704,7 @@ def test_fp8_storage_follows_the_device_lora_and_kill_switch(monkeypatch):
 
 
 def test_fp8_storage_keeps_fp32_modules_and_the_torchao_layers_apart(tmp_path, monkeypatch):
-    """Next to an fp8 GEMM runtime, only the layers it skips are stored; a fp16 pipeline's fp32-kept Linears widen
-    to fp32 exactly as before."""
+    """Only layers the fp8 GEMM runtime skips are stored; fp32-kept Linears still widen to fp32."""
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     path, _dense, _tensors = _fp8_file(tmp_path)
 
@@ -968,8 +965,7 @@ def test_buffers_built_in_init_follow_the_compute_dtype(comfy_file):
 
 
 def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monkeypatch):
-    """Stored fp8 Linears are not nn.Linear, so a generation-time adapter has nothing to attach to: refused by name,
-    as for the nvfp4 / mxfp8 runtime layers, and the status says LoRA needs a reload with it selected."""
+    """Stored fp8 Linears are not nn.Linear: a generation-time LoRA is refused by name."""
     import threading
 
     from core.inference.diffusion import DiffusionBackend
@@ -985,13 +981,11 @@ def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monke
     backend = DiffusionBackend.__new__(DiffusionBackend)
     with pytest.raises(ValueError, match = "stored as fp8"):
         DiffusionBackend._apply_loras(backend, state, [("some/lora", 1.0)], threading.Event())
-    # no adapter requested: nothing to refuse
     DiffusionBackend._apply_loras(backend, state, [], threading.Event())
 
 
 def test_fp8_storage_default_rule_is_offload_or_host_ram(monkeypatch):
-    """Unset env: store only where widening would offload the denoiser or leave under the host reserve (eager steps
-    pay the per-layer widen); ``1`` stores everywhere it can; MPS and a LoRA never."""
+    """Unset env stores only when widening would offload or crowd host RAM; ``1`` always; MPS and LoRA never."""
     monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
     cuda = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
     want = cq.fp8_storage_wanted
@@ -1032,8 +1026,7 @@ def test_fp8_upcast_is_read_from_the_header_not_the_basename(tmp_path):
 
 
 def test_fnuz_fp8_headers_are_priced_widened_and_never_stored(tmp_path):
-    """FNUZ float8 is fp8 on disk that every loader widens: the header predicate must see it, and the Krea 2
-    storage estimate must not drop its upcast (storage keeps only the OCP fp8 codes)."""
+    """FNUZ fp8 is seen by the header predicate and always priced widened."""
     from safetensors.torch import save_file
 
     from core.inference import diffusion as d
@@ -1117,8 +1110,7 @@ def _plan_harness(
 def test_offloaded_plan_prices_fp8_with_the_offloaded_backend_and_picks_storage(
     monkeypatch, tmp_path
 ):
-    """torchao fp8 prices the codes at 1 byte resident, but an offloaded load loses it: the plan must re-price under
-    offload (widened 2000 vs stored 1000) and pick storage, not hand the loader an fp8-sized plan it widens."""
+    """Offload loses torchao fp8: the plan re-prices offloaded and picks storage."""
     calls = []
 
     def comfy_mib(
@@ -1233,8 +1225,7 @@ def test_fnuz_krea2_file_is_not_planned_at_the_stored_size(monkeypatch, tmp_path
 
 
 def test_a_plan_priced_with_the_offload_only_backend_keeps_it_when_resident(monkeypatch, tmp_path):
-    """Torchao int8 missing, the native offload twin usable: resident prices widened (2000), offloaded at one byte
-    (1000), so the re-plan fits resident. The loader must still probe offloaded, not dequantize past the plan."""
+    """Int8 priced via the offload twin: the re-plan fits resident but the loader must still probe offloaded."""
 
     def comfy_mib(
         path,
@@ -1283,8 +1274,7 @@ def test_a_plan_repriced_larger_under_offload_does_not_force_the_offload_probe(
 
 
 def test_fp8_stored_pricing_widens_keep_fp32_layers_as_the_loader_does(tmp_path):
-    """The loader never stores a ``_keep_in_fp32_modules`` linear (fp32 on an fp16 load), so the stored-size estimate
-    must not price it at one byte, under its diffusers name or Wan's original ``time_embedding.N``."""
+    """``_keep_in_fp32_modules`` linears are never priced at one byte, under either name."""
     n = 1024
     names = ("blocks.0.ffn", "condition_embedder.time_embedder.linear_1", "time_embedding.0")
     tensors, layers = {}, {}
