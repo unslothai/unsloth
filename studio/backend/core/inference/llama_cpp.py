@@ -26786,6 +26786,8 @@ class LlamaCppBackend:
                 _moe_cache_ram_ok = False
                 _shared_gpus = frozenset()
                 _integrated_gpus = frozenset()
+                # The discrete-first tier; accounting keeps _integrated_gpus.
+                _tier_gpus = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
                 # the except arm restores use_fit=True without rebinding
@@ -27001,6 +27003,8 @@ class LlamaCppBackend:
                         _integrated_gpus = frozenset(idx for idx, _free in gpus if idx in _unified)
                         # A user device flag names ordinals of the base pick's mask, and an
                         # unmappable mask re-emits ordinals as physical ids: keep the base pick.
+                        # Host-only bytes still never land on a discrete-only subset.
+                        _tier_gpus = _integrated_gpus
                         if _integrated_gpus and (
                             _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
                             or any(
@@ -27009,7 +27013,7 @@ class LlamaCppBackend:
                             )
                             or self._visibility_mask_is_unmappable()
                         ):
-                            _integrated_gpus = frozenset()
+                            _tier_gpus = frozenset()
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
                     _shared_gpu_ids = (
@@ -27050,7 +27054,7 @@ class LlamaCppBackend:
                     def _tiered_subsets(ranked: list, floor: int) -> list:
                         # (count, prefix) in _select_gpus order: unshared discrete first.
                         tier = LlamaCppBackend._discrete_tier(
-                            ranked, _integrated_gpus, _shared_gpus
+                            ranked, _tier_gpus, _shared_gpus
                         )
                         tiers = (
                             (tier, ranked) if tier is not None and floor <= len(tier) else (ranked,)
@@ -27927,7 +27931,7 @@ class LlamaCppBackend:
                         # RAM, so moving the projector frees nothing there. Also pin when that
                         # alone lets the discrete cards hold the model (#7624).
                         _mm_discrete = LlamaCppBackend._discrete_tier(
-                            _mm_budgeted_gpus, _integrated_gpus, _shared_gpus
+                            _mm_budgeted_gpus, _tier_gpus, _shared_gpus
                         )
                         if (
                             not _mm_needs_fit
@@ -28548,7 +28552,23 @@ class LlamaCppBackend:
                             best_cap = 0
                             _cap_fraction = _vram_frac - _flat_mtp_reserve
                             # Every subset Auto may take, discrete tier included, priced as Auto prices it.
-                            for n_gpus, subset in _tiered_subsets(ranked_for_cap, 1):
+                            # With a tier, start at Auto's GPU floor: a forced split skips a short tier.
+                            _cap_floor = 1
+                            if _tier_gpus:
+                                _cap_floor = max(
+                                    1,
+                                    min(
+                                        _layer_min_gpus,
+                                        sum(
+                                            1
+                                            for g in ranked_for_cap
+                                            if _gpu_usable(g, _cap_fraction)
+                                            > _pipeline_overhead_bytes / (1024 * 1024)
+                                        )
+                                        or 1,
+                                    ),
+                                )
+                            for n_gpus, subset in _tiered_subsets(ranked_for_cap, _cap_floor):
                                 # Per-GPU-consistent pool budget (fixes mixed
                                 # known/unknown totals); pass it as an absolute
                                 # budget so the fit and the check below agree.
@@ -28623,7 +28643,7 @@ class LlamaCppBackend:
                                 min_gpus = _layer_min_gpus,
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
                                 shared = _shared_gpus,
-                                integrated = _integrated_gpus,
+                                integrated = _tier_gpus,
                                 discrete_size_bytes = requested_total - _discrete_host_only(),
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
@@ -28682,7 +28702,7 @@ class LlamaCppBackend:
                                             split_extra_bytes = _cc_split_extra(
                                                 effective_ctx, cache_type = "q8_0"
                                             ),
-                                            integrated = _integrated_gpus,
+                                            integrated = _tier_gpus,
                                             discrete_size_bytes = model_size_fit
                                             + _q8_kv
                                             + _mtp_bytes(effective_ctx)
@@ -28820,8 +28840,8 @@ class LlamaCppBackend:
                                 _ctx_capped_for_vram = 0 < capped < _ctx_before_fit
                                 if (
                                     _ctx_capped_for_vram
-                                    and _integrated_gpus
-                                    and _integrated_gpus.isdisjoint(i for i, _f in subset)
+                                    and _tier_gpus
+                                    and _tier_gpus.isdisjoint(i for i, _f in subset)
                                 ):
                                     # Capped only by the discrete preference: the base walk
                                     # holds the full context, so nothing evicted would help.
@@ -28888,7 +28908,7 @@ class LlamaCppBackend:
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
                             min_gpus = _layer_min_gpus,
                             shared = _shared_gpus,
-                            integrated = _integrated_gpus,
+                            integrated = _tier_gpus,
                             discrete_size_bytes = _fs_total - _discrete_host_only(),
                         )
                         if use_fit and not explicit_ctx:

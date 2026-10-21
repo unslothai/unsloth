@@ -6490,6 +6490,53 @@ def test_the_context_ceiling_covers_a_discrete_auto_launch(tmp_path, monkeypatch
     assert _launched_ctx(result) <= backend.vram_fit_context_length
 
 
+@pytest.mark.parametrize("apu_free, gguf_gb", [(8_000, 13), (10_000, 13.5), (8_000, 12.5)])
+def test_a_capped_dgpu_first_shortfall_matches_a_host_without_an_apu(
+    tmp_path, monkeypatch, apu_free, gguf_gb
+):
+    # The dGPU ranks first either way, so the base walk caps exactly as on a host whose
+    # second card is discrete: the shortfall answer must not depend on the APU.
+    from core.inference.llama_cpp import GpuMemoryShortError
+
+    def outcome(memory, rocm):
+        backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, memory, gguf_gb, rocm = rocm)
+        try:
+            result = _launch(backend, gguf, n_ctx = 0, refuse_partial_gpu_fit = True)
+        except GpuMemoryShortError as exc:
+            return ("short", exc.capped)
+        return (result["env"]["CUDA_VISIBLE_DEVICES"], _launched_ctx(result))
+
+    mixed = outcome([(0, apu_free, 0), _DGPU], (0,))
+    assert mixed == outcome([(0, apu_free, 16_384), _DGPU], ())
+
+
+@pytest.mark.parametrize("flag", [["--device", "ROCm0"], ["--main-gpu", "0"]])
+def test_a_user_device_flag_keeps_host_ram_off_the_dgpu_budget(tmp_path, monkeypatch, flag):
+    # The flag only turns off the discrete-first pick: the dGPU the base pick lands on
+    # still holds no host-RAM checkpoints, so the context matches the flagless load.
+    memory = [(0, 16_000, 16_384), (1, 1_000, 0)]
+
+    def launch(**kw):
+        backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, memory, 11, rocm = (1,))
+        result = _launch(backend, gguf, n_ctx = 0, ctx_checkpoints = 6, **kw)
+        return result["env"]["CUDA_VISIBLE_DEVICES"], _launched_ctx(result)
+
+    assert launch(extra_args = flag) == launch() == ("0", 32_768)
+
+
+def test_the_context_ceiling_starts_at_a_forced_gpu_floor(tmp_path, monkeypatch):
+    # A retry that must stay multi-GPU never takes the dGPU-only tier, so its checkpoint-free
+    # context must not set the published ceiling.
+    memory = [(0, 1_500, 0), _DGPU]
+    backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, memory, 11)
+    result = _launch(
+        backend, gguf, n_ctx = 0, ctx_checkpoints = 6, preserve_multi_gpu_on_layer = True
+    )
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
+    assert _launched_ctx(result) < 32_768
+    assert backend.max_context_length == _launched_ctx(result)
+
+
 @pytest.mark.parametrize("path", ["filesize", "auto_ctx", "explicit_ctx"])
 @pytest.mark.parametrize("how", ["argv", "env", "main_gpu"])
 def test_a_user_device_selection_keeps_the_base_placement(tmp_path, monkeypatch, path, how):
