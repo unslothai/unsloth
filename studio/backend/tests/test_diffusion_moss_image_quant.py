@@ -322,3 +322,13 @@ def test_activation_casts_read_a_declared_compute_dtype():
     packed = torch.nn.Linear(2, 2)
     packed.compute_dtype = torch.bfloat16
     assert _compute_dtype(packed) is torch.bfloat16
+
+
+def test_measured_peak_seeds_the_quantised_placement():
+    """The compiled-tier seed keeps a 5 GB int8 denoiser resident on a 16 GB card instead of the flat 8 GiB estimate."""
+    from core.inference.diffusion_memory import measured_image_runtime_mib
+
+    assert measured_image_runtime_mib("moss-image", "default") == 3584
+    assert measured_image_runtime_mib("moss-image", "max") == 3584
+    # the dense eager table is untouched: bf16 keeps the flat estimate
+    assert measured_image_runtime_mib("moss-image", "off", dense_transformer_mib = 9800) is None
