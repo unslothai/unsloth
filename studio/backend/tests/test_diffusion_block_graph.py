@@ -172,6 +172,32 @@ def test_a_host_tensor_input_is_never_recorded():
     handle.free()
 
 
+def test_a_block_graph_keys_on_the_roots_branch_flag():
+    # HunyuanVideo-1.5's pre-hook sets a null-mask flag on the root that picks a branch inside the blocks at the same
+    # shapes (diffusion_cuda_graph.GRAPH_KEY_EXTRA_ATTR): a block recorded on one branch must not replay for the other
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(masked = False)
+    root._unsloth_graph_key_extra = lambda: root.masked
+
+    def compute(x):
+        y = block.lin(x)
+        return y * 0.5 if root.masked else y
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        root.masked = True
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 2
+
+
 def test_weight_placement_is_none_while_a_weight_is_on_the_host():
     view = bg._WeightView(Block())
     assert view.placement(None) is None

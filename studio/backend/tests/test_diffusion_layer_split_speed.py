@@ -542,6 +542,7 @@ def _replaying_segment(n = 3):
     entry.record, entry.outputs, entry.replays = rec, outs, 1
     seg.mode, seg.cur, seg.ext = "replay", entry, [x, temb]
     seg.returned = [outs[0]]
+    seg.versions = [[bg._version(t) for t in outs[0]]]
     seg.pos = 1
     return seg, outs, temb
 
@@ -568,6 +569,36 @@ def test_a_segment_breaks_on_a_fresh_copy_of_a_shared_input():
     seg, outs, temb = _replaying_segment()
     assert seg.call(1, (outs[0][0], temb.clone()), {}) is bg._NOT_HANDLED
     assert seg.stats["segment_breaks"] == 1
+
+
+def test_a_segment_breaks_when_an_op_between_blocks_rewrites_an_output_in_place():
+    # same tensor, same layout, new values: the recorded next output no longer applies
+    seg, outs, temb = _replaying_segment()
+    outs[0][0].add_(100)
+    assert seg.call(1, (outs[0][0], temb), {}) is bg._NOT_HANDLED
+    assert seg.stats["segment_breaks"] == 1 and seg.pos is None
+
+
+def test_a_segment_starts_only_on_a_lazily_routed_chain(monkeypatch):
+    # a segment cannot see an op between blocks that rewrites an inference tensor in place (no version counter), so it
+    # only runs where the split verified the forward hands each block's outputs straight to the next one
+    walked = []
+    real_walk = bg._walk
+    monkeypatch.setattr(bg, "_walk", lambda tree, live: walked.append(1) or real_walk(tree, live))
+    shared = bg._Shared(1, None)
+    root = nn.Linear(4, 4)
+    shared.root = root
+    blocks = [nn.Linear(4, 4) for _ in range(2)]
+    seg = bg.SegmentGraph([bg.BlockGraph(b, b.forward, shared) for b in blocks], shared)
+    state = types.SimpleNamespace(lazy_now = False)
+    root.__dict__[ls._SPLIT_ATTR + "_root"] = state
+    x = torch.zeros(2, 4)
+    with torch.inference_mode():
+        assert seg.call(0, (x,), {}) is bg._NOT_HANDLED
+        assert walked == []  # declined before it looked at the inputs
+        state.lazy_now = True
+        assert seg.call(0, (x,), {}) is bg._NOT_HANDLED  # host tensors: declined by the next check
+        assert walked  # it got past the gate
 
 
 # --- FBCache head / tail streams -----------------------------------------------------------------------------------

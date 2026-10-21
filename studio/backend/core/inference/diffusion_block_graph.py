@@ -515,6 +515,13 @@ class BlockGraph:
             # One recording per precision branch: a W4A4 replay at a W4A16 step would skip the protection.
             from .diffusion_cuda_graph import protect_graph_key
             placement = (placement, protect_graph_key(self.protect))
+        try:
+            extra = _root_key_extra(self.shared.root)
+        except Exception:  # noqa: BLE001 - a branch flag that cannot be read: nothing safe to replay
+            self.stats["refused_object"] += 1
+            return self._eager(args, kwargs)
+        if extra is not None:
+            placement = (placement, extra)
         full = (key, placement)
         entry = self.cache.get(full)
         if entry is None:
@@ -706,6 +713,37 @@ class _SegEntry:
     __slots__ = ("graph", "static_in", "outputs", "record", "slots", "replays")
 
 
+def _root_key_extra(root: Any) -> Any:
+    """The root's per-call branch state (``diffusion_cuda_graph.GRAPH_KEY_EXTRA_ATTR``, e.g. HunyuanVideo-1.5's
+    null-mask flag a pre-hook sets): part of every block and segment key, as of the whole-step graph's, so a recording
+    made on one branch never replays for the other. None without one."""
+    from .diffusion_cuda_graph import GRAPH_KEY_EXTRA_ATTR
+
+    extra = getattr(root, GRAPH_KEY_EXTRA_ATTR, None) if root is not None else None
+    return ("x", extra()) if callable(extra) else None
+
+
+def _lazy_chain(root: Any) -> bool:
+    """Whether this forward of a split ``root`` routes lazily: its class is one the split verified to pass each block's
+    outputs straight to the next block, and the call carries no residual input. Only such a chain may replay as one
+    segment, since a segment cannot see an op between blocks that rewrites a tensor in place."""
+    try:
+        from .diffusion_layer_split import layer_split_of
+
+        split = layer_split_of(root)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(split is not None and split.lazy_now)
+
+
+def _version(t: Any) -> Any:
+    # an inference tensor carries no version counter
+    try:
+        return None if t.is_inference() else t._version
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class SegmentGraph:
     """One CUDA graph over a run of blocks a layer split keeps on one card, back to back in one block list: the first
     block's call replays the whole run, and each later block's call checks that it got exactly the tensors the run
@@ -753,6 +791,7 @@ class SegmentGraph:
         self.cur: Any = None
         self.ext: list = []
         self.returned: list = []
+        self.versions: list = []
 
     def reset(self) -> None:
         for entry in self.cache.values():
@@ -796,11 +835,12 @@ class SegmentGraph:
     def _start(self, args: tuple, kwargs: dict) -> Any:
         self._reset_forward()
         torch = _torch()
-        if torch.is_grad_enabled():
+        if torch.is_grad_enabled() or not _lazy_chain(self.shared.root):
             return _NOT_HANDLED
         live: list = []
         try:
             key = _walk((args, kwargs), live)
+            extra = _root_key_extra(self.shared.root)
         except Exception:  # noqa: BLE001
             return _NOT_HANDLED
         if _refusal(key, kwargs) or any(t.device.type != "cuda" for t in live):
@@ -817,7 +857,7 @@ class SegmentGraph:
         placement = self._placement()
         if placement is None:
             return _NOT_HANDLED
-        full = (key, placement)
+        full = (key, placement) if extra is None else (key, placement, extra)
         if full in self.refused:
             return _NOT_HANDLED
         entry = self.cache.get(full)
@@ -852,6 +892,7 @@ class SegmentGraph:
         rec.out_specs.append(spec)
         self.mode, self.cur, self.ext = "record", (full, rec), live
         self.returned = [flat]
+        self.versions = [[_version(t) for t in flat]]
         self.pos = 1
         self.graphs[0].stats["eager_calls"] += 1
         return out
@@ -863,6 +904,8 @@ class SegmentGraph:
             for j in range(len(self.returned) - 1, -1, -1):
                 for m, r in enumerate(self.returned[j]):
                     if t is r:
+                        if _version(t) != self.versions[j][m]:
+                            return None  # rewritten in place since its block handed it on
                         found = ("o", j, m)
                         break
                 if found is not None:
@@ -907,6 +950,7 @@ class SegmentGraph:
             rec.prov.append(prov)
             rec.out_specs.append(spec)
             self.returned.append(flat)
+            self.versions.append([_version(t) for t in flat])
             self.graphs[i].stats["eager_calls"] += 1
             if last:
                 self.seen[full] = rec
@@ -918,7 +962,7 @@ class SegmentGraph:
                 self.pos = i + 1
             return out
         entry = self.cur
-        if key != entry.record.keys[i] or prov != entry.record.prov[i]:
+        if prov is None or key != entry.record.keys[i] or prov != entry.record.prov[i]:
             # the denoiser changed something between blocks: the recorded outputs from here on do not apply
             self.stats["segment_breaks"] += 1
             self._abandon()
@@ -935,8 +979,10 @@ class SegmentGraph:
         else:
             if i == 0:
                 self.returned = [tensors]
+                self.versions = [[_version(t) for t in tensors]]
             else:
                 self.returned.append(tensors)
+                self.versions.append([_version(t) for t in tensors])
             self.pos = i + 1
         self.graphs[i].stats["segment_hits"] = self.graphs[i].stats.get("segment_hits", 0) + 1
         return _rebuild(entry.record.out_specs[i], tensors)
