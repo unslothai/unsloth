@@ -373,3 +373,15 @@ def test_a_graph_installs_under_a_router_nested_in_a_static_step_skip():
     assert dit.__dict__["forward"] is skip and skip.inner is graph and router.inner is None
     assert torch.equal(_cfg_loop(dit, latents.clone(), steps = 4), reference)
 
+
+def test_a_worker_that_fails_to_start_releases_its_capture_hold(monkeypatch):
+    assert cg._OUTSIDE_JOBS == 0
+
+    def refuse(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", refuse)
+    with pytest.raises(RuntimeError):
+        mg._ReplicaWorker(torch.device("cpu"))
+    assert cg._OUTSIDE_JOBS == 0
+

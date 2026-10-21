@@ -1476,10 +1476,15 @@ class _ReplicaWorker:
             target = self._loop, name = f"unsloth-cfg-replica-{device}", daemon = True
         )
         # Global capture mode forbids this thread's CUDA allocations while any recording runs, so hold them out.
-        from .diffusion_cuda_graph import capture_hold
+        from .diffusion_cuda_graph import capture_hold, capture_release
 
         capture_hold()
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException:
+            # _loop never runs to release it
+            capture_release()
+            raise
 
     def _loop(self) -> None:
         from .diffusion_cuda_graph import capture_release, held_work
