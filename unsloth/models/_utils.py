@@ -5611,6 +5611,7 @@ def patch_gradient_accumulation_fix(Trainer):
                     from .llama import _decline_fused_lora_for_fsdp
                     _decline_fused_lora_for_fsdp(getattr(self, "model", None), reason)
             _replan_auto_offload_safely(self)
+            _size_auto_checkpoint_skip_for_trainer(self)
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
             from ._ddp_defaults import install_unsloth_ddp_comm_defaults
@@ -8422,16 +8423,328 @@ def _skip_aware_flag(cls):
     cls._unsloth_skip_aware = True
 
 
+def _gc_keep_layers_env():
+    value = os.environ.get("UNSLOTH_GC_KEEP_LAYERS", "").strip().lower()
+    if value in ("", "0"):
+        return 0
+    if value in ("auto", "max"):
+        return value
+    try:
+        return max(0, int(value))
+    except ValueError:
+        logger.warning(
+            f"Unsloth: UNSLOTH_GC_KEEP_LAYERS = {value!r} is not K, max or auto; ignored."
+        )
+        return 0
+
+
+class _AutoCheckpointSkip:
+    """checkpoint_skip_layers = "auto": once, after step 1, un-checkpoint as many layers as fit.
+    Per-layer cost = the largest allocation any eligible layer's reentrant recompute leaves in the
+    first backward (hybrid stacks mix attention and Mamba blocks); AdamW state is reserved for every
+    trainable param the optimizer has no state for yet. Sized for the trainer batch at the longest of
+    max_length, max_seq_length and the measured length: inputs a collator expands past that (images,
+    audio) need max_seq_length set to their bound. Single process only: under torchrun each rank
+    would pick its own K."""
+
+    MARGIN = 1 << 30
+    FRACTION = 0.75
+    _warned_no_cuda = False
+
+    def __init__(self, model, layers, probe):
+        self.model = model
+        self.layers = layers
+        self.probe = probe
+        self.handles = []
+        self.started = None
+        self.no_grad_forward = False
+        self.before = None
+        self.measured = set()
+        self.layer_bytes = None
+        self.layer_rows = 1
+        self.layer_batch = 1
+        self.target_batch = None
+        self.target_seq = None
+        self.kept = None
+        self.step_peak = None
+        self.stepped = False
+        self.optimizers = []
+        self.fresh_grads = None
+        self.grad_bytes = None
+
+    @classmethod
+    def _no_cuda(cls):
+        if not cls._warned_no_cuda:
+            cls._warned_no_cuda = True
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" needs a CUDA GPU; every layer stays checkpointed.'
+            )
+        return None
+
+    @classmethod
+    def install(cls, model):
+        if not torch.cuda.is_available():
+            return cls._no_cuda()
+        try:
+            from .loader_utils import is_distributed
+            distributed = is_distributed()
+        except Exception:
+            distributed = False
+        if distributed:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" is single process only; every layer stays checkpointed.'
+            )
+            return None
+        previous = getattr(model, "_unsloth_auto_skip", None)
+        if previous is not None:
+            previous.remove()
+        layers = find_decoder_layers(model) if find_decoder_layers is not None else []
+        swapper = getattr(model, "_unsloth_block_swap", None)
+        swapped = set(getattr(swapper, "indices", None) or ())
+        eligible = [
+            i
+            for i, layer in enumerate(layers)
+            if i not in swapped and hasattr(layer, "gradient_checkpointing")
+        ]
+        if not eligible:
+            return None
+        devices = {p.device for layer in layers for p in layer.parameters() if p.is_cuda}
+        if not devices:
+            # Model on CPU / XPU on a CUDA host: the hooks would never run (and keep the model alive).
+            return cls._no_cuda()
+        if len(devices) > 1:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" sizes one GPU; the layers span several, so every layer stays checkpointed.'
+            )
+            return None
+        import functools, weakref
+
+        self = cls(model, layers, layers[eligible[-1]])
+        self.device = next(iter(devices))
+        self.handles.append(model.register_forward_pre_hook(self._model_pre_hook))
+        for i in eligible:
+            layer = layers[i]
+            self.handles.append(
+                layer.register_forward_pre_hook(functools.partial(self._probe_pre_hook, i))
+            )
+            self.handles.append(layer.register_forward_hook(functools.partial(self._probe_hook, i)))
+        try:
+            from torch.optim.optimizer import register_optimizer_step_pre_hook
+        except ImportError:
+            register_optimizer_step_pre_hook = None
+        if register_optimizer_step_pre_hook is not None:
+            # The global registry must not keep the planner (and so the model) alive if plan() never runs.
+            planner_ref = weakref.ref(self)
+
+            def _optimizer_pre_hook(optimizer, args, kwargs):
+                planner = planner_ref()
+                if planner is not None:
+                    planner._optimizer_pre_hook(optimizer, args, kwargs)
+
+            handle = register_optimizer_step_pre_hook(_optimizer_pre_hook)
+            self.handles.append(handle)
+            weakref.finalize(self, handle.remove)
+        model._unsloth_auto_skip = self
+        return self
+
+    def remove(self):
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+        if getattr(self.model, "_unsloth_auto_skip", None) is self:
+            del self.model._unsloth_auto_skip
+
+    def _plan_device(self):
+        # Not one layer's: offload_layers = "auto" may re-plan after install and move any layer to host.
+        for layer in self.layers:
+            for p in layer.parameters():
+                if p.is_cuda:
+                    return p.device
+        return None
+
+    def _model_pre_hook(self, module, args):
+        if not module.training or not torch.is_grad_enabled():
+            return
+        device = self._plan_device()
+        if device is None:
+            return
+        if self.started is None:
+            # Step-local peak: a model-loading spike must not count as activations.
+            torch.cuda.reset_peak_memory_stats(device)
+            self.started = torch.cuda.memory_allocated(device)
+            # Grads the first backward allocates persist: they are not sequence-dependent.
+            self.fresh_grads = [
+                p for p in self.model.parameters() if p.requires_grad and p.grad is None
+            ]
+            return
+        if self.layer_bytes is not None:
+            self.plan(device)
+
+    def _probe_pre_hook(self, index, module, args):
+        if self.started is None or index in self.measured or not module.training:
+            return
+        if not torch.is_grad_enabled():
+            # The reentrant checkpoint's own forward: the next grad-mode call is its recompute.
+            self.no_grad_forward = True
+            return
+        if not self.no_grad_forward:
+            print(
+                'Unsloth: checkpoint_skip_layers = "auto" needs reentrant gradient checkpointing; unchanged.'
+            )
+            self.remove()
+            return
+        hidden = args[0] if args and torch.is_tensor(args[0]) else None
+        if hidden is not None and hidden.is_cuda:
+            self.layer_rows = hidden.shape[-2] if hidden.dim() >= 3 else hidden.shape[0]
+            self.layer_batch = math.prod(hidden.shape[:-2]) if hidden.dim() >= 3 else 1
+            self.before = (index, torch.cuda.memory_allocated(hidden.device), hidden.device)
+
+    def _probe_hook(self, index, module, args, output):
+        if self.before is None or self.before[0] != index or index in self.measured:
+            return
+        device = self.before[2]
+        cost = max(0, torch.cuda.memory_allocated(device) - self.before[1])
+        self.measured.add(index)
+        # Conservative: the most expensive layer type sizes every kept layer.
+        self.layer_bytes = max(self.layer_bytes or 0, cost)
+        self.before = None
+
+    def _seq_exponent(self):
+        """Activation growth with sequence length: 1 for SDPA / flash / flex, 2 for anything that
+        materialises the attention matrix (eager) or cannot be identified."""
+        config = getattr(self.model, "config", None)
+        text_config = config
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                text_config = get_text_config()
+            except Exception:
+                text_config = config
+        impl = getattr(text_config, "_attn_implementation", None) or getattr(
+            config, "_attn_implementation", None
+        )
+        if isinstance(impl, str) and any(k in impl for k in ("sdpa", "flash", "flex")):
+            return 1
+        return 2
+
+    def _optimizer_pre_hook(self, optimizer, args, kwargs):
+        if self.started is None or self.stepped:
+            return
+        trainable = {id(p) for p in self.model.parameters() if p.requires_grad}
+        if not any(id(p) in trainable for group in optimizer.param_groups for p in group["params"]):
+            return
+        if not any(o() is optimizer for o in self.optimizers):
+            import weakref
+            self.optimizers.append(weakref.ref(optimizer))
+        # Forward + backward peak, before the optimizer allocates its state and temporaries.
+        device = self._plan_device()
+        if self.grad_bytes is None:
+            self.grad_bytes = self._fresh_grad_bytes(device)
+        if device is not None:
+            self.step_peak = torch.cuda.max_memory_allocated(device)
+        self.stepped = True
+
+    def _fresh_grad_bytes(self, device):
+        # Only grads on the planned card are in its step peak (a vision tower may sit on another GPU).
+        return sum(
+            p.grad.numel() * p.grad.element_size()
+            for p in (self.fresh_grads or ())
+            if p.grad is not None and p.grad.is_cuda and p.grad.device == device
+        )
+
+    def _has_optimizer_state(self, param):
+        for ref in self.optimizers:
+            optimizer = ref()
+            if optimizer is not None and optimizer.state.get(param):
+                return True
+        return False
+
+    def plan(self, device):
+        self.remove()
+        allocated_start = self.started
+        peak = (
+            self.step_peak
+            if self.step_peak is not None
+            else torch.cuda.max_memory_allocated(device)
+        )
+        # A short or small first batch (dynamic padding, packing, token-budget batches) under-measures:
+        # size for the trainer's batch x max length tokens, else the measured batch at max_seq_length.
+        rows = max(1, self.layer_rows)
+        # Never below the measured length (multimodal collators can expand past max_seq_length).
+        max_seq = max(rows, self.target_seq or getattr(self.model, "max_seq_length", None) or rows)
+        batch = max(self.target_batch or 0, self.layer_batch)
+        tokens = max(1.0, batch * max_seq / (self.layer_batch * rows))
+        # Eager attention keeps a seq x seq matrix per layer: one more length factor (over-estimates the rest).
+        scale = tokens * max(1.0, max_seq / rows) ** (self._seq_exponent() - 1)
+        # Persistent grads from the first backward are in the peak too; only the rest grows with length.
+        step_bytes = max(0, peak - allocated_start)
+        grad_bytes = (
+            self.grad_bytes if self.grad_bytes is not None else self._fresh_grad_bytes(device)
+        )
+        grad_bytes = min(step_bytes, grad_bytes)
+        # Grads still resident (gradient accumulation) are already outside usable_cuda_bytes.
+        resident = self._fresh_grad_bytes(device) if self.fresh_grads else 0
+        activation_peak = (step_bytes - grad_bytes) * scale + max(0, grad_bytes - resident)
+        self.fresh_grads = None
+        # State an optimizer step already allocated is excluded by usable_cuda_bytes; reserve the rest
+        # (sparse MoE experts, unused towers and gradient accumulation have none yet).
+        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        optimizer = sum(
+            p.numel() * 8
+            for p in trainable
+            if p.device == device and not self._has_optimizer_state(p)
+        )
+        # foreach AdamW allocates about one fp32 copy of the params (sqrt of exp_avg_sq) every step,
+        # on each param's own card.
+        optimizer += sum(p.numel() * 4 for p in trainable if p.device == device)
+        self.optimizers = []
+        headroom = usable_cuda_bytes(device) - activation_peak - optimizer
+        budget = headroom * self.FRACTION - self.MARGIN
+        per_layer = self.layer_bytes * scale
+        count = int(budget // per_layer) if per_layer > 0 and budget > 0 else 0
+        self.kept = skip_checkpointing(self.model, count) if count > 0 else []
+        if self.kept:
+            # Smart offloading learnt the checkpointed-call count in the first step; recount it.
+            try:
+                import unsloth_zoo.gradient_checkpointing as zoo_gc
+                if zoo_gc.CURRENT_GC_INDEX == 0:
+                    zoo_gc.FIRST_PASS = True
+                    zoo_gc.LAST_GC_INDEX = 0
+            except Exception:
+                pass
+        print(
+            f'Unsloth: checkpoint_skip_layers = "auto" keeps {len(self.kept)} of {len(self.layers)} '
+            f"decoder layers un-checkpointed ({per_layer / 2**30:.2f} GB each, "
+            f"{max(0, headroom) / 2**30:.1f} GB headroom)."
+        )
+        return self.kept
+
+
 def skip_checkpointing(model, layers = 0):
     """get_peft_model(checkpoint_skip_layers = K | "max"): K decoder layers (evenly spaced; "max" =
     all) keep their activations instead of recomputing them in backward. Faster, at the cost of
-    each layer's activations on the card. Block-swapped layers keep checkpointing."""
+    each layer's activations on the card. Block-swapped layers keep checkpointing. "auto" (or
+    UNSLOTH_GC_KEEP_LAYERS when 0): _AutoCheckpointSkip."""
     if not layers:
+        layers = _gc_keep_layers_env()
+    if layers != "auto":
+        # An explicit value replaces an earlier "auto" planner on the same model.
+        planner = getattr(model, "_unsloth_auto_skip", None)
+        if planner is not None:
+            planner.remove()
+    if not layers:
+        return []
+    if layers == "auto":
+        _AutoCheckpointSkip.install(model)
         return []
     layer_list = find_decoder_layers(model)
     swapper = getattr(model, "_unsloth_block_swap", None)
     swapped = set(getattr(swapper, "indices", None) or ())
-    eligible = [i for i in range(len(layer_list)) if i not in swapped]
+    eligible = [
+        i
+        for i, layer in enumerate(layer_list)
+        if i not in swapped and hasattr(layer, "gradient_checkpointing")
+    ]
     if layers == "max":
         chosen = eligible
     else:
@@ -8962,6 +9275,22 @@ def _trainer_offload_replan_skip(trainer):
     if not torch.cuda.is_available():
         return "cuda"
     return None
+
+
+def _size_auto_checkpoint_skip_for_trainer(trainer):
+    """checkpoint_skip_layers = "auto" sizes for the trainer's full batch, not only the first one."""
+    model = getattr(trainer, "model", None)
+    planner = getattr(model, "_unsloth_auto_skip", None)
+    if not isinstance(planner, _AutoCheckpointSkip):
+        return
+    args = getattr(trainer, "args", None)
+    batch_size = getattr(args, "per_device_train_batch_size", None)
+    if isinstance(batch_size, int) and batch_size > 0:
+        pairs = any(c.__name__.endswith(_PAIRED_FORWARD_TRAINERS) for c in type(trainer).__mro__)
+        planner.target_batch = batch_size * (2 if pairs else 1)
+    seq_len = getattr(args, "max_length", None) or getattr(args, "max_seq_length", None)
+    if isinstance(seq_len, int) and seq_len > 0:
+        planner.target_seq = max(seq_len, getattr(model, "max_seq_length", None) or 0)
 
 
 def replan_auto_offload_for_trainer(trainer):
