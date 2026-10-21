@@ -159,6 +159,31 @@ def test_batched_steps_match_two_calls_and_engage(monkeypatch):
     assert cb.cfg_batch_status(pipe)["shape_off"] is None
 
 
+def test_wan_expanded_timesteps_serve_the_second_branch(monkeypatch):
+    """WanPipeline passes ``timestep = t.expand(batch)`` per call: a fresh stride-0 tensor each branch. Equal bytes
+    must count as equal; a byte view of the stride-0 tensor raised, so every step missed and three misses turned
+    batching off."""
+
+    def loop(model):
+        torch.manual_seed(0)
+        latents = torch.randn(1, 4, 8)
+        pos, neg = torch.randn(1, 5, 8), torch.randn(1, 5, 8)
+        txt_ids, img_ids = torch.zeros(1, 5, 4), torch.ones(1, 4, 4)
+        for t in torch.tensor([999, 941, 883, 825, 767, 709]):
+            branch = {"txt_ids": txt_ids, "img_ids": img_ids, "return_dict": False}
+            c = model(hidden_states = latents, timestep = t.expand(latents.shape[0]), encoder_hidden_states = pos, **branch)[0]  # fmt: skip
+            u = model(hidden_states = latents, timestep = t.expand(latents.shape[0]), encoder_hidden_states = neg, **branch)[0]  # fmt: skip
+            latents = latents - 0.1 * (u + 4.0 * (c - u))
+        return latents
+
+    ref = loop(_offloaded(Flux2Transformer2DModel()))
+    model = Flux2Transformer2DModel()
+    _pipe, router = _armed(model, monkeypatch)
+    torch.testing.assert_close(loop(model), ref)
+    assert router.stats["hits"] == 4 and router.stats["misses"] == 0, router.describe()
+    assert router.shape.off is None
+
+
 def test_qwen_unequal_prompt_lengths_and_img_shapes_batch(monkeypatch):
     def loop(model):
         torch.manual_seed(1)

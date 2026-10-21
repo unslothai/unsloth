@@ -1012,6 +1012,19 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
     assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
 
 
+def test_bitwise_equal_on_an_expanded_scalar():
+    """``t.expand(1)`` keeps stride 0 through ``contiguous()`` (one element), which a byte view refuses."""
+    t = torch.tensor(941).expand(1)
+    assert t.stride() == (0,)
+    assert mg._bitwise_equal(t, t.clone())
+    assert mg._bitwise_equal(t, torch.tensor(941).expand(1))
+    assert not mg._bitwise_equal(t, torch.tensor([942]))
+    assert mg._bitwise_equal(torch.tensor(float("nan")).expand(1), torch.tensor([float("nan")]))
+    assert not mg._bitwise_equal(torch.tensor(-0.0).expand(1), torch.tensor([0.0]))
+    assert mg._unchanged_since_launch([(t, t.clone())])
+    assert not mg._unchanged_since_launch([(torch.tensor(942).expand(1), t.clone())])
+
+
 def test_bitwise_equal_distinguishes_signed_zero():
     assert mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([0.0]))
     assert mg._bitwise_equal(torch.tensor(0.5), torch.tensor(1.0) / 2)

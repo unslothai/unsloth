@@ -1420,6 +1420,17 @@ def _rebuild(
 _SMALL_TENSOR_NUMEL = 4096
 
 
+def _as_bytes(t: Any) -> Any:
+    """``t``'s elements as one flat uint8 tensor. ``contiguous()`` is a no-op on a one-element tensor whatever its
+    stride, so an expanded scalar (WanPipeline's ``t.expand(batch)``, stride 0) keeps stride 0, which a byte view
+    refuses: that one gets a dense copy."""
+    torch = _torch()
+    flat = t.reshape(-1).contiguous()
+    if flat.numel() and flat.stride(0) != 1:
+        flat = flat.clone(memory_format = torch.contiguous_format)
+    return flat.view(torch.uint8)
+
+
 def _bitwise_equal(a: Any, b: Any) -> bool:
     torch = _torch()
     if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)):
@@ -1429,12 +1440,7 @@ def _bitwise_equal(a: Any, b: Any) -> bool:
     if a is b:
         return True
     try:
-        return bool(
-            torch.equal(
-                a.reshape(-1).contiguous().view(torch.uint8),
-                b.reshape(-1).contiguous().view(torch.uint8),
-            )
-        )
+        return bool(torch.equal(_as_bytes(a), _as_bytes(b)))
     except Exception:  # noqa: BLE001 - a layout that cannot be viewed as bytes is never assumed equal
         return False
 
@@ -1451,11 +1457,11 @@ def _unchanged_since_launch(snapshots: list) -> bool:
         if src.numel() == 0:
             continue
         try:
-            now = src.to(snap.device).reshape(-1).contiguous().view(torch.uint8)
+            now = _as_bytes(src.to(snap.device))
             checks.append(
-                torch.equal(now, snap.reshape(-1).contiguous().view(torch.uint8))
+                torch.equal(now, _as_bytes(snap))
                 if snap.device.type == "cpu"
-                else (now == snap.reshape(-1).contiguous().view(torch.uint8)).all()
+                else (now == _as_bytes(snap)).all()
             )
         except Exception:  # noqa: BLE001 - an unverifiable tensor never accepts a prediction
             return False
