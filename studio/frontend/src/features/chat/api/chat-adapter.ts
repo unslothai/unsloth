@@ -9192,7 +9192,7 @@ export function createOpenAIStreamAdapter(
               description: msg || "Unknown error",
             });
           }
-          // A worker the OS killed is only noticed by a status read; until then the picker keeps it.
+          // A killed worker is only noticed by a status read.
           if (!isExternalRequest) {
             void syncInferenceStatusToStore({ includeLoras: false });
           }

@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A transformers or MLX worker the OS kills between requests stops being reported as loaded."""
-
 from __future__ import annotations
 
 import asyncio
