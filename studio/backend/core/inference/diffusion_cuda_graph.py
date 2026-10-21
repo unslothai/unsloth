@@ -1397,7 +1397,6 @@ class GraphedForward:
             try:
                 captured = self._capture(args, kwargs, call, key)
             except CaptureRefused as exc:
-                # Nothing was recorded: this step runs eager and a later call tries the capture again.
                 _restore_stream(stream_before)
                 self.stats["capture_refusals"] = self.stats.get("capture_refusals", 0) + 1
                 if self.logger is not None:
@@ -1577,7 +1576,6 @@ class GraphedForward:
             self.logger
         )  # before the warm-ups, and before the step skip's counters are saved
         if capture_refused_now():
-            # Replica-side work already outlasted one capture's wait: skip the warm-ups as well.
             raise CaptureRefused("replica-side CUDA work still running; capture refused")
         # Under an offload placement the capture also records the copy-stream onloads (OffloadPlacement.record).
         record = call if self.placement is None else self.placement.recorder(call)

@@ -88,7 +88,6 @@ def test_graph_wrapper_installs_under_the_router_and_branches_keep_routing():
     assert torch.equal(out, reference)
     assert router.stats["steps_parallel"] == 4 and router.stats["replica_calls"] == 4
     assert len(replicas) == 1 and router.disabled_reason is None
-    # the primary branches go through the graph wrapper, the replica runs the class forward
     assert "forward" not in replicas[0].__dict__
     graph.uninstall()
     assert router.inner is None and dit.__dict__["forward"] is router
@@ -182,7 +181,6 @@ def test_a_replica_thread_that_records_does_not_wait_on_itself():
     t.join(5)
 
 
-# Z-Image: the split guided call reaches the router as one explicit pair.
 
 zmod = None
 
@@ -298,7 +296,6 @@ def test_a_graph_armed_at_load_moves_under_a_later_router(monkeypatch):
         assert (
             dit.__dict__["forward"] is router and router.inner is graph and not router.had_override
         )
-        # run the routing on the CPU (the probe above only placed it)
         router.primary = router.secondary = torch.device("cpu")
         router.replica_factory = lambda: mg.build_replica(dit, torch.device("cpu"))
         out = _cfg_loop(dit, latents.clone(), steps = 4)
@@ -324,7 +321,6 @@ def test_a_queued_replica_job_holds_captures_off_until_it_has_dropped_its_inputs
         gate.wait(5)
         return 1
 
-    # held from submit, before the worker even picks it up
     done = worker.submit(job)
     del job
     assert cg._OUTSIDE_JOBS == 1
@@ -361,7 +357,6 @@ def test_a_graph_installs_under_a_router_nested_in_a_static_step_skip():
     skip = StaticStepSkip(dit, inner = router)
     dit.__dict__["forward"] = skip
     graph = cg.GraphedForward(dit).install()
-    # the graph goes beneath the router, not over it
     assert dit.__dict__["forward"] is skip and skip.inner is router and router.inner is graph
     graph.uninstall()
     assert router.inner is None and skip.inner is router
@@ -430,7 +425,6 @@ def test_captures_stay_held_off_while_replica_inputs_are_copied(_zs, monkeypatch
     monkeypatch.setattr(mg.CfgParallelRouter, "_to_replica", recording)
     _zimage_steps(model, pipe, 2)
     assert router.stats["pairs_parallel"] == 2
-    # args and kwargs per pair, each copied under its own hold
     assert len(held) == 4 and all(n >= 1 for n in held)
     assert cg._OUTSIDE_JOBS == 0
 
@@ -562,7 +556,6 @@ def test_a_capture_that_outwaits_replica_work_is_refused_not_recorded(monkeypatc
                 ran.append(cg._CAPTURE_DEPTH)
         assert ran == [] and cg._CAPTURE_DEPTH == 0
         assert cg.capture_refused_now()
-        # a stale count is not waited on again
         monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 30.0)
         with pytest.raises(cg.CaptureRefused):
             with cg._capturing():
@@ -723,7 +716,6 @@ def test_a_refused_prefetch_sends_the_rest_of_the_step_to_the_source_without_wai
         assert waits == [True]
         assert router.disabled_reason is None
         assert router.stats["steps_parallel"] == 1 and router.stats["exclusion_skips"] >= 2
-        # the capture ended: the next step runs parallel again
         latents = _step(dit, latents, ts[4], cond, uncond)
     assert router.stats["steps_parallel"] == 2 and not router.exclusion_refused
     assert torch.allclose(latents, refs[-1], atol = 1e-6)

@@ -1489,7 +1489,6 @@ class _ReplicaWorker:
         try:
             self._thread.start()
         except BaseException:
-            # _loop never runs to release it
             capture_release()
             raise
 
@@ -1521,7 +1520,6 @@ class _ReplicaWorker:
                             done["result"] = ctx.run(self._run, fn, modes)
                         except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's thread
                             done["error"] = exc
-                        # drop inputs inside the hold
                         fn = ctx = None
                 except Exception as exc:  # noqa: BLE001 - refused while a capture records: the job never ran
                     done["error"] = exc
@@ -1936,7 +1934,6 @@ class CfgParallelRouter:
         module = self.module_ref()
         if module is None or _holds_opaque_tensors((args, kwargs)):
             return None
-        # A root hook would only see the first half.
         if any(getattr(module, attr, None) for attr in _ROOT_HOOK_DICTS):
             return None
         self._drop_pending()
@@ -2174,7 +2171,6 @@ class CfgParallelRouter:
         if self._refused_this_capture():
             return
         try:
-            # Speculative cross-device copies are CUDA calls another pipeline's capture prohibits.
             with outside_capture():
                 for tensor in (*_iter_tensors((args, kwargs)), *self.carry):
                     if tensor.device == self.secondary or id(tensor) in self.prefetched:
@@ -2212,7 +2208,6 @@ class CfgParallelRouter:
 
         from .diffusion_cuda_graph import outside_capture
 
-        # Cross-device copies are CUDA calls another pipeline's capture prohibits.
         with outside_capture():
             return walk(obj)
 
@@ -2339,7 +2334,6 @@ def install_cfg_parallel(
             if free is not None and need_mib + 1024 > free:
                 reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
             else:
-                # A graph armed at load moves under the router.
                 graph = _resident_graph(denoiser)
                 if graph is not None:
                     del denoiser.__dict__["forward"]

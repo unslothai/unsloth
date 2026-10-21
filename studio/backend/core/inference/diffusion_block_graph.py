@@ -1065,7 +1065,6 @@ class SegmentGraph:
             current.wait_stream(stream)
             self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)
         except CaptureRefused:
-            # Refused before capture_begin: this call runs per block, a later one records the segment.
             self.seen[full] = rec
             self.stats["segment_refusals"] = self.stats.get("segment_refusals", 0) + 1
             return None
