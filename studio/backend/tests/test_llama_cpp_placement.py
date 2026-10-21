@@ -5929,6 +5929,108 @@ def test_an_explicit_pick_reaches_every_lazy_decision(tmp_path, _moe_cache_host,
     assert all(sel is not None and set(sel) <= {0, 1} for sel in seen), seen
 
 
+def test_split_mode_none_checks_only_the_main_device(monkeypatch):
+    """-sm none keeps only devices[main_gpu] of the model list (src/llama.cpp
+    llama_prepare_model_devices, main_gpu 0 by default, no device below 0), so an
+    integrated device the split mode discards cannot turn lazy auto off."""
+    _mixed_cuda_soc_host(monkeypatch)
+    backend = LlamaCppBackend()
+    vk = dict(
+        gpu_indices = None,
+        detected_gpus = [(0, 8_000), (1, 1_000)],
+        shared_gpu_ids = {1},
+        is_vulkan_backend = True,
+        env = {},
+    )
+    dev = ["--device", "Vulkan0,Vulkan1"]
+    assert backend._lazy_auto_resolves_off(**vk, extra_args = dev) is True
+    assert backend._lazy_auto_resolves_off(**vk, extra_args = [*dev, "-sm", "none"]) is False
+    assert (
+        backend._lazy_auto_resolves_off(**vk, extra_args = [*dev, "-sm", "none", "-mg", "1"]) is True
+    )
+    assert (
+        backend._lazy_auto_resolves_off(
+            **vk, extra_args = [*dev, "--split-mode", "none", "-mg", "-1"]
+        )
+        is False
+    )
+    # Studio's own Vulkan pick, in the order it emits it.
+    pick = dict(vk, extra_args = ["-sm", "none"])
+    assert backend._lazy_auto_resolves_off(**dict(pick, gpu_indices = [0, 1])) is False
+    assert backend._lazy_auto_resolves_off(**dict(pick, gpu_indices = [1, 0])) is True
+    # CUDA, with the split mode from the env and the list in --device order.
+    cuda = dict(vk, is_vulkan_backend = False, shared_gpu_ids = set())
+    env = {"LLAMA_ARG_SPLIT_MODE": "none"}
+    assert (
+        backend._lazy_auto_resolves_off(
+            **dict(cuda, env = env), extra_args = ["--device", "CUDA1,CUDA0"]
+        )
+        is True
+    )
+    assert (
+        backend._lazy_auto_resolves_off(
+            **dict(cuda, env = env), extra_args = ["--device", "CUDA0,CUDA1"]
+        )
+        is False
+    )
+
+
+def test_the_apu_guard_reads_the_childs_device_list(tmp_path, monkeypatch):
+    """APU 0 beside a discrete card 1, the user naming the APU with --device ROCm0:
+    llama.cpp uses the list as given, lazy auto turns off and the whole file loads
+    into RAM, so the APU guard has to price it in full and remap the unmapped load."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+    memory = [(0, 60_000, 60_000), (1, 8_000, 8_000)]
+    backend._get_gpu_memory = lambda _binary = None, **_kw: list(memory)
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(i, f) for i, f, _t in memory]
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [0, 1])
+    )
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen4exp",
+        {"per_layer_token_embd.weight": _QWEN38_PLE},
+        0,
+    )
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(_CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: caps
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none", "--device", "ROCm0"])["cmd"]
+
+    assert "unified-memory APU" in (backend.last_load_warning or ""), backend.last_load_warning
+    assert not _unmapped_tokens(cmd), cmd
+
+
+def test_the_arch_crash_retry_prices_ram_against_its_own_mask():
+    """The retry's RAM checks read --device ordinals through the retry's mask, so they
+    run after the mask, companion-device and split rewrites, and hand the retry argv and
+    env to the lazy check; RAM is still read before the kill, as it always was. Checked
+    at the source, like the other arch-crash retry tests, because this arm only runs
+    behind a real kernel-image crash."""
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    retry = src[src.index("_retry_wants_unified = self._amd_apu_wants_unified_memory(") :]
+    retry = retry[: retry.index('label = "-archfallback"')]
+    host = retry.index("_retry_host_msg = self._launch_host_shortfall_message(")
+    apu = retry.index("_retry_apu_msg = self._apu_ram_shortfall_message(")
+    for rewrite in (
+        "self._emit_child_gpu_visibility(",
+        "_widen_pin_ids_for_companion_devices(",
+        "self._clear_split_placement_env(env)",
+        "self._without_tensor_split(cmd)",
+    ):
+        assert retry.index(rewrite) < min(host, apu), rewrite
+    lazy = retry[retry.rindex("self._lazy_auto_resolves_off(", 0, apu) : apu]
+    assert "extra_args = cmd" in lazy and "env = env" in lazy, lazy
+    kill = retry.index("self._kill_process()")
+    assert retry.index("_retry_host_avail_mib = self._available_system_memory_mib()") < kill
+    assert "avail_mib = _retry_host_avail_mib" in retry[host:]
+
+
 @pytest.mark.parametrize("lazy_args, warned", [(["-lzm", "on"], False), ([], True)])
 def test_the_apu_guard_prices_only_resident_weights(tmp_path, monkeypatch, lazy_args, warned):
     """A 64.6 GiB model with a 26.82 GiB table on an APU with 46 GiB of RAM. "-lzm on"
