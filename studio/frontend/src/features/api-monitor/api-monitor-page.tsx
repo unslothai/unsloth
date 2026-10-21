@@ -1190,7 +1190,7 @@ export function ApiMonitorPage(): ReactElement {
       : served.length === 1
         ? `Eject ${served[0].name} and free its memory`
         : "No model is loaded";
-  const activeFacts = (
+  const contextFact = (
     <>
       {data?.context_length ? (
         <Fact label="Context">
@@ -1199,6 +1199,10 @@ export function ApiMonitorPage(): ReactElement {
           </span>
         </Fact>
       ) : null}
+    </>
+  );
+  const slotsFact = (
+    <>
       {data?.queue ? (
         <Fact label="Slots">
           {canEditSlots ? (
@@ -1226,6 +1230,12 @@ export function ApiMonitorPage(): ReactElement {
           )}
         </Fact>
       ) : null}
+    </>
+  );
+  const activeFacts = (
+    <>
+      {contextFact}
+      {slotsFact}
     </>
   );
 
@@ -1354,55 +1364,58 @@ export function ApiMonitorPage(): ReactElement {
         </div>
         <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
           {served.length > 1 ? (
-            <dl className="flex flex-col gap-1.5">
-              <dt className="text-ui-12 text-muted-foreground">
+            <div className="flex flex-col gap-2">
+              <p className="text-ui-12 text-muted-foreground">
                 {served.length} models answering requests
-              </dt>
-              {served.map((model) => (
-                <dd
-                  key={model.checkpoint}
-                  className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-1"
-                >
-                  <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
-                    <span
-                      className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                      aria-hidden={true}
-                    />
-                    <span className="ml-1 truncate font-mono text-foreground">
-                      {model.name}
+              </p>
+              {/* One grid for every row, so name, settings, context, slots and eject line up. */}
+              <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
+                {served.map((model) => (
+                  <div key={model.checkpoint} className="contents">
+                    <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
+                      <span
+                        className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                        aria-hidden={true}
+                      />
+                      <span className="ml-1 truncate font-mono text-foreground">
+                        {model.name}
+                      </span>
+                      <CopyButton
+                        value={model.name}
+                        label="Copy model name"
+                        revealOnHover={true}
+                      />
                     </span>
-                    <CopyButton
-                      value={model.name}
-                      label="Copy model name"
-                      revealOnHover={true}
-                    />
-                  </span>
-                  {settingsButton(model)}
-                  {model.active ? (
-                    <dl className="contents">{activeFacts}</dl>
-                  ) : null}
-                  <span className="ml-auto">
-                    <ToolbarTooltip label={`Eject ${model.name}`}>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Eject ${model.name}`}
-                        onClick={() => void ejectServed(model)}
-                        disabled={ejecting || modelLoading}
-                        className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={RemoveCircleIcon}
-                          strokeWidth={1.75}
-                          className="size-3.5"
-                        />
-                      </Button>
-                    </ToolbarTooltip>
-                  </span>
-                </dd>
-              ))}
-            </dl>
+                    {settingsButton(model)}
+                    <dl className="min-w-0">
+                      {model.active ? contextFact : null}
+                    </dl>
+                    <dl className="min-w-0">
+                      {model.active ? slotsFact : null}
+                    </dl>
+                    <span className="justify-self-end">
+                      <ToolbarTooltip label={`Eject ${model.name}`}>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Eject ${model.name}`}
+                          onClick={() => void ejectServed(model)}
+                          disabled={ejecting || modelLoading}
+                          className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                        >
+                          <HugeiconsIcon
+                            icon={RemoveCircleIcon}
+                            strokeWidth={1.75}
+                            className="size-3.5"
+                          />
+                        </Button>
+                      </ToolbarTooltip>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : (
             <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
               <Fact label="Model" className="group/copy max-w-full">
@@ -1507,7 +1520,7 @@ export function ApiMonitorPage(): ReactElement {
           {/* The Library page's tab strip (library-header.tsx TabStrip). */}
           <nav
             aria-label="Filter by status"
-            className="flex max-w-full gap-1 overflow-x-auto [scrollbar-width:none]!"
+            className="-my-2 flex max-w-full gap-1 overflow-x-auto px-1 py-2 [scrollbar-width:none]!"
           >
             {STATUS_FILTERS.map((option) => {
               const active = statusFilter === option.value;
