@@ -30,6 +30,7 @@ const {
   qwen3TimbreLogic,
   speakVoiceLogic,
   speakVoiceStored,
+  supertonicLanguageLogic,
   vibeVoiceDialogueLogic,
   voiceOptionName,
 } = await import("../src/features/audio/tools/panel-logic.ts");
@@ -118,6 +119,36 @@ test("the Voice panel shows on Speak for models that clone or declare a voice", 
     ),
     true,
   );
+});
+
+test("Supertonic's Language panel shows on Speak and sends only a code it reads", () => {
+  const supertonic = ctx({
+    audioFamily: "supertonic",
+    audioWorkflows: ["speak"],
+  });
+  assert.equal(
+    panelApplies(supertonicLanguageLogic, "speak", supertonic),
+    true,
+  );
+  assert.equal(
+    panelApplies(
+      supertonicLanguageLogic,
+      "speak",
+      ctx({ audioFamily: "kokoro_tts", audioWorkflows: ["speak"] }),
+    ),
+    false,
+  );
+  const request = (stored: unknown) =>
+    collectToolRequest(
+      [{ ...supertonicLanguageLogic, Component: () => null }],
+      stored === undefined ? {} : { "supertonic-language": stored },
+      { text: "Hallo" },
+      supertonic,
+    ).patch;
+  assert.deepEqual(request("de"), { language: "de" });
+  assert.deepEqual(request(""), {});
+  assert.deepEqual(request(undefined), {});
+  assert.deepEqual(request("German"), {});
 });
 
 test("collectToolRequest merges every panel's part and returns the first error", () => {

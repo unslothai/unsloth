@@ -16,6 +16,7 @@ import {
   type ExportLogPollEntry,
   type ExportOperationResponse,
   type ExportStatus,
+  type ReapOptions,
 } from "../api/export-api";
 import type { ExportMethod } from "../constants";
 
@@ -134,6 +135,8 @@ export interface ExportRunSummary {
   quantLevels: string[];
   mergedFormats: string[];
   destination: ExportDestination;
+  /** REAP expert pruning applied before the export, e.g. "25% of experts removed", else null. */
+  reapLabel?: string | null;
 }
 
 export interface RunExportParams {
@@ -165,6 +168,8 @@ export interface RunExportParams {
   privateRepo: boolean;
   baseModelId?: string | null;
   installMissingDependencies?: boolean;
+  /** Prune MoE experts with REAP before exporting; loads the model in 16-bit. Off when null. */
+  reap?: ReapOptions | null;
   /** Decision model (Clef / Laya): labels the run folder's gguf/ output with the quants it holds. */
   decisionOutputLabel?: (quantizations: string[]) => string;
   summary: ExportRunSummary;
@@ -425,6 +430,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           loadCheckpoint({
             checkpoint_path: checkpointPath,
             hf_token: params.loadToken ?? null,
+            // REAP scores and slices 16-bit expert weights.
+            ...(params.reap ? { load_in_4bit: false } : {}),
           }),
         );
       } else {
@@ -467,6 +474,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               install_missing_dependencies: Boolean(
                 params.installMissingDependencies,
               ),
+              reap: params.reap ?? null,
             }),
           );
           if (outputPath) outputs.push({ label: sel.label, path: outputPath });
@@ -491,6 +499,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               : null,
             private: params.privateRepo,
             npu_q4nx: params.npuQ4nx,
+            reap: params.reap ?? null,
           }),
         );
         if (outputPath) {
