@@ -2043,7 +2043,9 @@ def _fp8_dequantize_quantization_config(model_config):
         if isinstance(quantization_config, dict)
         else getattr(quantization_config, "to_dict", lambda: {})()
     )
-    if str(as_dict.get("quant_method", "")).lower() != "fp8":
+    quant_method = as_dict.get("quant_method", "")
+    # A config object's to_dict() can keep the QuantizationMethod enum, whose str() is not its value.
+    if str(getattr(quant_method, "value", quant_method)).lower() != "fp8":
         return None
     try:
         from transformers import FineGrainedFP8Config

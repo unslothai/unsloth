@@ -36,6 +36,15 @@ def test_block_fp8_config_gets_dequantize(as_object):
     assert list(out.weight_block_size) == [128, 128]
 
 
+@pytest.mark.skipif(not _HAS_DEQUANTIZE, reason = "transformers has no fp8 dequantize flag")
+def test_enum_quant_method_is_read_by_value():
+    from transformers.utils.quantization_config import QuantizationMethod
+
+    qc = dict(_BLOCK_FP8, quant_method = QuantizationMethod.FP8)
+    out = _fp8_dequantize_quantization_config(SimpleNamespace(quantization_config = qc))
+    assert out is not None and out.dequantize is True
+
+
 @pytest.mark.parametrize(
     "qc",
     [None, {"quant_method": "bitsandbytes", "load_in_4bit": True}, {"quant_method": "modelopt"}],
