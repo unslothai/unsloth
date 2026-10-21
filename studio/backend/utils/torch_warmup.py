@@ -270,6 +270,7 @@ def gate_torch_stack_import(reason: str, log = None) -> bool:
         _prime_cuda_driver()
         return True
     if os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1":
+        _prime_cuda_driver()  # the kill switch skips only the dynamo wait
         return False
     imported = ensure_dynamo_imported(
         log = log or logger, reason = reason, timeout = _dynamo_gate_timeout()

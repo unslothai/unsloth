@@ -251,6 +251,17 @@ def test_torch_stack_gate_primes(fake_cdll, monkeypatch):
     assert calls == [("cuInit", 0)]
 
 
+def test_torch_stack_gate_kill_switch_still_primes(fake_cdll, monkeypatch):
+    from utils import torch_warmup
+
+    calls, _opened, _gate = fake_cdll
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(calls))
+    monkeypatch.setattr(torch_warmup, "_dynamo_done", False)
+    monkeypatch.setenv(torch_warmup.DYNAMO_GATE_DISABLE_ENV_VAR, "1")
+    assert torch_warmup.gate_torch_stack_import("test") is False
+    assert calls == [("cuInit", 0)]
+
+
 _GIL_PROBE = textwrap.dedent(
     """
     import sys, threading, time
