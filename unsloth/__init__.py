@@ -376,7 +376,13 @@ if _IS_MLX:
 
     def _mlx_from_pretrained(*args, **kwargs):
         # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
-        if not is_bfloat16_supported():
+        # Not for full finetuning: zoo trains any non-bf16 target in float32, doubling weight memory.
+        try:
+            bound = _inspect.signature(FastMLXModel.from_pretrained).bind_partial(*args, **kwargs)
+            full_finetuning = bound.arguments.get("full_finetuning", False)
+        except Exception:
+            full_finetuning = kwargs.get("full_finetuning", False)
+        if not full_finetuning and not is_bfloat16_supported():
             if len(args) > 2:
                 if args[2] is None:
                     args = (*args[:2], "float16", *args[3:])

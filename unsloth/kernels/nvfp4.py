@@ -527,7 +527,8 @@ def _fused_config(
 ):
     """(BLOCK_M, BLOCK_OUT, BLOCK_RED, num_warps, num_stages, split) for an [M, k_red] @ [k_red, n_out] product."""
     index = device.index or 0
-    stages = 2 if _device_capability(index) < (8, 0) else 3
+    capability = _device_capability(index)
+    stages = 2 if capability < (8, 0) else 3
     if M <= 16:
         bm, bo, br, warps = (16, 128, 64, 4) if dx else (16, 64, 128, 4)
     elif M <= 64:
@@ -537,6 +538,9 @@ def _fused_config(
     else:
         bm, bo, br, warps = 128, 64, 64, 4
     tiles = triton.cdiv(M, bm) * triton.cdiv(n_out, bo)
+    # sm89 dX up to 32 rows: an output that fills every SM by itself is 11-17% faster unsplit (L4; A100 is not).
+    if dx and M <= 32 and capability == (8, 9) and tiles >= _sm_count(index):
+        return bm, bo, br, warps, stages, 1
     # Split under four waves; fp32 partials capped at 1/8 of the 16 bit weight.
     split = 1
     while (

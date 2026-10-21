@@ -348,8 +348,10 @@ export const BUDGET = {
   // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
   // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
-  transferBytes: 2_071_693,
-  rawBytes: 6_879_150,
+  // The NPU setup card (#14524): +439 B raw / +122 B transfer against fc91656ff (Node 24, 97 chunks), where main
+  // was already 1 B transfer over; transfer set to the measured build, raw raised by the growth.
+  transferBytes: 2_071_816,
+  rawBytes: 6_879_589,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
