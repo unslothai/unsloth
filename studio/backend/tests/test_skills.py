@@ -950,6 +950,46 @@ def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skil
     assert skills.read_skill_manifest("marked", home = home)["instructions"] == "Follow the steps."
 
 
+@pytest.mark.parametrize(
+    ("written", "description"),
+    [
+        (
+            'Fill PDF forms. Use when: the user attaches a "PDF" form',
+            'Fill PDF forms. Use when: the user attaches a "PDF" form',
+        ),
+        (
+            "Fill PDF forms. Use when: the user attaches\n  a PDF form",
+            "Fill PDF forms. Use when: the user attaches a PDF form",
+        ),
+    ],
+)
+def test_unquoted_description_with_a_colon_is_valid(isolated_skills, written, description):
+    home, _ = isolated_skills
+    _write_skill(home, "claude", "pdf-forms", description = written)
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "pdf-forms")
+
+    assert record["valid"] is True
+    assert record["description"] == description
+
+
+def test_colon_fallback_keeps_the_other_fields_as_written(isolated_skills):
+    home, _ = isolated_skills
+    _write_skill(
+        home,
+        "claude",
+        "pdf-forms",
+        description = "Fill PDF forms. Use when: the user attaches a PDF form",
+        frontmatter = "metadata: {author: someone}\ncompatibility: |\n  Needs Python 3.",
+    )
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "pdf-forms")
+
+    assert record["valid"] is True
+    assert record["metadata"] == {"author": "someone"}
+    assert record["compatibility"] == "Needs Python 3.\n"
+
+
 def test_read_skill_tool_applies_defaults_for_null_arguments(isolated_skills, monkeypatch):
     from core.inference import tools as tools_module
 

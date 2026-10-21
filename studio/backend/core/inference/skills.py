@@ -7,6 +7,7 @@ import errno
 import json
 import logging
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -50,6 +51,9 @@ _WINDOWS_RESERVED_STEMS = frozenset(
     | {f"lpt{index}" for index in "¹²³"}
 )
 _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
+_FRONTMATTER_SCALAR = re.compile(
+    r"^([a-zA-Z_-]+):[ \t]+(\S[^\r\n]*(?:\r?\n[ \t]+\S[^\r\n]*)*)", re.MULTILINE
+)
 
 
 class SkillError(ValueError):
@@ -284,6 +288,26 @@ def _read_limited(
     return raw
 
 
+def _quote_frontmatter_scalar(match: re.Match) -> str:
+    key, value = match.groups()
+    try:
+        yaml.safe_load(f"{key}: {value}")
+        return match.group(0)
+    except yaml.YAMLError:
+        pass
+    value = " ".join(line.strip() for line in value.splitlines())
+    value = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{key}: "{value}"'
+
+
+def _load_frontmatter(text: str):
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        # Agent skill loaders accept unquoted values such as `description: Use when: ...`.
+        return yaml.safe_load(_FRONTMATTER_SCALAR.sub(_quote_frontmatter_scalar, text))
+
+
 def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     if len(raw) > MAX_SKILL_MD_BYTES:
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
@@ -301,7 +325,7 @@ def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     if closing is None:
         raise SkillError("SKILL.md YAML frontmatter is not closed.")
     try:
-        frontmatter = yaml.safe_load("".join(lines[1:closing]))
+        frontmatter = _load_frontmatter("".join(lines[1:closing]))
     except (
         yaml.YAMLError,
         AttributeError,
