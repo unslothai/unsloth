@@ -25,7 +25,13 @@ def _override_branch(path):
     raise AssertionError(f"bf16 override not found in {path.name}")
 
 
-def _resolve(path, device_type, dtype, supports, zoo_keeps = True):
+def _resolve(
+    path,
+    device_type,
+    dtype,
+    supports,
+    zoo_keeps = True,
+):
     namespace = {
         "xpu_keeps_explicit_bf16": lambda: device_type == "xpu" and zoo_keeps,
         "torch": torch,
@@ -90,4 +96,6 @@ def _forced_float32_dtype_gate():
 )
 def test_forced_float32_only_for_a_float16_load(dtype, supports, forced):
     gate = _forced_float32_dtype_gate()
-    assert bool(eval(gate, {"torch": torch, "dtype": dtype, "SUPPORTS_BFLOAT16": supports})) is forced
+    assert (
+        bool(eval(gate, {"torch": torch, "dtype": dtype, "SUPPORTS_BFLOAT16": supports})) is forced
+    )
