@@ -236,3 +236,19 @@ test("an imported Only masked the loaded pipeline cannot crop is reported as not
     /\.\.\.inpaintOptionsNotApplied\(settings, status\.supports_inpaint_only_masked === true\),/,
   );
 });
+
+test("an Only masked imported before any model loads is checked once the model arrives", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(
+    page,
+    /onlyMaskedRecheck\.current = !status\?\.loaded && settings\.inpaint_only_masked === true;/,
+  );
+  assert.match(
+    page,
+    /if \(!onlyMaskedRecheck\.current \|\| !status\?\.loaded\) return;\n\s+onlyMaskedRecheck\.current = false;\n\s+const missed = inpaintOptionsNotApplied\(\n\s+\{ inpaint_only_masked: inpaintOnlyMasked, inpaint_padding: inpaintPadding \},\n\s+status\.supports_inpaint_only_masked === true,\n\s+\);/,
+  );
+  assert.match(
+    page,
+    /\}, \[status\?\.loaded, status\?\.supports_inpaint_only_masked, inpaintOnlyMasked, inpaintPadding\]\);/,
+  );
+});
