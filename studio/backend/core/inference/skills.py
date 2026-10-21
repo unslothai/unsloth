@@ -317,7 +317,7 @@ def _load_frontmatter(text: str):
     for _ in range(MAX_FRONTMATTER_REPAIRS):
         try:
             return yaml.safe_load(text)
-        except (yaml.scanner.ScannerError, yaml.parser.ParserError) as exc:
+        except yaml.MarkedYAMLError as exc:
             # Agent skill loaders accept unquoted values such as `description: Use when: ...`.
             repaired = (
                 _quote_frontmatter_value(text, exc.problem_mark.line) if exc.problem_mark else None
