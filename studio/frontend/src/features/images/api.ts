@@ -90,6 +90,8 @@ export interface DiffusionStatus {
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).
+  supports_inpaint_only_masked?: boolean;
   // The guidance a negative prompt is used above; null when guidance does not gate it, absent on older backends.
   negative_prompt_min_guidance?: number | null;
   // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
@@ -242,6 +244,10 @@ export interface DiffusionGenerateRequest {
   init_image?: string;
   mask_image?: string;
   strength?: number;
+  // Absent = today's behaviour; only_masked is refused (400) unless supports_inpaint_only_masked.
+  mask_blur?: number;
+  inpaint_only_masked?: boolean;
+  inpaint_padding?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
   allow_oversized?: boolean;
@@ -352,6 +358,9 @@ export interface GalleryImage {
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
   prompt_enhancement?: PromptEnhancement | null;
+  mask_blur?: number | null;
+  inpaint_only_masked?: boolean | null;
+  inpaint_padding?: number | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;

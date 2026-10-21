@@ -426,3 +426,185 @@ _autotuned_grouped_gemm_dW_kernel = triton.autotune(
     prune_configs_by = {"early_config_prune": prune_kernel_configs_backward_dW},
     key = ["NUM_EXPERTS", "N", "K", "PERMUTE_X", "PERMUTE_Y"],
 )(_grouped_gemm_dW_kernel)
+
+
+@triton.jit
+def _grouped_gemm_dW_per_expert_kernel(
+    x_ptr,
+    dY_ptr,
+    dW_ptr,
+    m_sizes_ptr,
+    gather_indices_ptr,
+    NUM_TOKENS,
+    TOPK: tl.constexpr,
+    NUM_EXPERTS: tl.constexpr,
+    N: tl.constexpr,
+    K: tl.constexpr,
+    NUM_SMS,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+    PERMUTE_X: tl.constexpr = False,
+    PERMUTE_Y: tl.constexpr = False,
+    USE_TMA_LOAD_dY: tl.constexpr = False,
+    USE_TMA_LOAD_X: tl.constexpr = False,
+    USE_TMA_STORE: tl.constexpr = False,
+    acc_dtype: tl.constexpr = tl.float32,
+    ACCUMULATE: tl.constexpr = False,
+    EXPERTS_POW2: tl.constexpr = 1,
+) -> None:
+    """dW[e] = dY_e^T X_e with one program per (expert, n tile, k tile).
+
+    The legacy kernel walks every expert inside each (n, k) program, so only N * K / (BN * BK)
+    programs exist and each restarts its pipeline per expert. Here the grid is
+    NUM_EXPERTS * n_tiles * k_tiles and a program reduces over its own expert's rows only. Every
+    program owns its output tile: no atomics, deterministic. An empty expert writes zeros (the
+    output is not pre-zeroed) or, when accumulating, leaves the existing gradient untouched.
+    """
+    TOTAL_TOKENS = NUM_TOKENS * TOPK
+    output_dtype = dW_ptr.dtype.element_ty
+
+    num_n_tiles = tl.cdiv(N, BLOCK_SIZE_N)
+    num_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
+    tiles_per_expert = num_n_tiles * num_k_tiles
+
+    pid = tl.program_id(0)
+    expert_idx = pid // tiles_per_expert
+    tile_idx = pid % tiles_per_expert
+    tile_n_idx = tile_idx % num_n_tiles
+    tile_k_idx = tile_idx // num_n_tiles
+    n_offset = tile_n_idx * BLOCK_SIZE_N
+    k_offset = tile_k_idx * BLOCK_SIZE_K
+
+    # This expert's row range from the per-expert counts (prefix sum in registers).
+    e_range = tl.arange(0, EXPERTS_POW2)
+    sizes = tl.load(m_sizes_ptr + e_range, mask = e_range < NUM_EXPERTS, other = 0).to(tl.int32)
+    m_start = tl.sum(tl.where(e_range < expert_idx, sizes, 0), axis = 0)
+    m_size = tl.sum(tl.where(e_range == expert_idx, sizes, 0), axis = 0)
+    m_end = m_start + m_size
+
+    if ACCUMULATE:
+        if m_size == 0:
+            return
+
+    block_range_m = tl.arange(0, BLOCK_SIZE_M)
+    block_range_n = tl.arange(0, BLOCK_SIZE_N)
+    block_range_k = tl.arange(0, BLOCK_SIZE_K)
+    n_mask = block_range_n + n_offset < N
+    k_mask = block_range_k + k_offset < K
+
+    if USE_TMA_LOAD_dY:
+        # Rows past this expert's end read as zero, so the other operand needs no masking either.
+        dY_desc = tl.make_tensor_descriptor(
+            dY_ptr,
+            shape = [m_end, N],
+            strides = [N, 1],
+            block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_N],
+        )
+    if USE_TMA_LOAD_X:
+        x_desc = tl.make_tensor_descriptor(
+            x_ptr,
+            shape = [m_end, K],
+            strides = [K, 1],
+            block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
+        )
+
+    accumulator = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K), dtype = acc_dtype)
+    for tile_m in range(0, m_size, BLOCK_SIZE_M):
+        rows = m_start + tile_m + block_range_m
+        row_mask = rows < m_end
+        rows64 = rows.to(tl.int64)
+        if PERMUTE_X or PERMUTE_Y:
+            token_idx = tl.load(gather_indices_ptr + rows64, mask = row_mask, other = 0).to(tl.int64)
+            if PERMUTE_X:
+                x_rows = token_idx // TOPK
+                dY_rows = rows64
+            else:
+                x_rows = rows64
+                dY_rows = token_idx
+        else:
+            x_rows = rows64
+            dY_rows = rows64
+
+        if USE_TMA_LOAD_X:
+            x = x_desc.load([m_start + tile_m, k_offset])
+        else:
+            x = tl.load(
+                x_ptr + x_rows[:, None] * K + (k_offset + block_range_k)[None, :],
+                mask = row_mask[:, None] & k_mask[None, :],
+                other = 0.0,
+            )
+        if USE_TMA_LOAD_dY:
+            dY = dY_desc.load([m_start + tile_m, n_offset])
+        else:
+            dY = tl.load(
+                dY_ptr + dY_rows[:, None] * N + (n_offset + block_range_n)[None, :],
+                mask = row_mask[:, None] & n_mask[None, :],
+                other = 0.0,
+            )
+        accumulator += tl.dot(dY.T.to(x.dtype), x)
+
+    store_row_offs = expert_idx.to(tl.int64) * N + n_offset + block_range_n
+    nk_mask = n_mask[:, None] & k_mask[None, :]
+    if ACCUMULATE:
+        # Same rule as the legacy kernel: the old gradient is added after the reduction, one rounding.
+        if USE_TMA_STORE:
+            prev = tl.make_tensor_descriptor(
+                dW_ptr,
+                shape = [NUM_EXPERTS, N, K],
+                strides = [N * K, K, 1],
+                block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
+            ).load([expert_idx, n_offset, k_offset])
+            prev = tl.reshape(prev, (BLOCK_SIZE_N, BLOCK_SIZE_K))
+        else:
+            prev = tl.load(
+                dW_ptr + store_row_offs[:, None] * K + (k_offset + block_range_k)[None, :],
+                mask = nk_mask,
+                other = 0.0,
+            )
+        accumulator += prev.to(acc_dtype)
+    y = accumulator.to(output_dtype)
+    if USE_TMA_STORE:
+        tl.static_assert(N % BLOCK_SIZE_N == 0, "N must be divisible by BLOCK_SIZE_N")
+        tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
+        dW_desc = tl.make_tensor_descriptor(
+            dW_ptr,
+            shape = [NUM_EXPERTS, N, K],
+            strides = [N * K, K, 1],
+            block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
+        )
+        dW_desc.store([expert_idx, n_offset, k_offset], tl.expand_dims(y, 0))
+    else:
+        tl.store(
+            dW_ptr + store_row_offs[:, None] * K + (k_offset + block_range_k)[None, :],
+            y,
+            mask = nk_mask,
+        )
+
+
+def _prune_dW_per_expert_configs(configs, args, **kwargs):
+    pruned = prune_kernel_configs_backward_dW(configs, args, **kwargs)
+    if kwargs["x_ptr"].element_size() < 4:
+        return pruned
+    # fp32 operands: single stage (see _launch_grouped_gemm_dW); drop the duplicates that leaves.
+    seen, single = set(), []
+    for config in pruned:
+        key = (tuple(sorted(config.kwargs.items())), config.num_warps)
+        if key not in seen:
+            seen.add(key)
+            single.append(
+                triton.Config(
+                    dict(config.kwargs),
+                    num_warps = config.num_warps,
+                    num_stages = 1,
+                    num_ctas = config.num_ctas,
+                )
+            )
+    return single
+
+
+_autotuned_grouped_gemm_dW_per_expert_kernel = triton.autotune(
+    configs = get_dW_kernel_configs(),
+    prune_configs_by = {"early_config_prune": _prune_dW_per_expert_configs},
+    key = ["NUM_EXPERTS", "N", "K", "PERMUTE_X", "PERMUTE_Y"],
+)(_grouped_gemm_dW_per_expert_kernel)

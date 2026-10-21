@@ -165,8 +165,10 @@ def test_hint_command_fits_the_shell(monkeypatch, capsys, os_name, command):
     _set_order(monkeypatch, None)
     import unsloth._gpu_init as gpu_init
 
-    monkeypatch.setattr(gpu_init.os, "name", os_name)
-    _run_cuda_arm(_fake_torch([A100, L4]), monkeypatch)
+    # Restore os.name before pytest reports the call: Python 3.13 pathlib reads it there.
+    with monkeypatch.context() as patch:
+        patch.setattr(gpu_init.os, "name", os_name)
+        _run_cuda_arm(_fake_torch([A100, L4]), monkeypatch)
     assert f"`{command}`" in capsys.readouterr().out
 
 
