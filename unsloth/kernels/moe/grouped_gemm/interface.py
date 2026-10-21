@@ -59,11 +59,16 @@ def _check_tma_support():
 _SUPPORTS_TMA = _check_tma_support()
 
 _DEVICE_AUTOTUNERS = {}
+_MODEL_AUTOTUNE_CACHES = {}
 _DEVICE_MODELS = {}
 
 
+def _device_index(device):
+    return device.index if device.index is not None else torch.cuda.current_device()
+
+
 def _device_model(device):
-    index = device.index if device.index is not None else torch.cuda.current_device()
+    index = _device_index(device)
     model = _DEVICE_MODELS.get(index)
     if model is None:
         try:
@@ -81,14 +86,16 @@ def _device_model(device):
 
 
 def _autotuner_for(kernel, device):
-    """Triton's autotune key omits the device, so on several GPU models each model tunes its own copy."""
+    """Triton's autotune key omits the device, so on several GPUs each card runs its own copy. Copies on
+    the same GPU model share one results cache, so identical cards tune once; a run's scratch state
+    (nargs) stays per card, since backward runs one autograd thread per device."""
     if torch.cuda.device_count() <= 1 or not hasattr(kernel, "cache"):
         return kernel
-    key = (id(kernel), _device_model(device))
+    key = (id(kernel), _device_index(device))
     tuner = _DEVICE_AUTOTUNERS.get(key)
     if tuner is None:
         tuner = copy.copy(kernel)
-        tuner.cache = {}
+        tuner.cache = _MODEL_AUTOTUNE_CACHES.setdefault((id(kernel), _device_model(device)), {})
         _DEVICE_AUTOTUNERS[key] = tuner
     # Callers reassign kernel.configs (benchmarks, tests): follow it like the shared tuner would.
     configs = getattr(kernel, "configs", None)

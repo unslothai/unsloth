@@ -215,13 +215,20 @@ def test_each_card_autotunes_its_own_copy(monkeypatch):
     assert base.cache == {"shape": "h100-config"}
 
 
-def test_identical_cards_share_one_autotuner(monkeypatch):
-    # device_map="auto" over identical cards: tune once, as with one shared tuner.
+def test_identical_cards_share_one_autotune_cache(monkeypatch):
+    # device_map="auto" over identical cards: tune once, as with one shared tuner. Each card keeps
+    # its own tuner object: Triton writes per-run state (nargs) on it, and per-device autograd
+    # threads can run two cards' kernels at once.
     module, _ = _load(monkeypatch, [H100, H100, A100])
     base = _Tuner()
     tuner0 = module._autotuner_for(base, torch.device("cuda", 0))
-    assert module._autotuner_for(base, torch.device("cuda", 1)) is tuner0
-    assert module._autotuner_for(base, torch.device("cuda", 2)) is not tuner0
+    tuner1 = module._autotuner_for(base, torch.device("cuda", 1))
+    tuner2 = module._autotuner_for(base, torch.device("cuda", 2))
+    assert tuner1 is not tuner0 and tuner1.cache is tuner0.cache
+    assert tuner2.cache is not tuner0.cache
+    tuner0.cache["shape"] = "h100-config"
+    assert tuner1.cache == {"shape": "h100-config"} and tuner2.cache == {}
+    assert module._autotuner_for(base, torch.device("cuda", 1)) is tuner1
 
 
 def test_per_card_autotuner_follows_reassigned_configs(monkeypatch):
