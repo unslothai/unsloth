@@ -1431,6 +1431,9 @@ class _VideoLoadState:
     # resolves a bare device. Mirrors the image backend.
     placed_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
+    # The repo the load actually read ``base_repo`` from (the unsloth mirror on a fresh install): the learned-peak key
+    # names it. None: no load decision (the key falls back to the mirror when the upstream is not cached).
+    fetch_base: Optional[str] = None
     # Content-detected checkpoint variant identifier (LTX-2.3 "ltx-2.3-22b-distilled" / "-dev"), read before the names.
     variant_id: Optional[str] = None
     # Resident MiniMax-H3 denoiser partition, if any.
@@ -3653,6 +3656,7 @@ def _calibration_revision(state: Any) -> Optional[str]:
         getattr(state, "gguf_filename", None),
         getattr(state, "kind", None),
         getattr(state, "base_repo", None),
+        getattr(state, "fetch_base", None),
     )
     try:
         pipe._unsloth_calibration_revision = revision or ""
@@ -9690,6 +9694,7 @@ class VideoBackend:
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
                     base_repo = base,
+                    fetch_base = fetch_base,
                     device = device,
                     gpu_ordinal = target.ordinal,
                     placed_ordinal = placed_cuda_ordinal(target),
@@ -10937,6 +10942,7 @@ class VideoBackend:
                 repo_id = repo_id,
                 display_repo_id = display_repo_id,
                 base_repo = base,
+                fetch_base = fetch_base,
                 device = device,
                 gpu_ordinal = umem_target.ordinal,
                 placed_ordinal = placed_cuda_ordinal(umem_target),
