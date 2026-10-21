@@ -217,6 +217,25 @@ def owner_only_path_args(args: Optional[Iterable[str]]) -> list[tuple[str, str]]
     return found
 
 
+def without_owner_only_path_args(args: Optional[Iterable[str]]) -> list[str]:
+    """``args`` minus every OWNER_ONLY_PATH_FLAGS occurrence and its value(s)."""
+    tokens = [str(a) for a in args or ()]
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        raw = tokens[i]
+        flag = _flag_name(raw)
+        if flag not in OWNER_ONLY_PATH_FLAGS:
+            out.append(raw)
+            i += 1
+            continue
+        i += 1 if "=" in raw else 2
+        # The older "--lora-scaled FNAME SCALE" spelling.
+        if flag in _OPTIONAL_SECOND_VALUE_FLAGS and i < len(tokens) and _flag_name(tokens[i]) is None:
+            i += 1
+    return out
+
+
 def owner_only_path_flags(args: Optional[Iterable[str]]) -> list[str]:
     """The OWNER_ONLY_PATH_FLAGS present in ``args``, in first-seen order."""
     return list(dict.fromkeys(flag for flag, _ in owner_only_path_args(args)))
