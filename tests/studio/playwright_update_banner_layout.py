@@ -929,6 +929,69 @@ def settle_llama_changelog(page, timeout_s: float = 3.0) -> None:
     info(f"WARN the open llama.cpp changelog never held one height for 3 frames (last={last})")
 
 
+# Matches SKIPPED_NOTICE_MS in llama-update-banner.tsx, plus slack.
+SKIPPED_NOTICE_WAIT_MS = 6_000 + 1_500
+
+
+def exercise_skip_undo(page, label: str) -> None:
+    """Undo restores a card past its notification-frequency gate, and focus holds the notice open."""
+    card = page.locator('[data-testid="llama-update-banner"]')
+    notice = page.locator('[data-testid="llama-update-skipped"]')
+    toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
+    skip = page.locator('[data-testid="llama-update-skip-button"]')
+    undo = page.locator('[data-testid="llama-update-undo-skip"]')
+    check(f"{label}: the card is up before skipping", card.count() == 1)
+    if card.count() != 1:
+        return
+    toggle.click()
+    skip.click()
+    notice.wait_for(state = "visible", timeout = 5_000)
+    # whisper.cpp defaults to biweekly, so the card was recorded as shown and is no longer due.
+    undo.click()
+    try:
+        card.wait_for(state = "visible", timeout = 5_000)
+    except PlaywrightTimeoutError:
+        pass
+    check(
+        f"{label}: Undo brings back a card the frequency gate would hide",
+        card.count() == 1 and notice.count() == 0,
+        f"cards={card.count()} notices={notice.count()}",
+    )
+    if card.count() != 1:
+        return
+
+    # keyboard activation moves focus to Undo, and focus keeps the notice up.
+    skip.focus()
+    page.keyboard.press("Enter")
+    notice.wait_for(state = "visible", timeout = 5_000)
+    focused = page.evaluate("document.activeElement?.getAttribute('data-testid') ?? null")
+    check(
+        f"{label}: a keyboard skip moves focus to Undo",
+        focused == "llama-update-undo-skip",
+        f"focused={focused!r}",
+    )
+    page.mouse.move(0, 0)
+    page.wait_for_timeout(SKIPPED_NOTICE_WAIT_MS)
+    check(
+        f"{label}: the notice stays while Undo has focus",
+        notice.count() == 1,
+        f"notices={notice.count()}",
+    )
+    page.keyboard.press("Enter")
+    try:
+        card.wait_for(state = "visible", timeout = 5_000)
+    except PlaywrightTimeoutError:
+        pass
+    check(
+        f"{label}: Enter on the focused Undo restores the card",
+        card.count() == 1,
+        f"cards={card.count()}",
+    )
+    # collapse again so later measurements see the default card.
+    if toggle.count() == 1 and toggle.get_attribute("aria-expanded") == "true":
+        toggle.click()
+
+
 def exercise_llama_changelog(page, label: str) -> None:
     toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
     check(
@@ -1124,6 +1187,8 @@ def main() -> int:
                 and "whisper.cpp" in facts["llamaText"],
                 f"text={facts['llamaText']!r}",
             )
+            if (width, height) == (VIEWPORTS[2:5] if SPOT else VIEWPORTS)[0]:
+                exercise_skip_undo(page, f"{width}x{height} whisper")
 
             # pending runtimes share one card and one summary line.
             llama_payload[0] = BUNDLE_STATUS

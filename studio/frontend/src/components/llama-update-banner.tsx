@@ -34,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { Download } from "lucide-react";
 import {
   type CSSProperties,
+  type MouseEvent,
   type ReactElement,
   useCallback,
   useEffect,
@@ -205,6 +206,7 @@ export function LlamaUpdateBanner({
   // the skipped offer, shown in the card's place with an undo for a few seconds.
   const [skipped, setSkipped] = useState<{
     key: string;
+    fromKeyboard: boolean;
     message: string;
   } | null>(null);
   const clearSkipped = useCallback(() => setSkipped(null), []);
@@ -316,10 +318,11 @@ export function LlamaUpdateBanner({
         }
         setShownChannels([...shownChannels, ...fresh]);
       }
-    } else if (!show && shownChannels.length > 0) {
+    } else if (!(show || skipped) && shownChannels.length > 0) {
+      // the skip notice still stands for the card, so Undo can reopen it past the frequency gate.
       setShownChannels([]);
     }
-  }, [show, tabVisible, livePref, recordKey, shownChannels]);
+  }, [show, skipped, tabVisible, livePref, recordKey, shownChannels]);
   // a migration can reapply the automatic backend at the installed release.
   const backendChange =
     llamaRow && status?.backend_migration_available && status.to_backend
@@ -333,7 +336,7 @@ export function LlamaUpdateBanner({
       ? "Skip these versions"
       : "Skip this version";
 
-  function handleSkip() {
+  function handleSkip(event: MouseEvent<HTMLButtonElement>) {
     const skippedTag = bundled || backendOnly ? null : primary?.latestTag;
     const key = dismiss();
     if (!key) {
@@ -341,6 +344,8 @@ export function LlamaUpdateBanner({
     }
     setSkipped({
       key,
+      // detail is 0 for Enter or Space, so only keyboard users get focus moved to Undo.
+      fromKeyboard: event.detail === 0,
       message: skippedTag
         ? `Skipped ${label} ${skippedTag}`
         : `Skipped the ${label} ${bundled ? "updates" : "update"}`,
@@ -436,6 +441,7 @@ export function LlamaUpdateBanner({
     return skipped ? (
       <SkippedNotice
         message={skipped.message}
+        focusUndo={skipped.fromKeyboard}
         positioned={positioned}
         onUndo={() => {
           undoDismiss(skipped.key);
@@ -579,33 +585,39 @@ export function LlamaUpdateBanner({
   );
 }
 
-// long enough to read and reach Undo; hovering holds it open.
+// long enough to read and reach Undo; hover or focus holds it open.
 const SKIPPED_NOTICE_MS = 6000;
 
 function SkippedNotice({
   message,
+  focusUndo,
   positioned,
   onUndo,
   onExpire,
 }: {
   message: string;
+  focusUndo: boolean;
   positioned: boolean;
   onUndo: () => void;
   onExpire: () => void;
 }): ReactElement {
   const undoRef = useRef<HTMLButtonElement>(null);
   const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   // the skip button is gone, so keyboard focus moves to Undo instead of the page.
   useEffect(() => {
-    undoRef.current?.focus({ preventScroll: true });
-  }, []);
+    if (focusUndo) {
+      undoRef.current?.focus({ preventScroll: true });
+    }
+  }, [focusUndo]);
+  // expiring under focus would drop it on the page body.
   useEffect(() => {
-    if (hovered) {
+    if (hovered || focused) {
       return;
     }
     const timer = setTimeout(onExpire, SKIPPED_NOTICE_MS);
     return () => clearTimeout(timer);
-  }, [hovered, onExpire]);
+  }, [hovered, focused, onExpire]);
   return (
     <div
       className={cn(
@@ -616,6 +628,12 @@ function SkippedNotice({
       )}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setFocused(false);
+        }
+      }}
       data-testid="llama-update-skipped"
     >
       <div className="flex items-center gap-3 rounded-[24px] bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
