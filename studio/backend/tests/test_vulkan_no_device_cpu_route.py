@@ -10,6 +10,7 @@ usable device before launch, or the first Vulkan child stalled in startup.
 from __future__ import annotations
 
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -30,7 +31,10 @@ def _probe_dir(tmp_path):
     bindir.mkdir()
     binary = bindir / "llama-server"
     binary.write_bytes(b"binary")
-    (bindir / "libggml-vulkan.so").write_bytes(b"vulkan")
+    # The name _lib_dir_has_ggml_backend looks for on this platform.
+    (bindir / ("ggml-vulkan.dll" if sys.platform == "win32" else "libggml-vulkan.so")).write_bytes(
+        b"vulkan"
+    )
     return str(binary)
 
 
