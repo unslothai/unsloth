@@ -4268,7 +4268,7 @@ export const ptBR = {
       project: "Projeto",
       projectNone: "Nenhum",
       model: "Modelo",
-      modelLoaded: "Modelo carregado no chat",
+      modelLoaded: "Modelo carregado no momento da tarefa",
       modelOnDevice: "Neste dispositivo",
       modelNote: "Se este modelo não estiver carregado quando a tarefa rodar, o Unsloth pergunta antes.",
       modelNoteAllowed: "Muda para este modelo só enquanto você não usa o Unsloth e depois volta ao que você tinha.",

@@ -4310,7 +4310,7 @@ export const it = {
       project: "Progetto",
       projectNone: "Nessuno",
       model: "Modello",
-      modelLoaded: "Modello caricato nella chat",
+      modelLoaded: "Modello caricato al momento dell'attività",
       modelOnDevice: "Su questo dispositivo",
       modelNote: "Se questo modello non è caricato quando l’attività parte, Unsloth chiede prima.",
       modelNoteAllowed: "Passa a questo modello solo mentre non usi Unsloth, poi torna al tuo.",

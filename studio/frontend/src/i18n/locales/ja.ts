@@ -4181,7 +4181,7 @@ export const ja = {
       project: "プロジェクト",
       projectNone: "なし",
       model: "モデル",
-      modelLoaded: "チャットで読み込み中のモデル",
+      modelLoaded: "タスク実行時に読み込まれているモデル",
       modelOnDevice: "このデバイス",
       modelNote: "実行時にこのモデルが読み込まれていなければ、先に確認します。",
       modelNoteAllowed: "Unsloth を使っていない間だけこのモデルに切り替え、終わったら元に戻します。",

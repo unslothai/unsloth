@@ -4309,7 +4309,7 @@ export const de = {
       project: "Projekt",
       projectNone: "Keins",
       model: "Modell",
-      modelLoaded: "Im Chat geladenes Modell",
+      modelLoaded: "Zum Zeitpunkt der Aufgabe geladenes Modell",
       modelOnDevice: "Auf diesem Gerät",
       modelNote: "Ist dieses Modell beim Ausführen nicht geladen, fragt Unsloth zuerst.",
       modelNoteAllowed: "Wechselt nur zu diesem Modell, während Sie Unsloth nicht nutzen, und danach zurück.",

@@ -4136,7 +4136,7 @@ export const zhCN = {
       project: "项目",
       projectNone: "无",
       model: "模型",
-      modelLoaded: "聊天中已加载的模型",
+      modelLoaded: "任务运行时已加载的模型",
       modelOnDevice: "此设备",
       modelNote: "如果任务运行时此模型未加载，Unsloth 会先询问。",
       modelNoteAllowed: "仅在你离开 Unsloth 时切换到此模型，完成后切回原来的模型。",
