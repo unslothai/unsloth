@@ -990,11 +990,12 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "ALL",
             "--seccomp",
             str(seccomp.fileno()),
-            *(("--tmpfs", "/proc") if empty_proc else ("--proc", "/proc")),
-            # A root-run Studio leaves the tool at uid 0: host sysctls stay read-only.
-            "--ro-bind-try",
-            "/proc/sys",
-            "/proc/sys",
+            # A root-run Studio leaves the tool at uid 0: host sysctls stay read-only. The empty layout keeps /proc empty.
+            *(
+                ("--tmpfs", "/proc")
+                if empty_proc
+                else ("--proc", "/proc", "--ro-bind-try", "/proc/sys", "/proc/sys")
+            ),
             "--dev",
             "/dev",
             "--dir",

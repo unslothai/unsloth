@@ -7,6 +7,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -55,8 +56,10 @@ _RESOURCE_ERRNOS = frozenset(
     if code is not None
 )
 _RESOURCE_TEXTS = tuple(os.strerror(code) for code in _RESOURCE_ERRNOS)
-# A launcher's own exit: bwrap reports a namespace limit (a host without a sandbox) as ENOSPC.
-_EXIT_RESOURCE_TEXTS = tuple(os.strerror(code) for code in _RESOURCE_ERRNOS if code != errno.ENOSPC)
+# bwrap reports a namespace limit (a host without a sandbox) as ENOSPC; any other ENOSPC is undecided.
+_NAMESPACE_LIMIT = re.compile(
+    r"bwrap: .*(?:namespace|unshare).*" + re.escape(os.strerror(errno.ENOSPC)), re.I
+)
 
 
 class UndecidedReason(str):
@@ -483,7 +486,9 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
                 f"the {backend_name} live probe failed "
                 f"(exit {completed.returncode}): {detail or 'no output'}"
             )
-            if any(text in detail for text in _EXIT_RESOURCE_TEXTS):
+            if any(text in detail for text in _RESOURCE_TEXTS) and not _NAMESPACE_LIMIT.search(
+                detail
+            ):
                 return False, UndecidedReason(reason)
             return False, reason
         if _host_saw_the_write(outside):

@@ -142,6 +142,23 @@ def test_the_jail_sees_host_sysctls_read_only(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason = "the bubblewrap backend is Linux only")
+def test_the_empty_proc_layout_binds_nothing_from_host_proc(tmp_path, monkeypatch):
+    from core.inference import sandbox_linux
+
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    monkeypatch.setattr(sandbox_linux, "empty_proc_layout", lambda bwrap = None: True)
+    monkeypatch.setattr(sandbox_linux, "_model_cache_binds", lambda workdir: {})
+    launch = sandbox_linux.prepare(
+        ToolLaunchPlan(argv = ("/bin/true",), workdir = str(tmp_path), env = {"PATH": "/usr/bin"})
+    )
+    try:
+        assert "/proc/sys" not in list(launch.argv)
+    finally:
+        launch.cleanup()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "the bubblewrap backend is Linux only")
 def test_datasets_and_assets_are_bound_from_the_real_hf_home(tmp_path, monkeypatch):
     """HF_HUB_CACHE=/mnt/models makes the display home the hub itself, which the jail can write."""
     from core.inference import sandbox_linux
@@ -297,12 +314,19 @@ class _FailingLauncher:
 
 @pytest.mark.skipif(sys.platform not in ("linux", "darwin"), reason = "the probe backends")
 @pytest.mark.parametrize(
-    ("code", "undecided"), [(errno.EAGAIN, True), (errno.ENOMEM, True), (errno.ENOSPC, False)]
+    ("message", "undecided"),
+    [
+        (f"bwrap: Creating new namespace failed: {os.strerror(errno.EAGAIN)}", True),
+        (f"bwrap: Creating new namespace failed: {os.strerror(errno.ENOMEM)}", True),
+        # The payload itself filling the disk says nothing about the backend.
+        (f"OSError: [Errno 28] {os.strerror(errno.ENOSPC)}: 'work/x'", True),
+        # bwrap reports a namespace limit (a host without a sandbox) as ENOSPC.
+        (f"bwrap: Creating new namespace failed: {os.strerror(errno.ENOSPC)}", False),
+    ],
 )
-def test_a_launcher_that_exits_out_of_resources_is_undecided(code, undecided):
+def test_a_launcher_that_exits_out_of_resources_is_undecided(message, undecided):
     # bwrap forks inside the namespace it made; running out there is an exit, not an exception.
-    # ENOSPC stays a plain failure: bwrap reports a namespace limit that way too.
-    launcher = _FailingLauncher(f"bwrap: Creating new namespace failed: {os.strerror(code)}")
+    launcher = _FailingLauncher(message)
     available, reason = sandbox_probe._run_probe(launcher, "bubblewrap", ToolLaunchPlan)
     assert available is False
     assert isinstance(reason, sandbox_probe.UndecidedReason) is undecided, reason
@@ -388,4 +412,14 @@ def test_a_project_sandbox_swapped_for_a_link_is_not_followed(project, target):
     (project / "elsewhere").mkdir()
     os.rename(project / "sandbox", project / "old")
     os.symlink(target, project / "sandbox")
+    assert tools._get_project_workdir("project-p1") is None
+
+
+def test_a_project_sandbox_that_is_a_windows_junction_is_not_followed(project, monkeypatch):
+    # islink() does not report a junction; its reparse-point attribute does.
+    monkeypatch.setattr(
+        tools,
+        "_is_windows_reparse_point",
+        lambda path: os.path.basename(path) == "sandbox",
+    )
     assert tools._get_project_workdir("project-p1") is None

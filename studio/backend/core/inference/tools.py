@@ -11133,11 +11133,23 @@ def _get_project_workdir(session_id: str) -> str | None:
     root_real = os.path.realpath(root_path)
     sandbox_real = os.path.realpath(sandbox_path)
     # Same rule as _get_workdir: a link left by tool code is dropped, and the root itself is never the workdir.
-    if os.path.islink(sandbox_path) or not sandbox_real.startswith(root_real + os.sep):
+    if (
+        os.path.islink(sandbox_path)
+        or _is_windows_reparse_point(sandbox_path)
+        or not sandbox_real.startswith(root_real + os.sep)
+    ):
         return None
     from storage.studio_db import available_project_working_folder
 
     return available_project_working_folder(project) or sandbox_real
+
+
+def _is_windows_reparse_point(path: str) -> bool:
+    """A Windows junction, which ``os.path.islink`` does not report."""
+    try:
+        return bool(getattr(os.lstat(path), "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return False
 
 
 # Dropped in every session directory we create. The root can be an existing shared folder the user pointed us at, and
