@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing as mp
-import os
-import signal
 import sys
 import time
 from pathlib import Path
@@ -32,7 +30,7 @@ def _orchestrator(killed = True):
     backend.active_model_name = MODEL
     backend.models = {MODEL: {"engine": "auto"}}
     if killed:
-        os.kill(backend._proc.pid, signal.SIGKILL)
+        backend._proc.kill()
         backend._proc.join(timeout = 10)
     return backend
 
