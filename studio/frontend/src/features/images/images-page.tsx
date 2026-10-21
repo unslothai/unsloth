@@ -409,6 +409,7 @@ import {
   parseVariationSeed,
   randomVariationSeed,
   sdControlsFromRecipe,
+  sdControlsNotRestored,
   sdControlsRecipeRows,
   sdControlsRequestFields,
   type SdControlsChoice,
@@ -2901,9 +2902,14 @@ export function ImagesPage({
       via === "restore"
         ? literalPromptNotApplied(image, Boolean(status?.loaded && isNativeEngineStatus(status)), sdCaps)
         : null;
-    if (literal) {
+    // Generate omits (or clamps) the SD controls this load lacks, so name them rather than claim a full restore.
+    const notApplied = [
+      ...(literal ? [literal] : []),
+      ...(via === "restore" && status?.loaded ? sdControlsNotRestored(image, sdCaps) : []),
+    ];
+    if (notApplied.length > 0) {
       toast.warning("Some settings in this image were not applied", {
-        description: `Not applied: ${literal}. This model or build does not support them.`,
+        description: `Not applied: ${notApplied.join(", ")}. This model or build does not support them.`,
       });
     }
   }, [changeSamplerChoice, samplerOptions.length, sdCaps, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status]);

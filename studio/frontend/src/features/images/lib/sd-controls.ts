@@ -133,6 +133,40 @@ export function varyBlockedReason(
     : null;
 }
 
+/** The SD controls a restored gallery recipe recorded that the current load drops or clamps (the request
+ *  fields omit what `capability` lacks); prompt weighting off is literalPromptNotApplied's. */
+export function sdControlsNotRestored(
+  image: {
+    clip_skip?: number | null;
+    cfg_rescale?: number | null;
+    variation_seed?: number | null;
+    variation_strength?: number | null;
+  },
+  capability: SdControlsCapability | null | undefined,
+): string[] {
+  const out: string[] = [];
+  const clipSkip = image.clip_skip ?? 1;
+  const clipMax = capability?.clip_skip?.max;
+  if (clipSkip > 1) {
+    if (clipMax === undefined) out.push(`CLIP skip ${clipSkip}`);
+    else if (clipSkip > clipMax) out.push(`CLIP skip ${clipSkip} (clamped to ${clipMax})`);
+  }
+  const rescale = image.cfg_rescale ?? 0;
+  if (rescale) {
+    const hi = capability?.cfg_rescale ? Math.min(1, capability.cfg_rescale.max) : undefined;
+    if (hi === undefined) out.push(`CFG rescale ${rescale}`);
+    else if (rescale > hi) out.push(`CFG rescale ${rescale} (clamped to ${hi})`);
+  }
+  if (image.variation_strength && !capability?.variation_seed) {
+    out.push(
+      image.variation_seed != null
+        ? `variation seed ${image.variation_seed} (strength ${image.variation_strength})`
+        : `variation strength ${image.variation_strength}`,
+    );
+  }
+  return out;
+}
+
 /** The choice a gallery recipe restores. Absent fields (older records, other models) read as off. */
 export function sdControlsFromRecipe(image: {
   prompt_weighting?: boolean | null;

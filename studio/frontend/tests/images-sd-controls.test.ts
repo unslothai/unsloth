@@ -358,6 +358,24 @@ test("pasted A1111 Emphasis: None restores prompt weighting off, and sd.cpp name
   ]);
 });
 
+test("a gallery restore names the SD controls the current load drops or clamps", async () => {
+  const { sdControlsNotRestored } = await import("../src/features/images/lib/sd-controls.ts");
+  const recipe = { clip_skip: 3, cfg_rescale: 0.7, variation_seed: 42, variation_strength: 0.3 };
+  assert.deepEqual(sdControlsNotRestored(recipe, SDXL), []);
+  assert.deepEqual(sdControlsNotRestored({ clip_skip: 1, cfg_rescale: 0 }, null), []);
+  // Same SDXL repo reloaded on the native engine: no sd_controls, so Generate sends none of them.
+  assert.deepEqual(sdControlsNotRestored(recipe, null), [
+    "CLIP skip 3",
+    "CFG rescale 0.7",
+    "variation seed 42 (strength 0.3)",
+  ]);
+  const narrow = { ...SDXL, clip_skip: { ...SDXL.clip_skip, max: 2 }, cfg_rescale: { ...SDXL.cfg_rescale, max: 0.5 } };
+  assert.deepEqual(sdControlsNotRestored(recipe, narrow), ["CLIP skip 3 (clamped to 2)", "CFG rescale 0.7 (clamped to 0.5)"]);
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(src, /via === "restore" && status\?\.loaded \? sdControlsNotRestored\(image, sdCaps\) : \[\]/);
+  assert.match(src, /description: `Not applied: \$\{notApplied\.join\(", "\)\}\./);
+});
+
 test("an imported CFG rescale outside the accepted range is named with its clamp", async () => {
   const { importNotApplied } = await import("../src/features/images/lib/image-metadata.ts");
   assert.deepEqual(importNotApplied({ prompt: "x", cfg_rescale: 0.7 }, "sdxl", false, SDXL), []);
