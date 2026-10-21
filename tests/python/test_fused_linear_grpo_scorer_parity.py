@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""GRPO old / ref logps must be scored by the same function as the policy pass.
-
-zoo's grpo_accumulated_loss scores the policy with grpo_chunked_hidden_states_logprobs (fp32
-logits). If the generated _get_per_token_logps_and_entropies kept the legacy helper (logits in
-the head dtype), the importance ratio of identical policies would start away from 1.
-"""
+"""GRPO old / ref logps must use the policy pass scorer, else the importance ratio starts away from 1."""
 
 from __future__ import annotations
 
@@ -25,7 +20,6 @@ if not hasattr(zoo_rl, "grpo_chunked_hidden_states_logprobs"):
 
 
 def _resolve_scorer(trainer):
-    """Run the generated function's scorer-selection block and return the bound scorer."""
     src = rl.grpo_trainer__get_per_token_logps_and_entropies(
         "_get_per_token_logps_and_entropies", None
     )
