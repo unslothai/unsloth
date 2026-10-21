@@ -109,3 +109,24 @@ def test_the_saved_dataset_loader_shared_with_the_mlx_worker(tmp_path, layout):
     (DatasetDict(train = dataset) if layout == "dict" else dataset).save_to_disk(str(folder))
 
     assert load_saved_dataset(folder)["output"] == ["hi", "yes", "no"]
+
+
+def test_the_mlx_worker_resolves_a_studio_dataset_name_before_the_saved_probe(
+    tmp_path, monkeypatch
+):
+    from datasets import Dataset
+    import utils.paths
+    from core.training.worker import _resolve_mlx_local_dataset_path
+    from utils.datasets.saved import load_saved_dataset
+
+    saved = tmp_path / "datasets" / "my_saved"
+    Dataset.from_list(_ROWS).save_to_disk(str(saved))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(utils.paths, "resolve_dataset_path", lambda name: saved)
+
+    assert load_saved_dataset("my_saved") is None
+    assert load_saved_dataset(_resolve_mlx_local_dataset_path("my_saved"))["output"] == [
+        "hi",
+        "yes",
+        "no",
+    ]
