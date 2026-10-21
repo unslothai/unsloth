@@ -2481,7 +2481,12 @@ def test_maintenance_waits_for_a_probe_a_cancelled_warm_start_left_running(warma
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
     )
-    for var in ("HIP_VISIBLE_DEVICES", "GGML_BACKEND_PATH", "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "GGML_BACKEND_PATH",
+        "LLAMA_ARG_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+    ):
         monkeypatch.delenv(var, raising = False)
     entered, release = threading.Event(), threading.Event()
 

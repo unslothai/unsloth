@@ -996,7 +996,6 @@ def _vulkan_rows_came_back_empty(binary: str) -> bool:
     """A pinnable host whose cached Vulkan probe listed nothing: a warm start would stay unpinned for good."""
     try:
         import torch
-
         return _vulkan_pin_possible(binary, torch) and not _vulkan_rows(binary)
     except Exception:  # noqa: BLE001
         return False
