@@ -847,22 +847,28 @@ def test_block_dequant_is_checked_for_its_peak_intermediates(monkeypatch, fmt):
         scale = torch.randint(120, 130, (rows, cols // 32), dtype = torch.uint8, generator = gen)
     seen = []
     monkeypatch.setattr(conv, "charge_host_ram", lambda n: seen.append(int(n)))
-    peak, stop = [0], [False]
 
-    def sample():
-        while not stop[0]:
-            peak[0] = max(peak[0], _rss_anon_now())
-            time.sleep(0.0005)
+    def measure():
+        peak, stop = [0], [False]
 
-    _rss_anon_bytes()  # trim first, so the baseline is what is live
-    start = _rss_anon_now()
-    thread = threading.Thread(target = sample, daemon = True)
-    thread.start()
-    out = cb.dequant_block(fmt, codes, scale, tensor_scale = 0.01, dtype = torch.bfloat16)
-    stop[0] = True
-    thread.join()
-    growth = peak[0] - start
-    assert out.shape == (rows, cols)
+        def sample():
+            while not stop[0]:
+                peak[0] = max(peak[0], _rss_anon_now())
+                time.sleep(0.0005)
+
+        _rss_anon_bytes()  # trim first, so the baseline is what is live
+        start = _rss_anon_now()
+        thread = threading.Thread(target = sample, daemon = True)
+        thread.start()
+        out = cb.dequant_block(fmt, codes, scale, tensor_scale = 0.01, dtype = torch.bfloat16)
+        stop[0] = True
+        thread.join()
+        assert out.shape == (rows, cols)
+        return peak[0] - start
+
+    # RssAnon is process-wide: anything else live in the worker only adds to it (CI saw 0.89 of a
+    # growth that measures 0.96-1.08 alone), so the least of a few runs is the dequant's own peak.
+    growth = min(measure() for _ in range(3))
     assert seen and max(seen) >= 0.9 * growth, (seen, growth)
 
 

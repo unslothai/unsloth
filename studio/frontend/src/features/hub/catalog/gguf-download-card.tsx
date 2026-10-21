@@ -1431,6 +1431,7 @@ export function GgufDownloadCard({
           repoId={repoId}
           quant={selected.quant}
           sizeBytes={selected.size_bytes}
+          lookupTableBytes={ggufVariantLookupTableBytes(selected)}
           gpuGb={gpuGb}
           showReadout={true}
           className="px-1"

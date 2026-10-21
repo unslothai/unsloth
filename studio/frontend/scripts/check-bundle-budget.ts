@@ -348,11 +348,17 @@ export const BUDGET = {
   // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
   // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
-  // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier and model picker adds 697 B raw /
-  // 338 B transfer (6,878,886 -> 6,879,583 B raw, 2,071,694 -> 2,072,032 B transfer against ce1ab5b6a, one machine
-  // and build, 97 chunks). Raised to that build plus a 160 B raw / 189 B transfer margin.
-  transferBytes: 2_072_221,
-  rawBytes: 6_879_743,
+  // The NPU setup card (#14524): +439 B raw / +122 B transfer against fc91656ff (Node 24, 97 chunks), where main
+  // was already 1 B transfer over; transfer set to the measured build, raw raised by the growth.
+  // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
+  // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
+  // (already 244 B above the measured 6_879_345).
+  // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier, model picker and memory bar adds
+  // 911 B raw / 466 B transfer (6,879,331 -> 6,880,242 B raw, 2,071,848 -> 2,072,314 B transfer against 463e3f348,
+  // one machine and build, 97 chunks). Raised to that build plus a 400 B raw / 189 B transfer margin (another
+  // reviewer's build of the same tree measured 282 B larger raw).
+  transferBytes: 2_072_503,
+  rawBytes: 6_880_642,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

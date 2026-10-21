@@ -142,6 +142,19 @@ def test_split_names_keep_the_extension_as_written():
     ]
 
 
+def test_a_posix_class_pattern_is_not_proof_the_table_stays_on_the_host():
+    """std::regex reads [[:alpha:]] as a class; Python reads a literal set, so its match is
+    unknown here: a device target may place the table, a host one settles nothing."""
+    from core.inference.llama_cpp import _override_places_tensor_on_device
+
+    name = "per_layer_token_embd.weight"
+    assert _override_places_tensor_on_device(name, ["-ot", "per_[[:alpha:]_]+=CUDA0"], {})
+    assert _override_places_tensor_on_device(
+        name, ["-ot", "per_[[:alpha:]_]+=CPU,per_layer=CUDA0"], {}
+    )
+    assert not _override_places_tensor_on_device(name, ["-ot", "per_[[:alpha:]_]+=CPU"], {})
+
+
 class TestHeaderScan:
     def test_real_table_sizes(self, tmp_path):
         from hub.utils.gguf_lookup_tables import local_lookup_info

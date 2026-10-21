@@ -55,6 +55,8 @@ export interface ModelMemorySource {
   quant: string;
   /** Size from the listing, so the bar draws before the estimate arrives. */
   sizeBytes?: number | null;
+  /** The listing's lookup-table bytes (never VRAM), taken off ``sizeBytes`` for that first draw. */
+  lookupTableBytes?: number | null;
   /**
      * The concrete thing this row loads, when the listing resolved one.
      *
@@ -533,7 +535,16 @@ export function useModelMemory(
     // automatic launch preserves that pin. budgetIsMeaningful sees only browser-side pins and saved
     // config, so this is the one placement override it cannot reach.
     if (estimate?.inheritedDevicePin) return computeModelMemory({});
-    const weights = estimate?.weightsBytes ?? source?.sizeBytes;
+    // Lookup tables are host-pinned on a discrete card (the only budget this bar draws on):
+    // resident ones sit inside weightsBytes, streamed ones never in it, and the listing's
+    // size carries them either way.
+    const hostTable = estimate
+      ? estimate.lookupTableOnDisk
+        ? 0
+        : (estimate.lookupTableBytes ?? 0)
+      : (source?.lookupTableBytes ?? 0);
+    const rawWeights = estimate?.weightsBytes ?? source?.sizeBytes;
+    const weights = rawWeights == null ? rawWeights : Math.max(0, rawWeights - hostTable);
     return computeModelMemory({
       // The projector is resident alongside the weights, so it belongs in that
       // segment rather than as a fourth sliver the eye cannot resolve.
@@ -569,5 +580,5 @@ export function useModelMemory(
           ? plan.nCtx == null
           : !estimate.contextIsPinned,
     });
-  }, [plan, entry, source?.sizeBytes, budgetGb, budgetFraction]);
+  }, [plan, entry, source?.sizeBytes, source?.lookupTableBytes, budgetGb, budgetFraction]);
 }

@@ -118,6 +118,7 @@ import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
   classifyGgufFitWithLookupTables,
+  ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
@@ -6784,6 +6785,7 @@ export function HubModelPicker({
                     repoId: c.repo_id,
                     quant: variant.quant,
                     sizeBytes: variant.size_bytes,
+                    lookupTableBytes: ggufVariantLookupTableBytes(variant),
                     loadId: c.load_id,
                   }
             }

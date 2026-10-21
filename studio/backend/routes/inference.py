@@ -15790,9 +15790,13 @@ def _gguf_memory_breakdown(
     lookup_table_on_disk = False
     # A pin strips the device flags and their env twins at launch, so it does here too.
     _lt_extras, _lt_env = extras, dict(os.environ)
-    if selected_gpu_ids:
+    # A governing pin strips them even with no card in the list (zero GPU layers).
+    if selected_gpu_ids or device_pin_governs:
         _lt_extras = LlamaCppBackend._strip_device_extra_args(extras)
         LlamaCppBackend._clear_device_placement_env(_lt_env)
+    if gpu_memory_mode == "manual":
+        # Manual owns the layer split: the launch clears the inherited placement env too.
+        LlamaCppBackend._clear_manual_placement_env(_lt_env)
     if lookup_table_bytes:
         # Streamed only on a build with a lazy mode whose devices keep it on disk.
         lookup_table_on_disk = _lt_backend.lookup_tables_stream_by_default(
@@ -15846,6 +15850,8 @@ def _gguf_memory_breakdown(
             _kv_offload_from_args,
             _pass_through_overrides_placement,
             _prompt_cache_host_bytes,
+            _sidecar_adapter_bytes,
+            _sidecar_adapter_paths,
         )
         from core.inference.llama_server_args import fit_target_margin_in
 
@@ -15866,6 +15872,10 @@ def _gguf_memory_breakdown(
             # asks for every layer, so what the cards cannot hold spills beside the table.
             if not _lt_avail or not runtime.kv_estimable:
                 return False  # unsized: the launch keeps llama.cpp's default too
+            # A pass-through adapter the header walk cannot size, or (on Metal) any adapter:
+            # the launch abstains from the resident choice there, so the panel does too.
+            if _sidecar_adapter_bytes(_lt_extras) is None:
+                return False
             prompt = _prompt_cache_host_bytes(
                 None,
                 _lt_extras,
@@ -15894,6 +15904,8 @@ def _gguf_memory_breakdown(
             from utils.hardware import is_apple_silicon
 
             if is_apple_silicon():
+                if _sidecar_adapter_paths(_lt_extras):
+                    return False
                 # One unified pool: Metal's ceiling and the RAM the OS can spare, together.
                 budget = _lt_backend._apple_metal_memory_budget_bytes()
                 if budget <= 0:
@@ -52099,6 +52111,42 @@ def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Option
     return {}
 
 
+def _shift_kwargs(generate: Any, request: Any) -> dict:
+    """``shift`` / ``base_shift`` / ``max_shift`` for an engine whose generate() takes them (diffusers only).
+
+    Omitted on every engine when unset, so an older call is unchanged; a value sent to another engine
+    is refused (ValueError -> 400) rather than silently ignored."""
+    values = {
+        "shift": getattr(request, "shift", None),
+        "base_shift": getattr(request, "base_shift", None),
+        "max_shift": getattr(request, "max_shift", None),
+    }
+    if all(v is None for v in values.values()):
+        return {}
+    try:
+        import inspect
+        if "shift" in inspect.signature(generate).parameters:
+            return values
+    except (TypeError, ValueError):
+        pass
+    raise ValueError("Shift is supported on the diffusers engine only.")
+
+
+def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
+    """Inpaint mask kwargs generate() accepts; only the set ones, so an untouched request is unchanged."""
+    try:
+        import inspect
+        params = inspect.signature(generate).parameters
+    except (TypeError, ValueError):
+        return {}
+    out = {}
+    for name in ("mask_blur", "inpaint_only_masked", "inpaint_padding"):
+        value = getattr(request, name, None)
+        if value is not None and name in params:
+            out[name] = value
+    return out
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -52202,6 +52250,12 @@ async def _external_image_generation(
         or body.localized_edit
         or body.sampler
         or body.schedule_type
+        or body.shift is not None
+        or body.base_shift is not None
+        or body.max_shift is not None
+        or body.mask_blur is not None
+        or body.inpaint_only_masked is not None
+        or body.inpaint_padding is not None
     ):
         raise HTTPException(
             status_code = 400,
@@ -52541,6 +52595,8 @@ async def _generate_diffusion_image_run(
                     ),
                     **_live_preview_kwarg(backend.generate, request.live_preview),
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
+                    **_shift_kwargs(backend.generate, request),
+                    **_inpaint_mask_kwargs(backend.generate, request),
                 )
             break
         except ImageActivationShortfallError as exc:
@@ -52658,6 +52714,19 @@ async def _generate_diffusion_image_run(
                         "localized_edit": result.get("localized_edit"),
                         "sampler": result.get("sampler"),
                         "schedule_type": result.get("schedule_type"),
+                        **{
+                            key: result[key]
+                            for key in (
+                                "shift",
+                                "base_shift",
+                                "max_shift",
+                                "embeddings",
+                                "mask_blur",
+                                "inpaint_only_masked",
+                                "inpaint_padding",
+                            )
+                            if result.get(key) not in (None, [])
+                        },
                         "created_at": created_at,
                     },
                 )
