@@ -610,7 +610,9 @@ def test_a_segment_never_starts_while_a_step_cache_is_on(monkeypatch):
     shared.root = root
     root.__dict__[ls._SPLIT_ATTR + "_root"] = types.SimpleNamespace(lazy_now = True)
     root._unsloth_step_cache = "fbcache@0.12"
-    seg = bg.SegmentGraph([bg.BlockGraph(nn.Linear(4, 4), lambda x: x, shared) for _ in range(2)], shared)
+    seg = bg.SegmentGraph(
+        [bg.BlockGraph(nn.Linear(4, 4), lambda x: x, shared) for _ in range(2)], shared
+    )
     with torch.inference_mode():
         assert seg.call(0, (torch.zeros(2, 4),), {}) is bg._NOT_HANDLED
     assert walked == []

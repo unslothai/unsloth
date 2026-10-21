@@ -746,7 +746,6 @@ def _lazy_chain(root: Any) -> bool:
     segment, since a segment cannot see an op between blocks that rewrites a tensor in place."""
     try:
         from .diffusion_layer_split import layer_split_of
-
         split = layer_split_of(root)
     except Exception:  # noqa: BLE001
         return False

@@ -207,7 +207,9 @@ def test_a_block_graph_runs_eager_while_a_step_cache_is_on():
 
     def compute(x):
         y = block.lin(x)
-        return y * 0.5 if root._unsloth_step_cache else y  # what the cache hooks change inside the forward
+        return (
+            y * 0.5 if root._unsloth_step_cache else y
+        )  # what the cache hooks change inside the forward
 
     shared = bg._Shared(torch.cuda.current_device(), None)
     shared.root = root

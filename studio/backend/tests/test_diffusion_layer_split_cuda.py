@@ -105,7 +105,9 @@ def test_a_hidream_split_hops_once_per_card_boundary_and_records_per_card_segmen
     )
     hops = []
     real = ls.cross_outputs
-    monkeypatch.setattr(ls, "cross_outputs", lambda out, device: hops.append(str(device)) or real(out, device))
+    monkeypatch.setattr(
+        ls, "cross_outputs", lambda out, device: hops.append(str(device)) or real(out, device)
+    )
     try:
         out = _run(pipe.transformer)
         stats = ls.layer_split_stats(pipe.transformer)
