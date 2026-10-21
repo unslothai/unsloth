@@ -1141,6 +1141,14 @@ export function matchLoraTags(
   return { loras, unmatched, notes };
 }
 
+/** The names of a recipe's `<lora:...>` tags. */
+export function loraTagNames(tags: unknown): string[] {
+  if (!Array.isArray(tags)) return [];
+  return (tags as unknown[])
+    .map((t) => (t && typeof t === "object" ? (t as Partial<LoraTag>).name : undefined))
+    .filter((n): n is string => typeof n === "string");
+}
+
 /** matchLoraTags against the catalog a paste can see. Without a LoRA-capable model resident the page holds
  *  no catalog, so the whole local list is fetched rather than reporting every installed adapter missing. */
 export async function matchLoraTagsForImport<
@@ -1156,13 +1164,10 @@ export async function matchLoraTagsForImport<
   try {
     return matchLoraTags(tags, await fetchAll());
   } catch {
-    const names = (tags as unknown[])
-      .map((t) => (t && typeof t === "object" ? (t as Partial<LoraTag>).name : undefined))
-      .filter((n): n is string => typeof n === "string");
     return {
       loras: [],
       unmatched: [],
-      notes: names.map((n) => `LoRA ${n} (the installed LoRAs could not be listed)`),
+      notes: loraTagNames(tags).map((n) => `LoRA ${n} (the installed LoRAs could not be listed)`),
     };
   }
 }

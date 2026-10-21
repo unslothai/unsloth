@@ -319,6 +319,7 @@ import {
   importedRecipe,
   importNotApplied,
   isGenerationParametersPaste,
+  loraTagNames,
   matchLoraTagsForImport,
   MAX_LORAS,
   lorasOverLimit,
@@ -442,6 +443,8 @@ const labelOf = (labels: Record<string, string>, id: string) =>
 
 // Identifies a loaded model for the once-per-model Only masked notice.
 const onlyMaskedKeyOf = (s: DiffusionStatus): string => `${s.repo_id ?? ""}|${s.family ?? ""}`;
+const loadedModelKey = (s: DiffusionStatus | null): string | null =>
+  s?.loaded ? onlyMaskedKeyOf(s) : null;
 
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
@@ -2829,10 +2832,14 @@ export function ImagesPage({
   }, [status, inpaintOnlyMasked, inpaintPadding]);
   // A later import supersedes one still waiting on the LoRA lookup.
   const importSeq = useRef(0);
+  // The status as of now, for an import resuming after its LoRA lookup.
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const applyImportedRecipe = useCallback(
     async (recipe: ImportedRecipe): Promise<boolean> => {
       const seq = ++importSeq.current;
-      const tagged = await matchLoraTagsForImport(
+      const modelBefore = loadedModelKey(status);
+      let tagged = await matchLoraTagsForImport(
         recipe.lora_tags,
         // Only a finished fetch for the loaded family: right after a load or family switch it is empty or stale.
         loraCapable && loraCatalogFamily === (status?.family ?? null),
@@ -2841,6 +2848,14 @@ export function ImagesPage({
         () => listDiffusionLoras(status?.loaded ? (status.family ?? undefined) : undefined),
       );
       if (seq !== importSeq.current) return false;
+      // A load or family switch landed during the lookup: its matches are for the old model.
+      if (loadedModelKey(statusRef.current) !== modelBefore) {
+        tagged = {
+          loras: [],
+          unmatched: [],
+          notes: loraTagNames(recipe.lora_tags).map((n) => `LoRA ${n} (model changed during import)`),
+        };
+      }
       const merged =
         tagged.loras.length > 0
           ? { ...recipe, loras: [...(Array.isArray(recipe.loras) ? recipe.loras : []), ...tagged.loras] }

@@ -11,6 +11,7 @@ import {
   importedRecipe,
   isGenerationParametersPaste,
   matchLoraTags,
+  loraTagNames,
   matchLoraTagsForImport,
   MAX_LORAS,
   lorasOverLimit,
@@ -333,7 +334,7 @@ test("LoRA tags pasted before a LoRA-capable model is resident match the whole l
   const page = readSrc("features/images/images-page.tsx");
   assert.match(
     page,
-    /const tagged = await matchLoraTagsForImport\(\n\s+recipe\.lora_tags,\n\s+\/\/[^\n]*\n\s+loraCapable && loraCatalogFamily === \(status\?\.family \?\? null\),\n\s+availableLoras,\n\s+\/\/[^\n]*\n\s+\(\) => listDiffusionLoras\(status\?\.loaded \? \(status\.family \?\? undefined\) : undefined\),\n\s+\);/,
+    /let tagged = await matchLoraTagsForImport\(\n\s+recipe\.lora_tags,\n\s+\/\/[^\n]*\n\s+loraCapable && loraCatalogFamily === \(status\?\.family \?\? null\),\n\s+availableLoras,\n\s+\/\/[^\n]*\n\s+\(\) => listDiffusionLoras\(status\?\.loaded \? \(status\.family \?\? undefined\) : undefined\),\n\s+\);/,
   );
   // The resident catalog counts only once the fetch for the current family has landed.
   assert.match(
@@ -405,7 +406,7 @@ test("a paste is reported applied only once its settings land, and a later impor
   // A sequence token taken before the LoRA lookup: an earlier import finishing late changes nothing.
   assert.match(
     page,
-    /async \(recipe: ImportedRecipe\): Promise<boolean> => \{\n\s+const seq = \+\+importSeq\.current;\n\s+const tagged = await matchLoraTagsForImport\(/,
+    /async \(recipe: ImportedRecipe\): Promise<boolean> => \{\n\s+const seq = \+\+importSeq\.current;\n\s+const modelBefore = loadedModelKey\(status\);\n\s+let tagged = await matchLoraTagsForImport\(/,
   );
   assert.match(
     page,
@@ -419,5 +420,23 @@ test("a paste is reported applied only once its settings land, and a later impor
   assert.match(
     dialog,
     /const apply = async \(\) => \{\n\s+if \(text\.trim\(\) && \(await onApply\(text\)\)\) \{\n\s+onTextChange\(""\);\n\s+onOpenChange\(false\);/,
+  );
+});
+
+test("LoRA matches from before a model switch during the lookup are not restored", () => {
+  assert.deepEqual(loraTagNames([{ name: "a", weight: 1 }, { weight: 1 }, null, { name: "b", weight: 0.5 }]), [
+    "a",
+    "b",
+  ]);
+  assert.deepEqual(loraTagNames(undefined), []);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /const statusRef = useRef\(status\);\n\s+statusRef\.current = status;/);
+  assert.match(
+    page,
+    /const seq = \+\+importSeq\.current;\n\s+const modelBefore = loadedModelKey\(status\);\n\s+let tagged = await matchLoraTagsForImport\(/,
+  );
+  assert.match(
+    page,
+    /if \(seq !== importSeq\.current\) return false;\n[^\n]*\n\s+if \(loadedModelKey\(statusRef\.current\) !== modelBefore\) \{\n\s+tagged = \{\n\s+loras: \[\],\n\s+unmatched: \[\],\n\s+notes: loraTagNames\(recipe\.lora_tags\)\.map\(\(n\) => `LoRA \$\{n\} \(model changed during import\)`\),/,
   );
 });
