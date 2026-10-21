@@ -320,13 +320,16 @@ export const BUDGET = {
   // 6,862,932 B raw, 2,066,441 -> 2,066,440 B transfer against 2aeeceb07e, one machine and build, 96 chunks).
   // Merged with main at 2552ee3895 the build measures 6,863,532 B raw / 2,066,692 B transfer (Node 26, 97 chunks).
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  // The model location row in the load settings (#14105) adds 2,146 B raw / 712 B transfer (6,863,614 ->
-  // 6,865,760 B raw, 2,066,668 -> 2,067,380 B transfer against 439411c65, one machine and build, Node 24, 97
+  // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
+  // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
+  // The model location row in the load settings (#14105) adds 2,162 B raw / 686 B transfer (6,870,362 ->
+  // 6,872,524 B raw, 2,068,986 -> 2,069,672 B transfer against 93fda2007, one machine and build, Node 24, 97
   // chunks): the picked model's path threads through the local pickers' change meta, and the location helper
-  // rides the eager config page (lazy-loading it was measured and lost: an extra eager chunk). Raised to that
+  // rides the eager config page (lazy-loading it was measured and lost: an extra eager chunk). main at 93fda2007
+  // itself measures 6,870,362 B raw / 2,068,986 B transfer on that build, above its limits. Raised to the merged
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_067_569,
-  rawBytes: 6_865_920,
+  transferBytes: 2_069_861,
+  rawBytes: 6_872_684,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
