@@ -303,10 +303,10 @@ export function SamplingDefaultsRow({
 
   useEffect(() => {
     let cancelled = false;
-    fetchModelSamplingDefaults()
-      .then((all) => {
+    fetchModelSamplingDefaults(modelId)
+      .then((resolved) => {
         if (!cancelled) {
-          setStored({ modelId, saved: all[modelId] ?? {} });
+          setStored({ modelId, saved: resolved });
         }
       })
       .catch(() => undefined);
@@ -319,8 +319,8 @@ export function SamplingDefaultsRow({
     setOpening(true);
     try {
       // Fresh, so another tab's save is what the fields start from.
-      const all = await fetchModelSamplingDefaults();
-      setStored({ modelId, saved: all[modelId] ?? {} });
+      const resolved = await fetchModelSamplingDefaults(modelId);
+      setStored({ modelId, saved: resolved });
       setOpenCount((count) => count + 1);
       setOpen(true);
     } catch (error: unknown) {
@@ -332,8 +332,7 @@ export function SamplingDefaultsRow({
 
   const write = async (next: SamplingDefaults): Promise<boolean> => {
     try {
-      const all = await putModelSamplingDefaults(modelId, next);
-      const written = all[modelId] ?? {};
+      const written = await putModelSamplingDefaults(modelId, next);
       const cleared = SAMPLING_DEFAULT_FIELDS.filter(
         (field) =>
           typeof saved?.[field] === "number" &&

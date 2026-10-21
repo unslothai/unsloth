@@ -98,24 +98,29 @@ def _lookup(
     return None
 
 
+def sampling_defaults_key(model_id: str) -> str:
+    """The key one model's defaults are stored under: per model, not per quant, and a cached repo by
+    its repo id rather than a snapshot path that a new revision would orphan."""
+    from core.inference.model_ids import hf_cache_repo_id
+
+    key = model_id.strip()
+    split = split_quant_suffix(key)
+    if split is not None:
+        key = split[0]
+    return hf_cache_repo_id(key) or key
+
+
 def saved_sampling_defaults(model_id: Optional[str]) -> dict[str, Any]:
-    """The saved defaults for ``model_id``, or ``{}``. A cached repo loads from its snapshot path, so
-    the repo id it came from is tried too."""
+    """The saved defaults for ``model_id``, or ``{}``."""
     if not model_id or not isinstance(model_id, str):
         return {}
     exact, folded = _index(current_account())
     if not exact:
         return {}
-    from core.inference.model_ids import hf_cache_repo_id
-
     candidates = [model_id]
-    # The editor saves per model, so "repo:Q4_K_M" reads the repo's row.
-    split = split_quant_suffix(model_id)
-    if split is not None:
-        candidates.append(split[0])
-    repo_id = hf_cache_repo_id(candidates[-1])
-    if repo_id and repo_id not in candidates:
-        candidates.append(repo_id)
+    key = sampling_defaults_key(model_id)
+    if key not in candidates:
+        candidates.append(key)
     found = _lookup(exact, folded, candidates)
     return dict(found) if found is not None else {}
 
@@ -129,8 +134,10 @@ def set_model_sampling_defaults(
     entry = normalize_sampling_defaults(sampling)
     from storage.studio_db import upsert_app_setting_map_entry
 
-    upsert_app_setting_map_entry(
-        MODEL_SAMPLING_DEFAULTS_SETTING_KEY, model_id.strip(), entry or None
-    )
+    key = sampling_defaults_key(model_id)
+    upsert_app_setting_map_entry(MODEL_SAMPLING_DEFAULTS_SETTING_KEY, key, entry or None)
+    # A row an earlier save left under the literal spelling would otherwise outrank this one.
+    if model_id.strip() != key:
+        upsert_app_setting_map_entry(MODEL_SAMPLING_DEFAULTS_SETTING_KEY, model_id.strip(), None)
     _invalidate(MODEL_SAMPLING_DEFAULTS_SETTING_KEY, current_account())
     return entry

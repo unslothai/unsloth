@@ -21,26 +21,25 @@ export const SAMPLING_DEFAULT_FIELDS = [
 export type SamplingDefaultField = (typeof SAMPLING_DEFAULT_FIELDS)[number];
 export type SamplingDefaults = Partial<Record<SamplingDefaultField, number>>;
 
-export async function fetchModelSamplingDefaults(): Promise<
-  Record<string, SamplingDefaults>
-> {
-  const res = await authFetch(URL);
+/** This model's saved defaults, resolved by the server's key rules (per model, repo id for a cache path). */
+export async function fetchModelSamplingDefaults(
+  modelId: string,
+): Promise<SamplingDefaults> {
+  const res = await authFetch(`${URL}?model_id=${encodeURIComponent(modelId)}`);
   if (!res.ok) {
     throw new Error(
       await readFastApiError(res, "Failed to read sampling defaults"),
     );
   }
-  const body = (await res.json()) as {
-    defaults?: Record<string, SamplingDefaults>;
-  };
-  return body.defaults ?? {};
+  const body = (await res.json()) as { resolved?: SamplingDefaults | null };
+  return body.resolved ?? {};
 }
 
-/** Replace one model's saved defaults; an empty object forgets the model. */
+/** Replace one model's saved defaults; an empty object forgets the model. Returns what is stored. */
 export async function putModelSamplingDefaults(
   modelId: string,
   sampling: SamplingDefaults,
-): Promise<Record<string, SamplingDefaults>> {
+): Promise<SamplingDefaults> {
   const res = await authFetch(URL, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -55,10 +54,8 @@ export async function putModelSamplingDefaults(
       await readFastApiError(res, "Failed to save sampling defaults"),
     );
   }
-  const body = (await res.json()) as {
-    defaults?: Record<string, SamplingDefaults>;
-  };
-  return body.defaults ?? {};
+  const body = (await res.json()) as { resolved?: SamplingDefaults | null };
+  return body.resolved ?? {};
 }
 
 /** What a request naming this model gets for every field it leaves out. */

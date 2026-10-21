@@ -99,6 +99,15 @@ def test_a_cached_snapshot_path_finds_the_repo_row():
     assert saved_sampling_defaults(path) == {"min_p": 0.05}
 
 
+def test_a_snapshot_path_save_is_stored_under_the_repo_id():
+    old = "/home/u/.cache/huggingface/hub/models--unsloth--Foo-GGUF/snapshots/abc123"
+    new = "/home/u/.cache/huggingface/hub/models--unsloth--Foo-GGUF/snapshots/def456"
+    response = _put(old + ":Q4_K_M", {"top_k": 40})
+    assert response.defaults == {"unsloth/Foo-GGUF": {"top_k": 40}}
+    assert response.resolved == {"top_k": 40}
+    assert saved_sampling_defaults(new) == {"top_k": 40}
+
+
 def test_a_quant_qualified_id_reads_the_repo_row():
     _put("unsloth/Foo-GGUF", {"top_k": 40})
     assert saved_sampling_defaults("unsloth/Foo-GGUF:Q4_K_M") == {"top_k": 40}
