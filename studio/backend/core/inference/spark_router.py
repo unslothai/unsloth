@@ -298,8 +298,7 @@ class SparkRouter:
         queue_limit: Optional[int] = None,
     ) -> Backend:
         if queue_limit is None:
-            # llama-server defers a request that finds every slot busy instead of refusing it, so
-            # the router queues the same way; the route's admission queue is what bounds the load.
+            # Queue like llama-server does when every slot is busy; the route's admission queue bounds load.
             queue_limit = DEFAULT_QUEUE_LIMIT
         backend = Backend(
             name = name,
@@ -933,7 +932,6 @@ class SparkRouter:
                         f"({type(exc).__name__}); the request cannot be resumed."
                     )
                     if not _is_event_stream(routed.headers):
-                        # The headers promised JSON (non-streaming chat, completions, embeddings, reranking).
                         logger.warning("spark router: %s", message)
                         raise
                     frame = (

@@ -17663,8 +17663,7 @@ def _shadow_stripped_inherited(
 
     fields_set = getattr(request, "model_fields_set", set())
     return strip_shadowing_flags(
-        # The Spark split block was ours, not the caller's: a reload planned single or as
-        # replicas must not relaunch against the old rpc-server.
+        # Our Spark split block: a reload re-plans it rather than relaunching against the old rpc-server.
         strip_layer_split_extra_args(stored_args),
         strip_context = "max_seq_length" in fields_set
         and not matches_explicit_ctx_override(
@@ -17676,21 +17675,15 @@ def _shadow_stripped_inherited(
             "chat_template_override" in fields_set or effective_chat_template_override is not None
         ),
         strip_split_mode = _should_strip_split_mode(request, stored_args),
-        # manual + per-GPU ratio emits its own --tensor-split; drop
-        # an inherited one (appended last would override it) while
-        # keeping the user's --split-mode row/none/layer choice.
+        # Drop an inherited --tensor-split but keep the user's --split-mode choice.
         strip_tensor_split = _should_strip_tensor_split(request),
-        # manual emits its own --fit/--gpu-layers, so an inherited offload flag
-        # must not last-wins-override it. auto leaves a user's inherited -ngl
-        # alone. getattr: a validate request reuses this resolver, no offload fields.
+        # auto keeps an inherited -ngl; getattr: a validate request has no offload fields.
         strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
         strip_reasoning_budget = "reasoning_budget" in fields_set,
         strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
-        # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
         strip_batch = "n_batch" in fields_set,
         strip_ubatch = "n_ubatch" in fields_set,
-        # same rule for the llama-server tuning group. The load mode strips its
-        # deprecated aliases too, because a trailing one resets the whole mode.
+        # A trailing deprecated load-mode alias resets the whole mode, so aliases go too.
         strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
         strip_cache_ram = "cache_ram" in fields_set,
         strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,

@@ -96,8 +96,7 @@ _SPEC_OWNER_ENV = frozenset(
         "LLAMA_ARG_CACHE_TYPE_V_DRAFT",
     }
 )
-# Still refused with the groups after PR #187 (tools/server validate_pipeline_groups): one
-# projector, one control vector set and one idle timer per server, none of them per group.
+# Still refused with groups after PR #187: projector, control vectors and idle timer are per server.
 _GROUPS_REFUSED_FLAGS = frozenset(
     {
         "--mmproj",
@@ -110,14 +109,12 @@ _GROUPS_REFUSED_FLAGS = frozenset(
         "--sleep-idle-seconds",
     }
 )
-# Mirrors of spark_cluster.GROUPS_X_MTP_*: the crossover is interpolated between the measured 8
-# and 32 rows, and every cell carries --kv-unified (1.27x on a two-group split alone).
+# Mirrors of spark_cluster.GROUPS_X_MTP_*: crossover interpolated between measured 8 and 32 rows, all with --kv-unified.
 GROUPS_X_MTP_MIN_ROWS = 16  # spark_cluster.GROUPS_X_MTP_CROSSOVER_ROWS
 GROUPS_X_MTP_OVER_MTP_ONLY = {8: 0.97, 32: 1.36}  # both over one context with MTP
 GROUPS_X_MTP_OVER_GROUPS_ONLY = {8: 1.71, 32: 1.09}  # both over two groups alone
 SPLIT_TENSOR_SPLIT_EVEN = "0.5,0.5"
-# Slots kept, as a fraction of the slots asked for, below which the groups are not worth the
-# concurrency the rounding costs. 1/1.4, the measured split speedup from two groups.
+# Below this kept/asked slot fraction groups lose to the rounding: 1/1.4, the measured two-group speedup.
 GROUPS_WORTH_SLOTS_RATIO = 1.0 / 1.4
 # Capped because the throughput table alone says 128 and p90 TTFT says that is unshippable.
 SPLIT_ROWS_INTERACTIVE_MAX = 64
@@ -1582,8 +1579,7 @@ def caller_speculation_off(
     if owner is None:
         return False
     if owner in _SPEC_OWNER_ENV:
-        # Set through the environment only: its LLAMA_ARG_SPEC_TYPE is the value, and any other
-        # draft knob there may still launch a drafter.
+        # Env-only: LLAMA_ARG_SPEC_TYPE is the value, and any other draft knob there may still launch a drafter.
         env_set = {name for name in _SPEC_OWNER_ENV if str(os.environ.get(name) or "").strip()}
         env_type = str(os.environ.get("LLAMA_ARG_SPEC_TYPE") or "").strip().lower()
         return env_set == {"LLAMA_ARG_SPEC_TYPE"} and env_type in (
@@ -1782,8 +1778,7 @@ def _snapshot_projector(model_file: Optional[str]) -> Optional[str]:
     if not model_file:
         return None
     try:
-        # NOT realpath: an HF cache snapshot is a directory of symlinks into blobs/, where the
-        # neighbours are content hashes and nothing ends in .gguf.
+        # NOT realpath: HF snapshot links resolve into blobs/, where nothing ends in .gguf.
         directory = osp.dirname(osp.abspath(str(model_file)))
         found = sorted(
             path
@@ -1920,8 +1915,7 @@ def layer_split_extra_args(
     pipeline_groups: int = 0,
 ) -> List[str]:
     """What the local llama-server needs to use the peer's rpc-server."""
-    # RPC device FIRST, local CUDA LAST: llama.cpp puts the output layer on the last device, so this
-    # keeps the logits local and the wire carries only the hidden state.
+    # RPC FIRST, CUDA LAST: llama.cpp puts the output layer on the last device, keeping logits local.
     out = [
         "--rpc",
         f"{peer}:{port}",
@@ -2050,8 +2044,7 @@ class PeerProcess:
         return self.proc is not None and self.proc.returncode is None
 
     async def start(self) -> None:
-        # A relaunch must not inherit the previous pid: stop() would kill whatever the peer has
-        # since reused that number for.
+        # A stale pid would make stop() kill whatever the peer reused that number for.
         self.remote_pid = None
         self.proc = await asyncio.create_subprocess_exec(
             *ssh_argv(self.peer, self.remote_command, keepalive = True),
@@ -2670,9 +2663,7 @@ class SparkServing:
         )
         await process.start()
         try:
-            # Not wait_for_port: an occupied port answers on the first probe while the child that
-            # could not bind it exits, and adopting that listener leaves the split attached to a
-            # server nothing here manages.
+            # Not wait_for_port: a stale listener on the port would be adopted while our child fails to bind.
             ready = await wait_for_own_port(
                 process, peer, port, PEER_START_TIMEOUT_S, cancelled = self._cancelled
             )
@@ -2873,8 +2864,7 @@ class SparkServing:
         if not argv or not port or not gguf_path:
             self.topology, self.reason = "single", "cannot read this node's llama-server launch"
             return
-        # Two round trips on purpose: the lookup script exits as soon as it finds the binary, so a
-        # file check appended to it would never run.
+        # Two round trips: the lookup script exits on its first hit, so an appended check would never run.
         rc, out, _ = await ssh_run(
             peer,
             find_binary_script(peer_binary_candidates(argv[0], Path(argv[0]).name)),
