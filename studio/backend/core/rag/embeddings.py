@@ -451,7 +451,7 @@ def _refuse_custom_module(
     ):
         raise ValueError(
             f"The model {model_name_or_path} references the module class {class_ref!r}, which is not "
-            "part of Sentence Transformers. Importing it executes third-party code, so Studio refuses "
+            "part of Sentence Transformers. Importing it executes third-party code, so Unsloth refuses "
             "to load it as an embedding model."
         )
 
@@ -1526,6 +1526,20 @@ def dim(model_name: str | None = None) -> int:
 
 def max_tokens(model_name: str | None = None) -> int | None:
     return _get_backend(model_name).max_tokens(model_name = model_name)
+
+
+def clip_to_limit(text: str, count, limit: int | None) -> tuple[str, bool]:
+    """The longest prefix of ``text`` within ``limit`` tokens by ``count``, and whether it was cut."""
+    if not limit or count(text) <= limit:
+        return text, False
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if count(text[:mid]) <= limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo], True
 
 
 def chunk_tokens(model_name: str | None = None) -> int:

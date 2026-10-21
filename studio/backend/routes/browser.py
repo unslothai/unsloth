@@ -926,7 +926,7 @@ _FRAME_HTML = r"""<!doctype html>
           }
         };
 
-        // Find in page for Studio's find bar: every visible match of the query, case-insensitive,
+        // Find in page for Unsloth's find bar: every visible match of the query, case-insensitive,
         // painted with the same two highlights as the chat's (all matches, then the active one) and
         // counted back to the bar. Highlights sit over the text, so the page itself is not changed.
         const finder = (() => {

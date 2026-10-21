@@ -81,7 +81,7 @@ def _preview_eligibility(folder: Path, layout: str) -> tuple:
             return True, None
         return False, (
             "GGUF export of Laya decision models needs a ModernBERT encoder, and this one is "
-            f"{model_type or 'unknown'}. It still serves through PyTorch in Studio's Decision API."
+            f"{model_type or 'unknown'}. It still serves through PyTorch in Unsloth's Decision API."
         )
     config = _read_json(folder / "config.json")
     if config is None:
@@ -97,7 +97,7 @@ def _preview_eligibility(folder: Path, layout: str) -> tuple:
     return False, (
         "GGUF export of this decision model is not supported: llama.cpp's decision graph is "
         f"built for Qwen3.5 backbones only, and this one is {', '.join(architectures) or 'unknown'}. "
-        "It still serves through PyTorch in Studio's Decision API."
+        "It still serves through PyTorch in Unsloth's Decision API."
     )
 
 

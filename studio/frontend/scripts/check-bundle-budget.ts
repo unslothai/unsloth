@@ -323,8 +323,10 @@ export const BUDGET = {
   // The browser panel's page history and scroll restore (#14283), merged with main
   // at 664fe02d8 the build measures 6,863,867 B raw / 2,066,704 B transfer (Node 24, 97 chunks). Raised to that
   // build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_066_893,
-  rawBytes: 6_864_027,
+  // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
+  // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
+  transferBytes: 2_067_239,
+  rawBytes: 6_864_373,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
