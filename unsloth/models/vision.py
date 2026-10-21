@@ -3379,7 +3379,8 @@ class FastBaseModel:
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
             if dtype == torch.float16:
                 dtype = torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and DEVICE_TYPE != "xpu":
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
