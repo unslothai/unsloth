@@ -253,12 +253,16 @@ def test_past_int32_offsets(pre_sm89):
 
 @needs_cuda
 @pytest.mark.skipif(not CUDA or torch.version.hip is not None, reason = "NVIDIA routing")
-@pytest.mark.parametrize("shape, block", [((130, 256), [128, 128]), ((300, 520), [128, 128]), ((256, 384), [128, 64])])
+@pytest.mark.parametrize(
+    "shape, block", [((130, 256), [128, 128]), ((300, 520), [128, 128]), ((256, 384), [128, 64])]
+)
 def test_real_device_ragged_or_rectangular_takes_bytes_bit_exact(monkeypatch, shape, block):
     # Unmocked: every NVIDIA arch sends ragged / rectangular e4m3fn blocks to the byte decoder.
     calls = []
     orig = fp8._e4m3fn_bytes_dequant
-    monkeypatch.setattr(fp8, "_e4m3fn_bytes_dequant", lambda *a, **k: calls.append(1) or orig(*a, **k))
+    monkeypatch.setattr(
+        fp8, "_e4m3fn_bytes_dequant", lambda *a, **k: calls.append(1) or orig(*a, **k)
+    )
     w = _weight(*shape, "cuda")
     s = _scale(*shape, block, torch.float32, "cuda")
     out = fp8._blockwise_weight_dequant_any_shape(w, s, block, torch.bfloat16)
