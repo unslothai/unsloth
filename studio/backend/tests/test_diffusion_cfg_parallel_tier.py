@@ -486,3 +486,44 @@ def test_the_replica_is_built_with_captures_held_off(_zs, monkeypatch):
     _zimage_steps(model, pipe, 1)
     assert held and held[0] >= 1
     assert cg._OUTSIDE_JOBS == 0
+
+
+class _FakeCopy:
+    """A carried input on another card: ``to`` records whether a capture hold was up, or fails like a full card."""
+
+    device = torch.device("cuda", 0)
+
+    def __init__(self, fail = False):
+        self.fail = fail
+        self.held = []
+
+    def to(self, device):
+        self.held.append((cg._OUTSIDE_JOBS, getattr(cg._OUTSIDE_LOCAL, "depth", 0)))
+        if self.fail:
+            raise RuntimeError("CUDA out of memory on the replica card")
+        return self
+
+
+def _bare_router():
+    dit = _Dit()
+    return mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu", replica_factory = lambda: None)
+
+
+def test_prefetch_copies_run_with_captures_held_off():
+    router = _bare_router()
+    carried = _FakeCopy()
+    router.carry = [carried]
+    router._prefetch((), {})
+    assert carried.held == [(1, 1)]
+    assert router.prefetched[id(carried)] == (carried, carried)
+    assert cg._OUTSIDE_JOBS == 0
+
+
+def test_a_failed_prefetch_copy_is_harmless():
+    router = _bare_router()
+    ok, bad = _FakeCopy(), _FakeCopy(fail = True)
+    router.carry = [ok, bad]
+    router._prefetch((), {})  # must not raise: the call copies its own inputs later
+    assert bad.held and not router.prefetched
+    assert cg._OUTSIDE_JOBS == 0
+

@@ -2130,10 +2130,16 @@ class CfgParallelRouter:
             self.disable(f"replica unavailable: {exc}")
 
     def _prefetch(self, args: tuple, kwargs: dict) -> None:
-        for tensor in (*_iter_tensors((args, kwargs)), *self.carry):
-            if tensor.device == self.secondary or id(tensor) in self.prefetched:
-                continue
-            self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
+        from .diffusion_cuda_graph import outside_capture
+        try:
+            # Speculative cross-device copies are CUDA calls another pipeline's capture prohibits.
+            with outside_capture():
+                for tensor in (*_iter_tensors((args, kwargs)), *self.carry):
+                    if tensor.device == self.secondary or id(tensor) in self.prefetched:
+                        continue
+                    self.prefetched[id(tensor)] = (tensor, tensor.to(self.secondary))
+        except Exception:  # noqa: BLE001 - only an optimisation: no prefetch, the call copies its inputs itself
+            self.prefetched.clear()
 
     def _to_replica(self, obj: Any) -> Any:
         torch = _torch()
