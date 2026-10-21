@@ -51,7 +51,8 @@ BROWSER_PRINT_PATH = "/api/browser/print"
 KIND_HEADER = "X-Unsloth-Browser-Kind"
 URL_HEADER = "X-Unsloth-Browser-Url"
 NAME_HEADER = "X-Unsloth-Browser-Filename"
-EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER, NAME_HEADER)
+ATTACHMENT_HEADER = "X-Unsloth-Browser-Attachment"
+EXPOSED_HEADERS = (KIND_HEADER, URL_HEADER, NAME_HEADER, ATTACHMENT_HEADER)
 
 _MAX_BROWSER_FETCH_BYTES = 50 * 1024 * 1024
 # HTML goes into srcdoc and the page cache; more would stall the renderer.
@@ -389,6 +390,9 @@ _FRAME_HTML = r"""<!doctype html>
   <body>
     <script>
       const boot = (cfg) => {
+        const inputChannel = new MessageChannel();
+        const edited = inputChannel.port1.postMessage.bind(inputChannel.port1);
+        parent.postMessage({ source: "unsloth-browser-input" }, "*", [inputChannel.port2]);
         // Captured before the page's scripts run, so they can't swap it.
         const compile = Function;
         // about:srcdoc has an opaque origin, and data: and blob: URLs share it.
@@ -397,21 +401,43 @@ _FRAME_HTML = r"""<!doctype html>
         // Without a <base> of its own a document's base is its URL, so the shell's follows the router:
         // relative links and requests after a pushState resolve as in a browser.
         const routedBase = cfg.url && !cfg.ownBase ? document.querySelector("base") : null;
-        const post = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
+        let scrollTimer = 0;
+        const post = (message) => {
+          if (scrollTimer && message.type === "navigate") reportScroll();
+          parent.postMessage({ source: "unsloth-browser", ...message }, "*");
+        };
+        const reportScroll = () => {
+          clearTimeout(scrollTimer);
+          scrollTimer = 0;
+          post({ type: "scroll", x: scrollX, y: scrollY });
+        };
         // URLs built from location point at this shell; map them to the page's site.
         const toPage = (url) => {
           if (!cfg.url || url.origin !== shellOrigin) return url.href;
           return new URL(url.pathname + url.search + url.hash, pageUrl).href;
         };
+        // Routers resolve paths against location.href or location.origin, which throw here ("about:srcdoc", "null").
+        if (cfg.url) {
+          const NativeURL = URL;
+          window.URL = new Proxy(NativeURL, {
+            construct(target, args, newTarget) {
+              const base = args.length > 1 ? String(args[1]) : "";
+              if (base === "null") args = [args[0], new NativeURL(pageUrl).origin];
+              else if (/^about:srcdoc(?=[?#]|$)/.test(base)) args = [args[0], pageUrl];
+              else if (args.length === 1 && args[0] === "null") args = [new NativeURL(pageUrl).origin];
+              return Reflect.construct(target, args, newTarget);
+            },
+          });
+        }
         const resolve = (href) => {
           try { return toPage(new URL(href, document.baseURI)); } catch { return null; }
         };
+        addEventListener("scroll", () => { scrollTimer ||= setTimeout(reportScroll, 200); }, { passive: true });
         const samePage = (url) => {
           const a = new URL(url), b = new URL(pageUrl);
           return a.origin === b.origin && a.pathname === b.pathname && a.search === b.search;
         };
         // Best effort: give routers the page's path. Chromium refuses this for opaque origins.
-        const originalPush = history.pushState;
         const originalReplace = history.replaceState;
         const shellPath = (url) => {
           if (!cfg.url) return undefined;
@@ -428,19 +454,21 @@ _FRAME_HTML = r"""<!doctype html>
           const target = document.getElementById(id) || document.getElementsByName(id)[0];
           target?.scrollIntoView();
         };
-        // An in-page jump: scroll, and show its fragment in the address bar.
+        // An in-page jump: a Back step that scrolls, with its fragment in the address bar.
         const followHash = (hash) => {
-          scrollToHash(hash);
+          const from = pageUrl;
           try {
             const next = new URL(pageUrl);
             next.hash = hash;
-            pageUrl = next.href;
-            reportUrl();
+            if (next.href !== pageUrl) pushRoute(null, "", next.href);
           } catch {}
+          scrollToHash(hash);
+          tellHashChange(from);
         };
         const navigate = (raw, newTab, background) => {
           const url = resolve(raw);
           if (!url) return;
+          if (/^(?:blob|data):/i.test(url)) { fileAt(url, "").then((file) => file && post({ type: "download", ...file })); return; }
           if (!/^https?:/i.test(url)) { post({ type: "external", url }); return; }
           if (!newTab && samePage(url) && new URL(url).hash) { followHash(new URL(url).hash); return; }
           // Relative links in a local file can't be reached.
@@ -498,27 +526,98 @@ _FRAME_HTML = r"""<!doctype html>
             post({ type: "url", url: pageUrl });
           }, 200);
         };
-        for (const [method, original] of [["pushState", originalPush], ["replaceState", originalReplace]]) {
+        const setRoute = (state, title, next) => {
+          try { originalReplace.call(history, state, title, next ? shellPath(next) : undefined); }
+          catch {
+            // An opaque frame keeps its URL; carry the fragment, which hash routers read.
+            try { originalReplace.call(history, state, title, location.href.split("#")[0] + new URL(next).hash); }
+            catch { originalReplace.call(history, state, title); }
+          }
+          if (next) {
+            if (!samePage(next)) edited(false);
+            pageUrl = next;
+            routedBase?.setAttribute("href", pageUrl);
+            reportUrl();
+          }
+        };
+        // The frame shares Studio's session history: a native push would add to Studio's own Back.
+        const routes = [{ state: history.state, url: pageUrl }];
+        let route = 0;
+        // As in browsers, the panel's Back and Forward skip entries a page added without the user acting.
+        const stepFrom = (step) => {
+          let to = route + step;
+          while (routes[to]?.skip && navigator.userActivation?.hasBeenActive === false) to += step;
+          return to;
+        };
+        const tellHashChange = (from) => {
+          if (new URL(from).hash !== new URL(pageUrl).hash) dispatchEvent(new HashChangeEvent("hashchange", { oldURL: from, newURL: pageUrl }));
+        };
+        const tellHistory = () => post({ type: "history", back: Boolean(routes[stepFrom(-1)]), forward: Boolean(routes[stepFrom(1)]) });
+        const pushRoute = (state, title, next) => {
+          routes[route].scroll = { x: scrollX, y: scrollY };
+          routes[route].skip = navigator.userActivation?.hasBeenActive === false;
+          setRoute(state, title, next);
+          routes.splice(++route);
+          routes[route] = { state: history.state, url: pageUrl };
+          tellHistory();
+        };
+        const moveRoute = (to) => {
+          const target = routes[to], from = pageUrl;
+          routes[route].scroll = { x: scrollX, y: scrollY };
+          route = to;
+          setRoute(target.state, "", target.url);
+          dispatchEvent(new PopStateEvent("popstate", { state: history.state }));
+          if (target.scroll && history.scrollRestoration !== "manual") scrollTo(target.scroll.x, target.scroll.y);
+          tellHashChange(from);
+          tellHistory();
+        };
+        for (const method of ["pushState", "replaceState"]) {
           history[method] = function (state, title, url) {
             const raw = url != null ? String(url) : null;
             let next = raw !== null ? resolve(raw) : null;
             // A router that builds its URL from location.pathname gets "srcdoc": put the page's path back.
-            const fromShell = raw !== null && /^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw);
+            // Next.js cuts location.href past "about://" and gets "cdoc", which its state keeps for Back.
+            const fromShell = raw !== null && (/^(?:about:)?srcdoc(?=[?#]|$)/.exec(raw) || /^\/?cdoc(?=[?#]|$)/.exec(raw));
             if (fromShell && cfg.url) {
               const page = new URL(pageUrl);
-              next = new URL(page.pathname + raw.slice(fromShell[0].length), page.origin).href;
+              const path = page.pathname + raw.slice(fromShell[0].length);
+              next = new URL(path, page.origin).href;
+              if (state?.__N && state.as === raw) state = { ...state, as: path };
             }
             // A router re-asserting the shell's own path is not a navigation.
             if (next && new URL(next).pathname === shellPathname) next = null;
-            try { original.call(this, state, title, next ? shellPath(next) : undefined); }
-            catch { original.call(this, state, title); }
-            if (next) {
-              pageUrl = next;
-              routedBase?.setAttribute("href", pageUrl);
-              reportUrl();
+            if (method === "pushState") pushRoute(state, title, next);
+            else {
+              setRoute(state, title, next);
+              routes[route] = { state: history.state, url: pageUrl };
             }
           };
         }
+        history.go = function (delta) {
+          const step = Math.trunc(Number(delta)) || 0;
+          setTimeout(() => {
+            if (!step) post({ type: "reload" });
+            else if (!routes[route + step]) post({ type: step < 0 ? "back" : "forward" });
+            else moveRoute(route + step);
+          });
+        };
+        history.back = () => history.go(-1);
+        history.forward = () => history.go(1);
+        // A script's location.hash is a native step (history.length grows): the page's Back takes it too.
+        let nativeLength = history.length;
+        addEventListener("hashchange", (event) => {
+          if (!event.isTrusted) return;
+          const pushed = history.length > nativeLength;
+          nativeLength = history.length;
+          const next = new URL(pageUrl);
+          next.hash = location.hash;
+          if (next.href === pageUrl) return;
+          if (pushed) pushRoute(history.state, "", next.href);
+          else {
+            setRoute(history.state, "", next.href);
+            routes[route] = { state: history.state, url: pageUrl };
+          }
+        });
         // Catch navigations the click and submit handlers miss (location.href, reload).
         if (window.navigation) {
           window.navigation.addEventListener("navigate", (event) => {
@@ -528,9 +627,18 @@ _FRAME_HTML = r"""<!doctype html>
             else navigate(event.destination.url, false);
           });
         }
+        // A blank popup the page then points somewhere (FileSaver.js sends it the file): open or save that.
+        const blankPopup = () => {
+          // Pointed there after the click's activation ran out, a new tab would be refused: open it here instead.
+          const go = (url) => navigate(String(url), navigator.userActivation?.isActive !== false);
+          const location = { set href(url) { go(url); }, assign: go, replace: go };
+          return { closed: false, document: { title: "", body: {} }, get location() { return location; }, set location(url) { go(url); }, close() {}, focus() {} };
+        };
         // Popup blocker: only open tabs on user activation.
         window.open = (url) => {
-          if (url && navigator.userActivation?.isActive !== false) navigate(String(url), true);
+          const target = url == null ? "" : String(url).trim();
+          if (!target || /^about:blank$/i.test(target)) return blankPopup();
+          if (/^(?:blob|data):/i.test(target) || navigator.userActivation?.isActive !== false) navigate(target, true);
           return null;
         };
 
@@ -568,13 +676,41 @@ _FRAME_HTML = r"""<!doctype html>
             if (!cancelled) action();
           });
         };
+        const fileAt = (raw, name) =>
+          nativeFetch(raw).then((response) => response.blob()).then((blob) => ({ name: name || "download", blob }), () => null);
+        // Read at the click: a page may revoke a blob: URL as soon as its click returns.
+        const fileFrom = (link, raw) =>
+          link.hasAttribute("download") && /^(?:blob|data):/i.test(raw) ? fileAt(raw, link.getAttribute("download")) : null;
+        const siteFile = (link, raw) => {
+          if (!link.hasAttribute("download") || raw.startsWith("#")) return null;
+          const url = resolve(raw);
+          try { return url && /^https?:/i.test(url) && new URL(url).origin === new URL(pageUrl).origin ? url : null; } catch { return null; }
+        };
         const onLinkClick = (event) => {
           const link = linkFrom(event);
           if (!link) return;
           const raw = (link.getAttribute("href") || "").trim();
           if (/^javascript:/i.test(raw)) return;
           const modified = event.button === 1 || event.metaKey || event.ctrlKey || event.shiftKey;
+          if (!raw.startsWith("#")) post({ type: "linkClick", url: resolve(raw) });
+          const name = link.getAttribute("download");
+          let file = fileFrom(link, raw);
           unlessCancelled(event, () => {
+            // The page's own click handler may have set the file; a rename keeps the bytes already read.
+            const now = (link.getAttribute("href") || "").trim();
+            const final = link.getAttribute("download");
+            if (now !== raw || !file) {
+              if (now !== raw || final !== name) file = fileFrom(link, now);
+            } else if (final !== name) file = final === null ? null : file.then((got) => got && { ...got, name: final || "download" });
+            if (file) {
+              file.then((download) => download && post({ type: "download", ...download }));
+              return;
+            }
+            const url = siteFile(link, now);
+            if (url) {
+              post({ type: "download", url, name: final || "" });
+              return;
+            }
             // Keep "#" links on the page; against <base> they would navigate.
             if (raw.startsWith("#")) {
               if (raw.length > 1) followHash(raw);
@@ -585,6 +721,18 @@ _FRAME_HTML = r"""<!doctype html>
         };
         document.addEventListener("click", onLinkClick, true);
         document.addEventListener("auxclick", (event) => { if (event.button === 1) onLinkClick(event); }, true);
+        // A script's click on a download link outside the document (FileSaver.js) never reaches the listener above.
+        const clickDetached = (anchor, click) => {
+          if (!(anchor instanceof HTMLAnchorElement) || anchor.isConnected || !anchor.hasAttribute("download")) return click();
+          anchor.addEventListener("click", onLinkClick);
+          try { return click(); } finally { anchor.removeEventListener("click", onLinkClick); }
+        };
+        const anchorClick = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function () { clickDetached(this, () => anchorClick.call(this)); };
+        const dispatch = EventTarget.prototype.dispatchEvent;
+        EventTarget.prototype.dispatchEvent = function (event) {
+          return event?.type === "click" ? clickDetached(this, () => dispatch.call(this, event)) : dispatch.call(this, event);
+        };
 
         const submitForm = (form, submitter) => {
           const method = ((submitter && submitter.getAttribute("formmethod")) || form.getAttribute("method") || "get").toLowerCase();
@@ -613,6 +761,25 @@ _FRAME_HTML = r"""<!doctype html>
           unlessCancelled(event, () => submitForm(target, submitter));
         }, true);
         HTMLFormElement.prototype.submit = function () { submitForm(this, null); };
+        let scriptedEdit = 0;
+        let editingKey = false;
+        // execCommand produces trusted input even when a page calls it on load.
+        const execCommand = Function.prototype.call.bind(Document.prototype.execCommand);
+        Document.prototype.execCommand = function (...args) {
+          scriptedEdit += 1;
+          try { return execCommand(this, ...args); }
+          finally { scriptedEdit -= 1; }
+        };
+        document.addEventListener("keydown", (event) => {
+          const target = event.composedPath()[0];
+          if (!event.isTrusted || !(target instanceof Element) || !(target.matches("input, textarea") || target.isContentEditable)) return;
+          if (event.key.length !== 1 && !["Backspace", "Delete", "Enter"].includes(event.key)) return;
+          editingKey = true;
+          setTimeout(() => { editingKey = false; });
+        }, true);
+        for (const type of ["input", "paste", "cut"]) document.addEventListener(type, (event) => {
+          if (event.isTrusted && (!scriptedEdit || editingKey)) edited(true);
+        }, true);
 
         const report = () => {
           const icon = document.querySelector("link[rel~='icon'][href], link[rel='shortcut icon'][href], link[rel='apple-touch-icon'][href]");
@@ -621,7 +788,14 @@ _FRAME_HTML = r"""<!doctype html>
             title: document.title || "",
             favicon: icon ? resolve(icon.getAttribute("href")) : resolve("/favicon.ico"),
           });
-          if (new URL(pageUrl).hash) scrollToHash(new URL(pageUrl).hash);
+          tellHistory();
+          if (cfg.scroll && history.scrollRestoration !== "manual") {
+            const restore = () => scrollTo(cfg.scroll.x, cfg.scroll.y);
+            restore();
+            // Again after images load and grow the page, unless the reader has scrolled.
+            const settled = scrollY;
+            addEventListener("load", () => { if (scrollY === settled) restore(); }, { once: true });
+          } else if (new URL(pageUrl).hash) scrollToHash(new URL(pageUrl).hash);
         };
         if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", report, { once: true });
         else report();
@@ -802,7 +976,7 @@ _FRAME_HTML = r"""<!doctype html>
           }
         };
 
-        // Find in page for Studio's find bar: every visible match of the query, case-insensitive,
+        // Find in page for Unsloth's find bar: every visible match of the query, case-insensitive,
         // painted with the same two highlights as the chat's (all matches, then the active one) and
         // counted back to the bar. Highlights sit over the text, so the page itself is not changed.
         const finder = (() => {
@@ -916,6 +1090,11 @@ _FRAME_HTML = r"""<!doctype html>
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
           else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
+          else if (data.command === "go") {
+            const to = stepFrom(data.delta === -1 ? -1 : 1);
+            if (routes[to]) moveRoute(to);
+            else post({ type: to < route ? "back" : "forward" });
+          }
           else if (data.command === "agent" && typeof data.id === "string") {
             // Browser use: the panel's agent code (agent/page-agent.ts), installed on first use.
             if (!agent && typeof data.code === "string" && data.code.length <= 262144) {
@@ -930,18 +1109,32 @@ _FRAME_HTML = r"""<!doctype html>
       };
       const escapeAttr = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
       const inject = (html, tags) => {
-        const at = (match) => match.index + match[0].length;
-        const head = /<head\b[^<>]*>/i.exec(html);
-        if (head) return html.slice(0, at(head)) + tags + html.slice(at(head));
-        const root = /<html\b[^<>]*>/i.exec(html) || /^\s*<!doctype[^>]*>/i.exec(html);
-        if (root) return html.slice(0, at(root)) + "<head>" + tags + "</head>" + html.slice(at(root));
-        return "<head>" + tags + "</head>" + html;
+        // Bootstrap before even malformed pages' scripts, preserving their document mode.
+        const doctype = /^(?:\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i.exec(html)?.[0] || "";
+        return doctype + "<html><head>" + tags + "</head>" + html.slice(doctype.length);
       };
+      const FOLLOW_CLICK_MS = 3000;
+      const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return false; } };
       let page = null;
+      let inputPort = null;
+      let lastInput = -Infinity;
+      let clicked = null;
       window.addEventListener("message", (event) => {
         // Relay the page's messages; the panel only trusts this window.
         if (page && event.source === page.contentWindow) {
-          if (event.data && event.data.source === "unsloth-browser") parent.postMessage(event.data, "*");
+          if (event.data?.source === "unsloth-browser-input" && !inputPort && event.ports.length === 1) {
+            inputPort = event.ports[0];
+            inputPort.onmessage = ({ data }) => {
+              if (typeof data !== "boolean") return;
+              const now = performance.now();
+              if (data && now - lastInput < 1000) return;
+              lastInput = data ? now : -Infinity;
+              parent.postMessage({ source: "unsloth-browser", type: "typed", reset: !data }, "*");
+            };
+          }
+          if (!event.data || event.data.source !== "unsloth-browser" || event.data.type === "typed") return;
+          if (event.data.type === "linkClick") clicked = { url: event.data.url, at: Date.now() };
+          else parent.postMessage(event.data, "*");
           return;
         }
         if (event.source !== parent) return;
@@ -952,11 +1145,12 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null, scroll: data.scroll || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
         page.setAttribute("sandbox", "allow-scripts allow-forms");
+        page.setAttribute("allow", "clipboard-write");
         page.setAttribute("allowfullscreen", "");
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);
@@ -964,7 +1158,14 @@ _FRAME_HTML = r"""<!doctype html>
         // report only names the origin, so the panel can say what happened but not follow it.
         let blocked = false;
         document.addEventListener("securitypolicyviolation", (event) => {
-          if (blocked || event.effectiveDirective !== "frame-src") return;
+          if (event.effectiveDirective !== "frame-src") return;
+          // Next.js loads its own links in full here, as it sees them as another origin: follow the click.
+          if (clicked && Date.now() - clicked.at < FOLLOW_CLICK_MS && sameOrigin(clicked.url, event.blockedURI)) {
+            parent.postMessage({ source: "unsloth-browser", type: "navigate", url: clicked.url }, "*");
+            clicked = null;
+            return;
+          }
+          if (blocked) return;
           blocked = true;
           parent.postMessage({ source: "unsloth-browser", type: "scriptNavigation" }, "*");
         });
@@ -1582,6 +1783,7 @@ def _fetch_module(
             meta_out = meta,
             cancel_event = cancel_event,
             host_headers = _studio_headers,
+            proxy_hostname = True,
         )
     except Exception as exc:
         logger.warning("browser_module_fetch_failed", error = type(exc).__name__)
@@ -1732,6 +1934,7 @@ def _fetch(
         cancel_event = cancel_event,
         host_headers = _studio_headers,
         error_page = request.error_page,
+        proxy_hostname = True,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
@@ -1743,6 +1946,14 @@ def _attachment_name(meta: dict) -> Optional[str]:
         return None
     name = re.sub(r"[\x00-\x1f\x7f]", "", name.replace("\\", "/").rsplit("/", 1)[-1]).strip()[:255]
     return name if name.strip(".") else None
+
+
+def _is_attachment(meta: dict) -> bool:
+    disposition = next(
+        (value for key, value in meta.get("headers") or () if key.lower() == "content-disposition"),
+        "",
+    )
+    return disposition.split(";", 1)[0].strip().lower() == "attachment"
 
 
 def _build_response(
@@ -1770,7 +1981,7 @@ def _build_response(
         raise HTTPException(status_code = 502, detail = error)
 
     final_url = meta.get("url") or url
-    if is_html:
+    if is_html and (error is not None or not _is_attachment(meta)):
         if len(body) > _MAX_BROWSER_HTML_BYTES:
             raise HTTPException(
                 status_code = 502,
@@ -1812,6 +2023,7 @@ def _build_response(
             # never rendered on Studio's origin
             "Content-Security-Policy": "sandbox",
             **({NAME_HEADER: quote(name, safe = "")} if (name := _attachment_name(meta)) else {}),
+            **({ATTACHMENT_HEADER: "1"} if _is_attachment(meta) else {}),
         },
     )
 
@@ -2002,6 +2214,7 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         method = method,
         any_status = True,
         on_redirect = on_redirect,
+        proxy_hostname = True,
     )
     # "manual" gets an opaque redirect: no status, headers or body reach the page.
     if hops["stopped"] and request.redirect == "manual":
@@ -2098,6 +2311,8 @@ async def _run_in_pool(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+        # Drain late failures without cancelling queued work, which must release its slot.
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
 
 
 @router.post("/fetch")

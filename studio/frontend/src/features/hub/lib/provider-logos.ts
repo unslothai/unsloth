@@ -258,8 +258,8 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"Llama-",
 			"llama-",
 			"meta-",
-			// Carries no Llama token, so the re-upload needs its own stem.
-			"Muse-Glimmer"
+			// Muse (Glimmer, Spark) carries no Llama token, so the re-uploads need their own stem.
+			"Muse-"
 		],
 		// "Meta Inc." / "Meta Llama" / "AI at Meta". Not facebookresearch, which is
 		// an unrelated account despite the name.

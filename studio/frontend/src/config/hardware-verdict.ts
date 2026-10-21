@@ -11,6 +11,8 @@ export type HealthVerdict = {
   chat_only_reason?: string | null;
   /** What blocked that reason, when the backend knows something specific. */
   chat_only_detail?: string | null;
+  /** The repair a closed AMD device node needs, when it fully explains the verdict. */
+  chat_only_hint?: string | null;
   hardware_detecting?: boolean;
   hardware_detection_deferred?: boolean;
 };
@@ -19,6 +21,7 @@ export type ResolvedVerdict = {
   chatOnly: boolean;
   chatOnlyReason: string | null;
   chatOnlyDetail: string | null;
+  chatOnlyHint: string | null;
 };
 
 /** True while the backend is still measuring the host, so chat_only is its
@@ -44,12 +47,18 @@ export function isDetectionDeferred(data: HealthVerdict): boolean {
 export function videoNavHint(
   chatOnlyMeasured: boolean,
   chatOnlyReason: string | null,
+  // Developer mode's CPU video opt-in (/api/health video_cpu_opt_in). Waives only the plain
+  // no-GPU host; VideoPage still answers from the backend's own video verdict.
+  videoCpuOptIn = false,
 ): string | undefined {
   if (!chatOnlyMeasured) return undefined;
+  if (chatOnlyReason === "no_gpu" && videoCpuOptIn) return undefined;
   // Not "or a GPU": an Intel Mac's own dGPU is not one the video pipelines can use, so offering
   // that reads as a fix that would not work. Mirrors the backend's message for this host.
   if (chatOnlyReason === "intel_mac")
     return "Video generation requires Apple Silicon. This Intel Mac has no Metal device to run it.";
+  if (chatOnlyReason === "rosetta")
+    return "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable video generation.";
   // The GPU is there; PyTorch is what cannot reach it (a Windows update that resolved torch
   // from PyPI leaves a +cpu wheel beside two working cards), so "get a GPU" is a lie.
   if (
@@ -80,6 +89,10 @@ export function resolveVerdict(
         data.chat_only_reason === undefined
           ? previous.chatOnlyDetail
           : (data.chat_only_detail ?? null),
+      chatOnlyHint:
+        data.chat_only_reason === undefined
+          ? previous.chatOnlyHint
+          : (data.chat_only_hint ?? null),
     };
   }
   if (isProvisionalVerdict(data)) return previous;
@@ -87,5 +100,6 @@ export function resolveVerdict(
     chatOnly: data.chat_only ?? false,
     chatOnlyReason: data.chat_only_reason ?? null,
     chatOnlyDetail: data.chat_only_detail ?? null,
+    chatOnlyHint: data.chat_only_hint ?? null,
   };
 }

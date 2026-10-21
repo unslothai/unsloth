@@ -1458,6 +1458,11 @@ def test_clef_autocasts_as_it_trains_and_never_on_the_float32_path(monkeypatch):
     assert decision._clef_amp_dtype(model, cuda) is None
     model._unsloth_forced_float32 = False
     assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
+    # An XPU without native bf16 loads fp16, so it autocasts fp16 too.
+    xpu = torch.device("xpu")
+    assert decision._amp_dtype(xpu) == torch.float16
+    monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: True)
+    assert decision._amp_dtype(xpu) == torch.bfloat16
 
 
 def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):

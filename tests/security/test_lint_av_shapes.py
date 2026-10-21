@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""scripts/lint_av_shapes.py: every rule fires, the repository is clean against its baseline,
-and each false positive that reached a user's machine is caught at the commit that shipped it.
-
-Fixture text is joined from fragments, like the lint's own, so this file does not carry the
-shapes it checks for.
-"""
+"""Fixture text is joined from fragments so this file does not itself match the lint's shapes."""
 
 from __future__ import annotations
 

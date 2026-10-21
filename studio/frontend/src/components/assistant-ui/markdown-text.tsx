@@ -8,6 +8,7 @@ import { filesOpenInBrowser, openFileInBrowser } from "@/features/browser";
 import { useT } from "@/i18n";
 import {
   ArtifactCard,
+  readIncompleteInfo,
   useChatProjectScope,
   useChatRuntimeStore,
 } from "@/features/chat";
@@ -48,14 +49,9 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import {
-  Copy01Icon,
-  Download01Icon,
-  ExpandIcon,
-} from "@hugeicons/core-free-icons";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
-import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
   type ReactNode,
@@ -82,8 +78,10 @@ import {
   FenceBody,
   type FenceTokens,
   fenceMode,
+  fenceNeedsQuietWork,
   noteStreamingFence,
   PlainFenceShell,
+  queueFenceWork,
   trimmedLength,
   trimTrailingNewlines,
   useFenceReached,
@@ -95,6 +93,7 @@ import {
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { markdownBlockFallback } from "./markdown-block-fallback";
 import { createCodePlugin } from "./code-plugin";
+import { mermaid } from "./mermaid-plugin";
 import { CodeHighlightModeContext } from "./code-highlight-context";
 import { spellLines } from "./reasoning-code-colour";
 import { useThinkingCodeColour } from "./use-thinking-code-colour";
@@ -119,6 +118,7 @@ import {
   sandboxSessionIdFor,
   sandboxSessionInSrc,
 } from "./sandbox-files";
+import { MARKDOWN_TABLE_ICONS, MarkdownTable } from "./markdown-table";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
 import { useSandboxImage } from "./use-sandbox-image";
 import { rehypeSandboxImages } from "./rehype-sandbox-images";
@@ -129,6 +129,7 @@ import {
   type DiscreteInputTracker,
 } from "./discrete-input";
 import {
+  FINISHED_TEXT_REMEND,
   IncrementalMarkdownCache,
   LITERAL_LINK_REMEND,
   hasIncompleteLinkRepair,
@@ -168,24 +169,6 @@ const STREAMDOWN_SHIKI_THEME = [
   unslothLightTheme,
   unslothDarkTheme,
 ] satisfies NonNullable<StreamdownProps["shikiTheme"]>;
-// Streamdown ships its own glyphs for the table controls; swap in ours so copy,
-// download and expand match the icons used everywhere else.
-// `strokeWidth` is dropped, not forwarded: SVG types it `string | number`, HugeiconsIcon wants a number.
-function streamdownIcon(icon: typeof Copy01Icon) {
-  return function StreamdownIcon({
-    size,
-    strokeWidth: _strokeWidth,
-    ...props
-  }: ComponentProps<"svg"> & { size?: number }) {
-    return <HugeiconsIcon icon={icon} size={size} {...props} />;
-  };
-}
-const STREAMDOWN_ICONS = {
-  CopyIcon: streamdownIcon(Copy01Icon),
-  DownloadIcon: streamdownIcon(Download01Icon),
-  // Streamdown's key for the table's enlarge control.
-  Maximize2Icon: streamdownIcon(ExpandIcon),
-} satisfies NonNullable<StreamdownProps["icons"]>;
 const { withSmoothContextProvider } = INTERNAL;
 
 const STREAMING_RENDER_DUTY = 3;
@@ -346,7 +329,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
         <button
           type="button"
           title="Download image"
-          className="absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
+          className="aui-chat-icon-btn absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
           onClick={async () => {
             // Reuse fetched bytes under the desktop CSP.
             try {
@@ -481,6 +464,7 @@ const STREAMDOWN_COMPONENTS = {
   // Module-scoped: Streamdown's memo comparator ignores `components`.
   [SEARCH_IMAGE_TAG]: SearchImageElement,
   img: MarkdownImage,
+  table: MarkdownTable,
 };
 // Through the sanitizer; the component drops tokens it cannot resolve.
 const STREAMDOWN_ALLOWED_TAGS = {
@@ -491,7 +475,7 @@ const COPY_RESET_MS = 2000;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
-  "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
+  "aui-chat-icon-btn flex size-8 cursor-pointer items-center justify-center rounded-full text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
 /**
  * THE MERMAID FENCE IN THIS BLOCK, found with fence context.
@@ -997,6 +981,8 @@ function useFenceTokens(
   enabled: boolean,
   streaming: boolean,
 ): FenceTokens | null {
+  const [eager, setEager] = useState(() => !fenceNeedsQuietWork(languageToken, source, streaming));
+  if (!eager && !fenceNeedsQuietWork(languageToken, source, streaming)) setEager(true);
   const highlight = useCallback(
     (body: string, late: (result: FenceTokens) => void) =>
       streaming
@@ -1005,7 +991,7 @@ function useFenceTokens(
     [languageToken, streaming],
   );
   const [seed] = useState<{ body: string; tokens: FenceTokens } | null>(() => {
-    if (!enabled) return null;
+    if (!enabled || !eager) return null;
     const body = trimTrailingNewlines(source);
     const options = fenceHighlightOptions(body, languageToken);
     const settled = settlesOffThread(body, streaming, options)
@@ -1018,15 +1004,7 @@ function useFenceTokens(
   );
   const wanted = useRef("");
   const seedConsumed = useRef(false);
-  /*
-   * ONE effect, and a layout one. This was two -- a passive effect for the result and the
-   * callback, plus a layout effect so an already-cached fence is coloured before its first paint.
-   * Both called `code.highlight` with the same inputs on the same deps, and the plugin's
-   * throttled `approximateResult` returns a FRESH object each call, so both `setTokens` were
-   * observable and every source change scheduled a second render of the whole body: exactly the
-   * work this branch exists to remove. A layout effect gets the before-paint colour on its own,
-   * so the passive one bought nothing.
-   */
+  const displayed = useRef(seed ? { body: seed.body, language: languageToken } : null);
   useLayoutEffect(() => {
     if (!enabled) return;
     const body = trimTrailingNewlines(source);
@@ -1035,67 +1013,112 @@ function useFenceTokens(
       seedConsumed.current = true;
       if (seed?.body === body) return;
     }
-    const late = (result: FenceTokens) => {
-      if (wanted.current === body) setTokens(result);
-    };
+    let active = true;
     let cancel: (() => void) | null = null;
     let release: (() => void) | null = null;
-    let settled: FenceTokens | null = null;
+    let cancelStart: (() => void) | null = null;
+    let cancelPublish: (() => void) | null = null;
+    let cancelFallback: (() => void) | null = null;
     const options = fenceHighlightOptions(body, languageToken);
-    if (settlesOffThread(body, streaming, options)) {
-      const failover = !tokenizesOffThread(body, streaming);
-      settled = code.cached(options);
-      if (settled === null) {
-        cancel = requestFullHighlight(
-          body,
-          languageToken,
-          (result) => {
-            if (result === null) {
-              if (failover && wanted.current === body) {
-                setTokens(highlight(body, late));
-              }
-              return;
-            }
-            release?.();
-            release = null;
-            if (wanted.current !== body) return;
-            code.seed(options, result);
-            setTokens(result);
-          },
-          false,
-          !failover,
-        );
-        if (cancel === null && failover) {
-          settled = highlight(body, late);
-        } else {
-          highlight("", () => {});
-          settled = code.cover(options).result;
-        }
-        release = awaitWorker(body.length, () => {
-          if (highlight("", () => {}) === null) return false;
-          const result = code.highlightExact(
-            fenceHighlightOptions(body, languageToken),
-            late,
-          );
-          if (result === null) return false;
-          cancel?.();
-          setTokens(result);
-          release?.();
-          release = null;
-          return true;
+    const current = (): boolean => active && wanted.current === body;
+    const defer = (): boolean => !eager && fenceNeedsQuietWork(languageToken, source, streaming);
+    const show = (result: FenceTokens | null): void => {
+      if (!current()) return;
+      displayed.current = result === null ? null : { body, language: languageToken };
+      setTokens(result);
+    };
+    const publish = (work: () => void): void => {
+      if (!current()) return;
+      cancelPublish?.();
+      cancelPublish = null;
+      if (defer()) {
+        cancelPublish = queueFenceWork(() => {
+          cancelPublish = null;
+          if (current()) work();
         });
+      } else work();
+    };
+    const late = (result: FenceTokens) => publish(() => show(result));
+    const tokenizeNow = (): boolean => {
+      if (!current() || highlight("", () => {}) === null) return false;
+      const result = code.highlightExact(options, late);
+      if (result === null) return false;
+      cancel?.();
+      cancelPublish?.();
+      cancelPublish = null;
+      show(result);
+      release?.();
+      release = null;
+      return true;
+    };
+    const start = (): void => {
+      cancelStart = null;
+      if (!current()) return;
+      let settled: FenceTokens | null = null;
+      if (settlesOffThread(body, streaming, options)) {
+        const failover = !tokenizesOffThread(body, streaming);
+        settled = code.cached(options);
+        if (settled === null) {
+          cancel = requestFullHighlight(
+            body,
+            languageToken,
+            (result) => {
+              if (!current()) return;
+              if (result === null) {
+                if (failover) publish(() => show(highlight(body, late)));
+                return;
+              }
+              cancelFallback?.();
+              cancelFallback = null;
+              release?.();
+              release = null;
+              publish(() => {
+                code.seed(options, result);
+                show(result);
+              });
+            },
+            false,
+            !failover,
+          );
+          if (cancel === null && failover) {
+            settled = highlight(body, late);
+          } else {
+            highlight("", () => {});
+            settled = code.cover(options).result;
+          }
+          release = awaitWorker(body.length, () => {
+            if (!current()) return false;
+            if (!defer()) return tokenizeNow();
+            if (cancelFallback === null) {
+              cancelFallback = queueFenceWork(() => {
+                cancelFallback = null;
+                tokenizeNow();
+              });
+            }
+            return false;
+          });
+        }
+      } else {
+        settled = highlight(body, late);
       }
-    } else {
-      settled = highlight(body, late);
-    }
-    // `settled === null` means the plugin caught a tokenization error; keeping the previous
-    // tokens would show an older, shorter body. The callback restores them if it succeeds later.
-    setTokens(settled ?? null);
+      show(settled);
+    };
+    if (defer()) {
+      if (displayed.current !== null
+        && (displayed.current.body !== body || displayed.current.language !== languageToken)) {
+        show(null);
+      }
+      cancelStart = queueFenceWork(start);
+    } else start();
     return () => {
+      active = false;
+      cancelStart?.();
+      cancelPublish?.();
+      cancelFallback?.();
       release?.();
       cancel?.();
     };
-  }, [enabled, source, highlight, seed, streaming, languageToken]);
+  }, [enabled, source, highlight, seed, streaming, languageToken, eager]);
   return tokens;
 }
 
@@ -1468,6 +1491,7 @@ type MarkdownTextRendererProps = {
   messageId: string;
   messageTextKey: string;
   precedingText: string;
+  cut?: boolean;
   searchImagesKey: string;
   statusType: string;
   text: string;
@@ -1479,6 +1503,7 @@ function MarkdownTextRenderer({
   messageId,
   messageTextKey,
   precedingText,
+  cut = !isStreaming,
   searchImagesKey,
   statusType,
   text,
@@ -1547,10 +1572,6 @@ function MarkdownTextRenderer({
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
-  const pendingLinkRepair = useMemo(
-    () => !isStreaming && hasIncompleteLinkRepair(processedText),
-    [isStreaming, processedText],
-  );
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1565,10 +1586,16 @@ function MarkdownTextRenderer({
       <SearchImagesContext.Provider value={searchImages}>
         <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
-            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
+            key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
-            remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
+            remend={
+              !cut
+                ? FINISHED_TEXT_REMEND
+                : hasIncompleteLinkRepair(processedText)
+                  ? LITERAL_LINK_REMEND
+                  : undefined
+            }
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
               parseMarkdownIntoRenderableBlocks
@@ -1583,7 +1610,7 @@ function MarkdownTextRenderer({
             rehypePlugins={rehypePlugins}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
-            icons={STREAMDOWN_ICONS}
+            icons={MARKDOWN_TABLE_ICONS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}
             BlockComponent={StreamdownBlock}
           >
@@ -1625,6 +1652,13 @@ const MarkdownTextImpl = () => {
       ? partsTextKey(message.parts)
       : "[]",
   );
+  // Every streamed yield carries the incomplete stamp and only a normal finish clears it.
+  const cut = useAuiState(
+    ({ message }) =>
+      message.status?.type !== "running" &&
+      !!readIncompleteInfo(message.metadata) &&
+      !message.parts.slice(partIndex + 1).some((part) => part.type === "text"),
+  );
 
   return (
     <MarkdownTextRenderer
@@ -1633,6 +1667,7 @@ const MarkdownTextImpl = () => {
       messageId={messageId}
       messageTextKey={messageTextKey}
       precedingText={precedingText}
+      cut={cut}
       searchImagesKey={searchImagesKey}
       statusType={status.type}
       text={text}

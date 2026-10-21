@@ -147,3 +147,61 @@ test("source Markdown suppresses a duplicate HTML card when render_html is prese
   assert.match(stdout, /reasoning HTML fence/);
   assert.doesNotMatch(stdout, /Open HTML preview preview/);
 });
+
+const RENDER_BOUNDED_BOLD_TRACE = String.raw`
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import {
+  AssistantRuntimeProvider,
+  useLocalRuntime,
+} from "@assistant-ui/react";
+import { createServer } from "vite";
+
+const vite = await createServer({
+  appType: "custom",
+  logLevel: "silent",
+  optimizeDeps: { noDiscovery: true },
+  server: { middlewareMode: true, watch: null },
+});
+const { MarkdownTextSource } = await vite.ssrLoadModule(
+  "/src/components/assistant-ui/markdown-text.tsx",
+);
+const { ReasoningTranscriptIndex } = await vite.ssrLoadModule(
+  "/src/components/assistant-ui/reasoning-transcript-index.ts",
+);
+const text = "**" + "long thought ".repeat(3000).trimEnd() + "**";
+const rows = new ReasoningTranscriptIndex().update([text]);
+const adapter = { async *run() {} };
+function Harness({ row }) {
+  const runtime = useLocalRuntime(adapter);
+  return createElement(
+    AssistantRuntimeProvider,
+    { runtime },
+    createElement(MarkdownTextSource, {
+      messageId: "bounded-trace",
+      sourceText: row.renderText ?? row.text,
+      streaming: false,
+    }),
+  );
+}
+const html = rows.map((row) => renderToStaticMarkup(createElement(Harness, { row })));
+process.stdout.write(JSON.stringify(html), () => process.exit(0));
+`;
+
+test("a finished long trace keeps bold across its bounded fragments", async () => {
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--input-type=module", "--eval", RENDER_BOUNDED_BOLD_TRACE],
+    {
+      cwd: process.cwd(),
+      maxBuffer: 10_000_000,
+      timeout: RENDER_TIMEOUT_MS,
+    },
+  );
+  const fragments = JSON.parse(stdout) as string[];
+  assert.ok(fragments.length > 1);
+  for (const html of fragments) {
+    assert.match(html, /data-streamdown="strong"/);
+    assert.doesNotMatch(html, /\*\*/);
+  }
+});

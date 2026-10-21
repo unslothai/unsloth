@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 
 const MARKDOWN_TEXT_PATH = new URL(
   "../src/components/assistant-ui/markdown-text.tsx",
@@ -180,7 +180,13 @@ test("streaming reparses only the active Markdown tail", () => {
   );
   assert.equal(
     jsxAttribute(streamdown, "remend")?.initializer?.getText(source),
-    "{pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}",
+    "{\n" +
+      "              !cut\n" +
+      "                ? FINISHED_TEXT_REMEND\n" +
+      "                : hasIncompleteLinkRepair(processedText)\n" +
+      "                  ? LITERAL_LINK_REMEND\n" +
+      "                  : undefined\n" +
+      "            }",
   );
   assert.equal(
     jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
@@ -194,12 +200,12 @@ test("streaming reparses only the active Markdown tail", () => {
 });
 
 test("retained block and sandbox changes move Streamdown's render identity", () => {
-  // Streamdown also ignores rehypePlugins changes when memoizing.
+  // Streamdown's memo also ignores rehypePlugins and remend.
   const streamdown = findChatStreamdown();
   assert.ok(streamdown, "chat <Streamdown> is missing");
   assert.equal(
     jsxAttribute(streamdown, "key")?.initializer?.getText(source),
-    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}",
+    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}",
   );
   assert.match(
     source.getText(),
