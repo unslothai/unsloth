@@ -728,3 +728,73 @@ def test_a_refused_prefetch_sends_the_rest_of_the_step_to_the_source_without_wai
     assert router.stats["steps_parallel"] == 2 and not router.exclusion_refused
     assert torch.allclose(latents, refs[-1], atol = 1e-6)
     assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0
+
+
+def test_a_held_capture_still_waits_for_another_threads_held_work(monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 5.0)
+    other_in, other_go = threading.Event(), threading.Event()
+
+    def other_worker():
+        with cg.outside_capture():
+            other_in.set()
+            other_go.wait(5)
+
+    o = threading.Thread(target = other_worker)
+    o.start()
+    assert other_in.wait(5)
+    captured = threading.Event()
+
+    def recording_worker():
+        with cg.outside_capture():
+            with cg._capturing():
+                captured.set()
+
+    r = threading.Thread(target = recording_worker)
+    r.start()
+    try:
+        # the other worker's held work is still running: this worker's own hold is discounted, the other's is not
+        assert not captured.wait(0.3)
+    finally:
+        other_go.set()
+    assert captured.wait(5)
+    o.join(5)
+    r.join(5)
+    assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0 and cg._OUTSIDE_PARKED == [0]
+    assert not cg._OUTSIDE_STUCK[0]
+
+
+def test_a_held_capture_alone_records_at_once_and_two_record_one_after_the_other(monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 5.0)
+    with cg.outside_capture():
+        assert not cg.capture_refused_now()
+        with cg._capturing():  # only this thread's own hold is up: no self-deadlock
+            assert cg._CAPTURE_DEPTH == 1
+    both_in = threading.Barrier(2)
+    overlap, errors = [], []
+    live = [0]
+    lock = threading.Lock()
+
+    def worker():
+        try:
+            with cg.outside_capture():
+                both_in.wait(5)
+                with cg._capturing():
+                    with lock:
+                        live[0] += 1
+                        overlap.append(live[0])
+                    threading.Event().wait(0.05)
+                    with lock:
+                        live[0] -= 1
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target = worker) for _ in range(2)]
+    t0 = __import__("time").perf_counter()
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    # both parked holders do not wait each other out: one records, then the other, well inside the wait
+    assert errors == [] and overlap == [1, 1]
+    assert __import__("time").perf_counter() - t0 < 2.0
+    assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0 and cg._OUTSIDE_PARKED == [0]

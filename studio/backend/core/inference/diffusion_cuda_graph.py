@@ -147,6 +147,9 @@ _OUTSIDE_LOCAL = threading.local()
 OUTSIDE_WAIT_S = 120.0
 # Set by a refusal, cleared once the replica-side count drains: while it stands, captures refuse without waiting again.
 _OUTSIDE_STUCK = [False]
+# Holds owned by threads parked in ``_capturing`` waiting to record: a parked thread issues no CUDA calls, so another
+# held thread may record while it waits (two replica workers that both want to capture do not wait each other out).
+_OUTSIDE_PARKED = [0]
 
 
 class CaptureExclusionTimeout(RuntimeError):
@@ -161,10 +164,17 @@ class OutsideWorkRefused(CaptureExclusionTimeout):
     """Raised by ``held_work`` before the replica-side work runs: none of its CUDA calls were made."""
 
 
+def _other_holds(own: int, parked: int) -> int:
+    """Replica-side holds a capture by this thread must wait for: its own held work (``own``) is discounted, and a
+    held thread also discounts holds whose threads are parked waiting to record (``parked``, this thread's excluded)."""
+    return _OUTSIDE_JOBS - own - (parked if own else 0)
+
+
 def capture_refused_now() -> bool:
     """Whether a capture would be refused without waiting (a stale replica-side count is still standing)."""
     with _CAPTURE_IDLE:
-        return _OUTSIDE_STUCK[0] and _OUTSIDE_JOBS > 0 and not getattr(_OUTSIDE_LOCAL, "depth", 0)
+        own = getattr(_OUTSIDE_LOCAL, "depth", 0)
+        return _OUTSIDE_STUCK[0] and _other_holds(own, _OUTSIDE_PARKED[0]) > 0
 
 
 @contextlib.contextmanager
@@ -176,17 +186,29 @@ def _capturing():
     ``CaptureRefused`` (depth untouched, nothing recorded) when replica-side work did not drain in time.
     """
     global _CAPTURE_DEPTH
+    # Replica-side recording (inside this thread's own held work) discounts only this thread's holds: another
+    # worker's held work still running must drain first, or the global capture would forbid its CUDA calls.
+    own = getattr(_OUTSIDE_LOCAL, "depth", 0)
     with _CAPTURE_IDLE:
-        if not getattr(_OUTSIDE_LOCAL, "depth", 0):
-            drained = (_OUTSIDE_JOBS <= 0) or (
-                not _OUTSIDE_STUCK[0]
-                and _CAPTURE_IDLE.wait_for(lambda: _OUTSIDE_JOBS <= 0, timeout = OUTSIDE_WAIT_S)
-            )
-            if not drained:
-                _OUTSIDE_STUCK[0] = True
-                raise CaptureRefused(
-                    f"replica-side CUDA work still running after {OUTSIDE_WAIT_S:g}s; capture refused"
+        drained = _other_holds(own, _OUTSIDE_PARKED[0]) <= 0
+        if not drained and not _OUTSIDE_STUCK[0]:
+            if own:
+                _OUTSIDE_PARKED[0] += own
+                _CAPTURE_IDLE.notify_all()
+            try:
+                drained = _CAPTURE_IDLE.wait_for(
+                    lambda: _other_holds(own, _OUTSIDE_PARKED[0] - own) <= 0,
+                    timeout = OUTSIDE_WAIT_S,
                 )
+            finally:
+                if own:
+                    _OUTSIDE_PARKED[0] -= own
+                    _CAPTURE_IDLE.notify_all()
+        if not drained:
+            _OUTSIDE_STUCK[0] = True
+            raise CaptureRefused(
+                f"replica-side CUDA work still running after {OUTSIDE_WAIT_S:g}s; capture refused"
+            )
         _CAPTURE_DEPTH += 1
     try:
         yield
