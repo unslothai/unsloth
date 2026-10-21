@@ -2160,7 +2160,9 @@ class FastSentenceTransformer(FastModel):
             # Router.load joins the route onto its own subfolder (Path(subfolder, route)),
             # and fetches it from the same repository.
             sub_folder = (
-                route if route.startswith("/") else (f"{folder}/{route}" if folder else route)
+                route
+                if route.startswith("/") or os.path.isabs(route)
+                else (f"{folder}/{route}" if folder else route)
             )
             FastSentenceTransformer._check_delegated_module_config(
                 model_name,
