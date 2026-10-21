@@ -458,7 +458,6 @@ _FRAME_HTML = r"""<!doctype html>
         const navigate = (raw, newTab, background) => {
           const url = resolve(raw);
           if (!url) return;
-          // A file the page made has nowhere to show here: save it.
           if (/^(?:blob|data):/i.test(url)) { fileAt(url, "").then((file) => file && post({ type: "download", ...file })); return; }
           if (!/^https?:/i.test(url)) { post({ type: "external", url }); return; }
           if (!newTab && samePage(url) && new URL(url).hash) { followHash(new URL(url).hash); return; }
@@ -554,7 +553,7 @@ _FRAME_HTML = r"""<!doctype html>
           const location = { set href(url) { go(url); }, assign: go, replace: go };
           return { closed: false, document: { title: "", body: {} }, get location() { return location; }, set location(url) { go(url); }, close() {}, focus() {} };
         };
-        // Popup blocker: only open tabs on user activation. The panel asks before saving a file.
+        // Popup blocker: only open tabs on user activation.
         window.open = (url) => {
           const target = url == null ? "" : String(url).trim();
           if (!target || /^about:blank$/i.test(target)) return blankPopup();
@@ -601,7 +600,6 @@ _FRAME_HTML = r"""<!doctype html>
         // Read at the click: a page may revoke a blob: URL as soon as its click returns.
         const fileFrom = (link, raw) =>
           link.hasAttribute("download") && /^(?:blob|data):/i.test(raw) ? fileAt(raw, link.getAttribute("download")) : null;
-        // As in a browser, only a link to the page's own site saves; one to another site opens.
         const siteFile = (link, raw) => {
           if (!link.hasAttribute("download") || raw.startsWith("#")) return null;
           const url = resolve(raw);
