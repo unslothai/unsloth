@@ -11451,6 +11451,8 @@ class LlamaCppBackend:
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
         device_list: Optional[bool] = None,
+        tensor_parallel: Optional[bool] = None,
+        integrated_gpu_ids: Optional[Iterable[int]] = None,
     ) -> bool:
         """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child: ANY
         model device without mmap support (ggml-org/llama.cpp#28160; integrated Vulkan and
@@ -11464,7 +11466,18 @@ class LlamaCppBackend:
         ``device_list`` says whether ``gpu_indices`` reaches the child as ``--device``:
         by default only on Vulkan, where Studio pins with ``--device Vulkan<i>``; the
         host preflight passes False, its ``gpu_indices`` being the inventory.
+        Tensor mode with no list builds one Meta device from EVERY visible GPU, iGPUs
+        included, and the Meta device has mmap support only if all members do, so there
+        the visible set is checked device by device too. ``tensor_parallel`` None reads
+        the split mode from ``extra_args`` / ``env``.
+        ``integrated_gpu_ids``: Vulkan iGPUs the automatic placement filtered out of
+        ``shared_gpu_ids``, which a ``--device`` list can still name.
         ``probe_integrated_cuda`` False uses only a cached SoC answer (no new context)."""
+        tensor = (
+            _effective_tensor_parallel(extra_args, False, env)
+            if tensor_parallel is None
+            else bool(tensor_parallel)
+        )
         selected = None
         override = self._effective_device_ids(extra_args, env)
         if override is not None:
@@ -11473,15 +11486,17 @@ class LlamaCppBackend:
             if all(o is not None for o in ordinals):
                 # --device names the child's compact ids; residency is keyed physical.
                 selected = list(self._physical_ordinals(ordinals, env, is_vulkan_backend) or ())
-        elif device_list if device_list is not None else is_vulkan_backend:
+        elif tensor or (device_list if device_list is not None else is_vulkan_backend):
             try:
                 selected = list(gpu_indices or ()) or None
             except TypeError:
                 selected = None
+            if selected is None and tensor:
+                selected = [row[0] for row in (detected_gpus or ())] or None
         if selected is not None:
             # Split mode none keeps only devices[main_gpu] of the list (main_gpu 0 by
             # default, none below 0), and only the kept device is checked.
-            if selected and _split_mode_confines_to_one_device(extra_args, env):
+            if selected and not tensor and _split_mode_confines_to_one_device(extra_args, env):
                 main = self._effective_main_gpu(extra_args, env)
                 main = 0 if main is None else main
                 selected = selected[main : main + 1] if main >= 0 else []
@@ -11490,7 +11505,7 @@ class LlamaCppBackend:
                 return False
         if selected:
             if is_vulkan_backend:
-                return bool(selected & set(shared_gpu_ids or ()))
+                return bool(selected & (set(shared_gpu_ids or ()) | set(integrated_gpu_ids or ())))
             try:
                 if selected & LlamaCppBackend._rocm_unified_memory_gpu_ids():
                     return True
@@ -16363,6 +16378,7 @@ class LlamaCppBackend:
         avail_mib: Optional[int] = None,
         shared_gpu_ids: Iterable[int] = (),
         honor_opt_out: bool = True,
+        integrated_gpu_ids: Iterable[int] = (),
     ) -> Optional[str]:
         """Warning when the weights alone do not fit in free VRAM plus available RAM.
 
@@ -16441,6 +16457,7 @@ class LlamaCppBackend:
                         extra_args = argv,
                         env = _env,
                         device_list = False,
+                        integrated_gpu_ids = integrated_gpu_ids,
                     ),
                 ),
             )
@@ -27074,6 +27091,7 @@ class LlamaCppBackend:
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
                 _shared_gpu_ids: set[int] = set()
+                _vulkan_igpu_ids: frozenset[int] = frozenset()
                 _placement_ctx_checkpoints = 0
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
@@ -27273,6 +27291,14 @@ class LlamaCppBackend:
                                 "get GPU inference back.",
                                 _present,
                             )
+                    # Classified before the automatic filter below drops them: a
+                    # --device list in the extras can still name one. Lazy-read pricing
+                    # only; _shared_gpu_ids keeps meaning the filtered candidates.
+                    _vulkan_igpu_ids = (
+                        frozenset(idx for idx, _free, total in _gpu_mem if total <= 0)
+                        if is_vulkan_backend
+                        else frozenset()
+                    )
                     if is_vulkan_backend and not gpu_ids and gpu_memory_mode != "manual":
                         _gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
@@ -29899,6 +29925,8 @@ class LlamaCppBackend:
                                 is_vulkan_backend = is_vulkan_backend,
                                 extra_args = _child_extras,
                                 env = _child_env,
+                                tensor_parallel = tensor_parallel,
+                                integrated_gpu_ids = _vulkan_igpu_ids,
                             ),
                         )
                         _need = (
@@ -30360,6 +30388,8 @@ class LlamaCppBackend:
                         is_vulkan_backend = is_vulkan_backend,
                         extra_args = _fit_extras,
                         env = _fit_env,
+                        tensor_parallel = tensor_parallel,
+                        integrated_gpu_ids = _vulkan_igpu_ids,
                     )
                     _fit_lazy_bytes = self._lazy_read_host_bytes(
                         model_path,
@@ -30764,6 +30794,7 @@ class LlamaCppBackend:
                                 probe_integrated_cuda = False,
                                 extra_args = _apu_lazy_extras,
                                 env = _apu_lazy_env,
+                                tensor_parallel = tensor_parallel,
                             ),
                         ),
                     )
@@ -33186,6 +33217,7 @@ class LlamaCppBackend:
                     child_has_no_gpu = _child_has_no_gpu,
                     avail_mib = _preflight_avail_mib,
                     shared_gpu_ids = _shared_gpu_ids,
+                    integrated_gpu_ids = _vulkan_igpu_ids,
                 )
                 # Snapshotted BEFORE the override note is appended below, so a re-price
                 # that promotes this notice appends that note once rather than twice.
@@ -33214,8 +33246,10 @@ class LlamaCppBackend:
                             _reachable_gpus,
                             env,
                             child_has_no_gpu = _child_has_no_gpu,
+                            avail_mib = _preflight_avail_mib,
                             shared_gpu_ids = _shared_gpu_ids,
                             honor_opt_out = False,
+                            integrated_gpu_ids = _vulkan_igpu_ids,
                         )
                     )
 
@@ -34583,7 +34617,11 @@ class LlamaCppBackend:
                                 return False
                             return bool(
                                 self._launch_host_shortfall_message(
-                                    cmd, _retry_rows, env, honor_opt_out = False
+                                    cmd,
+                                    _retry_rows,
+                                    env,
+                                    honor_opt_out = False,
+                                    avail_mib = _retry_host_avail_mib,
                                 )
                             )
 

@@ -164,7 +164,7 @@ def _launch(
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": 2**31 - 1,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
@@ -1270,7 +1270,7 @@ def _launch_with_failing_drafter(
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": 2**31 - 1,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
@@ -1378,7 +1378,7 @@ def test_a_drafter_that_fails_to_start_gives_its_slots_back(tmp_path):
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": 2**31 - 1,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
@@ -3566,7 +3566,7 @@ def _launch_with_text_only_fallback(backend, gguf, **load_kwargs):
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": 2**31 - 1,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,
@@ -3793,7 +3793,7 @@ def _launch_with_vulkan_cpu_replay(
             "Process",
             (),
             {
-                "pid": 123,
+                "pid": 2**31 - 1,
                 "stdout": (),
                 "returncode": rc,
                 "poll": lambda self: rc,
@@ -5992,6 +5992,128 @@ def test_the_arch_crash_retry_prices_ram_against_its_own_mask():
     kill = retry.index("self._kill_process()")
     assert retry.index("_retry_host_avail_mib = self._available_system_memory_mib()") < kill
     assert "avail_mib = _retry_host_avail_mib" in retry[host:]
+
+
+def test_tensor_mode_checks_every_visible_device(monkeypatch):
+    """With no --device list, --split-mode tensor builds one Meta device from every
+    visible GPU, iGPUs included (src/llama.cpp llama_prepare_model_devices), and the Meta
+    device supports mmap only if all members do (ggml-backend-meta.cpp), so one iGPU in
+    the visible set turns lazy auto off."""
+    _mixed_cuda_soc_host(monkeypatch)
+    backend = LlamaCppBackend()
+    cuda = dict(
+        gpu_indices = None,
+        detected_gpus = [(0, 8_000), (1, 1_000)],
+        shared_gpu_ids = set(),
+        is_vulkan_backend = False,
+    )
+    assert backend._lazy_auto_resolves_off(**cuda) is False
+    assert backend._lazy_auto_resolves_off(**cuda, tensor_parallel = True) is True
+    # Read off a finished argv or env when the caller has no resolved decision.
+    assert backend._lazy_auto_resolves_off(**cuda, extra_args = ["-sm", "tensor"], env = {}) is True
+    assert (
+        backend._lazy_auto_resolves_off(
+            **cuda, extra_args = [], env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
+        )
+        is True
+    )
+    # A resolved downgrade to layer split wins over the extras that asked for tensor.
+    assert (
+        backend._lazy_auto_resolves_off(
+            **cuda, extra_args = ["-sm", "tensor"], env = {}, tensor_parallel = False
+        )
+        is False
+    )
+    # A mask that leaves only the discrete card has no iGPU to add.
+    assert (
+        backend._lazy_auto_resolves_off(**dict(cuda, gpu_indices = [0]), tensor_parallel = True)
+        is False
+    )
+    vk = dict(cuda, is_vulkan_backend = True, shared_gpu_ids = {1})
+    assert backend._lazy_auto_resolves_off(**vk, device_list = False) is False
+    assert (
+        backend._lazy_auto_resolves_off(
+            **vk, device_list = False, extra_args = ["--split-mode", "tensor"], env = {}
+        )
+        is True
+    )
+
+
+def test_a_mixed_tensor_launch_prices_the_lazy_table(tmp_path, _moe_cache_host, monkeypatch):
+    """Manual tensor parallelism over a discrete card and an integrated SoC, asking for
+    --load-mode none: llama.cpp reads the table normally there, so the 20 GiB file does
+    not fit 6 GiB of RAM beside 16 GiB of VRAM, and the host guard must warn and page
+    the load. Layer split drops the iGPU and keeps the table lazy, so it fits."""
+    _mixed_cuda_soc_host(monkeypatch)
+    lazy = {"per_layer_token_embd.weight": 12 * _GIB}
+    no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+    kwargs = dict(
+        ram_gib = 6,
+        lazy = lazy,
+        arch = "qwen4exp",
+        caps = no_auto,
+        memory = [(0, 8_000, 16_000), (1, 8_000, 8_000)],
+        host_guard = True,
+        gpu_memory_mode = "manual",
+        gpu_layers = 20,
+        load_mode = "none",
+    )
+    backend, layer = _cache_launch(tmp_path, **kwargs)
+    assert _load_mode(layer) == "none", layer
+    assert backend.last_load_warning is None, backend.last_load_warning
+    backend, cmd = _cache_launch(tmp_path, tensor_parallel = True, **kwargs)
+    assert cmd[cmd.index("--split-mode") + 1] == "tensor", cmd
+    assert _load_mode(cmd) is None, cmd
+    assert backend.last_load_warning, cmd
+
+
+def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
+    """Automatic Vulkan placement drops iGPUs from its candidates, so they leave
+    _shared_gpu_ids; a --device list naming one still loads onto it, and the lazy check
+    gets the pre-filter classification instead."""
+    backend = LlamaCppBackend()
+    kw = dict(
+        gpu_indices = None,
+        detected_gpus = [(0, 8_000)],
+        shared_gpu_ids = set(),
+        is_vulkan_backend = True,
+        extra_args = ["--device", "Vulkan0,Vulkan1"],
+        env = {},
+    )
+    assert backend._lazy_auto_resolves_off(**kw) is False
+    assert backend._lazy_auto_resolves_off(**kw, integrated_gpu_ids = {1}) is True
+    # Not named, not counted.
+    assert (
+        backend._lazy_auto_resolves_off(
+            **dict(kw, extra_args = ["--device", "Vulkan0"]), integrated_gpu_ids = {1}
+        )
+        is False
+    )
+    # The launch hands the same classification to the fit, the preflight and the
+    # opt-out reading of it.
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    capture = src.index("_vulkan_igpu_ids = (")
+    assert capture < src.index("_gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)")
+    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 4, src.count(
+        "integrated_gpu_ids = _vulkan_igpu_ids"
+    )
+
+
+def test_the_oversized_readings_share_their_preflights_ram_snapshot():
+    """Under the opt-out the oversized reading re-prices the shortfall, and it must use
+    the RAM figure its neighbouring preflight used, not a later one."""
+    import inspect
+
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    for name, snapshot in (
+        ("def _launch_is_oversized()", "avail_mib = _preflight_avail_mib"),
+        ("def _retry_is_oversized()", "avail_mib = _retry_host_avail_mib"),
+    ):
+        body = src[src.index(name) :]
+        body = body[: body.index("self._page_an_oversized_unmapped_load(")]
+        assert snapshot in body, (name, body)
 
 
 @pytest.mark.parametrize("lazy_args, warned", [(["-lzm", "on"], False), ([], True)])
