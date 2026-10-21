@@ -118,7 +118,7 @@ def test_missing_binary_reports_no_support(tmp_path):
 )
 def test_mtp_emits_probabilistic_after_spec_type(monkeypatch, mode, gpus):
     flags = _flags(_backend(monkeypatch), mode, gpus = gpus)
-    assert flags[-2:] == _PROB or flags[flags.index("--spec-draft-sampling") :][:2] == _PROB
+    assert flags[-2:] == _PROB
     assert flags.index("--spec-type") < flags.index("--spec-draft-sampling")
     assert flags.count("--spec-draft-sampling") == 1
 
@@ -198,3 +198,56 @@ def test_helper_contract():
     assert _spec_draft_sampling_flags(None, None) == []
     assert _spec_draft_sampling_flags({}, None) == []
     assert _spec_draft_sampling_flags(caps, ["--spec-draft-sampling", "probabilistic"]) == []
+
+
+def test_renamed_gemma_target_keeps_greedy(monkeypatch, tmp_path):
+    # general.architecture, not the file name: a renamed Gemma 4 target still drafts greedily.
+    drafter = tmp_path / "mtp-custom-26B-Q8_0.gguf"
+    drafter.write_bytes(b"GGUF")
+    backend = _backend(monkeypatch)
+    backend._architecture = "gemma4"
+    flags = _flags(backend, "mtp", model = "local-custom-model", mtp_draft_path = str(drafter))
+    assert _flags_dict(flags).get("--model-draft") == str(drafter)
+    assert "--spec-draft-sampling" not in flags
+
+
+def test_renamed_gemma_assistant_keeps_greedy(monkeypatch, tmp_path):
+    drafter = tmp_path / "mtp-custom-26B-Q8_0.gguf"
+    drafter.write_bytes(b"GGUF")
+    backend = _backend(monkeypatch)
+
+    class _Draft:
+        _architecture = "gemma4-assistant"
+
+    monkeypatch.setattr(backend, "_draft_backend_for", lambda path: _Draft())
+    flags = _flags(backend, "mtp", model = "local-custom-model", mtp_draft_path = str(drafter))
+    assert _flags_dict(flags).get("--model-draft") == str(drafter)
+    assert "--spec-draft-sampling" not in flags
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--mirostat", "2"],
+        ["--mirostat=1"],
+        ["--samplers", "penalties;top_k;adaptive_p"],
+        ["--sampler-seq", "kpa"],
+        ["--sampling-seq=ka"],
+    ],
+)
+def test_stateful_sampler_keeps_greedy(monkeypatch, extra):
+    # Mirostat updates mu inside apply on the target's own draw, and adaptive-p only updates its
+    # EMA when the accepted token is that draw, so rejection sampling (which may emit another
+    # token) would corrupt their state.
+    flags = _flags(_backend(monkeypatch), "mtp", extra_args = extra)
+    assert "--spec-type" in flags
+    assert "--spec-draft-sampling" not in flags
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--mirostat", "0"], ["--samplers", "top_k;top_p;temperature"], ["--sampler-seq", "kpt"]],
+)
+def test_stateless_sampler_extras_keep_probabilistic(monkeypatch, extra):
+    flags = _flags(_backend(monkeypatch), "mtp", extra_args = extra)
+    assert _flags_dict(flags).get("--spec-draft-sampling") == "probabilistic"

@@ -4770,6 +4770,36 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
 _SPEC_DRAFT_SAMPLING_ENV = "UNSLOTH_SPEC_DRAFT_SAMPLING"
 
 
+def _extra_args_select_stateful_sampler(extra_args: Optional[Iterable[str]]) -> bool:
+    """Whether the extras pick Mirostat or adaptive-p (neither has an env var).
+
+    Rejection verification runs the target's sampler chain, then may emit the draft or a residual
+    draw instead of that chain's pick. Mirostat updates mu inside apply on its own pick and
+    adaptive-p updates its EMA only when the emitted token is its pick, so either would drift.
+    A malformed value counts as stateful (llama-server rejects it anyway)."""
+    if not extra_args:
+        return False
+    args = [str(a) for a in extra_args]
+    for i, raw in enumerate(args):
+        flag = _flag_name(raw)
+        if flag not in ("--mirostat", "--samplers", "--sampler-seq", "--sampling-seq"):
+            continue
+        _, eq, inline = raw.partition("=")
+        value = (inline if eq else (args[i + 1] if i + 1 < len(args) else "")).strip().lower()
+        if flag == "--mirostat":
+            try:
+                if int(value) != 0:
+                    return True
+            except ValueError:
+                return True
+        elif flag == "--samplers":
+            if "adaptive_p" in value.split(";"):
+                return True
+        elif "a" in value:
+            return True
+    return False
+
+
 def _spec_draft_sampling_flags(
     caps: Optional[dict], extra_args: Optional[Iterable[str]]
 ) -> list[str]:
@@ -4785,6 +4815,8 @@ def _spec_draft_sampling_flags(
     if not caps or not caps.get("supports_spec_draft_sampling"):
         return []
     if _extra_args_set_any_flag(extra_args, {"--spec-draft-sampling"}):
+        return []
+    if _extra_args_select_stateful_sampler(extra_args):
         return []
     if os.environ.get("LLAMA_ARG_SPEC_DRAFT_SAMPLING"):
         return []
@@ -35506,7 +35538,17 @@ class LlamaCppBackend:
             flags.extend(ngram_knobs)
             # Not for the Gemma 4 assistant: at Gemma's defaults (T 1.0, top-k 64) its
             # sampled drafts were accepted less often than its argmax.
-            if not _is_gemma_mtp_name(model_identifier, model_path):
+            # By general.architecture too, so a renamed target or assistant is still caught.
+            _draft_arch = None
+            if mtp_draft_path:
+                _db = self._draft_backend_for(mtp_draft_path)
+                _draft_arch = getattr(_db, "_architecture", None)
+            if not (
+                _is_gemma_mtp_name(model_identifier, model_path)
+                or _is_gemma_mtp_name(None, mtp_draft_path)
+                or getattr(self, "_architecture", None) == "gemma4"
+                or _draft_arch == "gemma4-assistant"
+            ):
                 flags.extend(_spec_draft_sampling_flags(caps, extra_args))
             self._speculative_type = "draft-mtp"
             chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
