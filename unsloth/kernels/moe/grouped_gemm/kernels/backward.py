@@ -496,11 +496,17 @@ def _grouped_gemm_dW_per_expert_kernel(
     if USE_TMA_LOAD_dY:
         # Rows past this expert's end read as zero, so the other operand needs no masking either.
         dY_desc = tl.make_tensor_descriptor(
-            dY_ptr, shape = [m_end, N], strides = [N, 1], block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_N],
+            dY_ptr,
+            shape = [m_end, N],
+            strides = [N, 1],
+            block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_N],
         )
     if USE_TMA_LOAD_X:
         x_desc = tl.make_tensor_descriptor(
-            x_ptr, shape = [m_end, K], strides = [K, 1], block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
+            x_ptr,
+            shape = [m_end, K],
+            strides = [K, 1],
+            block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_K],
         )
 
     accumulator = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K), dtype = acc_dtype)
@@ -544,7 +550,10 @@ def _grouped_gemm_dW_per_expert_kernel(
         # Same rule as the legacy kernel: the old gradient is added after the reduction, one rounding.
         if USE_TMA_STORE:
             prev = tl.make_tensor_descriptor(
-                dW_ptr, shape = [NUM_EXPERTS, N, K], strides = [N * K, K, 1], block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
+                dW_ptr,
+                shape = [NUM_EXPERTS, N, K],
+                strides = [N * K, K, 1],
+                block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
             ).load([expert_idx, n_offset, k_offset])
             prev = tl.reshape(prev, (BLOCK_SIZE_N, BLOCK_SIZE_K))
         else:
@@ -559,7 +568,10 @@ def _grouped_gemm_dW_per_expert_kernel(
         tl.static_assert(N % BLOCK_SIZE_N == 0, "N must be divisible by BLOCK_SIZE_N")
         tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
         dW_desc = tl.make_tensor_descriptor(
-            dW_ptr, shape = [NUM_EXPERTS, N, K], strides = [N * K, K, 1], block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
+            dW_ptr,
+            shape = [NUM_EXPERTS, N, K],
+            strides = [N * K, K, 1],
+            block_shape = [1, BLOCK_SIZE_N, BLOCK_SIZE_K],
         )
         dW_desc.store([expert_idx, n_offset, k_offset], tl.expand_dims(y, 0))
     else:
@@ -581,7 +593,12 @@ def _prune_dW_per_expert_configs(configs, args, **kwargs):
         if key not in seen:
             seen.add(key)
             single.append(
-                triton.Config(dict(config.kwargs), num_warps = config.num_warps, num_stages = 1, num_ctas = config.num_ctas)
+                triton.Config(
+                    dict(config.kwargs),
+                    num_warps = config.num_warps,
+                    num_stages = 1,
+                    num_ctas = config.num_ctas,
+                )
             )
     return single
 

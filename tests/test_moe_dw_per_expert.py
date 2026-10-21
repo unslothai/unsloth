@@ -122,7 +122,14 @@ def test_per_expert_fp32_activations_bf16_weight(monkeypatch, accumulate):
     X = torch.randn(T, K, device = "cuda", generator = g)
     dY = torch.randn(T * topk, N, device = "cuda", generator = g)
     prev = torch.randn(E, N, K, device = "cuda", generator = g).bfloat16()
-    kw = dict(BLOCK_SIZE_M = 128, BLOCK_SIZE_N = 128, BLOCK_SIZE_K = 64, num_warps = 8, num_stages = 3, permute_x = True)
+    kw = dict(
+        BLOCK_SIZE_M = 128,
+        BLOCK_SIZE_N = 128,
+        BLOCK_SIZE_K = 64,
+        num_warps = 8,
+        num_stages = 3,
+        permute_x = True,
+    )
     outs = {}
     for kernel in ("auto", "legacy"):
         monkeypatch.setenv("UNSLOTH_MOE_DW_KERNEL", kernel)
@@ -130,9 +137,13 @@ def test_per_expert_fp32_activations_bf16_weight(monkeypatch, accumulate):
             outs[kernel] = prev.clone()
             gg._grouped_gemm_dW_accumulate_impl(X, dY, m_sizes, gather, outs[kernel], topk, **kw)
         else:
-            outs[kernel] = gg._grouped_gemm_dW_impl(X, dY, m_sizes, gather, topk, dW_dtype = torch.bfloat16, **kw)
+            outs[kernel] = gg._grouped_gemm_dW_impl(
+                X, dY, m_sizes, gather, topk, dW_dtype = torch.bfloat16, **kw
+            )
     assert outs["auto"].dtype == torch.bfloat16
-    ref = _ref(X, dY, m_sizes, gather, topk, "permute_x", E, N, K) + (prev.double() if accumulate else 0)
+    ref = _ref(X, dY, m_sizes, gather, topk, "permute_x", E, N, K) + (
+        prev.double() if accumulate else 0
+    )
     for kernel, out in outs.items():
         assert ((out.double() - ref).norm() / ref.norm()) < 5e-3, kernel
     assert torch.equal(outs["auto"], outs["legacy"])
