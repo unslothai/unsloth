@@ -144,3 +144,11 @@ def test_cli_runtime_packages_are_core_dependencies(package):
         f"`unsloth train` / `unsloth export` walk, so a plain `pip install "
         f"unsloth` must provide it or they die with ModuleNotFoundError."
     )
+
+
+def test_studio_declares_psutil_for_the_cluster_link():
+    # The cluster link records, reaps and reads the connections of its ggml-rpc-server through psutil.
+    text = (REPO_ROOT / "studio" / "backend" / "requirements" / "studio.txt").read_text(
+        encoding = "utf-8"
+    )
+    assert any(line.split("==")[0].strip() == "psutil" for line in text.splitlines())

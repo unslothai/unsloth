@@ -725,7 +725,14 @@ def test_a_master_reset_during_pairing_records_nothing(master_dir, tmp_path, mon
 
 def test_pair_rejects_addresses_no_worker_could_decode(master_dir):
     async def main():
-        for bad in (["10.0.0.%d" % i for i in range(17)], ["a" * 254], ["has space"]):
+        # IPv6 literals too: the pairing listener and the agent bind IPv4 only.
+        for bad in (
+            ["10.0.0.%d" % i for i in range(17)],
+            ["a" * 254],
+            ["has space"],
+            ["fe80::1"],
+            ["::1"],
+        ):
             _, window = _window(addrs = bad)
             with pytest.raises(pairing.PairingError, match = "--addr"):
                 await window.start()

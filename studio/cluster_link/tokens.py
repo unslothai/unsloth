@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
 import json
 import re
 from dataclasses import dataclass, field
@@ -58,7 +59,18 @@ def check_addrs(addrs) -> list:
         raise TokenError(
             "bad addresses: 1 to 16 host names or IPs, letters, digits, '.', ':' and '-' only"
         )
+    # The pairing listener and the worker agent bind IPv4 only: an IPv6 literal would be a token no
+    # worker can dial.
+    if any(_is_ipv6(a) for a in addrs):
+        raise TokenError("IPv6 addresses are not supported yet: use an IPv4 address or a host name")
     return addrs
+
+
+def _is_ipv6(addr: str) -> bool:
+    try:
+        return ipaddress.ip_address(addr.strip("[]")).version == 6
+    except ValueError:
+        return False
 
 
 def encode(invite: Invite) -> str:

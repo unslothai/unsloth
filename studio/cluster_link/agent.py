@@ -670,6 +670,12 @@ class Agent:
             else:
                 ok = await self.wait_rpc_ready(RPC_READY_TIMEOUT_S)
             if not ok:
+                # Back to loopback before answering: the master falls back to the relay, which needs
+                # the loopback rpc-server, and a worker left in native mode would report it down.
+                await asyncio.to_thread(native.write_allowlist, path, [])
+                self.mode = "loopback"
+                self._native_master = None
+                await self._restart_rpc()
                 return {"type": "error", "error": "ggml-rpc-server did not start with TLS"}
             if self._native_watch is None or self._native_watch.done():
                 self._native_watch = asyncio.ensure_future(self._watch_native())

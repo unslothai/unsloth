@@ -1340,7 +1340,11 @@ def test_concurrent_ensure_makes_one_threaded_listener(tmp_path, monkeypatch):
 # Native mode: llama.cpp's own TLS rpc-server on request ---------------------------------------
 
 
-def _fake_rpc_binary(tmp: Path, tls_build: bool) -> Path:
+def _fake_rpc_binary(
+    tmp: Path,
+    tls_build: bool,
+    tls_fails: bool = False,
+) -> Path:
     """A ggml-rpc-server stand-in: `--help` lists the TLS flags only for a TLS build; otherwise it logs
     its argv (one JSON line per start), binds -H/-p and accepts forever."""
     import textwrap
@@ -1358,6 +1362,8 @@ def _fake_rpc_binary(tmp: Path, tls_build: bool) -> Path:
             sys.exit(0)
         with open({str(log)!r}, "a") as f:
             f.write(json.dumps(sys.argv[1:]) + "\\n")
+        if {tls_fails!r} and "--tls-cert" in sys.argv:
+            sys.exit("rejected the TLS arguments")
         a = sys.argv
         host, port = a[a.index("-H") + 1], int(a[a.index("-p") + 1])
         s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -1383,9 +1389,12 @@ def _native_link(
     make_link,
     tmp_path,
     tls_build = True,
+    tls_fails = False,
     **kw,
 ) -> Any:
-    fake = _fake_rpc_binary(tmp_path / f"bin{len(list(tmp_path.glob('bin*')))}", tls_build)
+    fake = _fake_rpc_binary(
+        tmp_path / f"bin{len(list(tmp_path.glob('bin*')))}", tls_build, tls_fails
+    )
     link = make_link(rpc_binary = str(fake), rpc_port = _free_port(), native_port = _free_port(), **kw)
     assert link.loop.run(link.agent.wait_rpc_ready(10.0))
     link.fake = fake
@@ -1490,3 +1499,53 @@ def test_a_removed_worker_still_takes_a_native_close(make_link, tmp_path):
     assert link.agent.mode == "native"
     assert link.relay.native_close("w1") is True
     assert link.agent.mode == "loopback"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_a_failed_native_start_rolls_back_to_loopback(make_link, tmp_path, monkeypatch):
+    # The TLS rpc-server dies at start: the master falls back to the relay, which needs the worker back
+    # on its loopback rpc-server, not stuck in native mode reporting rpc down.
+    from studio.cluster_link import native
+
+    import studio.cluster_link.agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "RPC_READY_TIMEOUT_S", 3.0)
+    link = _native_link(make_link, tmp_path, tls_fails = True)
+    assert link.relay.native("w1")["type"] == "error"
+    assert link.agent.mode == "loopback"
+    assert native.allowlist_path(link.agent.native_port).read_text().split() == []
+    argv = _argv_log(link.fake)[-1]
+    assert "--tls-cert" not in argv
+    assert argv[argv.index("-H") + 1] == "127.0.0.1"
+    assert link.loop.run(link.agent.wait_rpc_ready(10.0))
+    assert link.relay.status("w1")["rpc_up"] is True
+
+
+def test_the_relay_waits_out_a_native_to_loopback_restart():
+    # open_rpc on a worker still in native mode restarts its rpc-server before answering.
+    import studio.cluster_link.agent as agent_mod
+    import studio.cluster_link.relay as relay_mod
+    assert relay_mod.OPEN_RPC_REPLY_TIMEOUT_S > agent_mod.RPC_READY_TIMEOUT_S
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_removing_a_native_worker_on_the_master_alone_cuts_its_session(
+    make_link, tmp_path, monkeypatch
+):
+    # `unsloth cluster remove` only edits the master's registry; the native session does not pass
+    # through the relay, so the relay manager's own watch must notice and close it within seconds.
+    from studio.cluster_link import native
+
+    import studio.cluster_link.relay as relay_mod
+
+    monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)
+    trusted = {"ok": True}
+    link = _native_link(
+        make_link, tmp_path, relay_authorize = lambda pid: trusted["ok"] and pid.node_id == "w1"
+    )
+    assert link.relay.native("w1")["type"] == "native_ok"
+    pid_native = link.agent.rpc_pid
+    trusted["ok"] = False
+    assert _wait(lambda: link.agent.mode == "loopback", 10.0)
+    assert native.allowlist_path(link.agent.native_port).read_text().split() == []
+    assert _wait(lambda: link.agent.rpc_pid not in (None, pid_native), 10.0)

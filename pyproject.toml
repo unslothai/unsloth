@@ -159,6 +159,7 @@ studio = [
     "uvicorn==0.39.0 ; python_version < '3.10'",
     "pydantic==2.13.4",
     "packaging==26.3",
+    "psutil==7.2.2",
     "matplotlib==3.10.9",
     # win_arm64 pandas wheels start at 3.0; the 3.11 floor is pandas 3's own requires-python.
     "pandas==2.3.3 ; sys_platform != 'win32' or platform_machine != 'ARM64' or python_version < '3.11'",

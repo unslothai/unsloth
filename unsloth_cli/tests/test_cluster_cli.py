@@ -456,3 +456,20 @@ def test_list_tries_older_recorded_addresses_before_discovery(fakes):
     assert "192.168.1.20:50070" in listed.output and "ready" in listed.output, listed.output
     assert "Looking for" not in listed.output  # no discovery wait: the registry already knew
     assert fakes.recorded == [("node-aaaa1111", "192.168.1.20", 50070)]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("worker", "--port", "70000"),
+        ("worker", "--rpc-port", "0"),
+        ("worker", "--native-port", "65536"),
+        ("cluster", "pair", "--port", "70000"),
+        ("cluster", "join", "--port", "70000", "--token-stdin"),
+    ],
+)
+def test_out_of_range_ports_are_cli_errors(fakes, args):
+    # Not an OverflowError from socket.bind(), and never a bad port saved by join.
+    result = invoke(*args, input = "x\n")
+    assert result.exit_code == 2, result.output
+    assert "65535" in result.output or "range" in result.output

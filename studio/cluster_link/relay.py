@@ -35,6 +35,9 @@ logger = logging.getLogger(__name__)
 CONNECT_TIMEOUT_S = 10.0
 FIRST_BYTE_TIMEOUT_S = 30.0
 REPLY_TIMEOUT_S = 10.0
+# open_rpc may first move a worker out of native mode, which restarts its rpc-server and waits up to
+# the agent's RPC_READY_TIMEOUT_S (60 s) for it: the reply wait covers that window.
+OPEN_RPC_REPLY_TIMEOUT_S = 75.0
 # A client that reconnects right after its last session ends must not be refused as busy while that
 # session is still closing; a genuinely busy worker is still refused this fast, not after 8 s.
 BUSY_GRACE_S = 0.25
@@ -91,6 +94,8 @@ class RelayManager:
             rootfile = identity.rootfile,
         )
         self._relays: Dict[str, _Relay] = {}
+        # Native grants carry no relay session to revalidate: one watch per granted worker does it.
+        self._native_watches: Dict[str, asyncio.Future] = {}
         self._ensure_lock: Optional[asyncio.Lock] = None
         self.threaded = threaded_sessions()
         self._slot_lock = threading.Lock()
@@ -154,9 +159,7 @@ class RelayManager:
         """Ask the worker to serve llama.cpp's own TLS to this master; {"type": "native_ok", "port",
         "fingerprint"} when it does. The worker restarts its rpc-server, so this waits for it."""
         try:
-            return self._call(
-                self._control(node_id, {"type": "native_rpc"}, timeout), timeout + 1.0
-            )
+            return self._call(self._native(node_id, timeout), timeout + 1.0)
         except Exception as exc:
             return {"type": "error", "error": str(exc) or type(exc).__name__}
 
@@ -168,10 +171,7 @@ class RelayManager:
         """Tell a worker to stop serving this master natively, which cuts a live session. Also for a
         worker removed a moment ago: it is no longer authorized here, but it is still the same node."""
         try:
-            reply = self._call(
-                self._control(node_id, {"type": "native_close"}, timeout, paired = False),
-                timeout + 1.0,
-            )
+            reply = self._call(self._native_close(node_id, timeout), timeout + 1.0)
         except Exception:
             return False
         return isinstance(reply, dict) and reply.get("type") == "ok"
@@ -235,6 +235,55 @@ class RelayManager:
             relay.local_port = relay.server.sockets[0].getsockname()[1]
         self._relays[node_id] = relay
         return relay.endpoint
+
+    async def _native(self, node_id: str, timeout: float) -> Dict[str, Any]:
+        relay = self._relays.get(node_id)
+        reader, writer = await self._connect(node_id, timeout)
+        try:
+            pid = tls.peer_identity(writer.get_extra_info("ssl_object"))
+            await framing.write_frame(writer, {"type": "native_rpc"})
+            reply = await framing.read_frame(reader, timeout = timeout)
+        finally:
+            await close_writer(writer)
+        if relay is not None and isinstance(reply, dict) and reply.get("type") == "native_ok":
+            self._stop_native_watch(node_id)
+            self._native_watches[node_id] = asyncio.ensure_future(
+                self._revoke_native_when_unauthorized(relay, pid)
+            )
+        return reply
+
+    async def _native_close(self, node_id: str, timeout: float) -> Dict[str, Any]:
+        self._stop_native_watch(node_id)
+        return await self._control(node_id, {"type": "native_close"}, timeout, paired = False)
+
+    def _stop_native_watch(self, node_id: str) -> None:
+        watch = self._native_watches.pop(node_id, None)
+        if watch is not None and watch is not asyncio.current_task():
+            watch.cancel()
+
+    async def _revoke_native_when_unauthorized(
+        self, relay: _Relay, pid: Optional[tls.PeerIdentity]
+    ) -> None:
+        """The relay's 2 s revalidation for a native session, which does not pass through this
+        process: once the worker is removed here, tell it to close, which cuts the session."""
+        while True:
+            await asyncio.sleep(REVALIDATE_S)
+            try:
+                ok = pid is not None and bool(await asyncio.to_thread(self._authorize, pid))
+            except Exception:
+                ok = False
+            if ok:
+                continue
+            if self._native_watches.get(relay.node_id) is asyncio.current_task():
+                del self._native_watches[relay.node_id]
+            relay.last_error = f"{relay.node_id} is no longer paired; native session closed"
+            logger.warning("cluster relay: %s", relay.last_error)
+            try:
+                # The relay object, not its id: Studio may already have dropped the relay.
+                await self._control(relay, {"type": "native_close"}, 15.0, paired = False)
+            except Exception as exc:
+                logger.warning("cluster relay: could not close %s natively: %s", relay.node_id, exc)
+            return
 
     async def _remove(self, node_id: str) -> None:
         relay = self._relays.pop(node_id, None)
@@ -343,7 +392,7 @@ class RelayManager:
 
     async def _control(
         self,
-        node_id: str,
+        node_id: Any,  # a node id, or the _Relay itself once Studio may have dropped it
         request: Dict[str, Any],
         timeout: float,
         paired: bool = True,
@@ -458,7 +507,7 @@ class RelayManager:
                 upstream = self._connect_blocking(relay)
                 relay.raw.add(upstream)
                 framing.send_frame(upstream, {"type": "open_rpc"})
-                reply = framing.recv_frame(upstream, timeout = REPLY_TIMEOUT_S)
+                reply = framing.recv_frame(upstream, timeout = OPEN_RPC_REPLY_TIMEOUT_S)
             except (RelayError, framing.FrameError, OSError, ssl.SSLError) as exc:
                 relay.last_error = str(exc)
                 logger.warning("cluster relay %s: %s", relay.node_id, exc)
@@ -551,7 +600,7 @@ class RelayManager:
             try:
                 up_reader, upstream = await self._connect(relay)
                 await framing.write_frame(upstream, {"type": "open_rpc"})
-                reply = await framing.read_frame(up_reader, timeout = REPLY_TIMEOUT_S)
+                reply = await framing.read_frame(up_reader, timeout = OPEN_RPC_REPLY_TIMEOUT_S)
             except (RelayError, framing.FrameError, OSError, ssl.SSLError) as exc:
                 relay.last_error = str(exc)
                 logger.warning("cluster relay %s: %s", relay.node_id, exc)

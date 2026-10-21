@@ -106,11 +106,17 @@ def _find_worker(registry: Any, target: str) -> Any:
 
 
 def worker(
-    port: int = typer.Option(None, "--port", help = "Port the agent listens on (all interfaces)."),
-    rpc_port: int = typer.Option(None, "--rpc-port", help = "Loopback port for ggml-rpc-server."),
+    port: int = typer.Option(
+        None, "--port", min = 1, max = 65535, help = "Port the agent listens on (all interfaces)."
+    ),
+    rpc_port: int = typer.Option(
+        None, "--rpc-port", min = 1, max = 65535, help = "Loopback port for ggml-rpc-server."
+    ),
     native_port: int = typer.Option(
         None,
         "--native-port",
+        min = 1,
+        max = 65535,
         help = "LAN port for llama.cpp's own TLS transport, used when both ends' llama.cpp has it.",
     ),
     no_native_tls: bool = typer.Option(
@@ -243,7 +249,9 @@ def pair(
         "--addr",
         help = "Address workers should dial (repeatable); default: this host's LAN addresses.",
     ),
-    port: int = typer.Option(None, "--port", help = "Pairing port, open only while this runs."),
+    port: int = typer.Option(
+        None, "--port", min = 1, max = 65535, help = "Pairing port, open only while this runs."
+    ),
 ):
     """Print a one-time token that adds one worker to this machine's cluster."""
     identity = _link(crypto = True)
@@ -294,7 +302,11 @@ def join(
     ),
     name: Optional[str] = typer.Option(None, "--name", help = "This machine's name in the cluster."),
     port: int = typer.Option(
-        None, "--port", help = "Port `unsloth worker` will serve on here (default 50070)."
+        None,
+        "--port",
+        min = 1,
+        max = 65535,
+        help = "Port `unsloth worker` will serve on here (default 50070).",
     ),
 ):
     """Pair this machine to a master as a worker."""
