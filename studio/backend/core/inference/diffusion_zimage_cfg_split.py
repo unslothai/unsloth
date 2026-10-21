@@ -18,12 +18,8 @@ bit-exact: a single sample with no mask can pick other attention / GEMM tiles th
 
 Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
-recompile. Under a static step skip it splits when the skip keys the two calls of a step apart (Studio's step
-signal: call ``#0`` is the conditional branch, ``#1`` the unconditional, both on the batched call's schedule), and
-under a CFG-parallel router (it never pairs Z-Image calls, so both branches stay on the primary card as before).
-Declined per call under a step cache (FBCache keeps one residual per cache_context, which two calls would share; no
-Z-Image pipeline opens one, so it never engages there) and a skip with no per-step call order. Kill switch:
-``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
+recompile. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
+Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 """
 
 from __future__ import annotations
@@ -61,12 +57,7 @@ def _is_zimage(module: Any) -> bool:
 
 
 def _skip_keys_calls_apart(skip: Any) -> bool:
-    """Whether a static step skip with a plan keys the cond and uncond calls of one step apart.
-
-    It keys a call by its ``cache_context`` name, else (with a step signal) by its ordinal within the step, else by
-    one shared counter that a step's two calls would advance twice. Z-Image opens no cache_context, so with the
-    step signal Studio always passes the conditional call is ``#0`` and the unconditional ``#1``, each skipped or
-    computed on the step the batched call would be."""
+    """Whether a static step skip keys cond / uncond apart: without a step signal one shared counter advances twice."""
     if not hasattr(skip, "plan"):
         return False
     if not skip.plan:
@@ -79,13 +70,11 @@ def _declined_now(module: Any) -> Optional[str]:
     # FBCache keeps one residual per cache_context; two calls in one context would compare cond against uncond.
     if getattr(module, "_unsloth_step_cache", None):
         return "step cache"
-    # The skip's own slot: a CFG-parallel router installed after it takes the forward slot and wraps it.
+    # A CFG-parallel router installed after the skip takes the forward slot.
     for skip in (slots.get("_unsloth_static_skip"), slots.get("forward")):
         if getattr(skip, "_unsloth_outer_forward", False) and not _skip_keys_calls_apart(skip):
             return "static step skip without a per-step call order"
-    # A CFG-parallel router needs no decline: it pairs branches by the identity of the first tensor argument, which
-    # for Z-Image is the timestep, a fresh tensor per call (the batched call too), so it runs every call on the
-    # primary card either way.
+    # No CFG-router decline: it pairs by first-tensor identity (a fresh timestep per call), so never pairs Z-Image.
     if getattr(module, "training", False):
         return "training"
     return None
