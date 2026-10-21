@@ -324,6 +324,14 @@ export function MemoryEstimateRow({
             value={formatMemoryGb(estimate.projectorRuntimeBytes)}
           />
         )}
+        {/* Not in Weights or Total while streamed: only the rows in use page in. */}
+        {(estimate.lookupTableBytes ?? 0) > 0 && (
+          <MemoryBreakdownLine
+            label="Lookup tables"
+            value={formatMemoryGb(estimate.lookupTableBytes ?? 0)}
+            note={estimate.lookupTableOnDisk ? "on disk" : "in RAM"}
+          />
+        )}
         {/* Draft cache is additional to the drafter's weights. */}
         {estimate.drafterRuntimeBytes > 0 && (
           <MemoryBreakdownLine

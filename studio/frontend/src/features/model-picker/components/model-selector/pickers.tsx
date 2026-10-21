@@ -117,7 +117,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
-  ggufVariantFitSizeBytes,
+  classifyGgufFitWithLookupTables,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
@@ -802,6 +802,13 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
     label: "RAM fallback",
     tone: ORANGE,
     hint: "No GPU detected. Runs on system RAM and CPU. Expect much slower inference.",
+  },
+  // Runs only with its lookup tables (per-layer embeddings / Engram) left on disk, which is
+  // llama.cpp's default for them. Not over budget: the weights it keeps resident fit.
+  streamed: {
+    label: "Fits (lookup tables streamed from disk)",
+    tone: AMBER,
+    hint: "Fits with its lookup tables streamed from disk, llama.cpp's default for them. Prefill and decode can be slower and vary with disk speed.",
   },
   oom: OFFLOADS,
   exceeds: WONT_FIT,
@@ -2147,9 +2154,10 @@ function GgufVariantExpander({
   // GGUFs the loader charges for: a vision projector, or a drafter `auto`
   // promotes to. On the bare checkpoint a vision quant could sort and badge as
   // fitting while the recommendation had already ruled it OOM.
+  // Lookup tables llama.cpp streams from disk are priced apart, as on the Hub card.
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
-      getGgufFit(ggufVariantFitSizeBytes(variant)),
+      classifyGgufFitWithLookupTables(getGgufFit, variant),
     [getGgufFit],
   );
 

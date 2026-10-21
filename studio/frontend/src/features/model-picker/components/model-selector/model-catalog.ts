@@ -17,6 +17,7 @@ import {
   type GgufFitClass,
   type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
+  classifyGgufFitWithLookupTables,
   ggufVariantFitSizeBytes,
 } from "../../../../lib/gguf-fit.ts";
 import {
@@ -1390,7 +1391,10 @@ export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   // the download footprint, which also covers the companion GGUFs the loader charges for: a vision
   // projector, or a drafter `auto` promotes to. On `size_bytes` alone this starred quants that go
   // OOM once the mmproj lands beside them.
-  const fitOfVariant = (variant: T) => fitOf(ggufVariantFitSizeBytes(variant));
+  // Lookup tables llama.cpp streams from disk are priced apart (`streamed`): such a quant runs,
+  // but never outranks one that fits with everything resident.
+  const fitOfVariant = (variant: T) =>
+    classifyGgufFitWithLookupTables(fitOf, variant);
   // A listing with no size metadata reports zero (gguf_variants.py: an OSError stat-ing a local
   // file, or a manifest an older backend cannot read). Zero prices as the bare context allowance,
   // so it reads comfortable on any device and would outrank a real quant that only runs at the

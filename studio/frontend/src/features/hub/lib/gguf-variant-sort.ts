@@ -52,6 +52,7 @@ export function ggufVariantFitRank(
       return 1;
     case "partial":
     case "ram":
+    case "streamed":
       return 2;
     default:
       return 3;

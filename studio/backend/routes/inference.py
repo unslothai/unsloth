@@ -14517,6 +14517,11 @@ class _GgufMemoryBreakdown(NamedTuple):
     gpu_layers: Optional[int]
     # Host-resident checkpoint share of kv_bytes. Keep last for positional callers.
     kv_checkpoint_bytes: int = 0
+    # Lookup-only tables (per-layer embeddings / Engram) in the main GGUF. Never on the GPU
+    # (llama.cpp pins input embeddings to the host); when lazy reading engages they are
+    # not in weights_bytes or total_bytes either, since only touched rows page in.
+    lookup_table_bytes: int = 0
+    lookup_table_on_disk: bool = False
 
 
 def _gguf_offloaded_layer_fraction(
@@ -15684,6 +15689,21 @@ def _gguf_memory_breakdown(
     # --gpu-layers 0 report zero GPU bytes while both sat in VRAM.
     main_bytes = min(gpu_files_bytes, LlamaCppBackend._get_gguf_size_bytes(gguf_path))
     companion_bytes = max(0, gpu_files_bytes - main_bytes)
+    # A lookup table llama.cpp reads lazily (TENSOR_READ_LAZY, over 4 GiB, --lazy-mode auto
+    # by default) stays mmap'd from disk and pages in only the rows a token touches, and an
+    # input embedding is host-pinned in every mode. So it leaves the GPU share always, and
+    # the resident total whenever lazy reading engages. The panel cannot see the device
+    # set, so it assumes a discrete GPU: on an iGPU / APU llama.cpp resolves auto to off
+    # and the table is resident, which this under-reports by the table.
+    from core.inference.llama_cpp import _effective_lazy_mode
+    from hub.utils.gguf_lookup_tables import local_lookup_table_bytes
+
+    lookup_table_bytes = min(main_bytes, local_lookup_table_bytes(gguf_path))
+    lookup_table_on_disk = bool(lookup_table_bytes) and (
+        _effective_lazy_mode(extras, os.environ) != "off"
+    )
+    if lookup_table_on_disk:
+        weights_bytes = max(0, weights_bytes - lookup_table_bytes)
     # A drafter is only charged when it lands on the GPU (a CPU-pinned one is dropped
     # from the total upstream), so the projector is the single companion that can be
     # charged and off-GPU: --no-mmproj-offload keeps it in host RAM. Priced by itself
@@ -15703,7 +15723,7 @@ def _gguf_memory_breakdown(
         if _resolved_mmproj_offload(llama_extra_args) is False:
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
     gpu_weights = (
-        int(main_bytes * gpu_fraction)
+        int((main_bytes - lookup_table_bytes) * gpu_fraction)
         + int(adapter_bytes * gpu_fraction)
         + companion_bytes
         - host_companion_bytes
@@ -15801,6 +15821,8 @@ def _gguf_memory_breakdown(
         layer_count = layer_count,
         gpu_layers = gpu_layers if gpu_memory_mode == "manual" else None,
         kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
+        lookup_table_bytes = lookup_table_bytes,
+        lookup_table_on_disk = lookup_table_on_disk,
     )
 
 

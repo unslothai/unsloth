@@ -1282,6 +1282,17 @@ class EstimateMemoryResponse(BaseModel):
         description = "True when --n-cpu-moe is set: experts move per-tensor, not "
         "per-block, so the GPU/host split above ignores it and reads high.",
     )
+    lookup_table_bytes: int = Field(
+        0,
+        description = "Lookup-only tables (per-layer embeddings / Engram) in the model "
+        "file. Never in gpu_bytes; excluded from weights_bytes and total_bytes when "
+        "lookup_table_on_disk is true.",
+    )
+    lookup_table_on_disk: bool = Field(
+        False,
+        description = "True when llama.cpp streams those tables from disk (its default "
+        "lazy mode), so only the rows in use are paged in.",
+    )
 
 
 class MemoryEstimate(BaseModel):
@@ -1388,6 +1399,12 @@ class MemoryEstimate(BaseModel):
     gpu_layers: Optional[int] = Field(None, description = "Layers placed on the GPU, when known")
     moe_offload_unmodelled: bool = Field(
         False, description = "--n-cpu-moe is set, so the GPU figure reads high"
+    )
+    lookup_table_bytes: int = Field(
+        0, description = "Lookup-only tables in the model file, never charged to the GPU"
+    )
+    lookup_table_on_disk: bool = Field(
+        False, description = "Those tables are streamed from disk, not resident"
     )
     context_fitted: Optional[int] = Field(
         None,

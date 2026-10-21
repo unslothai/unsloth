@@ -188,6 +188,9 @@ export interface GgufVariantDetail {
   display_label?: string | null;
   size_bytes: number;
   download_size_bytes?: number;
+  /** Lookup tables (per-layer embeddings / Engram) inside `size_bytes` that llama.cpp
+   *  streams from disk by default. Absent or 0 when none, or on an older backend. */
+  lookup_table_bytes?: number;
   /** The only missing artifact when the main GGUF is already cached. */
   pending_drafter_filename?: string | null;
   pending_drafter_size_bytes?: number;

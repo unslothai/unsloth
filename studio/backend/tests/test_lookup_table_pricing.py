@@ -1,0 +1,414 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Lookup-only tables (per-layer embeddings / Engram) priced apart in the listing and the panel.
+
+llama.cpp reads a TENSOR_READ_LAZY table over 4 GiB lazily under its default ``--lazy-mode
+auto``: it stays mmap'd from disk and only the rows a token touches page in. The model listing
+reports those bytes per variant (``lookup_table_bytes``) and the Load Model estimate keeps them
+out of the GPU share, and out of the resident total while they stream.
+
+The headers are hand-built with the real tensor shapes and quant types read off the published
+GGUFs: DeepSeek-V4.1-Flash UD-IQ1_S (``per_layer_token_embd`` IQ4_NL [256, 768022850], 103.00
+GiB), Qwen3.8-Flash-Next UD-Q2_K_XL (arch qwen4exp, IQ4_NL [160, 320001536], 26.82 GiB) and
+gemma-3n-E4B Q4_K_M (Q5_1 [8960, 262144], 1.64 GiB, not lazily read upstream). Only the header
+is written, so a 103 GiB table costs a few hundred bytes on disk.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import os
+import struct
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+# Installs the process-wide loggers/structlog/httpx stubs the route module needs.
+import test_kv_cache_estimation  # noqa: E402,F401
+
+GIB = 1024**3
+IQ4_NL, Q5_1, F16 = 20, 7, 1
+
+DSV41_TABLE = 256 * 768022850 // 32 * 18
+FLASH_NEXT_TABLE = 160 * 320001536 // 32 * 18
+
+_ATTN = {
+    "block_count": 4,
+    "context_length": 4096,
+    "embedding_length": 256,
+    "attention.head_count": 4,
+    "attention.head_count_kv": 2,
+    "attention.key_length": 64,
+    "attention.value_length": 64,
+}
+
+
+def _header(
+    arch: str,
+    tensors: list[tuple[str, list[int], int]],
+    ints: dict | None = None,
+):
+    """A GGUF v3 header: the architecture, uint32 metadata, and tensor infos with no data."""
+    kv: list[tuple[str, object]] = [("general.architecture", arch)]
+    kv += [(f"{arch}.{k}", int(v)) for k, v in (ints or {}).items()]
+    buf = io.BytesIO()
+    buf.write(b"GGUF")
+    buf.write(struct.pack("<IQQ", 3, len(tensors), len(kv)))
+    for key, value in kv:
+        raw = key.encode()
+        buf.write(struct.pack("<Q", len(raw)) + raw)
+        if isinstance(value, str):
+            data = value.encode()
+            buf.write(struct.pack("<IQ", 8, len(data)) + data)
+        else:
+            buf.write(struct.pack("<II", 4, value))
+    offset = 0
+    for name, dims, ggml_type in tensors:
+        raw = name.encode()
+        buf.write(struct.pack("<Q", len(raw)) + raw)
+        buf.write(struct.pack("<I", len(dims)))
+        buf.write(struct.pack(f"<{len(dims)}Q", *dims))
+        buf.write(struct.pack("<IQ", ggml_type, offset))
+        offset += 1024
+    return buf.getvalue()
+
+
+def _write(path: Path, data: bytes) -> str:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(data)
+    return str(path)
+
+
+def _dsv41(tmp_path: Path, name = "DeepSeek-V4.1-Flash-UD-IQ1_S.gguf") -> str:
+    return _write(
+        tmp_path / name,
+        _header(
+            "deepseek41",
+            [
+                ("token_embd.weight", [4096, 129280], IQ4_NL),
+                ("per_layer_token_embd.weight", [256, 768022850], IQ4_NL),
+            ],
+        ),
+    )
+
+
+def _flash_next(tmp_path: Path, name = "Qwen3.8-Flash-Next-UD-Q2_K_XL.gguf") -> str:
+    return _write(
+        tmp_path / name,
+        _header(
+            "qwen4exp",
+            [
+                ("token_embd.weight", [2048, 151936], IQ4_NL),
+                ("per_layer_token_embd.weight", [160, 320001536], IQ4_NL),
+                ("blk.0.attn_q.weight", [256, 256], F16),
+            ],
+            _ATTN,
+        ),
+    )
+
+
+def _gemma3n(tmp_path: Path) -> str:
+    return _write(
+        tmp_path / "gemma-3n-E4B-it-Q4_K_M.gguf",
+        _header(
+            "gemma3n",
+            [
+                ("token_embd.weight", [2048, 262144], IQ4_NL),
+                ("per_layer_token_embd.weight", [8960, 262144], Q5_1),
+            ],
+        ),
+    )
+
+
+# A. The header scan
+
+
+class TestHeaderScan:
+    def test_real_table_sizes(self, tmp_path):
+        from hub.utils.gguf_lookup_tables import local_lookup_info
+
+        assert local_lookup_info(_dsv41(tmp_path)) == ("deepseek41", DSV41_TABLE)
+        assert DSV41_TABLE / GIB == pytest.approx(103.00, abs = 0.01)
+        assert local_lookup_info(_flash_next(tmp_path)) == ("qwen4exp", FLASH_NEXT_TABLE)
+        assert FLASH_NEXT_TABLE / GIB == pytest.approx(26.82, abs = 0.01)
+
+    def test_gemma3n_is_not_lazily_read(self, tmp_path):
+        # Same tensor name, but gemma3n does not flag it TENSOR_READ_LAZY (and it is under
+        # 4 GiB anyway): it is priced as weights, as before.
+        from hub.utils.gguf_lookup_tables import local_lookup_info
+        assert local_lookup_info(_gemma3n(tmp_path)) == ("gemma3n", 0)
+
+    def test_a_small_table_stays_resident_under_auto(self, tmp_path):
+        from hub.utils.gguf_lookup_tables import local_lookup_table_bytes
+        small = _write(
+            tmp_path / "gemma4-E2B.gguf",
+            _header("gemma4", [("per_layer_token_embd.weight", [8960, 262144], Q5_1)]),
+        )
+        assert local_lookup_table_bytes(small) == 0
+
+    def test_split_file_finds_the_table_in_a_later_shard(self, tmp_path):
+        from hub.utils.gguf_lookup_tables import local_lookup_table_bytes
+
+        first = _write(
+            tmp_path / "m-00001-of-00002.gguf",
+            _header("deepseek41", [("token_embd.weight", [4096, 129280], IQ4_NL)]),
+        )
+        _write(
+            tmp_path / "m-00002-of-00002.gguf",
+            _header("", [("per_layer_token_embd.weight", [256, 768022850], IQ4_NL)]),
+        )
+        assert local_lookup_table_bytes(first) == DSV41_TABLE
+
+    def test_a_missing_shard_or_garbage_is_zero(self, tmp_path):
+        from hub.utils.gguf_lookup_tables import local_lookup_table_bytes
+
+        first = _write(
+            tmp_path / "x-00001-of-00002.gguf",
+            _header("deepseek41", [("token_embd.weight", [4096, 129280], IQ4_NL)]),
+        )
+        assert local_lookup_table_bytes(first) == 0
+        assert local_lookup_table_bytes(_write(tmp_path / "junk.gguf", b"not a gguf")) == 0
+        assert local_lookup_table_bytes(None) == 0
+
+    def test_remote_reads_only_the_header_range(self, tmp_path):
+        from hub.utils import gguf_lookup_tables as glt
+
+        blob = _header(
+            "qwen4exp", [("per_layer_token_embd.weight", [160, 320001536], IQ4_NL)], _ATTN
+        )
+        calls = []
+
+        def fetcher(
+            repo_id,
+            name,
+            token,
+            revision = None,
+        ):
+            def fetch(start, end):
+                calls.append((name, start, end))
+                return blob[start : end + 1]
+
+            return fetch
+
+        got = glt.remote_lookup_info(
+            "unsloth/Flash-Next-GGUF", "Q2/flash-Q2.gguf", identity = 1, fetcher_fn = fetcher
+        )
+        assert got == ("qwen4exp", FLASH_NEXT_TABLE)
+        assert calls and all(start == 0 for _name, start, _end in calls)
+        # Cached: no second read for the same file identity.
+        calls.clear()
+        assert glt.remote_lookup_info(
+            "unsloth/Flash-Next-GGUF", "Q2/flash-Q2.gguf", identity = 1, fetcher_fn = fetcher
+        ) == ("qwen4exp", FLASH_NEXT_TABLE)
+        assert not calls
+
+    def test_remote_failure_is_zero_and_not_cached(self):
+        from hub.utils import gguf_lookup_tables as glt
+
+        def broken(
+            repo_id,
+            name,
+            token,
+            revision = None,
+        ):
+            def fetch(start, end):
+                raise OSError("network down")
+
+            return fetch
+
+        assert glt.remote_lookup_info("o/r", "f.gguf", identity = 7, fetcher_fn = broken) == (
+            None,
+            0,
+        )
+        assert glt.remote_cached("o/r", "f.gguf", None, 7) is None
+
+
+# B. The listing
+
+
+def _answer(variants, sources = None):
+    from hub.schemas.inventory import GgufVariantsResponse
+    from hub.services.models.gguf_variants import VariantsAnswer
+    return VariantsAnswer(
+        GgufVariantsResponse(repo_id = "unsloth/X-GGUF", variants = variants),
+        None,
+        variant_context_sources = sources or {},
+    )
+
+
+class TestListing:
+    def test_both_variant_models_carry_the_field(self):
+        from hub.schemas.inventory import GgufVariantDetail as HubDetail
+        from models.models import GgufVariantDetail as RouteDetail
+        for model in (HubDetail, RouteDetail):
+            assert model.model_fields["lookup_table_bytes"].default == 0
+
+    def test_a_downloaded_variant_is_read_from_its_own_header(self, tmp_path, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+
+        path = _dsv41(tmp_path)
+        # A local answer never asks the Hub.
+        monkeypatch.setattr(
+            gv, "_hub_repo_architecture", lambda *a, **k: pytest.fail("no Hub call")
+        )
+        answer = _answer(
+            [
+                GgufVariantDetail(
+                    filename = os.path.basename(path),
+                    quant = "UD-IQ1_S",
+                    size_bytes = 216 * GIB,
+                    downloaded = True,
+                )
+            ],
+            {"ud-iq1_s": path},
+        )
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                answer,
+                "unsloth/X-GGUF",
+                hf_token = None,
+                offline = True,
+                prefer_local_cache = False,
+            )
+        )
+        assert out.response.variants[0].lookup_table_bytes == DSV41_TABLE
+        # The shared answer is not mutated in place.
+        assert answer.response.variants[0].lookup_table_bytes == 0
+
+    def test_hub_only_quants_of_a_lazy_arch_are_range_read(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        monkeypatch.setattr(gv, "_hub_repo_architecture", lambda *a, **k: "qwen4exp")
+        monkeypatch.setattr(
+            glt,
+            "remote_lookup_info",
+            lambda repo, name, token, identity = None, **k: ("qwen4exp", FLASH_NEXT_TABLE),
+        )
+        rows = [
+            GgufVariantDetail(filename = "Q2/a-00001-of-00003.gguf", quant = "Q2", size_bytes = 1),
+            GgufVariantDetail(filename = "README.md", quant = "x", size_bytes = 1),
+        ]
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                _answer(rows),
+                "unsloth/Flash-Next-GGUF",
+                hf_token = None,
+                offline = False,
+                prefer_local_cache = False,
+            )
+        )
+        assert [v.lookup_table_bytes for v in out.response.variants] == [FLASH_NEXT_TABLE, 0]
+
+    def test_offline_or_a_non_lazy_arch_never_reads_the_hub(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        monkeypatch.setattr(
+            glt, "remote_lookup_info", lambda *a, **k: pytest.fail("no header read")
+        )
+        rows = [GgufVariantDetail(filename = "a.gguf", quant = "Q4_K_M", size_bytes = 1)]
+        answer = _answer(rows)
+        kwargs = dict(hf_token = None, prefer_local_cache = False)
+        assert asyncio.run(gv._with_lookup_tables(answer, "o/r", offline = True, **kwargs)) is answer
+        monkeypatch.setattr(gv, "_hub_repo_architecture", lambda *a, **k: "llama")
+        assert asyncio.run(gv._with_lookup_tables(answer, "o/r", offline = False, **kwargs)) is answer
+
+    def test_a_failure_returns_the_listing_unchanged(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+
+        def boom(*a, **k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(gv, "_local_variant_gguf", boom)
+        answer = _answer([GgufVariantDetail(filename = "a.gguf", quant = "Q", size_bytes = 1)])
+        assert (
+            asyncio.run(
+                gv._with_lookup_tables(
+                    answer, "o/r", hf_token = None, offline = False, prefer_local_cache = False
+                )
+            )
+            is answer
+        )
+
+
+# C. The Load Model estimate
+
+
+class TestEstimate:
+    WEIGHTS = 73.45 * GIB
+
+    @pytest.fixture
+    def breakdown(self, tmp_path, monkeypatch):
+        import routes.inference as ri
+
+        path = _flash_next(tmp_path)
+        monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: self.WEIGHTS / GIB)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gguf_size_bytes",
+            staticmethod(lambda p: int(self.WEIGHTS)),
+        )
+        ri._estimate_files_cache.clear()
+        ri._estimate_config_cache.clear()
+        config = SimpleNamespace(
+            identifier = "local/flash-next",
+            gguf_file = path,
+            is_gguf = True,
+            gguf_mmproj_file = None,
+        )
+
+        def run(**kw):
+            return ri._gguf_memory_breakdown(config, path, n_ctx = 4096, gpu_memory_mode = "auto", **kw)
+
+        yield run
+        ri._estimate_files_cache.clear()
+        ri._estimate_config_cache.clear()
+
+    def test_streamed_table_leaves_the_gpu_and_the_total(self, breakdown, monkeypatch):
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        b = breakdown()
+        assert b.lookup_table_bytes == FLASH_NEXT_TABLE
+        assert b.lookup_table_on_disk is True
+        assert b.weights_bytes == int(round(self.WEIGHTS)) - FLASH_NEXT_TABLE
+        assert b.total_bytes == b.weights_bytes + b.kv_bytes + b.compute_bytes
+        # Auto puts everything else on the GPU; the table is not part of it.
+        assert b.gpu_bytes == b.total_bytes
+
+    def test_lazy_mode_off_keeps_it_resident_but_still_off_the_gpu(self, breakdown, monkeypatch):
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        b = breakdown(llama_extra_args = ["-lzm", "off"])
+        assert b.lookup_table_bytes == FLASH_NEXT_TABLE
+        assert b.lookup_table_on_disk is False
+        assert b.weights_bytes == int(round(self.WEIGHTS))
+        assert b.gpu_bytes == b.total_bytes - FLASH_NEXT_TABLE
+
+    def test_the_load_panel_response_carries_the_table(self, breakdown, monkeypatch):
+        from core.inference.memory_contract import (
+            build_memory_estimate,
+            project_estimate_memory_response,
+        )
+        from models.inference import EstimateMemoryResponse
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        out = project_estimate_memory_response(
+            build_memory_estimate(breakdown(), quant_file_bytes = int(self.WEIGHTS))
+        )
+        assert out["lookup_table_bytes"] == FLASH_NEXT_TABLE
+        assert out["lookup_table_on_disk"] is True
+        assert EstimateMemoryResponse(**out).lookup_table_bytes == FLASH_NEXT_TABLE

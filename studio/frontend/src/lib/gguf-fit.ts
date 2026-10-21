@@ -8,7 +8,15 @@
  * chat picker can't disagree.
  */
 
-export type GgufFitClass = "fits" | "marginal" | "partial" | "ram" | "oom";
+/** `streamed`: runs because llama.cpp streams the model's lookup tables (per-layer embeddings /
+ *  Engram) from disk by default, and would not fit with them charged as resident weights. */
+export type GgufFitClass =
+  | "fits"
+  | "marginal"
+  | "partial"
+  | "ram"
+  | "streamed"
+  | "oom";
 
 export interface GgufFitInput {
   gpuGb?: number;
@@ -127,6 +135,9 @@ export function classifyGgufFit(
 export interface GgufVariantSizes {
   size_bytes: number;
   download_size_bytes?: number;
+  /** Lookup-only tables inside `size_bytes` that llama.cpp reads lazily from disk (its default
+   *  `--lazy-mode auto` for a flagged table over 4 GiB). Absent or 0 on older backends. */
+  lookup_table_bytes?: number;
 }
 
 /** Byte basis for a fit verdict on a listed variant.
@@ -146,9 +157,39 @@ export function ggufVariantFitSizeBytes(variant: GgufVariantSizes): number {
   return Math.max(variant.size_bytes, variant.download_size_bytes ?? 0);
 }
 
+/** The variant's streamed lookup-table bytes, clamped into its fit size. */
+export function ggufVariantLookupTableBytes(variant: GgufVariantSizes): number {
+  const table = Number(variant.lookup_table_bytes ?? 0);
+  if (!Number.isFinite(table) || table <= 0) return 0;
+  return Math.min(table, ggufVariantFitSizeBytes(variant));
+}
+
+/** A size verdict with the lookup tables priced apart.
+ *
+ * The tables are row-gathered, host-pinned and, under llama.cpp's default lazy mode, mmap'd
+ * from disk with only the touched rows paged in, so they are neither VRAM nor resident RAM.
+ * When charging them as weights would not change the verdict, that verdict stands. Otherwise
+ * a load that runs only with them on disk gets its own tier, `streamed`, rather than the
+ * verdict of the smaller footprint: prefill and decode then depend on the disk. */
+export function classifyGgufFitWithLookupTables(
+  fitOf: (sizeBytes: number) => GgufFitClass,
+  variant: GgufVariantSizes,
+): GgufFitClass {
+  const size = ggufVariantFitSizeBytes(variant);
+  const full = fitOf(size);
+  const table = ggufVariantLookupTableBytes(variant);
+  if (table <= 0) return full;
+  const reduced = fitOf(size - table);
+  if (reduced === full || reduced === "oom") return full;
+  return "streamed";
+}
+
 export function classifyGgufVariantFit(
   variant: GgufVariantSizes,
   input: GgufFitInput,
 ): GgufFitClass {
-  return classifyGgufFit(ggufVariantFitSizeBytes(variant), input);
+  return classifyGgufFitWithLookupTables(
+    (sizeBytes) => classifyGgufFit(sizeBytes, input),
+    variant,
+  );
 }
