@@ -519,3 +519,19 @@ def test_the_draft_micro_batch_is_priced(tmp_path, monkeypatch, extras, env):
 def test_a_zero_draft_micro_batch_follows_the_target():
     assert _lc._draft_n_ubatch(["--spec-draft-n-ubatch", "0"], {}) is None
     assert _lc._draft_n_ubatch(["--spec-draft-n-ubatch=256"], {}) == 256
+
+
+# Apple Silicon: one GPU. A draft pinned to it (MTL0) is reserved there; a pin to any
+# other device is not on the Metal target, so it gets no reserve.
+
+
+@pytest.mark.parametrize("pin, reserved", [("MTL0", True), ("mtl0", True), ("Vulkan0", False)])
+def test_a_metal_draft_pin_is_reserved_only_on_the_metal_device(
+    tmp_path, monkeypatch, pin, reserved
+):
+    cmd, _ = _r2._metal_cmd(
+        tmp_path, monkeypatch, "dspark", budget_gib = 16, extra_args = ["--device-draft", pin]
+    )
+    assert "--model-draft" in cmd
+    # The harness reads every GGUF as 4 GiB, the sidecar too.
+    assert (_r4._margin(cmd) >= 1024 + 4 * 1024) is reserved

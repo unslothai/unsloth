@@ -132,6 +132,9 @@ def _cuda_backend(
     backend._select_gpus = lambda *a, **k: (None, True)
     backend.probe_server_capabilities = lambda _binary = None: dict(_CAPS)
     backend._get_gguf_size_bytes = lambda path: 8 * _GIB if "dspark" in str(path) else 1024
+    # A discrete-GPU host on every OS: on an Apple Silicon runner the unified-memory
+    # Metal budget would otherwise stand in for the modelled cards.
+    backend._apple_metal_memory_budget_bytes = lambda: 0
     return backend, gguf
 
 

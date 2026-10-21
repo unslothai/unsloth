@@ -105,6 +105,12 @@ class TestReserveArithmetic:
         assert self._backend(0)._sidecar_fit_reserve_mib(0, None) == 0
 
 
+def _off_apple(backend):
+    """Pin a CUDA / Vulkan host: these cells model discrete GPUs, which an Apple Silicon
+    runner would otherwise replace with its unified-memory Metal budget."""
+    backend._apple_metal_memory_budget_bytes = lambda: 0
+
+
 def _cuda_launch(
     tmp_path,
     *,
@@ -113,6 +119,7 @@ def _cuda_launch(
     extra_args = None,
 ):
     backend, gguf = _placement._backend_non_vulkan(tmp_path, memory = [(0, 24_000, 24_000)])
+    _off_apple(backend)
     sidecar = tmp_path / f"{kind}-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
     backend._select_gpus = lambda *a, **k: (None, True) if use_fit else ([0], False)
@@ -216,6 +223,7 @@ def test_multi_gpu_cuda_does_not_broadcast_the_reserve(tmp_path):
     backend, gguf = _placement._backend_non_vulkan(
         tmp_path, memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)]
     )
+    _off_apple(backend)
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
     backend._select_gpus = lambda *a, **k: (None, True)
@@ -233,6 +241,7 @@ def test_a_pass_through_sidecar_is_reserved_too(tmp_path, spec_type):
     """Extras owning --spec-type replace Studio's emission, so the reserve has to follow
     the sidecar the child really loads, even with Studio's own speculation off."""
     backend, gguf = _placement._backend_non_vulkan(tmp_path, memory = [(0, 24_000, 24_000)])
+    _off_apple(backend)
     sidecar = tmp_path / "custom-sidecar-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
     backend._select_gpus = lambda *a, **k: (None, True)

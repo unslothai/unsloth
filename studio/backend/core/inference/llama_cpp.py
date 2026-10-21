@@ -30100,11 +30100,12 @@ class LlamaCppBackend:
                             )
                     # A draft pinned to another device (--device-draft Vulkan1 next to
                     # Vulkan0) allocates there, so the scalar margin would only starve
-                    # the target. Off Metal, keep the reserve only for a pin that names
-                    # the target's own device.
+                    # the target. Keep the reserve only for a pin that names the target's
+                    # own device; on Apple Silicon that is the one GPU (MTL0 on a Metal
+                    # build, Vulkan0 under MoltenVK).
                     _draft_pin = _extra_args_draft_device_pin(extra_args)
                     _draft_on_target_device = True
-                    if _draft_pin is not None and _apple_budget_mib <= 0:
+                    if _draft_pin is not None:
                         # The picker strips competing --device extras at emission, so a
                         # stale one must not stand in for the device actually launched.
                         _main_dev = _extra_args_main_device(
@@ -30118,7 +30119,13 @@ class LlamaCppBackend:
                                 if gpu_indices is not None
                                 else [g[0] for g in _detected_gpus]
                             )
-                            _main_dev = f"Vulkan{_target_ids[0]}" if _target_ids else None
+                            _main_dev = (
+                                f"Vulkan{_target_ids[0]}"
+                                if _target_ids
+                                else ("Vulkan0" if _apple_budget_mib > 0 else None)
+                            )
+                        elif _main_dev is None and _apple_budget_mib > 0:
+                            _main_dev = "MTL0"
                         _draft_on_target_device = bool(_main_dev) and (
                             _draft_pin.strip().lower() == _main_dev.strip().lower()
                         )
