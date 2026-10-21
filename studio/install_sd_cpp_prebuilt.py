@@ -43,7 +43,7 @@ UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # not build (ROCm) install it from upstream. master-968, the previous base, predates MOSS-Image (master-975,
 # split-QKV GGUF loading in the same release); master-951 before it predated FLUX.3 Image Klein (master-968), and
 # master-813 Qwen-Image-2.1 (master-883) and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
-DEFAULT_TAG = "master-982-0518b34-u0a68764"
+DEFAULT_TAG = "master-982-0518b34-ud331c66"
 
 REPO = DEFAULT_REPO
 
