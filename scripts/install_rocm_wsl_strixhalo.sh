@@ -263,7 +263,8 @@ export LD_LIBRARY_PATH="${ROCM_DIR}/lib\${LD_LIBRARY_PATH:+:\${LD_LIBRARY_PATH}}
 EOF
 # also drop into ~/.bashrc for interactive shells; an older block left a trailing ':' (the cwd) on an empty LD_LIBRARY_PATH, so replace it
 if [ -n "${HOME:-}" ] && grep -qF 'lib:${LD_LIBRARY_PATH:-}' "${HOME}/.bashrc" 2>/dev/null; then
-    sed -i '/^# >>> Unsloth ROCm-on-WSL >>>$/,/^# <<< Unsloth ROCm-on-WSL <<<$/d' "${HOME}/.bashrc"
+    # --follow-symlinks: a dotfile-managed ~/.bashrc stays a link and its target gets the edit.
+    sed --follow-symlinks -i '/^# >>> Unsloth ROCm-on-WSL >>>$/,/^# <<< Unsloth ROCm-on-WSL <<<$/d' "${HOME}/.bashrc"
 fi
 if [ -n "${HOME:-}" ] && ! grep -q "Unsloth ROCm-on-WSL" "${HOME}/.bashrc" 2>/dev/null; then
     cat "$_envfile" >> "${HOME}/.bashrc"

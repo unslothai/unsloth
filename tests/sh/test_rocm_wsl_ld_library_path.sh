@@ -17,7 +17,7 @@ mkdir -p "$_tmp/rocm/lib" "$_tmp/profile.d" "$_tmp/home"
 _dropin="$_tmp/profile.d/unsloth-rocm-wsl.sh"
 
 # Every function the writer needs, with the system paths pointed into the sandbox.
-_fns="$(sed -n '/^_rocm_wsl_dropin_stale() {$/,/^}$/p; /^_persist_rocm_wsl_dropin() {$/,/^}$/p' "$INSTALL_SH" \
+_fns="$(sed -n '/^_rocm_wsl_dropin_stale() {$/,/^}$/p; /^_repair_rocm_wsl_bashrc() {$/,/^}$/p; /^_persist_rocm_wsl_dropin() {$/,/^}$/p' "$INSTALL_SH" \
     | sed "s|/etc/profile.d/unsloth-rocm-wsl.sh|$_dropin|g; s|/opt/rocm|$_tmp/rocm|g")"
 case "$_fns" in
     *"_persist_rocm_wsl_dropin()"*) ;;
@@ -63,6 +63,19 @@ printf 'export LD_LIBRARY_PATH=/custom\n' > "$_dropin"
 _run_writer
 assert_eq "current drop-in not overwritten" "export LD_LIBRARY_PATH=/custom" "$(cat "$_dropin")"
 
+echo "=== install.sh repairs an old helper's ~/.bashrc block ==="
+mkdir -p "$_tmp/dotfiles" "$_tmp/home2"
+printf '# user line\n# >>> Unsloth ROCm-on-WSL >>>\nexport LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n# <<< Unsloth ROCm-on-WSL <<<\n' "$_tmp/rocm" > "$_tmp/dotfiles/bashrc"
+ln -s "$_tmp/dotfiles/bashrc" "$_tmp/home2/.bashrc"
+env -i PATH="$PATH" HOME="$_tmp/home2" bash -c 'eval "$1"; _repair_rocm_wsl_bashrc' _ "$_fns"
+if [ -L "$_tmp/home2/.bashrc" ]; then ok "symlinked ~/.bashrc stays a link"; else bad "~/.bashrc link replaced by a file"; fi
+assert_not_contains "old block line repaired" "$(cat "$_tmp/dotfiles/bashrc")" 'lib:${LD_LIBRARY_PATH:-}'
+_ld="$(_ld_after_source "$_tmp/home2/.bashrc")"
+assert_eq "repaired block with LD_LIBRARY_PATH unset" "$_tmp/rocm/lib" "$_ld"
+cp "$_tmp/dotfiles/bashrc" "$_tmp/repaired_first"
+env -i PATH="$PATH" HOME="$_tmp/home2" bash -c 'eval "$1"; _repair_rocm_wsl_bashrc' _ "$_fns"
+if cmp -s "$_tmp/repaired_first" "$_tmp/dotfiles/bashrc"; then ok "repair is idempotent"; else bad "second repair changed ~/.bashrc"; fi
+
 echo "=== helper env block ==="
 _step4="$(sed -n '/^# ── Step 4: persist environment/,/^# ── Step 5:/p' "$HELPER_SH" \
     | sed "s|/etc/profile.d/unsloth-rocm-wsl.sh|$_tmp/helper_env.sh|g")"
@@ -82,9 +95,11 @@ cp "$_tmp/home/.bashrc" "$_tmp/bashrc_first"
 _run_helper_step4 >/dev/null
 if cmp -s "$_tmp/bashrc_first" "$_tmp/home/.bashrc"; then ok "helper second run leaves ~/.bashrc byte-identical"; else bad "helper second run changed ~/.bashrc"; fi
 
-# An older helper's ~/.bashrc block is replaced, the user's own lines kept.
-printf '# user line\n# >>> Unsloth ROCm-on-WSL >>>\nexport LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n# <<< Unsloth ROCm-on-WSL <<<\n# after\n' "$_tmp/rocm" > "$_tmp/home/.bashrc"
+# An older helper's ~/.bashrc block is replaced through a symlink, the user's own lines kept.
+printf '# user line\n# >>> Unsloth ROCm-on-WSL >>>\nexport LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n# <<< Unsloth ROCm-on-WSL <<<\n# after\n' "$_tmp/rocm" > "$_tmp/dotfiles/helper_bashrc"
+rm -f "$_tmp/home/.bashrc"; ln -s "$_tmp/dotfiles/helper_bashrc" "$_tmp/home/.bashrc"
 _run_helper_step4 >/dev/null
+if [ -L "$_tmp/home/.bashrc" ]; then ok "helper keeps a symlinked ~/.bashrc a link"; else bad "helper replaced the ~/.bashrc link"; fi
 assert_not_contains "stale ~/.bashrc block removed" "$(cat "$_tmp/home/.bashrc")" 'lib:${LD_LIBRARY_PATH:-}'
 assert_contains "user lines kept" "$(cat "$_tmp/home/.bashrc")" "# after"
 _ld="$(_ld_after_source "$_tmp/home/.bashrc")"

@@ -6674,6 +6674,11 @@ _radeon_torch_compiles_for_pytag() {
 _rocm_wsl_dropin_stale() {
     grep -qF 'lib:${LD_LIBRARY_PATH:-}' /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null
 }
+# The helper pinned by _ROCM_WSL_HELPER_REF can predate the fix and leave the old line in ~/.bashrc.
+_repair_rocm_wsl_bashrc() {
+    [ -n "${HOME:-}" ] && grep -qF 'lib:${LD_LIBRARY_PATH:-}' "${HOME}/.bashrc" 2>/dev/null || return 0
+    sed --follow-symlinks -i '/^# >>> Unsloth ROCm-on-WSL/,/^# <<< Unsloth ROCm-on-WSL/ s#lib:\${LD_LIBRARY_PATH:-}#lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}#' "${HOME}/.bashrc" 2>/dev/null || true
+}
 _persist_rocm_wsl_dropin() {
     [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ] || return 0
     _rw_rocm=/opt/rocm
@@ -6728,6 +6733,7 @@ _maybe_bootstrap_rocm_wsl() {
             # librocdxg present but the env drop-in is gone (uninstall dropped it) or stale.
             _persist_rocm_wsl_dropin
         fi
+        _repair_rocm_wsl_bashrc
         return 0
     fi
 
@@ -6788,10 +6794,14 @@ _maybe_bootstrap_rocm_wsl() {
            UNSLOTH_LIBROCDXG_REF="$_rw_dxg_ref" UNSLOTH_LIBROCDXG_SHA="$_rw_dxg_sha" \
            bash "$_rw_helper"; then
             # Pull the helper's persisted env into THIS shell so detection (rocminfo) now enumerates the GPU and routes to gfx1151.
-            if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ]; then
+            if [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && ! _rocm_wsl_dropin_stale; then
                 # shellcheck disable=SC1091
                 . /etc/profile.d/unsloth-rocm-wsl.sh || true
+            else
+                # The pinned helper may write the old drop-in: rewrite it (and export) here.
+                _persist_rocm_wsl_dropin
             fi
+            _repair_rocm_wsl_bashrc
             substep "ROCm-on-WSL ready; continuing with GPU install." "$C_OK"
         else
             substep "ROCm-on-WSL setup did not complete; falling back to CPU-only." "$C_WARN"
