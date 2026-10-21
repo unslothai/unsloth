@@ -83,6 +83,8 @@ export interface DiffusionStatus {
   native_engine_eligible?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
+  // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
+  lora_after_reload?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.

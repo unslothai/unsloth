@@ -3609,6 +3609,11 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
     from utils.paths import datasets_root
 
     value = str(raw or "").strip()
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before dataset resolution touches the disk: a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(value) and managed_account():
+        raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
     if value and "\x00" not in value:
         p = Path(value)
         # A single component that is not "..", so joining under datasets_root() cannot escape it.

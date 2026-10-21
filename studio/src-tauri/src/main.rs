@@ -2349,6 +2349,7 @@ fn main() {
             show_main_window(app);
         }))
         .plugin(webview_cache_plugin())
+        .plugin(browser_webview::page_guard_plugin())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
