@@ -322,8 +322,11 @@ export const BUDGET = {
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
   // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
-  transferBytes: 2_067_227,
-  rawBytes: 6_864_038,
+  // Finished chat replies render lone markdown markers as written, cut ones keep the repair (#14391):
+  // 6,870,298 -> 6,870,477 B raw, 2,068,960 -> 2,069,012 B transfer against main, one machine and build.
+  // Raised by that, same margin.
+  transferBytes: 2_067_279,
+  rawBytes: 6_864_217,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

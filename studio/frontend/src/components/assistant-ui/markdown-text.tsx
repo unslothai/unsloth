@@ -1572,10 +1572,6 @@ function MarkdownTextRenderer({
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
-  const pendingLinkRepair = useMemo(
-    () => cut && hasIncompleteLinkRepair(processedText),
-    [cut, processedText],
-  );
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1596,7 +1592,7 @@ function MarkdownTextRenderer({
             remend={
               !cut
                 ? FINISHED_TEXT_REMEND
-                : pendingLinkRepair
+                : hasIncompleteLinkRepair(processedText)
                   ? LITERAL_LINK_REMEND
                   : undefined
             }

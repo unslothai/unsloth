@@ -183,7 +183,7 @@ test("streaming reparses only the active Markdown tail", () => {
     "{\n" +
       "              !cut\n" +
       "                ? FINISHED_TEXT_REMEND\n" +
-      "                : pendingLinkRepair\n" +
+      "                : hasIncompleteLinkRepair(processedText)\n" +
       "                  ? LITERAL_LINK_REMEND\n" +
       "                  : undefined\n" +
       "            }",
