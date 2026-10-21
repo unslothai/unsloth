@@ -8,6 +8,7 @@ import {
   A1111_INFO_KEYS,
   importNotApplied,
   parseA1111Parameters,
+  promptEmphasisGroups,
 } from "../src/features/images/lib/image-metadata.ts";
 
 type Handling = "applied" | "reported" | "ignored";
@@ -158,3 +159,28 @@ test("numbers past the request bounds are reported as clamped", () => {
     "masked area padding 300 (clamped to 256)",
   ]);
 });
+
+// Prompt content, not a key: A1111 attention syntax is kept in the prompt and named as plain text
+// unless the engine (sd.cpp) parses it.
+const PROMPT_CONTENT: Array<[string, string[]]> = [
+  ["a (red:1.2) car", ["(red:1.2)"]],
+  ["a ((red)) car, [blurry]", ["((red))", "[blurry]"]],
+  ["a \\(literal\\) car \\[x\\]", []],
+  ["a (red car", []],
+  ["plain text", []],
+];
+
+for (const [prompt, groups] of PROMPT_CONTENT) {
+  test(`prompt emphasis in ${JSON.stringify(prompt)}`, () => {
+    assert.deepEqual(promptEmphasisGroups(prompt), groups);
+    const r = parseA1111Parameters(`${prompt}\nNegative prompt: (worst quality:1.4)\n${BASE.split("\n")[1]}`);
+    assert.ok(r);
+    assert.equal(r.prompt, prompt);
+    const all = [...groups, "(worst quality:1.4)"];
+    assert.deepEqual(importNotApplied(r, "sdxl"), [
+      `prompt emphasis (${all.slice(0, 3).join(", ")}${all.length > 3 ? ", ..." : ""}) is passed as plain text`,
+    ]);
+    // The native sd.cpp engine reads the weights itself.
+    assert.deepEqual(importNotApplied(r, "sdxl", true), []);
+  });
+}

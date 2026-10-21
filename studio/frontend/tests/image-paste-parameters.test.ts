@@ -53,11 +53,15 @@ test("a Civitai block parses: legacy sampler name, JSON values with commas, quot
     { name: "missing_style", weight: 1 },
   ]);
   assert.equal(r.parameters_not_applied, undefined);
+  // The (masterpiece:1.2) weight stays in the prompt; only sd.cpp parses it.
+  const emphasis = "prompt emphasis ((masterpiece:1.2)) is passed as plain text";
+  assert.equal(r.prompt.includes("(masterpiece:1.2)"), true);
   // Clip skip 2 is what SDXL already renders, so nothing is reported for it there.
-  assert.deepEqual(importNotApplied(r, "sdxl"), []);
+  assert.deepEqual(importNotApplied(r, "sdxl"), [emphasis]);
+  assert.deepEqual(importNotApplied(r, "sdxl", true), []);
   // Any other family (or none loaded) applies no clip skip, so it is named.
-  assert.deepEqual(importNotApplied(r), ["Clip skip 2"]);
-  assert.deepEqual(importNotApplied(r, "flux"), ["Clip skip 2"]);
+  assert.deepEqual(importNotApplied(r), [emphasis, "Clip skip 2"]);
+  assert.deepEqual(importNotApplied(r, "flux", true), ["Clip skip 2"]);
   assert.deepEqual(importNotApplied({ prompt: "p", clip_skip: 1 }, "flux"), []);
   assert.deepEqual(unknownRecipeKeys(r), []);
 });
@@ -282,7 +286,10 @@ test("the Images page wires paste into the same restore path as a drop", () => {
     page,
     /if \(isGenerationParametersPaste\(text\)\) \{\n\s+e\.preventDefault\(\);\n\s+void importSettingsFromText\(text\);/,
   );
-  assert.match(page, /\.\.\.importNotApplied\(recipe, status\?\.loaded \? status\.family : null\),/);
+  assert.match(
+    page,
+    /\.\.\.importNotApplied\(\n\s+recipe,\n\s+status\?\.loaded \? status\.family : null,\n\s+Boolean\(status\?\.loaded && isNativeEngineStatus\(status\)\),\n\s+\),/,
+  );
   assert.match(
     page,
     /tagged\.unmatched\.map\(\(name\) => `LoRA \$\{name\} \(not installed\)`\)/,

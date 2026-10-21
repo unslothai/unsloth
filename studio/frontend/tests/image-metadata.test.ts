@@ -698,7 +698,7 @@ test("an unmapped ComfyUI sampler is kept by name; prototype names map to nothin
 test("the import names a sampler or schedule the loaded model does not offer", () => {
   const page = readSrc("features/images/images-page.tsx");
   const start = page.indexOf(
-    "const notApplied = [\n        ...importNotApplied(recipe, status?.loaded ? status.family : null),",
+    "const notApplied = [\n        ...importNotApplied(\n          recipe,\n          status?.loaded ? status.family : null,",
   );
   assert.ok(start > 0);
   const block = page.slice(start, page.indexOf("[restoreSettings,", start));

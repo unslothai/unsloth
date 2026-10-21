@@ -695,6 +695,27 @@ export function isGenerationParametersPaste(text: string): boolean {
 }
 
 /** AUTOMATIC1111 / Forge / Civitai `parameters` text (modules/infotext_utils.py:234). */
+/** The unescaped A1111 attention groups in `text`: `(x)`, `(x:1.2)`, `[x]`; `\(` and `\[` are literal. */
+export function promptEmphasisGroups(text: string): string[] {
+  const groups: string[] = [];
+  const open: Array<{ ch: string; at: number }> = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (ch === "(" || ch === "[") open.push({ ch, at: i });
+    else if ((ch === ")" || ch === "]") && open.length > 0) {
+      const top = open[open.length - 1];
+      if ((ch === ")") !== (top.ch === "(")) continue;
+      open.pop();
+      if (open.length === 0) groups.push(text.slice(top.at, i + 1));
+    }
+  }
+  return groups;
+}
+
 export function parseA1111Parameters(text: string): ImportedRecipe | null {
   const lines = text.replace(/\r\n?/g, "\n").trim().split("\n");
   if (lines.length === 0) {
@@ -719,6 +740,12 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     negative_prompt: negative,
   };
   if (networks.loras.length > 0) out.lora_tags = networks.loras;
+  // Kept in the prompt as written; importNotApplied names it for an engine without an A1111 parser.
+  const emphasis = [
+    ...promptEmphasisGroups(networks.prompt),
+    ...promptEmphasisGroups(negative ?? ""),
+  ];
+  if (emphasis.length > 0) out.prompt_emphasis = emphasis;
   const notApplied: string[] = networks.other.slice();
   const hires: Record<string, string> = {};
   let legacySchedule: string | undefined;
@@ -936,6 +963,7 @@ export const PENDING_RECIPE_KEYS = [
   "variation_strength",
   "hires",
   "lora_tags",
+  "prompt_emphasis",
   "parameters_not_applied",
 ] as const;
 
@@ -976,12 +1004,19 @@ const bounded = (r: ImportedRecipe, key: keyof typeof RECIPE_BOUNDS): number | u
   return clamp(b.integer ? int(r[key]) : num(r[key]), b.lo, b.hi);
 };
 
-/** `family`: the loaded model's family, when one is loaded. */
+/** `family`: the loaded model's family, when one is loaded. `parsesEmphasis`: the loaded engine reads
+ *  A1111 attention syntax itself (sd.cpp's parse_prompt_attention); diffusers and MLX do not. */
 export function importNotApplied(
   r: ImportedRecipe,
   family?: string | null,
+  parsesEmphasis = false,
 ): string[] {
   const out: string[] = [];
+  if (!parsesEmphasis && Array.isArray(r.prompt_emphasis) && r.prompt_emphasis.length > 0) {
+    const groups = r.prompt_emphasis.filter((g): g is string => typeof g === "string");
+    const shown = groups.slice(0, 3).join(", ") + (groups.length > 3 ? ", ..." : "");
+    out.push(`prompt emphasis (${shown}) is passed as plain text`);
+  }
   for (const key of Object.keys(RECIPE_BOUNDS) as (keyof typeof RECIPE_BOUNDS)[]) {
     const b = RECIPE_BOUNDS[key];
     const raw = b.integer ? int(r[key]) : num(r[key]);
