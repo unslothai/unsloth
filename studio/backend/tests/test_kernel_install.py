@@ -25,6 +25,7 @@ _REAL_LOCK_PATH = kernel_install._kernel_lock_path
 _REPO = _BACKEND.parent.parent
 _PT = "https://download.pytorch.org/whl"
 _CC1D = "https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.1.post4"
+_OURS = "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13"
 
 
 def _env(
@@ -92,9 +93,14 @@ def test_xformers_matches_torch_and_cuda(torch_version, cuda_version, expected):
 
 
 def test_causal_conv1d_reuses_torch_2_10_wheel_on_2_11():
+    # cu12 still takes upstream's torch2.10 wheel; cu13 cp311-cp313 takes our own 2.11 build.
+    url = kernel_install.resolve_wheel_url("causal_conv1d", _env("2.11.0+cu128", "12.8"))
+    assert (
+        url == f"{_CC1D}/causal_conv1d-1.6.1+cu12torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+    )
     url = kernel_install.resolve_wheel_url("causal_conv1d", _env("2.11.0+cu130", "13.0"))
     assert (
-        url == f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        url == f"{_OURS}/causal_conv1d-1.7.0+cu13torch2.11cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )
 
 
@@ -398,7 +404,7 @@ def test_mamba_ssm_installs_on_sm75_with_a_new_triton(uv, monkeypatch, triton):
     run = _Runner([False, True], capability = "7 5")
     assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
     assert run.installer_calls[0][-1].endswith(
-        "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        "mamba_ssm-2.3.2.post1+cu13torch2.11cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )
 
 
@@ -483,7 +489,7 @@ def test_causal_conv1d_still_installs_below_sm80(uv):
         kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
         == 0
     )
-    assert run.installer_calls[0][-1].startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10")
+    assert run.installer_calls[0][-1].startswith(f"{_OURS}/causal_conv1d-1.7.0+cu13torch2.11")
 
 
 @pytest.mark.parametrize(
@@ -561,7 +567,7 @@ def test_install_kernels_without_gpu_installs_mamba_ssm_headless(uv, monkeypatch
         monkeypatch.setenv("UNSLOTH_INSTALL_KERNELS_WITHOUT_GPU", "1")
     assert kernel_install.main(argv) == 0
     assert run.installer_calls[0][-1].endswith(
-        "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+        "mamba_ssm-2.3.2.post1+cu13torch2.11cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
     )
 
 
