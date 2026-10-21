@@ -174,6 +174,8 @@ class ClefAgent:
             # Polled in slices so a training run starting mid-load stops the worker before both need the GPU.
             deadline = time.monotonic() + LOAD_TIMEOUT_S
             while time.monotonic() < deadline and not self._conn.poll(1.0):
+                if is_process_shutting_down():
+                    raise ClefWorkerError("The Clef worker was stopped while it loaded.")
                 if cancelled is not None and cancelled():
                     raise ClefWorkerError("A training run took the GPU while Clef loaded.")
             if not self._conn.poll(0):

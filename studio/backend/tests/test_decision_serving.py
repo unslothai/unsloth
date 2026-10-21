@@ -871,6 +871,49 @@ def test_a_training_run_stops_a_clef_worker_still_loading(monkeypatch):
     assert "kill" in calls
 
 
+def test_unsloth_shutting_down_stops_a_clef_worker_still_loading(monkeypatch):
+    from core.systemone import clef_runtime
+    from utils import process_lifetime
+
+    calls = []
+
+    class Process:
+        exitcode = pid = None
+
+        def __init__(self, **kwargs):
+            self.child = kwargs["args"][1]
+
+        def start(self):
+            held.append(self.child)
+            self.child.close = lambda: None
+
+        def join(self, timeout = None):
+            calls.append("join")
+
+        def is_alive(self):
+            return "kill" not in calls
+
+        def kill(self):
+            calls.append("kill")
+
+    held = []
+    # The quit lands after the entry check: the spawn raced the shutdown sweep.
+    reads = iter([False])
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: next(reads, True))
+    monkeypatch.setattr(clef_runtime._CTX, "Process", Process)
+    monkeypatch.setattr(clef_runtime, "LOAD_TIMEOUT_S", 600)
+    try:
+        started = time.monotonic()
+        with pytest.raises(clef_runtime.ClefWorkerError, match = "stopped while it loaded"):
+            clef_runtime.ClefAgent("unused")
+        assert time.monotonic() - started < 30
+    finally:
+        for child in held:
+            del child.close
+            child.close()
+    assert "kill" in calls
+
+
 def _running(pid):
     try:
         with open(f"/proc/{pid}/stat", encoding = "utf-8") as stat:
