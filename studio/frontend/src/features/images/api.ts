@@ -591,17 +591,6 @@ export async function listDiffusionLoras(family?: string): Promise<DiffusionLora
   return data.loras ?? [];
 }
 
-/** List diffusion ControlNet models, optionally filtered to a model family. */
-export async function listDiffusionControlNets(
-  family?: string,
-): Promise<DiffusionControlNetInfo[]> {
-  const qs = family ? `?family=${encodeURIComponent(family)}` : "";
-  const data = await parseJson<{ controlnets: DiffusionControlNetInfo[] }>(
-    await authFetch(`/api/models/diffusion-controlnets${qs}`),
-  );
-  return data.controlnets ?? [];
-}
-
 export interface GalleryPage {
   images: GalleryImage[];
   has_more: boolean;
@@ -617,31 +606,6 @@ export async function getGallery(offset = 0, limit = 50, archived = false): Prom
 }
 
 /** Pin/unpin or archive/restore one image; omitted flags are left alone. Returns the new record. */
-/** Move one image to just after `afterId` (null = front). The server also decides the pin. */
-export async function moveGalleryImage(id: string, afterId: string | null): Promise<GalleryImage> {
-  return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/move`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ after_id: afterId }),
-    }),
-  );
-}
-
-/** Copy one image into a chat project's folder. */
-export async function addGalleryImageToProject(
-  id: string,
-  projectId: string,
-): Promise<{ path: string; already: boolean }> {
-  return parseJson(
-    await authFetch(`/api/inference/images/gallery/${id}/project`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_id: projectId }),
-    }),
-  );
-}
-
 export async function setGalleryImageFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },

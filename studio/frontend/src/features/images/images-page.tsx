@@ -287,10 +287,7 @@ import {
   getDiffusionStatus,
   getGallery,
   getGenerateProgress,
-  listDiffusionControlNets,
   listDiffusionLoras,
-  addGalleryImageToProject,
-  moveGalleryImage,
   setGalleryImageFlags,
   getDiffusionDownloadPlan,
   loadDiffusionModel,
@@ -367,6 +364,7 @@ import {
   withEmbeddingTrigger,
 } from "./lib/shift-choice";
 import { listDiffusionEmbeddings } from "./embeddings-api";
+import { addGalleryImageToProject, listDiffusionControlNets, moveGalleryImage } from "./images-page-api";
 import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
 import {
   enhancePromptRequestField,
