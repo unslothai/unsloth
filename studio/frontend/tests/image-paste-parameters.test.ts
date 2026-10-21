@@ -486,3 +486,11 @@ test("each textual-inversion embedding in TI hashes is named as not applied", ()
     "textual inversion badhandv4",
   ]);
 });
+
+test("the model identity an import checks covers the engine and build, not only repo and family", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(
+    page,
+    /const loadedModelKey = \(s: DiffusionStatus \| null\): string \| null =>\n\s+s\?\.loaded\n\s+\? JSON\.stringify\(\[\n\s+s\.repo_id,\n\s+s\.base_repo,\n\s+s\.family,\n\s+s\.engine,\n\s+s\.gguf_filename,\n\s+s\.dtype,\n\s+s\.transformer_quant,\n\s+s\.text_encoder_quant,\n\s+\]\)\n\s+: null;/,
+  );
+});

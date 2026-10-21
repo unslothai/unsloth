@@ -443,8 +443,22 @@ const labelOf = (labels: Record<string, string>, id: string) =>
 
 // Identifies a loaded model for the once-per-model Only masked notice.
 const onlyMaskedKeyOf = (s: DiffusionStatus): string => `${s.repo_id ?? ""}|${s.family ?? ""}`;
+// The load an import started under: model plus the engine and build, so a reload of the same repo on
+// another engine or quant counts as a change. Status carries no per-load id; an identical reload leaves
+// the same LoRA catalog, so its matches stay valid.
 const loadedModelKey = (s: DiffusionStatus | null): string | null =>
-  s?.loaded ? onlyMaskedKeyOf(s) : null;
+  s?.loaded
+    ? JSON.stringify([
+        s.repo_id,
+        s.base_repo,
+        s.family,
+        s.engine,
+        s.gguf_filename,
+        s.dtype,
+        s.transformer_quant,
+        s.text_encoder_quant,
+      ])
+    : null;
 
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
