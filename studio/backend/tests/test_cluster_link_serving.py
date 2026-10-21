@@ -274,8 +274,7 @@ def test_reset_stops_the_relays(monkeypatch):
 
 
 def test_a_spoofed_newer_sighting_does_not_take_the_worker_away(monkeypatch, relays):
-    # Fingerprints are public: a LAN host announces node-a's fingerprint from its own address. Only the
-    # real worker answers over mutual TLS, so serving keeps the address where it does.
+    # Fingerprints are public: serving keeps the address where the real worker answers mutual TLS.
     real = ("192.168.1.20", 50070)
     spoof = SimpleNamespace(host = "10.6.6.6", agent_port = 50070, fp = FP_A, seen_at = 2.0)
     honest = SimpleNamespace(host = real[0], agent_port = real[1], fp = FP_A, seen_at = 1.0)
@@ -333,8 +332,7 @@ def test_a_failed_status_is_never_treated_as_reachable(relays):
 def test_a_worker_not_at_its_recorded_address_waits_for_discovery_before_a_load(
     monkeypatch, relays
 ):
-    # node-b serves on another port than it paired with: only its announcement says where. A listener
-    # started moments ago has heard none, so the load waits one announcement round, then plans with it.
+    # node-b serves on an unpaired port: the load waits one announcement round, then plans with it.
     import asyncio
     import time as _time
 
@@ -385,8 +383,7 @@ def test_a_worker_not_at_its_recorded_address_waits_for_discovery_before_a_load(
 
 
 def test_a_reset_master_gets_a_new_relay_manager(monkeypatch):
-    # `cluster leave` on a master with no workers, then a new `cluster pair`: a new root. A running
-    # Studio must stop presenting the old certificate, which no new worker trusts.
+    # Leave + re-pair makes a new root: a running Studio must drop the old certificate.
     import studio.cluster_link.relay as relay_mod
 
     made = []
@@ -447,8 +444,7 @@ def test_an_older_recorded_address_is_tried_when_the_newest_is_stale(monkeypatch
 
 
 def test_after_the_master_is_reset_a_load_falls_back_instead_of_crashing(monkeypatch):
-    # The last worker removed and `cluster leave` run while Studio still holds a relay: the next
-    # refresh must close it and report "no cluster", not build a relay manager for no identity.
+    # Last worker removed and `cluster leave` run: the refresh closes the relay, reports no cluster.
     stopped = []
     monkeypatch.setattr(
         cs,
@@ -469,8 +465,6 @@ def test_after_the_master_is_reset_a_load_falls_back_instead_of_crashing(monkeyp
         cs.load_nodes()
     assert stopped and cs._RELAYS is None and not cs._LINK_ENDPOINTS
 
-
-# Native TLS: llama.cpp's own transport when both ends have it --------------------------------
 
 NATIVE_STATUS = {
     "busy": False,
@@ -594,8 +588,7 @@ def test_the_local_tls_probe_reads_the_bundled_rpc_server(monkeypatch, tmp_path)
 
 
 def test_every_status_read_sees_workers_paired_or_removed_since(monkeypatch, relays):
-    # `cluster pair` / `cluster remove` run in another process while Studio stays up: the status API
-    # must follow the registry without waiting for a model load to refresh the nodes.
+    # pair/remove in another process: the status API follows the registry without waiting for a load.
     st = cs.state()
     assert {n["name"] for n in st.status()["nodes"]} == {"desk", "laptop"}
     planned = list(st.nodes)
@@ -607,9 +600,8 @@ def test_every_status_read_sees_workers_paired_or_removed_since(monkeypatch, rel
 
 
 def test_a_status_read_never_repoints_a_verified_relay_at_a_spoofed_sighting(monkeypatch, relays):
-    # Planning verified node-a at its real address; a LAN host then announces node-a's public id and
-    # fingerprint from elsewhere. A status read checks nothing over the network, so it must leave the
-    # relay where verification put it, or the next RPC connection goes to the spoofer.
+    # A LAN host announces node-a's id and fingerprint after planning verified it: a status read
+    # must keep the relay where verification put it, or RPC goes to the spoofer.
     real = ("192.168.1.20", 50070)
     honest = SimpleNamespace(host = real[0], agent_port = real[1], fp = FP_A, seen_at = 1.0)
     sightings = {"node-a": [honest]}
@@ -630,9 +622,8 @@ def test_recorded_host_and_port_pairs_are_each_tried():
 
 
 def test_a_held_worker_is_recognized_after_its_transport_changed(monkeypatch, relays):
-    # The live split reached node-a over native TLS; this refresh falls back to its relay (kill switch,
-    # or a native request that failed once). Still the same rpc-server holding the served tensors: it
-    # must count as held, not be probed through the relay, whose open_rpc would restart it.
+    # The live split used native TLS; this refresh falls back to the relay. Same rpc-server holding
+    # the tensors: count it as held, never probe it through the relay (open_rpc would restart it).
     st = cs.state()
     st.refresh_nodes()
     a, b = st.nodes

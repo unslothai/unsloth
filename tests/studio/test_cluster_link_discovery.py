@@ -304,8 +304,7 @@ def test_lan_addresses_skip_loopback_public_and_down_interfaces(monkeypatch):
 
 
 def test_the_listener_retries_a_membership_that_failed(monkeypatch):
-    # One interface refuses the join (Wi-Fi still coming up) while another takes it. The list does not
-    # change, so only a retry on the open socket brings that network back.
+    # One interface refuses the join, another takes it; with the list unchanged only a retry recovers.
     import socket as real
 
     _fake_socket_module(monkeypatch)

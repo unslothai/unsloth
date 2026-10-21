@@ -48,8 +48,7 @@ def _base(purpose_server: bool) -> ssl.SSLContext:
     # SSLKEYLOGFILE would write session keys for every cluster link to disk.
     if hasattr(ctx, "keylog_filename"):
         _set(ctx, "keylog_filename", None)
-    # Every link authenticates afresh with its certificate and never resumes, so session tickets are
-    # dead weight: TLS 1.3 servers otherwise send two ticket records after each handshake.
+    # Links never resume: skip the two TLS 1.3 session tickets sent after each handshake.
     import _ssl
 
     _set(ctx, "options", _ssl._SSLContext.options.__get__(ctx) | ssl.OP_NO_TICKET)

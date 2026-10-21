@@ -42,8 +42,7 @@ OPEN_RPC_REPLY_TIMEOUT_S = 75.0
 # A client that reconnects right after its last session ends must not be refused as busy while that
 # session is still closing; a genuinely busy worker is still refused this fast, not after 8 s.
 BUSY_GRACE_S = 0.25
-# A live session re-checks its worker's authorization this often: `unsloth cluster remove` in another
-# process only edits the registry, and authorization is otherwise checked at connect time only.
+# Re-check worker authorization this often: `cluster remove` elsewhere only edits the registry.
 REVALIDATE_S = 2.0
 # Backoff cap for re-sending native_close to a removed worker that did not answer.
 NATIVE_CLOSE_RETRY_MAX_S = 30.0
@@ -74,7 +73,6 @@ class _Relay:
     counters: Dict[str, int] = field(default_factory = dict)
     conns: Set[asyncio.StreamWriter] = field(default_factory = set)
     idle: Optional[asyncio.Event] = None
-    # Threaded sessions: the local listener and what is live on it.
     listener: Optional[socket.socket] = None
     raw: Set[socket.socket] = field(default_factory = set)
     sessions: Set[SpliceSession] = field(default_factory = set)
@@ -202,8 +200,7 @@ class RelayManager:
                 self._loop.close()
 
     async def _ensure(self, node_id: str, host: str, agent_port: int) -> str:
-        # Serialized: start_server yields, and two callers creating the same relay at once each got a
-        # listener, one of them never registered and so never closed by remove() or stop().
+        # Serialized: concurrent creators each got a listener, one never registered and never closed.
         if self._ensure_lock is None:
             self._ensure_lock = asyncio.Lock()
         async with self._ensure_lock:
@@ -262,8 +259,7 @@ class RelayManager:
 
     async def _native_close(self, node_id: str, timeout: float) -> Dict[str, Any]:
         reply = await self._control(node_id, {"type": "native_close"}, timeout, paired = False)
-        # Only an answer ends the watch: after a failed close (the worker briefly unreachable) it keeps
-        # revalidating and, once the worker is no longer authorized here, retries the close itself.
+        # Only an answer ends the watch: after a failed close it keeps revalidating and retrying.
         self._stop_native_watch(node_id)
         return reply
 
@@ -288,8 +284,7 @@ class RelayManager:
             relay.last_error = f"{relay.node_id} is no longer paired; native session closed"
             logger.warning("cluster relay: %s", relay.last_error)
             break
-        # The worker still trusts this master, so nothing else ends its native session: keep asking
-        # until it acknowledges (a new native() or shutdown cancels this watch).
+        # The worker still trusts this master: keep asking until it acknowledges.
         delay = REVALIDATE_S
         while True:
             try:
@@ -297,8 +292,7 @@ class RelayManager:
                 reply = await self._control(relay, {"type": "native_close"}, 15.0, paired = False)
                 if isinstance(reply, dict) and reply.get("type") == "ok":
                     break
-                # An answer that is not "ok" means the worker no longer admits this master, and its
-                # own revalidation has already left native mode: nothing left to retry.
+                # A non-"ok" answer means the worker already left native mode for this master: done.
                 logger.warning(
                     "cluster relay: %s answered native_close with %s", relay.node_id, reply
                 )
@@ -428,8 +422,6 @@ class RelayManager:
             return await framing.read_frame(reader, timeout = timeout)
         finally:
             await close_writer(writer)
-
-    # Threaded sessions -------------------------------------------------------------------------
 
     def _accept_loop(self, relay: _Relay, listener: socket.socket) -> None:
         while relay.listener is listener:

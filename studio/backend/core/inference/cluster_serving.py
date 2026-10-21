@@ -690,9 +690,8 @@ class Node:
     rpc_port: int = RPC_PORT_DEFAULT
     ssh_user: Optional[str] = None
     managed: bool = False
-    # A paired worker ("link"): host and rpc_port are its agent, llama.cpp dials the loopback relay.
-    # "native_tls": the same agent address, but llama.cpp dials the worker's rpc-server itself over its
-    # own mutual TLS at native_port, pinned to the worker's paired fingerprint (tls_fp).
+    # "link": host/rpc_port are the agent; llama.cpp dials the loopback relay. "native_tls": llama.cpp
+    # dials the rpc-server at native_port over mutual TLS pinned to the paired fingerprint (tls_fp).
     node_id: Optional[str] = None
     transport: str = "direct"
     relay: Optional[str] = None
@@ -912,8 +911,7 @@ def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     return nodes
 
 
-# Paired workers (studio/cluster_link): each is reached through a loopback relay that carries RPC over
-# mutually authenticated TLS. Process-wide, like _STATE.
+# Paired workers: reached via a loopback relay carrying RPC over mutual TLS. Process-wide.
 _RELAYS: Any = None
 _LISTENER: Any = None
 _LINK_ENDPOINTS: Dict[str, str] = {}  # relay or tls:// endpoint -> node_id
@@ -980,8 +978,7 @@ def _relays() -> Optional[Any]:
     if _RELAYS is not None and (
         master is None or _RELAYS.identity.fingerprint != master.fingerprint
     ):
-        # The master was reset (`cluster leave`) and paired again under a new root: the cached
-        # certificate is one no new worker trusts.
+        # Master reset and re-paired under a new root: no new worker trusts the cached certificate.
         _stop_links()
     if master is None:
         # Not a master (any more, e.g. after `cluster leave`): there is nothing to relay to.
@@ -999,8 +996,7 @@ def _relays() -> Optional[Any]:
     return _RELAYS
 
 
-# node_id -> fingerprint of the paired workers: discovery keeps only their announcements, so a flood of
-# made-up node ids cannot fill its table.
+# node_id -> fingerprint of paired workers: discovery keeps only those, so fake ids cannot flood it.
 _PAIRED_FPS: Dict[str, str] = {}
 
 
@@ -1178,9 +1174,8 @@ def _link_nodes(verify: bool = True) -> List[Node]:
         if not candidates:
             LINK_DROPPED[label] = "no known address: start `unsloth worker` on it"
             continue
-        # Keep the address where the worker itself answers over mutual TLS: the recorded one may be stale
-        # (it moved, or serves on another port), and anyone on the LAN can announce a paired worker. A status read
-        # skips this: it runs on Studio's event loop, where no network wait belongs.
+        # Keep the address where the worker answers over mutual TLS: the recorded one may be stale and
+        # anyone may announce a paired worker. Status reads skip this (event loop, no network waits).
         verified = None
         if verify:
             verified = _first_verified(relays, peer.node_id, candidates)
@@ -1190,8 +1185,7 @@ def _link_nodes(verify: bool = True) -> List[Node]:
                 _UNVERIFIED.discard(peer.node_id)
         host, port = (verified[0], verified[1]) if verified else candidates[0]
         if not verify:
-            # A status read verifies nothing: an existing relay keeps the destination a verified pass gave it,
-            # or any LAN host announcing this worker's public id and fingerprint could re-point it.
+            # Status reads verify nothing: keep the verified destination, or a LAN spoofer could re-point it.
             current = relays.destination(peer.node_id)
             if current is not None:
                 host, port = current
@@ -1730,8 +1724,7 @@ class ClusterServing:
             if e in served_at:
                 return e
             node = links.get(e)
-            # A paired worker may have served the split over its other transport (native TLS <-> relay):
-            # still the same rpc-server holding the served tensors, so it must not be probed.
+            # Same rpc-server over its other transport (native TLS <-> relay): held, so never probe it.
             return next((old for old in served_at if node and _same_link_worker(old, node)), None)
 
         held_as = {e: served_as(e) for e in endpoints}
@@ -1788,8 +1781,7 @@ class ClusterServing:
         from core.inference import spark_serving as ss
 
         if _paired_workers():
-            # A load right after Studio starts would otherwise plan without workers found only by discovery.
-            # In a thread: verifying link addresses waits on the network, not on Studio's event loop.
+            # Wait for discovery so an early load sees its workers; in a thread, off Studio's event loop.
             await asyncio.to_thread(self.refresh_nodes)
             settle = discovery_settle_s()
             if settle:
@@ -2716,9 +2708,8 @@ class ClusterServing:
             return self.refresh_nodes(verify = False)
         if not _paired_only():
             return self.nodes
-        # Paired workers change while Studio runs (`cluster pair` / `remove` in another process): re-read
-        # the registry for every status, without network checks and without replacing self.nodes, which
-        # a load in flight planned against.
+        # Re-read the registry per status (pair/remove elsewhere) without network checks or replacing
+        # self.nodes, which an in-flight load planned against.
         dropped = dict(LINK_DROPPED)
         try:
             nodes = load_nodes(verify = False)

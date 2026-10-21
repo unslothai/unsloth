@@ -190,8 +190,7 @@ def master_identity(create: bool = True) -> Optional[LocalIdentity]:
     found = _existing_master()
     if found is not None or not create:
         return found
-    # Studio and `unsloth cluster pair` may both get here first: two roots would orphan every
-    # worker paired against the loser.
+    # Studio and `cluster pair` may race here: two roots would orphan the loser's workers.
     with _locked(state_dir() / "identity.lock"):
         return _existing_master() or _create_master_identity()
 
@@ -388,8 +387,7 @@ class Registry:
         for entry in data.get("peers", []) if isinstance(data, dict) else []:
             if not isinstance(entry, dict):
                 continue
-            # Fields from a newer version are carried through save, so an older CLI never drops
-            # a peer (or a tombstone) it does not fully understand.
+            # Unknown fields from newer versions survive save, so an older CLI never drops a peer or tombstone.
             try:
                 peer = Peer(**{k: v for k, v in entry.items() if k in known})
             except TypeError:
@@ -457,9 +455,8 @@ class Registry:
         peer = self.peers.get(node_id)
         if peer is None:
             return
-        # Each entry keeps the port it answered on ("host:port"): a worker seen once on a temporary port
-        # must not lose the pair it serves on normally, which a later restart may return to. Bare "host"
-        # entries (older registries) mean the peer's agent port at the time.
+        # Entries keep their port ("host:port") so a temporary port never evicts the normal pair;
+        # bare "host" entries (older registries) mean the agent port at the time.
         old = int(peer.agent_port or 0)
         port = int(port or old)
         kept = [a if (":" in a or not old) else f"{a}:{old}" for a in peer.addrs]

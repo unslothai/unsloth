@@ -408,8 +408,7 @@ def test_names_from_other_machines_cannot_write_control_sequences(fakes):
 
 
 def test_leave_resets_a_master_nobody_joined_but_not_one_with_workers(fakes):
-    # A `cluster pair` that nobody joined still made this machine a master: join refuses on a master,
-    # so leave is the way back.
+    # An unjoined `cluster pair` still made a master: join refuses, so leave is the way back.
     fakes.peers = [worker_peer()]
     refused = invoke("cluster", "leave", "--yes")
     assert refused.exit_code == 1 and "cluster remove" in refused.output and fakes.left == []
@@ -484,8 +483,7 @@ def test_out_of_range_ports_are_cli_errors(fakes, args):
     ],
 )
 def test_worker_ports_must_all_differ(fakes, monkeypatch, args):
-    # Native mode restarts the rpc-server on --native-port: equal to --rpc-port it used to fail with
-    # "another worker is running"; equal to --port it could never bind beside the agent.
+    # Native restarts rpc-server on --native-port: it must differ from --rpc-port and --port.
     fakes.worker = ident("worker")
     monkeypatch.setattr(cli, "_rpc_server_binary", lambda: "/opt/llama/ggml-rpc-server")
     result = invoke("worker", "--no-discovery", *args)

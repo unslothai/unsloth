@@ -224,8 +224,7 @@ class PairingWindow:
         except asyncio.TimeoutError:
             if not self._claimed:
                 raise
-        # A worker proved the token in time and may already have saved its identity: let the handler
-        # finish (its reads are bounded) instead of closing the window under it.
+        # A worker proved the token and may have saved its identity: let its bounded handler finish.
         return await asyncio.wait_for(asyncio.shield(self._done), CLAIMED_GRACE_S)
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -260,8 +259,7 @@ class PairingWindow:
             hello["invite_id"].encode("utf-8"), self.invite_id.encode("ascii")
         ):
             raise PairingError("unknown invitation")
-        # Counted only for hellos naming this invitation (which takes the token), so nobody on the
-        # LAN can use up the budget and close the window.
+        # Counted only for hellos naming this invitation, so LAN strangers cannot exhaust the budget.
         self._attempts += 1
         if self._attempts > MAX_ATTEMPTS:
             self.close()
@@ -296,8 +294,7 @@ class PairingWindow:
             if self._used:
                 raise PairingError("invitation already used")
             self._used = self._claimed = True
-        # Claimed: this handler now settles the window, so expiry must not report it failed while
-        # the worker is acknowledging (every read below is bounded by FRAME_TIMEOUT_S).
+        # Claimed: expiry must not report failure while the worker acknowledges (reads are bounded).
         if self._expiry is not None:
             self._expiry.cancel()
         try:
@@ -334,8 +331,7 @@ class PairingWindow:
                     "confirm": _confirm(self._secret, data),
                 },
             )
-            # Recorded only once the worker says it saved its identity: a connection lost in between
-            # must not leave a worker the master knows and that does not know it is paired.
+            # Recorded only after the worker saved its identity: never a worker unaware it is paired.
             framing.expect(
                 await framing.read_frame(reader, FRAME_TIMEOUT_S), "pair_ack", node_id = str
             )
@@ -421,8 +417,7 @@ async def join(
 ) -> LocalIdentity:
     """Worker side: pair with the master named by ``token`` and persist the result."""
     invite = tokens.decode(token)
-    # No check of invite.exp here: a worker's clock may be off (a new or offline machine), and the
-    # master, which this connection pins, enforces the window itself.
+    # No invite.exp check: the worker's clock may be off; the pinned master enforces the window.
     # One join at a time on this machine: two concurrent ones would interleave key, cert and root.
     async with _identity_lock():
         return await _join_locked(invite, name, devices, timeout, now, replace, agent_port)
@@ -498,8 +493,7 @@ async def _join_locked(invite, name, devices, timeout, now, replace, agent_port)
             _connect(invite.addrs, invite.port, invite.master_fp), timeout
         )
         try:
-            # The overall deadline covers the handshake only: once the identity is saved, a timeout
-            # or a cancel must still end in the unconfirmed outcome below, not a bare timeout.
+            # Deadline covers the handshake only: once the identity is saved, end unconfirmed, not timed out.
             issued = await asyncio.wait_for(
                 handshake(reader, writer), max(0.1, deadline - loop.time())
             )
@@ -514,8 +508,7 @@ async def _join_locked(invite, name, devices, timeout, now, replace, agent_port)
                 asyncio.TimeoutError,
                 asyncio.CancelledError,
             ) as exc:
-                # The master may already have recorded this worker (only pair_ok was lost): keep the
-                # identity rather than leave it a ghost, and say how to check.
+                # The master may have recorded this worker (only pair_ok lost): keep the identity, say how to check.
                 raise PairingUnconfirmed(
                     f"saved this worker's identity ({local.node_id[:12]}) but the master's final "
                     f"confirmation did not arrive ({type(exc).__name__}). If `unsloth cluster list` on "

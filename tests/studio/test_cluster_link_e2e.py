@@ -168,8 +168,7 @@ def spawn(
     quiet = False,
     **kw,
 ):
-    # Nothing drains a child's stderr while it runs, and llama-server also logs to stdout: a full
-    # pipe blocks the child (llama-server stops mid-load). Their output goes to a file instead.
+    # Undrained pipes block the child (llama-server stops mid-load): output goes to a file.
     log = tempfile.NamedTemporaryFile("w+", prefix = "e2e_", suffix = ".log", delete = False)
     p = subprocess.Popen(
         argv,
@@ -353,8 +352,7 @@ def test_a_split_through_paired_relays_matches_direct_rpc(tmp_path, procs, monke
         await writer.drain()
         return await asyncio.wait_for(reader.read(64), 5)
 
-    # The agent must be up and listening, so a refusal below is the TLS layer saying no, not a dead
-    # agent or a closed port (either would also "return nothing").
+    # The agent must be listening, so a refusal below is the TLS layer, not a dead agent or closed port.
     socket.create_connection((hosts[0], agent_ports[0]), timeout = 5).close()
     try:
         answer = asyncio.run(unpaired())
@@ -395,9 +393,8 @@ def _start_workers(
 
 
 def test_a_split_over_native_tls_matches_the_relays(tmp_path, procs, monkeypatch):
-    # Both bundles carry llama.cpp's TLS transport: the master asks each agent to serve it natively,
-    # llama-server dials tls://<worker fingerprint>@host:port with the master's certificate from the
-    # environment, and greedy output equals the same split through the relays.
+    # Both bundles have llama.cpp's TLS transport: llama-server dials tls://<fp>@host:port natively,
+    # and greedy output must equal the same split through the relays.
     if not _tls_build():
         pytest.skip("this llama.cpp build has no TLS transport (GGML_RPC_TLS)")
     master_state = tmp_path / "master"

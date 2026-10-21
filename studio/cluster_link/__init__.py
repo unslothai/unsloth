@@ -17,6 +17,5 @@ DISCOVERY_GROUP_V6 = "ff02::1"
 DISCOVERY_PORT = 50079
 PROTOCOL_VERSION = 1
 
-# Both ends of a secure link set this: GGML_RDMA_GID skips the RDMA address match, which could
-# otherwise negotiate RDMA through a loopback relay and move tensors outside TLS.
+# GGML_RDMA_GID skips RDMA address matching, which could move tensors via a loopback relay outside TLS.
 SECURE_RPC_ENV = {"GGML_RPC_NO_RDMA": "1"}

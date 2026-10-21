@@ -35,8 +35,7 @@ def _link(crypto: bool = False):
     try:
         from unsloth_cli._inference import ensure_studio_backend_path
 
-        # So cluster state resolves through Studio's own studio_root() (UNSLOTH_HOME, venv layout),
-        # the same directory the Studio backend reads.
+        # Resolve cluster state through Studio's studio_root(), the directory the backend reads.
         ensure_studio_backend_path(seed_cache_env = False)
     except Exception:
         pass

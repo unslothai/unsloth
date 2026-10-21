@@ -267,10 +267,8 @@ async def splice(
         await asyncio.gather(_close(a, not clean), _close(b, not clean), return_exceptions = True)
 
 
-# Threaded sessions (opt in): once an RPC session is admitted its bytes move in two plain threads,
-# one per direction, with no event loop in between. Measured on Colab G4 and Kaggle T4x2 it was no
-# faster than the asyncio path above (the TLS cost is the relay hop itself; llama.cpp's own TLS
-# transport removes it), so asyncio stays the default. UNSLOTH_CLUSTER_LINK_THREADED_SPLICE=1 opts in.
+# Threaded sessions (opt in, UNSLOTH_CLUSTER_LINK_THREADED_SPLICE=1): two plain threads per session.
+# Measured on Colab G4 / Kaggle T4x2: no faster than asyncio (the relay hop's TLS dominates).
 THREADED_SPLICE_ENV = "UNSLOTH_CLUSTER_LINK_THREADED_SPLICE"
 WRITE_MAX = 256 * 1024
 WAIT_S = 1.0
@@ -457,8 +455,7 @@ def _pump(
                         InterruptedError,
                     ):
                         continue
-                    # SSL hands out one record (<= 16 KiB) per read: take every record already here so
-                    # the plain side gets one write per message, not one per record.
+                    # SSL yields one record (<= 16 KiB) per read: drain every buffered record into one plain write.
                     while 0 < n <= len(view) - TLS_RECORD:
                         if not src.pending() and not _readable_now(src):
                             break
@@ -535,8 +532,7 @@ def socket_splice(
         trace.write(clean)
     if on_done is not None:
         on_done()
-    # No close_notify: SSLSocket.unwrap() drops its SSL object, and a TLS peer here treats a plain EOF
-    # as the end of the session, which is all an RPC session's end means.
+    # No close_notify: unwrap() drops the SSL object; a TLS peer here treats plain EOF as session end.
     for s in (a, b):
         try:
             s.close()

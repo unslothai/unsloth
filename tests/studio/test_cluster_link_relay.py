@@ -931,8 +931,7 @@ def test_rpc_up_waits_for_the_port_not_just_the_process(tmp_path):
 
 
 def test_revoking_a_worker_cuts_its_live_session(make_link, monkeypatch):
-    # `unsloth cluster remove` runs in another process and only edits the registry: a session that is
-    # already open must still end, not keep carrying tensors until Studio next refreshes its nodes.
+    # `cluster remove` elsewhere only edits the registry: an open session must still end promptly.
     import studio.cluster_link.relay as relay_mod
 
     monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)
@@ -947,8 +946,7 @@ def test_revoking_a_worker_cuts_its_live_session(make_link, monkeypatch):
 
 
 def test_a_worker_leaving_cuts_the_masters_live_session(make_link, monkeypatch):
-    # `unsloth cluster leave` on the worker only edits its registry; the master side still trusts the
-    # worker, so the agent itself must end the session it is serving.
+    # `cluster leave` on the worker only edits its registry: the agent itself must end the session.
     import studio.cluster_link.agent as agent_mod
 
     monkeypatch.setattr(agent_mod, "REVALIDATE_S", 0.2)
@@ -1001,8 +999,7 @@ def test_a_second_agent_on_the_same_rpc_port_does_not_kill_the_first_ones_server
 
 
 def test_rpc_server_dies_with_the_agent_even_when_the_agent_has_threads(tmp_path):
-    # preexec_fn is unsafe once the process has threads (the LAN announcer starts first): the launch
-    # must still tie rpc-server to the agent, through setpriv when it is there.
+    # preexec_fn is unsafe once threads exist: rpc-server must still be tied to the agent (setpriv).
     import dataclasses
     import json
     import signal
@@ -1060,8 +1057,7 @@ asyncio.run(main())
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_two_workers_starting_at_once_on_one_rpc_port_one_wins(tmp_path):
-    # Both used to pass the "is the port owned?" check before either recorded itself, then fought
-    # over the port forever. The per-port lock lets exactly one start.
+    # Both could pass the "is the port owned?" check: the per-port lock lets exactly one start.
     import dataclasses
     import json
     import subprocess
@@ -1151,8 +1147,7 @@ def test_links_send_no_session_tickets(tmp_path):
 
 
 def test_a_client_reconnecting_at_once_is_served(make_link):
-    # The busy slot is released when the splice ends, before the upstream socket finishes closing,
-    # so a llama-server that reconnects straight away must be served, not refused as busy.
+    # The busy slot frees when the splice ends, so an immediate reconnect is served, not refused.
     link = make_link()
     for i in range(5):
         payload = os.urandom(1000 + i)
@@ -1164,8 +1159,7 @@ def test_a_client_reconnecting_at_once_is_served(make_link):
 
 
 def test_a_client_reconnecting_while_its_last_session_drains_is_served(make_link):
-    # The previous session ends with megabytes still in flight: its teardown must not keep the slot
-    # past BUSY_GRACE_S and refuse the reconnect, and none of its bytes may reach the new session.
+    # A teardown with MBs in flight must not hold the slot past BUSY_GRACE_S or leak bytes onward.
     link = make_link()
     first = link.connect()
     first.sendall(os.urandom(8 * MIB))
@@ -1207,8 +1201,6 @@ def test_the_link_trace_records_both_hops_only_when_asked(make_link, tmp_path, m
         assert all(v["n"] >= 1 for v in row["turnaround_us"].values())
 
 
-# Threaded sessions: the default byte path once a session is admitted (splice.socket_splice).
-
 _SESSION_THREADS = (
     "unsloth-cluster-agent-conn",
     "unsloth-cluster-relay-conn",
@@ -1242,8 +1234,7 @@ def test_sessions_take_the_path_the_kill_switch_selects(make_link, monkeypatch, 
 
 
 def test_a_threaded_session_carries_a_bulk_reply_byte_exact_both_ways(make_link, monkeypatch):
-    # Upload and download at once, each fragmented: the one thread per session must never stall a
-    # direction behind the other or reorder bytes.
+    # Concurrent fragmented upload and download: never stall a direction or reorder bytes.
     monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", "1")
     link = make_link()
     payload = os.urandom(8 * MIB + 3)
@@ -1335,9 +1326,6 @@ def test_concurrent_ensure_makes_one_threaded_listener(tmp_path, monkeypatch):
     assert _wait(
         lambda: not [t for t in threading.enumerate() if t.name == "unsloth-cluster-relay-accept"]
     )
-
-
-# Native mode: llama.cpp's own TLS rpc-server on request ---------------------------------------
 
 
 def _fake_rpc_binary(
@@ -1489,8 +1477,7 @@ def test_native_close_and_a_relay_session_both_return_to_loopback(make_link, tmp
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_a_removed_worker_still_takes_a_native_close(make_link, tmp_path):
-    # The master cuts a native session of a worker it just removed: no longer authorized there, but
-    # the certificate still names that node, and closing is all it is asked.
+    # Closing a just-removed worker's native session: no longer authorized, but closing is allowed.
     link = _native_link(make_link, tmp_path, relay_authorize = lambda pid: False)
     assert link.relay.status("w1")["reachable"] is False  # status needs the worker still paired
     link.loop.run(
@@ -1503,8 +1490,7 @@ def test_a_removed_worker_still_takes_a_native_close(make_link, tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
 def test_a_failed_native_start_rolls_back_to_loopback(make_link, tmp_path, monkeypatch):
-    # The TLS rpc-server dies at start: the master falls back to the relay, which needs the worker back
-    # on its loopback rpc-server, not stuck in native mode reporting rpc down.
+    # TLS rpc-server dies at start: the worker must return to loopback for the relay fallback.
     from studio.cluster_link import native
 
     import studio.cluster_link.agent as agent_mod
@@ -1532,8 +1518,7 @@ def test_the_relay_waits_out_a_native_to_loopback_restart():
 def test_removing_a_native_worker_on_the_master_alone_cuts_its_session(
     make_link, tmp_path, monkeypatch
 ):
-    # `unsloth cluster remove` only edits the master's registry; the native session does not pass
-    # through the relay, so the relay manager's own watch must notice and close it within seconds.
+    # `cluster remove` only edits the registry and native bypasses the relay: the watch must close it.
     from studio.cluster_link import native
 
     import studio.cluster_link.relay as relay_mod
@@ -1555,8 +1540,7 @@ def test_removing_a_native_worker_on_the_master_alone_cuts_its_session(
 def test_a_failed_native_revocation_is_retried_until_the_worker_answers(
     make_link, tmp_path, monkeypatch
 ):
-    # The first native_close after a remove cannot reach the agent (a blip on the LAN): the watch must
-    # keep asking, or the worker, which still trusts this master, keeps its native session forever.
+    # The first native_close after remove fails: the watch must retry, or the session lives forever.
     from studio.cluster_link import native
 
     import studio.cluster_link.relay as relay_mod
@@ -1595,8 +1579,7 @@ def test_a_failed_native_revocation_is_retried_until_the_worker_answers(
 def test_a_failed_explicit_native_close_keeps_the_revocation_watch(
     make_link, tmp_path, monkeypatch
 ):
-    # Studio's removal path calls native_close() itself; if that one attempt cannot reach the agent, the
-    # watch must survive and retry, or the removed worker keeps its native session for good.
+    # Studio's one native_close attempt fails: the watch must survive and retry.
     from studio.cluster_link import native
 
     import studio.cluster_link.relay as relay_mod

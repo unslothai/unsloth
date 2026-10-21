@@ -55,8 +55,7 @@ RPC_READY_TIMEOUT_S = 60.0
 RESTART_BACKOFF_MAX_S = 30.0
 STABLE_RUN_S = 60.0
 BUSY_GRACE_S = 0.25
-# A live session re-checks its master's authorization this often: `unsloth cluster leave` (or a
-# re-pair) in another process only edits the registry, which is otherwise read at connect time.
+# Re-check the master's authorization this often: `cluster leave` elsewhere only edits the registry.
 REVALIDATE_S = 2.0
 _TAIL = 50
 
@@ -74,8 +73,7 @@ def _die_with_agent_hook() -> Optional[Callable[[], None]]:
         prctl = ctypes.CDLL(None, use_errno = True).prctl
     except Exception:
         return None
-    # Compared against the agent's own pid, not 1: an agent that IS pid 1 (a container entrypoint)
-    # is every child's parent, and a "parent is 1" test killed each rpc-server it started.
+    # Own pid, not 1: an agent running as pid 1 (container entrypoint) is every child's parent.
     agent_pid = os.getpid()
 
     def hook() -> None:
@@ -206,9 +204,8 @@ class Agent:
         self.port = port
         self.rpc_binary = rpc_binary
         self.rpc_port = rpc_port
-        # Native mode: rpc-server serves llama.cpp's own mutual TLS on the LAN for the one master that
-        # asked, instead of plain TCP on loopback behind this agent. One rpc-server either way: two
-        # would each hold an accelerator context. None = use it when the bundle has it.
+        # Native: rpc-server serves llama.cpp's mutual TLS on the LAN to the asking master. Never two
+        # rpc-servers (each would hold an accelerator context). None = use it when the bundle has it.
         self.native_port = native_port
         self._native_tls = native_tls
         self.native_available = False
@@ -334,8 +331,7 @@ class Agent:
         # Only once the port is ours: a failed bind must not leave an rpc-server running.
         if self.rpc_binary is not None:
             try:
-                # Held for the agent's whole life, released by the kernel however it ends: two
-                # workers starting at once on one rpc port cannot both pass the check below.
+                # Held for the agent's life: two workers starting on one rpc port cannot both pass the check.
                 self._port_lock = _lock_rpc_port(self.rpc_port)
                 # After the lock: a slow `--help` must not let a second worker pass it meanwhile.
                 self.native_available = bool(
@@ -424,8 +420,7 @@ class Agent:
         env["LLAMA_CACHE"] = str(self._cache())
         return env
 
-    # PR_SET_PDEATHSIG is Linux only: on macOS and Windows a killed agent leaves its rpc-server
-    # holding the port, so the next agent finds it through this record and stops it first.
+    # No PR_SET_PDEATHSIG off Linux: the next agent finds a leftover rpc-server via this record.
     def _record_path(self) -> Path:
         return run_dir() / f"rpc-server-{self.rpc_port}.json"
 
@@ -568,8 +563,7 @@ class Agent:
         deadline = time.monotonic() + RPC_READY_TIMEOUT_S
         while proc.returncode is None and time.monotonic() < deadline:
             try:
-                # A bare connect and close: a TLS rpc-server refuses the missing handshake and goes
-                # back to accept, so this only proves the port is bound.
+                # Bare connect+close: a TLS rpc-server drops it and keeps accepting; proves only the port is bound.
                 _, writer = await asyncio.wait_for(
                     asyncio.open_connection(*self._probe_target), 1.0
                 )
@@ -628,8 +622,6 @@ class Agent:
                 "port": self.native_port if self.native_available else 0,
             },
         }
-
-    # Native mode -------------------------------------------------------------------------------
 
     async def _restart_rpc(self) -> bool:
         """Stop rpc-server so the supervisor starts it again with the current mode's argv; a live
@@ -782,8 +774,6 @@ class Agent:
             logger.exception("cluster agent: authorization check failed")
             return False
 
-    # Threaded sessions -------------------------------------------------------------------------
-
     def _close_listener(self) -> None:
         listener, self._listener = self._listener, None
         if listener is not None:
@@ -878,7 +868,7 @@ class Agent:
                     self._active -= 1
 
         try:
-            # Right after start (or a restart) rpc-server may not have bound yet: wait, do not fail the load.
+            # rpc-server may not have bound yet after a (re)start: wait, do not fail the load.
             loop = self._loop
             if self.rpc_binary is not None and loop is not None and not loop.is_closed():
                 try:
@@ -986,7 +976,7 @@ class Agent:
                     self._idle.set()
 
         try:
-            # Right after start (or a restart) rpc-server may not have bound yet: wait, do not fail the load.
+            # rpc-server may not have bound yet after a (re)start: wait, do not fail the load.
             await self.wait_rpc_ready(RPC_CONNECT_TIMEOUT_S * 3)
             try:
                 up_reader, up_writer = await asyncio.wait_for(

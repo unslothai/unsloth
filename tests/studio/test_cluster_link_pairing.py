@@ -183,8 +183,7 @@ def test_wrong_secret_is_refused(master_dir, tmp_path):
 
 
 def test_a_worker_whose_clock_is_ahead_still_pairs_while_the_window_is_open(master_dir, tmp_path):
-    # A new or offline machine's clock may be off: the token's expiry as the worker sees it must not
-    # refuse a pairing the master (which this connection pins) still accepts.
+    # The worker's clock may be off: its view of expiry must not refuse what the pinned master accepts.
     async def main():
         _, window = _window()
         invite = tokens.decode(await window.start())
@@ -382,8 +381,7 @@ def test_registry_record_address(master_dir):
 
 
 def test_a_temporary_port_keeps_the_usual_pair_in_the_history(master_dir):
-    # Discovery saw the worker once on a temporary port; it later restarts on its paired port while
-    # multicast is blocked. The history must still hold that pair, not the host with the temporary port.
+    # Seen once on a temporary port, back on its paired port with multicast blocked: history keeps the pair.
     reg = identity.Registry()
     with reg.transaction():
         peer = _peer("w1", "worker", "a" * 64)
@@ -648,8 +646,7 @@ def test_a_pairing_cut_before_the_ack_records_nothing_on_the_master(master_dir, 
         _, window = _window()
         token = await window.start()
         result = await _worker(WORKER_JOIN_DROPS_ACK, tmp_path / "w", token)
-        # The worker keeps what it saved and is told how to check; the master never heard the ack, so
-        # it recorded nothing: no ghost on the master, and `cluster leave` + a new token recover.
+        # The worker keeps its identity and is told how to check; the master recorded nothing (no ghost).
         assert result == {"ok": False, "paired": True, "error": "PairingUnconfirmed"}
         with pytest.raises(pairing.PairingError):
             await window.wait(5)
@@ -691,8 +688,7 @@ WORKER_JOIN_STATUS = textwrap.dedent(
 
 
 def test_a_lost_final_confirmation_keeps_both_sides_paired(master_dir, tmp_path, monkeypatch):
-    # The master recorded the worker and only its pair_ok was lost: the worker keeps its identity, or
-    # the master is left with a worker that no longer exists.
+    # Master recorded it and only pair_ok was lost: the worker keeps its identity, or the master has a ghost.
     plain = pairing.framing.write_frame
 
     async def write_frame(writer, obj):
@@ -720,8 +716,7 @@ def test_a_lost_final_confirmation_keeps_both_sides_paired(master_dir, tmp_path,
 
 
 def test_a_master_reset_during_pairing_records_nothing(master_dir, tmp_path, monkeypatch):
-    # `cluster leave` resets the master between the certificate and the commit: the commit sees no
-    # master (or another one) under the shared lock and refuses.
+    # `cluster leave` between certificate and commit: the commit sees no master under the lock, refuses.
     async def main():
         _, window = _window()
         token = await window.start()
@@ -788,8 +783,7 @@ WORKER_JOIN_SHORT_TIMEOUT = textwrap.dedent(
 
 
 def test_the_join_deadline_does_not_cut_the_final_confirmation(master_dir, tmp_path, monkeypatch):
-    # The deadline covers the handshake; once the worker has saved its identity, a slow pair_ok must
-    # still be waited for (or end as unconfirmed), never as a bare timeout that leaves it half paired.
+    # Once the identity is saved a slow pair_ok is waited for (or unconfirmed), never a bare timeout.
     plain = pairing.framing.write_frame
 
     async def write_frame(writer, obj):
@@ -833,8 +827,7 @@ WORKER_JOIN_SLOW_ACK = textwrap.dedent(
 
 
 def test_expiry_after_the_proof_does_not_fail_a_pairing_that_completes(master_dir, tmp_path):
-    # A worker proves the token just before the TTL and acknowledges just after it: both sides end up
-    # paired, so `cluster pair` must report the worker, not "the pairing window expired".
+    # Token proved just before the TTL, acked just after: `cluster pair` reports the worker, not expiry.
     async def main():
         _, window = _window()
         token = await window.start()
@@ -893,8 +886,7 @@ def _self_signed(directory: Path):
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "needs 127.0.0.2 on loopback")
 def test_a_mismatched_first_address_falls_through_to_the_master(master_dir, tmp_path):
-    # A multihomed master's token: the first address now belongs to another machine with its own
-    # certificate. Nothing is sent to it, so the worker tries the next address instead of failing.
+    # Multihomed token whose first address is another machine: nothing sent, try the next address.
     async def main():
         master, window = _window(addrs = ["127.0.0.2", "127.0.0.1"])
         token = await window.start()
@@ -929,8 +921,7 @@ def test_a_mismatched_first_address_falls_through_to_the_master(master_dir, tmp_
 
 
 def test_waiting_for_the_identity_lock_does_not_block_the_event_loop(master_dir):
-    # Two joins in one process: the second must wait for the lock without freezing the loop, or the
-    # first can never finish its network I/O and release it.
+    # Two joins in one process: the second waits for the lock without freezing the loop.
     async def main():
         holding, release = asyncio.Event(), asyncio.Event()
         order = []
@@ -978,8 +969,7 @@ def test_waiting_for_the_identity_lock_does_not_block_the_event_loop(master_dir)
 
 
 def test_a_caller_deadline_waits_out_a_claimed_pairing(master_dir, tmp_path):
-    # `cluster pair` waits with its own deadline: when it passes while a worker that proved the token
-    # is still acknowledging, the master must finish recording it, not close the window under it.
+    # `cluster pair`'s own deadline passes mid-ack: the master must still record the worker.
     async def main():
         _, window = _window()
         token = await window.start()

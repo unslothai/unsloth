@@ -208,12 +208,10 @@ class Listener:
     ) -> None:
         self.expire_after = 3 * interval
         self.port = port
-        # (node_id, fp) -> keep? Serving passes its paired workers, so a flood of made-up node ids
-        # cannot fill the table and push a real worker out.
+        # (node_id, fp) -> keep? Limited to paired workers, so made-up node ids cannot flood the table.
         self._accept = accept
         self._lock = threading.Lock()
-        # node_id -> host -> Sighting. Several hosts per node: anyone on the LAN can announce a paired
-        # node's public fingerprint from another address, and last-writer-wins let that hide the real one.
+        # node_id -> host -> Sighting: a spoofed announcement from another host must not hide the real one.
         self._seen: Dict[str, Dict[str, Sighting]] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -264,8 +262,7 @@ class Listener:
         self._joined_at = time.monotonic()
         if lan_ipv4_addresses() != self._ifaces:
             return True
-        # Same interfaces: retry the memberships that failed, on the open socket, so a transient
-        # refusal does not leave one network deaf until the address list changes.
+        # Same interfaces: retry failed memberships so a transient refusal does not leave a network deaf.
         for iface in self._ifaces:
             if iface in self._joined or sock is None:
                 continue
@@ -334,8 +331,7 @@ class Listener:
         while not self._stop.is_set():
             sock = self._sock
             if sock is None:
-                # Not listening yet (no interface at start) or after an error: keep trying, or the
-                # process stays deaf to workers that move until it restarts.
+                # Not listening yet or after an error: keep retrying, or moved workers go unseen until restart.
                 self._sock = sock = self._open()
                 if sock is None:
                     self._stop.wait(REOPEN_S)
