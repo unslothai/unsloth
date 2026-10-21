@@ -48,10 +48,12 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
-# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
+# Why CHAT_ONLY is True; None when training is enabled. "mlx_unavailable": Apple Silicon with a missing, too old or broken MLX stack, published at once when no mlx is on disk while a present but unusable one waits for the post-warm probe, so a stack that only lost the warm's import race is still overturned; "no_torch": Apple Silicon installed --no-torch, GGUF-only by request, which `unsloth studio update` cannot change; "rosetta": an x86_64 Python on Apple Silicon; "intel_mac"; "no_gpu": CPU-only non-Mac; "torch_cpu_build" / "torch_cuda_unavailable" (see classify_torch_build()): the host HAS GPUs this PyTorch cannot use, which must not read as "no_gpu", since the fix is repairing the install, not buying a GPU.
 CHAT_ONLY_REASON: Optional[str] = None
 # What blocked the reason above, when there is something specific to say. Only "mlx_unavailable" sets it: the gate is all-or-nothing across mlx, mlx-lm and mlx-vlm, so naming the offending package is the difference between a dead end and a fix. Never shown on its own.
 CHAT_ONLY_DETAIL: Optional[str] = None
+# (reason, hint) from the last detection pass that found a torch mismatch.
+_CHAT_ONLY_HINT: Optional[tuple[Optional[str], Optional[str]]] = None
 # The vendors whose cards established the two mismatch reasons, empty otherwise: current_chat_only_verdict() freezes a mismatch while the inventory cannot answer, and without this a detached AMD eGPU stays "unusable" for as long as nvidia-smi is broken on a host that never had an NVIDIA card.
 CHAT_ONLY_MISMATCH_VENDORS: frozenset = frozenset()
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
@@ -148,6 +150,31 @@ def _backend_label(device: DeviceType) -> str:
 def is_apple_silicon() -> bool:
     """True on Apple Silicon (pure platform check, no ML imports)."""
     return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+_ROSETTA: Optional[bool] = None
+
+
+def _running_under_rosetta() -> bool:
+    """True for an x86_64 Python on an Apple Silicon Mac (``hw.optional.arm64``, as install.sh). Cached; never raises."""
+    global _ROSETTA
+    if _ROSETTA is None:
+        answer = False
+        if platform.system() == "Darwin" and platform.machine() == "x86_64":
+            try:
+                out = subprocess.run(
+                    ["sysctl", "-n", "hw.optional.arm64"],
+                    capture_output = True,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    timeout = 2,
+                )
+                answer = out.returncode == 0 and out.stdout.strip() == "1"
+            except Exception:
+                answer = False
+        _ROSETTA = answer
+    return _ROSETTA
 
 
 # Set by _has_torch() when torch is installed but its import blew up (unresolved CUDA libs); the CPU fallback reports that as a detection failure, not as "no GPU".
@@ -286,7 +313,7 @@ def _probe_physical_gpu_inventory() -> Dict[str, Any]:
             devices.extend(nvidia_devices)
             sources.append(result.get("source") or "nvidia-smi")
 
-    # Windows AMD has no vendor CLI guaranteed present (amd-smi elevates a child without a HIP SDK), but the DirectX registry records every adapter with its dedicated memory.
+    # Windows AMD: amd-smi is opt-in, but the DirectX registry records every adapter's dedicated memory.
     if platform.system() == "Windows":
         # The registry outlives the hardware, so a record only RE-LABELS an adapter the live WMI scan also returned, never adds one (setup.ps1 has the same rule).
         _live = _windows_live_adapter_names()
@@ -381,7 +408,25 @@ def _linux_kfd_gfx1153_candidates() -> list[str]:
         logger.debug("KFD gfx target probe failed: %s", e)
         return []
     found = sorted({gfx for gfx in targets if gfx})
-    return found if "gfx1153" in found else []
+    if "gfx1153" not in found:
+        return []
+    # KFD reads the silicon, immune to HSA_OVERRIDE_GFX_VERSION; the installers judge a readable
+    # override instead (install_python_stack._linux_host_only_uncovered_amd): any arch outside
+    # their uncovered set (per-arch or generic-only, e.g. gfx942) gets a ROCm wheel, so keep the
+    # conservative no-candidates answer; an uncovered one stays on CPU torch on purpose.
+    _hsa = (os.environ.get("HSA_OVERRIDE_GFX_VERSION") or "").strip()
+    if not (os.environ.get("UNSLOTH_ROCM_GFX_ARCH") or "").strip() and re.fullmatch(
+        r"[0-9]+\.[0-9]+\.[0-9]+", _hsa
+    ):
+        _maj, _min, _step = (int(p) for p in _hsa.split("."))
+        if (
+            _maj > 0
+            and _min <= 9
+            and _step <= 15
+            and f"gfx{_maj}{_min}{_step:x}" not in _LINUX_UNCOVERED_AMD_GFX
+        ):
+            return []
+    return found
 
 
 def _linux_amd_gfx_candidates() -> list[str]:
@@ -834,6 +879,11 @@ def _expected_cpu_flavor_was_chosen() -> bool:
         return True
     # A recorded cpu is not by itself a choice: setup.ps1 selects /cpu automatically on a GPU-less host and records it exactly as it records a pinned one.
     recorded, pinned = _recorded_install_flavor()
+    if recorded == "cpu" and not pinned:
+        # A pre-CUDA-13 Jetson always resolves to cpu (the generic aarch64 CUDA wheels see no GPU there), so a
+        # repair would land on cpu again. Thor (CUDA 13) installs cu130 and keeps the repair.
+        from utils.tegra import tegra_before_cuda13
+        return tegra_before_cuda13()
     return recorded == "cpu" and pinned
 
 
@@ -1060,6 +1110,9 @@ _GPU_NAME_GFX_TABLE: "list[tuple[str, str]]" = [
 # Only the Windows multi-arch route ships these (#11755, #11815); Linux installers decline them.
 _ROCM_SUPPORTED_GFX_WINDOWS_ONLY = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx1153"})
 
+# install_python_stack._LINUX_UNCOVERED_AMD_GFX: the arches the Linux installers leave on CPU torch.
+_LINUX_UNCOVERED_AMD_GFX = _ROCM_SUPPORTED_GFX_WINDOWS_ONLY | {"gfx803"}
+
 # Krackan Point 2 (gfx1153) names overlap the table's gfx1152 row; the Linux installers read them
 # first and leave CPU torch on purpose (install_python_stack._LINUX_KRACKAN2_NAME_RE).
 _LINUX_KRACKAN2_NAME_RE = r"820M|Krackan ?(?:Point ?)?2|AI 5 (?:PRO )?330"
@@ -1254,6 +1307,7 @@ def _mismatch_verdict_for_this_host(
     # Which vendors said so, for the frozen verdict's own uncertainty test.
     _remember_the_vendors_behind_the_mismatch(establishing)
     detail = _reported_torch_label()
+    _record_chat_only_hint(reason, detail)
     logger.warning(
         "GPUs are present on this host but PyTorch cannot use them (%s%s); "
         "Train/Export disabled (chat-only). Repair the installation to restore GPU "
@@ -1275,13 +1329,27 @@ def _torch_gpu_mismatch_report() -> Dict[str, Any]:
     physical = _devices_that_can_establish_a_mismatch(inventory.get("devices") or [])
     if not physical:
         return {}
+    torch_version = _reported_torch_label(CHAT_ONLY_DETAIL)
+    # Repair installation cannot add an account to the render group (#14067).
+    try:
+        node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(
+            torch_version, {str(d.get("vendor", "")).lower() for d in physical}
+        )
+    except Exception as exc:
+        logger.debug("AMD device node hint failed: %s", exc)
+        node_hint, wheel_targets_amd = None, False
     return {
         "physical_devices": physical,
         "mismatch": {
             "reason": reason,
-            "torch_version": _reported_torch_label(CHAT_ONLY_DETAIL),
+            "torch_version": torch_version,
             "physical_count": len(physical),
             "sources": inventory.get("sources") or [],
+            "permission_hint": node_hint,
+            # Only a ROCm wheel is fully explained by the closed node.
+            "permission_hint_only": bool(
+                node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd
+            ),
         },
     }
 
@@ -1618,6 +1686,9 @@ def _detect_hardware_locked() -> DeviceType:
         _build_reason, _build_detail = _mismatch_verdict_for_this_host(_disk_reason)
         if _build_reason is not None:
             CHAT_ONLY_REASON, CHAT_ONLY_DETAIL = _build_reason, _build_detail
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        # MLX needs a native arm64 Python; "Intel Mac" would be wrong.
+        CHAT_ONLY_REASON = "rosetta"
     elif platform.system() == "Darwin":
         CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
     else:
@@ -1636,6 +1707,9 @@ def _detect_hardware_locked() -> DeviceType:
                     "with UNSLOTH_FORCE_ROCM_TORCH=1.",
                     os.environ.get("CUDA_VISIBLE_DEVICES"),
                 )
+        elif _installed_without_torch():
+            # GGUF-only by request: "needs a GPU" is wrong on a GPU host and nothing is broken.
+            CHAT_ONLY_REASON = "no_torch"
     print("Hardware detected: CPU training backend (no PyTorch/MLX GPU backend available)")
     return DEVICE
 
@@ -1762,19 +1836,15 @@ def _intel_xpu_pin_hint(vendors: "set[str]") -> str:
     )
 
 
-def _gpu_present_but_unusable_message(
-    feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
-) -> Optional[str]:
-    """The capability message for a host whose GPUs are real but unreachable by torch, or ``None`` when this host is not in that state. detect_hardware() records ``torch_cpu_build`` / ``torch_cuda_unavailable`` only after the OS inventory has actually found a card, so reaching this point means the "no supported accelerator was found" wording below would contradict the System tab and send the user after hardware they already own. Both reasons are surfaced verbatim by the Export and Video pages and by rejected export API calls."""
-    # ``verdict`` lets one response read it ONCE: two reads across a TTL boundary can describe different hosts.
-    reason, detail = verdict if verdict is not None else current_chat_only_verdict()
-    if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
-        return None
-    installed = f" (installed {detail})" if detail else ""
+def _amd_permission_hint_for_mismatch(
+    detail: Optional[str], vendors: "Optional[set[str]]" = None
+) -> tuple[Optional[str], bool]:
+    """``(node_hint, wheel_targets_amd)`` for a torch mismatch: the closed AMD device node sentence when it applies, and whether the wheel is a ROCm one it fully explains."""
     # No reinstall changes group membership (#10466), so a closed node is not a mismatch.
     # Recording AMD is necessary but not sufficient: a hybrid host on CUDA torch records
     # both vendors, and there the verdict is about the NVIDIA card.
-    vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
+    if vendors is None:
+        vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
     # Worth MENTIONING is about the hardware; REPLACES the reinstall advice is about the
     # wheel, and only a ROCm one is repaired by opening a node. Conflating them was the bug.
     _label = (detail or "").lower()
@@ -1808,12 +1878,46 @@ def _gpu_present_but_unusable_message(
                 node_hint = amd_node_permission_hint()
         except Exception:
             node_hint = None
+    return node_hint, wheel_targets_amd
+
+
+def chat_only_permission_hint(reason: Optional[str], detail: Optional[str]) -> Optional[str]:
+    """The closed-node sentence for /api/health, read from the last detection pass that recorded this verdict."""
+    # Keyed on the reason only: the refreshed verdict can relabel the same wheel.
+    stored = _CHAT_ONLY_HINT
+    return stored[1] if stored is not None and stored[0] == reason else None
+
+
+def _record_chat_only_hint(reason: Optional[str], detail: Optional[str]) -> None:
+    """Detection-time only: the probe stats nodes and resolves group names, which /api/health (async) must not."""
+    global _CHAT_ONLY_HINT
+    hint = None
+    if reason == "torch_cuda_unavailable":
+        try:
+            node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
+            hint = node_hint if wheel_targets_amd else None
+        except Exception as exc:
+            logger.debug("AMD device node hint failed: %s", exc)
+    _CHAT_ONLY_HINT = (reason, hint)
+
+
+def _gpu_present_but_unusable_message(
+    feature: str, verdict: Optional[tuple[Optional[str], Optional[str]]] = None
+) -> Optional[str]:
+    """The capability message for a host whose GPUs are real but unreachable by torch, or ``None`` when this host is not in that state. detect_hardware() records ``torch_cpu_build`` / ``torch_cuda_unavailable`` only after the OS inventory has actually found a card, so reaching this point means the "no supported accelerator was found" wording below would contradict the System tab and send the user after hardware they already own. Both reasons are surfaced verbatim by the Export and Video pages and by rejected export API calls."""
+    # ``verdict`` lets one response read it ONCE: two reads across a TTL boundary can describe different hosts.
+    reason, detail = verdict if verdict is not None else current_chat_only_verdict()
+    if reason not in ("torch_cpu_build", "torch_cuda_unavailable"):
+        return None
+    installed = f" (installed {detail})" if detail else ""
+    node_hint, wheel_targets_amd = _amd_permission_hint_for_mismatch(detail)
     # Replaces the reinstall advice only for a ROCm wheel, which the closed node fully
     # explains. A CPU-only or other-vendor wheel needs BOTH repairs and is given both.
     if node_hint and reason == "torch_cuda_unavailable" and wheel_targets_amd:
         return f"This host has a GPU, but {feature} cannot use it. {node_hint}"
     # Both routes, always. The repair row exists only in the desktop app and only for a backend it manages, so a browser-hosted Studio, or a desktop attached to a server someone started from a terminal, was being sent to a control that is not on the page.
     if reason == "torch_cpu_build":
+        vendors = {str(vendor).lower() for vendor in CHAT_ONLY_MISMATCH_VENDORS}
         repair = _intel_xpu_pin_hint(vendors) or (
             "Reinstall the GPU build: use Repair installation in Settings in the desktop app, "
             "or re-run the Unsloth installer."
@@ -1871,6 +1975,12 @@ def export_capability() -> dict:
             "Export on Apple Silicon requires the MLX stack, which is unavailable or too old. Run "
             "`unsloth studio update` to restore MLX and enable export."
         )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Studio is running under Rosetta (x86_64 Python), so export is disabled. Re-run the installer from a "
+            "native arm64 terminal to enable export."
+        )
     elif _gpu_present_but_unusable_message("export", verdict) is not None:
         # BEFORE _has_torch(), which reports an unimportable wheel as absent while re-running the seconds-long import that already failed.
         reason = verdict[0]
@@ -1896,8 +2006,35 @@ def export_capability() -> dict:
     }
 
 
+def _video_cpu_opt_in() -> bool:
+    """Developer mode's CPU video opt-in (env override, else the owner setting). Never raises: an unreadable setting is off."""
+    try:
+        from utils.video_cpu_settings import video_cpu_enabled
+        return bool(video_cpu_enabled())
+    except Exception as exc:  # noqa: BLE001 -- the gate must answer even when the settings store cannot
+        logger.debug("video_capability: CPU opt-in unreadable (%s); treating it as off", exc)
+        return False
+
+
 def video_capability() -> dict:
-    """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch. Returns {video_supported, video_unsupported_reason, video_unsupported_message}."""
+    """Whether video generation can run here, with a torch-aware reason when it cannot. Supported on CUDA and XPU, and on Apple Silicon with a usable MPS device: the pipelines in core/inference/video.py are device-neutral, resolving the device through the shared diffusion device target whose capability flags already decline the CUDA-only options, so Metal needs no branches of its own. Safe to call without torch.
+
+    A plain CPU-only host (reason ``no_accelerator``: torch imports, detection worked, no GPU at all) is refused by default; Developer mode (``utils.video_cpu_settings``) admits it as experimental, the diffusers pipelines then resolving to the float32 CPU target. Every other refusal stays one whatever the opt-in says. Returns {video_supported, video_unsupported_reason, video_unsupported_message, video_cpu_experimental, video_cpu_opt_in_applicable}: the last says whether the opt-in would change the answer on this host, so Settings can say when it has no effect."""
+    cap = _video_capability_verdict()
+    applicable = cap["video_unsupported_reason"] == "no_accelerator"
+    if applicable and _video_cpu_opt_in():
+        return {
+            "video_supported": True,
+            "video_unsupported_reason": None,
+            "video_unsupported_message": None,
+            "video_cpu_experimental": True,
+            "video_cpu_opt_in_applicable": True,
+        }
+    return {**cap, "video_cpu_experimental": False, "video_cpu_opt_in_applicable": applicable}
+
+
+def _video_capability_verdict() -> dict:
+    """``video_capability`` without the Developer mode opt-in: {video_supported, video_unsupported_reason, video_unsupported_message}."""
     if get_device() in (DeviceType.CUDA, DeviceType.XPU):
         return {
             "video_supported": True,
@@ -1939,6 +2076,12 @@ def video_capability() -> dict:
                 "This PyTorch build exposes no Metal (MPS) device, so the video pipelines have "
                 "nowhere to run. Reinstall PyTorch with MPS support to enable video generation."
             )
+    elif platform.system() == "Darwin" and _running_under_rosetta():
+        reason = "rosetta"
+        message = (
+            "Studio is running under Rosetta (x86_64 Python), which has no Metal (MPS) device for the "
+            "video pipelines. Re-run the installer from a native arm64 terminal to enable video generation."
+        )
     elif platform.system() == "Darwin":
         # Ahead of the torch/GPU branches below: neither installing torch nor adding a GPU enables video on an Intel Mac, so it must not be told to try either.
         reason = "macos_unsupported"
@@ -1959,8 +2102,9 @@ def video_capability() -> dict:
         reason = "no_accelerator"
         message = (
             "Video generation requires an NVIDIA, AMD or Intel GPU. No supported accelerator was "
-            "found on this host. (PyTorch is installed, but the video pipelines cannot run on CPU "
-            "only.)"
+            "found on this host. (PyTorch is installed, but the video pipelines are not enabled on "
+            "CPU only. The owner can allow experimental CPU video in Settings > General > "
+            "Developer mode.)"
         )
     return {
         "video_supported": False,
@@ -2098,36 +2242,24 @@ def _cuda_cards_identical(gpu_ids: Optional[list[int]] = None) -> Optional[bool]
 
 
 def _nvidia_mig_gpu_indices_or_none() -> Optional[set[int]]:
-    """Physical indices of NVIDIA cards with MIG instances, from ``nvidia-smi -L``, or None when the
-    listing failed or came back empty (unknown, unlike a confirmed set with no MIG card)."""
+    """Physical indices of NVIDIA cards with MIG instances or MIG mode on (an instance-less one has no
+    CUDA device, so its row is no ordinal either), or None when discovery is unknown (a listing failed or
+    came back empty, unlike a confirmed set with no MIG card). Shares nvidia's caches, so a failed
+    listing backs off instead of re-running nvidia-smi per call."""
     try:
         from . import nvidia
-        result = nvidia.gpu_query.run_nvidia_smi(
-            [nvidia._nvidia_smi_executable(), "-L"],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-            env = nvidia.child_env_without_native_path_secret(),
-            **nvidia._windows_hidden_subprocess_kwargs(),
-        )
+
+        instances = nvidia.get_mig_gpu_indices_or_none()
+        if instances is None:
+            return None
+        mode = nvidia.get_mig_mode_gpu_indices_or_none()
+        return None if mode is None else instances | mode
     except Exception:
         return None
-    if result.returncode != 0 or not isinstance(result.stdout, str) or not result.stdout.strip():
-        return None
-    indices: set[int] = set()
-    current: Optional[int] = None
-    for line in result.stdout.splitlines():
-        if line.startswith("GPU "):
-            head = line[4:].split(":", 1)[0].strip()
-            current = int(head) if head.isdecimal() else None
-        elif current is not None and line.strip().startswith("MIG "):
-            indices.add(current)
-    return indices
 
 
-_cuda_ordinal_rows_cache: Dict[tuple, list[int]] = {}
+_cuda_ordinal_rows_cache: Dict[tuple, tuple[Optional[list[int]], float]] = {}
+_CUDA_ORDINAL_ROWS_RETRY_S = 300.0
 
 
 def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any]]:
@@ -2145,17 +2277,20 @@ def _smi_rows_for_cuda_ordinals(parent_ids: list[int]) -> Optional[Dict[str, Any
         os.environ.get("CUDA_DEVICE_ORDER"),
         gpu_query._static_gen,
     )
-    rows = _cuda_ordinal_rows_cache.get(key)
-    if rows is None:
+    hit = _cuda_ordinal_rows_cache.get(key)
+    if hit is None or (hit[0] is None and time.monotonic() - hit[1] >= _CUDA_ORDINAL_ROWS_RETRY_S):
         try:
             from . import nvidia
             rows = nvidia.get_cuda_ordinal_smi_rows()
         except Exception:
             rows = None
-        if rows is None:
-            return None
+        # A failed join is remembered too (briefly): each attempt spawns a driver-API child with a 15 s timeout.
         _cuda_ordinal_rows_cache.clear()
-        _cuda_ordinal_rows_cache[key] = rows
+        _cuda_ordinal_rows_cache[key] = (rows, time.monotonic())
+    else:
+        rows = hit[0]
+    if rows is None:
+        return None
     if not rows:  # an integrated card: keep the pool-aware torch telemetry
         return None
     if len(rows) != len(parent_ids) or len(set(rows)) != len(rows):
@@ -4839,8 +4974,18 @@ def _overlay_system_wide_vram(devices: list[Dict[str, Any]]) -> None:
     _apply_system_wide_vram(devices, _rocm_system_wide_vram_by_index(devices))
 
 
-def get_visible_gpu_utilization() -> Dict[str, Any]:
+def get_visible_gpu_utilization(*, no_context: bool = False) -> Dict[str, Any]:
+    """``no_context``: skip torch's per-device reading (it leaves a resident driver context); devices are then empty
+    when nvidia-smi cannot answer, and always on ROCm, whose amd-smi rows need that reading."""
     device = get_device()
+    if no_context and IS_ROCM and device == DeviceType.CUDA:
+        return {
+            "available": False,
+            "backend": _backend_label(device),
+            "parent_visible_gpu_ids": [],
+            "devices": [],
+            "index_kind": "relative",
+        }
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -4944,7 +5089,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
                     "index_kind": index_kind,
                 }
 
-        torch_devices = _torch_get_per_device_info(torch_indices)
+        torch_devices = [] if no_context else _torch_get_per_device_info(torch_indices)
         if torch_devices:
             devices = []
             for td in torch_devices:

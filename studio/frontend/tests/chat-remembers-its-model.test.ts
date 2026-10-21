@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Every thread row has carried modelId since long before this notice, so the model a chat
-// was started on is already known for chats that already exist. What was missing was
-// offering it back. The rules below are the ones that keep the offer from becoming a
+// Every thread row has carried modelId since long before this notice, and each send now
+// moves it to the model that send ran on, so a chat knows the model it last used. What was
+// missing was offering it back. The rules below are the ones that keep the offer from becoming a
 // nuisance: it never loads anything on its own, and it stays quiet whenever it could not
 // be honoured.
 
@@ -38,7 +38,7 @@ const {
   resolveResidentInitialConfig,
   savePerModelConfig,
 } = await import("../src/features/model-picker/model-config/per-model-config.ts");
-const { shouldPersistResolvedQueuedModel } = await import(
+const { shouldPersistRunModel } = await import(
   "../src/features/chat/utils/queued-chat-run-settings.ts"
 );
 const { wantsDownloadManagerStaging } = await import(
@@ -357,22 +357,32 @@ test("a chat thread keeps the GGUF variant it started on", () => {
   assert.match(initialize, /modelGgufVariant: modelGgufVariantAtInit/);
 });
 
-test("a queued empty-model send backfills its resolved GGUF variant", () => {
+test("a send records the model and GGUF variant it ran on", () => {
   const persistence = slice(
     adapter,
-    "const persistResolvedQueuedModel",
+    "const persistRunModel",
     "if (queuedRunSettings)",
   );
   assert.match(persistence, /modelGgufVariant: string \| null/);
   assert.match(persistence, /modelGgufVariant,/);
-  assert.match(persistence, /shouldPersistResolvedQueuedModel/);
+  assert.match(persistence, /shouldPersistRunModel\(storedThread, modelId, modelGgufVariant\)/);
+  // A failed write only loses the offer on reopen.
+  assert.match(persistence, /\} catch \{/);
   assert.match(adapter, /activeGgufVariant: state\.activeGgufVariant/);
   assert.match(adapter, /activeGgufVariant: status\.gguf_variant \?\? null/);
   assert.match(
     adapter,
     /queuedEmptyModelRuntime !== null[\s\S]{0,100}queuedEmptyModelRuntime\.activeGgufVariant[\s\S]{0,80}liveRuntime\.activeGgufVariant/,
   );
-  assert.match(adapter, /params\.checkpoint,\s*runtime\.activeGgufVariant/);
+  // Chat, audio and research runs record it once past the gates that refuse a send, and never
+  // hold the send up waiting on it.
+  assert.doesNotMatch(adapter, /await persistRunModel\(/);
+  assert.equal(
+    adapter.match(
+      /releaseCurrentPreStreamRun\(\);\s*(?:\/\/[^\n]*\s*)?void persistRunModel\(params\.checkpoint, runtime\.activeGgufVariant\);\s*runtime\.setThreadRunning\(threadKey, true/g,
+    )?.length,
+    3,
+  );
   const queuedSettings = readText(
     "../src/features/chat/utils/queued-chat-run-settings.ts",
   );
@@ -383,22 +393,42 @@ test("a queued empty-model send backfills its resolved GGUF variant", () => {
   );
 });
 
-test("queued model backfill changes only a fresh empty thread row", () => {
-  assert.equal(shouldPersistResolvedQueuedModel({ modelId: "" }), true);
+test("a chat remembers the model it last sent to", () => {
+  // A queued send on a row written without a model fills it in.
+  assert.equal(shouldPersistRunModel({ modelId: "" }, "unsloth/Qwen3-8B", null), true);
+  // Switching models mid-chat moves the chat to the new one.
+  assert.equal(shouldPersistRunModel({ modelId: "unsloth/Qwen3-8B" }, "unsloth/gemma-3-4b-it", null), true);
   assert.equal(
-    shouldPersistResolvedQueuedModel({ modelId: "original-model" }),
+    shouldPersistRunModel(
+      { modelId: "unsloth/Qwen3-8B-GGUF", modelGgufVariant: "Q4_K_M" },
+      "unsloth/Qwen3-8B-GGUF",
+      "Q8_0",
+    ),
+    true,
+  );
+  // Same model again writes nothing, so repeated sends are a no-op.
+  assert.equal(shouldPersistRunModel({ modelId: "unsloth/Qwen3-8B" }, "unsloth/Qwen3-8B", null), false);
+  assert.equal(
+    shouldPersistRunModel(
+      { modelId: "unsloth/Qwen3-8B-GGUF", modelGgufVariant: "Q4_K_M" },
+      "unsloth/Qwen3-8B-GGUF",
+      "Q4_K_M",
+    ),
     false,
   );
-  assert.equal(shouldPersistResolvedQueuedModel(undefined), false);
-  // The caller has already returned on a queued checkpoint four lines earlier.
-  assert.match(
-    slice(
-      adapter,
-      "const persistResolvedQueuedModel",
-      "if (queuedRunSettings)",
+  // An unknown variant never clears the saved one for the same model.
+  assert.equal(
+    shouldPersistRunModel(
+      { modelId: "unsloth/Qwen3-8B-GGUF", modelGgufVariant: "Q4_K_M" },
+      "unsloth/Qwen3-8B-GGUF",
+      null,
     ),
-    /queuedRunSettings\.params\.checkpoint \|\|/,
+    false,
   );
+  // Compare panes keep the model they were opened with, and no row or no model means no write.
+  assert.equal(shouldPersistRunModel({ modelId: "a", pairId: "pair-1" }, "b", null), false);
+  assert.equal(shouldPersistRunModel(undefined, "b", null), false);
+  assert.equal(shouldPersistRunModel({ modelId: "a" }, "", null), false);
 });
 
 // The switch back is the picker's handler, so it has to arrive carrying what the picker

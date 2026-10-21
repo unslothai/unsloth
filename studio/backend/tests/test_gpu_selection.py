@@ -1312,7 +1312,19 @@ class TestPreSpawnGpuResolution(_GpuCacheResetMixin, unittest.TestCase):
         self.assertEqual(sub_config["gpu_selection"]["selection_mode"], "auto")
 
 
+# The arbiter's module-level state, restored by TestRouteErrors.
+_ARBITER_STATE = ("_owner", "_owner_epoch", "_owner_account", "_prior_account")
+
+
 class TestRouteErrors(unittest.TestCase):
+    def setUp(self):
+        # These tests drive the real load routes, which claim the GPU in the process-wide arbiter before the
+        # stubbed backend refuses the load. Put the arbiter back, or the next test on this worker inherits a
+        # CHAT owner that nothing holds (it made the FLUX.3 prompt upsampler tests refuse to start).
+        import core.inference.gpu_arbiter as arb
+        saved = {name: getattr(arb, name) for name in _ARBITER_STATE}
+        self.addCleanup(lambda: [setattr(arb, name, value) for name, value in saved.items()])
+
     def test_prepare_gpu_selection_rejects_gpu_ids_on_non_accelerator_backend(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
             with self.assertRaises(ValueError) as exc_info:

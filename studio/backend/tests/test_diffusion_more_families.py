@@ -625,10 +625,10 @@ def test_flux2_klein_9b_resolves_its_own_base_and_text_encoder():
         assert _is_trusted_diffusion_repo(repo), repo
 
     for repo_id, want_te in (
-        ("unsloth/FLUX.2-klein-9B-GGUF", "qwen_3_8b"),
-        ("unsloth/FLUX.2-klein-base-9B-GGUF", "qwen_3_8b"),
-        ("unsloth/FLUX.2-klein-4B-GGUF", "qwen_3_4b"),
-        ("unsloth/FLUX.2-klein-base-4B-GGUF", "qwen_3_4b"),
+        ("unsloth/FLUX.2-klein-9B-GGUF", "Qwen3-8B"),
+        ("unsloth/FLUX.2-klein-base-9B-GGUF", "Qwen3-8B"),
+        ("unsloth/FLUX.2-klein-4B-GGUF", "Qwen3-4B"),
+        ("unsloth/FLUX.2-klein-base-4B-GGUF", "Qwen3-4B"),
     ):
         encoders = sd_cpp_text_encoders_for(detect_family(repo_id), repo_id, None)
         assert want_te in encoders[0][1], (repo_id, encoders)
@@ -853,10 +853,12 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.DEFAULT_TAG == "master-951-f89d9b1-uafac7a7", (
-        "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1; "
+    assert module.DEFAULT_TAG == "master-968-8cd731e-ubdb47d1", (
+        "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1 and FLUX.3; "
         f"{module.DEFAULT_TAG} is not"
     )
+    # FLUX.3 Image Klein landed upstream in master-968; the upstream fallback installs the pin's base.
+    assert int(module.DEFAULT_TAG.split("-")[1]) >= 968
 
 
 def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade(
@@ -1054,3 +1056,32 @@ def test_an_opaque_local_load_with_a_shipped_grid_runs_its_step_count():
     # A name still decides first, and no grid keeps the fallback.
     assert generation_params_with_grid(grid, "Qwen/Qwen-Image-2.1-Turbo") == (8, 1.0)
     assert generation_params_with_grid(None, "/models/opaque") == (9, 0.0)
+
+
+@pytest.mark.parametrize(
+    "parent",
+    [
+        "/home/flux.1/models",
+        "/data/sdxl_backup",
+        "D:\\qwen-image\\archive",
+        "/srv/2.14_flux.1/test0",
+    ],
+)
+def test_a_parent_folder_keyword_does_not_pick_the_image_family(parent):
+    sep = "\\" if "\\" in parent else "/"
+    assert detect_family(sep.join([parent, "plain"])) is None
+    assert detect_family(sep.join([parent, "plain", "model.safetensors"])) is None
+    assert detect_family(sep.join([parent, "plain", "transformer", "model.safetensors"])) is None
+    assert default_generation_params(sep.join([parent, "plain", "model.safetensors"])) == (
+        default_generation_params("/data/plain/model.safetensors")
+    )
+    fam = detect_family(sep.join([parent, "FLUX.1-dev"]))
+    assert fam is not None and fam.name == "flux.1"
+    fam = detect_family(sep.join([parent, "plain", "flux1-schnell-Q4_K_M.gguf"]))
+    assert fam is not None and fam.name == "flux.1"
+    for sub in ("weights", "checkpoints", "models", "ckpt"):
+        nested = sep.join([parent, "Qwen-Image-Edit", sub, "model.safetensors"])
+        assert detect_family(nested).name == "qwen-image-edit"
+    hf = "/home/sdxl/.cache/huggingface/hub/models--black-forest-labs--FLUX.1-dev/snapshots/0123abc"
+    assert detect_family(hf).name == "flux.1"
+    assert detect_family(hf + "/flux1-dev.safetensors").name == "flux.1"

@@ -70,3 +70,62 @@ def install(logger: Any = None) -> bool:
         if logger is not None:
             logger.debug("diffusion.aot_cache: not installed (%s: %s)", type(exc).__name__, exc)
         return False
+
+
+# libdevice pin: under emulate_precision_casts torch switches Triton to the CUDA toolkit libdevice only inside the
+# first kernel compile, but FX cache entries are keyed on its hash (extern_libs_key) and looked up before that, so
+# every restart silently missed (Wan2.2-TI2V-5B, torch 2.14.1). Pinning up front with torch's own resolver sets the
+# same knob a compile would. UNSLOTH_DIFFUSION_PIN_LIBDEVICE=0 disables it.
+_LIBDEVICE_ENV = "UNSLOTH_DIFFUSION_PIN_LIBDEVICE"
+
+
+def pin_libdevice_enabled() -> bool:
+    raw = (os.environ.get(_LIBDEVICE_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def pin_triton_libdevice(logger: Any = None) -> Any:
+    """Resolve libdevice now as torch would at first compile; returns the path or None. Never raises.
+    Call after emulate_precision_casts is set: that is when torch 2.13+ switches."""
+    if not pin_libdevice_enabled():
+        return None
+    try:
+        import warnings
+
+        import torch
+
+        if getattr(torch.version, "cuda", None) is None:
+            return None
+        # Probe capability, not version; import it since the submodule is not an attribute until imported.
+        try:
+            import importlib
+            utils_triton = importlib.import_module("torch.utils._triton")
+        except Exception:  # noqa: BLE001 - no such module on this build
+            return None
+        if not callable(getattr(utils_triton, "_extern_libs_key", None)):
+            return None
+        from torch._inductor.runtime import compile_tasks
+
+        # The GATED resolver, never ``_set_triton_libdevice_path_impl``: on torch 2.12 the impl
+        # would pick a libdevice file torch itself never selects.
+        resolve = getattr(compile_tasks, "_set_triton_libdevice_path", None)
+        if not callable(resolve):
+            return None
+        from triton import knobs
+
+        before = knobs.nvidia.libdevice_path
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            resolve()
+        after = knobs.nvidia.libdevice_path
+        if logger is not None and after != before:
+            logger.info(
+                "diffusion.aot_cache: Triton libdevice pinned before the first compile (%s)", after
+            )
+        return after
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        if logger is not None:
+            logger.debug(
+                "diffusion.aot_cache: libdevice not pinned (%s: %s)", type(exc).__name__, exc
+            )
+        return None

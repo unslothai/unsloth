@@ -1161,6 +1161,33 @@ def _make_loop(
     ), exec_fn
 
 
+def test_web_search_domain_limits_reach_execute_tool():
+    seen = []
+
+    def execute(name, arguments, **kwargs):
+        seen.append(kwargs.get("website_policy"))
+        return "OK"
+
+    policy = {"allowedDomains": ["docs.python.org"], "blockedDomains": []}
+    call = '<tool_call>{"name":"web_search","arguments":{"query":"asyncio"}}</tool_call>'
+    turns = iter([[call], ["Done."]])
+
+    def gen(_messages, **_kw):
+        for chunk in next(turns, []):
+            yield chunk
+
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = gen,
+            messages = [{"role": "user", "content": "hi"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            execute_tool = execute,
+            website_policy = policy,
+        )
+    )
+    assert seen == [policy]
+
+
 class TestMarkerlessExecToolGuardLoop:
     """End-to-end guard for the two prompt-injection -> RCE findings: a bare (unwrapped)
     ``python``/``terminal`` call quoted in assistant prose must never reach ``execute_tool``,

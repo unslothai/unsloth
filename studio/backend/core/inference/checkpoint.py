@@ -509,6 +509,7 @@ def fit_checkpoint_context(
     headroom_ratio: Optional[float] = None,
     force_reset: bool = False,
     sticky_manual: bool = False,
+    replay_only: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.
 
@@ -592,6 +593,20 @@ def fit_checkpoint_context(
         if replayed:
             fitted = candidate
             dropped = replayed
+
+    if replay_only:
+        projected, block = _project(fitted) if dropped else (messages, "")
+        current_tokens = count_tokens(projected) if dropped else initial_tokens
+        return projected, {
+            "dropped_messages": dropped,
+            "prompt_tokens_before": initial_tokens,
+            "prompt_tokens_after": current_tokens,
+            "context_length": context_length,
+            "fits": current_tokens <= prompt_target,
+            "checkpoint": True,
+            "checkpoint_started": False,
+            "carried_forward_chars": len(block),
+        }
 
     projected, block = _project(fitted)
     current_tokens = count_tokens(projected)

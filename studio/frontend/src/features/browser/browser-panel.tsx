@@ -3,6 +3,16 @@
 
 import { ATTACHMENT_PAGE_SCALES } from "@/components/assistant-ui/attachment-viewer-meta";
 import { ScaleMenu } from "@/components/media-viewer";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   ContextMenu,
@@ -637,7 +647,7 @@ function TabStrip({
     // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
     <div
       data-tauri-drag-region={true}
-      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-window-control-inset,0px))]"
+      className="browser-chrome relative z-40 flex h-[var(--studio-chat-header-height,48px)] min-w-0 shrink-0 items-center gap-1 pl-1.5 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]"
     >
       <div
         ref={listRef}
@@ -2372,23 +2382,53 @@ function DeviceBar() {
 }
 
 const MAX_MOUNTED_TABS = 4;
-// Hidden web pages run scripts on the chat's thread, so only the newest stays live.
+// Hidden pages share the chat's thread; keep only one ordinary page and three drafts.
 const MAX_HIDDEN_WEB_PAGES = 1;
+const MAX_TYPED_PAGES = 3;
+
+function typedTabIds(tabs: BrowserTab[], activeTabId: string | null): Set<string> {
+  const typed = tabs.filter((tab) => tab.typedAt !== undefined && tab.id !== activeTabId).sort((a, b) => (b.typedAt ?? 0) - (a.typedAt ?? 0));
+  return new Set(typed.slice(0, MAX_TYPED_PAGES).map((tab) => tab.id));
+}
+
+function mountedTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string): string[] {
+  const open = new Set(tabs.map((tab) => tab.id));
+  const typed = new Set(tabs.filter((tab) => tab.typedAt !== undefined).map((tab) => tab.id));
+  const recent = [...mounted.filter((id) => id !== activeTabId && open.has(id)), activeTabId];
+  return recent.filter((id, index) => index >= recent.length - MAX_MOUNTED_TABS || typed.has(id));
+}
 
 function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null): Set<string> {
   const byId = new Map(tabs.map((tab) => [tab.id, tab]));
+  const typed = typedTabIds(tabs, activeTabId);
   const live = new Set<string>();
   let hiddenWeb = 0;
   for (const id of [...mounted].reverse()) {
     const tab = byId.get(id);
     if (!tab) continue;
-    if (id !== activeTabId && currentEntry(tab).kind === "web") {
+    if (id !== activeTabId && currentEntry(tab).kind === "web" && !typed.has(id)) {
       if (hiddenWeb >= MAX_HIDDEN_WEB_PAGES) continue;
       hiddenWeb += 1;
     }
     live.add(id);
   }
   return live;
+}
+
+function retainedTabs(mounted: readonly string[], tabs: BrowserTab[], activeTabId: string | null) {
+  const live = liveTabIds(mounted, tabs, activeTabId);
+  const pendingDrafts = tabs.filter((tab) => tab.typedAt !== undefined && mounted.includes(tab.id) && !live.has(tab.id));
+  if (pendingDrafts.length) {
+    // The pending draft takes the ordinary hidden page's slot while the reader decides.
+    for (const tab of tabs) {
+      if (tab.id !== activeTabId && tab.typedAt === undefined && currentEntry(tab).kind === "web") live.delete(tab.id);
+    }
+    for (const tab of pendingDrafts) live.add(tab.id);
+    if (tabs.filter((tab) => live.has(tab.id) && currentEntry(tab).kind === "web").length > MAX_TYPED_PAGES + MAX_HIDDEN_WEB_PAGES + 1 && activeTabId) {
+      live.delete(activeTabId);
+    }
+  }
+  return { live, pendingDrafts };
 }
 
 /** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
@@ -2425,16 +2465,19 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const [mounted, setMounted] = useState<readonly string[]>(() =>
     activeTabId ? [activeTabId] : [],
   );
+  const [selection, setSelection] = useState({ id: activeTabId, previous: activeTabId, mounted });
+  if (selection.id !== activeTabId) setSelection({ id: activeTabId, previous: selection.id, mounted });
   if (activeTabId && mounted[mounted.length - 1] !== activeTabId) {
-    const open = new Set(tabs.map((tab) => tab.id));
-    setMounted(
-      [
-        ...mounted.filter((id) => id !== activeTabId && open.has(id)),
-        activeTabId,
-      ].slice(-MAX_MOUNTED_TABS),
-    );
+    setMounted(mountedTabIds(mounted, tabs, activeTabId));
   }
-  const live = liveTabIds(mounted, tabs, activeTabId);
+  const { live, pendingDrafts } = retainedTabs(mounted, tabs, activeTabId);
+  const cancelEviction = () => {
+    const previous = tabs.find((tab) => tab.id === selection.previous) ?? pendingDrafts[0];
+    if (previous) {
+      setMounted(selection.mounted);
+      useBrowserStore.getState().activateTab(previous.id);
+    }
+  };
   const fileTab = activeEntry?.kind === "file";
   const floatingFileControls = activeEntry?.kind === "file" && !usesBrowserChrome(activeEntry);
   const documentShown = fileTab || Boolean(activeTab?.documentType);
@@ -2462,17 +2505,37 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         }
       }}
       className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
+        "browser-panel @container/browser relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
         documentShown
           ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"
           : "[--browser-surface:var(--card)]",
       )}
     >
+      <AlertDialog open={active && pendingDrafts.length > 0} onOpenChange={(open) => { if (!open) cancelEviction(); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("browser.drafts.title")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("browser.drafts.description", { pages: pendingDrafts.map((tab) => tabTitle(tab, currentEntry(tab))).join(", ") })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("browser.clearData.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => {
+              event.preventDefault();
+              for (const tab of pendingDrafts) useBrowserStore.getState().updateTab(tab.id, { typedAt: undefined });
+            }}>
+              {t("browser.drafts.confirm")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
         <div
           className={cn(
             "browser-chrome @container flex shrink-0 items-center gap-2 px-2.5",
+            (!activeEntry || activeEntry.kind !== "file") && "browser-web-toolbar flex-wrap",
             floatingFileControls
               ? "browser-file-toolbar pointer-events-none absolute inset-x-0 top-0 z-20 py-2 *:pointer-events-auto"
               : // 1px less at the bottom for the page's top border.

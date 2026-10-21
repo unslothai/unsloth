@@ -19,6 +19,7 @@ from collections import deque
 import time
 import os
 import importlib.util as _importlib_util
+from ..device_type import clean_gpu_cache
 
 
 def _hf_transfer_importable() -> bool:
@@ -491,7 +492,7 @@ class SyntheticDataKit:
             except Exception as kill_e:
                 print(f"Error during forceful kill: {kill_e}")
         for _ in range(10):
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
 
         if hasattr(self, "_delete_vllm"):

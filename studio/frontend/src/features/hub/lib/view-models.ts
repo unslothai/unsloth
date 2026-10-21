@@ -29,6 +29,7 @@ export {
   isUnslothFinetunable,
   matchesFormat,
   matchesRecommended,
+  matchesRecommendedDiffusion,
 } from "./format-filters";
 export {
   formatLocalUpdated,
@@ -59,6 +60,7 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
   { value: "gguf", label: "GGUF" },
   { value: "checkpoint", label: "Safetensors" },
   { value: "mlx", label: "MLX" },
+  { value: "unsloth", label: "Exports & Fine-tunes" },
 ];
 
 const BILLION = 1_000_000_000;

@@ -53,6 +53,21 @@ def test_studio_extra_exists():
     )
 
 
+def test_s3_sdk_is_only_in_the_s3_extra():
+    from packaging.requirements import Requirement
+
+    project = _load_pyproject()["project"]
+    extras = project["optional-dependencies"]
+    assert extras["s3"] == ["boto3>=1.34.0"]
+    aws_packages = {"boto3", "botocore", "s3transfer", "jmespath"}
+    default_requirements = (
+        project["dependencies"] + extras["studio"] + _requirement_lines(STUDIO_TXT)
+    )
+    assert not aws_packages.intersection(
+        Requirement(entry).name.lower() for entry in default_requirements
+    )
+
+
 def test_huggingface_extra_contains_no_diffusers_vcs_reference():
     from packaging.requirements import Requirement
 

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
-from .family_name_match import normalize_family_name, token_in_name, token_length
+from .family_name_match import model_identity, normalize_family_name, token_in_name, token_length
 from .family_profile import AutoPrefer, ConvRotSpec, FamilyProfile, UntiledVae
 
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
@@ -237,6 +237,8 @@ class VideoFamily:
     # True when the pipeline returns synchronized audio (LTX-2): export muxes the track and size estimates count the
     # audio VAE + vocoder.
     has_audio: bool = False
+    # One or two sentences on how this family reads prompts; None when it has no quirks.
+    prompt_hint: Optional[str] = None
     # Wan2.2-A14B dual-expert MoE: a second DiT handles the low-noise steps with its own guidance kwarg
     transformer2_class: Optional[str] = None
     is_moe: bool = False
@@ -296,6 +298,14 @@ class VideoFamily:
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
     # DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # The scheme an UNSET text_encoder_quant takes (video.video_te_quant_request), same contract as
+    # DiffusionFamily.te_quant_auto: must be a scheme this family HOSTS (te_prequant_repos / TE_INT8_CONVROT_FILES), so
+    # the default never costs a dense download plus an in-place cast. "none" / "off" still pin the released encoder.
+    # MiniMax-H3 and LTX-2.5 resolve their own tri-state and leave this unset.
+    te_quant_auto: Optional[str] = None
+    # The pipeline encoders that automatic pick casts, when not all of them (empty = every present encoder). An
+    # explicit text_encoder_quant still covers every encoder.
+    te_quant_auto_encoders: tuple[str, ...] = ()
     # Hosted PRE-QUANTIZED DENOISER checkpoints as (scheme, repo_id). The DiT, NOT the text encoder that
     # te_prequant_repos above covers: the two are separate artifacts because a load can take one without the other. Same
     # semantics as DiffusionFamily.prequant_repos, so the shared diffusion_prequant resolver reads this table through
@@ -380,6 +390,23 @@ _LTX_VIDEO_09_REFUSAL = (
     "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
 )
 # Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+# MiniMax-H3 PDD files Studio cannot run. A "without_heads" bake keeps the single original output heads and needs the
+# external PDD head bank applied per step by a custom node; loaded as a plain denoiser it renders wrong output with no
+# error. The custom-node LoRA files hold a trunk LoRA plus that bank, not a denoiser. A "with_heads" bake carries its
+# 32-head bank in the file and runs natively (video_minimax_h3_pdd). An unnamed without-heads file is caught at load
+# from its header (pdd_acc_baked metadata with single heads).
+_H3_PDD_WITHOUT_HEADS_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*without[-_ ]?heads"
+H3_PDD_WITHOUT_HEADS_REFUSAL = (
+    "This MiniMax-H3 PDD checkpoint has no head bank: it keeps the single original output heads and needs the "
+    "external PDD head bank applied per step by a custom node, which Studio does not have, so it would render "
+    "wrong output. Load the matching '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead, which carries "
+    "the 32 video and audio heads in the file."
+)
+_H3_PDD_BANK_RE = r"(?<![a-z0-9])pdd(?![a-z])[^/\\|]*(?:lora|_comfyui\.safetensors$)"
+_H3_PDD_BANK_REFUSAL = (
+    "This is a MiniMax-H3 PDD acceleration LoRA with an external head bank for a companion custom node, not a "
+    "denoiser Studio can load. Load a '..._pdd_acc_8step_baked_with_heads_...' checkpoint instead."
+)
 _HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
 _HV15_I2V_REFUSAL = (
     "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
@@ -432,6 +459,8 @@ _WAN21_VAE_UNTILED = UntiledVae(bytes_per_latent_pixel = 0.6 * 2**20, output_sca
 # LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200). LTX-2.5
 # has the same conv decoder layout (vae/ of the Diffusers pack); unmeasured, priced as 2.3.
 _LTX2_VAE_UNTILED = UntiledVae(bytes_per_frame_latent_pixel = 0.11 * 2**20, temporal_scale = 8)
+# Wan2.1 and Wan2.2 ship one UMT5-XXL encoder, so every Wan family loads the same hosted pre-cast file.
+_WAN_UMT5_TE_PREQUANT = (("fp8", "text_encoder", "unsloth/Wan2.2-TI2V-5B-FP8"),)
 
 _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
@@ -546,6 +575,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         default_audio_flow_shift = 3.0,
         supports_keyframes = True,
         supports_references = True,
+        unsupported_checkpoints = (
+            (_H3_PDD_WITHOUT_HEADS_RE, H3_PDD_WITHOUT_HEADS_REFUSAL),
+            (_H3_PDD_BANK_RE, _H3_PDD_BANK_REFUSAL),
+        ),
         supports_cfg = False,
     ),
     # LTX-2.5 (diffusers >= 0.40): the 22B LTX-2.3 DiT without the video FFN bias plus a keyframe position embedding,
@@ -650,6 +683,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         gguf_repo = "unsloth/LTX-2.3-GGUF",
         # pre-cast Gemma3-12B TE (fp32 ~49 GB on the hub, pre-cast ~13.2 GB): the biggest download win
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
+        # fp8 by default. ComfyUI's LTX-2 / LTX-2.3 workflow templates (video_ltx2_t2v.json, video_ltx2_3_t2v.json) load
+        # gemma_3_12B_it_fp4_mixed; the hosted layerwise fp8 file is the nearest scheme we serve.
+        te_quant_auto = "fp8",
         # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
         prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
         # no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s)
@@ -708,6 +744,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
+        # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
+        # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
+        # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
+        # text_to_video_wan.json).
+        te_prequant_repos = _WAN_UMT5_TE_PREQUANT,
+        te_quant_auto = "fp8",
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
         # expand_timesteps on the loaded config keeps the first-frame latent clean.
         i2v_pipeline_class = "WanImageToVideoPipeline",
@@ -764,6 +806,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 114.3 fp32 sum. UMT5 TE bf16 (11.4); VAE fp32 (0.5).
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
+        # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
+        # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
+        # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
+        # text_to_video_wan.json).
+        te_prequant_repos = _WAN_UMT5_TE_PREQUANT,
+        te_quant_auto = "fp8",
         # same VAE as TI2V-5B
         cudnn_benchmark = False,
         # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
@@ -788,6 +836,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832)),
         bf16_components_gb = (2.8, 11.4, 0.5),
         vae_force_fp32 = True,
+        # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
+        # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
+        # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
+        # text_to_video_wan.json).
+        te_prequant_repos = _WAN_UMT5_TE_PREQUANT,
+        te_quant_auto = "fp8",
         cudnn_benchmark = False,
     ),
     # Wan2.1-T2V-14B: same keys as one Wan2.2 A14B expert, run as a single denoiser.
@@ -809,6 +863,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (1280, 720), (480, 832), (720, 1280)),
         bf16_components_gb = (28.6, 11.4, 0.5),
         vae_force_fp32 = True,
+        # UMT5-XXL pre-cast fp8, one file for all four Wan bases (diffusion_te_prequant._TE_EQUIVALENT_BASES), the
+        # int8 ConvRot one beside it (TE_INT8_CONVROT_FILES). fp8 by default, as ComfyUI's Wan templates load
+        # umt5_xxl_fp8_e4m3fn_scaled (workflow templates video_wan2_2_5B_ti2v.json, video_wan2_2_14B_t2v.json,
+        # text_to_video_wan.json).
+        te_prequant_repos = _WAN_UMT5_TE_PREQUANT,
+        te_quant_auto = "fp8",
         cudnn_benchmark = False,
     ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG
@@ -852,6 +912,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832), (640, 640)),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
+        # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
+        # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
+        # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
+        te_quant_auto = "fp8",
+        # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
+        te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
         # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
@@ -887,6 +954,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
         bf16_components_gb = (16.6, 14.8, 2.4),
+        # Qwen2.5-VL-7B text tower pre-cast fp8 (ByT5 stays dense: glyph rendering). fp8 by default, as ComfyUI's
+        # HunyuanVideo-1.5 template (video_hunyuan_video_1.5_720p_t2v.json) loads qwen_2.5_vl_7b_fp8_scaled. The tensors are Qwen/Qwen2.5-VL-7B-Instruct's
+        # language model unchanged (Apache-2.0), and the 480p and 720p repacks ship the same bytes.
+        te_prequant_repos = (("fp8", "text_encoder", "unsloth/HunyuanVideo-1.5-FP8"),),
+        te_quant_auto = "fp8",
+        # Only the Qwen tower: the ByT5 glyph encoder (text_encoder_2) stays dense under the default.
+        te_quant_auto_encoders = ("text_encoder",),
         fp16_guard = "native",
         cudnn_benchmark = False,
     ),
@@ -988,7 +1062,7 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
     # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None
-    needle = repo_id.lower()
+    needle = model_identity(repo_id).lower()
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
@@ -1059,13 +1133,19 @@ def resolve_video_base_repo(
 
 
 def _prequant_base_key(repo_id: Optional[str]) -> str:
-    """The lookup key ``prequant_variant_repos`` is written against: trimmed and lowercased.
+    """The lookup key ``prequant_variant_repos`` is written against: the UPSTREAM id, trimmed and lowercased.
 
-    Deliberately local rather than reusing ``diffusion_families.canonical_base``: this module
-    header keeps the two registries apart so neither picker can reach the other's tables, and the
-    image mirror map holds image repos only, so importing it would buy nothing but the coupling.
+    A video base's byte-identical unsloth mirror (``diffusion_families._VIDEO_MIRROR_PAIRS``) folds onto the upstream
+    it copies, since the fetch sites hand the mirror id to the loaders and an unfolded mirror would miss every row.
+    Only the id map is read (a lazy import of a pure function), never the image family table, so the two pickers
+    stay apart.
     """
-    return (repo_id or "").strip().lower()
+    text = (repo_id or "").strip()
+    try:
+        from .diffusion_families import canonical_base
+    except Exception:  # noqa: BLE001 -- the fold is an addition; the plain key is the old behaviour
+        return text.lower()
+    return canonical_base(text).strip().lower()
 
 
 def video_family_prequant_repo(
@@ -1550,6 +1630,9 @@ def validate_video_reference_conditioning(
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific
 # first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
+    # MiniMax-H3 PDD baked checkpoints: ComfyUI's recipe is 8 Euler steps on the simple schedule at CFG 1 (shifts 12 / 3
+    # are the family defaults). Its head bank was distilled for that partition.
+    ("pdd", 8, 1.0),
     ("distilled", 8, 1.0),
     # Wan2.1 14B FusionX merge (CausVid / AccVideo distilled): its card asks for CFG 1 and 8-10 steps.
     ("fusionx", 8, 1.0),
@@ -1570,8 +1653,10 @@ _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 # The Wan and FusionX keys count only in the model / file name, so an owner or folder spelling one cannot outrank the family the
 # checkpoint itself names.
 _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
-    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx"))
+    k for k, _s, _g in _VIDEO_GENERATION_DEFAULTS if k.startswith(("wan", "fusionx", "pdd"))
 )
+# A PDD recipe on another family's checkpoint (a Wan file under /models/pdd/) would silently run 8 steps at CFG 1.
+_FAMILY_SCOPED_DEFAULT_KEYS = {"pdd": "minimax-h3"}
 
 
 def default_video_generation_params(
@@ -1587,7 +1672,7 @@ def default_video_generation_params(
     if family == LTX25_FAMILY:
         # The generic table's "ltx" key is the LTX-2 dev recipe, and 2.5's Diffusers pack names no variant at all.
         return LTX25_DEV_DEFAULTS if ltx25_is_dev(*identifiers) else LTX25_DISTILLED_DEFAULTS
-    variant = video_generation_variant(*identifiers)
+    variant = video_generation_variant(*identifiers, family = family)
     for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
         if key == variant:
             return steps, guidance
@@ -1614,13 +1699,19 @@ def ltx25_is_dev(*identifiers: Optional[str]) -> bool:
     return False
 
 
-def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
+def video_generation_variant(
+    *identifiers: Optional[str], family: Optional[str] = None
+) -> Optional[str]:
     """The ``_VIDEO_GENERATION_DEFAULTS`` key the first identifier naming one matches, or None; the precedence
-    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults."""
+    ``default_video_generation_params`` uses, so every per-variant decision agrees with the defaults. Family-scoped
+    keys (``_FAMILY_SCOPED_DEFAULT_KEYS``) match only for their own family."""
     for identifier in identifiers:
-        whole = (identifier or "").lower()
+        whole = model_identity(identifier).lower()
         name = whole.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
+            scope = _FAMILY_SCOPED_DEFAULT_KEYS.get(key)
+            if scope is not None and family != scope:
+                continue
             needle = name if key in _NAME_SEGMENT_DEFAULT_KEYS else whole
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".

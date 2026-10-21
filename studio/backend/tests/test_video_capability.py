@@ -45,8 +45,10 @@ def _patch(
     system = None,
     mps = None,
     torch_import_error = None,
+    rosetta = False,
 ):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: rosetta)
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: apple)
     monkeypatch.setattr(hw, "CHAT_ONLY_REASON", chat_only_reason)
@@ -59,6 +61,9 @@ def _patch(
     # when this suite runs on a macOS runner. Default follows `apple` so existing callers
     # keep the host they were written for.
     monkeypatch.setattr(hw.platform, "system", lambda: system or ("Darwin" if apple else "Linux"))
+    # Developer mode's CPU opt-in reads the env and the settings store; pinned off so neither an
+    # ambient UNSLOTH_VIDEO_ALLOW_CPU nor a real Studio home changes the matrix below.
+    monkeypatch.setattr(hw, "_video_cpu_opt_in", lambda: False)
 
 
 # -- capability matrix --------------------------------------------------------------------------
@@ -248,7 +253,7 @@ def test_hardware_package_reexports_video_capability():
 
 
 def test_video_capability_separates_apple_silicon_from_intel_macs():
-    cap = _func_src("utils/hardware/hardware.py", "video_capability")
+    cap = _func_src("utils/hardware/hardware.py", "_video_capability_verdict")
     assert "DeviceType.CUDA, DeviceType.XPU" in cap
     assert "_has_torch()" in cap
     # Strip comments before asserting on the gate. This assertion used to name
@@ -297,6 +302,24 @@ def test_intel_mac_is_macos_unsupported_not_a_missing_gpu(monkeypatch):
         )
         assert "Apple Silicon" in cap["video_unsupported_message"]
         assert "GPU" not in cap["video_unsupported_message"]
+
+
+def test_rosetta_is_told_to_reinstall_native_not_that_it_is_an_intel_mac(monkeypatch):
+    _patch(
+        monkeypatch,
+        torch = True,
+        device = hw.DeviceType.CPU,
+        apple = False,
+        system = "Darwin",
+        mps = False,
+        chat_only_reason = "rosetta",
+        rosetta = True,
+    )
+    cap = hw.video_capability()
+    assert cap["video_supported"] is False
+    assert cap["video_unsupported_reason"] == "rosetta"
+    assert "arm64" in cap["video_unsupported_message"]
+    assert "Intel Mac" not in cap["video_unsupported_message"]
 
 
 def test_a_broken_probe_still_beats_the_macos_branch(monkeypatch):
