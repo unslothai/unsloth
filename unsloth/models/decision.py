@@ -92,9 +92,9 @@ def _pin_device_map(kwargs) -> None:
 
 
 def _amp_dtype(device):
-    if device.type == "cuda":
+    if device.type in ("cuda", "xpu"):
         return torch.bfloat16 if is_bfloat16_supported() else torch.float16
-    return torch.bfloat16 if device.type == "xpu" else None
+    return None
 
 
 def _no_cudnn_attention():

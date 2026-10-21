@@ -7,6 +7,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import { MAX_TITLE_CHARS, MAX_URL_CHARS } from "./history-store";
 
 export type PinnedPage = {
@@ -63,3 +64,4 @@ export const usePinnedPagesStore = create<PinnedPagesState>()(
     },
   ),
 );
+syncAcrossWindows(usePinnedPagesStore);

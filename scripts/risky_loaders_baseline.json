@@ -38,7 +38,7 @@
       "file": "studio/backend/core/export/worker.py",
       "rule": "trust-remote-code",
       "sink": "keyword",
-      "digest": "58d5d0f2c979e2ae",
+      "digest": "35a68c33b5a8b4ad",
       "count": 1,
       "reason": "Argument to the consent evaluator inside `if trust_remote_code:`; it scans the code and blocks unless approved."
     },

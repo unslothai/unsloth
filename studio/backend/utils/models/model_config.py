@@ -979,7 +979,7 @@ def _build_vision_check_inline_helpers() -> str:
     )
 
 
-# Subprocess script run with transformers 5.x active: model_name + token via argv, JSON out.
+# Subprocess script run with transformers 5.x active: model_name via argv, token via env, JSON out.
 def _build_vision_check_script() -> str:
     return (
         r"""
@@ -1102,8 +1102,8 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    # Only an explicit token travels in argv; the env below enforces the boundary.
-    token_arg = hf_token if isinstance(hf_token, str) else ""
+    # Token only via the child env (argv is world-readable); the empty slot keeps the argv layout.
+    token_arg = ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.
     sidecar_dir = _VENV_T5_DIR
@@ -1274,7 +1274,7 @@ _vision_detection_cache: Dict[_CapabilityCacheKey, bool] = {}
 _vision_cache_lock = threading.Lock()
 
 
-def is_vision_model(
+def _is_vision_model_or_none(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
@@ -1282,7 +1282,7 @@ def is_vision_model(
     gguf_variant: Optional[str] = None,
     require_image: bool = True,
     gguf_companion_roots: Optional[Tuple[str, ...]] = None,
-) -> bool:
+) -> Optional[bool]:
     """Detect VLMs via the config architecture (works for fine-tunes); transformers-5.x
     models are checked in a .venv_t5/ subprocess. Cached per (model_name, token,
     local_files_only, revision) minus transient failures; local_files_only is in the
@@ -1376,7 +1376,41 @@ def is_vision_model(
         with _vision_cache_lock:
             _vision_detection_cache[cache_key] = result
         return result
-    return False
+    return None
+
+
+def is_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+    gguf_variant: Optional[str] = None,
+    require_image: bool = True,
+    gguf_companion_roots: Optional[Tuple[str, ...]] = None,
+) -> bool:
+    """Whether model_name takes images; a transient probe failure reads as False (see _is_vision_model_or_none)."""
+    return bool(
+        _is_vision_model_or_none(
+            model_name,
+            hf_token,
+            local_files_only,
+            revision,
+            gguf_variant,
+            require_image,
+            gguf_companion_roots,
+        )
+    )
+
+
+def is_vision_model_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[bool, bool]:
+    """is_vision_model, plus whether the answer is definitive (False after a transient probe failure)."""
+    result = _is_vision_model_or_none(model_name, hf_token, local_files_only, revision)
+    return bool(result), result is not None
 
 
 def _is_vision_model_uncached(
@@ -3487,7 +3521,7 @@ def _gguf_repo_unreadable_message(
 ) -> str:
     if error is None:
         return (
-            f"Could not load the GGUF repo '{repo_id}': Studio is offline and the repo is not "
+            f"Could not load the GGUF repo '{repo_id}': Unsloth is offline and the repo is not "
             "in the local cache. Connect to the internet once to download it, then try again."
         )
     status = getattr(getattr(error, "response", None), "status_code", None)
@@ -3501,7 +3535,7 @@ def _gguf_repo_unreadable_message(
         # Anonymous access could not answer either: private, gated or missing without it.
         return (
             f"Could not read the GGUF repo '{repo_id}' from Hugging Face ({cause}). "
-            f"{HUB_TOKEN_REJECTED_ERROR} If Studio reaches the Hub through a proxy, mirror "
+            f"{HUB_TOKEN_REJECTED_ERROR} If Unsloth reaches the Hub through a proxy, mirror "
             "or HF_ENDPOINT, check that as well."
         )
     return (

@@ -128,6 +128,22 @@ def test_nvml_topology_keys_by_torch_index_via_pci_bus():
     assert nvml.shutdown
 
 
+def test_nvml_topology_accepts_tuple_p2p_read_constant():
+    # nvidia-ml-py ships `NVML_P2P_CAPS_INDEX_READ = 0,` (a tuple); its ctypes call rejects it.
+    class TupleConstant(_FakeNvml):
+        NVML_P2P_CAPS_INDEX_READ = (0,)
+
+        def nvmlDeviceGetP2PStatus(self, a, b, idx):
+            if not isinstance(idx, int):
+                raise TypeError("Don't know how to convert parameter 3")
+            return super().nvmlDeviceGetP2PStatus(a, b, idx)
+
+    gpus = [_gpu(0, pci = "bus-a"), _gpu(1, pci = "bus-b")]
+    topo, err = doctor_mod.nvml_topology(TupleConstant(), gpus)
+    assert err is None
+    assert topo[(0, 1)] == {"level": "PHB", "nvlink": True, "p2p_read": True}
+
+
 def test_nvml_topology_absent_without_pynvml_or_pci():
     topo, err = doctor_mod.nvml_topology(None, [_gpu(0, pci = "a"), _gpu(1, pci = "b")])
     assert topo is None and "nvidia-ml-py" in err
@@ -466,3 +482,55 @@ def test_doctor_reports_a_gpu_enumeration_failure(monkeypatch):
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "GPU enumeration failed" in result.output and "PROBLEMS FOUND" in result.output
+
+
+def _non_cuda_torch(
+    mps = False,
+    xpu = False,
+    cuda = None,
+    hip = None,
+):
+    torch = _fake_torch(0)
+    torch.__version__ = "2.x"
+    torch.version = SimpleNamespace(cuda = cuda, hip = hip)
+    torch.backends = SimpleNamespace(mps = SimpleNamespace(is_available = lambda: mps))
+    torch.xpu = SimpleNamespace(is_available = lambda: xpu)
+    return torch
+
+
+@pytest.mark.parametrize(
+    "mps, xpu, name",
+    [(True, False, "Metal (MPS)"), (False, True, "Intel XPU")],
+)
+def test_doctor_on_mps_or_xpu_is_healthy(monkeypatch, mps, xpu, name):
+    result, calls = _run_doctor(monkeypatch, _non_cuda_torch(mps = mps, xpu = xpu), [])
+    assert result.exit_code == 0, result.output
+    assert calls == []
+    assert "Verdict: OK" in result.output
+    assert f"{name} detected: multi-GPU CUDA checks skipped." in result.output
+
+
+@pytest.mark.parametrize(
+    "cuda, hip",
+    [("12.4", None), (None, "6.2")],
+)
+def test_cuda_or_rocm_build_without_a_device_still_fails_beside_xpu_or_mps(monkeypatch, cuda, hip):
+    torch = _non_cuda_torch(mps = True, xpu = True, cuda = cuda, hip = hip)
+    result, calls = _run_doctor(monkeypatch, torch, [])
+    assert result.exit_code == 1 and calls == []
+    assert "No GPU" in result.output
+
+
+def test_cpu_build_without_mps_or_xpu_still_fails(monkeypatch):
+    result, _ = _run_doctor(monkeypatch, _non_cuda_torch(), [])
+    assert result.exit_code == 1 and "No GPU" in result.output
+
+
+def test_a_raising_accelerator_probe_is_no_accelerator():
+    torch = _non_cuda_torch()
+
+    def boom():
+        raise RuntimeError("level zero")
+
+    torch.xpu = SimpleNamespace(is_available = boom)
+    assert doctor_mod.collect_gpus(torch)["accelerator"] is None

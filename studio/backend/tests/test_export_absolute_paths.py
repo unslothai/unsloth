@@ -156,6 +156,12 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_utils.anonymous_and_offline = lambda _hf_token: False
     utils_utils.safe_error_detail = lambda value: str(value)
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
+    utils_security = types.ModuleType("utils.security")
+    utils_security.__path__ = []
+    monkeypatch.setitem(sys.modules, "utils.security", utils_security)
+    utils_security.file_security = _load_module(
+        "utils.security.file_security", "utils/security/file_security.py", monkeypatch
+    )
 
     utils_models = types.ModuleType("utils.models")
     utils_models.__path__ = []

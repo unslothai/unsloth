@@ -61,9 +61,14 @@ export {
   type InferenceParams,
   type Preset,
 } from "./chat-settings-sheet";
-export { useChatRuntimeStore } from "./stores/chat-runtime-store";
+export {
+  syncKeepModelsLoaded,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
 export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
+export { forgetAgentsMd } from "./utils/agents-md";
+export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
@@ -256,6 +261,7 @@ export {
   PROMPT_QUEUE_RUN_FAILED_EVENT,
   PROMPT_QUEUE_STOP_EVENT,
   requestLocalPromptQueueStop,
+  requestScopedLocalPromptQueueStop,
   type PromptQueueRunFailedEventDetail,
   type PromptQueueStopEventDetail,
 } from "./utils/prompt-queue-boundary";
@@ -407,6 +413,7 @@ export { useForkInFlight } from "./utils/fork-in-flight";
 export { showForkCreatedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
+export { readIncompleteInfo } from "./utils/continuation";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {

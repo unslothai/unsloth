@@ -92,6 +92,7 @@ import { cn } from "@/lib/utils";
 import { createNavigationNonce } from "@/lib/navigation-nonce";
 import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
+import { useTauriRepairController } from "@/hooks/tauri-repair-context";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useHoverFlyout } from "@/hooks/use-hover-flyout";
@@ -1307,8 +1308,13 @@ export function AppSidebar() {
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const videoCpuOptIn = usePlatformStore((s) => s.videoCpuOptIn);
   const chatOnlyDetail = usePlatformStore((s) => s.chatOnlyDetail);
+  const chatOnlyHint = usePlatformStore((s) => s.chatOnlyHint);
   const detectionDeferred = usePlatformStore((s) => s.detectionDeferred);
+  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
+  const repair = useTauriRepairController();
+  const canRepair = repair !== null && !repair.isExternalServer;
   // Until /api/health answers, `chatOnly` is the browser-platform guess, so every Mac painted
   // Train and Video blacked out on load and only recovered once the backend reported. Gate the
   // rows on a measured verdict and let them spin until it lands.
@@ -1327,22 +1333,30 @@ export function AppSidebar() {
         ? `Training needs MLX: ${chatOnlyDetail}. Run \`unsloth studio update\` to enable Train.`
         : "Training needs MLX. Run `unsloth studio update` to enable Train."
       : chatOnlyReason === "no_torch"
-        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix.
-          "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        ? // GGUF-only by request. `unsloth studio update` keeps no-torch, so it is not the fix;
+          // on Desktop the manual repair reruns the installer with PyTorch.
+          canRepair
+          ? "Training was left out of this install (Chat only). Use Repair installation in Settings to add it."
+          : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
+        : chatOnlyReason === "rosetta"
+        ? "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable training."
         : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "torch_cpu_build" ||
             chatOnlyReason === "torch_cuda_unavailable"
           ? // The host HAS GPUs; this PyTorch cannot open them. "Get a GPU" is both wrong
             // and unactionable here, so name the installed build and point at the repair.
-            chatOnlyDetail
-            ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
-            : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
+            // A closed AMD device node is not fixed by a reinstall (#14067).
+            chatOnlyHint
+            ? `Training cannot use this machine's GPU. ${chatOnlyHint}`
+            : chatOnlyDetail
+              ? `Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch ${chatOnlyDetail} cannot use them; repair the installation.`
+              : "Training needs a working PyTorch GPU build. This machine's GPUs were detected but PyTorch cannot use them; repair the installation."
           : chatOnlyReason === "no_gpu"
             ? "Training needs an NVIDIA or AMD GPU."
             : undefined;
   // Everything without a hint reaches VideoPage, which answers from the backend's video verdict.
-  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
+  const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn);
   const videoDisabled = videoDisabledHint !== undefined;
 
   // Two things can change the verdict after the first /api/health: the backend MLX self-heal
@@ -4413,6 +4427,16 @@ export function AppSidebar() {
             onChange: setChatSort,
             options: CHAT_SORT_OPTIONS,
           })}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => {
+              navigateFromRow({ to: "/projects" });
+              closeMobileIfOpen();
+            }}
+          >
+            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.organize.projectsHome")}</span>
+          </DropdownMenuItem>
         </>
       );
     } else if (options.kind === "recents") {
@@ -6485,7 +6509,7 @@ export function AppSidebar() {
                           side="bottom"
                           align="end"
                           sideOffset={0}
-                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 font-heading rounded-full border-0"
                           trigger={(triggerRef) => (
                             <button
                               ref={triggerRef}

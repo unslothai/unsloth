@@ -273,6 +273,11 @@ from utils.security.hub_data_files import install as _guard_hub_data_files
 _guard_hub_data_files()
 del _guard_hub_data_files
 
+from utils.security.dataset_media import install as _guard_dataset_media
+
+_guard_dataset_media()
+del _guard_dataset_media
+
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
@@ -336,7 +341,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
 from datetime import datetime
@@ -559,6 +564,9 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     if os.environ.get("UNSLOTH_DISABLE_UPDATE_CHECK") == "1":
         return
 
+    from utils.audio_cpp_update import start_model_specs_backfill
+
+    start_model_specs_backfill()
     threading.Thread(
         target = _run_llama_cpp_startup_probes,
         args = (app,),
@@ -742,7 +750,7 @@ def banner_autofill_available(app_state, environ) -> bool:
     api_only = getattr(app_state, "api_only", None)
     if api_only is None:
         api_only = environ.get("UNSLOTH_API_ONLY") == "1"
-    # Desktop-owned api-only still serves the UI (and the autofill) to a loopback browser.
+    # Desktop-owned: the console gets the path, never the password (desktop logs land in bug reports).
     return not api_only or _desktop_owner() is not None
 
 
@@ -802,6 +810,18 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
+    def _prune_open_staging_in_background() -> None:
+        try:
+            from utils.paths.path_utils import prune_open_staging
+            prune_open_staging()
+        except Exception:  # noqa: BLE001
+            _lifespan_log.warning("could not prune open-staging", exc_info = True)
+
+    # Off the startup path: the cache can sit on a slow mount, and a tool launched first runs the same cleanup.
+    threading.Thread(
+        target = _prune_open_staging_in_background, name = "open-staging-prune", daemon = True
+    ).start()
+
     # Warm the OS sandbox probe so the "off" gate has an answer.
     try:
         from core.inference.os_sandbox import start_tool_isolation_warmup
@@ -837,6 +857,11 @@ async def lifespan(app: FastAPI):
         open_wal_keeper()
     except Exception as exc:
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
+    # Same for auth.db, before account reconciliation and admin seeding open it.
+    try:
+        storage.open_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("auth.db WAL keeper failed at startup: %s", exc)
 
     from utils.account_context import OWNER as _owner_account, run_as as _run_as
 
@@ -887,6 +912,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("chat generation lease sweeper failed to start: %s", exc)
 
+    # Stops the runs whose owner asked for them to end with the tab, once no tab follows them.
+    from state import unattended_runs as _unattended_runs
+
+    _unattended_runs.start()
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -917,6 +947,12 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+    try:
+        # The supervisor resumes runs that asked to stop with their tab; their watches died with the old process.
+        from routes.research_runs import rearm_unattended_research_runs
+        rearm_unattended_research_runs(app)
+    except Exception as exc:
+        _lifespan_log.warning("re-arming unattended research runs failed: %s", exc)
 
     from core.inference.chat_generation_runs import ChatGenerationSupervisor
 
@@ -948,6 +984,8 @@ async def lifespan(app: FastAPI):
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     _created = storage.ensure_default_admin()
     app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
+    # Read by desktop-login, which cannot import this module.
+    app.state.desktop_owned = _desktop_owner() is not None
     # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
     # _created is False there and the whole banner would be skipped on exactly the launch
     # that needs it. requires_password_change: the gate may also have taken a new password
@@ -1030,6 +1068,10 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
 
+    from state import unattended_runs as _unattended_runs
+
+    await _unattended_runs.stop()
+
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
@@ -1058,6 +1100,10 @@ async def lifespan(app: FastAPI):
     from storage.studio_db import close_wal_keeper
 
     close_wal_keeper()
+    try:
+        storage.close_wal_keeper()
+    except Exception as exc:
+        _lifespan_log.warning("auth.db WAL keeper failed to close: %s", exc)
 
 
 app = FastAPI(
@@ -1070,7 +1116,10 @@ app = FastAPI(
     docs_url = None,
     redoc_url = None,
     swagger_ui_oauth2_redirect_url = None,
+    # Served below instead, with the schema built off the event loop (#9712).
+    openapi_url = None,
 )
+app.openapi_url = "/openapi.json"
 app.state.secure = os.environ.get("UNSLOTH_SECURE") == "1"
 
 from fastmcp.utilities.lifespan import combine_lifespans  # noqa: E402
@@ -1335,6 +1384,31 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
         # Upstream retemplated the page: fail loudly rather than serve a blank one.
         raise RuntimeError(f"docs template changed, inline script tag not found: {tag.pattern!r}")
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
+
+
+# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by the chat
+# sidebar every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+_openapi_build_lock = threading.Lock()
+_build_openapi_schema = app.openapi
+
+
+def _openapi_once() -> dict:
+    with _openapi_build_lock:
+        return _build_openapi_schema()
+
+
+app.openapi = _openapi_once
+
+
+@app.get(app.openapi_url, include_in_schema = False)
+async def openapi_json(request: Request):
+    schema = await asyncio.to_thread(app.openapi)
+    # As FastAPI's built-in route: name the prefix a path-stripping proxy hides.
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    if root_path and app.root_path_in_servers:
+        if root_path not in {server.get("url") for server in schema.get("servers", [])}:
+            schema = {**schema, "servers": [{"url": root_path}, *schema.get("servers", [])]}
+    return JSONResponse(schema)
 
 
 if _DOCS_ASSETS_DIR.is_dir():
@@ -1704,6 +1778,11 @@ from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
 
 app.add_middleware(ModelAliasMiddleware)
 
+# Idle auto-unload request tracker; added before MaxBodyMiddleware so only fully received requests count.
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
+
+app.add_middleware(LlamaKeepWarmMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
@@ -1715,11 +1794,6 @@ app.add_middleware(
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
     upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
-
-# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
-from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
-
-app.add_middleware(LlamaKeepWarmMiddleware)
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
@@ -1782,6 +1856,7 @@ app.add_middleware(
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
+        "Retry-After",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
         *_browser_routes.EXPOSED_HEADERS,
     ],
@@ -2228,10 +2303,28 @@ async def health_check(request: Request):
         # Why chat_only is set; fingerprints the host, so keep it authed. One snapshot for all three.
         authed["chat_only"] = snapshot[0]
         authed["chat_only_reason"] = snapshot[1]
+        # Developer mode's CPU video opt-in, so the sidebar can keep the Video row navigable on a
+        # CPU-only host that opted in. Read only on that host: everywhere else it cannot matter.
+        authed["video_cpu_opt_in"] = False
+        if snapshot[0] and snapshot[1] == "no_gpu":
+            try:
+                from utils.video_cpu_settings import video_cpu_enabled
+                authed["video_cpu_opt_in"] = bool(video_cpu_enabled())
+            except Exception:
+                pass
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
+        # A closed AMD device node (#14067): Repair installation cannot fix group membership.
+        try:
+            authed["chat_only_hint"] = (
+                _hw_module.chat_only_permission_hint(snapshot[1], snapshot[2])
+                if snapshot[0]
+                else None
+            )
+        except Exception:
+            authed["chat_only_hint"] = None
         authed["device_type"] = device_type
         authed["apple_silicon"] = is_apple_silicon()
         from utils.paths.file_manager import file_manager_kind
@@ -2832,12 +2925,12 @@ def get_disk_space(
     is about to start.
 
     shutil.disk_usage is statvfs on Linux and macOS and GetDiskFreeSpaceExW on Windows, so this
-    is microseconds on every platform Studio runs on and needs no directory walk. Note that on
+    is microseconds on every platform Unsloth runs on and needs no directory walk. Note that on
     Windows it reports the quota available to the CALLING user, which is the number that decides
     whether the download fits, so that difference is the correct one.
 
     Measured at the models root rather than the filesystem root: those are different volumes
-    whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
+    whenever HF_HUB_CACHE, or the Unsloth root, sits on another disk, and the free space that
     matters is the one the bytes are going to.
 
     Both roots that receive bytes are measured, not just the hub one. HF_XET_CACHE is resolved
@@ -3017,7 +3110,14 @@ def get_hardware_info(
         # "5,3") would mislabel by array index.
         devices = get_backend_visible_gpu_info().get("devices", [])
         body["gpus"] = [
-            {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
+            {
+                "name": d.get("name"),
+                "vram_total_gb": d.get("memory_total_gb"),
+                # An iGPU's total is mostly borrowed system RAM; the About tab shows only its own carve-out.
+                "shared_memory": d.get("shared_memory") is True,
+                "unified_memory": d.get("unified_memory") is True,
+                "shared_memory_host_backed_gb": d.get("shared_memory_host_backed_gb"),
+            }
             for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
         ]
         body["llama_cpp"] = get_installed_llama_version()
@@ -3047,6 +3147,10 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
 
     # A local browser may belong to any account, including a deactivated one.
     if installation_has_managed_accounts():
+        return html_bytes, None
+
+    # The desktop shell never reads it, and any local process can fetch this page from loopback.
+    if _desktop_owner() is not None:
         return html_bytes, None
 
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)

@@ -91,6 +91,7 @@ from utils.helper_precache_settings import (
     set_helper_precache_enabled,
 )
 from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
+from utils import video_cpu_settings
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -108,8 +109,9 @@ from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.multi_model_settings import (
     DEFAULT_MULTI_MODEL_ENABLED,
-    get_multi_model_enabled,
-    set_multi_model_enabled,
+    DEFAULT_MULTI_MODEL_MODE,
+    get_multi_model_mode,
+    set_multi_model_mode,
 )
 from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
@@ -567,12 +569,26 @@ def delete_custom_generation_preset(
 
 
 class MultiModelPayload(BaseModel):
-    enabled: StrictBool
+    # ``mode`` is the current shape; a bare ``enabled`` comes from an older client.
+    enabled: Optional[StrictBool] = None
+    mode: Optional[Literal["off", "fit", "always"]] = None
+
+    @model_validator(mode = "after")
+    def exactly_one(self):
+        if (self.enabled is None) == (self.mode is None):
+            raise ValueError("Send exactly one of mode or enabled.")
+        return self
 
 
 class MultiModelResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_MULTI_MODEL_ENABLED
+    mode: Literal["off", "fit", "always"] = DEFAULT_MULTI_MODEL_MODE
+    default_mode: Literal["off", "fit", "always"] = DEFAULT_MULTI_MODEL_MODE
+
+
+def _multi_model_response(mode: str) -> MultiModelResponse:
+    return MultiModelResponse(enabled = mode != "off", mode = mode)
 
 
 class UploadLimitPayload(BaseModel):
@@ -746,6 +762,24 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class DeveloperModePayload(BaseModel):
+    video_cpu: StrictBool
+
+
+class DeveloperModeResponse(BaseModel):
+    # Effective answer (env override, else the setting) and the persisted setting on its own.
+    video_cpu: bool
+    video_cpu_setting: bool
+    default_video_cpu: bool = video_cpu_settings.DEFAULT_VIDEO_CPU_ENABLED
+    # True/False when UNSLOTH_VIDEO_ALLOW_CPU decides, null when the setting does.
+    video_cpu_env_override: Optional[bool] = None
+    # Whether the opt-in changes anything here: only a CPU-only host whose sole blocker is the
+    # missing accelerator. A GPU host already runs video; a broken install stays refused.
+    video_cpu_applicable: bool
+    host_ram_bytes: Optional[int] = None
+    min_ram_bytes: int = video_cpu_settings.VIDEO_CPU_MIN_RAM_GB * 1024**3
 
 
 class DownloadTransportPayload(BaseModel):
@@ -935,7 +969,8 @@ class LlamaCppPathResponse(BaseModel):
 
 
 class OpenAIAutoSwitchPayload(BaseModel):
-    enabled: bool
+    # Optional too, so a row saved outside API keys (Model memory) can't resend a stale value.
+    enabled: Optional[bool] = None
     # None leaves the stored value untouched (partial updates can't clobber it).
     auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
     auto_unload_keep_kv: Optional[bool] = None
@@ -1154,6 +1189,24 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
         disabled_by_env = helper_model_disabled_by_env(),
+    )
+
+
+def _developer_mode_response() -> DeveloperModeResponse:
+    try:
+        from utils.hardware import hardware as hardware_mod
+        applicable = (
+            hardware_mod._video_capability_verdict().get("video_unsupported_reason")
+            == "no_accelerator"
+        )
+    except Exception:  # noqa: BLE001 -- an unanswerable probe must not fail the settings read
+        applicable = False
+    return DeveloperModeResponse(
+        video_cpu = video_cpu_settings.video_cpu_enabled(),
+        video_cpu_setting = video_cpu_settings.get_video_cpu_setting(),
+        video_cpu_env_override = video_cpu_settings.video_cpu_env_override(),
+        video_cpu_applicable = applicable,
+        host_ram_bytes = video_cpu_settings.host_ram_bytes(),
     )
 
 
@@ -1449,7 +1502,7 @@ def update_llama_cpp_path(
 
 @_shared_settings_router.get("/multi-model", response_model = MultiModelResponse)
 def get_multi_model(current_subject: str = Depends(get_current_subject)) -> MultiModelResponse:
-    return MultiModelResponse(enabled = get_multi_model_enabled())
+    return _multi_model_response(get_multi_model_mode())
 
 
 @_owner_settings_router.put("/multi-model", response_model = MultiModelResponse)
@@ -1458,9 +1511,14 @@ def update_multi_model(
     background_tasks: BackgroundTasks,
     current_subject: str = Depends(get_current_subject),
 ) -> MultiModelResponse:
-    """Keep the loaded models when another loads. Takes effect on the next load."""
+    """Off, When they fit or Always. Takes effect on the next load."""
     try:
-        enabled = set_multi_model_enabled(payload.enabled)
+        mode = payload.mode
+        if mode is None:
+            # A legacy "on" never downgrades Always to When they fit.
+            current = get_multi_model_mode()
+            mode = (current if current != "off" else "fit") if payload.enabled else "off"
+        set_multi_model_mode(mode)
     except Exception as exc:
         raise log_and_http_error(
             exc,
@@ -1469,12 +1527,12 @@ def update_multi_model(
             event = "settings.update_multi_model_failed",
             log = logger,
         ) from exc
-    logger.info("settings.multi_model_updated subject=%s enabled=%s", current_subject, enabled)
-    if not enabled:
+    logger.info("settings.multi_model_updated subject=%s mode=%s", current_subject, mode)
+    if mode == "off":
         # Back to one model: the idle kept ones go after the reply (a teardown can take minutes),
         # a busy one once it is ejected. One that fails to unload stays tracked as stuck.
         background_tasks.add_task(_unload_idle_models)
-    return MultiModelResponse(enabled = enabled)
+    return _multi_model_response(mode)
 
 
 def _unload_idle_models() -> None:
@@ -1595,6 +1653,31 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@_shared_settings_router.get("/developer-mode", response_model = DeveloperModeResponse)
+def get_developer_mode(
+    current_subject: str = Depends(get_current_subject),
+) -> DeveloperModeResponse:
+    return _developer_mode_response()
+
+
+@_owner_settings_router.put("/developer-mode", response_model = DeveloperModeResponse)
+def update_developer_mode(
+    payload: DeveloperModePayload, current_subject: str = Depends(get_current_subject)
+) -> DeveloperModeResponse:
+    try:
+        enabled = video_cpu_settings.set_video_cpu_setting(payload.video_cpu)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid Developer mode setting."),
+            event = "settings.update_developer_mode_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.developer_mode_updated subject=%s video_cpu=%s", current_subject, enabled)
+    return _developer_mode_response()
 
 
 def _decision_description(checkpoint, mlx: bool) -> str:
@@ -2363,9 +2446,13 @@ def update_openai_auto_switch(
             log = logger,
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
-    if not keep_kv or not idle_unload_is_configured():
-        from core.inference.llama_keepwarm import purge_kv_resume
+    from core.inference.llama_keepwarm import purge_kv_resume
+
+    if not keep_kv:
         purge_kv_resume()
+    elif not idle_unload_is_configured():
+        # Only the chat TTL's own stash; one kept across a media swap survives a TTL save.
+        purge_kv_resume(origin = "idle")
     return OpenAIAutoSwitchResponse(
         enabled = enabled,
         auto_unload_idle_seconds = idle_seconds,
@@ -4026,6 +4113,20 @@ class CurrentDatePromptResponse(BaseModel):
     default_enabled: bool = DEFAULT_CURRENT_DATE_PROMPT_ENABLED
 
 
+class ChatMemoryPayload(BaseModel):
+    enabled: Optional[StrictBool] = None
+    text: Optional[StrictStr] = None
+
+
+class ChatMemoryResponse(BaseModel):
+    enabled: bool
+    text: str
+    path: str
+    max_bytes: int
+    # UNSLOTH_STUDIO_AGENTS_MD=0 keeps every AGENTS.md out of chats, whatever the switch says.
+    locked_by_environment: bool
+
+
 class RemoteAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
@@ -4362,6 +4463,56 @@ def update_current_date_prompt(
         "settings.current_date_prompt_updated subject=%s enabled=%s", current_subject, enabled
     )
     return CurrentDatePromptResponse(enabled = enabled)
+
+
+def _chat_memory_response() -> ChatMemoryResponse:
+    from core import agents_md
+    return ChatMemoryResponse(
+        enabled = agents_md.memory_enabled(),
+        text = agents_md.read_memory(),
+        path = agents_md._label(agents_md.global_agents_md_path()),
+        max_bytes = agents_md.MAX_AGENTS_MD_BYTES,
+        locked_by_environment = not agents_md.agents_md_enabled(),
+    )
+
+
+@_account_settings_router.get("/chat-memory", response_model = ChatMemoryResponse)
+def get_chat_memory(current_subject: str = Depends(get_current_subject)) -> ChatMemoryResponse:
+    return _chat_memory_response()
+
+
+@_account_settings_router.put("/chat-memory", response_model = ChatMemoryResponse)
+def update_chat_memory(
+    payload: ChatMemoryPayload,
+    current_subject: str = Depends(get_current_subject),
+    # Text here reaches every chat's system prompt: a remote key must not be able to plant it.
+    _ui_session: None = Depends(_require_ui_session),
+) -> ChatMemoryResponse:
+    """Edit the notes every chat reads (the account's global AGENTS.md) and whether chats read them."""
+    from core import agents_md
+    from utils.paths.storage_roots import RetiredAccountError
+
+    try:
+        if payload.text is not None:
+            agents_md.write_memory(payload.text)
+        if payload.enabled is not None:
+            agents_md.set_memory_enabled(payload.enabled)
+    except (ValueError, OSError, RetiredAccountError) as exc:
+        raise log_and_http_error(
+            exc,
+            400 if isinstance(exc, ValueError) else 500,
+            # Our own ValueError messages name what to change; the rest may carry a host path.
+            str(exc) if isinstance(exc, ValueError) else "Could not save memory.",
+            event = "settings.update_chat_memory_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.chat_memory_updated subject=%s text=%s enabled=%s",
+        current_subject,
+        payload.text is not None,
+        payload.enabled,
+    )
+    return _chat_memory_response()
 
 
 def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
@@ -5058,7 +5209,7 @@ class SandboxToolStatus(BaseModel):
 
 class SandboxWindowsStatus(BaseModel):
     runtime_installed: bool
-    # None: this Windows can run MXC; "arch" (not x64) or "build" (older than 26100) otherwise.
+    # None: this Windows can run MXC; "arch" (not x64 or ARM64) or "build" (older than 26100) otherwise.
     runtime_unsupported: Optional[Literal["arch", "build"]] = None
     allow_dacl_fallback: bool
     allow_dacl_fallback_saved: bool
