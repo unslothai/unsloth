@@ -631,11 +631,17 @@ function navigationContext(action: BrowserAction, context: Run) {
 }
 
 /** Where a search engine's redirect link lands: the tab opens that page, so that page is the one gated. */
-function redirectEnd(url: string): string {
-  let target = url;
+/** Every URL a redirect link passes through, the link first and its landing page last. */
+function redirectChain(url: string): string[] {
+  const chain = [url];
   // Each hop's target is a strictly shorter part of the link, so this ends.
-  for (let next = unwrapRedirect(target); next !== target; next = unwrapRedirect(target)) target = next;
-  return target;
+  for (let next = unwrapRedirect(url); next !== chain[chain.length - 1]; next = unwrapRedirect(next)) chain.push(next);
+  return chain;
+}
+
+function redirectEnd(url: string): string {
+  const chain = redirectChain(url);
+  return chain[chain.length - 1];
 }
 
 async function perform(action: BrowserAction, context: Run): Promise<Result> {
@@ -814,9 +820,9 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const linkGate = followsLink ? gateNavigation(linkEnd, navigationContext(action, context)) : null;
   if (linkGate) gates.push(linkGate);
   // The page itself still loads the wrapper first, so the wrapper keeps its own checks too.
-  const wrapperGate =
-    followsLink && linkEnd !== info.href ? gateNavigation(info.href, navigationContext(action, context)) : null;
-  if (wrapperGate) gates.push(wrapperGate);
+  const wrappers = followsLink ? redirectChain(info.href).slice(0, -1) : [];
+  const wrapperGates = wrappers.map((url) => gateNavigation(url, navigationContext(action, context)));
+  gates.push(...wrapperGates);
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
   const formAction = submits && info.formAction ? info.formAction : "";
   const formGate =
@@ -841,7 +847,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   }
   if (formGate) admit(formAction, formGate, context);
   if (linkGate) admit(linkEnd, linkGate, context);
-  if (wrapperGate) admit(info.href, wrapperGate, context);
+  wrappers.forEach((url, index) => admit(url, wrapperGates[index], context));
 
   // Before the action goes out, after any question: a request its handler starts at once is the action's too.
   const since = Date.now();

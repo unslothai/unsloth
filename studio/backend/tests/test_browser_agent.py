@@ -444,6 +444,7 @@ def test_repeated_browser_calls_run_again_and_keep_the_tools():
         "https://duckduckgo.com/x/%2e%2e/l/?uddg=http%3A%2F%2F10.0.0.1%2F",
         # ... and reads a backslash in the path as a slash.
         "https://www.google.com/foo\\..\\url?q=http://127.0.0.1:8888/private",
+        "https://www.google.com//.././url?q=http://127.0.0.1/private",
     ],
 )
 def test_redirect_target_is_checked_like_the_link(url):

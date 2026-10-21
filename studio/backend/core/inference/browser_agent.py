@@ -20,7 +20,7 @@ import json
 import re
 import unicodedata
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from loggers import get_logger
 
@@ -400,6 +400,27 @@ def _host_problem(hostname: str) -> Optional[str]:
     return None
 
 
+def _whatwg_path(path: str) -> str:
+    """The path as the tab's URL parser leaves it: `\\` is `/`, and `.` / `..` (also as %2e)
+    segments are resolved, with no network-path meaning for a leading `//`."""
+    segments: list[str] = []
+    parts = path.replace("\\", "/").split("/")[1:]
+    for index, part in enumerate(parts):
+        dots = re.sub(r"%2e", ".", part, flags = re.IGNORECASE)
+        last = index == len(parts) - 1
+        if dots == "..":
+            if segments:
+                segments.pop()
+            if last:
+                segments.append("")
+        elif dots == ".":
+            if last:
+                segments.append("")
+        else:
+            segments.append(part)
+    return "/" + "/".join(segments)
+
+
 def _redirect_target(url: str) -> Optional[str]:
     """The page a search engine's redirect link lands on, as the browser tab unwraps it
     (``unwrapRedirect`` in features/browser/address.ts), or None."""
@@ -409,9 +430,7 @@ def _redirect_target(url: str) -> Optional[str]:
     except ValueError:
         return None
     query = parse_qs(parsed.query)
-    # The tab's URL parser reads `\` as `/` and resolves dot segments (%2e included) first.
-    spelled = re.sub(r"%2e", ".", parsed.path.replace("\\", "/"), flags = re.IGNORECASE)
-    path = urlsplit(urljoin("http://h/", spelled)).path
+    path = _whatwg_path(parsed.path)
     target = None
     if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and path == "/l/":
         target = (query.get("uddg") or [None])[0]

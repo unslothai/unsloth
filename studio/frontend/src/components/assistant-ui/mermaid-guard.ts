@@ -19,7 +19,7 @@ const FETCHING_TAG =
   /<(?=\/?(?:img|image|picture|source|video|audio|track|input|iframe|frame|embed|object|link|style|svg|use|meta|base|body|table|thead|tbody|tr|td|th)\b)/gi;
 
 // A style rule that could name a resource: CSS functions that load one, or an escape hiding one.
-const STYLE_LINE = /^[ \t]*(?:classDef|style|linkStyle)\b.*$/gim;
+const STYLE_LINE = /^[^\S\n]*(?:classDef|style|linkStyle)\b.*$/gim;
 const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\(|@import/i;
 
 // An HTML label tag with a style attribute; its CSS can fetch (background-image and the like).
@@ -29,20 +29,20 @@ const CHAR_REF = /(?:&#|#)(x[0-9a-f]+|\d+);?/gi;
 const CSS_FETCH = /url|image|cross-fade|element\s*\(|@import|\\/i;
 
 // Mermaid drops a whole line starting with `%%` before parsing (an `%%{init}%%` directive stays).
-const COMMENT_LINE = /^[ \t]*%%(?!\{).*$/gm;
+const COMMENT_LINE = /^[^\S\n]*%%(?!\{).*$/gm;
 
 // `details Actor: id` in a sequence diagram merges the page element `id`'s JSON (an `icon` too),
 // which this cannot see; the line is dropped.
-const DETAILS_LINE = /^[ \t]*details\b[^:\n[({]*:.*$/gim;
-const SEQUENCE = /^[ \t]*sequenceDiagram\b/m;
+const DETAILS_LINE = /^[^\S\n]*details\b[^:\n[({]*:.*$/gim;
+const SEQUENCE = /^[^\S\n]*sequenceDiagram\b/m;
 
 // A `%%{init}%%` directive or front-matter config whose values could fetch (an XY chart copies
 // theme colours into SVG fills, so url() there loads). Ordinary theme colours stay.
 const DIRECTIVE = /%%\{[\s\S]*?\}%%/g;
-const FRONT_MATTER = /^\s*---\r?\n[\s\S]*?\r?\n---[ \t]*(?=\r?\n|$)/;
+const FRONT_MATTER = /^\s*---[^\S\n]*\n[\s\S]*?\n[^\S\n]*---[^\S\n]*(?=\n|$)/;
 
 // `properties Actor: {json}` in a sequence diagram, where `icon` is drawn as an <image>.
-const ACTOR_PROPERTIES = /(^|;)([ \t]*properties\b[^:\n;#]*:)([^#\n;]*)/gim;
+const ACTOR_PROPERTIES = /(^|;)([^\S\n]*properties\b[^:\n;#]*:)([^#\n;]*)/gim;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
