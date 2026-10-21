@@ -852,8 +852,8 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
             "hub": str(paths.hub_cache),
             "xet": str(paths.xet_cache),
             # Portable installs point these at their own root while HF_HOME stays the default.
-            "datasets": os.environ.get("HF_DATASETS_CACHE", ""),
-            "assets": os.environ.get("HF_ASSETS_CACHE", ""),
+            "datasets": os.path.expanduser(os.environ.get("HF_DATASETS_CACHE", "").strip()),
+            "assets": os.path.expanduser(os.environ.get("HF_ASSETS_CACHE", "").strip()),
         }
     except Exception:  # noqa: BLE001 - a launch never fails over a cache lookup
         logger.debug("could not resolve the configured Hugging Face cache", exc_info = True)

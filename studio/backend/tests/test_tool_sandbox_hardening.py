@@ -276,6 +276,66 @@ def test_a_host_without_a_sandbox_still_falls_back_in_auto(
     assert prepared.execution_record.os_isolation is False
 
 
+class _FailingLauncher:
+    """A backend whose launcher starts, then exits with *message* on stderr."""
+
+    def __init__(self, message):
+        self.message = message
+
+    def prepare(self, plan):
+        from types import SimpleNamespace
+        code = f"import sys; sys.stderr.write({self.message!r}); sys.exit(1)"
+        return SimpleNamespace(
+            argv = [sys.executable, "-c", code],
+            workdir = plan.workdir,
+            env = dict(plan.env),
+            preexec_fn = None,
+            pass_fds = (),
+            cleanup = lambda: None,
+        )
+
+
+@pytest.mark.skipif(sys.platform not in ("linux", "darwin"), reason = "the probe backends")
+@pytest.mark.parametrize(
+    ("code", "undecided"), [(errno.EAGAIN, True), (errno.ENOMEM, True), (errno.ENOSPC, False)]
+)
+def test_a_launcher_that_exits_out_of_resources_is_undecided(code, undecided):
+    # bwrap forks inside the namespace it made; running out there is an exit, not an exception.
+    # ENOSPC stays a plain failure: bwrap reports a namespace limit that way too.
+    launcher = _FailingLauncher(f"bwrap: Creating new namespace failed: {os.strerror(code)}")
+    available, reason = sandbox_probe._run_probe(launcher, "bubblewrap", ToolLaunchPlan)
+    assert available is False
+    assert isinstance(reason, sandbox_probe.UndecidedReason) is undecided, reason
+
+
+def test_dedicated_cache_paths_are_expanded(tmp_path, monkeypatch):
+    from core.inference import sandbox_linux
+    import utils.hf_cache_settings as cache_settings
+
+    home = tmp_path / "home"
+    (home / "portable" / "datasets").mkdir(parents = True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HF_DATASETS_CACHE", " ~/portable/datasets ")
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
+    monkeypatch.setattr(
+        cache_settings,
+        "get_hf_cache_paths",
+        lambda: cache_settings.HuggingFaceCachePaths(
+            cache_home = home / "hf",
+            hub_cache = home / "hf" / "hub",
+            xet_cache = home / "hf" / "xet",
+            source = "environment",
+        ),
+    )
+    monkeypatch.setattr(
+        sandbox_linux,
+        "_cache_hazard_within_deadline",
+        lambda name, path: None if os.path.isdir(path) else sandbox_linux.CACHE_MISSING,
+    )
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    assert binds["datasets"] == str(home / "portable" / "datasets")
+
+
 @_POSIX
 def test_the_stale_ipc_sweep_cannot_be_redirected_onto_the_host(tmp_path, monkeypatch):
     workdir = tmp_path / "w"

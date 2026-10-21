@@ -55,6 +55,8 @@ _RESOURCE_ERRNOS = frozenset(
     if code is not None
 )
 _RESOURCE_TEXTS = tuple(os.strerror(code) for code in _RESOURCE_ERRNOS)
+# A launcher's own exit: bwrap reports a namespace limit (a host without a sandbox) as ENOSPC.
+_EXIT_RESOURCE_TEXTS = tuple(os.strerror(code) for code in _RESOURCE_ERRNOS if code != errno.ENOSPC)
 
 
 class UndecidedReason(str):
@@ -477,11 +479,13 @@ def _run_probe(backend: Any, backend_name: str, plan_cls: Any) -> tuple[bool, st
             detail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]
             if not detail:
                 detail = (completed.stdout or b"").decode("utf-8", "replace").strip()[-300:]
-            # Not classified: bwrap reports a namespace limit (a host without a sandbox) as ENOSPC too.
-            return False, (
+            reason = (
                 f"the {backend_name} live probe failed "
                 f"(exit {completed.returncode}): {detail or 'no output'}"
             )
+            if any(text in detail for text in _EXIT_RESOURCE_TEXTS):
+                return False, UndecidedReason(reason)
+            return False, reason
         if _host_saw_the_write(outside):
             return False, (
                 f"the {backend_name} live probe wrote through to the host: a file created "
