@@ -446,6 +446,27 @@ class TestUvSafePathWindowsNo8dot3:
         accepted = dry_run(uvps.uv_safe_path(str(src)))
         assert "File not found" not in accepted.stderr, accepted.stderr
 
+    @pytest.mark.skipif(not ips.IS_WINDOWS, reason = "real NTFS 8.3 names")
+    def test_real_directory_without_a_short_name(self, tmp_path):
+        """A real spaced directory whose 8.3 alias was stripped, as on a D: with 8.3 creation off."""
+        import subprocess
+
+        from backend.utils import uv_path_safety as uvps
+
+        src = self._spaced_constraints(tmp_path)
+        if uvps._windows_short_path(str(src)) is not None:
+            # Needs admin (SeRestorePrivilege), which CI runners have.
+            subprocess.run(
+                ["fsutil", "file", "setshortname", str(src.parent), ""], capture_output = True
+            )
+        if uvps._windows_short_path(str(src)) is not None:
+            pytest.skip("could not remove the 8.3 name on this volume")
+
+        out = uvps.uv_safe_path(str(src))
+
+        assert " " not in out, f"uv would split this -c path: {out!r}"
+        assert Path(out).read_text() == "idna<4\n"
+
 
 class TestPinnedIndexClearsUvEnv:
     """Pinned installs must clear inherited UV_INDEX and UV_EXTRA_INDEX_URL, so the pinned index wins."""
