@@ -2,7 +2,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 """The chunked (vocab > 65536) cross entropy forward picks (BLOCK_SIZE, num_warps) per GPU arch:
-16384 / 8 on T4 (sm_75) and A100 (sm_80), MAX_FUSED_SIZE / 32 everywhere else. The launch has to use
+16384 / 8 on T4 (sm_75) at every vocab and on A100 (sm_80) up to 163840, MAX_FUSED_SIZE / 32
+everywhere else. The launch has to use
 the routed values, and the loss and gradients must not depend on the chunk width."""
 
 import pytest
@@ -15,25 +16,36 @@ from unsloth.kernels import cross_entropy_loss as ce_mod
 from unsloth.kernels.utils import MAX_FUSED_SIZE
 
 
-def _route(capability, monkeypatch):
+def _route(capability, monkeypatch, vocab = 128256):
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: capability)
     ce_mod._chunked_forward_config_at.cache_clear()
     try:
-        return ce_mod._chunked_forward_config(torch.device("cuda", 0))
+        return ce_mod._chunked_forward_config(torch.device("cuda", 0), vocab)
     finally:
         ce_mod._chunked_forward_config_at.cache_clear()
 
 
-@pytest.mark.parametrize("capability", [(7, 5), (8, 0)])
-def test_t4_and_a100_use_16k_blocks_with_8_warps(capability, monkeypatch):
-    assert _route(capability, monkeypatch) == (16384, 8)
+@pytest.mark.parametrize("vocab", [65537, 128256, 151936, 256000, 262144])
+def test_t4_uses_16k_blocks_with_8_warps(vocab, monkeypatch):
+    assert _route((7, 5), monkeypatch, vocab) == (16384, 8)
+
+
+@pytest.mark.parametrize("vocab", [65537, 128256, 151936, 152064, 163840])
+def test_a100_uses_16k_blocks_with_8_warps_up_to_163840(vocab, monkeypatch):
+    assert _route((8, 0), monkeypatch, vocab) == (16384, 8)
+
+
+@pytest.mark.parametrize("vocab", [163841, 256000, 262144])
+def test_a100_keeps_the_previous_config_for_larger_vocabs(vocab, monkeypatch):
+    assert _route((8, 0), monkeypatch, vocab) == (MAX_FUSED_SIZE, 32)
 
 
 @pytest.mark.parametrize(
     "capability", [(6, 1), (7, 0), (7, 2), (8, 6), (8, 7), (8, 9), (9, 0), (10, 0), (10, 3), (12, 0)]
 )
-def test_other_archs_keep_the_previous_config(capability, monkeypatch):
-    assert _route(capability, monkeypatch) == (MAX_FUSED_SIZE, 32)
+@pytest.mark.parametrize("vocab", [128256, 262144])
+def test_other_archs_keep_the_previous_config(capability, vocab, monkeypatch):
+    assert _route(capability, monkeypatch, vocab) == (MAX_FUSED_SIZE, 32)
 
 
 def test_device_without_index_uses_the_current_device(monkeypatch):
@@ -46,14 +58,14 @@ def test_device_without_index_uses_the_current_device(monkeypatch):
     monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
     ce_mod._chunked_forward_config_at.cache_clear()
     try:
-        assert ce_mod._chunked_forward_config(torch.device("cuda")) == (16384, 8)
+        assert ce_mod._chunked_forward_config(torch.device("cuda"), 128256) == (16384, 8)
     finally:
         ce_mod._chunked_forward_config_at.cache_clear()
     assert seen == [torch.cuda.current_device()]
 
 
 def test_non_cuda_devices_keep_the_previous_config():
-    assert ce_mod._chunked_forward_config_at("xpu", 0) == (MAX_FUSED_SIZE, 32)
+    assert ce_mod._chunked_forward_config_at("xpu", 0, 128256) == (MAX_FUSED_SIZE, 32)
 
 
 def _launch(vocab, config, monkeypatch, rows = 64, softcap = 0.0, scale = 0.0):
@@ -71,7 +83,7 @@ def _launch(vocab, config, monkeypatch, rows = 64, softcap = 0.0, scale = 0.0):
             return run
 
     monkeypatch.setattr(ce_mod, "_chunked_cross_entropy_forward", Spy())
-    monkeypatch.setattr(ce_mod, "_chunked_forward_config", lambda device: config)
+    monkeypatch.setattr(ce_mod, "_chunked_forward_config", lambda device, vocab_size: config)
     generator = torch.Generator(device = "cuda").manual_seed(vocab)
     logits = (torch.randn(rows, vocab, device = "cuda", generator = generator) * 3).to(torch.bfloat16)
     labels = torch.randint(0, vocab, (rows,), device = "cuda", generator = generator)

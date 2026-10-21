@@ -128,29 +128,32 @@ def _chunked_evict_policy(device):
     return _chunked_evict_at(device.type, index)
 
 
-# (BLOCK_SIZE, num_warps) of the chunked forward (vocab > MAX_FUSED_SIZE), per NVIDIA capability.
-# 16384 / 8 measured faster on T4 (sm_75) and A100 (sm_80) for Llama-3 / Qwen3 / Gemma vocabs at
-# 2K to 16K tokens; every other arch keeps MAX_FUSED_SIZE with 32 warps (16 on CDNA).
+# (BLOCK_SIZE, num_warps, max vocab) of the chunked forward (vocab > MAX_FUSED_SIZE), per NVIDIA
+# capability. 16384 / 8 is faster on T4 (sm_75) for Llama-3, Qwen3 and Gemma vocabs, and on A100
+# (sm_80) for Llama-3 and Qwen3; at Gemma's 262144 A100 is mixed (slower on torch 2.10, faster on
+# 2.14), so larger vocabs keep the default there. Every other arch keeps MAX_FUSED_SIZE with 32 warps
+# (16 on CDNA).
 _CHUNKED_FORWARD_CONFIGS = {
-    (7, 5): (16384, 8),
-    (8, 0): (16384, 8),
+    (7, 5): (16384, 8, None),
+    (8, 0): (16384, 8, 163840),
 }
 
 
 @functools.lru_cache(maxsize = None)
-def _chunked_forward_config_at(device_type, index):
+def _chunked_forward_config_at(device_type, index, vocab_size):
     if device_type == "cuda" and torch.version.hip is None:
         capability = tuple(torch.cuda.get_device_capability(index))
-        if capability in _CHUNKED_FORWARD_CONFIGS:
-            return _CHUNKED_FORWARD_CONFIGS[capability]
+        config = _CHUNKED_FORWARD_CONFIGS.get(capability)
+        if config is not None and (config[2] is None or vocab_size <= config[2]):
+            return config[0], config[1]
     return MAX_FUSED_SIZE, (16 if is_cdna() else 32)
 
 
-def _chunked_forward_config(device):
+def _chunked_forward_config(device, vocab_size):
     index = device.index
     if index is None and device.type == "cuda":
         index = torch.cuda.current_device()
-    return _chunked_forward_config_at(device.type, index)
+    return _chunked_forward_config_at(device.type, index, vocab_size)
 
 
 def _chunked_cross_entropy_forward(
@@ -382,7 +385,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 )
         else:
             # For large vocabs > 65336 like Gemma 256K
-            BLOCK_SIZE, num_warps = _chunked_forward_config(device)
+            BLOCK_SIZE, num_warps = _chunked_forward_config(device, vocab_size)
             div, mod = divmod(vocab_size, BLOCK_SIZE)
             n_chunks = div + (mod != 0)
             logsumexp = torch.empty(
