@@ -43,12 +43,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { exportUnsupportedText } from "@/config/hardware-verdict";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { hfApiToken, useHfTokenStore, useHubModelSearch } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useTauriRepairController } from "@/hooks/tauri-repair-context";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -253,9 +255,13 @@ export function ExportPage() {
   // Only gray out on an authoritative unsupported response; the backend supplies the reason.
   const exportUnsupported =
     hardware.loaded && hardware.exportSupported === false;
-  const exportUnsupportedMessage =
-    hardware.exportUnsupportedMessage ??
-    "Export requires a supported accelerator (NVIDIA, AMD, or Intel GPU, or Apple Silicon) with PyTorch or MLX installed.";
+  // Null off Desktop; an attached terminal-started backend has no Repair action to point at.
+  const repair = useTauriRepairController();
+  const exportUnsupportedMessage = exportUnsupportedText(
+    hardware.exportUnsupportedReason,
+    hardware.exportUnsupportedMessage,
+    repair !== null && !repair.isExternalServer,
+  );
   const availableFormats = useMemo<MergedFormatOption[]>(
     () =>
       MERGED_FORMATS.filter((f) => {
