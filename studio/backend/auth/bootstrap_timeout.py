@@ -21,8 +21,7 @@ from typing import Optional
 
 BOOTSTRAP_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT"
 DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 3600
-# After a failed auth storage read the deadline handler asks again every STORAGE_RETRY_SECONDS, for
-# at most STORAGE_RETRY_WINDOW_SECONDS, before treating "could not tell" as unsecured.
+# Retry cadence and window for a failed auth storage read at the deadline.
 STORAGE_RETRY_SECONDS = 5
 STORAGE_RETRY_WINDOW_SECONDS = 600
 
@@ -122,9 +121,7 @@ def enforce_bootstrap_password_deadline(
 ) -> bool:
     """Deadline handler: shut down iff the seeded admin password is still unchanged. Returns True if it
     shut Unsloth down, False if it left it running (the password was changed in time)."""
-    # A failed read is not "changed": the timer is one-shot, so giving up here would drop the deadline
-    # for good. Retry for a bounded window; storage still unreadable after it is treated as unsecured,
-    # as the terminal password gate does.
+    # One-shot timer: a failed read retries for a bounded window, then counts as unsecured.
     give_up_at = time.monotonic() + STORAGE_RETRY_WINDOW_SECONDS
     while True:
         try:
