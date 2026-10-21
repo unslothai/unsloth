@@ -74,6 +74,19 @@ except ImportError:
             "__exit__": lambda s, *a: None,
         },
     )
+
+    # Any other name (AsyncClient, Request, Limits, WriteError, ...) that a module routes/inference.py
+    # loads reads at import time, in an annotation, an except tuple or a constant: an exception type
+    # that takes any arguments, so it serves as a placeholder class and an except target alike.
+    # Cached on first read, so every module sees the same type.
+    def _httpx_placeholder(name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        value = type(name, (Exception,), {"__init__": lambda s, *a, **k: Exception.__init__(s, *a)})
+        setattr(_httpx_stub, name, value)
+        return value
+
+    _httpx_stub.__getattr__ = _httpx_placeholder
     sys.modules["httpx"] = _httpx_stub
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402

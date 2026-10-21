@@ -16,6 +16,7 @@ import ctypes
 import errno
 import functools
 import hashlib
+import importlib
 import json
 import logging
 import math
@@ -771,45 +772,62 @@ def _is_gpu_device_lost(exc: BaseException) -> bool:
     return any(marker in text for marker in _GPU_DEVICE_LOST_MARKERS)
 
 
+def _resident_source(name: str):
+    """``name`` imported, or None when it cannot be: a module that cannot import has never run in
+    this process, so nothing it would track can be loaded (a minimal install without FastAPI must
+    not read as "unknown"). Any other failure propagates, and the caller fails closed."""
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
+
 def _gpus_held_outside_llama() -> Optional[frozenset]:
     """Physical GPUs every resident that is not a llama.cpp chat server holds, or None when one may
     hold a card it does not publish. The one list of them, read before an auto tensor pair:
     image/video/decision models the GPU arbiter tracks (their ids, None when unknown), and, none of
     which publish ids, transformers models, managed engines and surviving inference workers,
-    dictation sidecars, RAG embedders and the decision worker, each loaded or loading off the CPU.
-    Unknown counts as held."""
+    dictation sidecars, RAG embedders, the decision worker, LLM and diffusion training and export
+    workers, each loaded, loading or running off the CPU. Unknown counts as held."""
     try:
-        from core.inference import gpu_arbiter, model_slots
-        from core.inference.orchestrator import peek_inference_backend
-        from core.inference.stt_registry import STT_ENGINES, sidecar_for
-
         held: set = set()
-        for owner, gpus in gpu_arbiter.residents().items():
-            if owner == gpu_arbiter.CHAT:
-                continue
-            if gpus is None:
-                return None
-            held.update(gpus)
+        gpu_arbiter = _resident_source("core.inference.gpu_arbiter")
+        if gpu_arbiter is not None:
+            for owner, gpus in gpu_arbiter.residents().items():
+                if owner == gpu_arbiter.CHAT:
+                    continue
+                if gpus is None:
+                    return None
+                held.update(gpus)
 
         # The kept-slot set model_slots.holds_vram prices, plus the slot a load is filling.
-        filling = model_slots.loading
-        for orchestrator in (
-            model_slots.in_slot(None, peek_inference_backend),
-            *(slot.orchestrator for slot in model_slots.resident()),
-            *((filling[0].orchestrator,) if filling else ()),
-        ):
+        orchestrator_module = _resident_source("core.inference.orchestrator")
+        model_slots = _resident_source("core.inference.model_slots")
+        orchestrators = []
+        if orchestrator_module is not None:
+            peek = orchestrator_module.peek_inference_backend
+            orchestrators.append(model_slots.in_slot(None, peek) if model_slots else peek())
+        if model_slots is not None:
+            filling = model_slots.loading
+            orchestrators += [slot.orchestrator for slot in model_slots.resident()]
+            orchestrators += [filling[0].orchestrator] if filling else []
+        for orchestrator in orchestrators:
             if orchestrator is not None and (
                 orchestrator.active_model_name
                 or orchestrator.loading_models
                 # A managed engine whose stop failed keeps its VRAM with no model name left.
                 or getattr(orchestrator, "_managed_engine", None) is not None
                 # An idle worker is shut down on its last unload, so a live one holds memory.
-                or model_slots._worker_alive(orchestrator)
+                or (
+                    callable(getattr(orchestrator, "is_worker_alive", None))
+                    and orchestrator.is_worker_alive()
+                )
             ):
                 return None
 
-        for engine in STT_ENGINES:
-            sidecar = sidecar_for(engine)
+        stt_registry = _resident_source("core.inference.stt_registry")
+        for engine in stt_registry.STT_ENGINES if stt_registry else ():
+            sidecar = stt_registry.sidecar_for(engine)
             if sidecar.is_loading():
                 return None
             if not sidecar.loaded_model:
@@ -841,6 +859,22 @@ def _gpus_held_outside_llama() -> Optional[frozenset]:
         # Its llama.cpp server is arbitrated above; the PyTorch worker is not.
         laya = sys.modules.get("core.systemone.laya_runtime")
         if laya is not None and (laya._loading is not None or laya._holds_gpu()):
+            return None
+
+        # Training and export workers, starting or running (the guards cache_inventory and
+        # transformers_version read). None publishes its GPUs. Never constructed here: a
+        # singleton nobody built has no worker.
+        training = sys.modules.get("core.training.training")
+        trainer = getattr(training, "_training_backend", None)
+        if trainer is not None and trainer.is_training_active():
+            return None
+        diffusion = sys.modules.get("core.training.diffusion_training_service")
+        service = getattr(diffusion, "_service", None)
+        if service is not None and service.is_active():
+            return None
+        export = sys.modules.get("core.export.orchestrator")
+        exporter = getattr(export, "_export_backend", None)
+        if exporter is not None and (exporter.is_export_active() or exporter.is_worker_alive()):
             return None
     except Exception:  # noqa: BLE001 - an unreadable resident may hold any card
         return None
@@ -28230,7 +28264,7 @@ class LlamaCppBackend:
                                     usable_fraction = _vram_frac,
                                     total_by_idx = total_by_idx,
                                     shared = _shared_gpus,
-                                    integrated = _integrated_gpus,
+                                    integrated = _tier_gpus,
                                 )
                                 _fits_one = (
                                     not _single_fit

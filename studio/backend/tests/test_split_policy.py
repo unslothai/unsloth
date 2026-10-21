@@ -2159,6 +2159,17 @@ def _decision_worker(device):
     return setup
 
 
+def _worker(module, attr, **state):
+    """A training / export singleton in ``module`` reporting ``state`` (method name -> result)."""
+
+    def setup(monkeypatch):
+        import importlib
+        fake = types.SimpleNamespace(**{name: (lambda v = v: v) for name, v in state.items()})
+        monkeypatch.setattr(importlib.import_module(module), attr, fake)
+
+    return setup
+
+
 @pytest.mark.parametrize(
     "setup, tensor",
     [
@@ -2182,6 +2193,52 @@ def _decision_worker(device):
         # The PyTorch decision worker the arbiter does not track.
         pytest.param(_decision_worker("cuda"), False, id = "decision-worker-gpu"),
         pytest.param(_decision_worker("cpu"), True, id = "decision-worker-cpu"),
+        # LLM and diffusion training and export workers, starting or running.
+        pytest.param(
+            _worker("core.training.training", "_training_backend", is_training_active = True),
+            False,
+            id = "llm-training",
+        ),
+        pytest.param(
+            _worker("core.training.training", "_training_backend", is_training_active = False),
+            True,
+            id = "llm-training-idle",
+        ),
+        pytest.param(
+            _worker("core.training.diffusion_training_service", "_service", is_active = True),
+            False,
+            id = "diffusion-training",
+        ),
+        pytest.param(
+            _worker(
+                "core.export.orchestrator",
+                "_export_backend",
+                is_export_active = True,
+                is_worker_alive = True,
+            ),
+            False,
+            id = "export-running",
+        ),
+        pytest.param(
+            _worker(
+                "core.export.orchestrator",
+                "_export_backend",
+                is_export_active = False,
+                is_worker_alive = True,
+            ),
+            False,
+            id = "export-worker-alive",
+        ),
+        pytest.param(
+            _worker(
+                "core.export.orchestrator",
+                "_export_backend",
+                is_export_active = False,
+                is_worker_alive = False,
+            ),
+            True,
+            id = "export-idle",
+        ),
     ],
 )
 def test_wired_any_resident_without_gpu_ids_keeps_layer(tmp_path, monkeypatch, setup, tensor):
@@ -2241,3 +2298,25 @@ def test_wired_auto_tensor_exit_cancelled_reports_a_cancelled_load(
     assert result is False
     assert [_split_flag(c) for c in spawns] == ["tensor"]
     _assert_no_split_state(backend)
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        ("core.inference.model_slots",),
+        ("core.inference.model_slots", "core.inference.orchestrator"),
+    ],
+)
+def test_wired_resident_source_that_cannot_import_holds_nothing(tmp_path, monkeypatch, blocked):
+    # A minimal install (no FastAPI) cannot import model_slots: nothing it tracks can be loaded, so
+    # the idle pair still runs tensor rather than reading as unknown.
+    import core.inference as inference_package
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    for name in blocked:
+        monkeypatch.setitem(sys.modules, name, None)
+        monkeypatch.delattr(inference_package, name.rsplit(".", 1)[1], raising = False)
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert _split_flag(cmd) == "tensor"
