@@ -297,6 +297,10 @@ def validate_rule(rule: dict) -> dict:
     elif kind == "length":
         out["max_chars"] = int(_number(rule.get("max_chars"), "max_chars"))
         out["score"] = _validate_score(rule.get("score", {}), ("over", "under"))
+    # Dropped silently, it would score a different text than the rule says.
+    for key in ("extract", "reference_extract"):
+        if rule.get(key) is not None and key not in out:
+            raise RewardError(f"{kind} rules take no {key}.")
     return out
 
 

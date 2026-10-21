@@ -444,3 +444,14 @@ def test_regex_extraction_is_explained():
     assert hit["reason"] == "matched" and hit["response"] == "4"
     assert score_rule(rule, "4", explanation = miss) == 0.0
     assert miss["reason"] == "missing_response"
+
+
+def test_rules_that_score_the_whole_reply_refuse_an_extraction_step():
+    rule = {
+        "type": "length",
+        "max_chars": 10,
+        "score": {"over": -1, "under": 1},
+        "extract": {"between": ["<answer>", "</answer>"]},
+    }
+    with pytest.raises(rewards.RewardError, match = "length rules take no extract"):
+        rewards.validate_rule(rule)
