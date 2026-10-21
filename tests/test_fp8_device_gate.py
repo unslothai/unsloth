@@ -112,3 +112,25 @@ def test_real_check_admits_t4_on_this_transformers(monkeypatch):
     else:
         with pytest.raises(ValueError, match = "compute capability 8.9"):
             _utils.verify_fp8_support_if_applicable(_config("fp8"))
+
+
+def test_fast_language_model_gates_on_the_effective_weight_loader():
+    # fast_inference with num_labels loads through transformers, so the 16-bit fallback applies.
+    import ast
+    import inspect
+    import textwrap
+
+    from unsloth.models import llama
+
+    assert llama._vllm_will_load_weights(True, num_labels = 2) is False
+    tree = ast.parse(textwrap.dedent(inspect.getsource(llama.FastLlamaModel.from_pretrained)))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "verify_fp8_support_if_applicable"
+    ]
+    assert len(calls) == 2
+    for call in calls:
+        (kw,) = [k for k in call.keywords if k.arg == "fast_inference"]
+        assert isinstance(kw.value, ast.Call) and kw.value.func.id == "_vllm_will_load_weights"
