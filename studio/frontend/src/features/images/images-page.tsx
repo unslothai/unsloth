@@ -311,6 +311,7 @@ import {
   inpaintMaskRequestFields,
   MASK_BLUR_DEFAULT,
   MASK_BLUR_MAX,
+  restoredInpaintMaskOptions,
 } from "./lib/inpaint-options";
 import {
   copyPngTextChunks,
@@ -2743,9 +2744,10 @@ export function ImagesPage({
       else setStrength(image.strength);
     }
     if (typeof image.upscale === "number") setUpscaleFactor(image.upscale);
-    if (typeof image.mask_blur === "number") setMaskBlur(image.mask_blur);
-    if (typeof image.inpaint_only_masked === "boolean") setInpaintOnlyMasked(image.inpaint_only_masked);
-    if (typeof image.inpaint_padding === "number") setInpaintPadding(image.inpaint_padding);
+    const maskOptions = restoredInpaintMaskOptions(image);
+    if (maskOptions.maskBlur !== undefined) setMaskBlur(maskOptions.maskBlur);
+    if (maskOptions.onlyMasked !== undefined) setInpaintOnlyMasked(maskOptions.onlyMasked);
+    if (maskOptions.padding !== undefined) setInpaintPadding(maskOptions.padding);
     // Conditioning images are not persisted, so every upload is cleared. Edit and Reference reopen
     // their own workflow, so Generate stays blocked until the inputs are supplied again instead of
     // replaying as text-to-image; the others return to Create.

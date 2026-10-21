@@ -14,6 +14,7 @@ import {
   INPAINT_PADDING_DEFAULT,
   inpaintMaskRequestFields,
   MASK_BLUR_DEFAULT,
+  restoredInpaintMaskOptions,
 } from "../src/features/images/lib/inpaint-options.ts";
 import {
   lastSeedOf,
@@ -140,4 +141,29 @@ test("inpaint mask options send nothing at their defaults", () => {
   );
   assert.match(page, /\.\.\.condInpaint,/);
   assert.match(page, /\{status\?\.supports_inpaint_only_masked && \(/);
+});
+
+test("restoring an inpaint record resets mask options it omitted at their defaults", () => {
+  assert.deepEqual(restoredInpaintMaskOptions({ workflow: "inpaint" }), {
+    maskBlur: MASK_BLUR_DEFAULT,
+    onlyMasked: false,
+    padding: INPAINT_PADDING_DEFAULT,
+  });
+  assert.deepEqual(
+    restoredInpaintMaskOptions({
+      workflow: "inpaint",
+      mask_blur: 6,
+      inpaint_only_masked: true,
+      inpaint_padding: 48,
+    }),
+    { maskBlur: 6, onlyMasked: true, padding: 48 },
+  );
+  // Other workflows carry no mask options, so they leave the controls alone.
+  assert.deepEqual(restoredInpaintMaskOptions({ workflow: "img2img" }), {});
+  assert.deepEqual(restoredInpaintMaskOptions({ workflow: null }), {});
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(
+    page,
+    /const maskOptions = restoredInpaintMaskOptions\(image\);\n\s+if \(maskOptions\.maskBlur !== undefined\) setMaskBlur\(maskOptions\.maskBlur\);/,
+  );
 });

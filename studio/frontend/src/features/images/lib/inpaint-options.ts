@@ -40,3 +40,27 @@ export function inpaintMaskRequestFields(
   }
   return out;
 }
+
+interface InpaintMaskRecord {
+  workflow?: string | null;
+  mask_blur?: number | null;
+  inpaint_only_masked?: boolean | null;
+  inpaint_padding?: number | null;
+}
+
+/** The mask options a restore applies. An inpaint record omits its defaults, so an absent field resets to it. */
+export function restoredInpaintMaskOptions(
+  image: InpaintMaskRecord,
+): Partial<InpaintMaskOptions> {
+  const inpaint = image.workflow === "inpaint";
+  const out: Partial<InpaintMaskOptions> = {};
+  if (typeof image.mask_blur === "number") out.maskBlur = image.mask_blur;
+  else if (inpaint) out.maskBlur = MASK_BLUR_DEFAULT;
+  if (typeof image.inpaint_only_masked === "boolean")
+    out.onlyMasked = image.inpaint_only_masked;
+  else if (inpaint) out.onlyMasked = false;
+  if (typeof image.inpaint_padding === "number")
+    out.padding = image.inpaint_padding;
+  else if (inpaint) out.padding = INPAINT_PADDING_DEFAULT;
+  return out;
+}
