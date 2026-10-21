@@ -252,11 +252,13 @@ if _IS_MLX:
         from .import_fixes import (
             fix_transformers_untrusted_config_fields as _fix_untrusted_config,
             fix_transformers_chat_template_path_traversal as _fix_template_names,
+            fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
         )
 
         _fix_untrusted_config()
         _fix_template_names()
-        del _fix_untrusted_config, _fix_template_names
+        _fix_vocab_paths()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
     except Exception:
         pass
     try:
@@ -372,10 +374,20 @@ if _IS_MLX:
     TextPreprocessor = _raw_text.TextPreprocessor
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
+    def _mlx_from_pretrained(*args, **kwargs):
+        # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
+        if not is_bfloat16_supported():
+            if len(args) > 2:
+                if args[2] is None:
+                    args = (*args[:2], "float16", *args[3:])
+            elif kwargs.get("dtype") is None:
+                kwargs["dtype"] = "float16"
+        return FastMLXModel.from_pretrained(*args, **kwargs)
+
     class FastLanguageModel:
         @staticmethod
         def from_pretrained(*args, **kwargs):
-            return FastMLXModel.from_pretrained(*args, **kwargs)
+            return _mlx_from_pretrained(*args, **kwargs)
 
         @staticmethod
         def get_peft_model(*args, **kwargs):
@@ -389,7 +401,7 @@ if _IS_MLX:
         @staticmethod
         def from_pretrained(*args, **kwargs):
             kwargs.setdefault("text_only", False)
-            return FastMLXModel.from_pretrained(*args, **kwargs)
+            return _mlx_from_pretrained(*args, **kwargs)
 
         @staticmethod
         def for_training(*args, **kwargs):
@@ -425,8 +437,15 @@ if _IS_MLX:
 
     def is_bfloat16_supported():
         try:
+            import re
             import mlx.core as mx
-            name = mx.device_info().get("device_name", "") or ""
+
+            info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+            # Family over name (VMs report "Apple Paravirtual device"); matches zoo's _apple_bf16_supported.
+            match = re.fullmatch(r"applegpu_g(\d+)[a-z]", str(info.get("architecture", "") or ""))
+            if match:
+                return int(match.group(1)) >= 15
+            name = info.get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:
             return True

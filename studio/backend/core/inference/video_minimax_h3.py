@@ -1814,6 +1814,8 @@ class MiniMaxH3NativeRuntime:
     offload_refusal: Optional[str] = None
     # Auto only: re-fit inputs, so an offloaded render is judged on live readings rather than the load's.
     fit_inputs: Any = None
+    # Free VRAM now (bytes or ``{device: bytes}``), read per launch for the explicit ``--max-vram`` budget.
+    vram_free_probe: Optional[Callable[[], Any]] = None
 
 
 # 0 / false / off: every render on a fresh one-shot sd-cli.
@@ -1924,6 +1926,9 @@ class H3NativeServerSlot:
         self._server: Any = None
         self._stopping: Any = None
         self._signature: Optional[tuple] = None
+        self.launched_flags: Optional[tuple[str, ...]] = None
+        # Set before a start runs; ``launched_flags`` only after it succeeds.
+        self.attempted_flags: Optional[tuple[str, ...]] = None
         self._lock = threading.RLock()
         self._busy = 0
         self._release_pending: Optional[str] = None
@@ -1959,11 +1964,14 @@ class H3NativeServerSlot:
         *,
         cancel_event: Any = None,
         pre_spawn: "Optional[Callable[[], Any]]" = None,
+        launch_transform: "Optional[Callable[[tuple[str, ...]], Any]]" = None,
     ) -> Any:
         """The live server for this (flags, env), (re)spawning one if needed. ``cancel_event`` aborts a start: the
         render holds the generate lock through the model load, so unload and Cancel would otherwise wait it out.
         ``pre_spawn`` runs only when a process is about to start, under the slot lock and after any old server has
-        stopped: it returns the flags to start with (a live memory fit) or raises to refuse the start."""
+        stopped: it returns the flags to start with (a live memory fit) or raises to refuse the start.
+        ``launch_transform`` rewrites only the argv; the signature keeps untransformed flags so a varying budget
+        never makes a reusable server look stale."""
         import threading
 
         from .sd_cpp_backend import register_tree_holder, unregister_tree_holder
@@ -1987,6 +1995,10 @@ class H3NativeServerSlot:
                 # Reuse was decided above, under this lock: from here a process starts, so it is fitted now.
                 flag_tuple = tuple(pre_spawn())
                 wanted = self._signature_for(flag_tuple, env_pairs)
+            launch_tuple = (
+                tuple(launch_transform(flag_tuple)) if launch_transform is not None else flag_tuple
+            )
+            self.attempted_flags = launch_tuple
             server = SdCppServer(self.server_binary)
             managed = is_managed_binary(self.server_binary)
             self._server = server
@@ -2011,7 +2023,7 @@ class H3NativeServerSlot:
                 from .sd_cpp_backend import _explicit_threads
                 server.start(
                     self.files,
-                    offload = list(flag_tuple),
+                    offload = list(launch_tuple),
                     threads = _explicit_threads(),
                     env = dict(env_pairs) or None,
                     # A context flag on sd-server (per-run on sd-cli); same RNG keeps seeds identical across paths.
@@ -2029,6 +2041,7 @@ class H3NativeServerSlot:
                     unregister_tree_holder(self)
                 raise
             started.set()
+            self.launched_flags = launch_tuple
             if cancel_event is not None and cancel_event.is_set() and not server.is_alive():
                 self._stop_locked("cancelled")
                 raise SdCppCancelled("sd-server start was cancelled.")
@@ -2043,7 +2056,12 @@ class H3NativeServerSlot:
         """Stop the server (pending release, memory pressure, idle 0) or arm the idle timer. Returns the stop reason."""
         with self._lock:
             self._busy = max(0, self._busy - 1)
-            if self._busy or self._server is None:
+            if self._busy:
+                return None
+            if self._server is None:
+                self._release_pending = (
+                    None  # nothing left to release; a stale one would refuse the next retry
+                )
                 return None
             reason = self._release_pending
         if reason is None and self.pressure_probe is not None:
@@ -2074,15 +2092,29 @@ class H3NativeServerSlot:
             self._release_pending = reason
             return True
         try:
-            if self._server is None:
-                return False
+            # Busy first: between restart_for_retry's stop and the respawn the render still owns the slot.
             if self._busy:
                 self._release_pending = reason
                 return True
+            if self._server is None:
+                return False
             self._stop_locked(reason)
             return True
         finally:
             self._lock.release()
+
+    @property
+    def release_pending(self) -> Optional[str]:
+        return self._release_pending
+
+    def restart_for_retry(self, reason: str) -> bool:
+        """Stop for a retry unless a release is pending. One locked step: a release racing a separate check would be
+        cleared by ``_stop_locked`` and the fresh server would outlive the render asked to free its memory."""
+        with self._lock:
+            if self._release_pending is not None:
+                return False
+            self._stop_locked(reason)
+            return True
 
     def stop(self, reason: str = "stopped") -> None:
         with self._lock:
