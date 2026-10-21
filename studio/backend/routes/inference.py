@@ -15975,8 +15975,8 @@ def _mlx_estimate_offload(
     request, config, model_dir: str, load_in_4bit: bool, kv_bits: Optional[int]
 ) -> tuple[dict, tuple]:
     """``({"offload": (ple, experts)} or {}, offloadable parts)`` for an MLX load of *request*,
-    "auto" decided as the load does, on its route, with the ``prefill_chunk`` the load prefills in while
-    experts are on disk; neither if the load quantizes, which unsloth_zoo refuses."""
+    "auto" decided as the load does, on its route; neither if the load quantizes, which unsloth_zoo
+    refuses."""
     from core.inference.mlx_inference import (
         mlx_resolve_offload,
         mlx_vlm_snapshot_store_available,

@@ -1098,7 +1098,6 @@ class TestEstimateMemoryRoute:
         )
         costless = [fit(None, *c) for c in (("fits", 4096), ("fits", 8192), ("unsizable", 4096))]
         assert costless == [(True, 4096), (False, 4096), (None, 4096)]
-        # Priced as the load prefills: experts on disk, in the planned step.
         asked = {}
         monkeypatch.setattr(
             mlx_memory, "mlx_fit_outcome", lambda d, **kw: asked.update(kw) or ("fits", 4096)
@@ -1371,7 +1370,7 @@ class TestEstimateMemoryRoute:
         assert off.mlx_offload.offloadable == ["experts"] and seen[-1] == (None, None)
         # Auto decides as the load does, at the pinned context.
         assert price(mlx_ple_offload = "off") == (None, 0.6) and planned[-1]["context"] == 4096
-        assert seen[-1][1] == 8192  # priced in the step the planner takes for experts on disk
+        assert seen[-1][1] == 8192
         assert planned[-1]["vision"] is None
         # A speculative load goes through mlx-vlm, so Auto is planned there.
         with monkeypatch.context() as patch:
@@ -4257,12 +4256,9 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     assert plan(budget_bytes = 1 << 40) == (None, None, None)
     priced = mm.mlx_memory_breakdown(str(tmp_path), n_ctx = 512).total_bytes
     assert asked["resident"] + experts + asked["context_cost"](512, None) == priced
-    # Each prefill step the planner weighs is priced as a load prefilling in it.
     wide = mm.mlx_memory_breakdown(str(tmp_path), n_ctx = 512, prefill_chunk = 8192).total_bytes
     assert wide > priced and asked["resident"] + experts + asked["context_cost"](512, 8192) == wide
     assert plan(budget_bytes = 1) == (None, 1.0, None)
-    # With experts on disk the planner picks the step (none above this 512-token window);
-    # else the load's own.
     assert (
         plan(budget_bytes = 1 << 40, experts = 0.5) == (None, 0.5, 2048)
         and asked["prefill_step"] is None
@@ -4341,8 +4337,11 @@ def test_auto_offload_is_planned_on_the_route_the_load_takes(monkeypatch):
         assert planned == ((1.0, 0.5, None) if vision else (None, 0.5, None))
         parts = mm.mlx_offloadable_parts("/x", vision)
         assert parts == (("ple", "experts") if vision else ("experts",))
-    # A larger prefill step is priced on the same route.
-    assert routes == [("sized", None), ("inventory", False), ("sized", None)] + [("sized", True), ("inventory", True), ("sized", True)]
+    assert routes == [("sized", None), ("inventory", False), ("sized", None)] + [
+        ("sized", True),
+        ("inventory", True),
+        ("sized", True),
+    ]
 
 
 def test_the_offload_probe_maps_a_text_model_on_the_route_unsloth_zoo_builds_it(monkeypatch):

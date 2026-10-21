@@ -453,8 +453,6 @@ def test_session_captures_the_boundary_and_resumes_leaving_a_copy_behind(fake_mx
 
 
 class LayeredLanguageModel(FakeLanguageModel):
-    """unsloth_zoo's layer-by-layer prefill in grid steps, copying entries but ``skipped`` where asked."""
-
     capture, skipped = None, ()
 
     def __call__(
@@ -489,7 +487,6 @@ def test_a_window_of_grid_steps_snapshots_the_grid_inside_it(fake_mx, monkeypatc
     zoo.capture_prefill_rows = contextlib.contextmanager(capture)
     monkeypatch.setitem(sys.modules, zoo.__name__, zoo)
     stores = [VLMPromptSnapshotStore(max_bytes = 10**9) for _ in range(2)]
-    # Cold, the boundary (1792) sits inside the second window; resumed there, 2048 sits inside the first.
     for tokens in (ids, ids + [1] * 300):
         _generate(stores[0], FakeLanguageModel(), tokens)
         _generate(stores[1], model, tokens, window = 4 * STEP, kwargs = {"step": 4 * STEP})
@@ -500,9 +497,7 @@ def test_a_window_of_grid_steps_snapshots_the_grid_inside_it(fake_mx, monkeypatc
     assert [len(key[1]) for key in held[1]] == [1792, 2048, 2199] and repr(held[0]) == repr(held[1])
     model.skipped, store = (1,), VLMPromptSnapshotStore(max_bytes = 10**9)
     _generate(store, model, ids, window = 4 * STEP, kwargs = {"step": 4 * STEP})
-    assert [len(key[1]) for key in store._entries] == [
-        1899
-    ]  # an in-window snapshot missing an entry is dropped
+    assert [len(key[1]) for key in store._entries] == [1899]
 
 
 def test_session_replays_a_prompt_from_where_its_prefill_ended(fake_mx):

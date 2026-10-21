@@ -1481,11 +1481,9 @@ def mlx_offload_plan(
     load_in_4bit: bool = False,
     vision: Optional[bool] = None,
 ) -> Optional[tuple]:
-    """The ``(ple, experts, prefill_step)`` unsloth_zoo's 50/50 rule takes for this load, priced as
-    Studio prices it; a knob not ``"auto"`` and a pinned ``context`` are kept. With experts on disk
-    each prefill step re-reads them, so the planner picks the step, priced at that step; otherwise
-    ``prefill_step`` is None and the load prefills in its own chunk. When nothing fits, everything
-    offloadable goes to disk. None when the load cannot be planned."""
+    """The ``(ple, experts, prefill_step)`` unsloth_zoo's 50/50 rule takes for this load, priced
+    as Studio prices it; a knob not ``"auto"`` and a pinned ``context`` are kept. When nothing fits,
+    everything offloadable goes to disk. None when the load cannot be planned."""
     planner = mlx_offload_planner()
     sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision)
     if planner is None or sizing is None:
@@ -1510,7 +1508,6 @@ def mlx_offload_plan(
         ceiling = max_ctx,
         minimum = MLX_FIT_MIN_CONTEXT,
         context = context,
-        # Studio prefills in its own chunk unless experts may go to disk.
         prefill_step = None if experts and found["expert_bytes"] else sizing.chunk,
         offload = {"ple": ple, "experts": experts},
     )

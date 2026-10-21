@@ -78,8 +78,6 @@ VLM_PROMPT_CACHE_ENTRIES = 6
 
 
 def _prefill_layer_step(model, step):
-    """mlx-vlm's step when unsloth_zoo runs every prefill call of ``model`` as consecutive calls of
-    it, layer by layer, and ``step`` is a multiple of it; else ``None``."""
     if not step:
         return None
     try:
@@ -294,8 +292,6 @@ def _prompt_wide_position_ids(args, kwargs):
 
 
 def _forward_capturing(base, model, args, kwargs, cache, rows):
-    """The forward, and the snapshot unsloth_zoo's layer-by-layer prefill copies once ``rows`` rows
-    of it are in every entry; ``None`` unless every entry was copied."""
     from unsloth_zoo.mlx.offload import capture_prefill_rows
 
     def copy(entry):
@@ -750,7 +746,6 @@ class VLMPromptCacheSession:
             record.on_resume = self._detach_served
         self._keep((self._key, tuple(token_ids[:prefix_len])) if prefix_len else None)
         rows = boundary - prefix_len
-        # A boundary inside a window is copied by the layers as they pass it.
         record.capture_at, record.capture_rows = (
             divmod(rows, self.window) if rows >= 0 else (rows, 0)
         )
@@ -1083,9 +1078,9 @@ def mlx_resolve_offload(
 ) -> tuple:
     """The ``(ple, expert)`` fractions a load of *model_dir* reads from disk (None for off), from
     knobs as ``normalize_mlx_offload`` gives them: an ``"auto"`` knob decided by unsloth_zoo's 50/50
-    rule on this load's pricing, and off where that cannot be planned; any other knob as given. Then
-    the prefill step the rule takes for experts on disk, or None for the load's own. ``vision=True``
-    prices the mlx-vlm route a speculative text load takes."""
+    rule on this load's pricing, and off where that cannot be planned; any other knob as given;
+    then the planned prefill step for experts on disk, else None. ``vision=True`` prices the
+    mlx-vlm route a speculative text load takes."""
     fixed = tuple(None if knob == "auto" else knob for knob in knobs) + (None,)
     if "auto" not in knobs or not model_dir:
         return fixed
@@ -1150,8 +1145,7 @@ def _mlx_offload_request(knobs, plan):
     """The offload a load asks for: the ``(ple, experts)`` knobs as sent, the fraction each wants,
     the ``FastMLXModel.from_pretrained`` kwargs, and why none is passed when unsloth_zoo cannot
     offload. unsloth_zoo hands an ``"auto"`` knob to *plan* once it has the checkpoint (the one it
-    resolved and downloaded), and never does for a load it cannot offload; with no *plan* it is off.
-    *plan* also gives the prefill step for experts on disk (``"prefill_step"``)."""
+    resolved and downloaded), and never does for a load it cannot offload; with no *plan* it is off."""
     from core.inference.mlx_memory import mlx_offload_planner
 
     requested = dict(zip(("ple", "experts"), knobs))
@@ -4462,7 +4456,7 @@ class MLXInferenceBackend:
         self._reads_vision = None
         self._turboquant_refusal = ""
         self._speculative_draft = None
-        self._prefill_step = None  # the planned step while experts are on disk, else the runtime's
+        self._prefill_step = None
         self._prefill_layer_step = None
         self._multi_image_marker = None
         self._config = {}
@@ -4791,10 +4785,8 @@ class MLXInferenceBackend:
         return _quantize_kv_entries(entries, bits)
 
     def _session_window(self):
-        """Rows a prefix-reuse session prefills in: the planned step only where unsloth_zoo runs it
-        layer by layer in mlx-vlm's steps and copies snapshots inside it, keeping them on mlx-vlm's
-        grid; else mlx-vlm's step. TurboQuant converts the cache between forwards, which a copy inside
-        one would miss; past a KV window the model derives positions from a rotated cache per forward."""
+        # TurboQuant converts the cache between forwards and a KV window rotates it per forward,
+        # so neither can take in-window snapshots.
         step = getattr(self, "_prefill_step", None)
         if (
             step
@@ -4810,8 +4802,6 @@ class MLXInferenceBackend:
         target = None,
         grid = False,
     ):
-        """``prefill_step_size`` for the planned step, else nothing (the runtime's own); with a
-        *target* (a constructor, or unsloth_zoo's defaults type), only when it takes one."""
         step = getattr(self, "_prefill_step", None)
         if step is not None and grid:
             step = vlm_prefill_step()
@@ -5296,7 +5286,6 @@ class MLXInferenceBackend:
         # Priced as applied: a knob unsloth_zoo did not apply prices as resident.
         _offloaded = (_offload["ple"]["applied"], _offload["experts"]["applied"])
         _offloaded = {"offload": _offloaded} if any(_offloaded) else {}
-        # Each prefill step re-reads experts on disk: prefill, and price, in the planned step.
         self._prefill_step = offload["prefill_step"] if _offload["experts"]["applied"] else None
         self._prefill_layer_step = _prefill_layer_step(self._model, self._prefill_step)
         if self._prefill_step:
