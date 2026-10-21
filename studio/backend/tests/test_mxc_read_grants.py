@@ -549,7 +549,7 @@ def test_another_process_mid_grant_refuses_the_launch_but_not_the_cleanup(host, 
         mxc_read_grants._scanned.clear()
         host.granted.discard(os.path.normcase(venv))
         monkeypatch.setattr(mxc_read_grants, "_lock", __import__("threading").Lock())
-        with pytest.raises(mxc_read_grants.ReadGrantError, match = "another Studio process"):
+        with pytest.raises(mxc_read_grants.ReadGrantError, match = "another Unsloth process"):
             _in_thread(lambda: mxc_read_grants.ensure([venv]))
         assert _in_thread(mxc_read_grants.revoke_recorded) == ()
     finally:

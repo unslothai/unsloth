@@ -264,6 +264,7 @@ def test_usage_riding_on_a_content_chunk_is_counted_once(executed):
     assert len(reports) == 1, reports
     assert reports[0]["choices"] == []
     assert reports[0]["usage"]["total_tokens"] == 15
+    assert reports[0]["usage"]["context_tokens"] == 15
 
 
 def test_usage_totals_still_sum_across_turns(executed):
@@ -289,6 +290,7 @@ def test_usage_totals_still_sum_across_turns(executed):
     reports = _usage_chunks(out)
     assert len(reports) == 1
     assert reports[0]["usage"]["total_tokens"] == 5
+    assert reports[0]["usage"]["context_tokens"] == 5
 
 
 def test_the_summed_usage_carries_the_last_turns_timings(executed):
@@ -324,6 +326,7 @@ def test_the_summed_usage_carries_the_last_turns_timings(executed):
     reports = _usage_chunks(out)
     assert len(reports) == 1
     assert reports[0]["usage"]["total_tokens"] == 17
+    assert reports[0]["usage"]["context_tokens"] == 10
     assert reports[0]["timings"] == last
     assert not any('"timings"' in line for line in out if '"content"' in line)
 
@@ -335,13 +338,13 @@ _USAGE_NO_TIMINGS = "data: " + json.dumps(
 
 
 @pytest.mark.parametrize(
-    "answer_turn, total",
+    "answer_turn, total, context",
     [
-        pytest.param([_finish("stop"), _USAGE_NO_TIMINGS], 17, id = "usage-without-timings"),
-        pytest.param([_ANSWER, _finish("stop")], 7, id = "no-usage-chunk"),
+        pytest.param([_finish("stop"), _USAGE_NO_TIMINGS], 17, 10, id = "usage-without-timings"),
+        pytest.param([_ANSWER, _finish("stop")], 7, 7, id = "no-usage-chunk"),
     ],
 )
-def test_a_last_turn_without_timings_reports_none(executed, answer_turn, total):
+def test_a_last_turn_without_timings_reports_none(executed, answer_turn, total, context):
     turn_one = "data: " + json.dumps(
         {
             "choices": [],
@@ -364,6 +367,7 @@ def test_a_last_turn_without_timings_reports_none(executed, answer_turn, total):
     reports = _usage_chunks(_run(transport))
     assert len(reports) == 1
     assert reports[0]["usage"]["total_tokens"] == total
+    assert reports[0]["usage"]["context_tokens"] == context
     assert "timings" not in reports[0]
 
 

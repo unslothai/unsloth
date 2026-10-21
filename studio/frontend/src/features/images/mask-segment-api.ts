@@ -29,7 +29,7 @@ export async function getSegmenterStatus(signal?: AbortSignal): Promise<Segmente
   );
 }
 
-/** Start the background download of the SAM 3 weights. Progress is read back from the status route. */
+/** Start the background download of the active segmenter variant. Progress is read back from the status route. */
 export async function startSegmenterDownload(hfToken?: string): Promise<void> {
   await parseJson<unknown>(
     await authFetch(MASK_SEGMENT_ROUTES.download, {

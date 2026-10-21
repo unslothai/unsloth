@@ -4602,3 +4602,80 @@ def test_planner_opt_out_is_only_sent_where_the_model_has_one(research_home, mon
     external["providerType"] = "mistral"
     mistral = planner_payload(supportsReasoning = False, supportsReasoningOff = False)
     assert "enable_thinking" not in mistral and "reasoning_effort" not in mistral
+
+
+@pytest.fixture(params = ["--disable-tools", "keyless caller without the tool grant"])
+def tools_off(request):
+    from state import tool_policy
+    if request.param == "--disable-tools":
+        tool_policy.set_tool_policy(False)
+        yield
+        tool_policy.reset_tool_policy()
+    else:
+        with tool_policy.tools_force_disabled():
+            yield
+
+
+def test_no_run_is_set_going_while_tools_are_off(research_home, tools_off):
+    """The worker runs web_search and search_knowledge_base outside the request, so the caller's
+    tool policy is applied by the routes that hand it a run."""
+    from fastapi import HTTPException
+    from routes import research_runs as research_route
+
+    request = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace()))
+
+    def refused(route, *args):
+        with pytest.raises(HTTPException) as exc:
+            route(*args, request, current_subject = "alice")
+        return (exc.value.status_code, exc.value.detail) == (
+            403,
+            "Tools are disabled on this server",
+        )
+
+    assert refused(
+        research_route.create_research_run,
+        research_route.CreateResearchRun(
+            threadId = "thread-1",
+            userMessageId = "user-1",
+            inferenceRequest = {"model": "local-model"},
+        ),
+    )
+    assert not research_db.has_thread_claim("thread-1")
+
+    _create()
+    plan = research_db.set_plan("run-1", _plan())
+    approval = research_route.ApprovePlan(
+        planRevision = plan["planRevision"], planHash = plan["planHash"]
+    )
+    assert refused(research_route.approve_research_plan, "run-1", approval)
+    assert research_db.get_run("run-1")["status"] == "awaiting_approval"
+
+    # Stopping a run uses no tool.
+    assert research_route.cancel_research_run("run-1", request, "alice")["status"] == "cancelled"
+    assert refused(research_route.retry_research_run, "run-1")
+    assert research_db.get_run("run-1")["status"] == "cancelled"
+
+
+def test_worker_leaves_an_approved_run_unsearched_under_disable_tools(research_home, monkeypatch):
+    """A durable run outlives a restart, so one approved earlier is claimed under the new policy."""
+    from state import tool_policy
+
+    worker, supervisor = _bare_supervisor(monkeypatch)
+    _create(rag_scope = {"kind": "thread", "id": "thread-1"})
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    called = []
+
+    async def undecided(*args, **kwargs):
+        # Not a valid action, so each step falls back to the plan's next query.
+        return "noise", "", "stop", None
+
+    monkeypatch.setattr(supervisor, "_stream_completion", undecided)
+    monkeypatch.setattr(worker, "execute_tool", lambda name, *a, **k: called.append(name) or "")
+    monkeypatch.setattr(tool_policy, "_tool_policy", False)
+
+    asyncio.run(supervisor._process(research_db.claim_next(supervisor.worker_id)))
+
+    run = research_db.get_run("run-1")
+    assert called == []
+    assert (run["status"], run["error"]) == ("failed", "Tools are disabled on this server")

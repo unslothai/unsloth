@@ -273,6 +273,11 @@ from utils.security.hub_data_files import install as _guard_hub_data_files
 _guard_hub_data_files()
 del _guard_hub_data_files
 
+from utils.security.dataset_media import install as _guard_dataset_media
+
+_guard_dataset_media()
+del _guard_dataset_media
+
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
@@ -745,7 +750,7 @@ def banner_autofill_available(app_state, environ) -> bool:
     api_only = getattr(app_state, "api_only", None)
     if api_only is None:
         api_only = environ.get("UNSLOTH_API_ONLY") == "1"
-    # Desktop-owned api-only still serves the UI (and the autofill) to a loopback browser.
+    # Desktop-owned: the console gets the path, never the password (desktop logs land in bug reports).
     return not api_only or _desktop_owner() is not None
 
 
@@ -967,6 +972,8 @@ async def lifespan(app: FastAPI):
     _suppress_bootstrap = getattr(app.state, "suppress_bootstrap_injection", False)
     _created = storage.ensure_default_admin()
     app.state.bootstrap_password = None if _suppress_bootstrap else storage.get_bootstrap_password()
+    # Read by desktop-login, which cannot import this module.
+    app.state.desktop_owned = _desktop_owner() is not None
     # A tunnel launch runs the pre-bind gate first and that gate seeds the account, so
     # _created is False there and the whole banner would be skipped on exactly the launch
     # that needs it. requires_password_change: the gate may also have taken a new password
@@ -1759,6 +1766,11 @@ from utils.model_aliases import ModelAliasMiddleware  # noqa: E402
 
 app.add_middleware(ModelAliasMiddleware)
 
+# Idle auto-unload request tracker; added before MaxBodyMiddleware so only fully received requests count.
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
+
+app.add_middleware(LlamaKeepWarmMiddleware)
+
 app.add_middleware(
     MaxBodyMiddleware,
     max_bytes_getter = default_request_body_limit_bytes,
@@ -1770,11 +1782,6 @@ app.add_middleware(
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
     upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
-
-# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
-from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
-
-app.add_middleware(LlamaKeepWarmMiddleware)
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
@@ -2906,12 +2913,12 @@ def get_disk_space(
     is about to start.
 
     shutil.disk_usage is statvfs on Linux and macOS and GetDiskFreeSpaceExW on Windows, so this
-    is microseconds on every platform Studio runs on and needs no directory walk. Note that on
+    is microseconds on every platform Unsloth runs on and needs no directory walk. Note that on
     Windows it reports the quota available to the CALLING user, which is the number that decides
     whether the download fits, so that difference is the correct one.
 
     Measured at the models root rather than the filesystem root: those are different volumes
-    whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
+    whenever HF_HUB_CACHE, or the Unsloth root, sits on another disk, and the free space that
     matters is the one the bytes are going to.
 
     Both roots that receive bytes are measured, not just the hub one. HF_XET_CACHE is resolved
@@ -3091,7 +3098,14 @@ def get_hardware_info(
         # "5,3") would mislabel by array index.
         devices = get_backend_visible_gpu_info().get("devices", [])
         body["gpus"] = [
-            {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
+            {
+                "name": d.get("name"),
+                "vram_total_gb": d.get("memory_total_gb"),
+                # An iGPU's total is mostly borrowed system RAM; the About tab shows only its own carve-out.
+                "shared_memory": d.get("shared_memory") is True,
+                "unified_memory": d.get("unified_memory") is True,
+                "shared_memory_host_backed_gb": d.get("shared_memory_host_backed_gb"),
+            }
             for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
         ]
         body["llama_cpp"] = get_installed_llama_version()
@@ -3121,6 +3135,10 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
 
     # A local browser may belong to any account, including a deactivated one.
     if installation_has_managed_accounts():
+        return html_bytes, None
+
+    # The desktop shell never reads it, and any local process can fetch this page from loopback.
+    if _desktop_owner() is not None:
         return html_bytes, None
 
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)

@@ -511,3 +511,73 @@ def test_the_a14b_row_prices_both_experts_not_one():
     measured = video_family_prequant_resident_gb(fam, "nvfp4")
     assert measured == pytest.approx(16.2)
     assert measured > 0.25 * fam.bf16_components_gb[0]
+
+
+@pytest.mark.parametrize(
+    "parent",
+    [
+        "/data/h3_backup/models",
+        "/home/wan/models",
+        "/mnt/ltx-2/archive",
+        "/srv/flux.1/cache",
+        "C:\\Users\\h3\\models",
+        "/tmp/pytest-of-u/2.14_h3/test_x0",
+    ],
+)
+def test_a_parent_folder_keyword_does_not_pick_the_video_family(parent):
+    sep = "\\" if "\\" in parent else "/"
+    assert detect_video_family(sep.join([parent, "my-videos"])) is None
+    assert detect_video_family(sep.join([parent, "my-videos", "model-Q4_K_M.gguf"])) is None
+    assert (
+        detect_video_family(sep.join([parent, "my-videos", "transformer", "model.safetensors"]))
+        is None
+    )
+    ltx = detect_video_family(sep.join([parent, "ltx-2.3-gguf", "ltx-2.3-22b-dev-Q4_K_M.gguf"]))
+    assert ltx is not None and ltx.name == "ltx-2"
+
+
+def test_the_model_own_folder_or_file_still_names_the_video_family():
+    def name(path):
+        fam = detect_video_family(path)
+        return fam.name if fam else None
+
+    assert name("/data/models/plain/ltx-2-19b-dev-Q4_K_M.gguf") == "ltx-2"
+    assert name("/data/models/LTX-2-GGUF/model-Q4_K_M.gguf") == "ltx-2"
+    assert name("/data/models/LTX-2-GGUF/Q4_K_M/model.gguf") == "ltx-2"
+    assert name("/data/models/LTX-2") == "ltx-2"
+    assert name("/data/models/LTX-2/") == "ltx-2"
+    assert name("/data/models/LTX-2/weights/model.safetensors") == "ltx-2"
+    assert name("/data/models/LTX-2/checkpoints/model.safetensors") == "ltx-2"
+    assert (
+        name("/data/models/MiniMax-H3/transformer/diffusion_pytorch_model.safetensors")
+        == "minimax-h3"
+    )
+    assert name("/data/models/Wan2.2-T2V-A14B-Diffusers") == "wan2.2-t2v-a14b"
+    cache = "/home/h3/.cache/huggingface/hub/models--Lightricks--LTX-2/snapshots/0123abc"
+    assert name(cache) == "ltx-2"
+    assert name(cache + "/ltx-2-19b-dev-fp8.safetensors") == "ltx-2"
+    assert (
+        name(
+            "/home/ltx/.cache/huggingface/hub/models--org--clip/snapshots/0123abc/model.safetensors"
+        )
+        is None
+    )
+    assert name("MiniMaxAI/MiniMax-H3") == "minimax-h3"
+    assert name("unsloth/LTX-2.3-GGUF/ltx-2.3-22b-dev-Q4_K_M.gguf") == "ltx-2"
+
+
+def test_a_parent_folder_keyword_does_not_pick_the_video_defaults():
+    plain = default_video_generation_params("/data/plain/model.gguf", fallback = (7, 7.0))
+    assert plain == (7, 7.0)
+    for parent in ("/data/wan2.1/x", "/home/ltx/x", "/srv/distilled/x"):
+        assert (
+            default_video_generation_params(parent + "/plain/model.gguf", fallback = (7, 7.0))
+            == plain
+        )
+    assert default_video_generation_params(
+        "/data/x/wan2.1-t2v-14b-Q4_K_M.gguf", fallback = (7, 7.0)
+    ) == (20, 6.0)
+    assert (
+        default_video_generation_params("/data/x/ltx-2-19b-distilled/model.gguf", fallback = (7, 7.0))
+        != plain
+    )

@@ -463,7 +463,7 @@ def _drive_whisper_branch(
     monkeypatch.setattr(
         tmod,
         "DataCollatorSpeechSeq2SeqWithPadding",
-        lambda processor: lambda f: f,
+        lambda processor, **_: lambda f: f,
         raising = False,
     )
 

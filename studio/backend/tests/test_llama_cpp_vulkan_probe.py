@@ -205,6 +205,26 @@ def test_large_discrete_gpu_is_untouched(tmp_path):
     assert gpus == [(0, 47 * 1024, 48 * 1024)], gpus
 
 
+@pytest.mark.parametrize(
+    "free_mib, total_mib, is_igpu, expected_free",
+    [
+        # Intel's Windows driver reports a heap budget above the heap size.
+        (18 * 1024, 16 * 1024, 0, 16 * 1024),
+        (40 * 1024, 32 * 1024, 1, 32 * 1024),
+        (6 * 1024, 24 * 1024, 0, 6 * 1024),
+        (24 * 1024, 24 * 1024, 0, 24 * 1024),
+        (8 * 1024, 0, 1, 8 * 1024),
+    ],
+    ids = ["dgpu_over", "igpu_over", "dgpu_under", "dgpu_equal", "total_unknown"],
+)
+def test_vulkan_free_never_exceeds_total(tmp_path, free_mib, total_mib, is_igpu, expected_free):
+    binary = _make_vulkan_install(tmp_path)
+    rows = [_row(0, free_mib * MIB, is_igpu = is_igpu, total_bytes = total_mib * MIB, name = "GPU")]
+    with _mock_probe(rows):
+        (row,) = LlamaCppBackend._run_vulkan_probe(binary)
+    assert (row["free_mib"], row["total_mib"]) == (expected_free, total_mib)
+
+
 def test_inherited_visible_devices_mask_is_passed_through_to_probe(tmp_path, monkeypatch):
     # Mask passes through unchanged: ggml parses it in raw device space, not compact ordinals.
     binary = _make_vulkan_install(tmp_path)

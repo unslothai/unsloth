@@ -214,3 +214,57 @@ def test_arming_publishes_the_deadline():
     finally:
         timer.cancel()
         clear_bootstrap_deadline()
+
+
+def _flaky_storage(failures: int, requires_change: bool):
+    reads = []
+
+    def _requires_password_change(_username):
+        reads.append(1)
+        if len(reads) <= failures:
+            raise OSError("unable to open database file")
+        return requires_change
+
+    return SimpleNamespace(
+        DEFAULT_ADMIN_USERNAME = "unsloth",
+        requires_password_change = _requires_password_change,
+    )
+
+
+def test_deadline_retries_an_unreadable_storage(monkeypatch):
+    # A failed read is not "changed": the timer is one-shot, so giving up would drop the deadline for good.
+    monkeypatch.setattr("auth.bootstrap_timeout.STORAGE_RETRY_SECONDS", 0)
+    calls = []
+    result = enforce_bootstrap_password_deadline(
+        _flaky_storage(failures = 2, requires_change = True),
+        lambda: calls.append("shutdown"),
+        timeout_seconds = 3600,
+    )
+    assert result is True
+    assert calls == ["shutdown"]
+
+
+def test_unreadable_storage_does_not_stop_a_changed_password(monkeypatch):
+    monkeypatch.setattr("auth.bootstrap_timeout.STORAGE_RETRY_SECONDS", 0)
+    calls = []
+    result = enforce_bootstrap_password_deadline(
+        _flaky_storage(failures = 2, requires_change = False),
+        lambda: calls.append("shutdown"),
+        timeout_seconds = 3600,
+    )
+    assert result is False
+    assert calls == []
+
+
+def test_storage_unreadable_for_the_whole_window_fails_closed(monkeypatch):
+    # Unknown for the whole retry window is treated as unsecured, not as "changed".
+    monkeypatch.setattr("auth.bootstrap_timeout.STORAGE_RETRY_SECONDS", 0)
+    monkeypatch.setattr("auth.bootstrap_timeout.STORAGE_RETRY_WINDOW_SECONDS", 0)
+    calls = []
+    result = enforce_bootstrap_password_deadline(
+        _flaky_storage(failures = 10_000, requires_change = False),
+        lambda: calls.append("shutdown"),
+        timeout_seconds = 3600,
+    )
+    assert result is True
+    assert calls == ["shutdown"]

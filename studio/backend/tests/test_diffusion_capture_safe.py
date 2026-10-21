@@ -396,7 +396,7 @@ def test_qwen_image_21_is_declined_with_the_reason(fresh_cache):
     assert forward is None
     assert why == (
         "QwenImage21Transformer2DModel forward is not capture-safe (its pipeline passes the prefix KV "
-        "cache as a Python object on every step; the Studio fast step that replays decode steps from "
+        "cache as a Python object on every step; the Unsloth fast step that replays decode steps from "
         "tensors is not installed)"
     )
     Sub = type("Sub", (QwenImage21Transformer2DModel,), {"forward": lambda self, x: x})

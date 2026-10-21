@@ -14,7 +14,7 @@ far the largest unsigned surface, 75 PE files against 47 for CUDA, because it
 carries AMD's own TheRock runtime DLLs (`amdhip64_*.dll`, `rocblas.dll`,
 `hipblas.dll`, `amd_comgr.dll`, `origami.dll` and more) which ship unsigned.
 
-Users report Studio installing and launching, then failing to load a model, with
+Users report Unsloth installing and launching, then failing to load a model, with
 the failure clearing when Smart App Control is turned off and returning after a
 reboot. The dialog is:
 
@@ -127,14 +127,14 @@ cd scripts\windows_sac_probe
 .\sac-probe.ps1 -Stage revert  -Label custom-sac-on
 ```
 
-`run` needs the Studio password, always:
+`run` needs the Unsloth password, always:
 
 ```powershell
 $env:UNSLOTH_STUDIO_PASSWORD = 'your studio password'
 .\sac-probe.ps1 -Stage run -Label custom-sac-on
 ```
 
-On a Studio that has already been opened, that is the password you sign in
+On an Unsloth that has already been opened, that is the password you sign in
 with. On one that has never been opened, the bootstrap credential is still on
 disk and the scenario rotates it to the value you give here; the rotation is
 permanent and `revert` does not undo it, which is why there is no default. The
@@ -147,7 +147,7 @@ It is deliberately not passed as `--password`: an argument is readable from the
 process table by anything that can see it and is captured verbatim by
 process-creation auditing and EDR telemetry, for the whole length of a run that
 can take minutes. `unsloth_cli` reads `UNSLOTH_STUDIO_PASSWORD` itself and
-treats it as *set the initial password*, so a Studio that already has one
+treats it as *set the initial password*, so an Unsloth that already has one
 refuses to start with
 
 ```
@@ -158,10 +158,10 @@ initial password.
 which is exactly the case the variable is needed for. One name, two
 incompatible consumers.
 
-If Studio runs from a custom home (`UNSLOTH_STUDIO_HOME`), a portable root (`UNSLOTH_HOME`) or a custom runtime
+If Unsloth runs from a custom home (`UNSLOTH_STUDIO_HOME`), a portable root (`UNSLOTH_HOME`) or a custom runtime
 (`UNSLOTH_LLAMA_CPP_PATH`), set the same variables in the shell that runs the
-probe, so it inventories the runtime Studio actually loads and reads the logs
-Studio actually writes.
+probe, so it inventories the runtime Unsloth actually loads and reads the logs
+Unsloth actually writes.
 
 `prepare` runs `Update-MpSignature`; add `-SkipUpdates` to skip it. It does not
 upgrade packages unless you pass `-UpgradePackages`: `winget upgrade --all` changes
@@ -171,7 +171,7 @@ not part of the reversible run. The same goes for Defender's sample submission:
 which `revert` restores, but sets `SubmitSamplesConsent` only with `-SendSamples`,
 since a sample uploaded during the probe cannot be recalled.
 
-`prepare` restarts a Studio that is already running. Studio's startup is where the
+`prepare` restarts an Unsloth that is already running. Unsloth's startup is where the
 venv's native modules load, and those loads have to happen inside the event window
 and under the audit policy to be measured.
 
@@ -216,19 +216,19 @@ run `revert` again.
 
 ### On a machine with no Unsloth on it
 
-Nothing extra to do. `prepare` detects that Studio is absent and installs it with
+Nothing extra to do. `prepare` detects that Unsloth is absent and installs it with
 the documented command, then starts it and waits for it to answer:
 
 ```
 === Unsloth Studio ===
-Studio is not installed on this machine.
+Unsloth is not installed on this machine.
 
 === Install Unsloth Studio ===
 irm https://unsloth.ai/install.ps1 | iex
 ...
 managed interpreter: C:\Users\you\.unsloth\studio\unsloth_studio\Scripts\python.exe
-starting Studio on port 8888
-Studio answering on port 8888 after 65s
+starting Unsloth on port 8888
+Unsloth answering on port 8888 after 65s
 ```
 
 The install happens **after** the event log window opens, on purpose: installing
@@ -236,7 +236,7 @@ is what downloads the llama.cpp bundle, and first launch is what loads it, so
 both are inside the window `collect` exports. On an affected machine the block
 may well appear during `prepare` rather than during `run`.
 
-Studio is started through the managed interpreter, not the generated
+Unsloth is started through the managed interpreter, not the generated
 `unsloth.exe`. Windows materialises that console script as an unsigned PE and
 Application Control denies it (unslothai/unsloth#8490) while the signed
 interpreter beside it keeps running, so on exactly the machines this probe
@@ -249,7 +249,7 @@ python -X utf8 -I -m unsloth_cli studio -p 8888
 ```
 
 Pass `-SkipInstall` to refuse to install, or `-Port` if 8888 is taken. `run`
-re-checks and restarts an installed Studio too, since a machine may have been
+re-checks and restarts an installed Unsloth too, since a machine may have been
 rebooted between stages, which is itself part of the reported behaviour; it
 never installs one, so a `prepare -SkipInstall` stays in force. `run` also
 evicts the model before the measured load, because a model already resident
@@ -259,15 +259,15 @@ would make the load a no-op that loads no PE inside the window.
 
 | stage | what it changes | how it is undone |
 | --- | --- | --- |
-| `prepare` | records a baseline; updates packages and Defender signatures; turns Defender real-time, MAPS advanced, cloud block level high and PUA on; raises the CodeIntegrity log to 64 MB; applies the audit policy if given (a pre-existing policy with the same GUID is saved first); installs Unsloth Studio if it is missing, then starts it | `revert` (Studio is left installed) |
-| `run` | nothing on the machine beyond restarting Studio if it stopped; inventories signatures and drives Studio (rotates a never-used bootstrap password to yours, see above) | n/a |
+| `prepare` | records a baseline; updates packages and Defender signatures; turns Defender real-time, MAPS advanced, cloud block level high and PUA on; raises the CodeIntegrity log to 64 MB; applies the audit policy if given (a pre-existing policy with the same GUID is saved first); installs Unsloth Studio if it is missing, then starts it | `revert` (Unsloth is left installed) |
+| `run` | nothing on the machine beyond restarting Unsloth if it stopped; inventories signatures and drives Unsloth (rotates a never-used bootstrap password to yours, see above) | n/a |
 | `collect` | nothing; exports events and zips the evidence | n/a |
-| `revert` | removes the audit policy (or restores the pre-existing one), restores the CodeIntegrity log settings and the Defender settings from the baseline, and regrants the invoking user access to the Studio trees (below); the EFI partition is never left mounted | n/a |
+| `revert` | removes the audit policy (or restores the pre-existing one), restores the CodeIntegrity log settings and the Defender settings from the baseline, and regrants the invoking user access to the Unsloth trees (below); the EFI partition is never left mounted | n/a |
 
-Because every stage is elevated, a Studio that `prepare` installs is installed
+Because every stage is elevated, an Unsloth that `prepare` installs is installed
 **as administrator**, and the trees its installer creates (`llama.cpp`,
 `whisper.cpp`, `node`, `.cache`) come out owned by `BUILTIN\Administrators`.
-The user's own non-elevated Studio can then fail to read its own runtime; on a
+The user's own non-elevated Unsloth can then fail to read its own runtime; on a
 machine where `prepare` did the install, `llama.cpp`, `whisper.cpp` and `node`
 all refused `Get-Acl` to the owning user afterwards. This is a side effect of
 running elevated at all, not something `prepare` sets, so there is no baseline
@@ -303,7 +303,7 @@ To pin a specific runtime for a cell, the runtime has to be **installed** with
 that pin **before `prepare`**.
 `UNSLOTH_LLAMA_RELEASE_TAG` is read by the installer only, and `run`
 never installs. The order is not a formality:
-`prepare` opens the event window and then installs or restarts Studio, so a
+`prepare` opens the event window and then installs or restarts Unsloth, so a
 runtime swapped in afterwards leaves loads from *both* releases inside one
 window. `collect` scopes those events by directory, and the installer overwrites
 the same managed `llama.cpp` directory, while the signature inventory hashes only
@@ -313,7 +313,7 @@ comparison the matrix exists to make.
 
 ```powershell
 $env:UNSLOTH_LLAMA_RELEASE_TAG = 'b10715-mix-86bd2d3'   # an older, more established build
-# re-run the Studio installer (studio\setup.ps1) so it fetches that release, then:
+# re-run the Unsloth Studio installer (studio\setup.ps1) so it fetches that release, then:
 .\sac-probe.ps1 -Stage prepare -Label custom-b10715-sac-on
 .\sac-probe.ps1 -Stage run     -Label custom-b10715-sac-on
 ```
@@ -323,7 +323,7 @@ release is installed. A second `prepare` on the same label reopens the window an
 deletes the previous one's evidence, and it keeps the baseline the first pass
 captured, so `revert` still restores the machine as it was before the first pass.
 
-For the upstream row, point Studio at an upstream build through its custom
+For the upstream row, point Unsloth at an upstream build through its custom
 llama.cpp folder setting (or `UNSLOTH_LLAMA_CPP_PATH`) and restart it, again
 before `prepare` and for the same reason. Either way, check
 `signature-inventory.json` afterwards: the SHA-256 of each file is what says
@@ -333,16 +333,16 @@ which build a cell actually exercised, not the label.
 
 `collect` writes a zip to `%USERPROFILE%\unsloth-sac-probe\`. Inside:
 
-- `runtime-selection.json`: the llama-server Studio resolved, in its own order (`LLAMA_SERVER_PATH`, `UNSLOTH_LLAMA_CPP_PATH`, the folder selected in Studio's settings, the managed default). The inventory is of that build.
+- `runtime-selection.json`: the llama-server Unsloth resolved, in its own order (`LLAMA_SERVER_PATH`, `UNSLOTH_LLAMA_CPP_PATH`, the folder selected in Unsloth's settings, the managed default). The inventory is of that build.
 - `signature-inventory.csv` and `.json`: every PE under that runtime with its Authenticode `Status`, `StatusMessage`, signer subject, thumbprint and SHA-256. Record `Status`, not merely whether a certificate is present: an unsigned file and one whose chain did not build both report `UnknownError`, and `StatusMessage` is what separates them
 - `venv-signature-inventory.csv` and `.json`: the same for every PE in the `unsloth_studio` venv, which is around 25 times as many files and is where the only enforced block so far actually landed. `run` also prints the ten worst packages by unsigned count
-- `scenario-status.json`: whether the Studio scenario ran and its exit code. Read this **before** reading the event count. A scenario that never authenticated or never loaded a model produces an empty window, and an empty window looks identical to a clean allow. `collect` warns loudly when this happened, and refuses to imply a result
+- `scenario-status.json`: whether the Unsloth scenario ran and its exit code. Read this **before** reading the event count. A scenario that never authenticated or never loaded a model produces an empty window, and an empty window looks identical to a clean allow. `collect` warns loudly when this happened, and refuses to imply a result
 - `code-integrity-events.json` and `.txt`: events 3033, 3076, 3077, 3089 and 3090 to 3099 in the run window, each tagged with a `Scope` of `llama.cpp`, `venv` or `other`. The channel is machine-wide, so unrelated software lands in the same window: one run picked up seven 3076 events from a Git Bash session (`msys-2.0.dll`, `head.exe`, `tail.exe`). `collect` counts only the Unsloth scopes in its headline and reports the rest separately; nothing is dropped from the export
 - `CodeIntegrity-Operational.evtx`: the raw log, bounded to the same window as the JSON
 - `defender-query-error.txt`: present only when the Defender detection query itself failed. If you see this file, the absence of `defender-detections.json` is not a clean window, it is an uncollected one
 - `scenario-results.json`: every HTTP call with its duration, plus the status-poll summary
-- `studio-logs\`: Studio's own logs, the redirected Studio stdout from a start the probe did, and the scenario's console output, all passed through Studio's log redactor. The raw copies stay in `raw-logs\` on the machine and are not archived
-- `studio-logs\`: Studio's own backend and llama-server logs
+- `studio-logs\`: Unsloth's own logs, the redirected Unsloth stdout from a start the probe did, and the scenario's console output, all passed through Unsloth's log redactor. The raw copies stay in `raw-logs\` on the machine and are not archived
+- `studio-logs\`: Unsloth's own backend and llama-server logs
 - `baseline.json`, `sac-state-after.json`: what the machine looked like before and after
 
 **Grade the events correctly.** They are not interchangeable:
@@ -351,7 +351,7 @@ which build a cell actually exercised, not the label.
 - **3076** is audit only: "would have been blocked". Strong, but not enforcement.
 - **3089** carries the signature detail for a block. Correlate it to a 3077 by `ActivityID`, never by timestamp alone.
 - **3090 to 3092** are allow and origin context, and prove nothing on their own.
-- Events scoped `other` are somebody else's binaries and say nothing about Studio. Do not quote a raw total off the evtx; read the scoped counts.
+- Events scoped `other` are somebody else's binaries and say nothing about Unsloth. Do not quote a raw total off the evtx; read the scoped counts.
 
 Also keep "unsigned" and "low reputation" apart. Smart App Control may allow a
 validly signed file whose reputation is inconclusive, which is the behaviour the

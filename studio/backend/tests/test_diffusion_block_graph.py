@@ -163,6 +163,56 @@ def test_a_host_tensor_input_is_never_recorded():
     handle.free()
 
 
+def test_a_block_graph_keys_on_the_roots_branch_flag():
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(masked = False)
+    root._unsloth_graph_key_extra = lambda: root.masked
+
+    def compute(x):
+        y = block.lin(x)
+        return y * 0.5 if root.masked else y
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        root.masked = True
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 2
+
+
+def test_a_block_graph_runs_eager_while_a_step_cache_is_on():
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(_unsloth_step_cache = None)
+
+    def compute(x):
+        y = block.lin(x)
+        return (
+            y * 0.5 if root._unsloth_step_cache else y
+        )  # what the cache hooks change inside the forward
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        replays = graph.stats["replays"]
+        root._unsloth_step_cache = "fbcache@0.12"
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1 and graph.stats["replays"] == replays
+
+
 def test_weight_placement_is_none_while_a_weight_is_on_the_host():
     view = bg._WeightView(Block())
     assert view.placement(None) is None
@@ -836,3 +886,17 @@ def test_torchao_int8_weights_stream_through_the_slot_ring_with_graphs():
     assert handle.stats["replays"] > 0 and handle.stats["fallbacks"] == 0
     assert pf.stats["slot_fills"] > 0
     handle.free()
+
+
+def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
+    """Per-block graphs key on the block inputs, which carry the text stream: a denoiser whose text length follows
+    the prompt would record every block again for each new prompt length, so it runs compiled ungraphed."""
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    net = type("QwenImageTransformer2DModel", (Net,), {})(blocks = 3)
+    pipe = _pipe_with(net)
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True, opt_in = False)
+    assert handles == () and not applied["cuda_graph"]
+    assert cg.status_reason(pipe, False).startswith(cg.PROMPT_LENGTH_REASON)
+    assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
