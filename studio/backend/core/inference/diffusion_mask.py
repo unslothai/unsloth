@@ -1,20 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inpaint mask settings: AUTOMATIC1111's "Mask blur" and "Inpaint area: Only masked".
+"""Inpaint mask settings: AUTOMATIC1111's "Mask blur" and "Inpaint area: Only masked" (diffusers padding_mask_crop).
 
-Mask blur is a Gaussian blur of the mask before the inpaint pipeline sees it (diffusers
-``VaeImageProcessor.blur`` is exactly ``PIL.ImageFilter.GaussianBlur(radius)``). "Only masked"
-is diffusers ``padding_mask_crop``: the pipeline crops the masked region plus padding, renders
-it at full resolution and pastes it back over the source. Unset / 0 / False leave the request
-exactly as before."""
+Unset / 0 / False leave the request exactly as before."""
 
 from __future__ import annotations
 
 import inspect
 from typing import Any, Optional
 
-# A1111's "Only masked padding, pixels" default (modules/processing.py, infotext "Masked area padding").
+# A1111's "Only masked padding, pixels" default.
 DEFAULT_INPAINT_PADDING = 32
 
 ONLY_MASKED_UNSUPPORTED_MSG = (

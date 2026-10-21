@@ -26,18 +26,15 @@ test("the Steps slider reaches every model's default: Krea-2-raw ships 52", () =
   assert.equal(krea2Raw, 52);
   assert.ok(stepsSliderMax(krea2Raw, krea2Raw) >= krea2Raw);
   assert.equal(stepsSliderMax(krea2Raw, krea2Raw), STEPS_REQUEST_MAX);
-  // A short-schedule model keeps today's 50.
   assert.equal(
     stepsSliderMax(defaultsFor("black-forest-labs/FLUX.1-schnell").steps, 4),
     STEPS_SLIDER_MAX,
   );
   assert.equal(stepsSliderMax(25, 25), 50);
   assert.equal(stepsSliderMax(30, 30), 60);
-  // An imported or restored value above the top widens it, never past the request's 100.
   assert.equal(stepsSliderMax(8, 80), 80);
   assert.equal(stepsSliderMax(8, 150), STEPS_REQUEST_MAX);
   assert.equal(stepsSliderMax(Number.NaN, 4), STEPS_SLIDER_MAX);
-  // Every shipped default fits on the slider.
   for (const id of [
     "krea-2-raw",
     "lumina",
@@ -137,7 +134,6 @@ test("inpaint mask options send nothing at their defaults", () => {
     },
   );
   const page = readSrc("features/images/images-page.tsx");
-  // Only the inpaint branch builds them; Extend (outpaint) keeps its own hard mask.
   assert.match(
     page,
     /condStrength = strength;\n\s+condInpaint = inpaintMaskRequestFields\(/,

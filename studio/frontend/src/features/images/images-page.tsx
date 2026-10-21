@@ -1660,7 +1660,6 @@ export function ImagesPage({
     guidance: number;
   } | null>(null);
   const [seed, setSeed] = useState("");
-  // Inpaint mask options; the defaults send nothing (lib/inpaint-options.ts).
   const [maskBlur, setMaskBlur] = useState(MASK_BLUR_DEFAULT);
   const [inpaintOnlyMasked, setInpaintOnlyMasked] = useState(false);
   const [inpaintPadding, setInpaintPadding] = useState(INPAINT_PADDING_DEFAULT);
@@ -2791,10 +2790,8 @@ export function ImagesPage({
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
-  // One restore path for a dropped image and pasted AUTOMATIC1111 / Forge / Civitai text.
   const applyImportedRecipe = useCallback(
     (recipe: ImportedRecipe) => {
-      // `<lora:name:weight>` tags select the installed LoRA of that file name.
       const tagged = matchLoraTags(recipe.lora_tags, availableLoras);
       const settings = recipeSettings(
         tagged.loras.length > 0
@@ -2904,7 +2901,6 @@ export function ImagesPage({
     },
     [applyImportedRecipe],
   );
-  // Paste generation parameters: the text AUTOMATIC1111, Forge and Civitai copy, same parser as a drop.
   const importSettingsFromText = useCallback(
     (text: string): boolean => {
       const recipe = pastedParameters(text);

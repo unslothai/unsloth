@@ -51902,9 +51902,7 @@ def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Option
 
 
 def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
-    """``mask_blur`` / ``inpaint_only_masked`` / ``inpaint_padding`` for an engine whose generate()
-    takes them (diffusers only). Only the set ones are forwarded, so an untouched request calls
-    generate() exactly as before; the other engines refuse a mask altogether."""
+    """Inpaint mask kwargs generate() accepts; only the set ones, so an untouched request is unchanged."""
     try:
         import inspect
         params = inspect.signature(generate).parameters
@@ -52478,7 +52476,6 @@ async def _generate_diffusion_image_run(
                         "localized_edit": result.get("localized_edit"),
                         "sampler": result.get("sampler"),
                         "schedule_type": result.get("schedule_type"),
-                        # From the engine: set only when the inpaint actually applied them.
                         **{
                             k: result[k]
                             for k in ("mask_blur", "inpaint_only_masked", "inpaint_padding")

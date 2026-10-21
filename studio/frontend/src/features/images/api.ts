@@ -244,7 +244,6 @@ export interface DiffusionGenerateRequest {
   init_image?: string;
   mask_image?: string;
   strength?: number;
-  // Inpaint only: mask blur radius px (0-64), "Only masked" crop + its padding px (0-256, default 32).
   // Absent = today's behaviour; only_masked is refused (400) unless supports_inpaint_only_masked.
   mask_blur?: number;
   inpaint_only_masked?: boolean;
@@ -359,7 +358,6 @@ export interface GalleryImage {
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
   prompt_enhancement?: PromptEnhancement | null;
-  // Inpaint mask options, recorded only when set.
   mask_blur?: number | null;
   inpaint_only_masked?: boolean | null;
   inpaint_padding?: number | null;

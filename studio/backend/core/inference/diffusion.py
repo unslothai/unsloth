@@ -12069,8 +12069,7 @@ class DiffusionBackend:
         live_preview: Optional[bool] = None,
         sampler: Optional[str] = None,
         schedule_type: Optional[str] = None,
-        # Inpaint only (init + mask): Gaussian mask blur radius px, and "Only masked" (diffusers padding_mask_crop)
-        # with its padding (None = 32). None / 0 / False keep the plain inpaint call.
+        # Inpaint only: None / 0 / False keep the plain inpaint call.
         mask_blur: Optional[int] = None,
         inpaint_only_masked: Optional[bool] = None,
         inpaint_padding: Optional[int] = None,

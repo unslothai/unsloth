@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inpaint "Mask blur" / "Only masked" through Studio's real diffusers backend with the tiny SDXL
-pipeline (hf-internal-testing/tiny-stable-diffusion-xl-pipe, ~50 MB, random weights). The inpaint
-pipeline is StableDiffusionXLInpaintPipeline built by from_pipe, exactly as a real SDXL load."""
+"""Inpaint "Mask blur" / "Only masked" through Studio's real diffusers backend with tiny SDXL."""
 
 from __future__ import annotations
 
@@ -73,8 +71,7 @@ def backend():
 
 @pytest.fixture
 def spy(monkeypatch):
-    """Record every StableDiffusionXLInpaintPipeline call's mask + padding_mask_crop. wraps keeps
-    the signature, so Studio's call_params gate sees the real parameters."""
+    """Record every StableDiffusionXLInpaintPipeline call's mask + padding_mask_crop; wraps keeps the signature."""
     calls = []
     cls = diffusers.StableDiffusionXLInpaintPipeline
     original = cls.__call__
@@ -139,7 +136,6 @@ def test_mask_blur_changes_mask_and_output(backend, spy):
     blurred = spy[-1]["mask"]
     assert out["mask_blur"] == 8
     assert not np.array_equal(blurred, ref_mask)
-    # Soft edges: intermediate values appear and the hard square's interior/exterior survive.
     assert len(np.unique(ref_mask)) == 2 and len(np.unique(blurred)) > 2
     assert img.shape == ref.shape
     assert int(np.abs(img - ref).max()) > 0
@@ -152,7 +148,6 @@ def test_only_masked_crops_and_keeps_source_size(backend, spy):
     assert (out["inpaint_only_masked"], out["inpaint_padding"]) == (True, 32)
     assert img.shape == (SIZE, SIZE, 3)
     assert int(np.abs(img - ref).max()) > 0
-    # Pasted back over the source: far outside mask + padding the output is the source.
     src = np.asarray(_source(), dtype = np.int16)
     assert int(np.abs(img[:8, :8] - src[:8, :8]).max()) <= 2
     _, img16 = _render(backend, inpaint_only_masked = True, inpaint_padding = 16)

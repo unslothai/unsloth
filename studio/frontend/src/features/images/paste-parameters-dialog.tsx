@@ -27,7 +27,6 @@ export function PasteParametersDialog({
   onOpenChange: (open: boolean) => void;
   text: string;
   onTextChange: (text: string) => void;
-  /** True when the text parsed and the form was filled. */
   onApply: (text: string) => boolean;
 }) {
   const apply = () => {

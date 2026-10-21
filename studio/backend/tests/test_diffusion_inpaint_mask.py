@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inpaint "Mask blur" and "Inpaint area: Only masked" (AUTOMATIC1111 semantics), no GPU.
-
-Unset / 0 / False must leave the inpaint call exactly as before; the real-pipeline pixel checks
-live in test_diffusion_inpaint_mask_sdxl.py."""
+"""Inpaint "Mask blur" and "Inpaint area: Only masked" (AUTOMATIC1111 semantics), no GPU."""
 
 from __future__ import annotations
 
@@ -160,7 +157,6 @@ def test_a1111_parameters_text():
     assert "Mask blur: 4, Inpaint area: Only masked, Masked area padding: 32" in text
 
 
-# --- Through DiffusionBackend.generate with the fake diffusers runtime ---
 
 
 class _CropInpaintPipe(_FakeInpaintPipe):

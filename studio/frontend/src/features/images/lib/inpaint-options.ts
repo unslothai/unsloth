@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// AUTOMATIC1111's inpaint "Mask blur" and "Inpaint area: Only masked" + "Only masked padding"
-// (modules/processing.py:1563-1569), sent as the backend's mask_blur / inpaint_only_masked /
-// inpaint_padding. The defaults send nothing, so an untouched form makes today's exact request.
+// A1111 inpaint mask options (modules/processing.py:1563-1569); the defaults send nothing.
 export const MASK_BLUR_DEFAULT = 0;
 export const MASK_BLUR_MAX = 64;
-// A1111's default "Only masked padding, pixels".
 export const INPAINT_PADDING_DEFAULT = 32;
 export const INPAINT_PADDING_MAX = 256;
 
@@ -22,8 +19,7 @@ export interface InpaintMaskRequestFields {
   inpaint_padding?: number;
 }
 
-/** Request fields for an inpaint run: only what differs from the default, and "Only masked" only
- *  when the loaded model's inpaint pipeline can crop to the mask. */
+/** Only non-default fields; "Only masked" only when the pipeline supports it. */
 export function inpaintMaskRequestFields(
   options: InpaintMaskOptions,
   supportsOnlyMasked: boolean,

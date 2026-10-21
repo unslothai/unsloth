@@ -607,7 +607,6 @@ function loraTag(body: string): LoraTag | null {
     : { name, weight };
 }
 
-/** The prompt without its extra-network tags, plus the LoRA tags and any other network named. */
 export function extractExtraNetworks(prompt: string): {
   prompt: string;
   loras: LoraTag[];
@@ -628,7 +627,6 @@ export function extractExtraNetworks(prompt: string): {
     },
   );
   if (!found) return { prompt, loras, other };
-  // Tidy what the tags leave behind: doubled separators and spaces, a dangling comma.
   const tidy = stripped
     .split("\n")
     .map((line) =>
@@ -669,8 +667,7 @@ function isSettingsLine(
   );
 }
 
-/** Pasted text: an Unsloth recipe (JSON) or AUTOMATIC1111 text WITH its settings line, since any
- *  other text would parse as a bare prompt. */
+/** Requires A1111's settings line, else any text would parse as a bare prompt. */
 export function pastedParameters(text: string): ImportedRecipe | null {
   const trimmed = text.trim();
   if (trimmed.startsWith("{")) return recipeJson(trimmed);
@@ -680,8 +677,7 @@ export function pastedParameters(text: string): ImportedRecipe | null {
     : null;
 }
 
-/** Paste into the prompt box that is a whole parameters block (a prompt plus a Steps line with a
- *  seed, sampler or CFG), so it fills the form rather than landing as prompt text. */
+/** A prompt-box paste that is a whole parameters block (Steps line with seed, sampler or CFG). */
 export function isGenerationParametersPaste(text: string): boolean {
   const last = text.trim().replace(/\r\n?/g, "\n").split("\n").pop() ?? "";
   const keys = new Set(a1111Fields(last).map(([k]) => k.toLowerCase()));
@@ -692,9 +688,7 @@ export function isGenerationParametersPaste(text: string): boolean {
   );
 }
 
-/** AUTOMATIC1111 / Forge / Civitai `parameters` text (modules/infotext_utils.py:234
- *  parse_generation_parameters): prompt, optional `Negative prompt:` lines, then a `Key: value, ...`
- *  line. Shared by image drop and Paste generation parameters. */
+/** AUTOMATIC1111 / Forge / Civitai `parameters` text (modules/infotext_utils.py:234). */
 export function parseA1111Parameters(text: string): ImportedRecipe | null {
   const lines = text.replace(/\r\n?/g, "\n").trim().split("\n");
   if (lines.length === 0) {
@@ -744,7 +738,6 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       out.variation_seed = n;
     else if (key === "variation seed strength" && n !== undefined)
       out.variation_strength = n;
-    // Inpaint settings (modules/processing.py:1563-1569 writes them for img2img inpaint).
     else if (key === "mask blur" && n !== undefined) out.mask_blur = n;
     else if (key === "inpaint area")
       out.inpaint_only_masked = /only masked/i.test(value);
@@ -854,7 +847,6 @@ export interface RestorableRecipe {
   // The prompt upsampler's caption and outcome; restore decides the Enhance prompt toggle from them.
   enhanced_prompt?: string | null;
   prompt_enhancement?: "applied" | "off" | "unavailable" | "failed" | null;
-  // Inpaint: mask blur px, "Only masked" area and its padding px (A1111's Inpaint area).
   mask_blur?: number;
   inpaint_only_masked?: boolean;
   inpaint_padding?: number;
@@ -912,8 +904,7 @@ export const INFO_RECIPE_KEYS = [
 /** Matches RECIPE_SCHEMA_VERSION in core/inference/image_gallery.py. */
 export const RECIPE_SCHEMA_VERSION = 1;
 
-/** Read from AUTOMATIC1111 text but not sent by this build: `importNotApplied` names them, and
- *  `lora_tags` is resolved against the installed LoRAs by the page. */
+/** Read from AUTOMATIC1111 text but not sent by this build. */
 export const PENDING_RECIPE_KEYS = [
   "clip_skip",
   "cfg_rescale",
@@ -946,7 +937,6 @@ export function unknownRecipeKeys(r: ImportedRecipe): string[] {
   });
 }
 
-/** Settings an AUTOMATIC1111 / Forge / Civitai text carried that this build cannot apply, by name. */
 export function importNotApplied(r: ImportedRecipe): string[] {
   const out: string[] = [];
   const clipSkip = num(r.clip_skip);
@@ -1062,7 +1052,6 @@ export function recipeSettings(
       r.prompt_enhancement === "failed"
         ? r.prompt_enhancement
         : null,
-    // Within the request's bounds (mask_blur 0-64, inpaint_padding 0-256).
     mask_blur: clamp(int(r.mask_blur), 0, 64),
     inpaint_only_masked:
       typeof r.inpaint_only_masked === "boolean"
@@ -1081,8 +1070,7 @@ const loraKey = (name: string) =>
     .pop()
     ?.toLowerCase() ?? "";
 
-/** Resolve `<lora:name:weight>` tags against the installed LoRAs by file name (the tag carries
- *  A1111's file stem), weights clamped to the request's 0-2. Unmatched names are returned. */
+/** Resolve `<lora:name:weight>` tags against the installed LoRAs by file stem; returns unmatched names. */
 export function matchLoraTags(
   tags: unknown,
   available: readonly { id: string; display_name: string; source?: string }[],

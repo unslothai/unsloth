@@ -48,7 +48,6 @@ test("a Civitai block parses: legacy sampler name, JSON values with commas, quot
     { name: "add-detail-xl", weight: 0.8 },
     { name: "missing_style", weight: 1 },
   ]);
-  // The JSON list's inner commas did not split it into fake fields, and info keys are not reported.
   assert.equal(r.parameters_not_applied, undefined);
   // Clip skip 2 is what SDXL already renders, so nothing is reported for it.
   assert.deepEqual(importNotApplied(r), []);
@@ -88,7 +87,6 @@ test("Clip skip, CFG rescale, variation seed and hires keys are read and named a
     "Hires steps": "10",
     "Hires upscaler": "R-ESRGAN 4x+",
   });
-  // The hires pass owns the denoising strength: not restored as img2img.
   assert.equal(r.strength, undefined);
   assert.equal(r.workflow, undefined);
   assert.deepEqual(importNotApplied(r), [
@@ -99,7 +97,6 @@ test("Clip skip, CFG rescale, variation seed and hires keys are read and named a
     "VAE: sdxl_vae.safetensors",
     "ADetailer model: face_yolov8n.pt",
   ]);
-  // Every key the parser writes is known, so nothing is reported twice under a raw key name.
   assert.deepEqual(unknownRecipeKeys(r), []);
   for (const label of [
     "RescaleCFG: 0.5",
@@ -156,7 +153,6 @@ test("inpaint mask blur, only-masked area and padding restore within the request
   assert.equal(wild.mask_blur, 64);
   assert.equal(wild.inpaint_padding, 0);
   assert.equal(wild.inpaint_only_masked, undefined);
-  // An older recipe without them leaves the form alone.
   const old = recipeSettings({ prompt: "p" }, DEFAULTS);
   assert.equal(old.mask_blur, undefined);
   assert.equal(old.inpaint_only_masked, undefined);
@@ -174,7 +170,6 @@ test("LoRA tags: positional and named weights, other networks stripped and repor
     { name: "d", weight: 0.3, unet_weight: 0.6 },
   ]);
   assert.deepEqual(r.other, ["<hypernet:h:1>"]);
-  // A prompt without tags comes back untouched, spacing and all.
   const plain = "a  cat ,, on a mat";
   assert.equal(extractExtraNetworks(plain).prompt, plain);
   const parsed = parseA1111Parameters("cat <hypernet:h:1>\nSteps: 20, Seed: 1");
@@ -211,7 +206,6 @@ test("LoRA tags select installed LoRAs by file name; the rest are named", () => 
     "add-detail-xl:0.8",
     "styles/Pixel_Art.safetensors:2",
   ]);
-  // Hub catalog entries are not matched by a Civitai file name.
   assert.deepEqual(m.unmatched, ["krea2-retroanime", "missing", "two"]);
   assert.deepEqual(m.notes, ["LoRA pixel_art weight 3 (clamped to 2)"]);
   assert.deepEqual(matchLoraTags(undefined, available), {
@@ -219,7 +213,6 @@ test("LoRA tags select installed LoRAs by file name; the rest are named", () => 
     unmatched: [],
     notes: [],
   });
-  // Matched LoRAs reach the restored form through the same recipe path as a recipe's own LoRAs.
   const settings = recipeSettings({ prompt: "p", loras: m.loras }, DEFAULTS);
   assert.deepEqual(settings.loras, [
     "add-detail-xl:0.8",
@@ -231,24 +224,20 @@ test("pasted text needs a settings line; a bare prompt is not parameters", () =>
   assert.equal(pastedParameters("just a cat on a mat"), null);
   assert.equal(pastedParameters("style: noir, mood: dark, light: low"), null);
   assert.equal(pastedParameters("a cat\nSteps: 20")?.steps, 20);
-  // AUTOMATIC1111's 3-field rule, with a known key.
   assert.equal(
     pastedParameters("a cat\nSampler: Euler, CFG scale: 7, Seed: 3")?.seed,
     3,
   );
-  // CRLF from a Windows clipboard.
   const crlf = pastedParameters(
     "a cat\r\nNegative prompt: dog\r\nSteps: 12, Seed: 9",
   );
   assert.equal(crlf?.negative_prompt, "dog");
   assert.equal(crlf?.steps, 12);
-  // An Unsloth recipe pasted as JSON loads like the file's.
   assert.equal(
     pastedParameters(JSON.stringify({ prompt: "x", steps: 4 }))?.steps,
     4,
   );
   assert.equal(pastedParameters("{not json"), null);
-  // Paste and drop share one parser.
   assert.deepEqual(
     pastedParameters(CIVITAI),
     importedRecipe({ parameters: CIVITAI }),

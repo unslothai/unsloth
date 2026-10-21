@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// "Reuse last seed" (AUTOMATIC1111's recycle button) needs only these fields of a gallery record.
 interface SeededImage {
   seed: number;
   batch_seed?: number | null;
@@ -25,7 +24,6 @@ export function lastSeedOf(run: readonly SeededImage[]): number | null {
   return null;
 }
 
-/** The seed "Reuse last seed" fills in: this session's last run, else the newest record in the gallery. */
 export function reusableSeed(
   sessionSeed: number | null,
   gallery: readonly SeededImage[],
