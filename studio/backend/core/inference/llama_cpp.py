@@ -29365,8 +29365,13 @@ class LlamaCppBackend:
                             caps = server_caps,
                             extra_args = extra_args,
                             model_size_fit = model_size_fit,
+                            # The drafter's reserve too, as _apple_footprint_mib charges it.
                             need_at_ctx = (
-                                (_kv_bytes(effective_ctx) + _cc_bytes(effective_ctx))
+                                (
+                                    _kv_bytes(effective_ctx)
+                                    + _cc_bytes(effective_ctx)
+                                    + _mtp_bytes(effective_ctx)
+                                )
                                 if effective_ctx > 0
                                 else None
                             ),
@@ -34540,6 +34545,9 @@ class LlamaCppBackend:
                             if not self._host_offload_warning_opted_out():
                                 _apu_ram_msg = _retry_apu_msg
                                 self._record_load_warning(_retry_apu_msg)
+                        # Before pricing: the resident-table verdict was for the crashed
+                        # device set, and a stale --lazy-mode off charges the table to RAM.
+                        cmd = self._drop_managed_lazy_mode(cmd, "device fallback")
                         _retry_host_msg = self._launch_host_shortfall_message(
                             cmd, _retry_rows, env, avail_mib = _retry_host_avail_mib
                         )
@@ -34553,7 +34561,6 @@ class LlamaCppBackend:
                         # llama.cpp's auto back, as the --fit on and CPU fallbacks do.
                         # Only Unsloth's own tokens; a user's --load-mode is theirs.
                         _fit_mode_left_cmd = bool(self._fit_load_mode_flags)
-                        cmd = self._drop_managed_lazy_mode(cmd, "device fallback")
                         if self._fit_load_mode_flags:
                             cmd = _without_subsequence(cmd, self._fit_load_mode_flags)
                             self._fit_load_mode_flags = []

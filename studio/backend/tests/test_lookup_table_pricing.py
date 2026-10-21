@@ -710,6 +710,54 @@ class TestEstimate:
         )
         assert breakdown().lookup_table_on_disk is False
 
+    @pytest.mark.parametrize("budget_gib, ram_gib, resident", [(48, 64, False), (180, 256, True)])
+    def test_apple_prices_the_whole_load_against_unified_memory(
+        self, breakdown, monkeypatch, budget_gib, ram_gib, resident
+    ):
+        """A 64 GB Mac holds the 27 GiB table only beside nothing else; the launch's Apple
+        discount checks the whole load, so the panel does too."""
+        import routes.inference as ri
+        import utils.hardware as hw
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_apple_metal_memory_budget_bytes",
+            lambda self: int(budget_gib * GIB),
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_available_system_memory_mib",
+            staticmethod(lambda: ram_gib * 1024),
+        )
+        assert breakdown().lookup_table_on_disk is (not resident)
+
+    def test_an_indexed_table_name_keeps_its_override(self, breakdown, monkeypatch):
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_OVERRIDE_TENSOR", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 256 * 1024)
+        )
+        real = ri.LlamaCppBackend._gguf_tensor_scan
+
+        def indexed(self, path):
+            arch, named, experts = real(self, path)
+            return (
+                arch,
+                {
+                    k.replace("per_layer_token_embd.", "per_layer_token_embd_0."): v
+                    for k, v in named.items()
+                },
+                experts,
+            )
+
+        monkeypatch.setattr(ri.LlamaCppBackend, "_gguf_tensor_scan", indexed)
+        b = breakdown(llama_extra_args = ["-ot", "per_layer_token_embd_0=CUDA0"])
+        assert b.lookup_table_on_disk is True
+
     def test_a_device_override_keeps_the_table_streamed_as_the_launch_does(
         self, breakdown, monkeypatch
     ):

@@ -324,12 +324,13 @@ export function MemoryEstimateRow({
             value={formatMemoryGb(estimate.projectorRuntimeBytes)}
           />
         )}
-        {/* Not in Weights or Total while streamed: only the rows in use page in. */}
+        {/* Streamed: outside Weights and Total, only the rows in use page in. Resident:
+            already inside Weights, so the note says so rather than adding it twice. */}
         {(estimate.lookupTableBytes ?? 0) > 0 && (
           <MemoryBreakdownLine
             label="Lookup tables"
             value={formatMemoryGb(estimate.lookupTableBytes ?? 0)}
-            note={estimate.lookupTableOnDisk ? "on disk" : "in RAM"}
+            note={estimate.lookupTableOnDisk ? "on disk" : "in RAM, part of Weights"}
           />
         )}
         {/* Draft cache is additional to the drafter's weights. */}

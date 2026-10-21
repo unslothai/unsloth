@@ -15788,13 +15788,13 @@ def _gguf_memory_breakdown(
     )
     lookup_table_bytes = min(main_bytes, _lt_bytes)
     lookup_table_on_disk = False
+    # A pin strips the device flags and their env twins at launch, so it does here too.
+    _lt_extras, _lt_env = extras, dict(os.environ)
+    if selected_gpu_ids:
+        _lt_extras = LlamaCppBackend._strip_device_extra_args(extras)
+        LlamaCppBackend._clear_device_placement_env(_lt_env)
     if lookup_table_bytes:
-        # Streamed only on a build with a lazy mode whose devices keep it on disk. A pin
-        # strips the device flags and their env twins at launch, so it does here too.
-        _lt_extras, _lt_env = extras, dict(os.environ)
-        if selected_gpu_ids:
-            _lt_extras = LlamaCppBackend._strip_device_extra_args(extras)
-            LlamaCppBackend._clear_device_placement_env(_lt_env)
+        # Streamed only on a build with a lazy mode whose devices keep it on disk.
         lookup_table_on_disk = _lt_backend.lookup_tables_stream_by_default(
             _lt_extras,
             _lt_env,
@@ -15814,23 +15814,36 @@ def _gguf_memory_breakdown(
                 int(v) for k, v in (_lt_scan[1] or {}).items() if _is_per_layer_embedding(k)
             )
             lookup_table_bytes = min(main_bytes, max(lookup_table_bytes, _resident))
+
+    def _lt_override_moves_table() -> bool:
+        # The file's own per-layer table names (an indexed per_layer_token_embd_0 too),
+        # against the arguments the child gets after a pin strips its device flags.
+        try:
+            scan = _lt_backend._gguf_tensor_scan(gguf_path)
+        except Exception:  # noqa: BLE001 -- unread header: the canonical name alone
+            scan = None
+        names = [k for k in ((scan[1] if scan else None) or {}) if _is_per_layer_embedding(k)]
+        return any(
+            _override_places_tensor_on_device(name, _lt_extras, _lt_env)
+            for name in names or ["per_layer_token_embd.weight"]
+        )
+
     if lookup_table_bytes:
         # Read resident, a device override applies to the table (deepseek41's loader
         # still forces it to the host), so it stays in the GPU share.
-        if (
-            not lookup_table_on_disk
-            and _lt_arch != "deepseek41"
-            and _override_places_tensor_on_device("per_layer_token_embd.weight", extras, os.environ)
-        ):
+        if not lookup_table_on_disk and _lt_arch != "deepseek41" and _lt_override_moves_table():
             lookup_table_bytes = 0
     if lookup_table_on_disk:
         # The launch reads the table resident (--lazy-mode off) where RAM holds it beside
         # the host share of the weights with a margin, unless the user set a lazy mode
         # (_managed_lazy_mode_flags); price that choice the same way.
         from core.inference.llama_cpp import (
+            _HOST_RAM_HEADROOM_MIB,
             _LAZY_MODE_SPELLINGS,
             _LAZY_RESIDENT_MARGIN_FRAC,
             _extra_args_set_any_flag,
+            _kv_offload_from_args,
+            _pass_through_overrides_placement,
             _prompt_cache_host_bytes,
         )
         from core.inference.llama_server_args import fit_target_margin_in
@@ -15845,24 +15858,10 @@ def _gguf_memory_breakdown(
         _lt_table_host = lookup_table_bytes + int(lookup_table_bytes * _LAZY_RESIDENT_MARGIN_FRAC)
 
         def _lt_resident_fits() -> bool:
-            # The launch's proof (_table_resident_fits): the whole load fits VRAM plus RAM
-            # with the table, the prompt cache and a margin charged to RAM alone. Auto asks
-            # for every layer, so what the cards cannot hold spills beside the table.
-            if not _lt_avail:
-                return False
-            try:
-                rows = list(
-                    _lt_backend._get_gpu_memory(
-                        _lt_backend._find_llama_server_binary(), for_llama_server = True
-                    )
-                    or ()
-                )
-            except Exception:  # noqa: BLE001 -- unread cards: the request's share below
-                rows = []
-            if not rows:
-                # No card readout (Apple Silicon, a CPU host): the request's host share.
-                return _lt_avail * 1024 * 1024 >= _lt_forced_host + _lt_table_host
-            if not runtime.kv_estimable:
+            # The launch's proof (_table_resident_fits / the Apple discount): the whole load
+            # fits with the table, the prompt cache and a margin charged to RAM alone. Auto
+            # asks for every layer, so what the cards cannot hold spills beside the table.
+            if not _lt_avail or not runtime.kv_estimable:
                 return False  # unsized: the launch keeps llama.cpp's default too
             prompt = _prompt_cache_host_bytes(
                 None,
@@ -15875,17 +15874,54 @@ def _gguf_memory_breakdown(
             if prompt is None:
                 return False
             host_only = _lt_forced_host + _lt_table_host + prompt
+            # --no-kv-offload keeps the whole cache in RAM whatever the layer placement.
+            if not _kv_offload_from_args(_lt_extras, env = _lt_env):
+                host_only += runtime.kv_bytes
+            footprint = (
+                _lt_device_share
+                + runtime.kv_bytes
+                + runtime.compute_bytes
+                + drafter_runtime_bytes
+                + _lt_table_host
+                + prompt
+            )
+            from utils.hardware import is_apple_silicon
+
+            if is_apple_silicon():
+                # One unified pool: Metal's ceiling and the RAM the OS can spare, together.
+                budget = _lt_backend._apple_metal_memory_budget_bytes()
+                if budget <= 0:
+                    return False
+                return footprint <= min(
+                    budget, max(0, _lt_avail - _HOST_RAM_HEADROOM_MIB) * 1024 * 1024
+                )
+            try:
+                rows = list(
+                    _lt_backend._get_gpu_memory(
+                        _lt_backend._find_llama_server_binary(), for_llama_server = True
+                    )
+                    or ()
+                )
+            except Exception:  # noqa: BLE001 -- unread cards: the whole load in RAM
+                rows = []
+            pick = sorted(int(i) for i in selected_gpu_ids) if selected_gpu_ids else None
+            # A CPU device or tensor override in the extras runs weights out of RAM the
+            # cards were credited for: no VRAM credit, as the launch's fit decides.
+            if not rows or _pass_through_overrides_placement(
+                _lt_extras,
+                _lt_env,
+                len(pick) if pick is not None else len(rows),
+                is_vulkan_backend = LlamaCppBackend._is_vulkan_backend(),
+                gpu_indices = pick,
+            ):
+                rows, pick = [], None
             return bool(
                 _lt_backend._fits_without_paging(
-                    _lt_device_share
-                    - _lt_forced_host
-                    + runtime.kv_bytes
-                    + runtime.compute_bytes
-                    + host_only,
+                    footprint,
                     [(idx, free) for idx, free, _total in rows],
-                    gpu_indices = sorted(int(i) for i in selected_gpu_ids)
-                    if selected_gpu_ids
-                    else None,
+                    gpu_indices = pick,
+                    # Vulkan reports total 0 for an iGPU: its free memory IS host RAM.
+                    shared_gpu_ids = {idx for idx, _free, total in rows if total <= 0},
                     host_only_bytes = host_only,
                     # llama.cpp's --fit-target default, or the pass-through margin.
                     vram_margin_mib = max(1024.0, fit_target_margin_in(_lt_extras, _lt_env) or 0.0),
@@ -15897,12 +15933,7 @@ def _gguf_memory_breakdown(
             not _lt_user
             # Read resident, a device override would apply to the table; the launch then
             # keeps it streamed (deepseek41's loader forces it to the host regardless).
-            and (
-                _lt_arch == "deepseek41"
-                or not _override_places_tensor_on_device(
-                    "per_layer_token_embd.weight", _lt_extras, _lt_env
-                )
-            )
+            and (_lt_arch == "deepseek41" or not _lt_override_moves_table())
             and _lt_resident_fits()
         ):
             lookup_table_on_disk = False

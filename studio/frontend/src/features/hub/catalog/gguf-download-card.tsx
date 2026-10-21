@@ -261,7 +261,9 @@ function QuantBadge({
         {meta.tooltip}
         {lookupTableBytes > 0 && (
           <span className="mt-1 block text-muted-foreground">
-            Lookup tables: {formatFootprintBytes(lookupTableBytes)}, on disk
+            Lookup tables: {formatFootprintBytes(lookupTableBytes)}
+            {/* Streamed only when RAM cannot hold them; otherwise the load keeps them resident. */}
+            {fit === "streamed" ? ", read from disk" : ", kept in RAM when it fits"}
           </span>
         )}
       </TooltipContent>

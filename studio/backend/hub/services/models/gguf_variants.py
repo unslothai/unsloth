@@ -1561,6 +1561,9 @@ async def _with_lookup_tables(
             and _lookup_remote_enabled()
             and not is_local_path(repo_id)
             and _is_valid_repo_id(repo_id)
+            # A host that reads the tables resident (iGPU / APU) prices them nowhere,
+            # so it has nothing to ask the Hub for.
+            and await listing_thread(True, _host_streams_lookup_tables)
         )
         if remote_ok:
             # Its own try: a Hub failure must not drop the local answers above.
