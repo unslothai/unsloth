@@ -350,7 +350,10 @@ export const BUDGET = {
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
   // The NPU setup card (#14524): +439 B raw / +122 B transfer against fc91656ff (Node 24, 97 chunks), where main
   // was already 1 B transfer over; transfer set to the measured build, raw raised by the growth.
-  transferBytes: 2_071_816,
+  // Naming an attached image over the 20 MB limit (#14538) adds 111 B raw / 58 B transfer to the eager chat chunk
+  // (6,879,345 -> 6,879,456 B raw, 2,071,823 -> 2,071,881 B transfer against 38d21245d0, Node 22, 97 chunks), where
+  // main was already 7 B transfer over; transfer set to the measured build, raw still fits.
+  transferBytes: 2_071_881,
   rawBytes: 6_879_589,
 };
 
