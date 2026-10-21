@@ -62,3 +62,32 @@ def test_explicit_bf16_on_xpu_follows_the_paired_zoo(monkeypatch):
     assert dt.xpu_keeps_explicit_bf16() is True
     monkeypatch.setattr(dt, "DEVICE_TYPE", "cuda")
     assert dt.xpu_keeps_explicit_bf16() is False
+
+
+def _forced_float32_dtype_gate():
+    tree = ast.parse((MODELS / "loader.py").read_text(encoding = "utf-8"))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.For)
+            and isinstance(node.iter, ast.Name)
+            and node.iter.id == "FORCE_FLOAT32"
+        ):
+            test = node.body[0].test
+            return compile(ast.Expression(test.values[1]), "gate", "eval")
+    raise AssertionError("FORCE_FLOAT32 gate not found")
+
+
+@pytest.mark.parametrize(
+    "dtype, supports, forced",
+    [
+        (torch.float16, True, True),
+        (torch.float16, False, True),
+        (torch.bfloat16, True, False),
+        (torch.bfloat16, False, False),  # explicit bf16 kept on XPU: no fp16 + float32 path
+        (torch.float32, False, True),
+        (torch.float32, True, False),
+    ],
+)
+def test_forced_float32_only_for_a_float16_load(dtype, supports, forced):
+    gate = _forced_float32_dtype_gate()
+    assert bool(eval(gate, {"torch": torch, "dtype": dtype, "SUPPORTS_BFLOAT16": supports})) is forced
