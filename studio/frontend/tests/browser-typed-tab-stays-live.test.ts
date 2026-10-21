@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import { test } from "node:test";
 import ts from "@typescript/typescript6";
+import { userActionGate } from "../src/features/browser/frame-message.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
@@ -182,7 +183,7 @@ test("discarding a frame clears only its own draft mark", () => {
   for (const id of [ids[1], ids[0]]) {
     const noop = () => {};
     const globals = {
-      pageRequests: () => ({ stop: noop }), requestForPage: noop, urlRef: { current: null }, frameRef: { current: null },
+      pageRequests: () => ({ stop: noop }), requestForPage: noop, userActionGate, urlRef: { current: null }, frameRef: { current: null },
       window: { addEventListener: noop, removeEventListener: noop }, onPageStorageClear: () => noop,
       onPageStorageWrite: () => noop, origin: "https://a.example", tabIdRef: { current: id },
       onMessageRef: { current: useFrameMessages(id, "https://a.example") },
