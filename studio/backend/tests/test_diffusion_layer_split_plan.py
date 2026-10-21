@@ -25,6 +25,12 @@ def _env(monkeypatch):
     monkeypatch.delenv(mg.MULTIGPU_ENV, raising = False)
     monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
     monkeypatch.delenv(lsp.LAYER_SPLIT_ENV, raising = False)
+    # make_selection filters the fake [0, 1] cards through the real host (torch's device count, the primary's
+    # capability) and the planner declines on a HIP torch: pinned, so a ROCm host (a one-GPU APU included) plans
+    # these fake cards like any other. The ROCm decline has its own test.
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
+    monkeypatch.setattr(mg, "_capability", lambda o: None)
+    monkeypatch.setattr(lsp, "_is_rocm", lambda: False)
     yield
 
 
