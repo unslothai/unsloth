@@ -571,6 +571,46 @@ def test_a_load_turned_off_while_it_downloads_never_builds(client, monkeypatch, 
     assert laya_runtime.status()["loaded_model"] is None
 
 
+def test_a_load_turned_off_while_it_builds_stops_its_worker(client, monkeypatch, tmp_path):
+    building, stopped = threading.Event(), []
+
+    class Worker:
+        def __init__(self, root, checkpoint, device, cancelled):
+            building.set()
+            deadline = time.monotonic() + 5
+            while not cancelled() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            stopped.append(cancelled())
+            if stopped[-1]:
+                raise laya_runtime.LayaWorkerError("stopped")
+            self.device = device
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "cuda")
+    monkeypatch.setattr(laya_runtime, "LayaWorker", Worker)
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    assert _post(client).status_code == 503
+    assert building.wait(5)
+    assert client.put("/api/settings/systemone", json = {"enabled": False}).status_code == 200
+    laya_runtime._loader.join(5)
+    assert stopped == [True]
+    assert laya_runtime.status()["loaded_model"] is None
+
+
+def test_an_unload_waits_for_a_load_that_is_publishing(client):
+    done = threading.Event()
+    unloading = threading.Thread(target = lambda: (laya_runtime.unload(), done.set()), daemon = True)
+    with laya_runtime._state_lock:
+        unloading.start()
+        assert not done.wait(0.2)
+    assert done.wait(5)
+
+
 def test_keyless_callers_only_reach_the_configured_model(client, monkeypatch, runtime):
     import auth.authentication
 

@@ -913,10 +913,15 @@ def _close(agent, release_gpu: bool = True) -> None:
         gpu_arbiter.release_if(gpu_arbiter.DECISIONS, unclaimed)
 
 
+def _unloaded() -> bool:
+    unloads = getattr(_load_generation, "unloads", None)
+    return unloads is not None and unloads != _unloads
+
+
 def _evict(external: bool = False) -> None:
     global _agent, _loaded, _device_name, _generation, _unloads
     # Every load evicts once its files are on disk: one unloaded meanwhile stops here.
-    if _unloads != getattr(_load_generation, "unloads", _unloads):
+    if _unloaded():
         raise RuntimeError("It was unloaded while it downloaded.")
     with _run_lock:
         agent, _agent, _loaded, _device_name = _agent, None, None, None
@@ -1085,11 +1090,7 @@ def _load_checkpoint(checkpoint: Checkpoint):
         from .clef_runtime import ClefAgent, ClefWorkerError
 
         _evict()
-        unloads = getattr(_load_generation, "unloads", _unloads)
-        agent = ClefAgent(
-            root,
-            cancelled = lambda: _clef_preempted() or _unloads != unloads,
-        )
+        agent = ClefAgent(root, cancelled = lambda: _clef_preempted() or _unloaded())
         # Training may have started while this loaded, and Clef has no CPU fallback.
         if _clef_preempted():
             agent.close()
@@ -1106,7 +1107,9 @@ def _load_checkpoint(checkpoint: Checkpoint):
     device = "cpu" if for_training else _device()
     if device in ("cuda", "xpu"):
         try:
-            agent = LayaWorker(root, checkpoint, device, cancelled = _training_active)
+            agent = LayaWorker(
+                root, checkpoint, device, cancelled = lambda: _training_active() or _unloaded()
+            )
             return agent, agent.device
         except LayaWorkerError:
             if not _training_active():
@@ -1170,7 +1173,7 @@ def _load_native(checkpoint: Checkpoint):
             gpu = gpu,
             clef_answers = checkpoint.layout == "clef",
             ctx = get_native_ctx(),
-            cancelled = (lambda: _training_active()) if gpu else None,
+            cancelled = lambda: (gpu and _training_active()) or _unloaded(),
         )
         if gpu and _training_active():
             agent.close()
@@ -2396,7 +2399,8 @@ def status() -> dict[str, Any]:
 
 def unload(reload_after_training: bool = False) -> bool:
     global _agent, _loaded, _device_name, _failure, _generation, _unloads
-    with _run_lock:
+    # _state_lock too: a load publishes under it, so it can never land just after this unload.
+    with _run_lock, _state_lock:
         agent, was_loaded, checkpoint = _agent, _agent is not None, _loaded
         _agent = _loaded = _device_name = None
         _failure = None
