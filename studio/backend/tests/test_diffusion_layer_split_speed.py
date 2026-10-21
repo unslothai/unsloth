@@ -7,6 +7,7 @@ must be read off a weight, the test names it."""
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from pathlib import Path
@@ -27,6 +28,10 @@ if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
 from test_diffusion_layer_split import FakeDiT, Pipe, _two_card_budget  # noqa: E402
+
+_needs_diffusers = pytest.mark.skipif(
+    importlib.util.find_spec("diffusers") is None, reason = "needs diffusers"
+)
 
 
 @pytest.fixture(autouse = True)
@@ -160,6 +165,7 @@ def test_arm_block_graphs_leaves_a_resident_one_card_denoiser_alone(monkeypatch)
     assert cg.arm_block_graphs(pipe, applied, target = target, family = None, hooked = False) == ()
 
 
+@_needs_diffusers
 def test_split_block_classes_register_with_a_copy_of_their_base_metadata(monkeypatch):
     from diffusers.hooks._helpers import TransformerBlockMetadata, TransformerBlockRegistry
 
@@ -210,6 +216,7 @@ def _tail_hook(head_output):
     return hook, state
 
 
+@_needs_diffusers
 def test_split_guard_leaves_a_one_card_tail_call_unchanged():
     assert dc.install_fbcache_split_guard()
     assert dc.install_fbcache_split_guard()  # idempotent
@@ -227,6 +234,7 @@ def test_split_guard_leaves_a_one_card_tail_call_unchanged():
     assert torch.equal(state.tail_block_residuals[0], x * 2 - head)
 
 
+@_needs_diffusers
 def test_split_guard_computes_the_tail_residual_on_the_tail_card_and_returns_it_home(monkeypatch):
     dc.install_fbcache_split_guard()
     moves = []
@@ -267,6 +275,7 @@ def test_split_guard_computes_the_tail_residual_on_the_tail_card_and_returns_it_
     assert torch.equal(out, x * 2)
 
 
+@_needs_diffusers
 def test_apply_step_cache_engages_on_a_split_through_the_guard(monkeypatch):
     dit = FakeDiT(dim = 1024, double = 4, single = 3)
     pipe, _, _ = _split(monkeypatch, dit)
@@ -604,6 +613,7 @@ def test_video_generate_bypasses_graphs_after_the_auto_cache_toggle():
     assert bypass < src.index("if static_skip:", toggle)
 
 
+@_needs_diffusers
 def test_split_guard_wraps_the_mixed_stream_tail_once():
     from diffusers.hooks.first_block_cache import FBCBlockHook
 
