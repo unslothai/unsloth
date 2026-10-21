@@ -19051,8 +19051,15 @@ async def load_model_gated(
                                     await _wait_for_model_switch_idle(
                                         current_request_counted = current_request_counted
                                     )
-                                    # The drain can outlast a sidecar install claiming its window.
+                                    # The drain can outlast a sidecar install or a cancel: never unload for nothing.
                                     _raise_if_sidecar_swap_in_progress()
+                                    request_cancel = (impl_kwargs or {}).get("load_cancel_event")
+                                    if attempt.cancel_event.is_set() or (
+                                        request_cancel is not None and request_cancel.is_set()
+                                    ):
+                                        raise HTTPException(
+                                            status_code = 409, detail = "Model load cancelled"
+                                        )
                                 else:
                                     _raise_or_cancel_active_generations(
                                         force = request.force_cancel_active,

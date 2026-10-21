@@ -1497,6 +1497,28 @@ def test_an_automatic_replace_fallback_rechecks_the_sidecar_after_the_drain(back
     assert exc.value.status_code == 409 and primary.model_identifier == "org/A-GGUF"
 
 
+def test_an_automatic_replace_fallback_cancelled_during_the_drain_keeps_the_active_model(
+    backends, monkeypatch
+):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    cancel = threading.Event()
+
+    async def wait(**kw):
+        cancel.set()  # the API request is cancelled while running chats drain
+
+    monkeypatch.setattr(inf, "_wait_for_model_switch_idle", wait)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inf.load_model_gated(
+                request, None, "s", background = True, impl_kwargs = {"load_cancel_event": cancel}
+            )
+        )
+    assert exc.value.status_code == 409 and primary.model_identifier == "org/A-GGUF"
+
+
 def test_training_stops_on_a_kept_model_that_would_not_unload(backends, monkeypatch):
     _, extra = backends
 
