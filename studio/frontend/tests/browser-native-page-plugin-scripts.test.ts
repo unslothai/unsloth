@@ -75,7 +75,6 @@ test("a browser page keeps its own target=_blank clicks, alert, confirm and Noti
   assert.equal(page.window.Notification, page.natives.Notification);
   assert.equal("__unslothPageGuard" in page.window, false);
   assert.deepEqual(page.invoked, []);
-  // Its own scripts still replace them and listen for clicks as usual.
   page.run(`window.alert = () => { window.ownAlert = true; }; alert("x");
     window.addEventListener("click", () => { window.ownClick = true; });`);
   page.click("https://example.org/", "");

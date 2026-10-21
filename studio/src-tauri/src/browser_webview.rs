@@ -92,10 +92,9 @@ const MUTE_SCRIPT: &str = r#"((muted) => {
   window[key](muted);
 })"#;
 
-/// Tauri injects every plugin's init script into pages too, where their commands are refused:
-/// opener cancels `target=_blank` clicks, dialog replaces `alert`/`confirm`, notification
-/// `Notification`. Run before those plugins' scripts; `PAGE_RESTORE_SCRIPT` (the page view's own
-/// init script, after every plugin's) puts the page's own back and drops their window listeners.
+/// Tauri injects plugin init scripts into pages too, where their commands are refused: opener
+/// cancels `target=_blank` clicks, dialog/notification replace `alert`/`confirm`/`Notification`.
+/// `PAGE_RESTORE_SCRIPT` (runs after every plugin's) restores these and drops their window listeners.
 const PAGE_GUARD_SCRIPT: &str = r#"(() => {
   const label = window.__TAURI_INTERNALS__?.metadata?.currentWebview?.label;
   if (typeof label !== "string" || !label.startsWith("unsloth-browser-")) return;
