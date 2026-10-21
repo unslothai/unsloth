@@ -11509,6 +11509,19 @@ class LlamaCppBackend:
         )
         if table <= 0:
             return []
+        # A lazily read table sits on a CPU buffer whatever -ot says; read resident, a
+        # device override would apply and could move it onto a card this fit never
+        # priced it on. Only deepseek41's loader forces it back to the host.
+        scan = self._gguf_tensor_scan(model_path)
+        if scan is None or (
+            scan[0] not in _HOST_FORCED_TABLE_ARCHS
+            and any(
+                _override_places_tensor_on_device(name, extra_args, source_env)
+                for name in scan[1]
+                if _is_per_layer_embedding(name)
+            )
+        ):
+            return []
         try:
             fits = resident_fits(table)
         except Exception as e:  # noqa: BLE001 -- unpriced: keep llama.cpp's default
@@ -11564,6 +11577,21 @@ class LlamaCppBackend:
             model_path, caps = caps, extra_args = extra_args, env = source_env
         )
         if table <= 0:
+            # A user's "off" reads the table resident, but the probe ran under the
+            # default auto and may have measured it outside Metal: take it back out.
+            auto_table = self._lazy_read_host_bytes(
+                model_path, caps = caps, extra_args = (), env = {}
+            )
+            if auto_table > 0 and _effective_lazy_mode(
+                extra_args,
+                source_env,
+                flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode"),
+            ) == "off":
+                return max(0, int(probe_discount) - auto_table)
+            return probe_discount
+        # Same guard as the measured discount: a pass-through adapter is resident and
+        # unpriced on this path, so no budget is handed to the cache on its behalf.
+        if _sidecar_adapter_paths(extra_args):
             return probe_discount
         scan = self._gguf_tensor_scan(model_path)
         if (
@@ -11585,7 +11613,13 @@ class LlamaCppBackend:
                 source_env,
                 supports_cache_ram = bool((caps or {}).get("supports_cache_ram")),
             )
-            if avail is None or prompt is None or need_at_ctx is None or budget_mib <= 0:
+            if (
+                avail is None
+                or prompt is None
+                or need_at_ctx is None
+                or budget_mib <= 0
+                or not self._can_estimate_kv()
+            ):
                 return None
             need = (
                 int(model_size_fit)
@@ -17191,10 +17225,11 @@ class LlamaCppBackend:
             is_vulkan_backend = is_vulkan_backend,
             gpu_indices = gpu_indices,
         ):
-            logger.info(
-                "Load mode: pass-through arguments override the placement this fit "
-                "priced; charging the whole load to host RAM."
-            )
+            if announce:
+                logger.info(
+                    "Load mode: pass-through arguments override the placement this fit "
+                    "priced; charging the whole load to host RAM."
+                )
             rows, gpu_indices = [], None
         footprint = (
             model_size
@@ -20985,6 +21020,8 @@ class LlamaCppBackend:
         self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
         self._fit_load_mode_flags = []
+        self._lazy_mode_flags = []
+        self._apple_lazy_flags = []
         self._memory_pending_launch = None
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
@@ -25350,6 +25387,8 @@ class LlamaCppBackend:
                 "Load mode: dropping the fit's --load-mode none for the CPU "
                 "fallback; it runs entirely from host RAM."
             )
+        # And a resident lookup table proven against the GPU placement.
+        replay = self._drop_managed_lazy_mode(replay, "CPU fallback")
         # And the managed pair: this replay appends "--device none".
         replay = self._drop_managed_dio(
             replay, "the CPU fallback runs entirely from host RAM", clear_record = False
@@ -30358,7 +30397,13 @@ class LlamaCppBackend:
                             resident_fits = _table_resident_fits,
                         )
                     if _managed_lazy_flags and _fit_lazy_bytes:
-                        # Resident now: host RAM, and no longer discounted.
+                        # Resident now: host RAM free VRAM may not pay for. Moved out of
+                        # the pooled weights into the host-only term, so it is charged
+                        # once (the footprint adds host_only_bytes on top of model_size).
+                        if _fit_load_mode_kwargs["model_size"]:
+                            _fit_load_mode_kwargs["model_size"] = max(
+                                1, _fit_load_mode_kwargs["model_size"] - _fit_lazy_bytes
+                            )
                         _fit_load_mode_kwargs["host_only_bytes"] += _fit_lazy_bytes
                         _fit_load_mode_kwargs["lazy_read_bytes"] = 0
                         _fit_lazy_bytes = 0
@@ -33231,6 +33276,9 @@ class LlamaCppBackend:
                     # and projector placement, and each retry changes one of them.
                     if label:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
+                        run_cmd = self._drop_managed_lazy_mode(
+                            run_cmd, label.lstrip("-") or "retry"
+                        )
                     # The cache only rides the first pinned launch: every retry re-places.
                     if label or not _argv_loads_pinned(run_cmd, env):
                         run_cmd = self._drop_moe_cache(
@@ -34289,6 +34337,7 @@ class LlamaCppBackend:
                         # llama.cpp's auto back, as the --fit on and CPU fallbacks do.
                         # Only Unsloth's own tokens; a user's --load-mode is theirs.
                         _fit_mode_left_cmd = bool(self._fit_load_mode_flags)
+                        cmd = self._drop_managed_lazy_mode(cmd, "device fallback")
                         if self._fit_load_mode_flags:
                             cmd = _without_subsequence(cmd, self._fit_load_mode_flags)
                             self._fit_load_mode_flags = []
@@ -37841,6 +37890,27 @@ class LlamaCppBackend:
         if not tokens:
             return []
         return ["-ngl", "-1", "--fit", "off", *tokens]
+
+    def _drop_managed_lazy_mode(self, run_cmd: "list[str]", why: str) -> "list[str]":
+        """Take Unsloth's ``--lazy-mode off`` back out of an argv for a retry.
+
+        The resident-table verdict was a proof about THIS launch's placement and
+        footprint; every retry re-places the model (more weights on the host, a CPU
+        replay, a bigger cache), so it hands the table back to llama.cpp's auto, which
+        streams it and can never make the host side larger. A user's own lazy mode is
+        never in the record. The record is kept, like the spill plan's, so a later
+        respawn from an argv that still carries the tokens can strip them."""
+        if not getattr(self, "_lazy_mode_flags", None):
+            return run_cmd
+        stripped = _without_subsequence(run_cmd, self._lazy_mode_flags)
+        if stripped == run_cmd:
+            return run_cmd
+        logger.info(
+            "Lookup tables: dropping %s for the %s retry; llama.cpp streams the table.",
+            " ".join(self._lazy_mode_flags),
+            why,
+        )
+        return stripped
 
     def _drop_tensor_spill(self, run_cmd: "list[str]", why: str) -> "list[str]":
         """Take the spill plan back out of an argv and restore ``--fit on``.

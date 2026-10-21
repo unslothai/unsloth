@@ -1365,6 +1365,9 @@ _LOOKUP_ARCH_TTL_S = 6 * 3600.0
 _LOOKUP_ARCH_FAIL_TTL_S = 600.0
 _lookup_arch_cache: dict[tuple[str, str], tuple[Optional[str], float]] = {}
 _lookup_arch_lock = threading.Lock()
+# Hub reads already submitted (architecture lookups and header reads), so a listing
+# polled while they run does not queue the same work again behind the pool.
+_lookup_inflight: set = set()
 # Its own small pool: Hub header reads never queue a listing or a load behind them, and the
 # pool size is the concurrency cap. Local header scans run on the disk listing pool.
 _LOOKUP_POOL = ThreadPoolExecutor(
@@ -1376,6 +1379,42 @@ async def _lookup_thread(fn, /, *args):
     loop = asyncio.get_running_loop()
     call = functools.partial(contextvars.copy_context().run, fn, *args)
     return await loop.run_in_executor(_LOOKUP_POOL, call)
+
+
+def _lookup_submit_once(key, fn, /, *args) -> bool:
+    """Run ``fn(*args)`` on the lookup pool unless ``key`` is already in flight.
+    Fire and forget: the result lands in the module caches for the next listing."""
+    with _lookup_arch_lock:
+        if key in _lookup_inflight:
+            return False
+        _lookup_inflight.add(key)
+
+    def _run():
+        try:
+            fn(*args)
+        except Exception as exc:  # noqa: BLE001 -- optional enrichment
+            logger.debug("lookup tables: background read failed (%s)", exc)
+        finally:
+            with _lookup_arch_lock:
+                _lookup_inflight.discard(key)
+
+    try:
+        _LOOKUP_POOL.submit(contextvars.copy_context().run, _run)
+    except RuntimeError:  # pool shut down at exit
+        with _lookup_arch_lock:
+            _lookup_inflight.discard(key)
+        return False
+    return True
+
+
+def _cached_hub_repo_architecture(repo_id: str, hf_token: Optional[str]):
+    """``(known, architecture)`` from the cache alone; never blocks on the Hub."""
+    key = (repo_id.lower(), hf_cache_scan.token_fingerprint(hf_token))
+    with _lookup_arch_lock:
+        hit = _lookup_arch_cache.get(key)
+    if hit is not None and hit[1] > time.monotonic():
+        return True, hit[0]
+    return False, None
 
 
 def _lookup_remote_enabled() -> bool:
@@ -1486,35 +1525,49 @@ async def _with_lookup_tables(
             and _is_valid_repo_id(repo_id)
         )
         if remote_ok:
-            if arch is None:
-                arch = await asyncio.wait_for(
-                    _lookup_thread(_hub_repo_architecture, repo_id, hf_token),
-                    _LOOKUP_DEADLINE_S * 3,
-                )
-            if lazy_architecture(arch):
-                tasks = {}
-                for index, v in unresolved:
-                    cached = remote_cached(repo_id, v.filename, None, int(v.size_bytes or 0))
-                    if cached is not None:
-                        found[index] = cached[1]
-                        continue
-                    tasks[
-                        asyncio.ensure_future(
-                            _lookup_thread(
-                                _remote_lookup_bytes,
-                                repo_id,
-                                v.filename,
-                                hf_token,
-                                int(v.size_bytes or 0),
-                            )
+            # Its own try: a Hub failure must not drop the local answers above.
+            try:
+                if arch is None:
+                    # Never waited on: an ordinary repo's listing pays nothing. A cold
+                    # architecture is fetched in the background for the next listing.
+                    known, arch = _cached_hub_repo_architecture(repo_id, hf_token)
+                    if not known:
+                        _lookup_submit_once(
+                            ("arch", repo_id.lower()), _hub_repo_architecture, repo_id, hf_token
                         )
-                    ] = index
-                if tasks:
-                    # Late reads keep running and land in the cache for the next listing.
-                    done, _pending = await asyncio.wait(tasks, timeout = _LOOKUP_DEADLINE_S)
-                    for task in done:
-                        if not task.cancelled() and task.exception() is None:
-                            found[tasks[task]] = int(task.result() or 0)
+                if lazy_architecture(arch):
+                    tasks = {}
+                    for index, v in unresolved:
+                        identity = int(v.size_bytes or 0)
+                        cached = remote_cached(repo_id, v.filename, None, identity)
+                        if cached is not None:
+                            found[index] = cached[1]
+                            continue
+                        key = ("table", repo_id, v.filename, identity)
+                        with _lookup_arch_lock:
+                            busy = key in _lookup_inflight
+                            if not busy:
+                                _lookup_inflight.add(key)
+                        if busy:
+                            continue
+
+                        def _read(name = v.filename, ident = identity, k = key):
+                            try:
+                                return _remote_lookup_bytes(repo_id, name, hf_token, ident)
+                            finally:
+                                with _lookup_arch_lock:
+                                    _lookup_inflight.discard(k)
+
+                        tasks[asyncio.ensure_future(_lookup_thread(_read))] = index
+                    if tasks:
+                        # One deadline for the whole listing; late reads keep running
+                        # and land in the cache for the next one.
+                        done, _pending = await asyncio.wait(tasks, timeout = _LOOKUP_DEADLINE_S)
+                        for task in done:
+                            if not task.cancelled() and task.exception() is None:
+                                found[tasks[task]] = int(task.result() or 0)
+            except Exception as exc:  # noqa: BLE001 -- keep the local answers
+                logger.debug("lookup tables: Hub reads skipped for %s (%s)", repo_id, exc)
         if not any(found.values()):
             return answer
         updated = [

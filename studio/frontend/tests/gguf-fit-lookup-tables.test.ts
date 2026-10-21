@@ -12,6 +12,7 @@ import test from "node:test";
 
 import {
   ggufFitRuns,
+  pickDefaultQuant,
   recommendedQuantForDevice,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
@@ -103,4 +104,12 @@ test("a malformed table size is ignored", () => {
     }),
     GIB,
   );
+});
+
+test("a bare repo click picks the streamed quant rather than the smallest fallback", () => {
+  const variants = [
+    { ...flashNext, filename: "Q2/a-00001-of-00003.gguf", downloaded: true },
+    { quant: "Q8_0", filename: "Q8/a.gguf", size_bytes: 160 * GIB, lookup_table_bytes: 26.82 * GIB },
+  ];
+  assert.equal(pickDefaultQuant(variants, "Q8_0", HOST_24_64)?.quant, "UD-Q2_K_XL");
 });

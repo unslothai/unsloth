@@ -292,7 +292,10 @@ class TestListing:
         from hub.services.models import gguf_variants as gv
         from hub.utils import gguf_lookup_tables as glt
 
-        monkeypatch.setattr(gv, "_hub_repo_architecture", lambda *a, **k: "qwen4exp")
+        # The repo's architecture is already known (an earlier listing fetched it).
+        monkeypatch.setattr(
+            gv, "_cached_hub_repo_architecture", lambda *a, **k: (True, "qwen4exp")
+        )
         monkeypatch.setattr(
             glt,
             "remote_lookup_info",
@@ -312,6 +315,51 @@ class TestListing:
             )
         )
         assert [v.lookup_table_bytes for v in out.response.variants] == [FLASH_NEXT_TABLE, 0]
+
+    def test_a_cold_architecture_never_blocks_the_listing(self, monkeypatch):
+        """An unknown repo pays no Hub round trip in its listing: the architecture is
+        fetched in the background and priced from the next listing on."""
+        import threading
+
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        release = threading.Event()
+        fetched = []
+
+        def slow_arch(repo, token):
+            fetched.append(repo)
+            release.wait(5)
+            return "qwen4exp"
+
+        monkeypatch.setattr(gv, "_hub_repo_architecture", slow_arch)
+        monkeypatch.setattr(
+            gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None)
+        )
+        monkeypatch.setattr(
+            glt, "remote_lookup_info", lambda *a, **k: pytest.fail("no header read yet")
+        )
+        rows = [GgufVariantDetail(filename = "a.gguf", quant = "Q2", size_bytes = 1)]
+        answer = _answer(rows)
+        try:
+            for _ in range(3):
+                out = asyncio.run(
+                    gv._with_lookup_tables(
+                        answer, "o/cold", hf_token = None, offline = False, prefer_local_cache = False
+                    )
+                )
+                assert out is answer
+        finally:
+            release.set()
+        # Submitted once, not once per listing.
+        for _ in range(50):
+            if not gv._lookup_inflight:
+                break
+            import time
+
+            time.sleep(0.05)
+        assert fetched == ["o/cold"]
 
     def test_offline_or_a_non_lazy_arch_never_reads_the_hub(self, monkeypatch):
         from hub.schemas.inventory import GgufVariantDetail
@@ -364,6 +412,12 @@ class TestEstimate:
             "_get_gguf_size_bytes",
             staticmethod(lambda p: int(self.WEIGHTS)),
         )
+        # A build with the lazy mode, as the Studio prebuilt is.
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"found": True, "supports_lazy_mode": True}),
+        )
         ri._estimate_files_cache.clear()
         ri._estimate_config_cache.clear()
         config = SimpleNamespace(
@@ -397,6 +451,29 @@ class TestEstimate:
         assert b.lookup_table_on_disk is False
         assert b.weights_bytes == int(round(self.WEIGHTS))
         assert b.gpu_bytes == b.total_bytes - FLASH_NEXT_TABLE
+
+    def test_a_build_without_lazy_mode_keeps_the_table_resident(self, breakdown, monkeypatch):
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"found": True}),
+        )
+        b = breakdown()
+        assert b.lookup_table_on_disk is False
+        assert b.weights_bytes == int(round(self.WEIGHTS))
+
+    def test_a_resident_table_moved_to_the_gpu_stays_in_the_gpu_share(
+        self, breakdown, monkeypatch
+    ):
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_OVERRIDE_TENSOR", raising = False)
+        b = breakdown(llama_extra_args = ["-lzm", "off", "-ot", "per_layer_token_embd=CUDA0"])
+        assert b.lookup_table_on_disk is False
+        assert b.lookup_table_bytes == 0
+        assert b.gpu_bytes == b.total_bytes
 
     def test_the_load_panel_response_carries_the_table(self, breakdown, monkeypatch):
         from core.inference.memory_contract import (

@@ -1436,6 +1436,8 @@ export interface QuantVariant {
   filename: string;
   size_bytes: number;
   downloaded?: boolean;
+  /** Streamed lookup tables inside `size_bytes`; see `GgufVariantSizes`. */
+  lookup_table_bytes?: number;
 }
 
 /** The quant a bare group/repo click loads: largest downloaded non-OOM quant, else the repo default
@@ -1447,8 +1449,14 @@ export function pickDefaultQuant(
 ): QuantVariant | null {
   if (!variants || variants.length === 0) return null;
   const anyBudget = (budget.gpuGb || 0) > 0 || (budget.systemRamGb || 0) > 0;
+  // Lookup tables llama.cpp streams from disk priced apart, as in the recommendation.
   const runs = (v: QuantVariant) =>
-    ggufFitRuns(classifyGgufFit(v.size_bytes, budget));
+    ggufFitRuns(
+      classifyGgufFitWithLookupTables(
+        (bytes) => classifyGgufFit(bytes, budget),
+        { size_bytes: v.size_bytes, lookup_table_bytes: v.lookup_table_bytes },
+      ),
+    );
   const downloadedFitting = variants
     .filter((v) => v.downloaded && runs(v))
     .sort((a, b) => b.size_bytes - a.size_bytes);

@@ -320,8 +320,41 @@ def test_flash_next_keeps_its_table_resident_where_ram_holds_it(tmp_path, _moe_c
     backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128)
     assert _lazy_values(cmd) == ["off"], cmd
     assert backend._lazy_mode_flags == ["--lazy-mode", "off"]
-    # Before the user's extras, so a pass-through choice would still win.
-    assert cmd.index("--lazy-mode") < len(cmd)
+
+
+def test_the_resident_table_is_charged_once_in_the_load_mode_fit(tmp_path, _moe_cache_host):
+    """After the resident verdict the table moves from the pooled weights to host-only
+    RAM. Charging it in both left a host that just proved the fit without --load-mode
+    none. 72 GiB holds ~47 GiB of host weights plus the table once, not twice."""
+    _backend, cmd = _flash_next_launch(tmp_path, ram_gib = 72)
+    assert _lazy_values(cmd) == ["off"], cmd
+    assert cmd[cmd.index("--load-mode") + 1] == "none", cmd
+
+
+def test_a_retry_hands_the_table_back_to_llama_cpp():
+    backend = LlamaCppBackend()
+    backend._lazy_mode_flags = ["--lazy-mode", "off"]
+    argv = ["/fake/llama-server", "-m", "/m.gguf", "--lazy-mode", "off", "-c", "4096"]
+    assert backend._drop_managed_lazy_mode(argv, "CPU fallback") == [
+        "/fake/llama-server",
+        "-m",
+        "/m.gguf",
+        "-c",
+        "4096",
+    ]
+    # A user's own pair is never in the record, so it is left alone.
+    backend._lazy_mode_flags = []
+    assert backend._drop_managed_lazy_mode(argv, "CPU fallback") == argv
+
+
+def test_a_device_override_keeps_the_table_streamed(tmp_path, _moe_cache_host):
+    """Read lazily, the table sits on a CPU buffer whatever -ot says; resident, the
+    override would apply and move 26.8 GiB onto a 24 GiB card."""
+    backend, cmd = _flash_next_launch(
+        tmp_path, ram_gib = 128, extra_args = ["-ot", "per_layer_token_embd=CUDA0"]
+    )
+    assert _lazy_values(cmd) == [], cmd
+    assert backend._lazy_mode_flags == []
 
 
 def test_flash_next_streams_its_table_on_a_64gb_box(tmp_path, _moe_cache_host):
@@ -416,6 +449,7 @@ def test_an_unpriced_fit_keeps_llama_cpp_default():
 def _apple_backend(arch, named, avail_gib):
     backend = _scan_backend(arch, named)
     backend._available_system_memory_mib = lambda: int(avail_gib * 1024)
+    backend._can_estimate_kv = lambda: True
     return backend
 
 
@@ -455,6 +489,31 @@ def test_flash_next_goes_resident_on_a_128gb_mac_and_stays_charged():
     got = _apple_discount(backend, probe = 0, model_size_fit = FLASH_NEXT_TOTAL, budget_gib = 96)
     assert backend._apple_lazy_flags == ["--lazy-mode", "off"]
     assert got == 0
+
+
+def test_an_unsized_kv_cache_proves_nothing_on_a_mac():
+    backend = _apple_backend("qwen4exp", {PLE: FLASH_NEXT_PLE}, avail_gib = 119)
+    backend._can_estimate_kv = lambda: False
+    got = _apple_discount(backend, probe = 0, model_size_fit = FLASH_NEXT_TOTAL, budget_gib = 96)
+    assert backend._apple_lazy_flags == []
+    assert got == FLASH_NEXT_PLE
+
+
+def test_a_users_lazy_off_on_a_mac_takes_the_table_back_out_of_the_probe_discount():
+    backend = _apple_backend("qwen4exp", {PLE: FLASH_NEXT_PLE}, avail_gib = 119)
+    got = backend._apple_lookup_table_discount(
+        FLASH_NEXT_PLE + FLASH_NEXT_TOKEN_EMBD,
+        "/m.gguf",
+        caps = dict(_CAPS),
+        extra_args = ["-lzm", "off"],
+        model_size_fit = FLASH_NEXT_TOTAL,
+        need_at_ctx = GIB,
+        budget_mib = 96 * 1024,
+        cache_ram = None,
+        env = {},
+    )
+    assert got == FLASH_NEXT_TOKEN_EMBD
+    assert backend._apple_lazy_flags == []
 
 
 def test_flash_next_streams_on_a_64gb_mac():

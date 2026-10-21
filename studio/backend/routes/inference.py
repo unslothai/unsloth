@@ -15695,13 +15695,39 @@ def _gguf_memory_breakdown(
     # the resident total whenever lazy reading engages. The panel cannot see the device
     # set, so it assumes a discrete GPU: on an iGPU / APU llama.cpp resolves auto to off
     # and the table is resident, which this under-reports by the table.
-    from core.inference.llama_cpp import _effective_lazy_mode
-    from hub.utils.gguf_lookup_tables import local_lookup_table_bytes
-
-    lookup_table_bytes = min(main_bytes, local_lookup_table_bytes(gguf_path))
-    lookup_table_on_disk = bool(lookup_table_bytes) and (
-        _effective_lazy_mode(extras, os.environ) != "off"
+    from core.inference.llama_cpp import (
+        _effective_lazy_mode,
+        _override_places_tensor_on_device,
     )
+    from hub.utils.gguf_lookup_tables import local_lookup_info
+
+    _lt_arch, _lt_bytes = local_lookup_info(gguf_path)
+    lookup_table_bytes = min(main_bytes, _lt_bytes)
+    lookup_table_on_disk = False
+    if lookup_table_bytes:
+        # Streamed only on a build with a lazy mode, read in the build's own spelling.
+        try:
+            _lt_caps = LlamaCppBackend.probe_server_capabilities()
+        except Exception:  # noqa: BLE001 -- unknown build: price the table as resident
+            _lt_caps = {}
+        lookup_table_on_disk = bool(_lt_caps.get("supports_lazy_mode")) and (
+            _effective_lazy_mode(
+                extras,
+                os.environ,
+                flag = str(_lt_caps.get("lazy_mode_flag") or "--lazy-mode"),
+            )
+            != "off"
+        )
+        # Read resident, a device override applies to the table (deepseek41's loader
+        # still forces it to the host), so it stays in the GPU share.
+        if (
+            not lookup_table_on_disk
+            and _lt_arch != "deepseek41"
+            and _override_places_tensor_on_device(
+                "per_layer_token_embd.weight", extras, os.environ
+            )
+        ):
+            lookup_table_bytes = 0
     if lookup_table_on_disk:
         weights_bytes = max(0, weights_bytes - lookup_table_bytes)
     # A drafter is only charged when it lands on the GPU (a CPU-pinned one is dropped

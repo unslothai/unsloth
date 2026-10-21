@@ -175,11 +175,17 @@ def _remember(cache: OrderedDict, key, value) -> None:
             cache.popitem(last = False)
 
 
+# Shards read per variant at most. llama.cpp's split keeps file order and the table sits
+# near the front, so a table not found by then is left unpriced (0, today's pricing)
+# rather than fanning out header reads over a long split.
+MAX_SHARDS_READ = 8
+
+
 def _scan_shards(read_header: Callable[[str], tuple], names: list[str]):
     """(architecture, lazy table bytes) over ``names``, stopping at the first shard that
     carries the table: llama.cpp's split keeps file order and the table sits near the front."""
     arch: Optional[str] = None
-    for name in names:
+    for name in names[:MAX_SHARDS_READ]:
         part_arch, named = read_header(name)
         arch = arch or part_arch
         if not lazy_architecture(arch):
