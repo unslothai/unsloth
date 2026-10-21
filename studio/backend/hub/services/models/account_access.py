@@ -788,7 +788,7 @@ def _write_grant(path: Path, key: str) -> None:
         )
 
 
-MODEL_NOT_ALLOWED = "This model is not enabled for your account. Ask the Studio owner to allow it."
+MODEL_NOT_ALLOWED = "This model is not enabled for your account. Ask the Unsloth owner to allow it."
 
 _allowlists: dict[str, tuple[int, tuple[str, ...] | None]] = {}
 _allowlists_lock = threading.Lock()

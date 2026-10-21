@@ -1398,7 +1398,7 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
     if not is_owner_context():
         raise HTTPException(
             status_code = 403,
-            detail = "Only the Studio owner can fine-tune decision models, since only the "
+            detail = "Only the Unsloth owner can fine-tune decision models, since only the "
             "owner's fine-tunes can be served by the Decision API.",
         )
     if sys.version_info < (3, 10):
@@ -4416,7 +4416,7 @@ async def upload_diffusion_dataset(
     if cleaned.casefold() in _reserved_diffusion_dataset_names():
         raise HTTPException(
             status_code = 400,
-            detail = f"'{cleaned}' is reserved for Studio's internal dataset storage.",
+            detail = f"'{cleaned}' is reserved for Unsloth's internal dataset storage.",
         )
     folder = _resolve_dataset_folder(name, must_exist = False)
     # serialize same-folder imports because the training interlock permits mutations; duplicate checks run here

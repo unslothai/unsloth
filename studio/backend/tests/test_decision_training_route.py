@@ -194,7 +194,7 @@ def test_a_managed_account_is_told_decision_training_is_owner_only(route, monkey
         asyncio.run(route.start_training(_request(), current_subject = "managed-user"))
 
     assert refused.value.status_code == 403
-    assert "Only the Studio owner" in refused.value.detail
+    assert "Only the Unsloth owner" in refused.value.detail
 
 
 def test_python_older_than_3_10_cannot_train_decision_models(route, monkeypatch):
