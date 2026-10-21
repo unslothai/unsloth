@@ -4,6 +4,7 @@
 """Malware / unsafe-file gate for model loads. The ``trust_remote_code`` consent gate covers the ``auto_map`` Python vector; this covers the other one, a malicious pickle inside a weight file, which executes during ``from_pretrained`` deserialization even with ``trust_remote_code=False``. It reads Hugging Face's OWN scan (picklescan + ClamAV) via ``model_info(securityStatus=True).security_repo_status``. METADATA-ONLY: it never downloads, opens, or unpickles the flagged files. Policy: a hard, non-approvable block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of ``scansDone`` (often false even for clean repos); unknown/future levels fail CLOSED so Hub schema drift cannot silently allow a bad verdict, and only a small allowlist of clean / not-yet-scanned levels is non-blocking, while an unavailable status falls back to local inspection for a pinned cache snapshot and otherwise fails open. Scoped to the load-path RCE vector: a root-level (or load-subdir-level) code-executing file, since inert formats (safetensors / gguf / config / text) and subdirectory pickles that no root weight-index references are not loaded and do not block, while an index-referenced shard does, wherever it lives. That blocks real malware (eicar's root ``*.pkl``/``*.dat``) without false-blocking repos like ``nvidia/Nemotron-H-8B-Base-8K`` (flagged NeMo pickles under ``nemo/`` that no index lists). No first-party exemption (scoping is by load path/format, not org), and local paths are skipped (no Hub scan) while a remote ``*.gguf``-named repo is still scanned so a repo cannot dodge the gate by suffixing its name."""
 
 import json
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -66,11 +67,11 @@ _TRANSFORMERS_INDEX_FILES = (
 
 def _escapes_folder(name: str) -> bool:
     spelled = name.replace("\\", "/")
-    return (
-        spelled.startswith("/")
-        or (len(spelled) > 1 and spelled[1] == ":")
-        or ".." in spelled.split("/")
-    )
+    if spelled.startswith("/") or (len(spelled) > 1 and spelled[1] == ":"):
+        return True
+    # weights/../weights/shard.bin stays inside; only a name that normalizes above the folder escapes.
+    normalized = posixpath.normpath(spelled)
+    return normalized == ".." or normalized.startswith("../")
 
 
 def escaping_weight_references(folder) -> list:

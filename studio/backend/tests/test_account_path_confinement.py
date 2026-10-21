@@ -164,6 +164,8 @@ def test_normal_weight_index_is_clean(tmp_path):
                 "weight_map": {
                     "a": "model-00001-of-00002.safetensors",
                     "b": "sub/model-00002-of-00002.safetensors",
+                    # Walks back up but lands inside the folder, where the loader reads it.
+                    "c": "sub/../model-00001-of-00002.safetensors",
                 }
             },
         },
@@ -283,3 +285,22 @@ def test_training_preflight_authorizes_adapter_base_beside_full_weights(tmp_path
     assert _refused(run_as, ALICE, training._reject_untrainable_model_request, request) == 403
     result = run_as(OWNER, training._reject_untrainable_model_request, request)
     assert result.adapter_base_pin is None
+
+
+def test_a_cached_snapshot_adapter_pin_is_rechecked_against_the_snapshot(tmp_path):
+    import json
+
+    from core.training import worker
+
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/base"})
+    )
+    config = {
+        "model_name": "org/finetune",
+        "model_snapshot_path": str(snapshot),
+        "adapter_base_pin": "org/base",
+    }
+    assert worker._adapter_base_changed_error(config) is None
+    assert worker._adapter_base_changed_error({**config, "adapter_base_pin": "org/other"})

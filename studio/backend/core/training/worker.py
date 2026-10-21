@@ -170,7 +170,10 @@ def _adapter_base_changed_error(config: dict) -> str | None:
         return None
     from utils.models.model_config import get_base_model_from_lora
 
-    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
+    # The folder the loader reads: a cached Hub snapshot, not the repo id it came from.
+    if (
+        get_base_model_from_lora(str(_resolve_cached_model_load_name(config) or "")) or ""
+    ) != pinned:
         return "The adapter's base model changed after the run was checked. Start the run again."
     return None
 
@@ -4189,6 +4192,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     apply_gpu_ids(gpu_ids, backend = config.get("device_backend"))
 
     if not _validate_training_worker_config(config, event_queue):
+        return
+    # Before any backend dispatch: the MLX, decision and embedding runners load these weights too.
+    weights_error = _escaping_weights_error(config)
+    if weights_error:
+        event_queue.put({"type": "error", "error": weights_error, "stack": "", "ts": time.time()})
         return
 
     model_name = config["model_name"]
