@@ -13,6 +13,7 @@ READ_ONLY = {
     "list_models",
     "list_media",
     "list_training_runs",
+    "plan_load",
     "studio_status",
     "system_one",
 }
@@ -25,6 +26,7 @@ OTHERS = {
     "analyze_audio",
     "chat",
     "datasets",
+    "download_model",
     "export_model",
     "generate_audio",
     "generate_image",

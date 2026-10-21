@@ -16,7 +16,7 @@ from fastmcp.tools import ToolResult
 from pydantic import Field
 
 from studio_mcp import checkpoints as named
-from studio_mcp import export_jobs, loading
+from studio_mcp import export_jobs, loading, model_downloads, video_queue
 from studio_mcp.caller import Caller, current_caller
 from studio_mcp.errors import raise_for_route
 from studio_mcp.forward import forward
@@ -302,8 +302,20 @@ async def _read_once(
         return await _load_job(caller, job_id)
     if kind in ("training", "diffusion_training"):
         return await _training_job(caller, kind, job_id)
+    if kind == "download":
+        if not job_id:
+            raise ToolError('get_job(kind="download") needs id: the id download_model returned.')
+        return media_result([], await model_downloads.status(caller, job_id))
     if job_id is None:
         return await _video_jobs(caller)
+    if video_queue.is_queue_id(job_id):
+        item = video_queue.lookup(caller.account_id, job_id)
+        if not item.video_id:
+            queued = await video_queue.job_status(item)
+            # Unless it started while that was read: then it is the video it became.
+            if not item.video_id:
+                return media_result([], queued)
+        return await _video_job(caller, item.video_id, return_media, preview_px)
     return await _video_job(caller, job_id, return_media, preview_px)
 
 
@@ -322,7 +334,9 @@ def _moment(structured: Any) -> tuple[Any, Any, Any]:
 
 
 async def get_job(
-    kind: Literal["video", "recipe", "export", "training", "diffusion_training", "load"],
+    kind: Literal[
+        "video", "recipe", "export", "training", "diffusion_training", "load", "download"
+    ],
     id: Optional[str] = None,
     wait_s: Annotated[
         int,
@@ -357,7 +371,8 @@ async def get_job(
     Unsloth Studio runs one recipe at a time; a recipe job id is not tied to an account.
     kind "export": an export_model job by its id (without ``id``, this key's export jobs), with its output named relative to Unsloth Studio's exports folder.
     kind "training" or "diffusion_training": the current run started by start_training (``id`` is its job id), and once completed its run folder and checkpoint names; ``loss_history`` names the list_training_runs call with the full loss curve.
-    kind "load": a load_model call that returned ``status`` "loading", by its ``job_id``; once completed, ``load`` is the load's result with what it unloaded."""
+    kind "load": a load_model call that returned ``status`` "loading", by its ``job_id``; once completed, ``load`` is the load's result with what it unloaded.
+    kind "download": a download_model download by the id it returned."""
     caller = current_caller()
     deadline = time.monotonic() + min(wait_s, loading.MAX_WAIT_S)
     # Forwarded reads have no HTTP timeout, so each one here is bounded: the first by the wait (at
@@ -419,6 +434,7 @@ POLL_AFTER_S = {
     "training": 30,
     "diffusion_training": 30,
     "load": 10,
+    "download": 15,
 }
 
 

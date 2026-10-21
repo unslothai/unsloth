@@ -50,6 +50,11 @@ export const de = {
     removeFromMessage: "Aus Nachricht entfernen",
   },
   browser: {
+    drafts: {
+      title: "Seite mit eingegebenem Text entladen?",
+      description: "Damit der Chat reaktionsschnell bleibt, laufen nur drei ausgeblendete Seiten mit eingegebenem Text weiter. Beim Fortfahren wird {pages} entladen. Nicht gespeicherter Text kann verloren gehen. Abbrechen kehrt zum vorherigen Tab zurück.",
+      confirm: "Entladen und fortfahren",
+    },
     agentSettings: {
       title: "Browsernutzung",
       enable: "Modelle den Browser nutzen lassen",
@@ -1621,9 +1626,9 @@ export const de = {
         autoDescription: "Jede Antwort vorlesen, sobald sie fertig ist",
         engineLabel: "TTS-Engine",
         engineSystemDescription: "Auf dem Gerät integrierte Stimmen",
-        engineStudioDescription: "Verwendet das in Audio geladene Sprachmodell",
+        engineStudioDescription: "Spricht mit einem in Audio › Sprachausgabe geladenen Modell",
         engineSystem: "Systemstimmen",
-        engineStudio: "TTS-Modell laden",
+        engineStudio: "Unsloth-Modell",
         engineCustom: "Eigener Endpunkt",
         engineCustomDescription:
           "Ein OpenAI-kompatibler TTS-Server aus deinen Verbindungen (z. B. Kokoro)",
@@ -1635,8 +1640,11 @@ export const de = {
         customVoiceDescription:
           "Vom Endpunkt erwarteter Stimmenname; Standard ist alloy",
         modelLabel: "TTS-Modell",
-        modelDescription:
-          "Laden Sie ein Sprachmodell in Audio. Es ersetzt das Chat-Modell.",
+        modelDescription: "Keines geladen. Laden Sie eines unter Audio › Sprachausgabe.",
+        modelLoaded: "{model} ist geladen",
+        keepBothLabel: "Chat-Modell geladen lassen",
+        keepBothDescription: "„Mehrere Modelle geladen lassen“ ist auf „Aus“ gestellt, daher wird beim Laden eines Sprachmodells das Chat-Modell entladen.",
+        keepBothAction: "Beide geladen lassen",
         openAudioAction: "Audio öffnen",
         voiceLabel: "Stimme",
         voiceDescription: "Beste Stimmen auf diesem Gerät",
@@ -1714,6 +1722,23 @@ export const de = {
         loadError: "Helfer-LLM-Einstellungen konnten nicht geladen werden.",
         saveError:
           "Helfer-LLM-Einstellungen konnten nicht gespeichert werden.",
+      },
+      developerMode: {
+        sectionTitle: "Entwicklermodus",
+        videoCpu: "Videogenerierung auf der CPU erlauben (experimentell)",
+        videoCpuDescription: "Ermöglicht die Videoseite auf einem Host ohne unterstützte GPU. Standardmäßig aus; nicht unterstützt und sehr langsam.",
+        notApplicable: "Hat auf diesem Rechner keine Wirkung: Video läuft entweder bereits auf der GPU oder wird durch etwas blockiert, das die CPU nicht umgehen kann.",
+        forcedOnByEnv: "Aktiviert durch UNSLOTH_VIDEO_ALLOW_CPU in der Backend-Umgebung.",
+        forcedOffByEnv: "Deaktiviert durch UNSLOTH_VIDEO_ALLOW_CPU in der Backend-Umgebung.",
+        confirmTitle: "Videogenerierung auf der CPU aktivieren?",
+        confirmWarning: "Die Videogenerierung auf der CPU kann Stunden dauern, große Mengen RAM verbrauchen und dein System einfrieren lassen. Fortfahren auf eigenes Risiko.",
+        ramBelowMinimum: "Dieser Rechner hat {host} GB RAM, weniger als die {min} GB, die das kleinste Videomodell auf der CPU benötigt. Das Laden schlägt wahrscheinlich fehl oder friert das System ein.",
+        ramOk: "Dieser Rechner hat {host} GB RAM. Das kleinste Videomodell benötigt auf der CPU etwa {min} GB; größere Modelle benötigen deutlich mehr.",
+        ramUnknown: "Das kleinste Videomodell benötigt auf der CPU etwa {min} GB RAM; größere Modelle benötigen deutlich mehr.",
+        performanceEstimate: "Rechne mit Minuten pro Denoising-Schritt: Ein 832x480-Clip mit 5 Frames aus Wan2.1 1.3B mit 3 Schritten dauerte auf 16 CPU-Threads etwa 4 Minuten, und ein Clip in voller Länge mit Standardeinstellungen kann Stunden dauern.",
+        confirmAction: "Trotzdem aktivieren",
+        loadError: "Entwicklermodus-Einstellungen konnten nicht geladen werden.",
+        saveError: "Entwicklermodus-Einstellungen konnten nicht gespeichert werden.",
       },
       modelAutoSwitch: {
         sectionTitle: "Automatischer Modellwechsel (OpenAI API)",
@@ -1838,6 +1863,12 @@ export const de = {
           "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
         closeToTraySaveError:
           "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
+
+        menuBarIcon: "In der Menüleiste anzeigen",
+        menuBarIconDescription:
+          "Zeigt das Unsloth-Symbol in der macOS-Menüleiste an. Wenn es ausgeblendet ist, bleibt Unsloth stattdessen im Dock – auch wenn es bei der Anmeldung startet.",
+        menuBarIconSaveError:
+          "Die Einstellung für das Menüleistensymbol konnte nicht aktualisiert werden.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
         saveError:
           "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
@@ -1942,8 +1973,8 @@ export const de = {
         downloadFailed: "Download konnte nicht gestartet werden",
         downloadConflict: "Diesen Download im Hub fortsetzen",
         downloadBusy: "Download läuft bereits",
-        pin: "An das RAG-Menü anheften",
-        unpin: "Vom RAG-Menü lösen",
+        pin: "An das Files-Menü anheften",
+        unpin: "Vom Files-Menü lösen",
         menuChip: "Modell",
         moreModels: "Weitere Modelle",
         pinMoreModels: "Weitere Modelle anheften",
@@ -2052,6 +2083,8 @@ export const de = {
         subtitle:
           "Alles Folgende wird aus Ihrem eigenen Verlauf berechnet. Es wird nichts erfasst oder an Unsloth gesendet.",
         retry: "Erneut versuchen",
+        exportCsv: "Als CSV exportieren",
+        exportError: "Token-Nutzung konnte nicht exportiert werden",
         privacyNote:
           "Die Statistiken werden aus dem lokalen Chat-, API-Nutzungs- und Trainingsverlauf Ihrer Unsloth-Installation berechnet. API-Eingaben, -Antworten und -Schlüssel werden dafür nie gespeichert. Nichts wird an Unsloth oder Dritte gesendet.",
         emptyChats:
@@ -2388,12 +2421,15 @@ export const de = {
         multiModelOff: "Aus",
         multiModelFit: "Wenn sie passen",
         multiModelAlways: "Immer",
-        multiModelDescription: "Beim Laden eines Chat-, Bild- oder Videomodells werden die anderen entladen.",
+        multiModelDescription: "Beim Laden eines Chat-, Sprach-, Bild- oder Videomodells werden die anderen entladen.",
         multiModelDescriptionFit:
           "Beim Laden eines Modells bleiben die anderen geladen, wenn sie passen. Wenn nicht, werden zuerst die nicht genutzten entladen, danach das aktive.",
         multiModelDescriptionAlways:
           "Beim Laden eines Modells wird nie ein anderes entladen. Ein Modell, das nicht passt, wird nicht geladen. Das automatische Entladen im Leerlauf und das Training geben weiterhin Speicher frei.",
-        multiModelHint: "Gilt für Chat-, Bild- und Videomodelle. Jedes geladene Chat-Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs versucht Unsloth, ein neues Modell auf eine GPU zu legen, die kein anderes Modell nutzt. „Wenn sie passen“ lässt etwa 1 GB frei. „Wenn sie passen“ und „Immer“ entladen nie ein Modell auf einer anderen GPU.",
+        multiModelHint: "Gilt für Chat-, Sprach-, Bild- und Videomodelle. Jedes geladene Chat-Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs versucht Unsloth, ein neues Modell auf eine GPU zu legen, die kein anderes Modell nutzt. „Wenn sie passen“ lässt etwa 1 GB frei. „Wenn sie passen“ und „Immer“ entladen nie ein Modell auf einer anderen GPU.",
+        allowOversizedLoad: "Übergroße Modelle trotzdem laden",
+        allowOversizedLoadDescription: "Bild- und Videomodelle auch laden, wenn die Speicherprüfung meldet, dass sie nicht passen.",
+        allowOversizedLoadHint: "Gilt, wenn CPU und GPU sich einen Speicher teilen (Apple Silicon, integrierte GPUs). Studio verweigert das Laden, wenn die geschätzten Modellgewichte größer sind als der Speicher, der nach der Reserve für das Betriebssystem bleibt. Ist dies aktiviert, wird das Laden trotzdem versucht. Die Schätzung kann in beide Richtungen falsch sein: Ein zu großes Modell kann fehlschlagen, den gesamten Speicher belegen, starkes Auslagern verursachen, den Computer einfrieren oder Studio beenden. Standardmäßig aus.",
         mediaIdleUnloadDescription:
           "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
@@ -2406,7 +2442,7 @@ export const de = {
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu speicher arbeitsspeicher ram resident anheften fixieren sperren geladen halten entladen leerlauf mmap no-mmap load-mode auslagern",
         multiModelKeywords:
-          "mehrere modelle gleichzeitig zusammen nebeneinander wechseln passen entladen verdrängen vram gpu bild video chat immer leerlauf",
+          "mehrere modelle gleichzeitig zusammen nebeneinander wechseln passen entladen verdrängen vram gpu bild video chat immer leerlauf sprache sprachausgabe tts stimme vorlesen",
         mediaIdleUnloadKeywords:
           "bild video diffusion leerlauf entladen ttl timeout sekunden freigeben vram gpu speicher",
       },
@@ -3218,6 +3254,7 @@ export const de = {
       audioCppVersion: "audio.cpp-Version",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integriert",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
@@ -4379,6 +4416,7 @@ export const de = {
       moreActions: "Weitere Aktionen",
       chatAboutThis: "Darüber chatten",
       chatWithModel: "Mit diesem Modell chatten",
+      editImage: "Bild bearbeiten",
       addToFavorites: "Zu Favoriten hinzufügen",
       regenerateTitle: "Titel neu generieren",
       removeFromFavorites: "Aus Favoriten entfernen",
@@ -4574,6 +4612,7 @@ export const de = {
       skippedOverLimit: "{count} weitere über dem Limit von {limit} Dateien.",
       chatFilesWaiting: "{count} werden angehängt, sobald ein Modell geladen ist, das sie lesen kann.",
       openFilesFailed: "Die Dateien konnten nicht geöffnet werden",
+      editImageFailed: "Das Bild konnte nicht zum Bearbeiten geöffnet werden",
       speechModel: "{name} ist ein Sprachmodell",
       speechModelDescription: "Wählen Sie es im Modellmenü auf der Audio-Seite aus.",
       noMediaLink: "Der Server hat keinen Link zum Abspielen dieser Datei zurückgegeben.",

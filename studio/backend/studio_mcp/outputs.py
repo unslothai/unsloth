@@ -79,6 +79,18 @@ def audio_options(rows: Any) -> Optional[list[AudioOption]]:
     return options or None
 
 
+class Placement(ToolOutput):
+    """Where a model ended up, as Unsloth Studio reports it after the load."""
+
+    # "cpu" or "gpu"; for a speech model that asked for the GPU and fell back, "cpu".
+    device: Optional[RouteText] = None
+    memory_mode: Optional[RouteText] = None
+    # How much of an image or video model is moved off the GPU: none, model, group, streaming or sequential.
+    offload_policy: Optional[RouteText] = None
+    transformer_quant: Optional[RouteText] = None
+    text_encoder_quant: Optional[RouteText] = None
+
+
 class MusicModeBounds(ToolOutput):
     # A music mode's duration_s range and default, in seconds.
     id: RouteText
@@ -140,6 +152,7 @@ class ImageSlot(ToolOutput):
     # How the loaded model reads prompts, in one or two sentences.
     prompt_hint: Optional[RouteText] = None
     generating: bool = False
+    placement: Optional[Placement] = None
 
 
 class VideoSlot(ToolOutput):
@@ -153,6 +166,7 @@ class VideoSlot(ToolOutput):
     # "WIDTHxHEIGHT" sizes the loaded model renders.
     size_presets: list[RouteText] = []
     generating: bool = False
+    placement: Optional[Placement] = None
 
 
 class SttDownload(ToolOutput):
@@ -268,6 +282,9 @@ class LoadResult(ToolOutput):
     job_id: Optional[RouteText] = None
     poll_after_s: Optional[float] = None
     display_name: Optional[RouteText] = None
+    placement: Optional[Placement] = None
+    # True when the chat model that was serving before the load still serves; None when none was.
+    alongside_applied: Optional[bool] = None
     evicted: list[RouteText] = []
     evicted_slots: list[EvictedSlot] = []
 
@@ -282,6 +299,43 @@ class UnloadResult(ToolOutput):
     kind: RouteText
     model: Optional[RouteText] = None
     unloaded: bool
+
+
+class SlotModel(ToolOutput):
+    # llm (chat, TTS and audio models share it), image, video or stt.
+    kind: RouteText
+    model: RouteText
+
+
+class UnloadAllResult(ToolOutput):
+    kind: RouteText = "all"
+    unloaded: list[SlotModel] = []
+
+
+class PlanVariant(ToolOutput):
+    variant: RouteText
+    size_bytes: Optional[int] = None
+    downloaded: bool = False
+    # Some files are on disk but not all: a download still running, or one that stopped.
+    partial: bool = False
+
+
+class PlanLoadResult(ToolOutput):
+    model: RouteText
+    kind: RouteText
+    variants: list[PlanVariant] = []
+    # Bytes still to download for this load; None when Unsloth Studio cannot tell before downloading.
+    download_bytes: Optional[int] = None
+    # The GPU memory the load is estimated to take; only known for a downloaded GGUF chat model.
+    est_gpu_bytes: Optional[int] = None
+    residents: list[SlotModel] = []
+    # off, fit or always (Keep multiple models loaded); None when this Unsloth Studio does not report it.
+    multi_model_mode: Optional[RouteText] = None
+    would_evict: list[SlotModel] = []
+    # False when would_evict is an upper bound: the load may keep some of them.
+    would_evict_exact: bool = True
+    # True when Keep multiple models loaded is Always and the load may be refused instead of unloading a model.
+    would_refuse: bool = False
 
 
 class Usage(ToolOutput):
@@ -493,6 +547,10 @@ class AnalysisResult(ToolOutput):
 class VideoJobRef(ToolOutput):
     id: RouteText
     status: RouteText
+    # Set while the video waits in this MCP server's queue behind another video; 1 is next.
+    queue_position: Optional[int] = None
+    # Seconds until the queued video is expected to start, from the running video's progress.
+    eta_s: Optional[float] = None
     progress: Optional[int] = None
     progress_percent: Optional[float] = None
 
@@ -576,6 +634,17 @@ class RecipeInfo(ToolOutput):
     data_rows: Optional[list[dict[str, Any]]] = None
 
 
+class DownloadRef(ToolOutput):
+    # What get_job(kind="download") and cancel(kind="model_download") take; None for a speech-to-text download.
+    id: Optional[RouteText] = None
+    model: Optional[RouteText] = None
+    kind: Optional[RouteText] = None
+    variant: Optional[RouteText] = None
+    status: RouteText
+    attached: bool = False
+    error: Optional[RouteText] = None
+
+
 class ExportInfo(ToolOutput):
     format: RouteText
     # Relative to Studio's exports folder, or only a name; never a host path.
@@ -594,10 +663,13 @@ class JobStatus(ToolOutput):
     poll_after_s: Optional[float] = None
     training: Optional[TrainingJob] = None
     load: Optional[LoadResult] = None
+    queue_position: Optional[int] = None
+    eta_s: Optional[float] = None
     error: Optional[RouteText] = None
     error_code: Optional[RouteText] = None
     video: Optional[VideoInfo] = None
     recipe: Optional[RecipeInfo] = None
+    download: Optional[DownloadRef] = None
     export: Optional[ExportInfo] = None
     jobs: Optional[list[Union[ExportJobSummary, JobSummary]]] = None
 
@@ -607,6 +679,8 @@ class LocalDataset(ToolOutput):
     label: RouteText
     source: RouteText = "local"
     rows: Optional[int] = None
+    # What config.local_datasets takes for any account; ``id`` alone works for the owner only.
+    ref: Optional[RouteText] = None
 
 
 class CachedDataset(ToolOutput):
@@ -631,11 +705,32 @@ class DatasetDownload(ToolOutput):
     error: Optional[RouteText] = None
 
 
+class DatasetUpload(ToolOutput):
+    id: RouteText
+    filename: RouteText
+    # The handle config.local_datasets takes; never the stored path.
+    ref: RouteText
+
+
+class ImageDatasetUpload(ToolOutput):
+    # What start_training kind "diffusion" takes as config.data_dir.
+    name: RouteText
+    image_count: Optional[int] = None
+    caption_count: Optional[int] = None
+    uploaded: Optional[int] = None
+
+
 class DatasetsResult(ToolOutput):
     local: Optional[list[LocalDataset]] = None
     cached: Optional[list[CachedDataset]] = None
     format: Optional[DatasetFormat] = None
     download: Optional[DatasetDownload] = None
+    uploaded: Optional[DatasetUpload] = None
+    image_dataset: Optional[ImageDatasetUpload] = None
+
+
+ConfigScalar = Union[StrictBool, StrictInt, StrictFloat, RouteText]
+ConfigValue = Union[ConfigScalar, list[ConfigScalar], dict[str, ConfigScalar]]
 
 
 class TrainingStarted(ToolOutput):
@@ -643,6 +738,8 @@ class TrainingStarted(ToolOutput):
     job_id: Optional[RouteText] = None
     status: RouteText
     message: Optional[RouteText] = None
+    # validate_only: the config as the route will read it, without paths or secrets.
+    config: Optional[dict[str, ConfigValue]] = None
     # What cancel(kind="training_start") takes while the job has not begun.
     start_request_id: Optional[RouteText] = None
 

@@ -1741,6 +1741,8 @@ def test_the_seeded_denoiser_artifact_is_fetched_under_the_load_cancel_event(mon
         _load_token = 1,
         _cancel_event = cancel,
         transformer_quant = "nvfp4",
+        # pinned: on a CUDA host an unset request also plans the hosted FP8 text encoder, a second fetch
+        text_encoder_quant = "off",
     )
 
     assert [(r, f) for r, f, _ in fetched] == [
@@ -1916,3 +1918,18 @@ def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatc
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
     assert ask() == vid.H3_AUTO_FALLBACK_SCHEME and fired == []
+
+
+def test_an_explicit_cached_scheme_seeds_even_when_another_scheme_is_hosted(monkeypatch):
+    """HunyuanVideo-1.5 hosts nvfp4; an explicit locally cached int8 must still seed."""
+    from core.inference import video as vid
+    from core.inference import video_denoiser_prequant as vdp
+
+    monkeypatch.setattr(vid, "video_family_prequant_schemes", lambda fam: ("nvfp4",))
+    sources = {"nvfp4": object(), "int8": object()}  # int8 resolves only through the local cache
+    monkeypatch.setattr(
+        vdp, "denoiser_prequant_sources", lambda fam, s, base, hf_token = None: sources.get(s)
+    )
+    assert _video_auto(monkeypatch, scheme = "int8", requested = "int8") == "int8"
+    sources.pop("int8")
+    assert _video_auto(monkeypatch, scheme = "int8", requested = "int8") is None

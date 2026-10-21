@@ -18,9 +18,10 @@ from fastmcp import Context
 from fastmcp.exceptions import ToolError
 
 from studio_mcp import job_store
+from studio_mcp import placement as place
 from studio_mcp.caller import Caller
 from studio_mcp.errors import tool_error
-from studio_mcp.outputs import EvictedSlot, LoadResult, UnloadResult
+from studio_mcp.outputs import EvictedSlot, LoadResult, SlotModel, UnloadAllResult, UnloadResult
 from studio_mcp.tools import as_dict, number, opt_text, route_json, strings, try_json
 
 POLL_INTERVAL_S = 2.0
@@ -126,7 +127,7 @@ def _same(left: Optional[str], right: Optional[str]) -> bool:
 
 def _repo(name: str) -> str:
     # A GGUF is listed as repo:variant in one place and the bare repo in another. A local path
-    # (C:\models\a.gguf) has a drive letter there, not a variant; a ref:<digest> handle is one local model.
+    # (C:\models\a.gguf) has a drive letter there, not a variant, and a ref: handle is one opaque id.
     if name.startswith("ref:"):
         return name
     head, sep, tail = name.partition(":")
@@ -212,6 +213,7 @@ async def start_load(
     run: Callable[[LoadJob, dict[str, list[str]]], Awaitable[LoadResult]],
     options: Any = None,
     hub_token: Optional[str] = None,
+    attach: bool = True,
 ) -> LoadResult:
     """Run a load as a job and wait for it until ``deadline``. A repeat call for the same load while it runs follows it; one with another Hub token (a retry with a fixed token, say) starts its own."""
     token = hub_token or caller.hf_token
@@ -230,9 +232,26 @@ async def start_load(
         # A chat load Unsloth Studio is already running (started elsewhere) is followed, not started
         # again. The status names only the repo, so a load asking for a variant always posts.
         loading_now = strings(chat.get("loading"))
-        if slot in CHAT_ROUTE_KINDS and not variant and any(_same(n, model) for n in loading_now):
+        if (
+            slot in CHAT_ROUTE_KINDS
+            and attach
+            and not variant
+            and any(_same(n, model) for n in loading_now)
+        ):
             return await _watch_llm(caller, slot, model, before, job)
         # K16, after the attach: M5 waits on a download of the same model here, then M7 refuses a partial one.
+        from studio_mcp import model_downloads
+
+        # Inside the job, so the wait outlives wait_s: the load starts once the download ends.
+        await model_downloads.wait_for_managed(
+            caller,
+            job,
+            model = model,
+            kind = slot,
+            variant = variant,
+            budget_s = model_downloads.MAX_LOAD_WAIT_S,
+        )
+        await place.refuse_partial_variant(caller, model, slot, variant)
         return await run(job, before)
 
     job = _in_flight(caller, asked) or LOADS.start(asked, drive)
@@ -333,7 +352,7 @@ def _llm_poll(caller: Caller, model: str) -> Callable[[], Awaitable[Progress]]:
         fraction = number(loading.get("fraction")) if isinstance(loading, dict) else None
         if fraction and opt_text(loading.get("phase")):
             return min(fraction, 1.0), f"Loading into memory ({loading['phase']})"
-        if model.startswith(("/", "\\")) or ":" in model[:3]:
+        if model.startswith(("/", "\\", "ref:")) or ":" in model[:3]:
             return None
         download = await route_json(
             "GET",
@@ -359,6 +378,11 @@ async def load_llm(
     hf_token: Optional[str],
     kind: str = "llm",
     deadline: Optional[float] = None,
+    device: Optional[str] = None,
+    alongside: Optional[bool] = None,
+    kv_cache_type: Optional[str] = None,
+    gpu_layers: Optional[int] = None,
+    is_lora: bool = False,
 ) -> LoadResult:
     body: dict[str, Any] = {
         "model_path": model,
@@ -367,12 +391,30 @@ async def load_llm(
     }
     if variant:
         body["gguf_variant"] = variant
+    if is_lora:
+        body["is_lora"] = True
     # The load routes read the Hub token from the body, not the header.
     token = hf_token or caller.hf_token
     if token:
         body["hf_token"] = token
+    if hf_token:
+        # The variant lookups before the load read the Hub token from the header.
+        caller = dataclasses.replace(caller, hf_token = hf_token)
 
     async def run(job: LoadJob, before: dict[str, list[str]]) -> LoadResult:
+        # The GGUF listing and status reads run inside the job, so a slow one never holds the call
+        # past ``wait_s``; device='cpu' for a chat model that is not a GGUF is refused here.
+        gguf = await place.require_cpu_gguf(caller, kind, model, variant, device, gpu_layers)
+        body.update(
+            place.llm_fields(
+                kind,
+                gguf = gguf,
+                device = device,
+                alongside = await place.auto_alongside(caller, device, alongside, gpu_layers),
+                kv_cache_type = kv_cache_type,
+                gpu_layers = gpu_layers,
+            )
+        )
         payload = await with_progress(
             None,
             route_json("POST", "/api/inference/load", caller = caller, json_body = body),
@@ -381,13 +423,22 @@ async def load_llm(
         )
         if not isinstance(payload, dict):
             raise ToolError("Unsloth Studio did not confirm the load")
+        loaded = opt_text(payload.get("model")) or model
+        chat = before.get("llm") or []
+        # Serving only: a model merely held in memory behind the new primary no longer serves.
+        # Bounded: the model is loaded, and a stalled read must not keep the job open.
+        status = await _read_json(caller, "/api/inference/status") if chat else None
+        # A failed read leaves it unknown whether the previous model still serves.
+        after = strings(status.get("serving")) if isinstance(status, dict) else None
         return await finish_load(
             caller,
             kind,
-            opt_text(payload.get("model")) or model,
+            loaded,
             before,
             payload,
             display_name = opt_text(payload.get("display_name")),
+            placement = place.llm_placement(payload, device),
+            alongside_applied = place.alongside_applied(chat, after, loaded),
         )
 
     return await start_load(
@@ -398,8 +449,21 @@ async def load_llm(
         variant = variant,
         deadline = deadline or deadline_after(None),
         run = run,
-        options = (max_seq_length or 0, load_in_4bit),
+        # A load asked with other placement fields is a different load, not one to follow.
+        options = (
+            max_seq_length or 0,
+            load_in_4bit,
+            device,
+            alongside,
+            kv_cache_type,
+            gpu_layers,
+        ),
         hub_token = token,
+        # A load asked with its own settings is never the one already running; following it would
+        # skip them (and the CPU check).
+        attach = not max_seq_length
+        and load_in_4bit
+        and all(v is None for v in (device, alongside, kv_cache_type, gpu_layers)),
     )
 
 
@@ -531,20 +595,17 @@ def _resident_matches(
     return h3_task.lower() == h3_transformer_task(wanted).lower()
 
 
-async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> Optional[str]:
-    """The checkpoint file to load from a GGUF repo: the named variant, else the repo's default."""
+async def _gguf_filename(caller: Caller, model: str, variant: Optional[str]) -> Optional[dict]:
+    """The variant to load from a GGUF repo (the named one, else the repo's default), with its filename, size_bytes, downloaded and partial."""
     listing = await route_json(
         "GET", "/api/hub/gguf-variants", caller = caller, params = {"repo_id": model}, hub_header = True
     )
-    listing = as_dict(listing)
-    variants = [v for v in listing.get("variants") or [] if isinstance(v, dict)]
-    wanted = (variant or opt_text(listing.get("default_variant")) or "").lower()
-    for entry in variants:
-        if str(entry.get("quant", "")).lower() == wanted and opt_text(entry.get("filename")):
-            return entry["filename"]
+    entry = place.pick_variant(listing, variant)
+    if entry is not None and opt_text(entry.get("filename")):
+        return entry
     if variant:
         raise ToolError(f"{model} has no GGUF variant {variant}")
-    return opt_text(variants[0].get("filename")) if variants else None
+    return None
 
 
 async def load_media(
@@ -556,8 +617,10 @@ async def load_media(
     variant: Optional[str],
     hf_token: Optional[str],
     deadline: Optional[float] = None,
+    knobs: Optional[dict[str, str]] = None,
 ) -> LoadResult:
     routes = MEDIA_ROUTES[kind]
+    knobs = knobs or {}
     if hf_token:
         # The GGUF lookup reads the Hub token from the header, so a gated repo needs it there too.
         caller = dataclasses.replace(caller, hf_token = hf_token)
@@ -569,12 +632,12 @@ async def load_media(
     async def prepare() -> None:
         # Hub and plan reads run inside the job, so a slow one never holds the call past ``wait_s``.
         if variant or "gguf" in model.lower():
-            filename = await _gguf_filename(caller, model, variant)
-            if filename:
-                body["gguf_filename"] = filename
+            entry = await _gguf_filename(caller, model, variant)
+            if entry:
+                body["gguf_filename"] = entry["filename"]
                 body["model_kind"] = "gguf"
         # The plan validates the pick the way the load does, before any download.
-        plan = await route_json("POST", routes["plan"], caller = caller, json_body = body)
+        plan = await place.post_plan(caller, routes["plan"], body, knobs)
         if isinstance(plan, dict):
             if opt_text(plan.get("incompatible_reason")):
                 raise tool_error(plan["incompatible_reason"])
@@ -592,7 +655,7 @@ async def load_media(
         await prepare()
         # The answer names what the arbiter unloaded to make room; the load itself goes on in the background.
         job.post = asyncio.ensure_future(
-            route_json("POST", routes["load"], caller = caller, json_body = body)
+            route_json("POST", routes["load"], caller = caller, json_body = {**body, **knobs})
         )
         job.post.add_done_callback(lambda post: post.cancelled() or post.exception())
         answer = await with_progress(
@@ -600,7 +663,9 @@ async def load_media(
         )
         status = await _media_ready(caller, kind, model, routes, job, body)
         name = _media_name(status) or model
-        return await finish_load(caller, kind, name, before, answer)
+        return await finish_load(
+            caller, kind, name, before, answer, placement = place.media_placement(status)
+        )
 
     return await start_load(
         caller,
@@ -610,6 +675,7 @@ async def load_media(
         variant = variant,
         deadline = deadline or deadline_after(None),
         run = run,
+        options = tuple(sorted(knobs.items())),
     )
 
 
@@ -879,3 +945,73 @@ async def unload_stt(caller: Caller, model: Optional[str]) -> UnloadResult:
     after = (await stt_status(caller)).get(engine)
     still = isinstance(after, dict) and after.get("loaded_model") == name
     return UnloadResult(kind = "stt", model = name, unloaded = not still)
+
+
+async def unload_all(caller: Caller) -> UnloadAllResult:
+    """Unload every chat slot, then the image, video and speech-to-text models. The embedding model is Unsloth Studio's own and stays. A step that fails does not stop the rest; the error then names what was unloaded and what was not."""
+    failed: list[str] = []
+
+    async def unload(name: str, target: str) -> None:
+        try:
+            await route_json(
+                "POST", "/api/inference/unload", caller = caller, json_body = {"model_path": target}
+            )
+        except ToolError as exc:
+            failed.append(f"{name}: {exc}")
+
+    async def resident() -> tuple[list[str], list[str], set[str]]:
+        # Bounded: a stalled status read fails the chat step, and the other slots still go.
+        try:
+            return await asyncio.wait_for(_llm_resident(caller), READ_S)
+        except asyncio.TimeoutError:
+            raise ToolError("Unsloth Studio did not say which chat models are loaded") from None
+
+    unloaded: list[SlotModel] = []
+    try:
+        serving, checkpoints, _before = await resident()
+        pairs = list(zip(serving, checkpoints))
+        # Kept models first, so unloading the primary never promotes one of them in between.
+        for name, target in reversed(pairs):
+            await unload(name, target)
+        now_serving, now_checkpoints, after = await resident()
+        # A model the unloads promoted still serves (by name and by checkpoint): unload it too.
+        promoted = [pair for pair in zip(now_serving, now_checkpoints) if pair not in pairs]
+        for name, target in promoted:
+            await unload(name, target)
+        # Models held in memory behind the active one are listed only under loaded.
+        known = {*serving, *checkpoints, *now_serving, *now_checkpoints}
+        held = [name for name in after if name not in known]
+        for name in held:
+            await unload(name, name)
+        if held or promoted:
+            _serving, _checkpoints, after = await resident()
+        pairs += promoted + [(name, name) for name in held]
+        unloaded += [
+            SlotModel(kind = "llm", model = name)
+            for name, target in pairs
+            if not {name, target} & after
+        ]
+    except ToolError as exc:
+        # Unsloth Studio could not say which chat models are loaded; the other slots still go.
+        failed.append(f"llm: {exc}")
+    for kind in MEDIA_ROUTES:
+        try:
+            result = await unload_media(caller, kind)
+        except ToolError as exc:
+            failed.append(f"{kind}: {exc}")
+            continue
+        if result.unloaded and result.model:
+            unloaded.append(SlotModel(kind = kind, model = result.model))
+    for _engine in STT_ENGINES:
+        try:
+            result = await unload_stt(caller, None)
+        except ToolError as exc:
+            failed.append(f"stt: {exc}")
+            break
+        if not (result.unloaded and result.model):
+            break
+        unloaded.append(SlotModel(kind = "stt", model = result.model))
+    if failed:
+        done = ", ".join(f"{slot.kind} {slot.model}" for slot in unloaded) or "nothing"
+        raise ToolError(f"Unloaded {done}; could not unload {'; '.join(failed)}")
+    return UnloadAllResult(unloaded = unloaded)

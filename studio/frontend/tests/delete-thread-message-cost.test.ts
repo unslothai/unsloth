@@ -12,6 +12,7 @@ import test from "node:test";
 
 import { MessageRepository } from "@assistant-ui/core/internal";
 import * as researchSync from "../src/features/chat/utils/research-message-sync.ts";
+import * as savedUsage from "../src/features/chat/utils/saved-context-usage.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 type Exported = {
@@ -71,6 +72,7 @@ function harness(): Harness {
         },
       },
       "./research-message-sync": researchSync,
+      "./saved-context-usage": savedUsage,
     },
   );
   return { module, calls, synced, stored };
