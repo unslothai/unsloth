@@ -273,6 +273,11 @@ from utils.security.hub_data_files import install as _guard_hub_data_files
 _guard_hub_data_files()
 del _guard_hub_data_files
 
+from utils.security.dataset_media import install as _guard_dataset_media
+
+_guard_dataset_media()
+del _guard_dataset_media
+
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
