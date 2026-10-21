@@ -185,7 +185,9 @@ def test_memory_refuses_oversize_text_and_a_linked_file(home):
     try:
         os.symlink(target, path)
     except OSError:
-        pytest.skip("symlinks unavailable")
+        pytest.skip(
+            reason = "Windows without Developer Mode refuses os.symlink; the link refusal needs a real link"
+        )
     assert agents_md.read_memory() == "kept"
     with pytest.raises(ValueError, match = "link"):
         agents_md.write_memory("new")

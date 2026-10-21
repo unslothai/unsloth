@@ -478,8 +478,9 @@ def test_fast_linear_forward_compiles_fullgraph(nf4_kernels, bsz):
 
 
 def test_eager_gemv_gate_off_takes_bitsandbytes(monkeypatch):
-    """Where the Triton GEMV is not the eager choice (HIP before Triton 3.7), eager decode takes
-    bitsandbytes' GEMV, on the live stream. On CUDA the Triton GEMV is the eager choice."""
+    """Where the Triton GEMV is not the eager choice (HIP before Triton 3.6, or
+    UNSLOTH_TRITON_GEMV_EAGER=0), eager decode takes bitsandbytes' GEMV, on the live stream.
+    On CUDA the Triton GEMV is the eager choice."""
     from unsloth.kernels import nf4_gemv
 
     if torch.version.hip is None and _NF4_KERNELS_AVAILABLE:

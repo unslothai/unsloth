@@ -664,6 +664,56 @@ def sd_cpp_cuda_compute_capability(
     return caps.get(int(device_name[len(head) :]))
 
 
+def sd_cpp_device_listing_known(binary: Optional[str]) -> bool:
+    if not binary:
+        return False
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    return seen is not None and seen[0] == _binary_stat_identity(binary)
+
+
+# Runs when --list-devices timed out (possibly a stalled driver); CUDA calls have no deadline, so bound the wait.
+TORCH_CC_TIMEOUT_S = 10.0
+
+
+def torch_cuda_compute_capability(
+    ordinal: Optional[int], *, timeout_s: Optional[float] = None
+) -> Optional[tuple[int, int]]:
+    """torch's compute capability for ``ordinal`` (lowest visible when None), or None on ROCm (not sm numbers),
+    error or timeout (the daemon thread is left behind). Same runtime and mask as CUDA sd.cpp, so indices agree."""
+    import threading
+
+    result: list = []
+
+    def read() -> None:
+        result.append(_torch_cuda_compute_capability(ordinal))
+
+    worker = threading.Thread(target = read, daemon = True, name = "sd-cpp-torch-cc")
+    worker.start()
+    worker.join(TORCH_CC_TIMEOUT_S if timeout_s is None else timeout_s)
+    return result[0] if result else None
+
+
+def _torch_cuda_compute_capability(ordinal: Optional[int]) -> Optional[tuple[int, int]]:
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) or not getattr(torch.version, "cuda", None):
+            return None
+        if not torch.cuda.is_available():
+            return None
+        if ordinal is None:
+            caps = [
+                tuple(torch.cuda.get_device_capability(i)) for i in range(torch.cuda.device_count())
+            ]
+            return min(caps) if caps else None  # type: ignore[return-value]
+        if not 0 <= int(ordinal) < torch.cuda.device_count():
+            return None
+        major, minor = torch.cuda.get_device_capability(int(ordinal))
+        return (int(major), int(minor))
+    except Exception:  # noqa: BLE001 -- unknown stays unknown
+        return None
+
+
 _VULKAN_DEVICE_UMA_RE = re.compile(r"^ggml_vulkan: (\d+) = .*?\| uma: ([01]) \|", re.MULTILINE)
 
 
@@ -744,7 +794,9 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
     source = os.environ if env is None else env
     # Windows HIP has no ROCr layer, so a leftover ROCR_VISIBLE_DEVICES masks nothing there.
     rocr = None if sys.platform == "win32" else source.get(_ROCR_MASK_VAR)
-    hip = next((source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None), None)
+    # ROCm reads a non-empty HIP_VISIBLE_DEVICES over CUDA_VISIBLE_DEVICES; an empty one does not shadow it.
+    present = [source.get(var) for var in _HIP_MASK_VARS if source.get(var) is not None]
+    hip = next((raw for raw in present if raw.strip()), present[0] if present else None)
     opaque = source.get(_OPAQUE_MASK_VAR)
     if rocr is None and hip is None and opaque is None:
         return ordinal, False
@@ -757,6 +809,11 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
         entries = _mask_entries(raw)
         if entries is None:
             return None, True
+        # clr keeps the first of a repeated HIP entry; ROCr stops at one (utils/hardware/amd.py).
+        if raw is hip:
+            entries = list(dict.fromkeys(entries))
+        elif len(set(entries)) < len(entries):
+            entries = entries[: next(i for i, e in enumerate(entries) if e in entries[:i])]
         if visible is None:
             visible = entries
         else:
@@ -878,17 +935,19 @@ def sd_cpp_device_named(
     card_name: Optional[str],
     *,
     position: Optional[int] = None,
+    listing: Optional[str] = None,
 ) -> Optional[str]:
     """The ggml device that IS *card_name*, when exactly one of them is. The Vulkan build names its
     devices in its own namespace, so a physical ordinal names nothing in it. ``position`` breaks a
     tie on the ASSUMPTION that RADV and HIP walk one vendor's GPUs in the same order -- unreadable
-    here, so only among devices already agreed to be the right MODEL."""
+    here, so only among devices already agreed to be the right MODEL. ``listing``: tab-separated name and
+    description lines read elsewhere, instead of running ``binary --list-devices``."""
     if not binary or not card_name:
         return None
     wanted = _normalized_card_name(card_name)
     if not wanted:
         return None
-    text = _sd_cpp_probe_output(binary, "--list-devices")
+    text = listing if listing is not None else _sd_cpp_probe_output(binary, "--list-devices")
     if text is None:
         return None
     # Both readings: containment cannot tell `RX 7600` from `RX 7600 XT`, equality cannot see through a driver tag.
@@ -3132,6 +3191,8 @@ class SdCppDiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card
         gpu_ordinal: Optional[int] = None,
+        # Accepted for parity; native never raises the unified-memory refusal.
+        allow_oversized_load: bool = False,
     ) -> dict[str, Any]:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
