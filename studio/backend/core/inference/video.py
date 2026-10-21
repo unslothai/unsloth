@@ -1431,6 +1431,9 @@ class _VideoLoadState:
     # resolves a bare device. Mirrors the image backend.
     placed_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
+    # The repo the load actually read ``base_repo`` from (the unsloth mirror on a fresh install): the learned-peak key
+    # names it. None: no load decision (the key falls back to the mirror when the upstream is not cached).
+    fetch_base: Optional[str] = None
     # Content-detected checkpoint variant identifier (LTX-2.3 "ltx-2.3-22b-distilled" / "-dev"), read before the names.
     variant_id: Optional[str] = None
     # Resident MiniMax-H3 denoiser partition, if any.
@@ -3653,6 +3656,7 @@ def _calibration_revision(state: Any) -> Optional[str]:
         getattr(state, "gguf_filename", None),
         getattr(state, "kind", None),
         getattr(state, "base_repo", None),
+        getattr(state, "fetch_base", None),
     )
     try:
         pipe._unsloth_calibration_revision = revision or ""
@@ -9489,8 +9493,10 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
-            if not speed_offload and _video_denoiser_hooked(pipe):
-                # compiled for a resident denoiser but it landed hooked: move the compile below the offload hooks (as the image backend)
+            if _video_denoiser_hooked(pipe):
+                # Below the offload hooks (as the image backend), whether the speed layer planned the offload or a split
+                # fell back to a hooked placement: compiled through them, each block splits at the hook's
+                # torch.compiler.disable'd pre / post forward.
                 compile_pipe_below_offload_hooks(pipe, logger)
             # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
             graph_applied = arm_graphs_after_placement(
@@ -9690,6 +9696,7 @@ class VideoBackend:
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
                     base_repo = base,
+                    fetch_base = fetch_base,
                     device = device,
                     gpu_ordinal = target.ordinal,
                     placed_ordinal = placed_cuda_ordinal(target),
@@ -10937,6 +10944,7 @@ class VideoBackend:
                 repo_id = repo_id,
                 display_repo_id = display_repo_id,
                 base_repo = base,
+                fetch_base = fetch_base,
                 device = device,
                 gpu_ordinal = umem_target.ordinal,
                 placed_ordinal = placed_cuda_ordinal(umem_target),

@@ -345,11 +345,14 @@ export const BUDGET = {
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier and model picker adds 703 B raw /
-  // 347 B transfer (6,878,617 -> 6,879,320 B raw, 2,071,511 -> 2,071,858 B transfer against 4d7ebf5ce, one machine
-  // and build, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_072_047,
-  rawBytes: 6_879_480,
+  // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
+  // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
+  // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
+  // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier and model picker adds 697 B raw /
+  // 338 B transfer (6,878,886 -> 6,879,583 B raw, 2,071,694 -> 2,072,032 B transfer against ce1ab5b6a, one machine
+  // and build, 97 chunks). Raised to that build plus a 160 B raw / 189 B transfer margin.
+  transferBytes: 2_072_221,
+  rawBytes: 6_879_743,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
