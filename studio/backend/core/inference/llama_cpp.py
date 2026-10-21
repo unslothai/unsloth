@@ -30211,7 +30211,9 @@ class LlamaCppBackend:
                             )
                             # An automatic context scales with the FINAL slots and layout.
                             if _auto_ctx:
-                                _ctx = _sidecar_child_ctx(run_args, child_env, _native, _np, _kv_unified)
+                                _ctx = _sidecar_child_ctx(
+                                    run_args, child_env, _native, _np, _kv_unified
+                                )
                             # The draft context's own micro-batch sizes its compute graph.
                             _ub = _draft_n_ubatch(run_args, child_env) or _ub
                             _v = self._estimate_mtp_overhead_bytes(
