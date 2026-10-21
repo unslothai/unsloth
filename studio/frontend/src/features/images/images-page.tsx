@@ -2823,7 +2823,8 @@ export function ImagesPage({
         // Only a finished fetch for the loaded family: right after a load or family switch it is empty or stale.
         loraCapable && loraCatalogFamily === (status?.family ?? null),
         availableLoras,
-        () => listDiffusionLoras(),
+        // A LoRA is family-specific, so a loaded model narrows the lookup like the picker does.
+        () => listDiffusionLoras(status?.loaded ? (status.family ?? undefined) : undefined),
       );
       const merged =
         tagged.loras.length > 0

@@ -329,7 +329,7 @@ test("LoRA tags pasted before a LoRA-capable model is resident match the whole l
   const page = readSrc("features/images/images-page.tsx");
   assert.match(
     page,
-    /const tagged = await matchLoraTagsForImport\(\n\s+recipe\.lora_tags,\n\s+\/\/[^\n]*\n\s+loraCapable && loraCatalogFamily === \(status\?\.family \?\? null\),\n\s+availableLoras,\n\s+\(\) => listDiffusionLoras\(\),\n\s+\);/,
+    /const tagged = await matchLoraTagsForImport\(\n\s+recipe\.lora_tags,\n\s+\/\/[^\n]*\n\s+loraCapable && loraCatalogFamily === \(status\?\.family \?\? null\),\n\s+availableLoras,\n\s+\/\/[^\n]*\n\s+\(\) => listDiffusionLoras\(status\?\.loaded \? \(status\.family \?\? undefined\) : undefined\),\n\s+\);/,
   );
   // The resident catalog counts only once the fetch for the current family has landed.
   assert.match(
