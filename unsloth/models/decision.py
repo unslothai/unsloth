@@ -302,6 +302,23 @@ class ClefDataCollator:
         return batch
 
 
+_ENCODER_GRAD_SCALE = 1024.0
+_ENCODER_GRAD_UNSCALE = 1.0 / _ENCODER_GRAD_SCALE
+
+
+class _ScaleEncoderGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, hidden, unscale):
+        ctx.dtype = hidden.dtype
+        ctx.unscale = unscale
+        return hidden.float()
+
+    @staticmethod
+    def backward(ctx, grad_hidden):
+        ctx.unscale[0] = _ENCODER_GRAD_UNSCALE
+        return (grad_hidden * _ENCODER_GRAD_SCALE).to(ctx.dtype), None
+
+
 class ClefDecisionModel(torch.nn.Module):
     # `encoder` is the Qwen3.5 backbone, named like Laya's so the trainer treats both alike.
     is_clef = True
@@ -310,6 +327,7 @@ class ClefDecisionModel(torch.nn.Module):
         super().__init__()
         self.encoder = encoder
         self.head = head
+        self._unsloth_grad_unscale = [1.0]
 
     def _backbone(self):
         return (
@@ -317,6 +335,16 @@ class ClefDecisionModel(torch.nn.Module):
             if hasattr(self.encoder, "get_base_model")
             else self.encoder
         )
+
+    def _scale_encoder_grad(self, hidden):
+        # Forced-float32 disables GradScaler while the backbone stays in float16;
+        # scale dL/d(hidden) so small initial head gradients do not underflow.
+        unscale = self._unsloth_grad_unscale
+        for param in self.encoder.parameters():
+            if param.requires_grad and not getattr(param, "_unsloth_grad_unscaled", False):
+                param.register_hook(lambda grad, u = unscale: grad * u[0] if u[0] != 1.0 else grad)
+                param._unsloth_grad_unscaled = True
+        return _ScaleEncoderGrad.apply(hidden, unscale)
 
     def forward(
         self,
@@ -346,6 +374,11 @@ class ClefDecisionModel(torch.nn.Module):
             return_dict = True,
             **media,
         ).last_hidden_state
+        if hidden.requires_grad:
+            if hidden.dtype == torch.float16 and not torch.is_autocast_enabled(hidden.device.type):
+                hidden = self._scale_encoder_grad(hidden)
+            else:
+                self._unsloth_grad_unscale[0] = 1.0
         logits = head(
             hidden,
             input_ids,

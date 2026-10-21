@@ -705,3 +705,36 @@ def test_a_plain_lm_in_a_subfolder_loads_from_it(tmp_path, monkeypatch):
     with pytest.raises(Captured):
         FastDecisionModel.from_pretrained(str(tmp_path), subfolder = "lm", decision_head = "clef")
     assert seen == [str(tmp_path / "lm")]
+
+
+def test_forced_float32_fp16_backbone_gradients_do_not_underflow(monkeypatch):
+    model, processor = _tiny_lm(monkeypatch, dtype = torch.float32)
+    model = FastDecisionModel.get_peft_model(model, r = 4, lora_alpha = 4, random_state = 3407)
+    with torch.no_grad():
+        model._backbone().model.embed_tokens.weight.mul_(4096.0)
+        model._backbone().model.norm.weight.mul_(2048.0)
+    model.decision_config["max_len"] = 512
+    items, _ = FastDecisionModel.build_dataset(_rows(2), processor, model)
+    batch = decision.ClefDataCollator(processor.pad_token_id, tokenizer = processor, max_len = 512)(
+        items
+    )
+    target, mask = batch.pop("target"), batch["marker_mask"]
+    batch.pop("ordinal", None)
+
+    def lora_b_grad(dtype):
+        model.encoder.to(dtype)
+        model.zero_grad()
+        logits, _ = model(**batch)
+        (decision._decision_loss(logits, target, mask) / 16.0).backward()
+        return torch.cat(
+            [
+                p.grad.detach().float().flatten()
+                for n, p in model.encoder.named_parameters()
+                if "lora_B" in n
+            ]
+        )
+
+    ref = lora_b_grad(torch.float32)
+    got = lora_b_grad(torch.float16)
+    cos = torch.nn.functional.cosine_similarity(ref.unsqueeze(0), got.unsqueeze(0)).item()
+    assert cos > 0.99 and pytest.approx(ref.norm().item(), rel = 0.05) == got.norm().item()
