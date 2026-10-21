@@ -921,7 +921,12 @@ def require_model_access(
 ) -> None:
     access_options = {"offline": True} if offline else {}
     if not model_visible(reference, repo_type = repo_type, **access_options):
-        if repo_type == "model":
+        from utils.paths.path_utils import is_network_or_device_path
+
+        # The allowlist check below resolves the reference on disk: not for a share path.
+        if repo_type == "model" and not (
+            isinstance(reference, str) and is_network_or_device_path(reference)
+        ):
             require_model_allowed(reference)
         raise HTTPException(status_code = 404, detail = "Model not found")
 

@@ -655,7 +655,7 @@ def model_library_roots() -> tuple[str, ...]:
     return tuple(kept)
 
 
-_CREDENTIAL_BASENAMES = ("token", "stored_tokens", ".env", ".git-credentials", ".netrc")
+_CREDENTIAL_BASENAMES = (".env",)  # plus the approval gate's own list, read at call time
 
 
 def _hf_home_roots() -> tuple[str, ...]:
@@ -687,7 +687,9 @@ def _is_within(path: str, root: str) -> bool:
 
 
 def _holds_a_credential_file(folder: str) -> bool:
-    return any(os.path.lexists(os.path.join(folder, name)) for name in _CREDENTIAL_BASENAMES)
+    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
+    names = (*_CREDENTIAL_BASENAMES, *sorted(approval_names))
+    return any(os.path.lexists(os.path.join(folder, name)) for name in names)
 
 
 def _is_filesystem_root(path: str, pathmod: Any = None) -> bool:

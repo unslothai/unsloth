@@ -111,3 +111,17 @@ def test_local_spellings_are_not_network_paths():
     from utils.paths.path_utils import is_network_or_device_path
     assert not is_network_or_device_path("C:\\Users\\x")
     assert not is_network_or_device_path("/home/x")
+
+
+def test_the_allowlist_fallback_does_not_touch_a_unc_path(studio_home, unc_calls, monkeypatch):
+    # With a model allowlist set, require_model_access asks it about a refused reference;
+    # that check resolves paths on disk, which a share path must never reach.
+    monkeypatch.setattr(account_access, "model_allowlist", lambda: {"org/allowed"})
+    token = bind_account(ALICE)
+    try:
+        with pytest.raises(HTTPException) as info:
+            account_access.require_model_access(UNC)
+        assert info.value.status_code == 404
+    finally:
+        reset_account(token)
+    assert unc_calls == []

@@ -104,3 +104,10 @@ def test_the_capability_text_says_loopback_is_reachable(monkeypatch, platform):
     capability = os_sandbox.capability_snapshot()
     assert capability.available
     assert "loopback" in capability.remediation
+
+
+@pytest.mark.parametrize("name", ["credentials", "auth.db", ".pypirc", ".npmrc", "id_ed25519"])
+def test_a_folder_holding_any_approval_gated_credential_is_not_granted(tmp_path, name):
+    from core.inference import os_sandbox
+    (tmp_path / name).write_text("secret")
+    assert os_sandbox._holds_a_credential_file(str(tmp_path))
