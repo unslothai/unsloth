@@ -1029,6 +1029,47 @@ def test_hugging_face_recipe_seeds_use_explicit_account_credentials():
         run_as(ALICE, jobs.validate_recipe_access, {"source": {**source, "token": ""}})
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"seed_type": "agent_rollout", "format": "codex"},
+        {"seed_type": "agent_rollout", "format": "claude_code", "path": None},
+        {"seed_type": "agent_rollout", "format": "codex", "path": ""},
+        {"seed_type": "directory", "path": ""},
+        {"seed_type": "file_contents", "path": ""},
+    ],
+)
+def test_folder_recipe_seeds_cannot_fall_back_to_a_host_folder(source):
+    with pytest.raises(HTTPException):
+        run_as(ALICE, jobs.validate_recipe_access, {"seed_config": {"source": source}})
+    run_as(OWNER, jobs.validate_recipe_access, {"seed_config": {"source": source}})
+    own = {**source, "path": str(run_as(ALICE, workspace_root) / "rollouts")}
+    run_as(ALICE, jobs.validate_recipe_access, {"seed_config": {"source": own}})
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["/tmp/elsewhere", "../elsewhere", "..\\elsewhere", "nested/name", "C:x", "..", "", None],
+)
+def test_recipe_processor_names_cannot_be_paths(name):
+    recipe = {"processors": [{"processor_type": "schema_transform", "name": name, "template": {}}]}
+    with pytest.raises(HTTPException):
+        run_as(ALICE, jobs.validate_recipe_access, recipe)
+    run_as(OWNER, jobs.validate_recipe_access, recipe)
+
+
+def test_recipe_plain_processor_names_pass():
+    for name in ("schema_transform", "schema_transform_2", "chat format v1.2"):
+        recipe = {"processors": [{"processor_type": "schema_transform", "name": name}]}
+        run_as(ALICE, jobs.validate_recipe_access, recipe)
+    # A schema-transform template may name an output column processor_type.
+    template = {"processor_type": "{{ kind }}", "text": "{{ text }}"}
+    recipe = {
+        "processors": [{"processor_type": "schema_transform", "name": "out", "template": template}]
+    }
+    run_as(ALICE, jobs.validate_recipe_access, recipe)
+
+
 @pytest.mark.parametrize("account", [OWNER, ALICE])
 def test_recipe_workflow_key_belongs_to_the_starting_account(account, monkeypatch):
     from routes.data_recipe import jobs as route
