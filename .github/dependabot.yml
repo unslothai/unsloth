@@ -73,6 +73,10 @@ updates:
       - dependency-name: "bitsandbytes"
       - dependency-name: "transformers"
       - dependency-name: "datasets"
+      # Also hand-kept: torchcodec per audio-torch extra (matched to each torch line), and
+      # huggingface-hub split by Python version (1.x needs 3.10+, 3.9 stays on 0.36.2).
+      - dependency-name: "torchcodec"
+      - dependency-name: "huggingface-hub"
       # A major bump (huggingface-hub 2.x, pymupdf4llm 0.3 -> 1.x) needs its own review.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
