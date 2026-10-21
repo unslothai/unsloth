@@ -81,7 +81,6 @@ def _optimizer_for_host(requested: Optional[str] = None) -> str:
     return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
 
 
-# Enough rows to see past a leading empty or broken media value.
 _MEDIA_SNIFF_ROWS = 16
 # Containers the PyAV audio decoder reads beyond the detector's extension list.
 _MORE_AUDIO_EXTENSIONS = (".amr", ".aif", ".aiff", ".aifc", ".caf")

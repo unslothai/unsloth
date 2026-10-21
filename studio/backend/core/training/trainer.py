@@ -3199,7 +3199,6 @@ class UnslothTrainer:
         if os.path.isabs(dataset_file):
             return Path(dataset_file)
         if os.path.exists(dataset_file):
-            # A path relative to the current working directory (CLI usage)
             return Path(os.path.abspath(dataset_file))
         return Path(str(resolve_dataset_path(dataset_file)))
 
