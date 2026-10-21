@@ -37,9 +37,7 @@ _DIFFUSION_GGUF_ARCHS = frozenset(
         "krea2",
     }
 )
-# Archs only one family's GGUFs declare, so the header alone names the family. Not "flux" or
-# "qwen_image": Krea 2 and other DiTs ship GGUFs under those too (the loader reads the tensors).
-# A custom krea2 file named "my-mix-Q4_K_M.gguf" otherwise has no family to check (#14474).
+# Archs that alone name the family. Not "flux" / "qwen_image": several DiTs ship under those (#14474).
 _FAMILY_NAMING_DIFFUSION_GGUF_ARCHS = frozenset({"krea2"})
 _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
     {"sd1", "sd3", "sdxl", "aura", "hidream", "cosmos", "hyvid"}

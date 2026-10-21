@@ -2684,15 +2684,12 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
 
 
 def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
-    """Custom Krea 2 GGUFs (molbal/krea2-gguf) declare general.architecture = krea2. The Images
-    loader reads the DiT from the tensors and loads them like the Krea 2 GGUFs that declare
-    "flux" / "qwen_image", so the Hub must not offer them as chat RUN (#14474)."""
+    """krea2-arch GGUFs (molbal/krea2-gguf) are images, not chat RUN (#14474)."""
     for hints in ((), ("custom/my-mix-Q4_K_M.gguf",), ("molbal/krea2-gguf", "krea2_turbo-Q4_0.gguf")):
         assert models_route._arch_to_task("krea2", hints) == "text-to-image"
         assert models_route._arch_to_task("KREA2", hints) == "text-to-image"
 
-    # The arch alone names the family, so a host that cannot build Krea 2 hides even a file whose
-    # name says nothing (the name-only gate fails open on it).
+    # The arch alone names the family, so an unbuildable host hides even an uninformative name.
     import core.inference.diffusion_engine_router as router
 
     seen = []
@@ -2706,7 +2703,6 @@ def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
         models_route._UNSUPPORTED_DIFFUSION_TASK
     )
     assert seen == [("krea-2", "gguf")]
-    # "flux" / "qwen_image" are shared by several DiTs, so they still go by the name alone.
     assert models_route._arch_to_task("flux", ("custom/my-mix-Q4_K_M.gguf",)) == "text-to-image"
     assert models_route._arch_to_task("qwen_image", ("org/Qwen-Image-GGUF",)) == "text-to-image"
 

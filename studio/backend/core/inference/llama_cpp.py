@@ -22052,8 +22052,7 @@ class LlamaCppBackend:
             "qwen_image",
             "qwen_image21",
             "flux",
-            # Krea 2 GGUFs from some converters (molbal/krea2-gguf); the Images page loads them
-            # like the Krea 2 GGUFs that declare "flux" / "qwen_image" (#14474).
+            # Krea 2 GGUFs from some converters (molbal/krea2-gguf), #14474.
             "krea2",
         )
     )

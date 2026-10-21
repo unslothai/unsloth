@@ -480,7 +480,6 @@ def test_a_krea2_gguf_this_host_cannot_build_promises_no_page(tmp_path, monkeypa
     assert message is not None
     assert "cannot run as a chat model" in message
     assert "Open it from the Images page" not in message
-    # The llama-server error path answers the same way.
     text = LlamaCppBackend._classify_start_failure_text(
         "error loading model: unknown model architecture: 'krea2'",
         str(tmp_path / "my-custom-mix-Q8_0.gguf"),
