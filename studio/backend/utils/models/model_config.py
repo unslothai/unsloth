@@ -979,7 +979,7 @@ def _build_vision_check_inline_helpers() -> str:
     )
 
 
-# Subprocess script run with transformers 5.x active: model_name + token via argv, JSON out.
+# Subprocess script run with transformers 5.x active: model_name via argv, token via env, JSON out.
 def _build_vision_check_script() -> str:
     return (
         r"""
@@ -1102,8 +1102,8 @@ def _is_vision_model_subprocess(
     or None for transient failures (timeouts, subprocess errors), which are not
     cached so they can be retried.
     """
-    # Only an explicit token travels in argv; the env below enforces the boundary.
-    token_arg = hf_token if isinstance(hf_token, str) else ""
+    # Token only via the child env (argv is world-readable); the empty slot keeps the argv layout.
+    token_arg = ""
 
     # Latest-only architectures need the latest sidecar for AutoConfig; other tiers keep 5.5.
     sidecar_dir = _VENV_T5_DIR

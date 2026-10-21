@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import base64
+import os
 from pathlib import Path
 
 import pytest
@@ -151,6 +153,77 @@ def test_managed_account_image_file_lookup_skips_the_cwd_fallback(studio_home, m
 
     assert run_as(ALICE, _load_image_file_to_base64, "private.png", base_path = str(base)) is None
     assert _load_image_file_to_base64("private.png", base_path = str(base)) is not None
+
+
+def _image_contexts(cell, base_path: Path) -> list[dict]:
+    from core.data_recipe.service import _apply_data_designer_image_context_patch
+
+    models = pytest.importorskip("data_designer.config.models")
+    _apply_data_designer_image_context_patch()
+    return models.ImageContext(column_name = "img").get_contexts(
+        {"img": cell}, base_path = str(base_path)
+    )
+
+
+def _sent_image_data(contexts: list[dict]) -> str:
+    (context,) = contexts
+    return context["image_url"]["url"].split(",", 1)[1]
+
+
+@pytest.mark.parametrize("spelling", [str, lambda path: {"path": path}])
+def test_managed_account_image_context_cell_outside_its_workspace_is_refused(studio_home, spelling):
+    from fastapi import HTTPException
+
+    secret = _png(studio_home / "elsewhere" / "private.png")
+    base = run_as(ALICE, lambda: workspace_root() / "artifacts")
+
+    for cell in (spelling(str(secret)), spelling(os.path.relpath(secret, base))):
+        with pytest.raises(HTTPException) as refused:
+            run_as(ALICE, _image_contexts, cell, base)
+        assert refused.value.status_code == 403
+
+
+@pytest.mark.parametrize("spelling", [str, lambda path: {"path": path}])
+def test_managed_account_image_context_cell_does_not_fall_back_to_the_cwd(
+    studio_home, monkeypatch, spelling
+):
+    _png(studio_home / "cwd" / "private.png")
+    monkeypatch.chdir(studio_home / "cwd")
+    base = run_as(ALICE, lambda: workspace_root() / "artifacts")
+
+    # Not a file to the engine either: it takes the bare name for base64 data and rejects it.
+    with pytest.raises(ValueError):
+        run_as(ALICE, _image_contexts, spelling("private.png"), base)
+
+
+@pytest.mark.parametrize("spelling", [str, lambda path: {"path": path}])
+def test_managed_account_image_context_cell_inside_its_workspace_is_sent(studio_home, spelling):
+    own = run_as(ALICE, lambda: _png(workspace_root() / "data" / "mine.png"))
+    base = run_as(ALICE, lambda: workspace_root() / "artifacts")
+
+    contexts = run_as(ALICE, _image_contexts, spelling(str(own)), base)
+
+    assert _sent_image_data(contexts) == base64.b64encode(own.read_bytes()).decode()
+
+
+def test_managed_account_image_context_url_cell_passes_through(studio_home):
+    base = run_as(ALICE, lambda: workspace_root() / "artifacts")
+
+    for url in ("https://example.com/cat.png", "https://example.com/../../../../../cat.png"):
+        (context,) = run_as(ALICE, _image_contexts, url, base)
+        assert context["image_url"] == url
+
+
+def test_owner_image_context_cell_loads_any_local_path(studio_home, monkeypatch):
+    image = _png(studio_home / "elsewhere" / "local.png")
+    _png(studio_home / "cwd" / "local-cwd.png")
+    monkeypatch.chdir(studio_home / "cwd")
+    base = studio_home / "artifacts"
+
+    sent = _sent_image_data(_image_contexts(str(image), base))
+
+    assert sent == base64.b64encode(image.read_bytes()).decode()
+    assert _sent_image_data(_image_contexts("local-cwd.png", base))
 
 
 def test_managed_account_hub_hosted_images_still_preview(studio_home, monkeypatch):

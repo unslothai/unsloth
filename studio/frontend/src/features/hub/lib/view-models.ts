@@ -29,6 +29,7 @@ export {
   isUnslothFinetunable,
   matchesFormat,
   matchesRecommended,
+  matchesRecommendedDiffusion,
 } from "./format-filters";
 export {
   formatLocalUpdated,

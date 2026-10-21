@@ -304,8 +304,17 @@ export const BUDGET = {
   // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
   // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
   // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_064_889,
-  rawBytes: 6_857_482,
+  // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
+  // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
+  // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_066_583,
+  rawBytes: 6_862_784,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
