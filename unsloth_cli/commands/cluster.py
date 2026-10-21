@@ -12,7 +12,7 @@ import re
 import socket
 import sys
 import time
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import typer
 
@@ -58,6 +58,20 @@ def _link(crypto: bool = False):
 
 def _registry(identity: Any) -> Any:
     return identity.Registry().load()
+
+
+def _addresses(peer: Any) -> List[Tuple[str, int]]:
+    """A peer's recorded (host, agent port) pairs, newest first: "host:port" entries carry the port they
+    answered on, a bare "host" uses the peer's agent port."""
+    default = int(getattr(peer, "agent_port", 0) or 0)
+    out: List[Tuple[str, int]] = []
+    for addr in getattr(peer, "addrs", None) or []:
+        host, sep, port = str(addr).rpartition(":")
+        if sep and host and port.isdigit() and ":" not in host:
+            out.append((host, int(port)))
+        elif addr and default:
+            out.append((str(addr), default))
+    return out
 
 
 def parse_duration(text: str) -> float:
@@ -173,6 +187,12 @@ def worker(
         )
     port = port or paired_port
     rpc_port = rpc_port or RPC_PORT_DEFAULT
+    native_port = native_port or NATIVE_RPC_PORT_DEFAULT
+    if len({port, rpc_port, native_port}) < 3:
+        # Each is its own listener: the agent, the loopback rpc-server, and its TLS mode on the LAN.
+        _fail(
+            f"--port ({port}), --rpc-port ({rpc_port}) and --native-port ({native_port}) must all differ."
+        )
     rpc_args: List[str] = []
     names = [n.strip() for value in device for n in value.split(",") if n.strip()]
     if names:
@@ -188,7 +208,7 @@ def worker(
         cache_dir = cache_dir,
         allow_any_network = allow_any_network,
         rpc_env = _rpc_server_env(binary),
-        native_port = native_port or NATIVE_RPC_PORT_DEFAULT,
+        native_port = native_port,
         native_tls = False if no_native_tls else None,
     )
     announcer = None
@@ -360,7 +380,8 @@ def list_workers(
         return
     if not check:
         for peer in workers:
-            where = f"{peer.addrs[0]}:{peer.agent_port}" if peer.addrs else "address unknown"
+            pairs = _addresses(peer)
+            where = f"{pairs[0][0]}:{pairs[0][1]}" if pairs else "address unknown"
             _say(_printable(f"{peer.name:<20} {peer.node_id[:12]}  {where}"))
         return
     from studio.cluster_link.relay import RelayManager
@@ -388,14 +409,14 @@ def list_workers(
     try:
         for peer in workers:
             # Every recorded address, newest first, before discovery (which a network may block).
-            for i, addr in enumerate(peer.addrs):
-                st = ask(peer, addr, peer.agent_port)
+            for i, (addr, aport) in enumerate(_addresses(peer)):
+                st = ask(peer, addr, aport)
                 if i == 0 or answered(st):
-                    found[peer.node_id] = (f"{addr}:{peer.agent_port}", st, False)
+                    found[peer.node_id] = (f"{addr}:{aport}", st, False)
                 if answered(st):
                     if i:
                         with registry.transaction():
-                            registry.record_address(peer.node_id, addr, peer.agent_port)
+                            registry.record_address(peer.node_id, addr, aport)
                     break
         missing = [p for p in workers if not answered(found.get(p.node_id, (None, None))[1])]
         if missing:

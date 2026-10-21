@@ -378,7 +378,20 @@ def test_registry_record_address(master_dir):
         reg.record_address("w1", "10.0.0.6")
         reg.record_address("w1", "10.0.0.5")
     peer = identity.Registry().load().peers["w1"]
-    assert peer.addrs == ["10.0.0.5", "10.0.0.6"] and peer.agent_port == 50070
+    assert peer.addrs == ["10.0.0.5:50070", "10.0.0.6:50070"] and peer.agent_port == 50070
+
+
+def test_a_temporary_port_keeps_the_usual_pair_in_the_history(master_dir):
+    # Discovery saw the worker once on a temporary port; it later restarts on its paired port while
+    # multicast is blocked. The history must still hold that pair, not the host with the temporary port.
+    reg = identity.Registry()
+    with reg.transaction():
+        peer = _peer("w1", "worker", "a" * 64)
+        peer.addrs, peer.agent_port = ["10.0.0.5"], 50070  # as pairing records it
+        reg.add(peer)
+        reg.record_address("w1", "10.0.0.5", 50099)
+    peer = identity.Registry().load().peers["w1"]
+    assert peer.addrs == ["10.0.0.5:50099", "10.0.0.5:50070"] and peer.agent_port == 50099
 
 
 def test_token_round_trip_and_rejections():

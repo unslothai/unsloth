@@ -622,3 +622,35 @@ def test_a_status_read_never_repoints_a_verified_relay_at_a_spoofed_sighting(mon
     sightings["node-a"] = [spoof, honest]
     st.status()
     assert relays.destination("node-a") == real
+
+
+def test_recorded_host_and_port_pairs_are_each_tried():
+    p = SimpleNamespace(addrs = ["10.0.0.5:50099", "10.0.0.5:50070"], agent_port = 50099)
+    assert cs._peer_addresses(p, 50070) == [("10.0.0.5", 50099), ("10.0.0.5", 50070)]
+
+
+def test_a_held_worker_is_recognized_after_its_transport_changed(monkeypatch, relays):
+    # The live split reached node-a over native TLS; this refresh falls back to its relay (kill switch,
+    # or a native request that failed once). Still the same rpc-server holding the served tensors: it
+    # must count as held, not be probed through the relay, whose open_rpc would restart it.
+    st = cs.state()
+    st.refresh_nodes()
+    a, b = st.nodes
+    old = f"tls://{FP_A}@192.168.1.20:50053"
+    assert a.endpoint != old
+    device = cs.Device(name = "RPC0", description = old, total_bytes = 1, free_bytes = 1, endpoint = old)
+    st._seen = {old: [device], b.endpoint: []}
+    st._pre_load = (
+        "layer_split",
+        "",
+        SimpleNamespace(topology = "layer_split", devices = [device]),
+        [],
+    )
+    st._backend = SimpleNamespace(is_loaded = True)
+    relays.statuses["node-a"] = {"busy": True, "rpc_up": True}
+    monkeypatch.setattr(
+        cs, "list_devices", lambda *a, **k: pytest.fail("a held link worker was probed")
+    )
+    held = asyncio.run(st._held_workers("llama-server", [a.endpoint, b.endpoint]))
+    assert list(held) == [a.endpoint]
+    assert [d.endpoint for d in held[a.endpoint]] == [a.endpoint]

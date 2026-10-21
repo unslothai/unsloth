@@ -11,6 +11,7 @@ import json
 import os
 import socket
 import ssl
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -277,6 +278,42 @@ WAIT_S = 1.0
 
 def threaded_sessions() -> bool:
     return os.environ.get(THREADED_SPLICE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _loopback_owner_uid(client_port: int, server_port: int) -> Optional[int]:
+    """The uid owning the client end of a loopback TCP connection, from /proc/net/tcp{,6} (Linux)."""
+    for path in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(path, encoding = "ascii") as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            cols = row.split()
+            if len(cols) < 8:
+                continue
+            try:
+                local = int(cols[1].rsplit(":", 1)[1], 16)
+                remote = int(cols[2].rsplit(":", 1)[1], 16)
+            except (IndexError, ValueError):
+                continue
+            if local == client_port and remote == server_port:
+                return int(cols[7])
+    return None
+
+
+def local_client_is_ours(sock: socket.socket) -> bool:
+    """Whether a client of a loopback listener runs as this user. Every local account can reach a
+    127.0.0.1 port, and a relay proxies with this user's cluster credentials. Enforced on Linux;
+    elsewhere there is no cheap owner lookup, and those listeners rely on the loopback bind alone."""
+    if not sys.platform.startswith("linux") or not hasattr(os, "getuid"):
+        return True
+    try:
+        client_port = sock.getpeername()[1]
+        server_port = sock.getsockname()[1]
+    except OSError:
+        return False
+    return _loopback_owner_uid(client_port, server_port) == os.getuid()
 
 
 def tune_raw_socket(sock: socket.socket) -> None:

@@ -23,6 +23,7 @@ from .splice import (
     STREAM_LIMIT,
     SpliceSession,
     close_writer,
+    local_client_is_ours,
     socket_splice,
     splice,
     threaded_sessions,
@@ -509,6 +510,10 @@ class RelayManager:
 
     def _on_local_threaded(self, relay: _Relay, conn: socket.socket) -> None:
         tune_raw_socket(conn)
+        if not local_client_is_ours(conn):
+            logger.warning("cluster relay: refused a local client owned by another user")
+            _drop(conn)
+            return
         if not self._wait_idle_threaded(relay):
             # A probe of a held worker: fail it now rather than make it wait out a timeout.
             _drop(conn)
@@ -602,6 +607,11 @@ class RelayManager:
         self, relay: _Relay, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         tune_socket(writer)
+        sock = writer.get_extra_info("socket")
+        if sock is None or not await asyncio.to_thread(local_client_is_ours, sock):
+            logger.warning("cluster relay: refused a local client owned by another user")
+            await close_writer(writer, abort = True)
+            return
         if not await self._wait_idle(relay):
             # A probe of a held worker: fail it now rather than make it wait out a timeout.
             await close_writer(writer, abort = True)

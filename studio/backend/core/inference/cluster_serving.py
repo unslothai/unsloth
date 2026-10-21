@@ -1116,6 +1116,17 @@ def _peer_addresses(peer: Any, default_port: int) -> List[Tuple[str, int]]:
     return found
 
 
+def _same_link_worker(endpoint: str, node: "Node") -> bool:
+    """Whether ``endpoint`` (from an earlier plan) reached the same paired worker as ``node`` over the
+    other transport: its relay endpoint, or a tls:// endpoint pinned to its certificate."""
+    if node.relay and endpoint == node.relay:
+        return True
+    if endpoint.startswith("tls://"):
+        fp = endpoint[len("tls://") :].split("@", 1)[0].lower()
+        return bool(fp) and fp == str(_PAIRED_FPS.get(node.node_id, "")).lower()
+    return False
+
+
 def _drop_stale_relays(current: set) -> None:
     """Close the relay (and any live session through it) of every worker no longer paired."""
     stale = [(e, n) for e, n in _LINK_ENDPOINTS.items() if n not in current]
@@ -1710,10 +1721,21 @@ class ClusterServing:
             or not getattr(self._backend, "is_loaded", False)
         ):
             return {}
-        held = [
-            e for e in endpoints if e in self._seen and any(d.endpoint == e for d in served.devices)
-        ]
         links = {n.endpoint: n for n in self.nodes if n.link}
+        served_at = [
+            e for e in dict.fromkeys(d.endpoint for d in served.devices) if e in self._seen
+        ]
+
+        def served_as(e: str) -> Optional[str]:
+            if e in served_at:
+                return e
+            node = links.get(e)
+            # A paired worker may have served the split over its other transport (native TLS <-> relay):
+            # still the same rpc-server holding the served tensors, so it must not be probed.
+            return next((old for old in served_at if node and _same_link_worker(old, node)), None)
+
+        held_as = {e: served_as(e) for e in endpoints}
+        held = [e for e in endpoints if held_as[e]]
 
         async def silent(e: str) -> bool:
             if e in links:
@@ -1729,7 +1751,11 @@ class ClusterServing:
             return not any(d.endpoint == e for d in devs)
 
         answers = await asyncio.gather(*(silent(e) for e in held))
-        return {e: self._seen[e] for e, quiet in zip(held, answers) if quiet}
+        return {
+            e: [replace(d, endpoint = e) for d in self._seen[held_as[e]]]
+            for e, quiet in zip(held, answers)
+            if quiet
+        }
 
     async def _reachable(self, node: Node) -> bool:
         from core.inference import spark_serving as ss

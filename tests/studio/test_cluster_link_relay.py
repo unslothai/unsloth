@@ -1629,3 +1629,38 @@ def test_a_failed_explicit_native_close_keeps_the_revocation_watch(
     assert _wait(lambda: link.agent.mode == "loopback", 15.0)
     assert native.allowlist_path(link.agent.native_port).read_text().split() == []
     assert _wait(lambda: link.agent.rpc_pid not in (None, pid_native), 10.0)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "owner lookup is Linux-only")
+def test_the_relay_serves_only_local_clients_of_this_user(make_link, monkeypatch):
+    # Every local account can reach a 127.0.0.1 port, and the relay proxies with this user's cluster
+    # credentials: a client owned by another uid gets nothing, and the worker never hears of it.
+    import studio.cluster_link.splice as splice_mod
+
+    link = make_link()
+    assert _echo(link, b"mine") == b"mine"  # this user's own client
+    before = link.agent.stats["connections"]
+    monkeypatch.setattr(splice_mod, "_loopback_owner_uid", lambda c, s: os.getuid() + 1)
+    sock = link.connect()
+    sock.sendall(b"steal")
+    assert _closed(sock)
+    time.sleep(0.3)
+    assert link.agent.stats["connections"] == before
+    assert link.target.connections == 1
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "owner lookup is Linux-only")
+def test_the_loopback_owner_of_a_real_connection_is_found():
+    from studio.cluster_link.splice import _loopback_owner_uid, local_client_is_ours
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    client = socket.create_connection(server.getsockname())
+    conn, _ = server.accept()
+    try:
+        assert _loopback_owner_uid(client.getsockname()[1], server.getsockname()[1]) == os.getuid()
+        assert local_client_is_ours(conn)
+    finally:
+        for s in (client, conn, server):
+            s.close()

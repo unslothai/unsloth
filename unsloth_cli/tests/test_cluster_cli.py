@@ -473,3 +473,29 @@ def test_out_of_range_ports_are_cli_errors(fakes, args):
     result = invoke(*args, input = "x\n")
     assert result.exit_code == 2, result.output
     assert "65535" in result.output or "range" in result.output
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--rpc-port", "50111", "--native-port", "50111"),
+        ("--port", "50070", "--native-port", "50070"),
+        ("--port", "50111", "--rpc-port", "50111"),
+    ],
+)
+def test_worker_ports_must_all_differ(fakes, monkeypatch, args):
+    # Native mode restarts the rpc-server on --native-port: equal to --rpc-port it used to fail with
+    # "another worker is running"; equal to --port it could never bind beside the agent.
+    fakes.worker = ident("worker")
+    monkeypatch.setattr(cli, "_rpc_server_binary", lambda: "/opt/llama/ggml-rpc-server")
+    result = invoke("worker", "--no-discovery", *args)
+    assert result.exit_code == 1, result.output
+    assert "must all differ" in result.output
+    assert getattr(fakes, "agent", None) is None
+
+
+def test_cluster_list_reads_host_and_port_pairs():
+    peer = types.SimpleNamespace(
+        addrs = ["10.0.0.5:50099", "10.0.0.5:50070", "10.0.0.9"], agent_port = 50099
+    )
+    assert cli._addresses(peer) == [("10.0.0.5", 50099), ("10.0.0.5", 50070), ("10.0.0.9", 50099)]

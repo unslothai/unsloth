@@ -457,6 +457,13 @@ class Registry:
         peer = self.peers.get(node_id)
         if peer is None:
             return
-        peer.addrs = [host] + [a for a in peer.addrs if a != host][:7]
+        # Each entry keeps the port it answered on ("host:port"): a worker seen once on a temporary port
+        # must not lose the pair it serves on normally, which a later restart may return to. Bare "host"
+        # entries (older registries) mean the peer's agent port at the time.
+        old = int(peer.agent_port or 0)
+        port = int(port or old)
+        kept = [a if (":" in a or not old) else f"{a}:{old}" for a in peer.addrs]
+        entry = f"{host}:{port}" if port else host
+        peer.addrs = [entry] + [a for a in kept if a != entry][:7]
         if port:
-            peer.agent_port = int(port)
+            peer.agent_port = port
