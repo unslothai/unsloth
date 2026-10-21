@@ -328,6 +328,9 @@ def _sd_cpp_component_specs(
         vae = getattr(fam, "sd_cpp_vae", None)
         if vae and vae[0]:
             specs.add((vae[0], vae[1]))
+        tokenizer = getattr(fam, "sd_cpp_tokenizer", None)
+        if tokenizer and tokenizer[0]:
+            specs.add((tokenizer[0], tokenizer[1]))
         # EVERY set the family could pick: there is no header to read and a renamed FLUX.2-klein 9B file carries no size token, so guessing answers 4B and leaves the 9B encoder unprotected.
         for encoder in sd_cpp_text_encoder_candidates(fam) or ():
             if encoder and encoder[0]:

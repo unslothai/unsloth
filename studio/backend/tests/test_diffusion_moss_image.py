@@ -430,7 +430,8 @@ def test_family_row_defaults_and_trust():
     from core.inference.family_profile import trusted_repo_ids
 
     fam = df.detect_family("OpenMOSS-Team/MOSS-Image-SFT")
-    assert fam.pipeline_only and fam.fp16_incompatible and fam.uses_negative_prompt
+    assert fam.native_transformer_files_only and not fam.pipeline_only
+    assert fam.fp16_incompatible and fam.uses_negative_prompt
     assert (
         fam.pipeline_class == "MOSSImagePipeline"
         and fam.transformer_class == "MOSSImageTransformer"

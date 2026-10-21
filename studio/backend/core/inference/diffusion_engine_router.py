@@ -747,6 +747,9 @@ def select_and_activate_engine(
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
         return _activate(ENGINE_DIFFUSERS, "native engine disabled (UNSLOTH_DIFFUSION_SD_CPP=0)")
+    if native_gguf_only(fam, model_kind):
+        # diffusers cannot build this family from a GGUF (it refuses the pick), so the GPU default does not apply
+        prefer_native = True
 
     target = resolve_diffusion_device_target()
     backend = target.backend
@@ -870,12 +873,18 @@ def select_and_activate_engine(
     if off_torch is not None:
         reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
         logger.warning("image load stays on torch's device: %s", reason)
-    if requested == ENGINE_SD_CPP:
-        # The load asked for native: say why it cannot run, rather than load it on diffusers behind its back.
+    if requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind):
+        # The load asked for native, or only native can build it: say why it cannot run, before anything unloads,
+        # rather than load it on diffusers behind its back.
         raise ValueError(f"The native sd.cpp engine cannot load this model here: {reason}.")
     if before_fallback is not None:
         before_fallback()
     return _activate(ENGINE_DIFFUSERS, reason)
+
+
+def native_gguf_only(fam: Optional[DiffusionFamily], model_kind: Optional[str]) -> bool:
+    """A GGUF of a family whose transformer-only files load natively only (``native_transformer_files_only``)."""
+    return model_kind == "gguf" and bool(getattr(fam, "native_transformer_files_only", False))
 
 
 def refuse_engine_pick(
@@ -898,6 +907,10 @@ def refuse_engine_pick(
                 f"The native sd.cpp engine has no support for the {fam.name} model family."
             )
     elif requested == ENGINE_DIFFUSERS:
+        if native_gguf_only(fam, model_kind):
+            raise ValueError(
+                f"Diffusers cannot load a {fam.name} GGUF; use the Auto or native engine, or the pipeline repo."
+            )
         if fam is not None and not family_pipeline_available(fam):
             raise ValueError(
                 f"Diffusers cannot build the {fam.name} model family with the installed version; "
@@ -997,6 +1010,8 @@ def predict_engine(
     prefer_native = forced == ENGINE_SD_CPP
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
         return ENGINE_DIFFUSERS
+    if native_gguf_only(fam, model_kind):
+        prefer_native = True
 
     backend = resolve_diffusion_device_target().backend
     if off_torch_sd_cpp_device(backend) is not None:
@@ -1021,11 +1036,16 @@ def predict_engine(
     choice = select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
-    if requested == ENGINE_SD_CPP and choice != ENGINE_SD_CPP:
+    if (
+        requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind)
+    ) and choice != ENGINE_SD_CPP:
         # Selection raises the same refusal; planning diffusers here would stage GB for a load that cannot run.
-        raise ValueError(
-            "The native sd.cpp engine cannot load this model here: native sd.cpp binary unavailable."
+        why = (
+            "native sd.cpp binary unavailable"
+            if requested == ENGINE_SD_CPP
+            else f"no usable sd.cpp build here supports '{fam.name}'"
         )
+        raise ValueError(f"The native sd.cpp engine cannot load this model here: {why}.")
     return choice
 
 
@@ -1053,6 +1073,12 @@ def family_buildable_here(
     ``predict_engine`` activates nothing and installs nothing."""
     if fam is None:
         return False
+    if native_gguf_only(fam, model_kind):
+        # Only native builds this GGUF, so the diffusers class says nothing; the prediction refuses an incapable build.
+        try:
+            return predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
+        except Exception:  # noqa: BLE001 -- refused or unprobeable: not buildable here
+            return False
     if family_pipeline_available(fam):
         return True
     if model_kind == "gguf" and gguf_filename and family_mlx_supported(fam):

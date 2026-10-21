@@ -3471,6 +3471,7 @@ class SdCppDiffusionBackend:
                 llm = paths.get("llm"),
                 llm_vision = paths.get("llm_vision"),
                 qwen2vl = paths.get("qwen2vl"),
+                tokenizer = paths.get("tokenizer"),
             )
             device = (
                 off_torch.accelerator
@@ -4082,6 +4083,9 @@ class SdCppDiffusionBackend:
             fam, repo_id, gguf_filename, inner_dim = inner_dim
         ):
             specs.append((terepo, tefile, kind))
+        tokenizer = getattr(fam, "sd_cpp_tokenizer", None)
+        if tokenizer:
+            specs.append((tokenizer[0], tokenizer[1], "tokenizer"))
         return specs
 
     def _set_expected_bytes(
@@ -4233,6 +4237,8 @@ class SdCppDiffusionBackend:
             repos = [state.repo_id, state.base_repo]
             if fam.sd_cpp_vae:
                 repos.append(fam.sd_cpp_vae[0])
+            if getattr(fam, "sd_cpp_tokenizer", None):
+                repos.append(fam.sd_cpp_tokenizer[0])
             # Same per-variant selection as _asset_specs (the header dim this load committed, else repo id AND GGUF
             # filename) so the delete guard protects the encoder repo this load actually downloaded. Read off the
             # state, never re-probed: this runs under _lock.

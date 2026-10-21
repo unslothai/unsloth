@@ -70,6 +70,8 @@ class SdCppModelFiles:
     llm: Optional[str] = None
     llm_vision: Optional[str] = None
     qwen2vl: Optional[str] = None
+    # A tokenizer.json for --tokenizer (MOSS-Image: sd.cpp refuses the model without its Qwen3.5 tokenizer.json).
+    tokenizer: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -668,6 +670,7 @@ def build_sd_cpp_command(
         ("--llm", files.llm),
         ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
+        ("--tokenizer", files.tokenizer),
     ):
         if value:
             cmd += [flag, value]
@@ -767,6 +770,8 @@ def build_sd_cpp_video_command(
     cmd += ["--llm", files.llm]
     if files.llm_vision:
         cmd += ["--llm_vision", files.llm_vision]
+    if files.tokenizer:
+        cmd += ["--tokenizer", files.tokenizer]
     # Reject incompatible partitions before loading the model.
     if (params.init_img or params.end_img) and (
         params.ref_images or params.ref_videos or params.ref_audios
@@ -905,6 +910,7 @@ def build_sd_cpp_server_command(
         ("--llm", files.llm),
         ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
+        ("--tokenizer", files.tokenizer),
     ):
         if value:
             cmd += [flag, value]

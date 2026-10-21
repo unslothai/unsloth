@@ -100,6 +100,10 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
+    # True when a transformer-only file (a GGUF) loads ONLY through the native sd.cpp engine: diffusers cannot build
+    # this family's denoiser from one (MOSS-Image, an in-tree port with no single-file loader). The engine router sends
+    # such a GGUF to sd.cpp on any backend, and the diffusers loader refuses transformer-only picks.
+    native_transformer_files_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
     img2img_pipeline_class: Optional[str] = None
@@ -205,6 +209,9 @@ class DiffusionFamily:
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
+    # (repo_id, filename) of a tokenizer.json sd-cli needs on --tokenizer: sd.cpp's MOSS-Image conditioner refuses to
+    # run without the official Qwen3.5 tokenizer.json. None for every family that tokenizes from its encoder file.
+    sd_cpp_tokenizer: Optional[tuple[str, str]] = None
     # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
     mlx_model_config_by_base: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -1293,9 +1300,19 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # transient workspace on the first 1024^2 decode (B200), then settled on a 4x slower plan (0.34 vs 0.08 s warm)
         # with different pixels, so the family keeps cuDNN's heuristic pick.
         cudnn_benchmark = False,
-        # Assembled per component from the diffusers folders. The hosted builds are transformer state dicts seeded into
-        # that assembly; no transformer-only single-file pick and no diffusers GGUF route (sd.cpp runs the GGUFs).
-        pipeline_only = True,
+        # The diffusers route assembles per component (the hosted int8 / fp8 builds are state dicts seeded into it).
+        # GGUFs run on stable-diffusion.cpp: upstream master-975 added MOSS-Image; its model-version name is the gate.
+        native_transformer_files_only = True,
+        # The repo's own VAE: the FLUX.2 VAE with MOSS's small decoder (decoder channels 96-384, not FLUX.2-dev's), the
+        # same file the diffusers route decodes with. sd-cli reads the diffusers layout as-is.
+        sd_cpp_vae = ("OpenMOSS-Team/MOSS-Image-SFT", "vae/diffusion_pytorch_model.safetensors"),
+        # Stock Qwen3.5-9B (MOSS's text_encoder shards are that model minus the head), as GGUF.
+        sd_cpp_text_encoders = (("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q8_0.gguf", "llm"),),
+        # sd.cpp refuses MOSS without the official tokenizer.json (SFT and Base ship the same one).
+        sd_cpp_tokenizer = ("OpenMOSS-Team/MOSS-Image-SFT", "tokenizer/tokenizer.json"),
+        # The model-version name master-975 added (diffusion_engine.cpp model_version_to_str). No flow-shift override:
+        # sd.cpp's MOSS default is ComfyUI's shift 5.
+        sd_cpp_arch_marker = "MOSS-Image",
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
