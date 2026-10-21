@@ -308,7 +308,7 @@ test("the plain stylesheets' controls follow the scale", () => {
       `${rule} has a fixed size`,
     );
   }
-  assert.match(CSS, /--slider-thumb-size: calc\(1\.375rem \* var\(--ui-space-scale, 1\)\);/);
+  assert.match(CSS, /--slider-thumb-size: calc\(1\.25rem \* var\(--ui-space-scale, 1\)\);/);
   assert.match(CSS, /--slider-track-height: calc\(0\.15625rem \* var\(--ui-space-scale, 1\)\);/);
 });
 
