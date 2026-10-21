@@ -10,6 +10,7 @@ GRPO runs without vLLM: Unsloth only switches TRL to vLLM rollouts when the mode
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import json
 import math
 import os
@@ -434,6 +435,12 @@ def render_preference_rows(dataset, tokenizer):
         return dataset
     from trl.data_utils import maybe_apply_chat_template
 
+    # TRL before 0.21 takes no template kwargs; those rows are rendered here instead.
+    trl_takes_kwargs = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        for p in inspect.signature(maybe_apply_chat_template).parameters.values()
+    )
+
     def render(row: dict) -> dict:
         tools, kwargs = _row_tools(row), _row_template_kwargs(row)
         # Passed explicitly, never left in the row: TRL 0.25+ would expand it a second time.
@@ -443,7 +450,8 @@ def render_preference_rows(dataset, tokenizer):
             if k not in _TRL_ROW_COLUMNS
         }
         prompt = row.get("prompt")
-        if isinstance(prompt, list) and prompt and prompt[-1].get("role") == "tool":
+        tool_ended = isinstance(prompt, list) and prompt and prompt[-1].get("role") == "tool"
+        if tool_ended or (kwargs and not trl_takes_kwargs and isinstance(prompt, list)):
             # TRL 0.23 refuses a prompt that ends on a tool result; render it as newer TRL does.
             render_kwargs = {"tools": tools, "tokenize": False, **kwargs}
             text = tokenizer.apply_chat_template(
