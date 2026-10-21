@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useNavigate, useRouterState } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { AUTH_SESSION_STORED_EVENT, getAuthSessionEpoch, hasSettledAuthSession } from "@/features/auth";
 import { notifyChatHistoryUpdated, useChatNavigationStore } from "@/features/chat";
 import { translate } from "@/i18n";
@@ -13,6 +13,7 @@ import { toast } from "@/lib/toast";
 import { type FinishedScheduledTaskRun, getScheduledTaskActivity } from "./api";
 import {
   IDLE_POLL_MS,
+  asksToLoadModel,
   SCHEDULED_TASKS_CHANGED_EVENT,
   SCHEDULED_TASK_RUNS_FINISHED_EVENT,
   SEEN_KEY_PREFIX,
@@ -23,12 +24,15 @@ import {
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
+  runsAskingToLoad,
   runsToNotify,
 } from "./results";
 import { useUnseenScheduledRuns } from "./unseen";
 
 // More than this at once, e.g. on reopening Studio, and one toast speaks for them all.
 const INDIVIDUAL_TOASTS = 2;
+// Loaded when a task first asks, so the question costs the startup bundle nothing.
+const ModelLoadPrompt = lazy(() => import("./model-load-prompt"));
 const RECHECK_MS = 500;
 // Held by one of an account's tabs while it claims what to announce, the account's name appended.
 const ANNOUNCE_LOCK_PREFIX = "unsloth-scheduled-task-results:";
@@ -119,6 +123,8 @@ function notifySystem(runs: FinishedScheduledTaskRun[]): void {
  *  window is in the background. Renders nothing. */
 export function ScheduledTaskRunNotifier() {
   const navigate = useNavigate();
+  // Runs waiting for a yes to load their task's model, asked one at a time.
+  const [asking, setAsking] = useState<FinishedScheduledTaskRun[]>([]);
   const navigateRef = useRef(navigate);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const pathnameRef = useRef(pathname);
@@ -173,7 +179,15 @@ export function ScheduledTaskRunNotifier() {
         })),
         pathnameRef.current === "/tasks",
       );
-      const notified = runsToNotify(runs);
+      const asks = runsAskingToLoad(runs);
+      if (asks.length > 0) {
+        setAsking((current) => [
+          ...current.filter((run) => !asks.some((ask) => ask.taskId === run.taskId)),
+          ...asks,
+        ]);
+      }
+      // The question stands in for their toast.
+      const notified = runsToNotify(runs.filter((run) => !asksToLoadModel(run)));
       if (notified.length === 0) return;
       if (notified.length > INDIVIDUAL_TOASTS) {
         toast(translate("scheduledTasks.toast.many", { count: notified.length }), {
@@ -274,5 +288,11 @@ export function ScheduledTaskRunNotifier() {
     };
   }, []);
 
-  return null;
+  const ask = asking[0];
+  if (!ask) return null;
+  return (
+    <Suspense fallback={null}>
+      <ModelLoadPrompt key={ask.id} run={ask} onDone={() => setAsking((current) => current.slice(1))} />
+    </Suspense>
+  );
 }

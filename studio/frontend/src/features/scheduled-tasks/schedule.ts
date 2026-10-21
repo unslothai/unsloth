@@ -225,15 +225,47 @@ export function summarizeSchedule(schedule: TaskSchedule, locale: string): Sched
   }
 }
 
-/** A moment in the user's own zone, short enough for a row: "Thu, Oct 15, 9:00 AM". */
-export function formatMoment(epochMs: number, locale: string): string {
-  return new Intl.DateTimeFormat(locale, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(epochMs);
+/** The list's Repeats column, the cadence alone: its time has a column of its own. The caller words
+ *  the keyed ones; weekly is the days themselves, "Mon, Wed, Fri". */
+export type RepeatsSummary =
+  | { key: "once" | "daily" | "weekdays" }
+  | { key: "weekly"; days: string }
+  | { key: "monthly"; day: number };
+
+export function summarizeRepeats(schedule: TaskSchedule, locale: string): RepeatsSummary {
+  switch (schedule.kind) {
+    case "once":
+    case "daily":
+      return { key: schedule.kind };
+    case "weekly":
+      if (schedule.days.length === ISO_WEEKDAYS.length) return { key: "daily" };
+      if (isWorkdays(schedule.days)) return { key: "weekdays" };
+      return {
+        key: "weekly",
+        days: new Intl.ListFormat(locale, { style: "short", type: "unit" }).format(
+          schedule.days.map((day) => weekdayName(day, locale, "short")),
+        ),
+      };
+    case "monthly":
+      return { key: "monthly", day: schedule.day };
+  }
+}
+
+/** The day of a run in the user's own zone: "Today", "Tomorrow", else "Thu, Oct 15". */
+export function formatRunDay(epochMs: number, now: number, locale: string): string {
+  const dayStart = (at: number) => {
+    const date = new Date(at);
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  };
+  // Rounded: a DST change makes one day 23 or 25 hours long.
+  const days = Math.round((dayStart(epochMs) - dayStart(now)) / 86_400_000);
+  if (days === 0 || days === 1) {
+    const word = new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(days, "day");
+    return word.charAt(0).toLocaleUpperCase(locale) + word.slice(1);
+  }
+  return new Intl.DateTimeFormat(locale, { weekday: "short", month: "short", day: "numeric" }).format(
+    epochMs,
+  );
 }
 
 /** The largest whole unit for a distance in time, for Intl.RelativeTimeFormat. */

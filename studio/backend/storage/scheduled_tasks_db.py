@@ -61,6 +61,14 @@ def _task_from_row(row: sqlite3.Row) -> dict:
         "enabled": bool(row["enabled"]),
         "notify": row["notify"],
         "named": bool(row["named"]),
+        "model": row["model"],
+        "reasoningEffort": row["reasoning_effort"],
+        "allowModelLoad": bool(row["allow_model_load"]),
+        "newChatEachRun": bool(row["new_chat_each_run"]),
+        "archiveSuccessful": bool(row["archive_successful"]),
+        "projectId": row["project_id"],
+        # The chat runs add to while newChatEachRun is off; set by the run that started it.
+        "chatThreadId": row["chat_thread_id"],
         "nextRunAt": row["next_run_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -81,6 +89,7 @@ def _run_from_row(row: sqlite3.Row) -> dict:
         "model": row["model"],
         "errorCode": row["error_code"],
         "error": row["error"],
+        "allowModelLoad": bool(row["allow_model_load"]),
     }
 
 
@@ -147,8 +156,9 @@ def create_task(task: dict) -> dict:
             """
             INSERT INTO scheduled_tasks
                 (id, owner_subject, title, prompt, schedule_json, timezone, enabled, notify,
-                 named, next_run_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 named, model, reasoning_effort, allow_model_load, new_chat_each_run,
+                 archive_successful, project_id, next_run_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task["id"],
@@ -160,6 +170,12 @@ def create_task(task: dict) -> dict:
                 1 if task["enabled"] else 0,
                 task["notify"],
                 1 if task["named"] else 0,
+                task.get("model"),
+                task.get("reasoningEffort"),
+                1 if task.get("allowModelLoad") else 0,
+                0 if task.get("newChatEachRun") is False else 1,
+                1 if task.get("archiveSuccessful") else 0,
+                task.get("projectId"),
                 task["nextRunAt"],
                 task["createdAt"],
                 task["updatedAt"],
@@ -204,7 +220,9 @@ def update_task(
             """
             UPDATE scheduled_tasks
             SET title = ?, prompt = ?, schedule_json = ?, timezone = ?, enabled = ?, notify = ?,
-                named = ?, next_run_at = ?, updated_at = ?
+                named = ?, model = ?, reasoning_effort = ?, allow_model_load = ?,
+                new_chat_each_run = ?, archive_successful = ?, project_id = ?, next_run_at = ?,
+                updated_at = ?
             WHERE id = ?
             """,
             (
@@ -215,6 +233,12 @@ def update_task(
                 1 if task["enabled"] else 0,
                 task["notify"],
                 1 if task["named"] else 0,
+                task["model"],
+                task["reasoningEffort"],
+                1 if task["allowModelLoad"] else 0,
+                1 if task["newChatEachRun"] else 0,
+                1 if task["archiveSuccessful"] else 0,
+                task["projectId"],
                 task["nextRunAt"],
                 now_ms(),
                 task_id,
@@ -225,6 +249,18 @@ def update_task(
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+def set_chat_thread(task_id: str, thread_id: str) -> None:
+    """Record the chat a task's runs add to from now on. Leaves updated_at: not the user's edit."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE scheduled_tasks SET chat_thread_id = ? WHERE id = ?", (thread_id, task_id)
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -252,8 +288,11 @@ def delete_task(task_id: str) -> bool:
         conn.close()
 
 
-def request_run(task_id: str) -> Optional[dict]:
-    """Queue a run now, outside the schedule. None when the task does not exist."""
+def request_run(task_id: str, allow_model_load: bool = False) -> Optional[dict]:
+    """Queue a run now, outside the schedule. None when the task does not exist.
+
+    ``allow_model_load`` lets this run alone load the task's model if it is not loaded.
+    """
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -271,9 +310,10 @@ def request_run(task_id: str) -> Optional[dict]:
             raise TaskRunActive()
         run_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO scheduled_task_runs (id, task_id, source, status, created_at)"
-            " VALUES (?, ?, 'manual', 'queued', ?)",
-            (run_id, task_id, now_ms()),
+            "INSERT INTO scheduled_task_runs"
+            " (id, task_id, source, status, created_at, allow_model_load)"
+            " VALUES (?, ?, 'manual', 'queued', ?, ?)",
+            (run_id, task_id, now_ms(), 1 if allow_model_load else 0),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)).fetchone()
@@ -600,7 +640,7 @@ def activity(since: Optional[int]) -> dict:
         if since is not None:
             rows = conn.execute(
                 """
-                SELECT r.*, t.title AS task_title, t.notify AS task_notify
+                SELECT r.*, t.title AS task_title, t.notify AS task_notify, t.model AS task_model
                 FROM scheduled_task_runs r
                 JOIN scheduled_tasks t ON t.id = r.task_id
                 WHERE r.finished_at IS NOT NULL AND r.finished_at >= ?
@@ -614,6 +654,7 @@ def activity(since: Optional[int]) -> dict:
                     **_run_from_row(row),
                     "taskTitle": row["task_title"],
                     "taskNotify": row["task_notify"],
+                    "taskModel": row["task_model"],
                 }
                 for row in rows[:ACTIVITY_LIMIT]
             ]

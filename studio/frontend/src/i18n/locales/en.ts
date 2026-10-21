@@ -4148,11 +4148,16 @@ export const en = {
   // The Scheduled page: prompts that run on a schedule, each run answered in a new chat.
   scheduledTasks: {
     title: "Scheduled",
-    description: "Run a prompt on a schedule. Each run opens a new chat with the answer.",
-    // Said once under the heading: nothing runs while Unsloth is closed or no model is loaded.
-    runsWhileOpen: "Tasks run on the model loaded in Chat while Unsloth is open.",
+    description: "Run prompts on a schedule with your loaded model.",
     newTask: "New task",
     upcoming: "Upcoming",
+    // Column headers over the list, and the Repeats value of a monthly task.
+    columns: {
+      repeats: "Repeats",
+      time: "Time",
+      nextRun: "Next run",
+    },
+    monthlyDay: "Monthly, day {day}",
     // The list's status filter: a menu of Active, Paused and Completed.
     filterBy: "Filter by",
     filter: "Filter tasks",
@@ -4175,8 +4180,6 @@ export const en = {
     paused: "Paused",
     completed: "Completed",
     running: "Running",
-    // {when} is a date and time, e.g. "Thu, Oct 15, 9:00 AM".
-    nextRun: "Next run {when}",
     // {when} is relative, e.g. "2 hours ago".
     lastRun: "Last run {when}",
     // {reason} says why, e.g. "No model was loaded."
@@ -4221,6 +4224,23 @@ export const en = {
       notifyAll: "Every run",
       notifyFailures: "Only failures",
       notifyNone: "Off",
+      newChatEachRun: "Start each run in new chat",
+      archiveSuccessful: "Archive successful runs",
+      project: "Project",
+      projectNone: "None",
+      model: "Model",
+      modelLoaded: "Model loaded in Chat",
+      modelOnDevice: "On this device",
+      modelNote: "If this model isn't loaded when the task runs, Unsloth asks first.",
+      modelNoteAllowed: "Switches to this model only while you're away from Studio, then back to what you had.",
+      modelEmpty: "Download a model in Model hub or add a connection to choose another.",
+      modelMissing: "{model} (not on this device)",
+      allowLoad: "Switch automatically when I'm away",
+      reasoning: "Thinking effort",
+      reasoningDefault: "Default",
+      reasoningOff: "Off",
+      reasoningLowest: "Lowest",
+      reasoningHighest: "Highest",
       create: "Create",
     },
     deleteDialog: {
@@ -4229,6 +4249,10 @@ export const en = {
     },
     errors: {
       noModel: "No model was loaded. Load a model in Chat, then run the task again.",
+      modelNotLoaded: "The task's model wasn't loaded. Load it in Chat, then run the task again.",
+      modelLoadFailed: "Couldn't load the task's model. Make sure it's still downloaded in Model hub.",
+      modelBusy: "Skipped while you were using Studio, so your model was left alone.",
+      connectionUnavailable: "The task's connection is missing or turned off. Check it in Connections.",
       timeout: "The model took too long to answer.",
       cancelled: "The run was stopped before it finished.",
       interrupted: "Unsloth closed before the run finished.",
@@ -4238,6 +4262,16 @@ export const en = {
       updateFailed: "Could not update the task",
       deleteFailed: "Could not delete the task",
       runFailed: "Could not start the task",
+    },
+    // Asked when a task's model is not loaded: loading it replaces the model in Chat.
+    loadPrompt: {
+      title: "Load {model}?",
+      description: "“{title}” runs on {model}, which isn't loaded. Running it switches Chat to {model} until it finishes, then back.",
+      always: "Don't ask again. Switch only while I'm away from Studio.",
+      notNow: "Not now",
+      load: "Load and run",
+      busyTitle: "Run “{title}” now?",
+      busyDescription: "It was due, but you were using Studio, so it left your model alone. Running it now switches to {model}, then back when it finishes.",
     },
     toast: {
       finished: "“{title}” is ready",

@@ -169,11 +169,31 @@ export function runsToNotify<T extends { status: string; taskNotify: string }>(
   );
 }
 
+/** A run that stopped only because its task's model was not loaded, and is waiting for a yes:
+ *  `model_not_loaded` has none yet, `model_busy` had one but found Studio in use. */
+export function asksToLoadModel(run: { errorCode: string | null; taskModel?: string | null }): boolean {
+  return (run.errorCode === "model_not_loaded" || run.errorCode === "model_busy") && Boolean(run.taskModel);
+}
+
+/** Of the runs announced, those that ask to load their task's model: one per task, the newest.
+ *  They ask whatever the task's Notifications say, since only an answer lets the task run. */
+export function runsAskingToLoad<
+  T extends { taskId: string; errorCode: string | null; taskModel?: string | null },
+>(runs: readonly T[]): T[] {
+  const byTask = new Map<string, T>();
+  for (const run of runs) if (asksToLoadModel(run)) byTask.set(run.taskId, run);
+  return [...byTask.values()];
+}
+
 type Translate = (key: TranslationKey, values?: InterpolationValues) => string;
 
 // The backend's error codes; anything else carries its own text.
 const ERROR_KEYS: Record<string, TranslationKey> = {
   no_model: "scheduledTasks.errors.noModel",
+  model_not_loaded: "scheduledTasks.errors.modelNotLoaded",
+  model_load_failed: "scheduledTasks.errors.modelLoadFailed",
+  model_busy: "scheduledTasks.errors.modelBusy",
+  connection_unavailable: "scheduledTasks.errors.connectionUnavailable",
   timeout: "scheduledTasks.errors.timeout",
   cancelled: "scheduledTasks.errors.cancelled",
   interrupted: "scheduledTasks.errors.interrupted",

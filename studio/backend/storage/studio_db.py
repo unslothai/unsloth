@@ -872,7 +872,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             notify TEXT NOT NULL DEFAULT 'all',
-            named INTEGER NOT NULL DEFAULT 1
+            named INTEGER NOT NULL DEFAULT 1,
+            model TEXT,
+            reasoning_effort TEXT,
+            allow_model_load INTEGER NOT NULL DEFAULT 0,
+            new_chat_each_run INTEGER NOT NULL DEFAULT 1,
+            archive_successful INTEGER NOT NULL DEFAULT 0,
+            project_id TEXT,
+            chat_thread_id TEXT
         )
         """
     )
@@ -883,6 +890,26 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN notify TEXT NOT NULL DEFAULT 'all'")
     if "named" not in scheduled_task_cols:
         conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN named INTEGER NOT NULL DEFAULT 1")
+    if "model" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN model TEXT")
+    if "reasoning_effort" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN reasoning_effort TEXT")
+    if "allow_model_load" not in scheduled_task_cols:
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN allow_model_load INTEGER NOT NULL DEFAULT 0"
+        )
+    if "new_chat_each_run" not in scheduled_task_cols:
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN new_chat_each_run INTEGER NOT NULL DEFAULT 1"
+        )
+    if "archive_successful" not in scheduled_task_cols:
+        conn.execute(
+            "ALTER TABLE scheduled_tasks ADD COLUMN archive_successful INTEGER NOT NULL DEFAULT 0"
+        )
+    if "project_id" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT")
+    if "chat_thread_id" not in scheduled_task_cols:
+        conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN chat_thread_id TEXT")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
     )
@@ -902,10 +929,18 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             thread_id TEXT REFERENCES chat_threads(id) ON DELETE SET NULL,
             model TEXT,
             error_code TEXT,
-            error TEXT
+            error TEXT,
+            allow_model_load INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    scheduled_run_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(scheduled_task_runs)").fetchall()
+    }
+    if "allow_model_load" not in scheduled_run_cols:
+        conn.execute(
+            "ALTER TABLE scheduled_task_runs ADD COLUMN allow_model_load INTEGER NOT NULL DEFAULT 0"
+        )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task"
         " ON scheduled_task_runs(task_id, created_at)"

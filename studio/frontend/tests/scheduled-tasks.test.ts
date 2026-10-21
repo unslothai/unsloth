@@ -19,23 +19,29 @@ import {
   readSeenRuns,
   runErrorText,
   runsToAnnounce,
+  runsAskingToLoad,
   runsToNotify,
 } from "../src/features/scheduled-tasks/results.ts";
 import {
   type ScheduleSummary,
   type TaskSchedule,
+  ISO_WEEKDAYS,
   defaultScheduleForm,
   formFromSchedule,
+  formatRunDay,
   relativeTimeParts,
   sameSchedule,
   scheduleFormComplete,
   scheduleFromForm,
+  summarizeRepeats,
   summarizeSchedule,
   timeChoices,
   titleFromPrompt,
   waitForDue,
   zoneLabel,
 } from "../src/features/scheduled-tasks/schedule.ts";
+
+const ISO_ALL = [...ISO_WEEKDAYS];
 
 // ICU puts a narrow no-break space before AM/PM; compare the words, not the spacing.
 function plain(summary: ScheduleSummary): ScheduleSummary {
@@ -154,6 +160,36 @@ test("schedules are described in the user's locale", () => {
   });
 });
 
+test("the Repeats column names the cadence without its time", () => {
+  assert.deepEqual(summarizeRepeats({ kind: "daily", time: "09:00" }, "en-US"), { key: "daily" });
+  assert.deepEqual(summarizeRepeats({ kind: "once", at: "2026-10-21T09:00" }, "en-US"), {
+    key: "once",
+  });
+  assert.deepEqual(summarizeRepeats({ kind: "weekly", time: "09:00", days: ISO_ALL }, "en-US"), {
+    key: "daily",
+  });
+  assert.deepEqual(
+    summarizeRepeats({ kind: "weekly", time: "09:00", days: [1, 2, 3, 4, 5] }, "en-US"),
+    { key: "weekdays" },
+  );
+  assert.deepEqual(summarizeRepeats({ kind: "weekly", time: "09:00", days: [1, 3, 5] }, "en-US"), {
+    key: "weekly",
+    days: "Mon, Wed, Fri",
+  });
+  assert.deepEqual(summarizeRepeats({ kind: "monthly", time: "09:00", day: 31 }, "en-US"), {
+    key: "monthly",
+    day: 31,
+  });
+});
+
+test("a next run reads Today or Tomorrow, else its date", () => {
+  const now = new Date(2026, 9, 20, 23, 30).getTime();
+  assert.equal(formatRunDay(new Date(2026, 9, 20, 23, 45).getTime(), now, "en-US"), "Today");
+  assert.equal(formatRunDay(new Date(2026, 9, 21, 0, 15).getTime(), now, "en-US"), "Tomorrow");
+  assert.equal(formatRunDay(new Date(2026, 9, 21, 0, 15).getTime(), now, "de"), "Morgen");
+  assert.equal(formatRunDay(new Date(2026, 9, 29, 9, 0).getTime(), now, "en-US"), "Thu, Oct 29");
+});
+
 test("the results poll looks quickly while a run is going and again just after one is due", () => {
   assert.equal(nextPollDelay({ now: 0, activeRuns: 1, nextRunAt: null }), ACTIVE_POLL_MS);
   assert.equal(nextPollDelay({ now: 0, activeRuns: 0, nextRunAt: null }), IDLE_POLL_MS);
@@ -233,6 +269,7 @@ function finished(id: string, finishedAt: number): ScheduledTasksApi.FinishedSch
     error: null,
     taskTitle: "Morning brief",
     taskNotify: "all",
+    taskModel: null,
   };
 }
 
@@ -472,4 +509,28 @@ test("a task left unnamed is named after its instructions' first line", () => {
   const title = titleFromPrompt(long);
   assert.ok(title.endsWith("…") && title.length <= 61, title);
   assert.ok(long.startsWith(title.slice(0, -1)), "cut at a word, from the start");
+});
+
+test("a run whose model was not loaded asks once per task, whatever its notifications say", () => {
+  const run = (id: string, taskId: string, errorCode: string | null, taskModel: string | null) => ({
+    ...finished(id, 1_000),
+    status: "failed" as const,
+    taskId,
+    errorCode,
+    taskModel,
+    taskNotify: "none" as const,
+  });
+  const asks = runsAskingToLoad([
+    run("a", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
+    run("b", "task-1", "model_not_loaded", "unsloth/Qwen3-1.7B-GGUF"),
+    run("c", "task-2", "no_model", null),
+    // Allowed, but Studio was in use: asked about this run.
+    run("e", "task-4", "model_busy", "unsloth/gemma-3-GGUF"),
+    // Nothing to load: the model was cleared from the task meanwhile.
+    run("d", "task-3", "model_not_loaded", null),
+  ]);
+  assert.deepEqual(
+    asks.map((ask) => ask.id),
+    ["b", "e"],
+  );
 });

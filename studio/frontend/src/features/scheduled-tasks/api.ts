@@ -12,6 +12,18 @@ export type TaskRunStatus = "queued" | "running" | "succeeded" | "failed";
 /** Which finished runs a task announces with a toast and a system notification. Every run still
  *  brings its chat into Recents, marked unread. */
 export type TaskNotify = "all" | "failures" | "none";
+/** Lowest and highest are relative, for a local model whose levels are known only once loaded; a
+ *  connection's task names one of its own levels. Null: the model's default. */
+export type TaskReasoningEffort =
+  | "off"
+  | "lowest"
+  | "highest"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 
 export interface ScheduledTaskRun {
   id: string;
@@ -33,6 +45,8 @@ export interface ScheduledTaskRun {
 export interface FinishedScheduledTaskRun extends ScheduledTaskRun {
   taskTitle: string;
   taskNotify: TaskNotify;
+  /** The task's model, which a `model_not_loaded` run asks to load. */
+  taskModel: string | null;
 }
 
 export interface ScheduledTask {
@@ -45,6 +59,15 @@ export interface ScheduledTask {
   notify: TaskNotify;
   /** False when the title was taken from the instructions rather than typed. */
   named: boolean;
+  /** A local model id or a connection's `external::` id; null answers on the model loaded in Chat. */
+  model: string | null;
+  reasoningEffort: TaskReasoningEffort | null;
+  /** A run may load `model` when it is not loaded, without asking. */
+  allowModelLoad: boolean;
+  /** False: every run adds to one ongoing chat. The next two apply to a chat per run only. */
+  newChatEachRun: boolean;
+  archiveSuccessful: boolean;
+  projectId: string | null;
   status: "active" | "paused" | "completed";
   nextRunAt: number | null;
   createdAt: number;
@@ -59,6 +82,12 @@ export interface ScheduledTaskInput {
   timezone: string;
   notify: TaskNotify;
   named: boolean;
+  model?: string | null;
+  reasoningEffort?: TaskReasoningEffort | null;
+  allowModelLoad?: boolean;
+  newChatEachRun?: boolean;
+  archiveSuccessful?: boolean;
+  projectId?: string | null;
 }
 
 export type ScheduledTaskPatch = Partial<ScheduledTaskInput> & { enabled?: boolean };
@@ -122,8 +151,12 @@ export function deleteScheduledTask(id: string): Promise<void> {
   return request(taskPath(id), { method: "DELETE" });
 }
 
-export function runScheduledTaskNow(id: string): Promise<ScheduledTaskRun> {
-  return request(taskPath(id, "/run"), { method: "POST" });
+/** `loadModel`: this run alone may load the task's model, the user having said yes to it. */
+export function runScheduledTaskNow(id: string, loadModel = false): Promise<ScheduledTaskRun> {
+  return request(taskPath(id, "/run"), {
+    method: "POST",
+    ...(loadModel ? { body: JSON.stringify({ loadModel: true }) } : {}),
+  });
 }
 
 /** Runs finished at or after `since` (server ms), plus what the results poll paces itself by. */

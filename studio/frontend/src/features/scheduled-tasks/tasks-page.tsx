@@ -50,8 +50,10 @@ import type { ScheduledTask } from "./api";
 import { runErrorText } from "./results";
 import {
   type TaskSchedule,
-  formatMoment,
+  formatClock,
+  formatRunDay,
   relativeTimeParts,
+  summarizeRepeats,
   summarizeSchedule,
   waitForDue,
 } from "./schedule";
@@ -63,7 +65,7 @@ import { useUnseenScheduledRuns } from "./unseen";
 const OVERDUE_REFRESH_MS = 5_000;
 
 const ROW_BUTTON =
-  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
+  "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 data-[state=open]:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[state=open]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 type TaskStatus = ScheduledTask["status"];
 
@@ -111,6 +113,26 @@ function scheduleText(
   const summary = summarizeSchedule(schedule, locale);
   return t(`scheduledTasks.schedule.${summary.key}`, summary.values);
 }
+
+function repeatsText(
+  schedule: TaskSchedule,
+  locale: string,
+  t: (key: TranslationKey, values?: InterpolationValues) => string,
+): string {
+  const summary = summarizeRepeats(schedule, locale);
+  if (summary.key === "weekly") return summary.days;
+  if (summary.key === "monthly") return t("scheduledTasks.monthlyDay", { day: summary.day });
+  return t(`scheduledTasks.form.${summary.key}`);
+}
+
+function clockText(schedule: TaskSchedule, locale: string): string {
+  return formatClock(schedule.kind === "once" ? schedule.at.split("T")[1] : schedule.time, locale);
+}
+
+// Widths shared by the column header and each row, so the values sit under their headings.
+const REPEATS_COLUMN = "hidden w-36 shrink-0 truncate md:block";
+const TIME_COLUMN = "hidden w-24 shrink-0 truncate md:block";
+const NEXT_RUN_COLUMN = "hidden w-32 shrink-0 truncate md:block";
 
 function errorText(error: unknown): string | undefined {
   return error instanceof Error ? error.message : undefined;
@@ -165,24 +187,13 @@ function TaskRow({
   const ago = (at: number) =>
     formatRelativeTime(locale, ...relativeTimeParts(Math.min(at, now - 1_000), now));
   const finishedAt = run?.finishedAt ?? null;
+  const repeats = repeatsText(task.schedule, locale, t);
+  const clock = clockText(task.schedule, locale);
+  // A paused or completed task has no next run: its status pill says why.
+  const nextDay = task.nextRunAt === null ? "—" : formatRunDay(task.nextRunAt, now, locale);
 
   return (
-    <div className="group/task-row flex items-start gap-4 rounded-xl px-5 py-4 transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]">
-      <span
-        className={cn(
-          "relative mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70",
-          task.status === "active" && "group-hover/task-row:bg-primary/10 group-hover/task-row:text-primary",
-        )}
-      >
-        <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-5" />
-        {unseen && (
-          <span
-            role="img"
-            aria-label={t("scheduledTasks.newResult")}
-            className="absolute -right-0.5 -top-0.5 size-2.5 rounded-full bg-primary ring-2 ring-background"
-          />
-        )}
-      </span>
+    <div className="group/task-row flex items-center gap-4 rounded-xl px-5 py-4 transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
           <button
@@ -195,20 +206,25 @@ function TaskRow({
           >
             {task.title}
           </button>
+          {/* After the title, so titles stay in line whether or not a row has news. */}
+          {unseen && (
+            <span
+              role="img"
+              aria-label={t("scheduledTasks.newResult")}
+              className="size-2 shrink-0 rounded-full bg-primary"
+            />
+          )}
           {task.status !== "active" && (
             <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-ui-11 font-medium text-muted-foreground">
               {task.status === "paused" ? t("scheduledTasks.paused") : t("scheduledTasks.completed")}
             </span>
           )}
         </div>
-        <p className="text-ui-13 text-muted-foreground">
-          {scheduleText(task.schedule, locale, t)}
-          {task.nextRunAt !== null && (
-            <>
-              {" · "}
-              {t("scheduledTasks.nextRun", { when: formatMoment(task.nextRunAt, locale) })}
-            </>
-          )}
+        {/* Below md the columns go, and their values line up here instead. */}
+        <p className="truncate text-ui-13 text-muted-foreground md:hidden">
+          {[repeats, clock, task.nextRunAt === null ? null : nextDay]
+            .filter(Boolean)
+            .join(" · ")}
         </p>
         {running ? (
           <p className="flex items-center gap-1.5 text-ui-13 text-foreground">
@@ -235,7 +251,8 @@ function TaskRow({
             )}
           </p>
         ) : run?.status === "failed" && finishedAt !== null ? (
-          <p className="text-ui-13 text-destructive">
+          // One line like the rows beside it; the whole reason on hover.
+          <p title={runErrorText(run, t)} className="truncate text-ui-13 text-destructive">
             {t("scheduledTasks.lastRunFailed", {
               when: ago(finishedAt),
               reason: runErrorText(run, t),
@@ -243,6 +260,13 @@ function TaskRow({
           </p>
         ) : null}
       </div>
+      <span title={scheduleText(task.schedule, locale, t)} className={cn(REPEATS_COLUMN, "text-ui-15 text-foreground/85")}>
+        {repeats}
+      </span>
+      <span title={task.timezone} className={cn(TIME_COLUMN, "text-ui-15 text-foreground/85")}>
+        {clock}
+      </span>
+      <span className={cn(NEXT_RUN_COLUMN, "text-ui-15 text-muted-foreground")}>{nextDay}</span>
       <div className="flex shrink-0 items-center gap-1">
         <button
           type="button"
@@ -259,17 +283,17 @@ function TaskRow({
             "opacity-0 group-hover/task-row:opacity-100 group-focus-within/task-row:opacity-100 [@media(pointer:coarse)]:opacity-100",
           )}
         >
-          <PlayIcon strokeWidth={1.75} className="size-4" />
+          <PlayIcon strokeWidth={1.75} className="size-4.5" />
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button type="button" aria-label={t("scheduledTasks.options")} className={ROW_BUTTON}>
-              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="end"
-            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 py-2 font-heading rounded-[14px] border-0"
+            className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-48 font-heading rounded-[14px] border-0"
           >
             <DropdownMenuItem onSelect={onEdit}>
               <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
@@ -439,7 +463,7 @@ export function TasksPage() {
         </h1>
         {/* Same search pill as Projects. Below sm it wraps to its own row under the heading. */}
         <div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">
-          <div className="relative min-w-0 flex-1 sm:max-w-md">
+          <div className="relative min-w-0 flex-1 sm:max-w-sm">
             <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
               <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
             </span>
@@ -457,14 +481,12 @@ export function TasksPage() {
           </Button>
         </div>
       </div>
-      <p className="mt-2 text-ui-15 text-muted-foreground">{t("scheduledTasks.description")}</p>
-      <p className="mt-1 text-ui-13 text-muted-foreground">{t("scheduledTasks.runsWhileOpen")}</p>
+      <p className="mt-4 text-ui-15 text-muted-foreground">{t("scheduledTasks.description")}</p>
 
       {loading && tasks.length === 0 ? (
         <div className="mt-12">
           {Array.from({ length: 3 }).map((_, index) => (
             <div key={index} className="flex items-start gap-4 rounded-xl px-5 py-4">
-              <Skeleton className="size-9 shrink-0 rounded-[10px]" />
               <div className="flex flex-1 flex-col gap-2">
                 <Skeleton className="h-4 w-48 rounded-[8px]" />
                 <Skeleton className="h-3.5 w-72 rounded-[8px]" />
@@ -500,40 +522,45 @@ export function TasksPage() {
         </div>
       ) : (
         <div className="mt-10 flex flex-col">
-          <div className="flex items-center justify-between px-5 pb-2">
-            <h2 className="text-ui-13 font-medium text-muted-foreground">
-              {t("scheduledTasks.upcoming")}
-            </h2>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  aria-label={t("scheduledTasks.filter")}
-                  title={t("scheduledTasks.filter")}
-                  className={cn(ROW_BUTTON, shown.length < STATUSES.length && "text-foreground")}
-                >
-                  <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-4" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="end"
-                className="app-user-menu menu-soft-surface ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
-              >
-                <DropdownMenuLabel className="text-muted-foreground">
-                  {t("scheduledTasks.filterBy")}
-                </DropdownMenuLabel>
-                {STATUSES.map((status) => (
-                  <DropdownMenuCheckboxItem
-                    key={status}
-                    checked={shown.includes(status)}
-                    onCheckedChange={(on) => toggleStatus(status, on)}
-                    onSelect={(event) => event.preventDefault()}
+          {/* Column header: the filter sits over each row's menu, and a spacer over its Run now. */}
+          <div className="flex items-center gap-4 px-5 pb-2 text-ui-14 font-medium text-muted-foreground">
+            <h2 className="min-w-0 flex-1">{t("scheduledTasks.upcoming")}</h2>
+            <span className={REPEATS_COLUMN}>{t("scheduledTasks.columns.repeats")}</span>
+            <span className={TIME_COLUMN}>{t("scheduledTasks.columns.time")}</span>
+            <span className={NEXT_RUN_COLUMN}>{t("scheduledTasks.columns.nextRun")}</span>
+            <span className="flex shrink-0 items-center gap-1">
+              <span className="size-9" />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={t("scheduledTasks.filter")}
+                    title={t("scheduledTasks.filter")}
+                    className={cn(ROW_BUTTON, shown.length < STATUSES.length && "text-foreground")}
                   >
-                    {t(STATUS_LABEL[status])}
-                  </DropdownMenuCheckboxItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  className="app-user-menu menu-soft-surface ring-0 w-52 font-heading rounded-[14px] border-0"
+                >
+                  <DropdownMenuLabel className="text-muted-foreground">
+                    {t("scheduledTasks.filterBy")}
+                  </DropdownMenuLabel>
+                  {STATUSES.map((status) => (
+                    <DropdownMenuCheckboxItem
+                      key={status}
+                      checked={shown.includes(status)}
+                      onCheckedChange={(on) => toggleStatus(status, on)}
+                      onSelect={(event) => event.preventDefault()}
+                    >
+                      {t(STATUS_LABEL[status])}
+                    </DropdownMenuCheckboxItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </span>
           </div>
           {visibleTasks.length === 0 ? (
             <p className="px-5 py-4 text-ui-13 text-muted-foreground">

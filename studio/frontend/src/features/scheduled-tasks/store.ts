@@ -40,7 +40,8 @@ interface ScheduledTasksState {
   create: (input: ScheduledTaskInput) => Promise<ScheduledTask>;
   update: (id: string, patch: ScheduledTaskPatch) => Promise<ScheduledTask>;
   remove: (id: string) => Promise<void>;
-  runNow: (id: string) => Promise<void>;
+  /** `loadModel`: this run alone may load the task's model. */
+  runNow: (id: string, loadModel?: boolean) => Promise<void>;
 }
 
 let refreshGeneration = 0;
@@ -110,9 +111,9 @@ export const useScheduledTasksStore = create<ScheduledTasksState>()((set, get) =
       // results poll will never report it: Recents has to look for that chat itself.
       notifyChatHistoryUpdated();
     },
-    runNow: async (id) => {
+    runNow: async (id, loadModel = false) => {
       await write(
-        () => runScheduledTaskNow(id),
+        () => runScheduledTaskNow(id, loadModel),
         (run) =>
           set((state) => ({
             tasks: state.tasks.map((task) => (task.id === id ? { ...task, lastRun: run } : task)),

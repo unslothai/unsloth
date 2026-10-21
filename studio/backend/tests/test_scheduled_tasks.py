@@ -318,6 +318,55 @@ def create(client, **overrides):
     return client.post("/api/scheduled-tasks", json = body)
 
 
+def test_a_task_keeps_its_model_and_reasoning_until_cleared(client):
+    connection = "external::conn-1::gpt-5-mini"
+    task = create(client, model = connection, reasoningEffort = "highest").json()
+    assert (task["model"], task["reasoningEffort"]) == (connection, "highest")
+    # A rename leaves them alone; an explicit null goes back to the loaded model and its default.
+    renamed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"title": "Renamed"}).json()
+    assert (renamed["model"], renamed["reasoningEffort"]) == (connection, "highest")
+    cleared = client.patch(
+        f"/api/scheduled-tasks/{task['id']}", json = {"model": None, "reasoningEffort": None}
+    ).json()
+    assert (cleared["model"], cleared["reasoningEffort"]) == (None, None)
+    assert create(client, reasoningEffort = "extreme").status_code == 422
+    assert create(client).json()["model"] is None
+
+
+def test_run_now_can_carry_a_one_time_permission_to_load_the_model(client):
+    task = create(client, model = "unsloth/Qwen3-1.7B-GGUF").json()
+    assert task["allowModelLoad"] is False
+    run = client.post(f"/api/scheduled-tasks/{task['id']}/run", json = {"loadModel": True})
+    assert run.status_code == 202
+    assert db.list_runs(task["id"])[0]["allowModelLoad"] is True
+    # Always allowing is the task's own setting, and survives an unrelated edit.
+    allowed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"allowModelLoad": True})
+    assert allowed.json()["allowModelLoad"] is True
+    renamed = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"title": "Renamed"})
+    assert renamed.json()["allowModelLoad"] is True
+
+
+def make_project(project_id = "proj-1"):
+    return studio_db.upsert_chat_project(
+        {"id": project_id, "name": "Reports", "instructions": "", "createdAt": 1, "updatedAt": 1}
+    )
+
+
+def test_a_task_keeps_its_chat_options_and_refuses_a_missing_project(client):
+    make_project()
+    task = create(client, newChatEachRun = True, archiveSuccessful = True, projectId = "proj-1").json()
+    assert (task["newChatEachRun"], task["archiveSuccessful"], task["projectId"]) == (
+        True,
+        True,
+        "proj-1",
+    )
+    assert create(client, projectId = "nowhere").status_code == 400
+    cleared = client.patch(f"/api/scheduled-tasks/{task['id']}", json = {"projectId": None}).json()
+    assert cleared["projectId"] is None
+    # New tasks start a chat per run, as before this option existed.
+    assert create(client).json()["newChatEachRun"] is True
+
+
 def test_create_list_and_read(client, monkeypatch):
     monkeypatch.setattr(db, "now_ms", lambda: ms("2026-10-14T12:00:00+00:00"))
     response = create(client, title = "  Morning brief  ")
@@ -346,7 +395,7 @@ def test_create_list_and_read(client, monkeypatch):
         ({"schedule": {"kind": "daily", "time": "25:00"}}, 422),
         ({"timezone": "Nowhere/Special"}, 400),
         ({"schedule": {"kind": "once", "at": "2020-01-01T09:00"}}, 400),
-        ({"model": "some-model"}, 422),
+        ({"model": "   "}, 422),
         ({"notify": "sometimes"}, 422),
     ],
 )
@@ -930,6 +979,451 @@ def test_a_refusal_from_a_loaded_model_keeps_its_reason(monkeypatch):
     with pytest.raises(RunFailed) as failure:
         generate(monkeypatch, producer)
     assert (failure.value.code, failure.value.message) == (None, "Too long.")
+
+
+def test_a_task_can_pin_the_loaded_model_and_its_reasoning(monkeypatch):
+    monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: True)
+    producer = FakeProducer(completion("Dawn light."))
+    generate(
+        monkeypatch, producer, make_task(model = "unsloth/Qwen3-1.7B-GGUF", reasoningEffort = "lowest")
+    )
+    payload = producer.payload
+    assert payload.model == "unsloth/Qwen3-1.7B-GGUF"
+    assert (payload.enable_thinking, payload.reasoning_effort) == (True, "low")
+    assert payload.provider_id is None
+
+
+def test_reasoning_off_turns_thinking_off_on_a_local_model(monkeypatch):
+    producer = FakeProducer(completion("Dawn light."))
+    generate(monkeypatch, producer, make_task(reasoningEffort = "off"))
+    assert (producer.payload.enable_thinking, producer.payload.reasoning_effort) == (False, None)
+    assert "model" not in producer.payload.model_fields_set
+
+
+def loaded_gguf(monkeypatch, **reasoning):
+    backend = SimpleNamespace(
+        is_loaded = True,
+        supports_reasoning = True,
+        reasoning_style = "enable_thinking",
+        reasoning_effort_levels = [],
+        reasoning_always_on = False,
+    )
+    for key, value in reasoning.items():
+        setattr(backend, key, value)
+    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: backend)
+
+
+@pytest.mark.parametrize(
+    "reasoning, effort, expected",
+    [
+        # An effort ladder: its own ends, not a fixed low and high.
+        (
+            {
+                "reasoning_style": "reasoning_effort",
+                "reasoning_effort_levels": ["minimal", "low", "medium", "high", "xhigh"],
+            },
+            "highest",
+            {"reasoning_effort": "xhigh"},
+        ),
+        (
+            {
+                "reasoning_style": "reasoning_effort",
+                "reasoning_effort_levels": ["minimal", "low", "medium", "high", "xhigh"],
+            },
+            "lowest",
+            {"reasoning_effort": "minimal"},
+        ),
+        # An empty list is the plain ladder.
+        ({"reasoning_style": "reasoning_effort"}, "lowest", {"reasoning_effort": "low"}),
+        # gpt-oss style has no off: the model's default stands.
+        ({"reasoning_style": "reasoning_effort"}, "off", {}),
+        # On/off only: both ends mean on.
+        ({}, "lowest", {"enable_thinking": True}),
+        ({}, "off", {"enable_thinking": False}),
+        ({"reasoning_always_on": True}, "off", {}),
+        (
+            {
+                "reasoning_style": "enable_thinking_effort",
+                "reasoning_effort_levels": ["low", "high", "max"],
+            },
+            "highest",
+            {"enable_thinking": True, "reasoning_effort": "max"},
+        ),
+        # No thinking at all: nothing sent.
+        ({"supports_reasoning": False}, "highest", {}),
+    ],
+)
+def test_thinking_effort_resolves_to_the_loaded_model(monkeypatch, reasoning, effort, expected):
+    loaded_gguf(monkeypatch, **reasoning)
+    assert scheduler_module._reasoning_fields(effort, False, on_loaded_model = True) == expected
+
+
+def test_thinking_effort_for_a_model_not_yet_loaded_or_a_connection(monkeypatch):
+    loaded_gguf(monkeypatch, supports_reasoning = False)
+    # The run loads its model, whose levels are unknown before the request: the shared ends.
+    assert scheduler_module._reasoning_fields("highest", False, on_loaded_model = False) == {
+        "enable_thinking": True,
+        "reasoning_effort": "high",
+    }
+    assert scheduler_module._reasoning_fields("off", True, on_loaded_model = True) == {
+        "reasoning_effort": "none"
+    }
+    assert scheduler_module._reasoning_fields(None, False, on_loaded_model = True) == {}
+
+
+def test_a_connection_task_names_its_level_and_a_local_one_resolves_it(monkeypatch):
+    loaded_gguf(monkeypatch, reasoning_style = "reasoning_effort")
+    assert scheduler_module._reasoning_fields("xhigh", True, on_loaded_model = False) == {
+        "reasoning_effort": "xhigh"
+    }
+    assert scheduler_module._reasoning_fields("medium", False, on_loaded_model = True) == {
+        "enable_thinking": True,
+        "reasoning_effort": "medium",
+    }
+
+
+def test_a_chosen_model_that_is_not_loaded_fails_rather_than_switching(monkeypatch):
+    from utils import openai_auto_switch_settings
+
+    monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: False)
+    monkeypatch.setattr(inference_routes, "_loaded_identity_satisfies", lambda model: False)
+    monkeypatch.setattr(
+        openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False
+    )
+    producer = FakeProducer(completion("Dawn light."))
+    with pytest.raises(RunFailed) as failure:
+        generate(monkeypatch, producer, make_task(model = "unsloth/Qwen3-1.7B-GGUF"))
+    assert failure.value.code == "model_not_loaded"
+    assert producer.payload is None
+
+    # With auto-switch on, the request names it and the backend loads it.
+    monkeypatch.setattr(openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: True)
+    db.delete_task("task-1")
+    generate(monkeypatch, producer, make_task(model = "unsloth/Qwen3-1.7B-GGUF"))
+    assert producer.payload.model == "unsloth/Qwen3-1.7B-GGUF"
+
+
+def test_a_task_allowed_to_load_its_model_lets_only_its_own_request_switch(monkeypatch):
+    from utils import openai_auto_switch_settings
+
+    monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: False)
+    monkeypatch.setattr(inference_routes, "_loaded_identity_satisfies", lambda model: False)
+    monkeypatch.setattr(
+        openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False
+    )
+    producer = FakeProducer(completion("Dawn light."))
+    generate(
+        monkeypatch,
+        producer,
+        make_task(model = "unsloth/Qwen3-1.7B-GGUF", allowModelLoad = True),
+    )
+    assert producer.payload.model == "unsloth/Qwen3-1.7B-GGUF"
+    # The opt-in rides on this run's in-process request, where no client can put it.
+    assert inference_routes._model_switch_allowed_for_request(producer.request)
+
+
+def test_a_one_time_yes_lets_that_run_alone_load_the_model(monkeypatch):
+    from utils import openai_auto_switch_settings
+
+    monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: False)
+    monkeypatch.setattr(inference_routes, "_loaded_identity_satisfies", lambda model: False)
+    monkeypatch.setattr(
+        openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False
+    )
+    monkeypatch.setattr(
+        inference_routes, "produce_openai_chat_completions", FakeProducer(completion("Ok."))
+    )
+    task = make_task(model = "unsloth/Qwen3-1.7B-GGUF")
+    app = SimpleNamespace(state = SimpleNamespace())
+    granted = {"id": "run-1", "allowModelLoad": True}
+    asyncio.run(generate_answer(app, task, granted, threading.Event()))
+    with pytest.raises(RunFailed) as failure:
+        asyncio.run(generate_answer(app, task, {"id": "run-2"}, threading.Event()))
+    assert failure.value.code == "model_not_loaded"
+
+
+def test_a_permitted_load_that_still_finds_no_model_says_the_load_failed(monkeypatch):
+    from utils import openai_auto_switch_settings
+
+    monkeypatch.setattr(inference_routes, "_loaded_satisfies", lambda model: False)
+    monkeypatch.setattr(inference_routes, "_loaded_identity_satisfies", lambda model: False)
+    monkeypatch.setattr(inference_routes, "_loaded_slot_ident", lambda: None)
+    monkeypatch.setattr(
+        openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False
+    )
+    producer = FakeProducer(error = HTTPException(status_code = 400, detail = "No model loaded."))
+    with pytest.raises(RunFailed) as failure:
+        generate(
+            monkeypatch,
+            producer,
+            make_task(model = "unsloth/Qwen3-1.7B-GGUF", allowModelLoad = True),
+        )
+    # Not "load a model in Chat": the run was let load one and could not.
+    assert failure.value.code == "model_load_failed"
+
+
+class SwapWorld:
+    """The model slot around one run: what is loaded, and what restoring did to it."""
+
+    EARLIER = ("/models/gemma.gguf", "Q4_K_M", "unsloth/gemma-3-GGUF")
+    TASK_MODEL = "unsloth/Qwen3-1.7B-GGUF"
+
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        idle = True,
+        earlier = EARLIER,
+    ):
+        from core.inference import llama_keepwarm
+        from utils import openai_auto_switch_settings
+
+        self.loaded = earlier
+        self.unloaded, self.stashed, self.reloads = [], [], []
+        self.idle = idle
+        monkeypatch.setattr(llama_keepwarm, "idle_for", lambda seconds: self.idle)
+        monkeypatch.setattr(llama_keepwarm, "loaded_identity", lambda: self.loaded)
+        monkeypatch.setattr(llama_keepwarm, "stash_for_reload", self.stashed.append)
+        monkeypatch.setattr(
+            inference_routes,
+            "_loaded_satisfies",
+            lambda model: self.loaded is not None and self.loaded[2] == model,
+        )
+        monkeypatch.setattr(inference_routes, "_loaded_identity_satisfies", lambda model: False)
+        monkeypatch.setattr(inference_routes, "_resident_npu_model", lambda: None)
+        monkeypatch.setattr(
+            inference_routes,
+            "get_inference_backend",
+            lambda: SimpleNamespace(active_model_name = None),
+        )
+        monkeypatch.setattr(
+            openai_auto_switch_settings, "get_openai_auto_switch_enabled", lambda: False
+        )
+
+        async def unload(request, subject):
+            self.unloaded.append(request.model_path)
+            self.loaded = None
+
+        async def reload(model, request, subject, **kwargs):
+            self.reloads.append(
+                (model, inference_routes._model_switch_allowed_for_request(request))
+            )
+            self.loaded = self.stashed[-1]
+
+        monkeypatch.setattr(inference_routes, "_unload_model_impl", unload)
+        monkeypatch.setattr(inference_routes, "_maybe_auto_switch_model", reload)
+
+    def producer(self):
+        world = self
+
+        class LoadsTheTaskModel(FakeProducer):
+            async def __call__(self, payload, request, current_subject, *, cancel_on_disconnect):
+                world.loaded = ("/models/qwen.gguf", "Q4_K_M", world.TASK_MODEL)
+                return await super().__call__(
+                    payload, request, current_subject, cancel_on_disconnect = cancel_on_disconnect
+                )
+
+        return LoadsTheTaskModel(completion("Dawn light."))
+
+    def run(
+        self,
+        monkeypatch,
+        run,
+        producer = None,
+    ):
+        producer = producer or self.producer()
+        monkeypatch.setattr(inference_routes, "produce_openai_chat_completions", producer)
+        task = make_task(model = self.TASK_MODEL, allowModelLoad = True)
+        app = SimpleNamespace(state = SimpleNamespace())
+        asyncio.run(generate_answer(app, task, run, threading.Event()))
+        return producer
+
+
+def test_a_scheduled_run_leaves_the_model_alone_while_studio_is_in_use(monkeypatch):
+    world = SwapWorld(monkeypatch, idle = False)
+    producer = world.producer()
+    with pytest.raises(RunFailed) as failure:
+        world.run(monkeypatch, {"id": "run-1", "source": "schedule"}, producer)
+    assert failure.value.code == "model_busy"
+    assert producer.payload is None
+    assert world.loaded == SwapWorld.EARLIER
+
+
+def test_a_scheduled_run_while_away_switches_back_to_the_earlier_model(monkeypatch):
+    world = SwapWorld(monkeypatch)
+    world.run(monkeypatch, {"id": "run-1", "source": "schedule"})
+    assert world.unloaded == ["/models/qwen.gguf"]
+    assert world.stashed == [SwapWorld.EARLIER]
+    # Brought back through the idle-reload path, so its saved launch settings come with it.
+    assert world.reloads == [(inference_routes._RELOAD_ONLY_MODEL, True)]
+    assert world.loaded == SwapWorld.EARLIER
+
+
+def test_a_run_that_found_nothing_loaded_leaves_nothing_loaded(monkeypatch):
+    world = SwapWorld(monkeypatch, earlier = None)
+    world.run(monkeypatch, {"id": "run-1", "source": "schedule"})
+    assert world.unloaded == ["/models/qwen.gguf"]
+    assert world.reloads == [] and world.loaded is None
+
+
+def test_a_run_now_swaps_even_while_studio_is_in_use_and_still_switches_back(monkeypatch):
+    world = SwapWorld(monkeypatch, idle = False)
+    # The user pressed Run now: they are there. Nothing restores while they are mid-request.
+    world.run(monkeypatch, {"id": "run-1", "source": "manual"})
+    assert world.loaded[2] == SwapWorld.TASK_MODEL and world.unloaded == []
+    db.delete_task("task-1")
+    world = SwapWorld(monkeypatch, idle = True)
+    world.run(monkeypatch, {"id": "run-2", "source": "manual"})
+    assert world.loaded == SwapWorld.EARLIER
+
+
+def test_restoring_leaves_alone_a_model_the_user_loaded_meanwhile(monkeypatch):
+    world = SwapWorld(monkeypatch)
+    picked = ("/models/llama.gguf", "Q8_0", "unsloth/Llama-3.2-3B-GGUF")
+    base = world.producer()
+
+    class UserPicksAnother(type(base)):
+        async def __call__(self, *args, **kwargs):
+            answer = await super().__call__(*args, **kwargs)
+            world.loaded = picked
+            return answer
+
+    world.run(
+        monkeypatch, {"id": "run-1", "source": "schedule"}, UserPicksAnother(completion("Ok."))
+    )
+    assert world.unloaded == [] and world.reloads == [] and world.loaded == picked
+
+
+def test_a_header_cannot_turn_on_the_switch_opt_in():
+    from starlette.requests import Request
+
+    request = Request(
+        {"type": "http", "headers": [(b"unsloth.allow_model_switch", b"1")], "path": "/"}
+    )
+    assert not inference_routes._model_switch_allowed_for_request(request)
+    inference_routes.allow_model_switch_for_request(request.scope)
+    assert inference_routes._model_switch_allowed_for_request(request)
+
+
+def test_a_missing_or_disabled_connection_fails_with_its_own_reason(monkeypatch):
+    from storage import providers_db
+    task = make_task(model = "external::conn-1::gpt-5-mini")
+    for config in (None, {"id": "conn-1", "is_enabled": 0}):
+        monkeypatch.setattr(providers_db, "get_provider", lambda provider_id, config = config: config)
+        producer = FakeProducer(completion("unused"))
+        with pytest.raises(RunFailed) as failure:
+            generate(monkeypatch, producer, task)
+        assert failure.value.code == "connection_unavailable"
+        assert producer.payload is None
+
+
+def test_a_connection_run_streams_and_records_which_connection_answered(monkeypatch):
+    import json as jsonlib
+
+    from fastapi.responses import StreamingResponse
+    from storage import providers_db
+
+    config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
+    monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
+
+    async def chunks():
+        for delta in ({"content": "Dawn "}, {"content": "light."}):
+            chunk = {"id": "c1", "model": "gpt-5-mini", "choices": [{"index": 0, "delta": delta}]}
+            yield f"data: {jsonlib.dumps(chunk)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+
+    producer = FakeProducer(StreamingResponse(chunks(), media_type = "text/event-stream"))
+    answer = generate(
+        monkeypatch,
+        producer,
+        make_task(model = "external::conn-1::gpt-5-mini", reasoningEffort = "off"),
+    )
+    payload = producer.payload
+    assert (payload.provider_id, payload.external_model, payload.stream) == (
+        "conn-1",
+        "gpt-5-mini",
+        True,
+    )
+    assert payload.reasoning_effort == "none" and payload.enable_thinking is None
+    assert answer.content == "Dawn light."
+    assert answer.provider == config
+
+
+def test_a_new_chat_per_run_can_go_to_a_project_and_be_archived():
+    make_project()
+    task, run = claim_manual_run()
+    db.update_task(task["id"], {"archiveSuccessful": True, "projectId": "proj-1"})
+    task = db.get_task(task["id"])
+    answer = Answer(content = "Done.", reasoning = "", model = "gemma-3")
+    thread = studio_db.get_chat_thread(scheduler_module.save_chat(task, run, answer, 1_000, 2_000))
+    assert (thread["projectId"], thread["archived"]) == ("proj-1", True)
+
+
+def test_a_project_deleted_since_the_task_was_saved_is_skipped():
+    task, run = claim_manual_run()
+    db.update_task(task["id"], {"projectId": "gone"})
+    answer = Answer(content = "Done.", reasoning = "", model = "gemma-3")
+    thread_id = scheduler_module.save_chat(db.get_task(task["id"]), run, answer, 1_000, 2_000)
+    assert studio_db.get_chat_thread(thread_id)["projectId"] is None
+
+
+def test_without_a_new_chat_per_run_every_run_continues_one_chat():
+    task, first = claim_manual_run()
+    db.update_task(
+        task["id"], {"newChatEachRun": False, "archiveSuccessful": True, "projectId": "x"}
+    )
+    task = db.get_task(task["id"])
+    one = scheduler_module.save_chat(
+        task, first, Answer("First answer.", "", "gemma-3"), 1_000, 2_000
+    )
+    # The run that started it is the one the stale-run sweep would remove it with.
+    assert one == db.chat_id_for_run(first["id"])
+    task = db.get_task(task["id"])
+    assert task["chatThreadId"] == one
+    # Those two options belong to a chat per run.
+    assert studio_db.get_chat_thread(one)["archived"] is False
+
+    assert scheduler_module.chat_history(one) == [
+        {"role": "user", "content": "Write a haiku about mornings."},
+        {"role": "assistant", "content": "First answer."},
+    ]
+    second = {**first, "id": "run-2"}
+    two = scheduler_module.save_chat(
+        task, second, Answer("Second answer.", "", "gemma-3"), 3_000, 4_000
+    )
+    assert two == one
+    messages = studio_db.list_chat_messages(one)
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    # Threaded after the earlier answer, so the chat reads as one conversation.
+    assert messages[2]["parentId"] == messages[1]["id"]
+    assert len(studio_db.list_chat_threads()) == 1
+
+
+def test_a_deleted_ongoing_chat_is_replaced_by_a_new_one():
+    task, first = claim_manual_run()
+    db.update_task(task["id"], {"newChatEachRun": False})
+    one = scheduler_module.save_chat(
+        db.get_task(task["id"]), first, Answer("A.", "", "m"), 1_000, 2_000
+    )
+    studio_db.delete_chat_threads([one])
+    second = {**first, "id": "run-2"}
+    two = scheduler_module.save_chat(
+        db.get_task(task["id"]), second, Answer("B.", "", "m"), 3_000, 4_000
+    )
+    assert two != one and db.get_task(task["id"])["chatThreadId"] == two
+
+
+def test_an_ongoing_chat_reaches_the_model_as_history(monkeypatch):
+    task, first = claim_manual_run()
+    db.update_task(task["id"], {"newChatEachRun": False})
+    scheduler_module.save_chat(
+        db.get_task(task["id"]), first, Answer("Yesterday.", "", "m"), 1_000, 2_000
+    )
+    producer = FakeProducer(completion("Today."))
+    generate(monkeypatch, producer, db.get_task(task["id"]))
+    roles = [message.role for message in producer.payload.messages]
+    assert roles == ["system", "user", "assistant", "user"]
+    assert producer.payload.messages[2].content == "Yesterday."
 
 
 def test_an_empty_reply_is_a_failure(monkeypatch):

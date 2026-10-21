@@ -50,6 +50,11 @@ _STOP_GRACE_SECONDS = 5.0
 _SETTLE_ATTEMPTS = 3
 _SETTLE_RETRY_SECONDS = 1.0
 _ERROR_TEXT_LIMIT = 500
+# Studio counts as in use until this long after its last inference request: a scheduled run leaves a
+# model alone that someone was just talking to, and asks instead.
+_AWAY_SECONDS = 5 * 60
+# How much of an ongoing chat a run sees: enough to carry it on, small enough for a short context.
+_HISTORY_MESSAGES = 20
 
 _schedulers: "weakref.WeakSet[ScheduledTaskScheduler]" = weakref.WeakSet()
 
@@ -72,6 +77,16 @@ class Answer:
     content: str
     reasoning: str
     model: Optional[str]
+    # The connection that answered; None for a local model.
+    provider: Optional[dict] = None
+
+
+@dataclass
+class _Swap:
+    """A run that loads its task's model in place of what was loaded, put back afterwards."""
+
+    # The GGUF loaded before, as a reload brings it back; None when nothing was.
+    previous: Optional[tuple]
 
 
 @dataclass
@@ -167,21 +182,187 @@ def _chat_model_loaded() -> bool:
     return _loaded_slot_ident() is not None
 
 
+def _model_is_loaded(model: str) -> bool:
+    from routes.inference import _loaded_identity_satisfies, _loaded_satisfies
+    return _loaded_satisfies(model) or _loaded_identity_satisfies(model)
+
+
+# Levels the request accepts; a template may list others, which a run never sends.
+_EFFORT_LEVELS = ("minimal", "low", "medium", "high", "max", "xhigh")
+
+
+def _reasoning_fields(effort: Optional[str], connection: bool, on_loaded_model: bool) -> dict:
+    """The request fields for a task's thinking effort; None keeps the model's default.
+
+    Lowest and highest are the answering model's own ends, read off the loaded GGUF when it is the
+    one answering. Otherwise (a model this run loads, a connection) its levels are not known here,
+    and low and high, which every effort ladder has, stand in. Off goes only where thinking turns
+    off; where it cannot, the model's default stands rather than the nearest level.
+    """
+    if effort is None:
+        return {}
+    relative = {"off": "none", "lowest": "low", "highest": "high"}
+    if connection:
+        return {"reasoning_effort": relative.get(effort, effort)}
+    if effort not in relative:
+        # A level named for a connection, kept after the task moved to a local model.
+        return {"enable_thinking": True, "reasoning_effort": effort}
+    backend = None
+    if on_loaded_model:
+        from routes.inference import get_llama_cpp_backend
+        backend = get_llama_cpp_backend()
+        if not getattr(backend, "is_loaded", False):
+            backend = None
+    if backend is None:
+        if effort == "off":
+            return {"enable_thinking": False}
+        return {
+            "enable_thinking": True,
+            "reasoning_effort": "low" if effort == "lowest" else "high",
+        }
+    if not backend.supports_reasoning:
+        return {}
+    style = backend.reasoning_style
+    if effort == "off":
+        if backend.reasoning_always_on or style == "reasoning_effort":
+            return {}
+        return {"enable_thinking": False}
+    if style == "enable_thinking":
+        return {"enable_thinking": True}
+    # An empty list is the plain low/medium/high ladder.
+    levels = [
+        level
+        for level in (backend.reasoning_effort_levels or ["low", "medium", "high"])
+        if level in _EFFORT_LEVELS
+    ] or ["low", "high"]
+    fields = {"reasoning_effort": levels[0] if effort == "lowest" else levels[-1]}
+    if style == "enable_thinking_effort":
+        fields["enable_thinking"] = True
+    return fields
+
+
+def _model_fields(model: Optional[str], may_load: bool) -> tuple[dict, Optional[dict], bool]:
+    """The request fields that pick the task's model, the connection's saved config when it is
+    one, and whether it has to be loaded. Raises RunFailed when the choice cannot answer now."""
+    from routes.inference import (
+        _connection_model_ref,
+        _loaded_identity_satisfies,
+        _loaded_satisfies,
+    )
+    from storage import providers_db
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    if not model:
+        # No model: the loaded one answers, and an idle-unloaded one is brought back.
+        return {}, None, False
+    connection = _connection_model_ref(model)
+    if connection is not None:
+        provider_id, external_model = connection
+        config = providers_db.get_provider(provider_id)
+        if config is None or not config["is_enabled"]:
+            raise RunFailed("connection_unavailable")
+        # The proxy relays a stream:false provider body as is, so stream and collect the chunks.
+        return (
+            {
+                "model": model,
+                "provider_id": provider_id,
+                "external_model": external_model,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+            config,
+            False,
+        )
+    if _loaded_satisfies(model) or _loaded_identity_satisfies(model):
+        return {"model": model}, None, False
+    # Loading it replaces the model in Chat, so only with the user's yes: for this task always,
+    # for this run once, or for every request through auto-switch. Otherwise the run fails with
+    # a reason the app turns into that question.
+    if may_load or get_openai_auto_switch_enabled():
+        return {"model": model}, None, True
+    raise RunFailed("model_not_loaded")
+
+
+async def _plan_swap(unattended: bool) -> _Swap:
+    """What a load must put back. An unattended run swaps only a GGUF it can restore, and only
+    while nobody is using Studio; otherwise it asks, and the user, there now, decides."""
+    from core.inference.llama_keepwarm import idle_for, loaded_identity
+    from routes.inference import _resident_npu_model, get_inference_backend
+
+    previous = loaded_identity()
+    if unattended:
+        unrestorable = _resident_npu_model() is not None or getattr(
+            await asyncio.to_thread(get_inference_backend), "active_model_name", None
+        )
+        if unrestorable or not idle_for(_AWAY_SECONDS):
+            raise RunFailed("model_busy")
+    return _Swap(previous)
+
+
+async def _restore_after_swap(swap: _Swap, model: str, app: Any, run_id: str, task: dict) -> None:
+    """Put back what the run's load replaced: the earlier model, or nothing. Leaves alone a model
+    someone started using or loaded meanwhile. Best effort: a failure keeps the task's model."""
+    from core.inference.llama_keepwarm import idle_for, loaded_identity, stash_for_reload
+    from models.inference import UnloadRequest
+    from routes.inference import (
+        _RELOAD_ONLY_MODEL,
+        _maybe_auto_switch_model,
+        _unload_model_impl,
+        allow_model_switch_for_request,
+    )
+
+    subject = task["ownerSubject"]
+    try:
+        if not idle_for(0):
+            return
+        current = loaded_identity()
+        if _model_is_loaded(model):
+            if current is not None:
+                await _unload_model_impl(UnloadRequest(model_path = current[0]), subject)
+        elif current is not None:
+            return
+        if swap.previous is None:
+            return
+        stash_for_reload(swap.previous)
+        request = _producer_request(app, f"{run_id}:restore", threading.Event(), task["timezone"])
+        allow_model_switch_for_request(request.scope)
+        await _maybe_auto_switch_model(_RELOAD_ONLY_MODEL, request, subject)
+    except Exception as exc:  # noqa: BLE001 - the run's own outcome stands
+        logger.warning("Scheduled task %s could not restore the earlier model: %s", task["id"], exc)
+
+
 async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threading.Event) -> Answer:
     """Ask the loaded chat model to do the task. Text only: tools never run unattended."""
     from fastapi import HTTPException
 
     from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
     from core.inference.llama_keepwarm import InferenceActivityReservation, end_in_process_request
-    from models.inference import ChatCompletionRequest
-    from routes.inference import produce_openai_chat_completions
+    from fastapi.responses import StreamingResponse
 
+    from models.inference import ChatCompletionRequest
+    from routes.inference import (
+        _chat_completion_from_connection_stream,
+        _relay_split_thinking,
+        allow_model_switch_for_request,
+        produce_openai_chat_completions,
+    )
+
+    ongoing = await asyncio.to_thread(ongoing_chat, task)
+    history = await asyncio.to_thread(chat_history, ongoing["id"]) if ongoing else []
+    model_fields, provider, allow_switch = _model_fields(
+        task.get("model"), bool(task.get("allowModelLoad") or run.get("allowModelLoad"))
+    )
+    # A yes given for this run, or a Run now, has the user right there; a schedule does not.
+    swap = (
+        await _plan_swap(run.get("source") == "schedule" and not run.get("allowModelLoad"))
+        if allow_switch
+        else None
+    )
     payload = ChatCompletionRequest.model_validate(
         {
-            # No model: the loaded one answers, and an idle-unloaded one is brought back. Naming
-            # one could switch models under the user.
             "messages": [
                 {"role": "system", "content": system_prompt(task, db.now_ms())},
+                *history,
                 {"role": "user", "content": task["prompt"]},
             ],
             "stream": False,
@@ -190,11 +371,18 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             # means every built-in, python and terminal included.
             "tool_choice": "none",
             "enabled_tools": [],
+            **model_fields,
+            # A run that loads its model cannot read that model's levels before the request.
+            **_reasoning_fields(
+                task.get("reasoningEffort"), provider is not None, on_loaded_model = not allow_switch
+            ),
         }
     )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _RUN_TIMEOUT_SECONDS
     request = _producer_request(app, run["id"], cancel_event, task["timezone"])
+    if allow_switch:
+        allow_model_switch_for_request(request.scope)
     activity = InferenceActivityReservation()
     activity.reserve()
     producer: Optional[asyncio.Future] = None
@@ -221,8 +409,25 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             raise RunFailed("timeout")
         try:
             response = producer.result()
+            if provider is not None and isinstance(response, StreamingResponse):
+                response.body_iterator = _relay_split_thinking(
+                    response.body_iterator,
+                    payload.stop,
+                    parse_thinking = payload.enable_thinking is not False,
+                )
+                remaining = max(0.0, deadline - loop.time())
+                try:
+                    response = await asyncio.wait_for(
+                        _chat_completion_from_connection_stream(response, payload.model),
+                        timeout = remaining,
+                    )
+                except TimeoutError:
+                    raise RunFailed("timeout") from None
         except HTTPException as exc:
-            if not _chat_model_loaded():
+            if allow_switch and not _model_is_loaded(payload.model):
+                # Let load its model and still without it: gone from disk, or the load failed.
+                raise RunFailed("model_load_failed", _error_text(exc.detail)) from None
+            if provider is None and not _chat_model_loaded():
                 raise RunFailed("no_model") from None
             raise RunFailed(None, _error_text(exc.detail)) from None
         except GpuBusyForAnotherAccountError as exc:
@@ -238,6 +443,9 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
             request.scope,
             answered = response is not None and int(getattr(response, "status_code", 200)) < 400,
         )
+        # Not while Studio shuts down or the run is stopped: a reload then would only be torn down.
+        if swap is not None and not cancel_event.is_set():
+            await _restore_after_swap(swap, payload.model, app, run["id"], task)
     if cancel_event.is_set():
         raise RunFailed("cancelled")
     body = getattr(response, "body", None)
@@ -255,29 +463,90 @@ async def generate_answer(app: Any, task: dict, run: dict, cancel_event: threadi
         content = content,
         reasoning = message.get("reasoning_content") or "",
         model = data.get("model") or None,
+        provider = provider,
     )
 
 
-def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_at: int) -> str:
-    """Write the run as a new chat: the task's prompt, then the answer. Returns the chat id."""
+def ongoing_chat(task: dict) -> Optional[dict]:
+    """The chat a task that keeps one adds to, while it is still there. One the user deleted or
+    archived is done with, and the next run starts another."""
     from storage import studio_db
 
-    thread_id = db.chat_id_for_run(run["id"])
+    if task.get("newChatEachRun", True) or not task.get("chatThreadId"):
+        return None
+    thread = studio_db.get_chat_thread(task["chatThreadId"])
+    return thread if thread is not None and not thread.get("archived") else None
+
+
+def _message_text(message: dict) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    return "".join(
+        part.get("text") or ""
+        for part in content or []
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
+def chat_history(thread_id: str) -> list[dict]:
+    """The ongoing chat's latest turns as request messages, text only: reasoning and tool parts
+    were the model's working, not the conversation."""
+    from storage import studio_db
+
+    history = []
+    for message in studio_db.list_chat_messages(thread_id)[-_HISTORY_MESSAGES:]:
+        text = _message_text(message)
+        if message.get("role") in ("user", "assistant") and text.strip():
+            history.append({"role": message["role"], "content": text})
+    return history
+
+
+def _project_or_none(project_id: Optional[str]) -> Optional[str]:
+    from storage import studio_db
+
+    # Deleted since the task was saved: the chat goes where chats go by default.
+    return project_id if project_id and studio_db.get_chat_project(project_id) else None
+
+
+def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_at: int) -> str:
+    """Write the run's prompt and answer: to a new chat, or to the end of the task's ongoing one.
+    Returns the chat id."""
+    from storage import studio_db
+
+    ongoing = ongoing_chat(task)
+    parent_id = None
+    if ongoing is not None:
+        thread_id = ongoing["id"]
+        earlier = studio_db.list_chat_messages(thread_id)
+        if earlier:
+            parent_id = earlier[-1]["id"]
+            # After what is there, even a message the user added while the run was going.
+            started_at = max(started_at, int(earlier[-1]["createdAt"]) + 1)
+    else:
+        thread_id = db.chat_id_for_run(run["id"])
     user_message_id = str(uuid.uuid4())
     # After the prompt even within one millisecond, which the message order relies on.
     answered_at = max(finished_at, started_at + 1)
     model = answer.model or ""
-    studio_db.upsert_chat_thread(
-        {
-            "id": thread_id,
-            "title": task["title"],
-            "modelType": "base",
-            "modelId": model,
-            "createdAt": started_at,
-            "updatedAt": answered_at,
-            "scheduledTaskId": task["id"],
-        }
-    )
+    if ongoing is not None:
+        # Moved to the top of Recents; its title, project and the rest stay as the user left them.
+        studio_db.upsert_chat_thread({**ongoing, "updatedAt": answered_at})
+    else:
+        new_each_run = task.get("newChatEachRun", True)
+        studio_db.upsert_chat_thread(
+            {
+                "id": thread_id,
+                "title": task["title"],
+                "modelType": "base",
+                "modelId": model,
+                "createdAt": started_at,
+                "updatedAt": answered_at,
+                "scheduledTaskId": task["id"],
+                "projectId": _project_or_none(task.get("projectId")) if new_each_run else None,
+                "archived": bool(new_each_run and task.get("archiveSuccessful")),
+            }
+        )
     parts: list[dict] = []
     source = {"taskId": task["id"], "runId": run["id"]}
     metadata: dict = {
@@ -287,8 +556,15 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
             "modelId": model,
             "modelLabel": model,
             "responseModelId": model,
-            "providerName": "Local model",
-            "providerType": "local",
+            **(
+                {
+                    "providerId": answer.provider["id"],
+                    "providerName": answer.provider["display_name"],
+                    "providerType": answer.provider["provider_type"],
+                }
+                if answer.provider
+                else {"providerName": "Local model", "providerType": "local"}
+            ),
             "startedAt": started_at,
             "finishedAt": answered_at,
             "durationMs": answered_at - started_at,
@@ -309,7 +585,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
                 {
                     "id": user_message_id,
                     "threadId": thread_id,
-                    "parentId": None,
+                    "parentId": parent_id,
                     "role": "user",
                     "content": [{"type": "text", "text": task["prompt"]}],
                     "metadata": {"scheduledTask": source},
@@ -327,9 +603,12 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
             ],
         )
     except Exception:
-        # Never leave an empty chat behind.
-        _discard_chat(thread_id)
+        # Never leave an empty chat behind; an ongoing one keeps what it had.
+        if ongoing is None:
+            _discard_chat(thread_id)
         raise
+    if ongoing is None and not task.get("newChatEachRun", True):
+        db.set_chat_thread(task["id"], thread_id)
     return thread_id
 
 

@@ -10236,6 +10236,22 @@ def disable_openai_auto_switch_for_request(scope) -> None:
         scope[_DISABLE_OPENAI_AUTO_SWITCH_SCOPE_KEY] = True
 
 
+_ALLOW_MODEL_SWITCH_SCOPE_KEY = "unsloth.allow_model_switch"
+
+
+def allow_model_switch_for_request(scope) -> None:
+    """Let one in-process request load the downloaded model it names with auto-switch off: a
+    scheduled task whose owner allowed it to load its model. A scope key, not a header, so no
+    HTTP client can set it; every other switch guard still applies."""
+    if isinstance(scope, dict):
+        scope[_ALLOW_MODEL_SWITCH_SCOPE_KEY] = True
+
+
+def _model_switch_allowed_for_request(fastapi_request) -> bool:
+    scope = getattr(fastapi_request, "scope", None)
+    return isinstance(scope, dict) and bool(scope.get(_ALLOW_MODEL_SWITCH_SCOPE_KEY))
+
+
 async def _keyless_caller_held_back(fastapi_request) -> bool:
     """Keyless caller that may not POST /api/inference/load itself, so it may not switch models."""
     from auth.authentication import request_admitted_without_credential
@@ -11487,7 +11503,9 @@ async def _maybe_auto_switch_model(
     # pinned preview checkpoint it just loaded.
     if _auto_switch_opted_out(fastapi_request):
         return
-    auto_switch_on = get_openai_auto_switch_enabled()
+    auto_switch_on = get_openai_auto_switch_enabled() or _model_switch_allowed_for_request(
+        fastapi_request
+    )
 
     def _refuse_non_gguf_endpoint() -> None:
         """Refuse a switch target this endpoint cannot serve.

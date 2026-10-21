@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,18 +17,31 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { buildExternalModelId, type ExternalProviderConfig } from "@/features/chat/external-providers";
+import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
+import { chatLocalModelOptions } from "@/features/chat/local-model-options";
+import {
+  externalReasoningTakesEffort,
+  getExternalReasoningCapabilities,
+} from "@/features/chat/provider-capabilities";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import { useDeviceInventorySources } from "@/features/hub/inventory";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import type { ScheduledTask, ScheduledTaskPatch, TaskNotify } from "./api";
+import type { ScheduledTask, ScheduledTaskPatch, TaskNotify, TaskReasoningEffort } from "./api";
 import {
   ISO_WEEKDAYS,
   REPEAT_KINDS,
@@ -87,15 +101,103 @@ function Row({ id, label, children }: { id?: string; label: string; children: Re
   );
 }
 
+// Dark mode separates by fill, not outline: a white wash on the card surface, no borders or dividers.
 const CARD =
-  "flex flex-col divide-y divide-border/70 overflow-hidden rounded-[20px] border border-border/70 dark:divide-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))] dark:border-[rgb(255_255_255_/_calc(0.12*var(--contrast-edge-gain,1)))]";
+  "flex flex-col divide-y divide-border overflow-hidden rounded-[20px] border border-border dark:divide-y-0 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 // Controls sit flush in their row and read as its value, like a settings list.
 const BARE_SELECT =
   "h-9 w-auto gap-1.5 border-none bg-transparent px-2 text-ui-15 text-muted-foreground shadow-none hover:text-foreground focus-visible:ring-1 dark:bg-transparent dark:hover:bg-transparent";
 const BARE_INPUT =
   "h-9 w-auto border-none bg-transparent px-2 text-right text-ui-15 text-muted-foreground shadow-none focus-visible:ring-1 dark:bg-transparent";
 // A long list (days of the month, times of day) scrolls rather than filling the window.
-const LONG_LIST = "max-h-[min(--spacing(72),var(--radix-select-content-available-height))]";
+// Its scroll buttons paint the base popover colour, which shows as bands on the lifted dark menu.
+const LONG_LIST =
+  "max-h-[min(--spacing(72),var(--radix-select-content-available-height))] [&_[data-slot^=select-scroll]]:bg-transparent";
+
+// Select values cannot be empty, so null (the loaded model, the model's default) has a stand-in.
+const LOADED_MODEL = "__loaded__";
+const NO_PROJECT = "__none__";
+const DEFAULT_EFFORT = "__default__";
+const RELATIVE_LABELS: Partial<Record<TaskReasoningEffort, TranslationKey>> = {
+  off: "scheduledTasks.form.reasoningOff",
+  lowest: "scheduledTasks.form.reasoningLowest",
+  highest: "scheduledTasks.form.reasoningHighest",
+};
+const ALL_EFFORTS: readonly TaskReasoningEffort[] = ["off", "lowest", "highest"];
+const CONNECTION_LEVELS: readonly TaskReasoningEffort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** A connection's level as the Chat composer names it (formatReasoningEffortLabel), so a task's
+ *  menu reads like Chat's for the same model. */
+function levelLabel(level: TaskReasoningEffort, modelId: string | undefined): string {
+  if (level === "max") return "Max";
+  if (level === "xhigh") {
+    const normalized = modelId?.trim().toLowerCase() ?? "";
+    return normalized.startsWith("claude-opus-4-6") || normalized.startsWith("claude-sonnet-4-6")
+      ? "Max"
+      : "Extra High";
+  }
+  return level.charAt(0).toUpperCase() + level.slice(1);
+}
+
+/** The loaded model's thinking, as Chat reads it. */
+type LoadedReasoning = { supportsReasoning: boolean; reasoningStyle: string; reasoningAlwaysOn: boolean };
+
+type ConnectionChoice = { id: string; modelId: string; provider: ExternalProviderConfig };
+
+/** What a task can run on: models on this device and models of connected providers, never one
+ *  that would have to be downloaded first. */
+function useModelChoices(current: string | null) {
+  const inventory = useDeviceInventorySources(["localModels"]);
+  const providers = useExternalProvidersStore((state) => state.providers);
+  const connectionsEnabled = useExternalProvidersStore((state) => state.connectionsEnabled);
+  return useMemo(() => {
+    const local = chatLocalModelOptions(inventory.localModels.rows).map(({ id, name }) => ({ id, name }));
+    const connections = (connectionsEnabled ? providers : []).map((provider) => ({
+      provider,
+      models: provider.models.map(
+        (modelId): ConnectionChoice => ({ id: buildExternalModelId(provider.id, modelId), modelId, provider }),
+      ),
+    }));
+    const known =
+      current === null ||
+      local.some((option) => option.id === current) ||
+      connections.some((group) => group.models.some((option) => option.id === current));
+    // A saved choice that is gone (deleted, disconnected) stays visible rather than silently changing.
+    const missing = known ? null : current;
+    const connection = connections.flatMap((group) => group.models).find((option) => option.id === current);
+    return { local, connections, missing, connection };
+  }, [inventory.localModels.rows, providers, connectionsEnabled, current]);
+}
+
+/** The efforts the task's model takes: a connection's from its capabilities, the loaded model's
+ *  from what Chat read off it, and all of them for a model not loaded, which a run resolves once it
+ *  is. Empty: the model has no thinking to set. */
+function effortChoices(
+  connection: ConnectionChoice | undefined,
+  loaded: LoadedReasoning | null,
+): readonly TaskReasoningEffort[] {
+  if (!connection) {
+    if (!loaded) return ALL_EFFORTS;
+    if (!loaded.supportsReasoning) return [];
+    // An effort ladder alone (gpt-oss) or always-on thinking has no off.
+    return loaded.reasoningAlwaysOn || loaded.reasoningStyle === "reasoning_effort"
+      ? ["lowest", "highest"]
+      : ALL_EFFORTS;
+  }
+  const { provider, modelId } = connection;
+  const caps = getExternalReasoningCapabilities(provider.providerType, modelId, {
+    isReasoningProvider: provider.isReasoningModel === true,
+    baseUrl: provider.baseUrl ?? null,
+    apiType: provider.apiType,
+    reasoningConfig: provider.reasoningConfig,
+  });
+  if (!externalReasoningTakesEffort(caps)) return [];
+  // Known up front, so the connection's own levels, weakest first, rather than relative ends.
+  const levels = CONNECTION_LEVELS.filter((level) =>
+    (caps.reasoningEffortLevels as readonly string[]).includes(level),
+  );
+  return caps.supportsReasoningOff ? ["off", ...levels] : levels;
+}
 
 /** Creates a task, or edits `task`. Mounted while open, so each opening starts from the task. */
 export function TaskDialog({
@@ -121,8 +223,33 @@ export function TaskDialog({
     task ? formFromSchedule(task.schedule, now) : defaultScheduleForm(now),
   );
   const [notify, setNotify] = useState<TaskNotify>(task?.notify ?? "all");
+  const [model, setModel] = useState<string | null>(task?.model ?? null);
+  const [allowLoad, setAllowLoad] = useState(task?.allowModelLoad ?? false);
+  const [newChatEachRun, setNewChatEachRun] = useState(task?.newChatEachRun ?? true);
+  const [archiveSuccessful, setArchiveSuccessful] = useState(task?.archiveSuccessful ?? false);
+  const [projectId, setProjectId] = useState<string | null>(task?.projectId ?? null);
+  const { projects } = useChatProjects();
+  const openProjects = projects.filter((project) => !project.archived || project.id === projectId);
+  const [chosenEffort, setEffort] = useState<TaskReasoningEffort | null>(task?.reasoningEffort ?? null);
+  const models = useModelChoices(model);
+  const checkpoint = useChatRuntimeStore((state) => state.params.checkpoint);
+  const supportsReasoning = useChatRuntimeStore((state) => state.supportsReasoning);
+  const reasoningStyle = useChatRuntimeStore((state) => state.reasoningStyle);
+  const reasoningAlwaysOn = useChatRuntimeStore((state) => state.reasoningAlwaysOn);
+  // Only while Chat has a model loaded and the task runs on it; otherwise the run resolves it.
+  const loadedReasoning =
+    checkpoint && !models.connection && (model === null || model === checkpoint)
+      ? { supportsReasoning, reasoningStyle, reasoningAlwaysOn }
+      : null;
+  const efforts = effortChoices(models.connection, loadedReasoning);
+  // A model that cannot take the chosen effort runs at its default instead.
+  const effort = chosenEffort !== null && efforts.includes(chosenEffort) ? chosenEffort : null;
   // Open when it holds something other than the defaults, so an edit shows what was chosen.
-  const [advanced, setAdvanced] = useState(() => task !== null && task.notify !== "all");
+  const [advanced, setAdvanced] = useState(
+    () =>
+      task !== null &&
+      (task.notify !== "all" || !task.newChatEachRun || task.archiveSuccessful || task.projectId !== null),
+  );
   const [busy, setBusy] = useState(false);
   // An edit keeps the zone the task was made in; a new task takes this browser's.
   const timezone = task?.timezone ?? browserTimeZone();
@@ -153,9 +280,28 @@ export function TaskDialog({
         if (!sameSchedule(schedule, task.schedule)) patch.schedule = schedule;
         if (named !== task.named) patch.named = named;
         if (notify !== task.notify) patch.notify = notify;
+        if (model !== task.model) patch.model = model;
+        if (effort !== task.reasoningEffort) patch.reasoningEffort = effort;
+        if (allowLoad !== task.allowModelLoad) patch.allowModelLoad = allowLoad;
+        if (newChatEachRun !== task.newChatEachRun) patch.newChatEachRun = newChatEachRun;
+        if (archiveSuccessful !== task.archiveSuccessful) patch.archiveSuccessful = archiveSuccessful;
+        if (projectId !== task.projectId) patch.projectId = projectId;
         if (Object.keys(patch).length > 0) await update(task.id, patch);
       } else {
-        await create({ title: finalTitle, prompt: prompt.trim(), schedule, timezone, notify, named });
+        await create({
+          title: finalTitle,
+          prompt: prompt.trim(),
+          schedule,
+          timezone,
+          notify,
+          named,
+          model,
+          reasoningEffort: effort,
+          allowModelLoad: allowLoad,
+          newChatEachRun,
+          archiveSuccessful,
+          projectId,
+        });
       }
       onClose();
     } catch (error) {
@@ -196,34 +342,133 @@ export function TaskDialog({
           </DialogTitle>
           <DialogDescription className="sr-only">{t("scheduledTasks.description")}</DialogDescription>
         </DialogHeader>
-        <div className={CARD}>
-          <Input
-            id={`${ids}-name`}
-            aria-label={t("scheduledTasks.form.name")}
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            maxLength={120}
-            disabled={busy}
-            placeholder={t("scheduledTasks.form.namePlaceholder")}
-            className="h-12 rounded-none border-none bg-transparent px-5 text-ui-15 font-medium shadow-none focus-visible:ring-0 dark:bg-transparent dark:focus-visible:bg-transparent"
-          />
-          <Textarea
-            ref={promptRef}
-            id={`${ids}-prompt`}
-            aria-label={t("scheduledTasks.form.instructions")}
-            aria-describedby={`${ids}-prompt-hint`}
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            maxLength={20_000}
-            rows={5}
-            disabled={busy}
-            placeholder={t("scheduledTasks.form.instructionsPlaceholder")}
-            className="max-h-60 min-h-32 resize-none rounded-none border-none bg-transparent px-5 py-3.5 text-ui-15 shadow-none focus-visible:ring-0 dark:bg-transparent dark:focus-visible:bg-transparent"
-          />
+        {/* The name and the instructions are separate fields, so each gets its own card. */}
+        <div className="flex flex-col gap-2">
+          <div className={CARD}>
+            <Input
+              id={`${ids}-name`}
+              aria-label={t("scheduledTasks.form.name")}
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              maxLength={120}
+              disabled={busy}
+              placeholder={t("scheduledTasks.form.namePlaceholder")}
+              className="h-12 rounded-none border-none bg-transparent px-5 text-ui-15 font-medium shadow-none focus-visible:ring-0 dark:bg-transparent dark:focus-visible:bg-transparent"
+            />
+          </div>
+          <div className={CARD}>
+            <Textarea
+              ref={promptRef}
+              id={`${ids}-prompt`}
+              aria-label={t("scheduledTasks.form.instructions")}
+              aria-describedby={`${ids}-prompt-hint`}
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              maxLength={20_000}
+              rows={5}
+              disabled={busy}
+              placeholder={t("scheduledTasks.form.instructionsPlaceholder")}
+              className="max-h-60 min-h-32 resize-none rounded-none border-none bg-transparent px-5 py-3.5 text-ui-15 shadow-none focus-visible:ring-0 dark:bg-transparent dark:focus-visible:bg-transparent"
+            />
+          </div>
         </div>
         <p id={`${ids}-prompt-hint`} className="sr-only">
           {t("scheduledTasks.form.instructionsHint")}
         </p>
+        <div className={CARD}>
+          <Row id={`${ids}-model`} label={t("scheduledTasks.form.model")}>
+            <Select
+              value={model ?? LOADED_MODEL}
+              onValueChange={(value) => setModel(value === LOADED_MODEL ? null : value)}
+              disabled={busy}
+            >
+              <SelectTrigger id={`${ids}-model`} className={cn(BARE_SELECT, "max-w-[60%]")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end" className={cn(LONG_LIST, "max-w-80")}>
+                <SelectItem value={LOADED_MODEL}>{t("scheduledTasks.form.modelLoaded")}</SelectItem>
+                {models.missing && (
+                  <SelectItem value={models.missing}>
+                    {t("scheduledTasks.form.modelMissing", { model: models.missing })}
+                  </SelectItem>
+                )}
+                {models.local.length > 0 && (
+                  <SelectGroup>
+                    <SelectLabel>{t("scheduledTasks.form.modelOnDevice")}</SelectLabel>
+                    {models.local.map((option) => (
+                      <SelectItem key={option.id} value={option.id}>
+                        {option.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                )}
+                {models.connections.map(
+                  (group) =>
+                    group.models.length > 0 && (
+                      <SelectGroup key={group.provider.id}>
+                        <SelectLabel>{group.provider.name}</SelectLabel>
+                        {group.models.map((option) => (
+                          <SelectItem key={option.id} value={option.id}>
+                            {option.modelId}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ),
+                )}
+                {models.local.length === 0 && models.connections.every((group) => group.models.length === 0) && (
+                  <p className="max-w-64 px-3 py-2 text-ui-12 text-muted-foreground">
+                    {t("scheduledTasks.form.modelEmpty")}
+                  </p>
+                )}
+              </SelectContent>
+            </Select>
+          </Row>
+          {/* Loading replaces the model in Chat, so a run asks first unless this is on. */}
+          {model !== null && !models.connection && (
+            <Row id={`${ids}-allow-load`} label={t("scheduledTasks.form.allowLoad")}>
+              <Switch
+                id={`${ids}-allow-load`}
+                checked={allowLoad}
+                onCheckedChange={setAllowLoad}
+                disabled={busy}
+                className="mr-2"
+              />
+            </Row>
+          )}
+          {efforts.length > 0 && (
+            <Row id={`${ids}-effort`} label={t("scheduledTasks.form.reasoning")}>
+              <Select
+                value={effort ?? DEFAULT_EFFORT}
+                onValueChange={(value) =>
+                  setEffort(value === DEFAULT_EFFORT ? null : (value as TaskReasoningEffort))
+                }
+                disabled={busy}
+              >
+                <SelectTrigger id={`${ids}-effort`} className={BARE_SELECT}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  {efforts.includes("off") && (
+                    <SelectItem value="off">{t("scheduledTasks.form.reasoningOff")}</SelectItem>
+                  )}
+                  <SelectItem value={DEFAULT_EFFORT}>{t("scheduledTasks.form.reasoningDefault")}</SelectItem>
+                  {efforts.filter((choice) => choice !== "off").map((choice) => (
+                    <SelectItem key={choice} value={choice}>
+                      {RELATIVE_LABELS[choice]
+                        ? t(RELATIVE_LABELS[choice])
+                        : levelLabel(choice, models.connection?.modelId)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Row>
+          )}
+        </div>
+        {model !== null && !models.connection && (
+          <p className="-mt-2 px-1 text-ui-13 text-muted-foreground">
+            {allowLoad ? t("scheduledTasks.form.modelNoteAllowed") : t("scheduledTasks.form.modelNote")}
+          </p>
+        )}
         <div className={CARD}>
           <Row id={`${ids}-repeat`} label={t("scheduledTasks.form.repeat")}>
             <Select
@@ -293,7 +538,7 @@ export function TaskDialog({
                         "h-8 min-w-11 cursor-pointer rounded-full px-2.5 text-ui-13 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
                         selected
                           ? "bg-primary text-primary-foreground"
-                          : "bg-muted text-muted-foreground hover:text-foreground",
+                          : "bg-muted text-muted-foreground hover:text-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:text-foreground/75",
                       )}
                     >
                       {weekdayName(day, locale, "short")}
@@ -330,7 +575,7 @@ export function TaskDialog({
             {t("scheduledTasks.form.lastDayNote")}
           </p>
         )}
-        <div>
+        <div className="pb-5">
           <button
             type="button"
             aria-expanded={advanced}
@@ -365,6 +610,49 @@ export function TaskDialog({
                   </SelectContent>
                 </Select>
               </Row>
+              <Row id={`${ids}-new-chat`} label={t("scheduledTasks.form.newChatEachRun")}>
+                <Switch
+                  id={`${ids}-new-chat`}
+                  checked={newChatEachRun}
+                  onCheckedChange={setNewChatEachRun}
+                  disabled={busy}
+                  className="mr-2"
+                />
+              </Row>
+              {/* A single ongoing chat is one the user files and keeps themselves. */}
+              {newChatEachRun && (
+                <>
+                  <Row id={`${ids}-archive`} label={t("scheduledTasks.form.archiveSuccessful")}>
+                    <Switch
+                      id={`${ids}-archive`}
+                      checked={archiveSuccessful}
+                      onCheckedChange={setArchiveSuccessful}
+                      disabled={busy}
+                      className="mr-2"
+                    />
+                  </Row>
+                  <Row id={`${ids}-project`} label={t("scheduledTasks.form.project")}>
+                    <Select
+                      value={projectId ?? NO_PROJECT}
+                      onValueChange={(value) => setProjectId(value === NO_PROJECT ? null : value)}
+                      disabled={busy}
+                    >
+                      <SelectTrigger id={`${ids}-project`} className={cn(BARE_SELECT, "max-w-[60%]")}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent align="end" className={cn(LONG_LIST, "max-w-72")}>
+                        {openProjects.map((project) => (
+                          <SelectItem key={project.id} value={project.id}>
+                            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                            {project.name}
+                          </SelectItem>
+                        ))}
+                        <SelectItem value={NO_PROJECT}>{t("scheduledTasks.form.projectNone")}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Row>
+                </>
+              )}
             </div>
           )}
         </div>

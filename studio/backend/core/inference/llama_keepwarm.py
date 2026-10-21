@@ -224,6 +224,12 @@ def _is_idle(ttl_seconds: float) -> bool:
         return _inflight == 0 and _pending == 0 and (time.monotonic() - _last_active) >= ttl_seconds
 
 
+def idle_for(seconds: float) -> bool:
+    """Nothing in flight or waiting, and no inference request for ``seconds``: nobody is using
+    the loaded model, so work that is nobody's request (a scheduled task) may swap it."""
+    return _is_idle(seconds)
+
+
 def _note_activity() -> None:
     """Stamp activity, e.g. on a (re)load, so the model survives at least one TTL."""
     global _last_active
@@ -831,6 +837,18 @@ def _loaded_identity(backend):
     identity = (backend.model_identifier, getattr(backend, "hf_variant", None), advertised)
     companion_roots = tuple(getattr(backend, "_openai_gguf_companion_roots", ()) or ())
     return (*identity, companion_roots) if companion_roots else identity
+
+
+def loaded_identity():
+    """What a reload needs to bring back the loaded GGUF exactly (path, quant, the advertised id
+    its saved launch settings are keyed by), or None when none is loaded."""
+    from routes.inference import get_llama_cpp_backend
+    return _loaded_identity(get_llama_cpp_backend())
+
+
+def stash_for_reload(identity) -> None:
+    """Let the next reload-only request bring ``identity`` back, as after an idle unload."""
+    _set_last_unloaded(identity)
 
 
 def _note_idle_unload_event(freed) -> None:

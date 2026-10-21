@@ -214,8 +214,12 @@ export const BUDGET = {
   // the results poll follows, and the schedule dialog's new strings add 210 B raw / 56 B transfer (6,817,333 ->
   // 6,817,543 B raw, 2,051,373 -> 2,051,429 B transfer against 619b57a16a, one machine and build, Node 22, chunk
   // count unchanged at 101). Raised by that growth.
-  transferBytes: 2_051_661,
-  rawBytes: 6_817_616,
+  // Asking before a scheduled task loads its model (the results poll's queue of questions, with the dialog
+  // itself lazy) and the strings for per-task models, thinking effort and that question add 1,620 B raw /
+  // 655 B transfer (6,816,656 -> 6,818,276 B raw, 2,050,152 -> 2,050,807 B transfer against 8d283e8cc1, one
+  // machine and build, Node 26, chunk count unchanged at 95). Raised by that growth.
+  transferBytes: 2_052_316,
+  rawBytes: 6_819_236,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

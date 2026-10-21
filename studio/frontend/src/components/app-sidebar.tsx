@@ -3529,6 +3529,7 @@ export function AppSidebar() {
     tasks: {
       icon: scheduledNotice ? CLOCK_NOTICE_ICON : Clock01Icon,
       label: t("shell.navigation.tasks"),
+      badge: t("shell.navigation.newBadge"),
       active: pathname === "/tasks",
       dot: scheduledNotice,
       onClick: () => {
@@ -6320,7 +6321,7 @@ export function AppSidebar() {
                       side="right"
                       align="start"
                       sideOffset={6}
-                      className="sidebar-more-menu w-48 p-1 [--icon-dot-ring:var(--popover)] dark:[--icon-dot-ring:var(--sidebar)]"
+                      className="sidebar-more-menu w-max min-w-48 max-w-72 p-1 [--icon-dot-ring:var(--popover)] dark:[--icon-dot-ring:var(--sidebar)]"
                       {...moreHover.content}
                       // The trigger handles its own presses.
                       onPointerDownOutside={(event) => {
