@@ -54,6 +54,7 @@ from .diffusion_content import (
 )
 from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
 from .diffusion_families import (
+    SMALL_DIT_BF16_WHEN_RESIDENT,
     named_variant_base,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -7536,6 +7537,8 @@ class DiffusionBackend:
                 # Why the dense quant did not engage, in the caller's terms. Threaded into `resolved` so a fallback is
                 # visible, and into the refusal so it is actionable.
                 transformer_quant_decline: Optional[str] = None
+                # auto kept a small DiT bf16 in place of INT8 (it then compiles from render 1, as INT8 did)
+                small_dit_kept_bf16 = False
                 transformer_quant_decline_status = RESOLVED_FELL_BACK
                 # A GGUF is excluded while it bakes LoRAs: only the dense build can carry them.
                 if (
@@ -7576,6 +7579,10 @@ class DiffusionBackend:
                     transformer_quant_decline = eager_reason
                     # Place the released weights by the plan that proved they fit, not by fp32 shard bytes.
                     plan = eager_plan
+                    small_dit_kept_bf16 = (
+                        auto_bf16_when_resident_reason(getattr(fam, "name", None))
+                        == SMALL_DIT_BF16_WHEN_RESIDENT
+                    )
                 native_scheme = (
                     native_quant_scheme(
                         target, transformer_quant_pinned, family = getattr(fam, "name", None)
@@ -9165,6 +9172,21 @@ class DiffusionBackend:
                         logger.info(
                             "diffusion.transformer_quant: forcing speed_mode=default "
                             "(quantized transformer must be compiled; eager is ~30x slower)"
+                        )
+                        effective_speed = SPEED_DEFAULT
+                    # A small DiT kept bf16 in place of the INT8 default compiles from render 1, as that INT8 load did:
+                    # deferring it would compile on the 3rd image, a follow-up prompt.
+                    if (
+                        small_dit_kept_bf16
+                        and speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and not comfy_compile
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
+                        and not fp16_compile_explicit_only(target)
+                    ):
+                        logger.info(
+                            "diffusion.speed: speed_mode=default from render 1 (a small denoiser kept bf16 in "
+                            "place of the INT8 default, which compiled from render 1 too)"
                         )
                         effective_speed = SPEED_DEFAULT
                     # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile

@@ -1878,3 +1878,37 @@ def test_the_streamed_seed_credits_host_ram_the_outgoing_pipeline_frees(
         ),
     )
     assert (_settle(backend) == "fp8") is expected
+
+
+def _small_dit_kept_bf16(monkeypatch, reason):
+    _measured_bf16_family(monkeypatch)
+    monkeypatch.setattr(dmod, "auto_bf16_when_resident_reason", lambda _name: reason)
+    monkeypatch.setattr(dmod, "compile_eligible", lambda *_a, **_k: True)
+    monkeypatch.setattr(dmod, "fp16_compile_explicit_only", lambda _t: False)
+
+
+@pytest.mark.parametrize(
+    "reason, speed, expect_speed, expect_deferred",
+    [
+        # the small-DiT rule replaced an INT8 load that compiled from render 1: so does the bf16 one, and follow-up
+        # prompts compile nothing (the deferred profile would compile on the 3rd image)
+        (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, None, "default", False),
+        # an explicit speed is the caller's
+        (dmod.SMALL_DIT_BF16_WHEN_RESIDENT, "off", "off", False),
+        # every other bf16-kept family keeps the deferred profile
+        ("measured: no faster", None, "off", True),
+    ],
+)
+def test_a_small_dit_kept_bf16_compiles_from_render_1(
+    fake_runtime, monkeypatch, reason, speed, expect_speed, expect_deferred
+):
+    backend, spy = _load_backend(monkeypatch)
+    _small_dit_kept_bf16(monkeypatch, reason)
+    status = _load(
+        backend, speed_mode = speed, _pipeline_prequant_planned = None, _pipeline_prequant_skipped = ()
+    )
+
+    assert spy.quantised == [] and spy.seeds == []
+    assert status["resolved"]["transformer_quant"]["value"] == "off"
+    assert backend._state.speed_mode == expect_speed
+    assert backend._state.speed_deferred is expect_deferred

@@ -321,8 +321,10 @@ _HIDREAM_BF16_WHEN_RESIDENT = (
 # Small DiTs (FLUX.2-klein, Z-Image, FLUX.3-klein: up to ~6B parameters) stay bf16 while it fits: a quantised denoiser
 # moves image detail, and on these sizes bf16 already fits common cards. Colab L4, 3 prompts, against bf16: FP8 LPIPS
 # mean 0.065 / max 0.129 (FLUX.2-klein-4B) and 0.103 / 0.191 (Z-Image-Turbo); FLUX.3-klein INT8 0.027 mean even with
-# its keep-set. An explicit precision is still honoured, and INT8 is still picked when bf16 would offload.
-_SMALL_DIT_BF16_WHEN_RESIDENT = (
+# its keep-set. An explicit precision is still honoured, and INT8 is still picked when bf16 would offload. A load kept
+# bf16 by this rule compiles from render 1 when speed is unset, as the INT8 default it replaces did (diffusion.py), so
+# follow-up prompts add no compile.
+SMALL_DIT_BF16_WHEN_RESIDENT = (
     "a small denoiser stays bf16 while it fits (INT8 / FP8 change image detail: FP8 LPIPS 0.065 on FLUX.2-klein-4B, "
     "0.103 on Z-Image-Turbo)"
 )
@@ -433,7 +435,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.2-klein",
         label = "FLUX.2 Klein",
         profile = FamilyProfile(
-            auto_bf16_when_resident = _SMALL_DIT_BF16_WHEN_RESIDENT,
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "flux2",
             auto_static_skip = (
                 (
@@ -518,7 +520,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.3-klein-base",
         label = "FLUX.3 Klein Base",
         profile = FamilyProfile(
-            auto_bf16_when_resident = _SMALL_DIT_BF16_WHEN_RESIDENT,
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -573,7 +575,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "flux.3-klein",
         label = "FLUX.3 Klein",
         profile = FamilyProfile(
-            auto_bf16_when_resident = _SMALL_DIT_BF16_WHEN_RESIDENT,
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             # Left dense for EVERY transformer-quant scheme: per-token modulations, timestep embedders, norm_out, the
             # text-stream per-mode blocks and the 20480-wide text projection. Measured on B200 against bf16 (11-case
             # recipe set, LPIPS mean): int8 0.097 -> 0.027, fp8 0.063 -> 0.033, mxfp8 0.024 with it; without it mxfp8
@@ -1042,7 +1044,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 default_on = True,
             ),
             auto_prefer = _GATED_AUTO_PREFER,
-            auto_bf16_when_resident = _SMALL_DIT_BF16_WHEN_RESIDENT,
+            auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT,
             preview_factors = "zimage",
         ),
         # B200 too: 1 of 4 fresh servers picked R0_BLOCK 1024 (others 4096) and rendered other latents.
