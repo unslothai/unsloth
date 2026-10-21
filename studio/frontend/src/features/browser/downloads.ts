@@ -74,6 +74,37 @@ function downloadName(name: string, contentType: string): string {
   return isTauri ? typed : typed.replace(/^\.+/, "").replace(/[. ]+$/, "") || "download";
 }
 
+const SAVE_PROMPTS = 3;
+let savePrompts = 0;
+
+function offerSave(name: string, save: () => Promise<void>, id?: string): void {
+  const locale = getLocale();
+  toast(translate("browser.downloadPrompt.ready", { name: safeDownloadName(name) }, locale), {
+    id,
+    action: { label: translate("browser.downloadPrompt.save", {}, locale), onClick: () => void save() },
+  });
+}
+
+const nextPrompt = () => `page-download-${savePrompts++ % SAVE_PROMPTS}`;
+
+export function saveBrowserDownloadOnClick(download: BrowserDownload): void {
+  const temporary = download.temporary ?? useChatRuntimeStore.getState().incognito;
+  offerSave(downloadName(download.name, download.contentType), () => saveBrowserDownload({ ...download, temporary }), nextPrompt());
+}
+
+type LinkedFile = Pick<BrowserDownload, "site" | "temporary"> & { agentRule: (fileUrl: string) => DownloadsRule | null };
+
+export function saveLinkedFile(url: string, name: string, file: LinkedFile, askFirst = false): void {
+  const temporary = file.temporary ?? useChatRuntimeStore.getState().incognito;
+  const save = () =>
+    fetchBrowserPage({ url }, new AbortController().signal).then(
+      (page) => saveBrowserDownload({ ...linkDownload(page, url, name), site: file.site, temporary, agentRule: file.agentRule(page.url) }),
+      (error: unknown) => void toast.error(error instanceof Error ? error.message : String(error)),
+    );
+  if (askFirst) offerSave(name || fileNameFromUrl(url), save, nextPrompt());
+  else void save();
+}
+
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
 export async function saveBrowserDownload(given: BrowserDownload, target?: SaveHandle | null): Promise<void> {
   const download = { ...given, name: downloadName(given.name, given.contentType) };
@@ -83,13 +114,7 @@ export async function saveBrowserDownload(given: BrowserDownload, target?: SaveH
     if (!(await approved(download.url, download.name, download.site, download.agentRule))) return;
     // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
     if (saveNeedsClick()) {
-      const locale = getLocale();
-      toast(translate("browser.downloadPrompt.ready", { name: safeDownloadName(download.name) }, locale), {
-        action: {
-          label: translate("browser.downloadPrompt.save", {}, locale),
-          onClick: () => void writeDownload(download, undefined, temporary),
-        },
-      });
+      offerSave(download.name, () => writeDownload(download, undefined, temporary));
       return;
     }
   }
@@ -150,13 +175,12 @@ async function writeDownload(
 // Well inside the ~5 s a click lets a page open the save dialog.
 const RESOLVE_BEFORE_ASK_MS = 1000;
 
-/** A fetched link as a file: the server's name, or the page as .html. */
-function linkDownload(page: BrowserPage, url: string): BrowserDownload {
+function linkDownload(page: BrowserPage, url: string, linkName = ""): BrowserDownload {
   if (page.kind === "raw") {
-    const name = downloadName(page.fileName ?? fileNameFromUrl(page.url), page.contentType);
+    const name = downloadName(page.fileName ?? (linkName || fileNameFromUrl(page.url)), page.contentType);
     return { blob: page.blob, name, contentType: page.contentType, url };
   }
-  const name = fileNameFromUrl(page.url);
+  const name = linkName || fileNameFromUrl(page.url);
   return {
     blob: new Blob([withBaseUrl(page.html, page.base)], { type: "text/html" }),
     name: /\.html?$/i.test(name) ? name : `${name}.html`,

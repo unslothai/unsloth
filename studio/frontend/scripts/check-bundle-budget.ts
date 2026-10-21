@@ -322,9 +322,14 @@ export const BUDGET = {
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
   // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
+  // Main at dcf5c4009 measures 6,870,312 B raw / 2,068,954 B transfer, already over the line above. Browser panel
+  // page downloads add 1,468 B raw / 354 B transfer on top (6,871,780 B raw, 2,069,308 B transfer, one machine and
+  // build, Node 24, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Browser store sync across windows (#14277) adds 545 B raw / 288 B transfer on top (6,872,325 B raw, 2,069,596 B
+  // transfer merged with main at 4962983b0, Node 24, 97 chunks). Raised to that plus the same margin.
   // The runtime update card's skip and Undo (#14436) add 1,706 B raw / 424 B transfer against 444f63275c.
-  transferBytes: 2_067_651,
-  rawBytes: 6_865_744,
+  transferBytes: 2_070_209,
+  rawBytes: 6_874_191,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
