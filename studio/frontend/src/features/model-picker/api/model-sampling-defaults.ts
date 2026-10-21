@@ -60,3 +60,16 @@ export async function putModelSamplingDefaults(
   };
   return body.defaults ?? {};
 }
+
+/** What a request naming this model gets for every field it leaves out. */
+export async function fetchEffectiveSampling(
+  modelId: string,
+): Promise<SamplingDefaults> {
+  const res = await authFetch(
+    `/api/inference/sampling-defaults?model=${encodeURIComponent(modelId)}`,
+  );
+  if (!res.ok) {
+    return {};
+  }
+  return (await res.json()) as SamplingDefaults;
+}

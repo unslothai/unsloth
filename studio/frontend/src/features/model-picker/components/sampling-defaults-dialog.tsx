@@ -23,6 +23,7 @@ import {
   SAMPLING_DEFAULT_FIELDS,
   type SamplingDefaultField,
   type SamplingDefaults,
+  fetchEffectiveSampling,
   fetchModelSamplingDefaults,
   putModelSamplingDefaults,
 } from "../api/model-sampling-defaults";
@@ -109,18 +110,24 @@ function draftsFrom(saved: SamplingDefaults): Drafts {
 }
 
 /** Chat lays its memory of a model over the model's own defaults on every load, so a save has to
- *  land there too or the chat keeps showing the last values used. A cleared field has no value to
- *  write and keeps what chat remembers. */
-function chatPatchFrom(saved: SamplingDefaults): ChatSamplingPatch {
+ *  land there too or the chat keeps showing the last values used. A field cleared here goes back to
+ *  what a request would get without it (`fallback`); Min P goes back to the server's choice. */
+function chatPatchFrom(
+  written: SamplingDefaults,
+  cleared: readonly SamplingDefaultField[],
+  fallback: SamplingDefaults,
+): ChatSamplingPatch {
   const patch: ChatSamplingPatch = {};
   for (const field of SAMPLING_DEFAULT_FIELDS) {
-    const value = saved[field];
+    const value = cleared.includes(field) ? fallback[field] : written[field];
     if (typeof value === "number") {
       patch[FIELDS[field].chatKey] = value;
     }
   }
-  if (typeof saved.min_p === "number") {
+  if (typeof written.min_p === "number") {
     patch.minPMode = "custom";
+  } else if (cleared.includes("min_p")) {
+    patch.minPMode = "server-default";
   }
   return patch;
 }
@@ -326,7 +333,19 @@ export function SamplingDefaultsRow({
     try {
       const all = await putModelSamplingDefaults(modelId, next);
       const written = all[modelId] ?? {};
-      setRememberedParamsForModel(chatModelId, chatPatchFrom(written));
+      const cleared = SAMPLING_DEFAULT_FIELDS.filter(
+        (field) =>
+          typeof saved?.[field] === "number" &&
+          typeof written[field] !== "number",
+      );
+      const fallback =
+        cleared.length > 0
+          ? await fetchEffectiveSampling(modelId).catch(() => ({}))
+          : {};
+      setRememberedParamsForModel(
+        chatModelId,
+        chatPatchFrom(written, cleared, fallback),
+      );
       setStored({ modelId, saved: written });
       toast.success(
         Object.keys(written).length > 0

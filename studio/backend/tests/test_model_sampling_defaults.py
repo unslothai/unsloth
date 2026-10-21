@@ -106,6 +106,12 @@ def test_lookup_folds_case_but_not_ambiguously():
     assert saved_sampling_defaults("UNSLOTH/foo-GGUF") == {}
 
 
+def test_a_posix_path_never_matches_another_casing():
+    _put("/models/Foo.gguf", {"top_k": 40})
+    assert saved_sampling_defaults("/models/Foo.gguf") == {"top_k": 40}
+    assert saved_sampling_defaults("/models/foo.gguf") == {}
+
+
 def test_out_of_range_and_non_finite_values_are_dropped():
     _put(MODEL, {"temperature": 5.0, "top_p": math.nan, "top_k": 30, "min_p": -1})
     assert get_model_sampling_defaults() == {MODEL: {"top_k": 30}}

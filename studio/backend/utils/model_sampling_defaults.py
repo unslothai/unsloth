@@ -11,7 +11,11 @@ import threading
 from typing import Any, Mapping, Optional
 
 from utils.account_context import OWNER, current_account, is_owner_context
-from utils.openai_auto_switch_settings import _cached_setting, _invalidate
+from utils.openai_auto_switch_settings import (
+    _cached_setting,
+    _invalidate,
+    _looks_like_filesystem_path,
+)
 
 MODEL_SAMPLING_DEFAULTS_SETTING_KEY = "model_sampling_defaults"
 
@@ -62,7 +66,10 @@ def _index(account) -> tuple[dict[str, dict], dict[str, Optional[dict]]]:
                 continue
             entry = normalize_sampling_defaults(value)
             exact[key] = entry
-            # Repo ids are case-insensitive and the browser lowercases some; an ambiguous fold matches nothing.
+            # Repo ids fold, as the browser lowercases some; a path does not (POSIX is case-sensitive),
+            # and an ambiguous fold matches nothing.
+            if _looks_like_filesystem_path(key):
+                continue
             fold = key.casefold()
             folded[fold] = None if fold in folded else entry
     with _index_lock:
@@ -77,6 +84,8 @@ def _lookup(
         if candidate in exact:
             return exact[candidate]
     for candidate in candidates:
+        if _looks_like_filesystem_path(candidate):
+            continue
         found = folded.get(candidate.casefold())
         if found is not None:
             return found
