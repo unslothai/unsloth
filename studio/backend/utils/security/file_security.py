@@ -133,10 +133,13 @@ def escaping_weight_references(folder) -> list:
         modules = None
     for module in modules if isinstance(modules, list) else []:
         sub = module.get("path") if isinstance(module, dict) else None
-        if not isinstance(sub, str) or not sub.strip("./\\"):
+        if not isinstance(sub, str):
             continue
+        # Before the self-folder skip: "..", "../.." and "/" are only dots and slashes too.
         if _escapes_folder(sub):
             names.append(sub)
+            continue
+        if not sub.strip("./\\"):
             continue
         names.extend(_in_subfolder(sub, name) for name in _weight_names(folder / sub))
     # Spark-TTS / BiCodec load their transformers model from LLM/.
