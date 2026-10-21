@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .diffusion_comfy_block import BLOCK_SIZES, MXFP8, NVFP4, tiled_scale_numel
+from .diffusion_single_file_converters import host_ram_budget_scope
 
 COMFY_QUANT_SUFFIX = ".comfy_quant"
 QUANT_METADATA_KEY = "_quantization_metadata"
@@ -446,7 +447,10 @@ def _dequant(codes: Any, scale: Any, group: int, dtype: Any) -> Any:
     """``codes * scale`` in float32, the ConvRot rotation undone, cast to ``dtype``."""
     import torch
 
+    from .diffusion_single_file_converters import charge_host_ram
+
     rows = codes.shape[0]
+    charge_host_ram(codes.numel() * torch.empty((), dtype = dtype).element_size())
     weight = codes.to(torch.float32) * scale.to(torch.float32).reshape(-1, 1).expand(rows, 1)
     if group:
         from .diffusion_convrot import build_convrot_hadamard
@@ -482,7 +486,16 @@ def _dequant_parts(fmt: str, parts: list, dtype: Any) -> Any:
         )
         for codes, scale, extra in parts
     ]
-    return dense[0] if len(dense) == 1 else torch.cat(dense)
+    if len(dense) == 1:
+        return dense[0]
+    from .diffusion_single_file_converters import charge_host_ram
+
+    parts_bytes = sum(d.numel() * d.element_size() for d in dense)
+    charge_host_ram(parts_bytes)
+    out = torch.cat(dense)
+    del dense
+    charge_host_ram(-parts_bytes)  # the segments are freed; only the joined weight stays
+    return out
 
 
 def _block_runtime_args(value: "_BlockWeight") -> Optional[tuple]:
@@ -920,6 +933,7 @@ def load_comfy_prequant(
     return model
 
 
+@host_ram_budget_scope
 def load_comfy_quant_transformer(
     transformer_cls: Any,
     path: str,
@@ -1037,7 +1051,7 @@ def load_comfy_quant_transformer(
         MXFP8: mxfp8_backend,
     }
     # Without a runtime (fp8 below sm_89) layers widen to ``dtype`` in host RAM: refuse before an OOM.
-    from .diffusion_single_file_converters import converted_host_bytes, refuse_host_ram_shortfall
+    from .diffusion_single_file_converters import HostRamBudget, charge_cast, converted_host_bytes
 
     # Mirrors the source loop below: a layer is kept as codes only with a runtime for its format (fp16_keep
     # merely defers the dtype choice; the layer is still expanded) and, for a block format, no key map.
@@ -1051,17 +1065,20 @@ def load_comfy_quant_transformer(
         )
         for layer in scan.layers.values()
     }
-    refuse_host_ram_shortfall(
-        path,
+    # The header estimate refuses early; the budget it activates is charged by every allocating helper
+    # below, so a layer the estimate cannot see (runtime filters, nibble swaps) still cannot OOM the host.
+    budget = HostRamBudget(
+        path, f"expanding its quantized weights to {str(dtype).replace('torch.', '')}", logger
+    )
+    budget.check(
         converted_host_bytes(
             path,
             dtype,
             keep_fp32 = keep_fp32 if fp16_keep else (),
             dequantized = _widened.get,
-        ),
-        f"expanding its quantized weights to {str(dtype).replace('torch.', '')}",
-        logger,
+        )
     )
+    budget.activate()
     sources: list = []  # (layer, codes, scale, block extras or None) kept for a runtime
     dequantized = 0
     for layer in scan.layers.values():
@@ -1104,10 +1121,12 @@ def load_comfy_quant_transformer(
             continue
         wanted_dtype = keep_dtype(key) if keep_dtype is not None else None
         if wanted_dtype is not None:
+            charge_cast(value, wanted_dtype)
             state[key] = value.to(wanted_dtype)
             continue
         if fp16_keep or value.dtype == dtype:
             continue
+        charge_cast(value, dtype)
         state[key] = value.to(dtype)
     from accelerate import init_empty_weights
 
@@ -1206,6 +1225,7 @@ def load_comfy_quant_transformer(
     if fp16_keep:
         for key, value in list(converted.items()):
             if torch.is_tensor(value) and value.is_floating_point():
+                charge_cast(value, _dtype_for(key))
                 converted[key] = value.to(_dtype_for(key))
 
     min_features = DEFAULT_MIN_LINEAR_FEATURES if min_features is None else int(min_features)

@@ -145,19 +145,15 @@ def test_kill_switch_and_unreadable_ram_never_refuse(tmp_path, monkeypatch, krea
 
 
 def _spy_need(monkeypatch):
+    """The header estimate each load checks up front, recorded."""
     seen = []
-    real = conv.refuse_host_ram_shortfall
+    real = conv.HostRamBudget.check
 
-    def spy(
-        path,
-        need_bytes,
-        why,
-        logger = None,
-    ):
+    def spy(self, need_bytes):
         seen.append(need_bytes)
-        return real(path, need_bytes, why, logger)
+        return real(self, need_bytes)
 
-    monkeypatch.setattr(conv, "refuse_host_ram_shortfall", spy)
+    monkeypatch.setattr(conv.HostRamBudget, "check", spy)
     return seen
 
 
@@ -185,3 +181,18 @@ def test_fp16_pipeline_counts_the_deferred_dequantization(tmp_path, monkeypatch,
         if v.dtype == torch.bfloat16
     )
     assert seen and seen[0] >= widened + rest
+
+
+def test_fnuz_float8_weights_are_priced_as_widened(tmp_path):
+    """ROCm FNUZ float8 tensors are widened by ``value.to(want)`` like any other float8."""
+    model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
+    tensors = {}
+    for key, value in krea2_original(model.state_dict()).items():
+        if _LINEAR.match(key):
+            tensors[key] = value.to(torch.float8_e4m3fnuz)
+        else:
+            tensors[key] = value.to(torch.bfloat16).contiguous()
+    path = tmp_path / "krea2_fnuz.safetensors"
+    safetensors_torch.save_file(tensors, str(path))
+    widened = sum(v.numel() * 2 for v in tensors.values() if v.dtype == torch.float8_e4m3fnuz)
+    assert conv.converted_host_bytes(str(path), torch.bfloat16) == widened

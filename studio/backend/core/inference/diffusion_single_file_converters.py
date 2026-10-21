@@ -11,8 +11,9 @@ No module-level torch import: ``diffusion.py`` imports this on every load.
 
 from __future__ import annotations
 
+import contextvars
 import re
-from typing import Any
+from typing import Any, Optional
 
 _CONTAINER_PREFIXES = ("model.diffusion_model.", "model.model.", "diffusion_model.")
 
@@ -351,9 +352,10 @@ CONVERTERS: dict = {
 
 _ST_ITEMSIZE = {
     "F64": 8, "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1, "F8_E8M0": 1,
+    "F8_E4M3FNUZ": 1, "F8_E5M2FNUZ": 1,
     "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
 }  # fmt: skip
-_ST_FLOATS = ("F64", "F32", "F16", "BF16", "F8_E4M3", "F8_E5M2")
+_ST_FLOATS = ("F64", "F32", "F16", "BF16", "F8_E4M3", "F8_E5M2", "F8_E4M3FNUZ", "F8_E5M2FNUZ")
 HOST_RAM_CHECK_MIN_MIB = 1024
 _MIB = 1024 * 1024
 
@@ -413,46 +415,122 @@ def converted_host_bytes(
     return total
 
 
-def refuse_host_ram_shortfall(
-    path: str,
-    need_bytes: int,
-    why: str,
-    logger: Any = None,
-) -> None:
-    """Raise ``HostRamShortfallError`` if ``need_bytes`` plus the reserve exceed free host RAM (an OOM
-    kills the whole server). ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the check."""
-    import os
+class HostRamBudget:
+    """Free host RAM a single-file load may still write, charged where each new tensor is allocated.
 
-    from .diffusion_small_host import (
-        HOST_RAM_CHECK_ENV,
-        host_ram_check_disabled,
-        host_ram_mib,
-        host_reserve_mib,
-    )
+    ``converted_host_bytes`` prices a load from the header before any read, but cannot see the per-layer
+    choices made later (runtime filters, nibble swaps, row splits). Every allocating helper therefore
+    charges this budget too (``charge_host_ram``, a no-op outside ``with budget:``), and the load is
+    refused before the allocation that would cross free RAM minus the small-host reserve, instead of
+    the OOM that ends the whole server. ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` disables both."""
 
-    need_mib = -(-int(need_bytes) // _MIB)
-    if need_mib < HOST_RAM_CHECK_MIN_MIB or host_ram_check_disabled():
-        return
-    try:
-        total, available = host_ram_mib()
-    except Exception:  # noqa: BLE001 -- unreadable: no claim, as the small-host route does
-        return
-    if available is None:
-        return
-    reserve = host_reserve_mib(total)
-    if need_mib + reserve <= int(available):
-        return
-    name = os.path.basename(str(path))
-    message = (
-        f"Not enough system RAM to load {name}: {why} needs about "
-        f"{(need_mib + reserve) / 1024:.1f} GB of free host memory "
-        f"({need_mib / 1024:.1f} GB of weights + {reserve / 1024:.1f} GB reserve) and "
-        f"{int(available) / 1024:.1f} GB is free. Close other applications, use a GGUF or a "
-        f"smaller quant of this model, or set {HOST_RAM_CHECK_ENV}=0 to try anyway."
-    )
-    if logger is not None:
-        logger.error("diffusion.single_file: refusing load: %s", message)
-    raise HostRamShortfallError(message)
+    def __init__(
+        self,
+        path: str,
+        why: str,
+        logger: Any = None,
+    ) -> None:
+        from .diffusion_small_host import (
+            host_ram_check_disabled,
+            host_ram_mib,
+            host_reserve_mib,
+        )
+
+        self.path, self.why, self.logger = path, why, logger
+        self._token = None
+        self.used = 0
+        self.available_mib: Optional[int] = None
+        self.reserve_mib = 0
+        if host_ram_check_disabled():
+            return
+        try:
+            total, available = host_ram_mib()
+        except Exception:  # noqa: BLE001 -- unreadable: no claim, as the small-host route does
+            return
+        if available is None:
+            return
+        self.available_mib = int(available)
+        self.reserve_mib = host_reserve_mib(total)
+
+    def _refuse_if_over(self, need_bytes: int, at_least: bool) -> None:
+        import os
+
+        from .diffusion_small_host import HOST_RAM_CHECK_ENV
+
+        need_mib = -(-int(need_bytes) // _MIB)
+        if self.available_mib is None or need_mib < HOST_RAM_CHECK_MIN_MIB:
+            return
+        if need_mib + self.reserve_mib <= self.available_mib:
+            return
+        reserve = self.reserve_mib
+        name = os.path.basename(str(self.path))
+        message = (
+            f"Not enough system RAM to load {name}: {self.why} needs "
+            f"{'at least' if at_least else 'about'} {(need_mib + reserve) / 1024:.1f} GB of free host "
+            f"memory ({need_mib / 1024:.1f} GB of weights + {reserve / 1024:.1f} GB reserve) and "
+            f"{self.available_mib / 1024:.1f} GB is free. Close other applications, use a GGUF or a "
+            f"smaller quant of this model, or set {HOST_RAM_CHECK_ENV}=0 to try anyway."
+        )
+        if self.logger is not None:
+            self.logger.error("diffusion.single_file: refusing load: %s", message)
+        raise HostRamShortfallError(message)
+
+    def check(self, need_bytes: int) -> None:
+        """Up-front refusal from a header estimate; charges nothing."""
+        self._refuse_if_over(need_bytes, at_least = False)
+
+    def charge(self, nbytes: int) -> None:
+        """Account ``nbytes`` about to be allocated; raises before the one that would not fit."""
+        self.used += int(nbytes)
+        self._refuse_if_over(self.used, at_least = True)
+
+    def activate(self) -> "HostRamBudget":
+        """Make this the budget the allocating helpers charge, until the enclosing
+        ``host_ram_budget_scope`` returns."""
+        _ACTIVE_BUDGET.set(self)
+        return self
+
+    def __enter__(self) -> "HostRamBudget":
+        self._token = _ACTIVE_BUDGET.set(self)
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        _ACTIVE_BUDGET.reset(self._token)
+
+
+_ACTIVE_BUDGET: "contextvars.ContextVar[Optional[HostRamBudget]]" = contextvars.ContextVar(
+    "unsloth_single_file_host_ram_budget", default = None
+)
+
+
+def host_ram_budget_scope(fn: Any) -> Any:
+    """Run ``fn`` with no budget inherited and none left behind: a budget it ``activate()``s lives
+    exactly as long as the call."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = _ACTIVE_BUDGET.set(None)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _ACTIVE_BUDGET.reset(token)
+
+    return wrapper
+
+
+def charge_host_ram(nbytes: int) -> None:
+    """Charge the active ``HostRamBudget`` (if any) for a tensor about to be allocated (negative = freed)."""
+    budget = _ACTIVE_BUDGET.get()
+    if budget is not None and nbytes:
+        budget.charge(nbytes)
+
+
+def charge_cast(value: Any, dtype: Any) -> None:
+    """Charge the copy ``value.to(dtype)`` makes; nothing when it is already ``dtype``."""
+    if getattr(value, "dtype", dtype) != dtype:
+        import torch
+        charge_host_ram(value.numel() * torch.empty((), dtype = dtype).element_size())
 
 
 def load_original_layout_transformer(
@@ -465,9 +543,7 @@ def load_original_layout_transformer(
     (Krea 2 on diffusers 0.40). ``sf_kwargs`` = the ``from_single_file`` kwargs. Cast like
     ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes."""
     import torch
-    from accelerate import init_empty_weights
     from diffusers.loaders import single_file_model as sfm
-    from safetensors.torch import load_file
 
     kwargs = dict(sf_kwargs)
     dtype = kwargs.pop("torch_dtype", None) or torch.bfloat16
@@ -491,12 +567,19 @@ def load_original_layout_transformer(
     if isinstance(keep, str):
         keep = [keep]
     # Before any read: fp8 widened to bf16 (13B Krea 2: ~26 GB) used to OOM the whole app.
-    refuse_host_ram_shortfall(
-        path,
-        converted_host_bytes(path, dtype, keep_fp32 = keep),
-        f"widening its weights to {str(dtype).replace('torch.', '')}",
-        logger,
+    budget = HostRamBudget(
+        path, f"widening its weights to {str(dtype).replace('torch.', '')}", logger
     )
+    budget.check(converted_host_bytes(path, dtype, keep_fp32 = keep))
+    with budget:
+        return _load_original_layout(transformer_cls, path, config, mapping_fn, keep, dtype, logger)
+
+
+def _load_original_layout(transformer_cls, path, config, mapping_fn, keep, dtype, logger) -> Any:
+    import torch
+    from accelerate import init_empty_weights
+    from safetensors.torch import load_file
+
     with init_empty_weights():
         model = transformer_cls.from_config(config)
     wanted = model.state_dict()
@@ -521,6 +604,7 @@ def load_original_layout_transformer(
                 f"{key}: {tuple(value.shape)} in the file, {tuple(wanted[key].shape)} in the model"
             )
         if value.dtype != want:
+            charge_cast(value, want)
             converted[key] = value.to(want)
     model.load_state_dict(converted, strict = True, assign = True)
     model.eval()

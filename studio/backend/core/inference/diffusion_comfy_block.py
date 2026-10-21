@@ -48,6 +48,9 @@ def untile_scales(tiled: Any, rows: int, blocks: int) -> Any:
             f"tiled scales hold {flat.numel()} values, {rp * bp} expected for {rows}x{blocks}"
         )
     # tile (row // 128, block // 4) is 512 values: inner (row % 32, (row % 128) // 32, block % 4)
+    from .diffusion_single_file_converters import charge_host_ram
+
+    charge_host_ram(rp * bp * flat.element_size())  # the permuted copy
     v = flat.reshape(rp // 128, bp // 4, 32, 4, 4).permute(0, 3, 2, 1, 4).reshape(rp, bp)
     return v[:rows, :blocks].contiguous()
 
@@ -69,7 +72,10 @@ def swap_nibbles(packed: Any) -> Any:
     """High-first fp4 packing <-> low-first (``0xAB`` -> ``0xBA``)."""
     import torch
 
+    from .diffusion_single_file_converters import charge_host_ram
+
     u = packed.view(torch.uint8) if packed.dtype != torch.uint8 else packed
+    charge_host_ram(u.numel())  # a new packed copy, the source stays memory-mapped
     return ((u << 4) | (u >> 4)).to(torch.uint8)
 
 
@@ -108,8 +114,11 @@ def dequant_block(
     """Dense ``[N, K]`` weight; ``pre_quant_scale`` folds into the columns: ``(x * s) @ W.T == x @ (W * s).T``."""
     import torch
 
+    from .diffusion_single_file_converters import charge_host_ram
+
     dtype = dtype or torch.bfloat16
     rows = int(codes.shape[0])
+    charge_host_ram(rows * logical_cols(fmt, codes) * torch.empty((), dtype = dtype).element_size())
     if fmt == NVFP4:
         lut = torch.tensor(
             _E2M1 + tuple(-v for v in _E2M1), dtype = torch.float32, device = codes.device
