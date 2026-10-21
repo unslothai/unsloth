@@ -58,6 +58,7 @@ SIGMA_SCHEDULES = ("sgm_uniform", "training_grid")
 # ``(fused Linear, q, k, v, runner)`` for the one-GEMM q/k/v projection, and the runner for every block Linear.
 FUSED_QKV_ATTR = "_unsloth_moss_fused_qkv"
 LINEAR_RUNNER_ATTR = "_unsloth_moss_linear"
+QK_ROPE_ATTR = "_unsloth_moss_qk_rope"
 # Kill switch for the per-render text-refiner cache (``refine_text``): 0 refines on every step like the reference.
 TEXT_CACHE_ENV = "UNSLOTH_MOSS_TEXT_CACHE"
 DEFAULT_UNCOND_SKIP_LAYERS = (22,)
@@ -175,6 +176,23 @@ def _attention(
     return out.flatten(2)
 
 
+def _attention_heads_first(
+    q,
+    k,
+    v,
+    backend = None,
+):
+    """Attention over already normalised and rotated [B, H, S, D] q / k / v (the dispatcher takes [B, S, H, D] views)."""
+    q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+    if _DISPATCH is None:
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        ).transpose(1, 2)
+    else:
+        out = _DISPATCH(q, k, v, backend = backend)
+    return out.flatten(2)
+
+
 try:  # the mixin is what ``ModelMixin.set_attention_backend`` looks for
     from diffusers.models.attention import AttentionModuleMixin as _AttentionMixin
 except Exception:  # noqa: BLE001 - older diffusers: attention stays on SDPA
@@ -255,9 +273,17 @@ class _Block(nn.Module, _AttentionMixin):
         dtype = _compute_dtype(self.proj["q"])
         y = y.to(dtype)
         q, k, v = self._qkv(y)
-        q = self.q_norm(q.unflatten(-1, (self.heads, -1))).flatten(2)
-        k = self.k_norm(k.unflatten(-1, (self.heads, -1))).flatten(2)
-        attn = _attention(q, k, v, rope, self.heads, self.processor._attention_backend)
+        fused = self.__dict__.get(QK_ROPE_ATTR) if torch.compiler.is_compiling() else None
+        if fused is not None and q.dtype == torch.bfloat16:
+            # Studio's one-pass q/k RMSNorm + RoPE (+ v relayout) into [B, H, S, D], the port's eager roundings kept
+            q, k, v = fused(
+                q, k, v, self.q_norm.weight, self.k_norm.weight, rope[0], rope[1], self.heads
+            )
+            attn = _attention_heads_first(q, k, v, self.processor._attention_backend)
+        else:
+            q = self.q_norm(q.unflatten(-1, (self.heads, -1))).flatten(2)
+            k = self.k_norm(k.unflatten(-1, (self.heads, -1))).flatten(2)
+            attn = _attention(q, k, v, rope, self.heads, self.processor._attention_backend)
         x = x + self._linear("o", attn) * gate_a[:, None]
         y = self.norm2(x) * (1 + scale_f[:, None]) + shift_f[:, None]
         hidden, gate = self._linear("ffn_up_gate", y.to(dtype)).chunk(2, -1)
