@@ -1317,7 +1317,7 @@ export function ApiMonitorPage(): ReactElement {
             each request live.
           </p>
         </div>
-        <ToolbarTooltip label="Create keys, see client examples and API settings">
+        <ToolbarTooltip label="API keys, usage examples, access and model switching">
           <Button
             type="button"
             variant="outline"
@@ -1326,11 +1326,11 @@ export function ApiMonitorPage(): ReactElement {
             className="h-9 gap-1.5 rounded-full px-3.5"
           >
             <HugeiconsIcon
-              icon={Key01Icon}
+              icon={Settings02Icon}
               strokeWidth={1.75}
               className="size-4"
             />
-            API keys
+            API settings
           </Button>
         </ToolbarTooltip>
       </header>

@@ -24,7 +24,8 @@ export const apiMonitorTourSteps: TourStep[] = [
       <>
         Load or switch the model the API serves, reload the last one, or eject
         it to free memory. Each model's row below opens its run settings and an
-        API example. Keys are under API keys at the top.
+        API example. Keys and other API options are under API settings at the
+        top.
       </>
     ),
   },
