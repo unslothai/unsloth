@@ -409,7 +409,7 @@ function ApiMonitorPanel({
         exit={{ opacity: 0 }}
         /* Panel language from the sidebar menu: soft surface, 20px corner, heading font. */
         className={cn(
-          "menu-soft-surface pointer-events-auto absolute flex max-h-full w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-[20px] border-0 p-2.5 font-heading ring-0",
+          "menu-soft-surface pointer-events-auto absolute flex max-h-full w-[calc(400px*var(--ui-space-scale,1))] max-w-full cursor-default select-none flex-col overflow-hidden rounded-[18px] border-0 p-2.5 font-heading ring-0",
           // The CSS corner until it has been measured, so the first paint
           // is the corner it has always opened in rather than the top left.
           layout ? "top-0 left-0 resize" : "bottom-0 right-0",
@@ -500,7 +500,7 @@ function ApiMonitorPanel({
             </p>
 
             {/* Soft tile, as the Hub and Train pages group readouts. */}
-            <div className="grid grid-cols-4 rounded-[14px] bg-muted/45 py-2.5 dark:bg-background/45">
+            <div className="grid grid-cols-4 rounded-[12.5px] bg-muted/45 py-2.5 dark:bg-background/45">
               <StatCell
                 label="In flight"
                 value={stats.active.toLocaleString()}
@@ -581,7 +581,7 @@ function ApiMonitorPanel({
                       data-entry-id={entry.id}
                       onClick={() => openApiPage(entry.id)}
                       title="Inspect this request on the API page"
-                      className="flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="flex h-9 w-full min-w-0 items-center gap-2.5 rounded-[11px] px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       {cells}
                     </button>
@@ -613,7 +613,7 @@ function ApiMonitorPanel({
             close();
           }}
           title="Turn it back on in Settings, under API"
-          className="mt-1.5 shrink-0 w-full rounded-[12px] py-1 text-ui-11 tracking-nav text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="mt-1.5 shrink-0 w-full rounded-[11px] py-1 text-ui-11 tracking-nav text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           Stop opening this automatically
         </button>

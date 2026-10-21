@@ -84,7 +84,7 @@ export function ApiExampleDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-3xl">
+      <DialogContent className="api-rounding corner-squircle dialog-soft-surface gap-5 sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>API example</DialogTitle>
           <DialogDescription>

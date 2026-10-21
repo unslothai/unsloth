@@ -6068,6 +6068,32 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		box-shadow: none;
 	}
 
+	/* The API surfaces sit a hair tighter than Train's cards and the app's boxes. */
+	/* rounded-* compile to var(--radius) itself (@theme inline), so the step goes on --radius: the
+	   theme's 1.1rem less 2px, which moves lg, xl and the rest together. */
+	.api-rounding {
+		--radius: calc(1.1rem - 2px);
+	}
+
+	.api-rounding .elevated-card,
+	.api-rounding.elevated-card {
+		border-radius: 18px;
+	}
+
+	@media (min-width: 640px) {
+		.api-rounding .elevated-card,
+		.api-rounding.elevated-card {
+			border-radius: 25px;
+		}
+	}
+
+	@media (min-width: 1024px) {
+		.api-rounding .elevated-card,
+		.api-rounding.elevated-card {
+			border-radius: 29px;
+		}
+	}
+
 	.dark .elevated-card.elevated-card-dark-border {
 		border-color: color-mix(in srgb, var(--border) 70%, transparent);
 	}
