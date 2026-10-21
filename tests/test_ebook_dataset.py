@@ -226,7 +226,11 @@ def test_new_reader_reuses_discovery_chunking_and_metadata(
     ebooks, tokenizer, tmp_path, monkeypatch, file_types
 ):
     def read_notes(path, chapter_markers):
-        return path.read_text(), {"title": "Notes", "author": "Ada", "genre": "Fiction"}
+        return path.read_text(encoding = "utf-8"), {
+            "title": "Notes",
+            "author": "Ada",
+            "genre": "Fiction",
+        }
 
     # A future format supplies only its reader and one extension mapping entry.
     monkeypatch.setattr(ebooks, "_READERS", {".notes": read_notes}, raising = False)
@@ -355,7 +359,7 @@ def test_real_mobi_round_trip(ebooks, tokenizer, tmp_path):
 def test_public_exports_cover_gpu_mlx_and_dataprep(ebooks):
     root = Path(__file__).resolve().parents[1] / "unsloth"
     # Execute the MLX loading block without importing its unrelated model backends.
-    tree = ast.parse((root / "__init__.py").read_text())
+    tree = ast.parse((root / "__init__.py").read_text(encoding = "utf-8"))
     branch = next(
         n
         for n in tree.body
@@ -374,7 +378,7 @@ def test_public_exports_cover_gpu_mlx_and_dataprep(ebooks):
     for name in ("_gpu_init.py", "dataprep/__init__.py"):
         imports = [
             n
-            for n in ast.walk(ast.parse((root / name).read_text()))
+            for n in ast.walk(ast.parse((root / name).read_text(encoding = "utf-8")))
             if isinstance(n, ast.ImportFrom) and n.module
         ]
         assert any(
