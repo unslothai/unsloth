@@ -34101,9 +34101,12 @@ async def produce_openai_chat_completions(
                             _tool_decode_finished = True
                             break
 
-                        # Anything after the gated tool_start means the user answered.
+                        # Anything after the gated tool_start means the user answered, except the
+                        # context meter the loop sends before it waits: an answer arrives as a
+                        # status or tool_end first.
                         if not (
                             (event["type"] == "tool_start" and event.get("awaiting_confirmation"))
+                            or event["type"] == "context_usage"
                             or (
                                 event["type"] == "skill_load"
                                 and event.get("status") == "awaiting_approval"
