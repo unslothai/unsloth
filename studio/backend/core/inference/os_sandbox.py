@@ -630,6 +630,7 @@ def model_library_roots() -> tuple[str, ...]:
         return ()
     state = studio_state_roots()
     forbidden = _never_a_model_library()
+    hf_homes = _hf_home_roots()
     kept: list[str] = []
     for path in candidates:
         if not path or not os.path.isabs(path):
@@ -643,11 +644,50 @@ def model_library_roots() -> tuple[str, ...]:
         # The approval gate still asks for a credential inside a model folder; a whole-folder grant would not.
         if tool_path_approval._references_sensitive_path(real + os.sep):
             continue
+        # The root check above can't see a credential inside the folder: an HF home holds token and
+        # stored_tokens (its hub cache is bound on its own), and these basenames sit at a folder's top.
+        if any(_is_within(home, real) for home in hf_homes) or _holds_a_credential_file(real):
+            continue
         if any(_paths_overlap(real, root) for root in state):
             continue
         if real not in kept:
             kept.append(real)
     return tuple(kept)
+
+
+_CREDENTIAL_BASENAMES = ("token", "stored_tokens", ".env", ".git-credentials", ".netrc")
+
+
+def _hf_home_roots() -> tuple[str, ...]:
+    homes: list[str] = []
+    try:
+        from utils.hf_cache_settings import known_hf_cache_homes
+        homes.extend(os.path.realpath(str(home)) for home in known_hf_cache_homes())
+    except Exception:  # noqa: BLE001 - never fail a launch over the cache settings
+        pass
+    # HF_TOKEN_PATH moves token, and stored_tokens beside it, out of the HF home.
+    token_path = os.environ.get("HF_TOKEN_PATH")
+    if token_path and token_path != os.devnull:
+        token_path = os.path.expanduser(os.path.expandvars(token_path))
+        if os.path.isabs(token_path):
+            homes.append(os.path.dirname(os.path.realpath(token_path)))
+    return tuple(homes)
+
+
+def _is_within(path: str, root: str) -> bool:
+    """Whether *path* is *root* or sits inside it."""
+    if sys.platform in ("darwin", "win32"):
+        # Case-insensitive by default, and realpath keeps the caller's spelling on macOS. Folding on a
+        # case-sensitive volume can only over-match, which skips a grant rather than adding one.
+        path, root = path.casefold(), root.casefold()
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _holds_a_credential_file(folder: str) -> bool:
+    return any(os.path.lexists(os.path.join(folder, name)) for name in _CREDENTIAL_BASENAMES)
 
 
 def _is_filesystem_root(path: str, pathmod: Any = None) -> bool:
@@ -952,7 +992,7 @@ def capability_snapshot(
         environment_fingerprint = identity,
         remediation = (
             "Python and Terminal run with OS isolation. The network is not confined; a tool "
-            "call can still reach the internet."
+            "call can still reach the internet and services listening on this machine's loopback."
         ),
     )
 
