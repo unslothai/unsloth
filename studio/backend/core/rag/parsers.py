@@ -531,6 +531,22 @@ def parse_pdf_bytes(data: bytes, *, max_pages: int | None = None) -> tuple[list[
     return pages, total_pages
 
 
+def mupdf_document_text(path: str) -> str:
+    """Paragraph text of a reflowable e-book only MuPDF reads (.mobi, .fb2)."""
+    import pymupdf
+
+    with pymupdf.open(path) as doc:
+        # One tall page per chapter-ish span keeps paragraphs from splitting at page breaks.
+        doc.layout(width = 1000, height = 100000, fontsize = 11)
+        paragraphs = [
+            " ".join(block[4].split())
+            for page in doc
+            for block in page.get_text("blocks")
+            if block[6] == 0
+        ]
+    return "\n\n".join(p for p in paragraphs if p)
+
+
 def _merge_rects(boxes: list) -> list:
     """Union overlapping rectangles (largest-first) into figure regions."""
     import pymupdf

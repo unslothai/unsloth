@@ -1812,3 +1812,70 @@ def test_validate_answers_when_the_error_collector_cannot_read_the_seed(monkeypa
 
     assert response.valid is False
     assert "repository not found" in (response.raw_detail or "")
+
+
+def test_every_recipe_document_type_has_an_extractor(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    from core.rag import config
+
+    readable = (
+        config.SUPPORTED_UPLOAD_EXTS | config.DOCUMENT_UPLOAD_EXTS | seed_route._MUPDF_EBOOK_EXTS
+    )
+    assert seed_route.UNSTRUCTURED_ALLOWED_EXTS <= readable
+    assert {".epub", ".mobi", ".doc", ".xlsx", ".pptx", ".odt", ".rtf", ".eml"} <= (
+        seed_route.UNSTRUCTURED_ALLOWED_EXTS
+    )
+
+
+def test_recipe_upload_extracts_office_ebook_and_email_files(monkeypatch, tmp_path):
+    from .test_rag_office_formats import BUILDERS
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    for ext, build in sorted(BUILDERS.items()):
+        assert ext in seed_route.UNSTRUCTURED_ALLOWED_EXTS, ext
+        source = build(tmp_path / f"source{ext}")
+        result = _run_upload(seed_route, f"book{ext}", source.read_bytes(), block_id = ext[1:])
+        assert result.status == "ok", (ext, result.error)
+        extracted = (
+            seed_route.UNSTRUCTURED_UPLOAD_ROOT / ext[1:] / f"{result.file_id}.extracted.txt"
+        )
+        assert "zebramarker" in extracted.read_text(encoding = "utf-8").lower(), ext
+
+
+_FB2 = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">'
+    "<description><title-info><book-title>Tiny</book-title></title-info></description>"
+    "<body><section><title><p>Chapter One</p></title>"
+    "<p>It was a bright cold day in April, and the clocks were striking thirteen.</p>"
+    "<p>Zebramarker closes the chapter.</p></section></body></FictionBook>"
+).encode()
+
+
+def test_recipe_upload_reads_mupdf_ebooks_in_the_worker_pool(monkeypatch, tmp_path):
+    pytest.importorskip("pymupdf")
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+
+    result = _run_upload(seed_route, "novel.fb2", _FB2)
+
+    assert result.status == "ok", result.error
+    extracted = seed_route.UNSTRUCTURED_UPLOAD_ROOT / "block" / f"{result.file_id}.extracted.txt"
+    assert extracted.read_text(encoding = "utf-8") == (
+        "Chapter One\n\n"
+        "It was a bright cold day in April, and the clocks were striking thirteen.\n\n"
+        "Zebramarker closes the chapter."
+    )
+
+
+def test_recipe_upload_names_pymupdf_when_an_ebook_reader_is_missing(monkeypatch, tmp_path):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        seed_route,
+        "_extract_text_from_file",
+        _raise(ModuleNotFoundError("No module named 'pymupdf'", name = "pymupdf")),
+    )
+
+    result = _run_upload(seed_route, "novel.mobi", b"BOOKMOBI")
+
+    assert result.status == "error"
+    assert result.error == "Cannot read .mobi files: the 'pymupdf' package is not installed."
+    assert _block_files(seed_route) == []

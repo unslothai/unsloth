@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
 
-from anyio import CapacityLimiter, to_process
+from anyio import CapacityLimiter, to_process, to_thread
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 from auth.authentication import allow_ambient_hf_token
@@ -78,7 +78,18 @@ DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
 DEFAULT_CONFIG = "default"
 LOCAL_UPLOAD_EXTS = {".csv", ".json", ".jsonl", ".parquet"}
-UNSTRUCTURED_ALLOWED_EXTS = {".pdf", ".docx", ".txt", ".md"}
+# Every type here must be readable by core.rag parsers (or MuPDF for _MUPDF_EBOOK_EXTS): a frontend parity
+# test reads this literal.
+UNSTRUCTURED_ALLOWED_EXTS = {
+    ".pdf", ".docx", ".txt", ".md", ".markdown", ".html", ".htm", ".xhtml", ".xht",
+    ".doc", ".docm", ".dotx", ".dotm", ".odt", ".ott", ".rtf",
+    ".epub", ".mobi", ".fb2",
+    ".xlsx", ".xlsm", ".xltx", ".xltm", ".xls", ".xlt", ".ods", ".ots",
+    ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".ppt", ".pps", ".odp", ".otp",
+    ".eml", ".msg", ".mht", ".mhtml",
+}  # fmt: skip
+# Read by MuPDF (already installed for PDFs), which is not thread-safe, so they go through the PDF worker pool.
+_MUPDF_EBOOK_EXTS = {".mobi", ".fb2"}
 SEED_UPLOAD_DIR = LazyPath(seed_uploads_root)
 UNSTRUCTURED_UPLOAD_ROOT = LazyPath(unstructured_uploads_root)
 _SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -1254,7 +1265,10 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     elif ext == ".pdf":
         from core.rag import config, pdf_ocr
         raw = pdf_ocr.extract_text(str(file_path), config.OCR_SCANNED, config.OCR_MAX_PAGES)
-    elif ext == ".docx":
+    elif ext in _MUPDF_EBOOK_EXTS:
+        from core.rag import parsers
+        raw = parsers.mupdf_document_text(str(file_path))
+    elif ext in UNSTRUCTURED_ALLOWED_EXTS:
         from core.rag import parsers
         raw = "\n\n".join(page.text for page in parsers.parse(str(file_path)))
     else:
@@ -1270,8 +1284,20 @@ _pdf_extraction_limiter = CapacityLimiter(2)
 
 
 async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
+    if ext in _MUPDF_EBOOK_EXTS:
+        from core.rag import parsers
+
+        raw = await to_process.run_sync(
+            parsers.mupdf_document_text,
+            str(file_path),
+            cancellable = True,
+            limiter = _pdf_extraction_limiter,
+        )
+        chunking = _chunking()
+        return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
     if ext != ".pdf":
-        return _extract_text_from_file(file_path, ext)
+        # Office and e-book parsers are pure Python; a large spreadsheet must not stall the event loop.
+        return await to_thread.run_sync(_extract_text_from_file, file_path, ext)
     from core.rag import config, pdf_ocr
 
     # MuPDF is not thread-safe; each worker owns its document and OCR state.
@@ -1422,7 +1448,11 @@ async def upload_unstructured_file(
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
         missing = getattr(e, "name", None)
-        expected_missing = {".pdf": "pymupdf4llm", ".docx": "docx"}.get(ext)
+        expected_missing = {
+            ".pdf": "pymupdf4llm",
+            **dict.fromkeys((".docx", ".docm", ".dotx", ".dotm"), "docx"),
+            **dict.fromkeys(_MUPDF_EBOOK_EXTS, "pymupdf"),
+        }.get(ext)
         if isinstance(e, ModuleNotFoundError) and missing == expected_missing:
             # Name what to install: python-docx imports as docx, and PyPI's "docx" is another package.
             package = {"docx": "python-docx"}.get(missing, missing)
