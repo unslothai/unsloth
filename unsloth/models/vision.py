@@ -137,7 +137,7 @@ from ._utils import _ignore_block_swap_params_for_ddp
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
-from ._custom_dtype import resolve_dtype, trusted_custom_dtype
+from ._custom_dtype import cast_mixed_linear_inputs, resolve_dtype, trusted_custom_dtype
 from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
@@ -3892,7 +3892,9 @@ class FastBaseModel:
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
 
-        verify_fp8_support_if_applicable(model_config)
+        verify_fp8_support_if_applicable(
+            model_config, fast_inference = bool(fast_inference and is_vLLM_available())
+        )
 
         raise_handler = RaiseUninitialized()
         try:
@@ -4201,6 +4203,7 @@ class FastBaseModel:
             with torch.no_grad():
                 for jj, (name, module) in enumerate(model.named_modules()):
                     exec(custom_datatype)
+                cast_mixed_linear_inputs(model, torch_dtype)
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()
