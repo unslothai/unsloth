@@ -879,6 +879,11 @@ def model_visible(
         return False
     reference = reference.strip()
     access_options = {"offline": True} if offline else {}
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before any exists()/resolve(): touching a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(reference):
+        return False
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
         try:
