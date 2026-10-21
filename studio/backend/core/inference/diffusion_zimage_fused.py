@@ -366,9 +366,8 @@ def install_modules(
 
 
 def probe_split_cards(cards: Any) -> tuple:
-    """A layer split placed after :func:`install_modules` probed only the card the denoiser sat on: probe every other
-    card of the split (the processor reads its query's card, and an unprobed one takes the complex RoPE that the
-    regional compile cannot lower). Nothing when no install probed a card. Returns the cards whose probe passed."""
+    """Probe the split's other cards (an unprobed card takes the complex RoPE the regional compile cannot lower).
+    Returns the cards whose probe passed."""
     if zimage_fused_disabled() or not _FUSION:
         return ()
     import torch

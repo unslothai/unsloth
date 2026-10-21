@@ -752,8 +752,6 @@ def test_a_split_records_block_graphs_for_a_prompt_length_family(monkeypatch):
 
 
 def test_zimage_real_rope_probes_every_card_of_a_split(monkeypatch):
-    # Z-Image's speed patch installed while the denoiser sat on cuda:0 probed only that card: after the split the
-    # blocks on cuda:1 must not fall back to the complex RoPE inside the regional compile
     from core.inference import diffusion_qwenimage21_rope as q21r
     from core.inference import diffusion_zimage_fused as zf
 

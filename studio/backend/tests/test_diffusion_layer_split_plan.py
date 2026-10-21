@@ -25,9 +25,7 @@ def _env(monkeypatch):
     monkeypatch.delenv(mg.MULTIGPU_ENV, raising = False)
     monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
     monkeypatch.delenv(lsp.LAYER_SPLIT_ENV, raising = False)
-    # make_selection filters the fake [0, 1] cards through the real host (torch's device count, the primary's
-    # capability) and the planner declines on a HIP torch: pinned, so a ROCm host (a one-GPU APU included) plans
-    # these fake cards like any other. The ROCm decline has its own test.
+    # pin the host so the fake [0, 1] cards plan on any machine (ROCm included)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
     monkeypatch.setattr(mg, "_capability", lambda o: None)
     monkeypatch.setattr(lsp, "_is_rocm", lambda: False)
@@ -871,8 +869,7 @@ def test_two_denoisers_that_fit_only_jointly_are_cut_jointly():
 
 
 def test_dual_denoisers_may_keep_one_wholly_on_the_primary():
-    # A=(2,2) fits only wholly on the 4 MiB primary, B=(3,3) only wholly on the 6 MiB secondary: forcing both
-    # to cut onto the secondary would decline a placement that fits
+    # A fits only on the primary, B only on the secondary: forcing both to cut would decline a valid placement
     assert lsp._search_cuts([(2, 2), (3, 3)], [4, 6]) == [[0, 2, 2], [0, 0, 2]]
     assert lsp._search_cuts([(2, 2), (3, 3)], [10, 0]) is None  # nothing off the primary: no split
     split, reason = lsp.plan_layer_split(
@@ -895,8 +892,6 @@ def test_dual_denoisers_may_keep_one_wholly_on_the_primary():
 
 
 def test_failed_placement_drops_fused_records_left_on_another_card(monkeypatch):
-    # the fused QKV owned the shared allocation on the card it was built on; once its parts moved, pipe.to("cpu")
-    # cannot reach it, so the one-card fallback would OOM beside it
     from types import SimpleNamespace
 
     from torch import nn
@@ -930,8 +925,7 @@ def test_failed_placement_drops_fused_records_left_on_another_card(monkeypatch):
 
 
 def test_an_arch_pinned_attention_backend_keeps_blocks_off_other_architectures(monkeypatch, engine):
-    # flash3 is Hopper only and was gated on the H100 primary; a B200 secondary passes make_selection (higher
-    # capability) and would reject the kernel on its first block
+    # flash3 is Hopper only: a B200 secondary would reject it
     from core.inference.diffusion_attention import ATTENTION_BACKEND_ATTR
 
     caps = {0: (9, 0), 1: (10, 0), 2: (9, 0)}

@@ -219,7 +219,6 @@ def _search_cuts(
             visited[0] += 1
             if visited[0] > _SEARCH_BUDGET:
                 return None
-            # a denoiser wholly on the primary is placed there as is; the plan only needs one denoiser off it
             left = [remaining[i] - (prefix[cuts[i + 1]] - prefix[cuts[i]]) for i in range(k)]
             rest = dfs(d + 1, left, split or cuts[1] < n)
             if rest is not None:
@@ -611,10 +610,7 @@ def _layout_refusal(pipe: Any) -> str:
     return "no sequential block list the engine can cut"
 
 
-# Attention backends gated by an arch range or a probe run on the primary only (flash3 is Hopper only, flash4 / Sage
-# probe the primary's card, FlashAttention 2 builds per arch). make_selection drops lower-capability cards; a split
-# card of another architecture could still reject the kernel on its first block, so only identical cards take blocks.
-# cuDNN (Ampere and up) and native SDPA run on every card make_selection admits.
+# Backends gated on the primary's arch only (flash3, flash4, Sage, FA2): split only onto identical cards.
 _PRIMARY_ARCH_BACKENDS = frozenset({"_flash_3_hub", "flash_4_hub", "sage", "sage_hub", "flash"})
 
 
@@ -758,7 +754,7 @@ _RECORD_ATTR = "_unsloth_layer_split_record"
 
 
 def _drop_stranded_fused_records(pipe: Any) -> None:
-    """The fused records a failed placement left owning a card's memory (``diffusion_int8_fused``). Never raises."""
+    """Drop fused records a failed placement left on a card. Never raises."""
     from .diffusion_multigpu import DENOISER_ATTRS
     for name in DENOISER_ATTRS:
         module = getattr(pipe, name, None)

@@ -1768,10 +1768,8 @@ def relocate_after_layer_split(transformer: Any, logger: Any = None) -> dict:
 
 
 def drop_stranded_fused_records(transformer: Any) -> int:
-    """A failed layer split placement moved some blocks before giving up: each off-tree fused Linear whose parts left
-    its card still owns the original (shared) allocation there, which neither ``pipe.to("cpu")`` nor
-    ``empty_cache()`` reaches. Drop those records (the module runs its stock path) so the one-card fallback gets the
-    memory back. Returns how many were dropped."""
+    """Drop fused records whose parts left their card after a failed split (``pipe.to("cpu")`` cannot free them).
+    Returns how many were dropped."""
     dropped = 0
     with _LOCK:
         for module in transformer.modules():
