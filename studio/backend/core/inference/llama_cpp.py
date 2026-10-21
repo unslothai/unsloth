@@ -11449,10 +11449,30 @@ class LlamaCppBackend:
         is_vulkan_backend: bool,
         probe_integrated_cuda: bool = True,
     ) -> bool:
-        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child: a model
-        device without mmap support (ggml-org/llama.cpp#28160), i.e. every selected device
-        integrated, since the default list holds iGPUs only when no discrete GPU is seen.
+        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child: ANY
+        model device without mmap support (ggml-org/llama.cpp#28160; integrated Vulkan and
+        CUDA devices report none). An explicit selection is checked device by device; the
+        default list holds iGPUs only when no discrete GPU is seen, so there every visible
+        device must be integrated.
         ``probe_integrated_cuda`` False uses only a cached SoC answer (no new context)."""
+        try:
+            selected = set(gpu_indices or ())
+        except TypeError:
+            selected = set()
+        if selected:
+            if is_vulkan_backend:
+                return bool(selected & set(shared_gpu_ids or ()))
+            try:
+                if selected & LlamaCppBackend._rocm_unified_memory_gpu_ids():
+                    return True
+            except Exception:
+                pass
+            if not probe_integrated_cuda and not self._integrated_cuda_probe_is_free():
+                return False
+            try:
+                return bool(selected & LlamaCppBackend._integrated_cuda_gpu_ids())
+            except Exception:
+                return False
         rows = [(row[0], row[1]) for row in (detected_gpus or ())]
         if self._offload_target_shares_system_memory(
             is_vulkan_backend = is_vulkan_backend,

@@ -5705,18 +5705,40 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
         # llama.cpp drops an iGPU from its default list once a discrete GPU is seen.
         (True, None, {1}, set(), set(), False),
         (False, [0], set(), {0}, set(), True),
-        (False, [0, 1], set(), {0}, set(), False),
+        # An explicit selection: llama.cpp turns auto off if ANY selected device lacks
+        # mmap support (src/llama-model.cpp load_tensors), and integrated Vulkan / CUDA
+        # devices report none.
+        (False, [0, 1], set(), {0}, set(), True),
         (False, [0], set(), set(), {0}, True),
         (False, None, set(), set(), {0, 1}, True),
+        (True, [0, 1], {1}, set(), set(), True),
+        (True, [0, 1], set(), set(), set(), False),
+        (True, [0, 1], {0, 1}, set(), set(), True),
+        (True, None, set(), set(), set(), False),
+        (True, None, {0, 1}, set(), set(), True),
+        (False, [0, 1], set(), set(), {1}, True),
+        (False, [0, 1], set(), set(), set(), False),
+        (False, None, set(), set(), set(), False),
+        # Unpinned mixed CUDA: the default list drops the iGPU once a dGPU is seen.
+        (False, None, set(), set(), {1}, False),
     ],
     ids = [
         "discrete",
         "vulkan_igpu",
-        "vulkan_mixed",
+        "vulkan_mixed_default",
         "rocm_apu",
         "rocm_mixed",
         "cuda_soc",
         "cuda_soc_unpinned",
+        "vulkan_mixed_explicit",
+        "vulkan_all_discrete_explicit",
+        "vulkan_all_integrated_explicit",
+        "vulkan_discrete_default",
+        "vulkan_all_integrated_default",
+        "cuda_mixed_explicit",
+        "cuda_all_discrete_explicit",
+        "cuda_discrete_default",
+        "cuda_mixed_default",
     ],
 )
 def test_lazy_auto_resolves_off_only_where_llama_cpp_does(
