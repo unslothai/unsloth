@@ -96,9 +96,7 @@ class ExportOrchestrator:
     # ------------------------------------------------------------------
 
     def _clear_account_result(self):
-        # Runs under _account_job_lock before the job changes accounts: the idle worker
-        # holds the previous account's model, so it goes with the hand-over. A survivor
-        # keeps the previous owner and reports busy.
+        # Under _account_job_lock: the worker holds the previous account's model; one that will not stop reports busy.
         if not self._shutdown_subprocess():
             raise HTTPException(status_code = 409, detail = {"code": "job_busy", "message": "Busy"})
         self.current_checkpoint = None
