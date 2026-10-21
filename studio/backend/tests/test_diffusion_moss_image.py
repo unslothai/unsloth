@@ -536,8 +536,7 @@ def _old_pythons():
 
 
 def test_step_callback_reads_tensors_from_the_call_scope():
-    """Studio always passes a step-end callback. Before Python 3.12 (no PEP 709 inlining) a dict comprehension's
-    ``locals()`` is the comprehension's own scope, so ``locals()["latents"]`` there raised KeyError on step one."""
+    """Before Python 3.12 a comprehension's ``locals()`` is its own scope, so ``locals()["latents"]`` raised KeyError."""
     import subprocess
 
     import ast

@@ -368,13 +368,11 @@ def test_moss_image_bchw_latents_use_the_flux2_map():
     lat = torch.randn(1, 128, 4, 6)
     grid = DP.latent_grid(lat, spec, height = 64, width = 96)
     assert grid is not None and torch.equal(grid, lat[0].permute(1, 2, 0))
-    # The same latent as FLUX.2 tokens projects to the same picture.
     tokens = lat.flatten(2).transpose(1, 2)
     assert torch.equal(grid, DP.latent_grid(tokens, spec, 64, 96))
     w = torch.tensor(spec.weight)
     b = torch.tensor(spec.bias)
     assert tuple(DP.project(grid, w, b, spec.patch).shape) == (8, 12, 3)
-    # Any other 4-D channel count is still refused.
     assert DP.latent_grid(torch.randn(1, 32, 4, 6), spec, 64, 96) is None
 
 
