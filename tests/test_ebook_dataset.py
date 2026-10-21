@@ -127,6 +127,11 @@ def test_cdata_in_xhtml_keeps_literal_text(ebooks):
     )
 
 
+def test_bom_is_dropped_when_xml_declares_utf8(ebooks):
+    data = b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?><html><body><p>Chapter</p></body></html>'
+    assert ebooks._html_text(data) == "Chapter"
+
+
 def test_declared_html_charset_is_honored(ebooks):
     data = (
         '<html><head><meta charset="windows-1252"/></head><body><p>café</p></body></html>'.encode(
@@ -353,9 +358,16 @@ def test_public_exports_cover_gpu_mlx_and_dataprep(ebooks):
         imports = [
             n
             for n in ast.walk(ast.parse((root / name).read_text()))
-            if isinstance(n, ast.ImportFrom) and n.module and n.module.endswith("ebooks")
+            if isinstance(n, ast.ImportFrom) and n.module
         ]
-        assert any(any(a.name in {"load_ebook_dataset", "*"} for a in n.names) for n in imports)
+        assert any(
+            (
+                n.module.endswith("ebooks")
+                and any(a.name in {"load_ebook_dataset", "*"} for a in n.names)
+            )
+            or (n.module.endswith("dataprep") and any(a.name == "ebooks" for a in n.names))
+            for n in imports
+        )
 
 
 @pytest.mark.parametrize("chunk_size", [10, 13, 16, 25])

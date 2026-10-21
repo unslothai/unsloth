@@ -134,7 +134,8 @@ def _html_text(data):
             header.feed(data[:1024].decode("latin-1"))
             encoding = header.encoding or "utf-8-sig"
     parser = _BookTextParser()
-    parser.feed(data.decode(encoding))
+    # A declared UTF-8 encoding keeps a leading BOM, which str.strip() leaves in place.
+    parser.feed(data.decode(encoding).lstrip("\ufeff"))
     parser.close()
     text = unicodedata.normalize("NFC", "".join(parser.parts))
     text = re.sub(r"[^\S\n]+", " ", text)
