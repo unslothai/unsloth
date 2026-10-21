@@ -32,6 +32,7 @@ def _clean_env(monkeypatch):
         op.PREFETCH_DEPTH_ENV,
         cg.OFFLOAD_CUDA_GRAPH_ENV,
         cg.CUDA_GRAPH_DISABLE_ENV,
+        cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV,
         cg.SPEED_CHECK_ENV,
         "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT",
         "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN",
@@ -203,7 +204,8 @@ def test_sequential_offload_is_refused_with_the_reason():
     assert placement is None and "sequential" in why
 
 
-def test_model_offload_replays_under_the_hook_and_records_again_when_weights_move():
+def test_model_offload_replays_under_the_hook_and_records_again_when_weights_move(monkeypatch):
+    monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")  # the opt-in re-record path
     _cuda()
     accelerate = pytest.importorskip("accelerate")
     from accelerate import cpu_offload_with_hook
@@ -235,9 +237,10 @@ def test_model_offload_replays_under_the_hook_and_records_again_when_weights_mov
     del accelerate, other_hook
 
 
-def test_model_offload_re_records_a_moved_module_without_a_warm_up():
+def test_model_offload_re_records_a_moved_module_without_a_warm_up(monkeypatch):
     """Every onload of a model-offloaded denoiser may land at new addresses: the same key records again with no
     warm-up step (its kernels exist), and replays stay exact across many moves."""
+    monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")  # the opt-in re-record path
     _cuda()
     pytest.importorskip("accelerate")
     from accelerate import cpu_offload_with_hook
@@ -277,6 +280,58 @@ def test_model_offload_re_records_a_moved_module_without_a_warm_up():
     assert len(calls) == cg.WARMUP_ITERS + 1 + moves
     assert flushes == []
     del _hold
+
+
+def _model_offloaded():
+    from accelerate import cpu_offload_with_hook
+
+    torch.manual_seed(0)
+    ref = _Net().cuda()
+    torch.manual_seed(0)
+    net, hook = cpu_offload_with_hook(_Net(), execution_device = "cuda")
+    return ref, net, hook
+
+
+def test_model_offload_keeps_the_step_eager_by_default_with_the_reason():
+    _cuda()
+    pytest.importorskip("accelerate")
+    _ref, net, _hook = _model_offloaded()
+    placement, why = cg.offload_placement(net)
+    assert placement is None and why == cg.MODEL_OFFLOAD_REASON
+    assert cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV in why
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert handles == () and "re-uploads the denoiser every render" in reason
+
+
+@pytest.mark.parametrize("opt_in", [False, True])
+def test_model_offload_records_nothing_after_the_first_render(monkeypatch, opt_in):
+    """Studio's low_vram placement: every render onloads the denoiser, runs its steps, then the next stage offloads it
+    and reuses its VRAM. Renders 2+ must not record a graph (the default); the opt-in records one per moved render."""
+    _cuda()
+    pytest.importorskip("accelerate")
+    if opt_in:
+        monkeypatch.setenv(cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV, "1")
+    ref, net, hook = _model_offloaded()
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == (1 if opt_in else 0), reason
+    dev = torch.cuda.current_device()
+    later, hold = 0, []
+    for render in range(4):
+        seeds = [10 * render + i for i in range(5)]
+        before = cg.capture_generation(dev)
+        got = _run(net, seeds)
+        if render:
+            later += cg.capture_generation(dev) - before
+        for a, b in zip(got, _run(ref, seeds)):
+            assert torch.equal(a, b)
+        hook.offload()
+        torch.cuda.empty_cache()
+        # the next stage takes the VRAM the denoiser freed, so its next onload lands elsewhere
+        hold.append(torch.empty(4 << 20, device = "cuda"))
+    if opt_in:
+        assert later >= 1 and handles[0].stats["invalidations"] >= 1
+    else:
+        assert later == 0
 
 
 def test_model_offload_stops_recording_only_when_moves_outpace_replays():

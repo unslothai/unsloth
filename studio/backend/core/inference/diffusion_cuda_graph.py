@@ -31,6 +31,16 @@ CUDA_GRAPHS_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPHS"
 OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_OFFLOAD_CUDA_GRAPH"
 # =0: a block-streamed whole-step graph records its copies into the graph pool instead of the prefetcher's slot ring.
 STEP_SLOTS_ENV = "UNSLOTH_DIFFUSION_STEP_GRAPH_SLOTS"
+# =1: a model-offloaded denoiser (whole-module CPU offload) records its whole step again, re-recorded on every onload.
+MODEL_OFFLOAD_CUDA_GRAPH_ENV = "UNSLOTH_DIFFUSION_MODEL_OFFLOAD_CUDA_GRAPH"
+# Default off: the hook re-uploads the denoiser every render (the text encoder and VAE reuse its VRAM in between), so
+# its weights land at new addresses and the step graph is recorded again on every render. Each replay saved about 1%
+# of a compiled step (FLUX.2-klein 4B, 1024^2), the per-render recording and its pool (~0.6 GB) cost more, and the
+# output is bit-identical either way. The per-block graphs refuse this placement for the same reason.
+MODEL_OFFLOAD_REASON = (
+    "model offload re-uploads the denoiser every render at new addresses, so its step graph would record again on "
+    "every render; set " + MODEL_OFFLOAD_CUDA_GRAPH_ENV + "=1 to record it anyway"
+)
 
 # Per module. Legitimate second keys exist, but each costs a pool-sized slice of VRAM.
 MAX_GRAPHS_PER_MODULE = 4
@@ -98,6 +108,10 @@ def offload_graphs_enabled() -> bool:
         "false",
         "no",
     )
+
+
+def model_offload_graphs_requested() -> bool:
+    return (os.environ.get(MODEL_OFFLOAD_CUDA_GRAPH_ENV) or "").strip().lower() in _TRUE_TOKENS
 
 
 def cuda_graph_disabled() -> bool:
@@ -1570,8 +1584,9 @@ class OffloadPlacement:
     and the resident groups read in place. The pool holds the in-flight window at fixed addresses, so it plays the
     prefetch ring. Recorded again when a residency change, a release / restore or a host-copy swap moves an address.
 
-    ``model``: whole-module CPU offload (accelerate). The hook moves the module on the eager path first and the replay
-    sits under it, in ``_old_forward``. Recorded again when the onload placed the weights at new addresses; after
+    ``model``: whole-module CPU offload (accelerate), only with ``MODEL_OFFLOAD_CUDA_GRAPH_ENV=1`` (see
+    ``MODEL_OFFLOAD_REASON``). The hook moves the module on the eager path first and the replay sits under it, in
+    ``_old_forward``. Recorded again when the onload placed the weights at new addresses; after
     ``MODEL_MAX_INVALIDATIONS`` re-records the module runs eager (each re-record costs a forward)."""
 
     MODEL_MAX_INVALIDATIONS = 2
@@ -1843,6 +1858,8 @@ def offload_placement(module: Any) -> tuple:
                 None,
                 f"offload hook {type(hf_hook).__name__} moves the weights inside the forward",
             )
+        if not model_offload_graphs_requested():
+            return None, MODEL_OFFLOAD_REASON
         why = _forward_refusal(module, "model")
         if why is not None:
             return None, why
