@@ -12473,20 +12473,26 @@ class DiffusionBackend:
                     shift_w, shift_h = kwargs.get("width"), kwargs.get("height")
                     if (not shift_w or not shift_h) and init_pil is not None:
                         shift_w, shift_h = init_pil.size
+                    if pipe_sample_sigmas(state.pipe) is not None:
+                        # Tuned on the shipped scheduler, like the load-time ComfyUI shift (which skips it too).
+                        raise ValueError(
+                            "This checkpoint ships its own sampling schedule, so Shift is not available."
+                        )
+                    shift_node = _state_shift_node(state)
                     applied_shift = requested_flow_shift(
-                        _state_shift_node(state),
+                        shift_node,
                         shift = shift,
                         base_shift = base_shift,
                         max_shift = max_shift,
                         width = shift_w or width,
                         height = shift_h or height,
+                        defaults = shift_control(shift_node, pipe.scheduler),
                     )
                     shifted = scheduler_with_flow_shift(pipe.scheduler, applied_shift)
-                    if restore_scheduler is None:
-                        restore_scheduler = (pipe, pipe.scheduler)
-                    pipe.scheduler = shifted
-                    # An explicit shift replaces the checkpoint's own sampling grid, as in ComfyUI.
-                    kwargs.pop("sigmas", None)
+                    if shifted is not pipe.scheduler:
+                        if restore_scheduler is None:
+                            restore_scheduler = (pipe, pipe.scheduler)
+                        pipe.scheduler = shifted
                 if (
                     negative_prompt
                     and _negative_prompt_engaged(state.family, guidance)
@@ -13391,9 +13397,10 @@ class DiffusionBackend:
             "supports_live_preview": _live_preview_available(state),
             "prompt_hint": state.family.prompt_hint,
             "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),
-            "shift_control": shift_control(
-                _state_shift_node(state), getattr(state.pipe, "scheduler", None)
-            ),
+            # Hidden for a checkpoint that ships its own sampling grid (the load-time ComfyUI shift skips it too).
+            "shift_control": None
+            if pipe_sample_sigmas(state.pipe) is not None
+            else shift_control(_state_shift_node(state), getattr(state.pipe, "scheduler", None)),
             "textual_inversion": getattr(state.family, "textual_inversion", None),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)

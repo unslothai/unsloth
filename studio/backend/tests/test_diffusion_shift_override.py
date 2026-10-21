@@ -174,7 +174,9 @@ def test_built_schedule_is_comfyui_time_snr_shift(config, shift):
 
     resident = _flow_euler(**config)
     built = scheduler_with_flow_shift(resident, shift)
-    assert built is not resident
+    # The resolved value keeps the loaded object; any other is a copy.
+    unchanged = not config["use_dynamic_shifting"] and shift == config["shift"]
+    assert (built is resident) == unchanged
     assert resident.config.get("shift") == config["shift"]  # the loaded scheduler is not touched
     steps = 8
     t = np.linspace(1.0, 1.0 / steps, steps)
@@ -273,3 +275,43 @@ def test_request_model_bounds():
     for bad in ({"shift": 0.0}, {"shift": 101.0}, {"max_shift": -0.1}, {"base_shift": 200.0}):
         with pytest.raises(ValidationError):
             DiffusionGenerateRequest(prompt = "x", **bad)
+
+
+def test_flux_node_defaults_to_the_resolved_fixed_mu():
+    """A load that resolved ComfyUI's fixed mu (Kontext 1.15, Qwen-Image-2.1 0.69) reports base = max = mu, so
+    a request that leaves one field out starts from it, and sending the defaults back changes nothing."""
+    from core.inference.diffusion_flow_shift import flux_mu_shift
+
+    resolved = _flow_euler(shift = flux_mu_shift(0.69), use_dynamic_shifting = False)
+    control = shift_control(SHIFT_NODE_FLUX, resolved)
+    assert control["base_shift"] == pytest.approx(0.69) and control["max_shift"] == pytest.approx(
+        0.69
+    )
+    same = requested_flow_shift(
+        SHIFT_NODE_FLUX,
+        base_shift = control["base_shift"],
+        max_shift = control["max_shift"],
+        width = 1344,
+        height = 768,
+    )
+    assert scheduler_with_flow_shift(resolved, same) is resolved
+    only_max = requested_flow_shift(
+        SHIFT_NODE_FLUX, max_shift = 2.0, width = 1024, height = 1024, defaults = control
+    )
+    assert only_max == pytest.approx(
+        math.exp(_comfy_model_sampling_flux_shift(2.0, 0.69, 1024, 1024))
+    )
+
+
+def test_dynamic_flux_reports_its_config_line():
+    krea2_like = _flow_euler(shift = 1.0, use_dynamic_shifting = True, base_shift = 0.5, max_shift = 1.15)
+    assert shift_control(SHIFT_NODE_FLUX, krea2_like)["max_shift"] == 1.15
+    qwen21_like = _flow_euler(shift = 1.0, use_dynamic_shifting = True, base_shift = 0.5, max_shift = 0.9)
+    assert shift_control(SHIFT_NODE_FLUX, qwen21_like)["max_shift"] == 0.9
+
+
+def test_the_resolved_shift_is_not_rebuilt():
+    """Sending the value the load resolved keeps the loaded scheduler object (no rebuild, identical render)."""
+    resolved = _flow_euler(shift = 3.1, use_dynamic_shifting = False)
+    assert scheduler_with_flow_shift(resolved, 3.1) is resolved
+    assert scheduler_with_flow_shift(resolved, 3.2) is not resolved

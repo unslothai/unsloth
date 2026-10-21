@@ -9,6 +9,11 @@ import { cn } from "@/lib/utils";
 import { listDiffusionEmbeddings, type DiffusionEmbeddingInfo } from "./api";
 import { shiftFieldInvalid, type ShiftControl, type ShiftValue } from "./lib/shift-choice";
 
+// The resolved defaults can be e.g. ln(e^0.69); show them the way a user would type them.
+function roundShift(value: number): number {
+  return Number(value.toFixed(3));
+}
+
 function Label({ label, hint }: { label: string; hint: ReactNode }) {
   return (
     <div className="flex items-center gap-1">
@@ -64,7 +69,7 @@ export function ShiftField({
         <NumberBox
           ariaLabel="Shift"
           value={value.shift}
-          placeholder={control.shift != null ? `Model default (${control.shift})` : "Model default"}
+          placeholder={control.shift != null ? `Model default (${roundShift(control.shift)})` : "Model default"}
           exclusiveMin
           onChange={(shift) => onChange({ ...value, shift })}
         />
@@ -75,20 +80,20 @@ export function ShiftField({
     <div className="flex flex-col gap-1.5 pt-2">
       <Label
         label="Shift (base / max)"
-        hint="Resolution-dependent shift, as ComfyUI's ModelSamplingFlux: base shift applies at 256 latent tokens, max shift at 4096 (1024x1024), interpolated for your size. Higher spends more steps on composition. Leave both empty for the model's default."
+        hint="Resolution-dependent shift, as ComfyUI's ModelSamplingFlux: base shift applies at 256 latent tokens, max shift at 4096 (1024x1024), interpolated for your size. Higher spends more steps on composition. Empty boxes keep the value Studio already uses for this model (shown in grey)."
       />
       <div className="flex items-center gap-2">
         <NumberBox
           ariaLabel="Base shift"
           value={value.baseShift}
-          placeholder={`Base (${control.base_shift ?? 0.5})`}
+          placeholder={`Base (${roundShift(control.base_shift ?? 0.5)})`}
           exclusiveMin={false}
           onChange={(baseShift) => onChange({ ...value, baseShift })}
         />
         <NumberBox
           ariaLabel="Max shift"
           value={value.maxShift}
-          placeholder={`Max (${control.max_shift ?? 1.15})`}
+          placeholder={`Max (${roundShift(control.max_shift ?? 1.15)})`}
           exclusiveMin={false}
           onChange={(maxShift) => onChange({ ...value, maxShift })}
         />

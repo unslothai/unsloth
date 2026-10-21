@@ -185,10 +185,12 @@ def requested_flow_shift(
     max_shift: Optional[float] = None,
     width: Optional[int] = None,
     height: Optional[int] = None,
+    defaults: Optional[dict] = None,
 ) -> Optional[float]:
     """The static flow shift a request asks for, or None when it sets none (today's schedule).
 
-    Raises ValueError for a field this family's node does not take."""
+    ``defaults`` (``shift_control``'s) fills the base / max shift a request leaves out, so changing one
+    starts from what the load resolved. Raises ValueError for a field this family's node does not take."""
     if shift is None and base_shift is None and max_shift is None:
         return None
     if node not in SHIFT_NODES:
@@ -206,8 +208,11 @@ def requested_flow_shift(
         raise ValueError(
             "This model takes base / max shift (ComfyUI ModelSamplingFlux), not a single Shift value."
         )
-    hi = COMFY_FLUX_MAX_SHIFT if max_shift is None else float(max_shift)
-    lo = COMFY_FLUX_BASE_SHIFT if base_shift is None else float(base_shift)
+    defaults = defaults or {}
+    hi = float(defaults.get("max_shift", COMFY_FLUX_MAX_SHIFT) if max_shift is None else max_shift)
+    lo = float(
+        defaults.get("base_shift", COMFY_FLUX_BASE_SHIFT) if base_shift is None else base_shift
+    )
     for value in (hi, lo):
         if not (math.isfinite(value) and 0.0 <= value <= SHIFT_MAX):
             raise ValueError(f"Base and max shift must be between 0 and {SHIFT_MAX:g}.")
@@ -217,13 +222,16 @@ def requested_flow_shift(
 
 
 def scheduler_with_flow_shift(scheduler: Any, shift: float) -> Any:
-    """A copy of ``scheduler`` sampling at static ``shift`` (dynamic shifting and terminal stretch off).
+    """A copy of ``scheduler`` sampling at static ``shift`` (dynamic shifting and terminal stretch off), or
+    ``scheduler`` itself when it already samples there (the resolved value: no rebuild, identical render).
 
     Raises ValueError when the scheduler has no flow shift Studio can set."""
     config = getattr(scheduler, "config", None)
     overrides = flow_shift_overrides(config, shift) if config is not None else None
     if not overrides:
         raise ValueError("The loaded model's scheduler has no flow shift to override.")
+    if all(config.get(k) == v for k, v in overrides.items()):
+        return scheduler
     return type(scheduler).from_config(config, **overrides)
 
 
@@ -236,11 +244,20 @@ def shift_control(node: Optional[str], scheduler: Any) -> Optional[dict]:
     if config is None or not flow_shift_overrides(config, 1.0):
         return None
     if node == SHIFT_NODE_FLUX:
-        return {
-            "node": node,
-            "base_shift": COMFY_FLUX_BASE_SHIFT,
-            "max_shift": COMFY_FLUX_MAX_SHIFT,
-        }
+        base, top = COMFY_FLUX_BASE_SHIFT, COMFY_FLUX_MAX_SHIFT
+        try:
+            if not config.get("use_dynamic_shifting", False) and "flow_shift" not in config.keys():
+                # The load resolved a fixed mu (ComfyUI's fixed-mu templates, ``flux_mu_shift``): base = max = mu
+                # reproduces it at every size.
+                static = float(config.get("shift"))
+                if static > 0:
+                    base = top = math.log(static)
+            else:
+                base = float(config.get("base_shift", base))
+                top = float(config.get("max_shift", top))
+        except (TypeError, ValueError):
+            base, top = COMFY_FLUX_BASE_SHIFT, COMFY_FLUX_MAX_SHIFT
+        return {"node": node, "base_shift": base, "max_shift": top}
     current: Optional[float] = None
     try:
         if "flow_shift" in config.keys():
