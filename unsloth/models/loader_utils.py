@@ -2032,6 +2032,31 @@ def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
     return Version(vllm.__version__) < Version("0.12.0")
 
 
+def _fp8_dequantize_quantization_config(model_config):
+    """The checkpoint's fine-grained fp8 config with `dequantize = True` for an explicit 16bit load, else None.
+    On FP8-capable GPUs transformers otherwise keeps FP8Linear layers; FastModel passes the same flag."""
+    quantization_config = getattr(model_config, "quantization_config", None)
+    if quantization_config is None:
+        return None
+    as_dict = (
+        quantization_config
+        if isinstance(quantization_config, dict)
+        else getattr(quantization_config, "to_dict", lambda: {})()
+    )
+    if str(as_dict.get("quant_method", "")).lower() != "fp8":
+        return None
+    try:
+        from transformers import FineGrainedFP8Config
+    except Exception:
+        return None
+    if "dequantize" not in inspect.signature(FineGrainedFP8Config).parameters:
+        return None
+    try:
+        return FineGrainedFP8Config.from_dict(dict(as_dict), dequantize = True)
+    except Exception:
+        return None
+
+
 def _fp8_load_as_is(
     model_name,
     revision = None,

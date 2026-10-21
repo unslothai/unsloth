@@ -50,6 +50,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _fp8_load_as_is,
+    _fp8_dequantize_quantization_config,
     _fp8_needs_offline_quantize,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
@@ -1793,6 +1794,17 @@ class FastLanguageModel(FastLlamaModel):
         if quantization_config is not None and not fast_inference:
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
+        # Mirror FastModel: an explicit 16bit load dequantizes a fine-grained fp8 checkpoint.
+        if (
+            load_in_16bit
+            and not load_in_4bit
+            and not load_in_8bit
+            and not fast_inference
+            and kwargs.get("quantization_config", None) is None
+        ):
+            _fp8_dequantize_config = _fp8_dequantize_quantization_config(model_config)
+            if _fp8_dequantize_config is not None:
+                kwargs["quantization_config"] = _fp8_dequantize_config
 
         # Mirror FastModel: bitsandbytes < 0.46.0 needs dynamo disabled. Best effort, never crash the load (an old zoo without the #710 fix raises NameError here on Python 3.13).
         try:
