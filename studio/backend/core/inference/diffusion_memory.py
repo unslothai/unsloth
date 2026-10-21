@@ -16,10 +16,12 @@ lazily.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import functools
 import os
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 
@@ -614,6 +616,11 @@ class MemoryPlan:
     # MiB of the streamed denoiser / encoders kept resident (whole groups); None streams every group.
     resident_transformer_mib: Optional[int] = None
     resident_text_encoder_mib: Optional[int] = None
+    secondary_ordinal: Optional[int] = None
+    secondary_components: Optional[tuple[str, ...]] = None
+    # The single-card plan a split replaced, applied on the primary if the split placement fails (a torchao denoiser
+    # cannot take the whole-module offload a blind fallback would choose).
+    fallback_plan: Optional["MemoryPlan"] = field(default = None, compare = False, repr = False)
 
     @property
     def engages_offload(self) -> bool:
@@ -632,6 +639,10 @@ class MemoryPlan:
             "stream_transformer": self.stream_transformer,
             "resident_transformer_mib": self.resident_transformer_mib,
             "resident_text_encoder_mib": self.resident_text_encoder_mib,
+            "secondary_ordinal": self.secondary_ordinal,
+            "secondary_components": (
+                list(self.secondary_components) if self.secondary_components is not None else None
+            ),
         }
 
 
@@ -1661,37 +1672,109 @@ def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
 
 
 # Opt-in escape hatch for the unified-memory refusal below: the shortfall check is an estimate, so an operator who
-# believes it is wrong can still attempt the load.
+# believes it is wrong can still attempt the load. Desktop / API callers send ``allow_oversized_load`` per load instead.
 UNIFIED_OVERSIZE_ENV = "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD"
+UNIFIED_OVERSIZE_REQUEST_FIELD = "allow_oversized_load"
+# Must match the Settings switch label and location in frontend unified-memory-load-refusal.ts.
+UNIFIED_OVERSIZE_SETTING_LABEL = "Allow oversized model loads"
+UNIFIED_OVERSIZE_SETTING_LOCATION = "Settings > System > Model memory"
+UNIFIED_OVERSIZE_REFUSAL_CODE = "unified-memory-load"
+
+# Unlike the env var, the per-load flag does NOT lift the MPS allocator cap: that cap is process-wide and set once,
+# and keeping it turns an over-commit into an MPS OOM rather than the OS killing the process.
+_UNIFIED_OVERSIZE_REQUESTED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "unsloth_diffusion_allow_oversized_load", default = False
+)
 
 
-def _unified_oversize_override() -> bool:
+class UnifiedMemoryShortfallError(RuntimeError):
+    """A RuntimeError so existing handlers still catch it."""
+
+    code = UNIFIED_OVERSIZE_REFUSAL_CODE
+
+
+def unified_memory_refusal_code(exc: Optional[BaseException]) -> Optional[str]:
+    """``UNIFIED_OVERSIZE_REFUSAL_CODE`` when ``exc`` is, or was raised from, the unified-memory refusal."""
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, UnifiedMemoryShortfallError):
+            return UNIFIED_OVERSIZE_REFUSAL_CODE
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
+@contextlib.contextmanager
+def unified_oversize_requested(allowed: Any):
+    """Per-load ``UNIFIED_OVERSIZE_ENV``; a ContextVar so concurrent loads / plans on other threads are unaffected."""
+    token = _UNIFIED_OVERSIZE_REQUESTED.set(bool(allowed))
+    try:
+        yield
+    finally:
+        _UNIFIED_OVERSIZE_REQUESTED.reset(token)
+
+
+def unified_oversize_scoped(allowed: Any, fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def _scoped(*args: Any, **kwargs: Any) -> Any:
+        with unified_oversize_requested(allowed):
+            return fn(*args, **kwargs)
+
+    return _scoped
+
+
+def scoped_allow_oversized_load(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Kwarg is read, not popped, so ``fn`` keeps it in its signature; nested calls keep an outer True."""
+
+    @functools.wraps(fn)
+    def _wrapper(*args: Any, **kwargs: Any) -> Any:
+        allowed = (
+            bool(kwargs.get(UNIFIED_OVERSIZE_REQUEST_FIELD)) or _UNIFIED_OVERSIZE_REQUESTED.get()
+        )
+        with unified_oversize_requested(allowed):
+            return fn(*args, **kwargs)
+
+    return _wrapper
+
+
+def _unified_oversize_env() -> bool:
     return os.environ.get(UNIFIED_OVERSIZE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None) -> Optional[str]:
-    """On UNIFIED device memory, a user-facing refusal when the WEIGHTS alone cannot fit the safe
-    budget (else None).
+def _unified_oversize_override() -> bool:
+    return _UNIFIED_OVERSIZE_REQUESTED.get() or _unified_oversize_env()
 
-    Unified memory is the one placement with no fallback left. On discrete VRAM an oversized model
-    still loads, degrading to group / whole-module CPU offload and streaming from host RAM. On Apple
-    Silicon (and integrated CUDA) the CPU and GPU share one pool, so offload moves bytes within that
-    pool and frees nothing: ``plan_diffusion_memory`` correctly returns ``none`` and the load then
-    allocates past physical memory. ``apply_mps_memory_cap`` bounds MPS allocations just below RAM,
-    but that only turns the overrun into a late OOM after minutes of loading (and integrated CUDA has
-    no such cap), so refusing up front is still the better failure.
 
-    Weights only (``model_dense_mib`` plus the flat base overhead): the per-call runtime headroom is
-    a coarse activation / VAE-decode estimate and the mps path already turns on VAE tiling and
-    slicing, so counting it would refuse marginal loads that would in fact complete. The weights are
-    unavoidable resident bytes, and if they alone do not fit then nothing at generation time can
-    rescue the load. Same reasoning as the llama.cpp APU guard.
+def _unified_oversize_source() -> str:
+    if _UNIFIED_OVERSIZE_REQUESTED.get():
+        return UNIFIED_OVERSIZE_REQUEST_FIELD
+    return f"{UNIFIED_OVERSIZE_ENV}=1"
 
-    Fail-open on anything unknown (no budget, no size), matching the planner's own "budget or model
-    size unknown; staying resident".
-    """
-    if _unified_oversize_override():
-        return None
+
+def unified_capacity_memory(memory: DeviceMemory) -> DeviceMemory:
+    """``memory`` at CAPACITY (free = total), so the verdict does not depend on what is loaded right now.
+
+    On mps the snapshot picks the RAM or working-set view from the CURRENT free reading; re-read RAM here so the
+    same pick is not judged against the smaller working set just because something is resident."""
+    capacity = replace(memory, free_mib = memory.total_mib)
+    if getattr(memory, "device", None) != "mps" or memory.metal_working_set_mib is None:
+        return capacity
+    try:
+        total, _free = _system_memory_mib()
+    except Exception:  # noqa: BLE001 - no RAM reading: keep the working-set view
+        return capacity
+    if total is None:
+        return capacity
+    ram = DeviceMemory(memory.backend, memory.device, "unified_memory", int(total), int(total))
+    ram_budget = _safe_device_budget_mib(ram)
+    capacity_budget = _safe_device_budget_mib(capacity)
+    if ram_budget is not None and (capacity_budget is None or ram_budget > capacity_budget):
+        return ram
+    return capacity
+
+
+def _unified_memory_shortfall_text(plan: Any, family: Optional[str]) -> Optional[str]:
+    """Ignores the overrides."""
     try:
         memory = plan.device_memory
         # ``system_memory`` (plain CPU) is deliberately excluded: it is an opt-in fringe path, it has swap, and it is
@@ -1732,6 +1815,14 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
             "the main model will not fit either. Use a smaller model, or free memory by closing "
             "other applications."
         )
+    elif companions and int(companions) < int(weights) and int(budget) - floor >= 1024:
+        room = int(budget) - floor
+        advice = (
+            f"Its text encoders and VAE need about {floor / 1024:.0f} GB, which leaves room for a "
+            f"main model of up to about {room / 1024:.0f} GB: use a lower GGUF quant (or another "
+            "quantized build) of this model at or below that size, or free memory by closing "
+            "other applications."
+        )
     else:
         advice = (
             "Use a smaller or more quantized model (for example a lower GGUF quant), or free memory "
@@ -1744,10 +1835,40 @@ def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None)
         f"about {int(budget) / 1024:.{digits}f} GB is usable on this device ({free_note}). This device "
         "has unified memory, so the CPU and GPU share one pool: offloading weights to the CPU "
         "frees nothing, and the operating system stops an oversized load outright instead of "
-        f"reporting an out-of-memory error. {advice} (Server "
-        f"installs that know this estimate is wrong can set {UNIFIED_OVERSIZE_ENV}=1 to attempt "
-        "the load anyway.)"
+        f"reporting an out-of-memory error. {advice} The size is an estimate. To try anyway, "
+        f"choose Load anyway, or turn on '{UNIFIED_OVERSIZE_SETTING_LABEL}' in "
+        f"{UNIFIED_OVERSIZE_SETTING_LOCATION} (API callers can send {UNIFIED_OVERSIZE_REQUEST_FIELD}; "
+        f"server installs can set {UNIFIED_OVERSIZE_ENV}=1). An oversized load can exhaust memory, "
+        "swap heavily, stop Studio or make the computer unresponsive."
     )
+
+
+def unified_memory_shortfall_message(plan: Any, *, family: Optional[str] = None) -> Optional[str]:
+    """On UNIFIED device memory, a user-facing refusal when the WEIGHTS alone cannot fit the safe
+    budget (else None).
+
+    Unified memory is the one placement with no fallback left. On discrete VRAM an oversized model
+    still loads, degrading to group / whole-module CPU offload and streaming from host RAM. On Apple
+    Silicon (and integrated CUDA) the CPU and GPU share one pool, so offload moves bytes within that
+    pool and frees nothing: ``plan_diffusion_memory`` correctly returns ``none`` and the load then
+    allocates past physical memory. ``apply_mps_memory_cap`` bounds MPS allocations just below RAM,
+    but that only turns the overrun into a late OOM after minutes of loading (and integrated CUDA has
+    no such cap), so refusing up front is still the better failure.
+
+    Weights only (``model_dense_mib`` plus the flat base overhead): the per-call runtime headroom is
+    a coarse activation / VAE-decode estimate and the mps path already turns on VAE tiling and
+    slicing, so counting it would refuse marginal loads that would in fact complete. The weights are
+    unavoidable resident bytes, and if they alone do not fit then nothing at generation time can
+    rescue the load. Same reasoning as the llama.cpp APU guard.
+
+    None under the env var or a per-load ``allow_oversized_load``, as the loaders' speculative probes also see.
+
+    Fail-open on anything unknown (no budget, no size), matching the planner's own "budget or model
+    size unknown; staying resident".
+    """
+    if _unified_oversize_override():
+        return None
+    return _unified_memory_shortfall_text(plan, family)
 
 
 def raise_on_unified_memory_shortfall(
@@ -1764,13 +1885,22 @@ def raise_on_unified_memory_shortfall(
     both re-plan against a settled snapshot), and a planner that raised would turn those probes
     into load failures instead of letting a smaller candidate win. Call this once, on the plan
     the loader has committed to, after the previous pipeline has been evicted so the free
-    reading is the memory the load actually gets."""
-    message = unified_memory_shortfall_message(plan, family = family)
+    reading is the memory the load actually gets. Under an override the
+    load proceeds with a warning."""
+    message = _unified_memory_shortfall_text(plan, family)
     if message is None:
+        return
+    if _unified_oversize_override():
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: loading past the unified-memory estimate (%s): %s",
+                _unified_oversize_source(),
+                message,
+            )
         return
     if logger is not None:
         logger.error("diffusion.memory: refusing oversized unified-memory load: %s", message)
-    raise RuntimeError(message)
+    raise UnifiedMemoryShortfallError(message)
 
 
 def _sum_required(*values: Optional[int]) -> Optional[int]:
@@ -1965,6 +2095,8 @@ def plan_diffusion_memory(
             reasons.append("companions exceed budget; whole-module offload of every component")
 
     # The legacy cpu_offload flag applies only when no memory_mode was supplied, so an explicit `fast` stays resident.
+    if explicit_offload and normalize_memory_mode(requested_mode) is None:
+        estimates["explicit_cpu_offload"] = 1
     if (
         explicit_offload
         and normalize_memory_mode(requested_mode) is None
@@ -2003,17 +2135,116 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
-    return MemoryPlan(
+    split = _multigpu_companion_split(
+        target = target,
+        device_memory = device_memory,
+        mode = mode,
+        requested_mode = requested_mode,
+        explicit_offload = explicit_offload,
+        can_offload = can_offload,
+        policy = policy,
+        budget = budget,
+        model_dense_mib = model_dense_mib,
+        companion_dense_mib = companion_dense_mib,
+        runtime_headroom_mib = runtime_headroom_mib,
+        base_overhead_mib = base_overhead_mib,
+        text_encoder_dense_mib = text_encoder_dense_mib,
+        calibrated_activation = calibrated_activation,
+    )
+    single_card = MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
         vae_tiling = tile,
         vae_slicing = any_offload,
         device_memory = device_memory,
-        estimates = estimates,
+        estimates = dict(estimates),
         reasons = tuple(reasons),
         # only ever meaningful under group offload; every other tier already places the encoders
         stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
         stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
+    )
+    if split is not None:
+        estimates["multigpu_primary_required_mib"] = split.primary_required_mib
+        estimates["multigpu_secondary_required_mib"] = split.secondary_required_mib
+        return MemoryPlan(
+            requested_mode = mode,
+            offload_policy = OFFLOAD_NONE,
+            vae_tiling = False,
+            vae_slicing = False,
+            device_memory = device_memory,
+            estimates = estimates,
+            reasons = tuple(reasons) + (split.reason,),
+            secondary_ordinal = split.secondary_ordinal,
+            secondary_components = split.components,
+            fallback_plan = single_card,
+        )
+    return single_card
+
+
+def _multigpu_companion_split(
+    *,
+    target: Any,
+    device_memory: DeviceMemory,
+    mode: str,
+    requested_mode: Optional[str],
+    explicit_offload: bool,
+    can_offload: bool,
+    policy: str,
+    budget: Optional[int],
+    model_dense_mib: Optional[int],
+    companion_dense_mib: Optional[int],
+    runtime_headroom_mib: int,
+    base_overhead_mib: int,
+    text_encoder_dense_mib: Optional[int] = None,
+    calibrated_activation: Optional[CalibratedImageActivation] = None,
+) -> Any:
+    """The multi-GPU companion split for this plan, or None (one card: every existing decision unchanged). Only for
+    ``auto`` / ``fast`` on a discrete CUDA card that is the primary of a multi-card selection; explicit offload modes
+    and the legacy ``cpu_offload`` flag keep their meaning."""
+    from .diffusion_multigpu import (
+        current_selection,
+        plan_companion_split,
+        secondary_resident_limit_mib,
+    )
+
+    selection = current_selection()
+    if selection is None or not can_offload or device_memory.is_unified:
+        return None
+    if getattr(device_memory, "device", None) != "cuda" or budget is None:
+        return None
+    ordinal = getattr(target, "ordinal", None)
+    if ordinal is None and selection.automatic:
+        from .diffusion_device import placed_cuda_ordinal
+        ordinal = placed_cuda_ordinal(target)
+    if ordinal != selection.primary:
+        return None
+    if mode not in (MEMORY_MODE_AUTO, MEMORY_MODE_FAST):
+        return None
+    if explicit_offload and normalize_memory_mode(requested_mode) is None:
+        return None
+    if mode == MEMORY_MODE_FAST:
+        limit = _fast_device_budget_mib(device_memory)
+    else:
+        limit = int(budget * 0.85)
+    return plan_companion_split(
+        single_card_policy = policy,
+        model_dense_mib = model_dense_mib,
+        companion_dense_mib = companion_dense_mib,
+        runtime_headroom_mib = runtime_headroom_mib,
+        base_overhead_mib = base_overhead_mib,
+        primary_limit_mib = limit,
+        secondary_limit_mib = lambda ordinal: secondary_resident_limit_mib(ordinal, mode),
+        selection = selection,
+        text_encoder_dense_mib = text_encoder_dense_mib,
+        phase_headroom_mib = (
+            (
+                calibrated_activation.text_encoder_mib,
+                calibrated_activation.denoise_mib,
+                calibrated_activation.decode_mib,
+            )
+            if calibrated_activation is not None
+            else None
+        ),
     )
 
 
@@ -3178,6 +3409,31 @@ def release_resident_groups(
     blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
     A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
     the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them)."""
+    released: list = []
+    streamed: set = set()
+
+    def restore(strict: bool = False) -> None:
+        """Pin the released groups again. ``strict``: raise when any of them is still not resident afterwards (the
+        re-pin catches its own failures and leaves those groups streamed, which callers that must retry need to
+        know)."""
+        for module in released:
+            _keep_groups_resident(
+                module,
+                module._unsloth_resident_room,
+                module._unsloth_resident_device,
+                logger,
+                only = streamed,
+            )
+        if strict:
+            left = [
+                g
+                for module in released
+                for g in (_offload_groups(module) or [])
+                if id(g) in streamed and not getattr(g, "_unsloth_resident", False)
+            ]
+            if left:
+                raise RuntimeError(f"re-pinning resident offload groups left {len(left)} streamed")
+
     try:
         import torch
 
@@ -3191,8 +3447,6 @@ def release_resident_groups(
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
         left = int(need_mib) * 1024 * 1024
-        released: list = []
-        streamed: set = set()
         for module in modules:
             for group in reversed(_offload_groups(module) or []):
                 if left <= 0:
@@ -3203,15 +3457,16 @@ def release_resident_groups(
                 state = getattr(module, "_unsloth_stream_state", None)
                 if isinstance(state, dict):
                     state["streamed"] = 1
+                if module not in released:
+                    released.append(module)
                 # tied partners stream together (a resident partner would keep reading the host copy)
                 for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
                     if not getattr(member, "_unsloth_resident", False):
                         continue
-                    _release_group(member)
+                    # Recorded before demoting: a release that fails part way is still re-pinned by ``restore``.
                     streamed.add(id(member))
+                    _release_group(member)
                     left -= int(getattr(member, "_unsloth_resident_bytes", 0))
-                if module not in released:
-                    released.append(module)
         if not released:
             return None
         for module in released:
@@ -3228,21 +3483,12 @@ def release_resident_groups(
                 reason,
             )
 
-        def restore() -> None:
-            for module in released:
-                _keep_groups_resident(
-                    module,
-                    module._unsloth_resident_room,
-                    module._unsloth_resident_device,
-                    logger,
-                    only = streamed,
-                )
-
         return restore
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
         if logger is not None:
             logger.warning("diffusion.memory: releasing resident groups failed (%s)", exc)
-        return None
+        # groups released before the failure stay streamed until the caller re-pins them: hand back their restore
+        return restore if released else None
 
 
 def resident_group_mib(pipe: Any) -> int:
@@ -3261,10 +3507,14 @@ def hook_resident_denoiser(
     pipe: Any,
     device: Any,
     logger: Any = None,
+    resident: bool = True,
 ) -> bool:
     """Give a hookless resident torchao transformer block-level offload hooks, every group kept resident, so
     release_resident_groups can stream part of it. On demand, not at load: hooks at load recompile every load's second
-    render. True when installed."""
+    render. True when installed. ``resident=False``: every group streams (the load's flat plan), for a transformer
+    that cannot come back to the card whole. A failure whose own return to the card fails raises, the transformer
+    split between host and card with no hooks (return_torchao_denoiser / hook_resident_denoiser(resident=False) are
+    the ways out)."""
     transformer = getattr(pipe, "transformer", None)
     if (
         transformer is None
@@ -3315,19 +3565,17 @@ def hook_resident_denoiser(
             _skip_top_level_copy_back(transformer, logger)
         if gkwargs.get("record_stream"):
             install_group_prefetch(transformer, onload, logger)
-        kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
-        # the helper reports its own failure as 0 MiB kept: anything still streamed is a failed install
-        if not all(getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)):
-            raise RuntimeError("not every offload group stayed resident")
+        kept = 0
+        if resident:
+            kept = _keep_groups_resident(transformer, dit_mib + 1, onload, logger)
+            if not all(
+                getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)
+            ):
+                raise RuntimeError("not every offload group stayed resident")
     except Exception as exc:  # noqa: BLE001 - the guard still refuses what cannot fit
-        # the apply already moved the weights to their host copies: back to the card, as before the call
-        _remove_group_offload_hooks(transformer)
-        _drop_module_forward_hooks_since(transformer, torch_hooks)
-        from .diffusion_offload_prefetch import PREFETCHER_ATTR
-
-        for attr in (PREFETCHER_ATTR, "_unsloth_stream_state"):
-            transformer.__dict__.pop(attr, None)
-        _return_module_tensors(transformer, onload)
+        # the apply already moved the weights to their host copies: back to the card, as before the call (a return
+        # that itself fails raises: the caller owns the way back)
+        _unhook_and_return(transformer, onload, torch_hooks)
         if logger is not None:
             logger.warning("diffusion.memory: resident transformer left without hooks (%s)", exc)
         return False
@@ -3351,6 +3599,44 @@ _FORWARD_HOOK_DICTS = (
 
 def _module_forward_hook_ids(module: Any) -> dict[str, set]:
     return {name: set(getattr(module, name, None) or ()) for name in _FORWARD_HOOK_DICTS}
+
+
+def _unhook_and_return(transformer: Any, onload: Any, torch_hooks: Optional[dict]) -> None:
+    _remove_group_offload_hooks(transformer)
+    if torch_hooks is not None:
+        _drop_module_forward_hooks_since(transformer, torch_hooks)
+    from .diffusion_offload_prefetch import PREFETCHER_ATTR
+
+    for attr in (PREFETCHER_ATTR, "_unsloth_stream_state"):
+        transformer.__dict__.pop(attr, None)
+    _return_module_tensors(transformer, onload)
+
+
+def return_torchao_denoiser(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+    torch_hooks: Optional[dict] = None,
+) -> None:
+    """The way back to where a hookless resident torchao transformer started, from wherever a failed
+    hook_resident_denoiser left it: streamed under offload hooks (settled) -> every group resident again, the state
+    a successful hook_resident_denoiser leaves; split with no hooks -> whole on the card. Raises if it is not there."""
+    import torch
+
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None:
+        return
+    onload = torch.device(device)
+    if _offload_groups(transformer):
+        _keep_groups_resident(transformer, _module_host_mib(transformer) + 1, onload, logger)
+        if not all(getattr(g, "_unsloth_resident", False) for g in _offload_groups(transformer)):
+            raise RuntimeError("the transformer's offload groups are not all resident again")
+        return
+    _unhook_and_return(transformer, onload, torch_hooks)
+
+
+def module_forward_hook_ids(module: Any) -> dict[str, set]:
+    return _module_forward_hook_ids(module)
 
 
 def _drop_module_forward_hooks_since(module: Any, before: dict[str, set]) -> None:
@@ -3680,6 +3966,34 @@ def apply_memory_plan(
                 )
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
+    elif getattr(plan, "secondary_ordinal", None) is not None:
+        from .diffusion_multigpu import apply_split_plan
+        if not apply_split_plan(pipe, plan, placement = placement, logger = logger):
+            fallback = getattr(plan, "fallback_plan", None)
+            if fallback is not None and getattr(fallback, "secondary_ordinal", None) is None:
+                # the policy one card would have used (group offload keeps a torchao denoiser loadable)
+                result = apply_memory_plan(
+                    pipe, fallback, device = device, placement_device = placement_device, logger = logger
+                )
+                # applied_plan() must report the fallback (or the lower re-plan it recorded), not the split
+                if getattr(pipe, "_unsloth_applied_plan", None) is None:
+                    try:
+                        pipe._unsloth_applied_plan = fallback
+                    except Exception:  # noqa: BLE001
+                        pass
+                return result
+            _fallback_to_model_offload()
+            policy = OFFLOAD_MODEL
+            try:
+                pipe._unsloth_applied_plan = replace(
+                    plan,
+                    offload_policy = OFFLOAD_MODEL,
+                    secondary_ordinal = None,
+                    secondary_components = None,
+                    fallback_plan = None,
+                )
+            except Exception:  # noqa: BLE001
+                pass
     else:
         from .diffusion_fast_load import fast_upload
 

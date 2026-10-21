@@ -17,6 +17,8 @@ import os
 import torch
 import re
 import tempfile
+import types
+import shutil
 import contextlib
 import threading as _threading
 import functools
@@ -240,6 +242,159 @@ def deepspeed_zero3_device_map(device_map):
     if not zero3:
         return device_map
     return None if is_automatic_device_map(device_map) else device_map
+
+
+def deepspeed_zero_stage():
+    """DeepSpeed ZeRO stage, else None. Unsloth loads before TrainingArguments, so `accelerate launch` env counts."""
+    try:
+        from transformers.integrations.deepspeed import deepspeed_config
+        config = deepspeed_config()
+    except Exception:
+        config = None
+    if config is None:
+        try:
+            from accelerate.state import AcceleratorState
+
+            plugins = AcceleratorState._shared_state.get("deepspeed_plugins", None) or {}
+            if not isinstance(plugins, dict):
+                plugins = {"": plugins}
+            for plugin in plugins.values():
+                if (
+                    getattr(plugin, "selected", True)
+                    and getattr(plugin, "zero_stage", None) is not None
+                ):
+                    return int(plugin.zero_stage)
+        except Exception:
+            pass
+        if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() not in _TRUTHY:
+            return None
+        stage = str(os.environ.get("ACCELERATE_DEEPSPEED_ZERO_STAGE", "")).strip()
+        if stage.isdigit():
+            return int(stage)
+        path = os.environ.get("ACCELERATE_DEEPSPEED_CONFIG_FILE", "")
+        if not path:
+            return None
+        try:
+            import json
+            with open(path, "r", encoding = "utf-8") as f:
+                config = json.load(f)
+        except Exception:
+            return None
+    try:
+        return int(config.get("zero_optimization", {}).get("stage"))
+    except Exception:
+        return None
+
+
+def deepspeed_zero3_requested():
+    return deepspeed_zero_stage() == 3
+
+
+def sync_deepspeed_mixed_precision(args):
+    """Resync an already-filled DeepSpeed config's fp16 / bf16 after Unsloth changed them, else
+    transformers stops with "ds fp16.enabled=True vs hf fp16|fp16_full_eval=False"."""
+    want = {
+        "fp16": bool(getattr(args, "fp16", False) or getattr(args, "fp16_full_eval", False)),
+        "bf16": bool(getattr(args, "bf16", False) or getattr(args, "bf16_full_eval", False)),
+    }
+    configs = []
+    for holder, attr in (
+        (getattr(args, "hf_deepspeed_config", None), "config"),
+        (getattr(args, "deepspeed_plugin", None), "deepspeed_config"),
+    ):
+        config = getattr(holder, attr, None) if holder is not None else None
+        if isinstance(config, dict) and all(config is not c for c in configs):
+            configs.append(config)
+    changed = []
+    for config in configs:
+        for key, enabled in want.items():
+            section = config.get(key)
+            if not isinstance(section, dict) or section.get("enabled", False) == "auto":
+                continue
+            if bool(section.get("enabled", False)) != enabled:
+                section["enabled"] = enabled
+                changed.append(key)
+    hf_config = getattr(args, "hf_deepspeed_config", None)
+    if hf_config is not None and isinstance(getattr(hf_config, "config", None), dict):
+        # trainer_config_process already queued mismatches for the old flags; the config now agrees.
+        mismatches = getattr(hf_config, "mismatches", None)
+        if isinstance(mismatches, list):
+            mismatches[:] = [
+                m
+                for m in mismatches
+                if not m.startswith(("- ds fp16.enabled=", "- ds bf16.enabled="))
+            ]
+        if hasattr(hf_config, "_dtype"):
+            # From the flags: accelerate adds absent fp16 / bf16 sections later without refreshing _dtype.
+            hf_config._dtype = (
+                torch.bfloat16 if want["bf16"] else torch.float16 if want["fp16"] else torch.float32
+            )
+    return changed
+
+
+def vlm_gradient_checkpointing_reentrant():
+    """Only DDP needs non-reentrant (#3713); under ZeRO-3 non-reentrant fails torch's saved-tensor check."""
+    return not is_distributed() or fsdp2_requested() or deepspeed_zero_stage() is not None
+
+
+def _is_moe_block(module):
+    children = dict(module.named_children())
+    return "experts" in children and ("gate" in children or "router" in children)
+
+
+def set_deepspeed_moe_leaf_modules(model):
+    """Mark MoE blocks ZeRO-3 leaves (before `deepspeed.initialize`): per-expert hooks give mismatched all-gathers across ranks."""
+    if model is None or not deepspeed_zero3_requested():
+        return ()
+    try:
+        from deepspeed.utils import set_z3_leaf_modules
+    except Exception:
+        return ()
+    classes = []
+    for module in model.modules():
+        if type(module) not in classes and _is_moe_block(module):
+            classes.append(type(module))
+    if not classes:
+        return ()
+    try:
+        set_z3_leaf_modules(model, classes)
+    except Exception as exc:
+        print(f"Unsloth: could not mark MoE blocks as DeepSpeed ZeRO-3 leaf modules ({exc}).")
+        return ()
+    return tuple(cls.__name__ for cls in classes)
+
+
+def set_deepspeed_fused_lora_leaf_modules(layers):
+    """Fused LoRA kernels read weights without calling their modules, so ZeRO-3's prefetch trace breaks unless layers are leaves."""
+    layers = list(layers)
+    for layer in layers:
+        layer._unsloth_fused_lora_layer = True
+    if not deepspeed_zero3_requested():
+        return 0
+    for layer in layers:
+        layer._z3_leaf = True
+    return len(layers)
+
+
+def apply_deepspeed_zero3_model_setup(model):
+    """Redo load-time ZeRO-3 setup at trainer time, for models loaded before DeepSpeed was visible."""
+    if not hasattr(model, "modules") or not deepspeed_zero3_requested():
+        return
+    try:
+        set_deepspeed_moe_leaf_modules(model)
+        set_deepspeed_fused_lora_leaf_modules(
+            m for m in model.modules() if getattr(m, "_unsloth_fused_lora_layer", False)
+        )
+    except Exception as exc:
+        print(f"Unsloth: could not apply the DeepSpeed ZeRO-3 model setup ({exc}).")
+    if getattr(model, "_unsloth_vlm_gc_non_reentrant", False) and not getattr(
+        model, "_unsloth_warned_zero3_gc", False
+    ):
+        model._unsloth_warned_zero3_gc = True
+        print(
+            "Unsloth: this model was loaded without DeepSpeed detected, so it uses non-reentrant gradient "
+            "checkpointing, which can fail under ZeRO-3. Load the model under the DeepSpeed launch instead."
+        )
 
 
 UNSLOTH_DEVICE_MAP = "unsloth"
@@ -1711,6 +1866,7 @@ def _offline_quantize_to_fp8(
     text_only: bool = False,
     revision: str = None,
     token = None,
+    trust_remote_code: bool = False,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1722,7 +1878,9 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
+    config = AutoConfig.from_pretrained(
+        model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+    )
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1749,6 +1907,9 @@ def _offline_quantize_to_fp8(
     temp_dir = tempfile.gettempdir()
     # Cache text-only and full-VLM artifacts separately so neither reuses the other (#5816).
     cache_name = model_name.split("/")[-1] + "-fp8-" + fp8_mode
+    # The basename alone would let org-a/model and org-b/model share one artifact.
+    source = os.path.abspath(model_name) if os.path.isdir(model_name) else model_name
+    cache_name += "-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
     if revision is not None:
         # Sanitizing is lossy (release/v1 and release.v1 collapse), so a digest of the raw ref rides along and two refs never share an artifact.
         digest = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
@@ -1764,7 +1925,19 @@ def _offline_quantize_to_fp8(
 
         qconfig = _get_torchao_fp8_config(fp8_mode)
         qconfig = TorchAoConfig(qconfig)
-        load_kwargs = dict(torch_dtype = "auto", device_map = "auto", quantization_config = qconfig)
+        # Under torchrun every rank converts: keep each on its own GPU, not all of them on "auto".
+        local_rank = os.environ.get("LOCAL_RANK")
+        device_map = (
+            {"": int(local_rank)}
+            if local_rank is not None and int(os.environ.get("WORLD_SIZE", "1")) > 1
+            else "auto"
+        )
+        load_kwargs = dict(
+            torch_dtype = "auto",
+            device_map = device_map,
+            quantization_config = qconfig,
+            trust_remote_code = trust_remote_code,
+        )
         if text_config is not None:
             _apply_text_only_key_mapping(load_kwargs, config, text_config)
             config = text_config
@@ -1782,18 +1955,108 @@ def _offline_quantize_to_fp8(
             model_name,
             revision = revision,
             token = token,
+            trust_remote_code = trust_remote_code,
         )
-        model.save_pretrained(new_model_name, safe_serialization = False)
-        del model
-        for _ in range(2):
-            clean_gpu_cache()
-            gc.collect()
-        tokenizer.save_pretrained(new_model_name)
+        # Atomic publish: the isdir check above must never see another rank's half-written artifact.
+        partial = tempfile.mkdtemp(prefix = cache_name + ".partial-", dir = temp_dir)
+        try:
+            model.save_pretrained(partial, safe_serialization = False)
+            del model
+            for _ in range(2):
+                clean_gpu_cache()
+                gc.collect()
+            tokenizer.save_pretrained(partial)
+            try:
+                os.rename(partial, new_model_name)
+            except OSError:
+                if not os.path.isdir(new_model_name):
+                    raise
+        finally:
+            shutil.rmtree(partial, ignore_errors = True)
     return new_model_name
+
+
+def _fp8_needs_offline_quantize(resolved_name, requested_name, fast_inference):
+    """True when no pre-quantized FP8 repo was mapped and vLLM won't quantize it on the fly."""
+    if resolved_name is not None and str(resolved_name).lower() != str(requested_name).lower():
+        return False
+    if not fast_inference or importlib.util.find_spec("vllm") is None:
+        return True
+    import vllm
+
+    return Version(vllm.__version__) < Version("0.12.0")
+
+
+def _fp8_load_as_is(
+    model_name,
+    revision = None,
+    token = None,
+    trust_remote_code = False,
+):
+    """Only a readable, unquantized model config takes the offline fp8 path and its H100 gate: an already quantized checkpoint, an adapter (resolved to its base later) or an unreadable config loads as before."""
+    from transformers import AutoConfig
+
+    try:
+        from peft import PeftConfig
+
+        # The loader treats a repo holding both config.json and adapter_config.json as an adapter too.
+        PeftConfig.from_pretrained(model_name, revision = revision, token = token)
+        return True
+    except Exception:
+        pass
+    try:
+        config = AutoConfig.from_pretrained(
+            model_name, revision = revision, token = token, trust_remote_code = trust_remote_code
+        )
+    except Exception:
+        # Unreadable here (a Mistral-format checkpoint, say): leave it to the loader's own fallbacks.
+        return True
+    text_config = getattr(config, "text_config", None)
+    return bool(
+        getattr(config, "quantization_config", None)
+        or getattr(text_config, "quantization_config", None)
+    )
+
+
+class _Float8TensorLinear(torch.autograd.Function):
+    """torchao's Float8Tensor linear has no backward, so a LoRA layer Unsloth's kernels do not take (a biased Qwen2 q_proj, FastModel's PEFT path) failed in backward."""
+
+    @staticmethod
+    def forward(ctx, X, weight, bias):
+        ctx.weight = weight
+        ctx.bias_needs_grad = bias is not None and bias.requires_grad
+        return torch.nn.functional.linear(X, weight, bias)
+
+    @staticmethod
+    def backward(ctx, dY):
+        dX = dY @ ctx.weight.dequantize().to(dY.dtype)
+        dB = dY.reshape(-1, dY.shape[-1]).sum(0) if ctx.bias_needs_grad else None
+        return dX, None, dB
+
+
+def _float8_tensor_linear_forward(self, input):
+    # A trainable fp8 weight keeps torchao's own (backward-less) path, so it errors instead of silently getting no gradient.
+    if torch.is_grad_enabled() and input.requires_grad and not self.weight.requires_grad:
+        return _Float8TensorLinear.apply(input, self.weight, self.bias)
+    return torch.nn.functional.linear(input, self.weight, self.bias)
+
+
+def _enable_float8_tensor_backward(model: torch.nn.Module):
+    from ..kernels.utils import Float8Tensor
+    for module in model.modules():
+        weight = getattr(module, "weight", None)
+        if type(module) is torch.nn.Linear and isinstance(
+            getattr(weight, "data", weight), Float8Tensor
+        ):
+            module.forward = types.MethodType(_float8_tensor_linear_forward, module)
 
 
 def _tag_model_with_fp8_torchao_config(model: torch.nn.Module, fp8_mode: str):
     """Tag a model with a `TorchAOConfig` so downstream callers know how to handle it."""
+    try:
+        _enable_float8_tensor_backward(model)
+    except Exception:
+        pass
     try:
         base_config = _get_torchao_fp8_config(fp8_mode)
         model.torchao_config = TorchAOConfig(
@@ -3445,6 +3708,28 @@ def gptq_trainable_quantization_config(model_config, user_quantization_config):
             return None
         return AwqConfig(bits = qc.get("bits", 4), backend = "auto_trainable")
     return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
+
+
+def refuse_fast_inference_load_in_8bit(
+    load_in_8bit,
+    model_config = None,
+    quantization_config = None,
+):
+    """Refuse bnb 8-bit (flag, caller config or checkpoint config) under fast_inference: no 8-bit vLLM path."""
+    checkpoint_config = getattr(model_config, "quantization_config", None)
+    if not (
+        load_in_8bit
+        or _bnb_bits_requested(quantization_config) == 8
+        or _bnb_bits_requested(checkpoint_config) == 8
+    ):
+        return
+    raise NotImplementedError(
+        "Unsloth: fast_inference = True does not support bitsandbytes 8-bit "
+        "(load_in_8bit = True or an 8-bit bitsandbytes checkpoint): vLLM would "
+        "not run in 8-bit. Use load_in_4bit = True or 16-bit "
+        "(load_in_4bit = False, load_in_8bit = False) with fast_inference, or set "
+        "fast_inference = False to keep load_in_8bit."
+    )
 
 
 def warn_if_bitsandbytes_quantized_nothing(

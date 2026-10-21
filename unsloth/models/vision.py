@@ -142,6 +142,8 @@ from .remote_code_shims import apply_remote_code_shims
 from .grouped_linear_lora import register_grouped_linear_lora
 from .loader_utils import (
     _bnb_bits_requested,
+    vlm_gradient_checkpointing_reentrant,
+    set_deepspeed_moe_leaf_modules,
     fsdp2_requested,
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -4062,6 +4064,13 @@ class FastBaseModel:
                     )
 
                 from unsloth_zoo.utils import get_quant_type
+                from .loader_utils import refuse_fast_inference_load_in_8bit
+
+                refuse_fast_inference_load_in_8bit(
+                    load_in_8bit,
+                    model_config,
+                    kwargs.get("quantization_config", None),
+                )
 
                 # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
                 # Every sparse MoE, text ones too: vLLM's MoE LoRA layer rejects the bnb MoE
@@ -5066,6 +5075,7 @@ class FastBaseModel:
         float32_mixed_precision = None,
     ):
         reject_alora(model)
+        set_deepspeed_moe_leaf_modules(model)
         from ..import_fixes import fix_transformers_voxtral_realtime_inplace_audio_add
 
         fix_transformers_voxtral_realtime_inplace_audio_add()
@@ -5079,12 +5089,17 @@ class FastBaseModel:
                 float32_mixed_precision = False
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
-        use_reentrant = not is_distributed()
+        # FSDP2 has no DDP reducer to mark twice: each unit reduce-scatters in its own post-backward hook,
+        # recompute included, so it keeps Unsloth's offloaded checkpointing (and unsloth_stream) as 1 GPU does.
+        use_reentrant = vlm_gradient_checkpointing_reentrant()
         # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
         _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
         _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
         if _force_non_reentrant:
             use_reentrant = False
+        model._unsloth_vlm_gc_non_reentrant = bool(
+            use_gradient_checkpointing and not use_reentrant and not _force_non_reentrant
+        )
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()

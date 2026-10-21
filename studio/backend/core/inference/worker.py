@@ -430,9 +430,19 @@ def _ensure_ssm_kernels(
                 else []
             )
             if stale:
+                from utils.ssm_runtime import REMOVED_PREFIX
+
+                # "removed mamba_ssm" entries mark an uninstall, which changes the kernels as much
+                # as an install does; say which happened.
+                changes = ", ".join(
+                    f"Removed {name[len(REMOVED_PREFIX):]}"
+                    if name.startswith(REMOVED_PREFIX)
+                    else f"Installed {name}"
+                    for name in installed
+                )
                 logger.info(
-                    "Installed %s after %s was imported; restarting the worker to pick it up",
-                    ", ".join(installed),
+                    "%s after %s was imported; restarting the worker to pick it up",
+                    changes,
                     ", ".join(stale),
                 )
                 _send_response(
@@ -441,8 +451,8 @@ def _ensure_ssm_kernels(
                         "type": "loaded",
                         "success": False,
                         "message": (
-                            f"Installed {', '.join(installed)} for this model; "
-                            "restarting the model worker to use it."
+                            f"{changes} for this model; restarting the model worker to "
+                            "pick up the change."
                         ),
                         "error_kind": SSM_RESTART_REQUIRED,
                     },
@@ -1195,7 +1205,7 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
             raise RuntimeError("The loaded backend does not read video.")
         gen_kwargs["video"] = cmd["video_base64"]
     # Only a raw completion carries these; its batch rows are planned from them.
-    for raw in ("prompt_ids", "penalty_window", "grammar"):
+    for raw in ("prompt_ids", "penalty_window", "grammar", "n_probs"):
         if raw in cmd:
             gen_kwargs[raw] = cmd[raw]
 
@@ -1279,6 +1289,7 @@ _COMPLETION_OPTIONS = (
     "stop",
     "penalty_window",
     "grammar",
+    "n_probs",
 )
 
 

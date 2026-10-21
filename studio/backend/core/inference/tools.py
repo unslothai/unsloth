@@ -5,6 +5,7 @@
 execution, and terminal commands."""
 
 import ast
+import base64
 import codecs
 import copy
 from collections import OrderedDict, deque
@@ -78,11 +79,14 @@ from core.inference.mcp_image import (
     strip_attached_image_note,
 )
 from core.inference.mcp_client import (
+    MCP_RESOURCE_TOOL,
     MCP_TOOL_PREFIX,
     MCP_IMAGES_SENTINEL,
     TOOL_CACHE_INVALIDATING_FIELDS,
+    _drop_forged_ui_sentinels,
     cache_tools,
     call_tool_sync,
+    get_cached_resources,
     get_cached_tools,
     in_failure_cooloff,
     is_studio_decisions,
@@ -92,6 +96,7 @@ from core.inference.mcp_client import (
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
+    read_resource_sync,
     record_probe_failure,
     stdio_mcp_enabled,
     tool_ui_resource_uri,
@@ -7021,6 +7026,45 @@ _MCP_CREDENTIAL_KEY_RE = re.compile(
 )
 
 
+def _mcp_resource_names_a_secret(name: str, tool_name: str, arguments) -> bool:
+    # read_resource names nothing; the resource it reads stands in for a tool name, by URI
+    # (secrets://prod) or by its listed name (vault://object/7f3a listed as production-secret).
+    uri = (
+        arguments.get("uri")
+        if tool_name == MCP_RESOURCE_TOOL and isinstance(arguments, dict)
+        else None
+    )
+    if not isinstance(uri, str):
+        return False
+    uri = uri.strip()
+    parts = name.split("__", 2)
+    resources = get_cached_resources(parts[1]) if len(parts) == 3 else None
+    listed = next((r for r in resources or () if r.get("uri") == uri), {})
+    return any(
+        _AUTO_SENSITIVE_MCP_NOUN_RE.search(
+            _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", text))
+        )
+        for text in (uri, listed.get("name") or "")
+    )
+
+
+def _path_spellings(value: str) -> tuple:
+    # A file: URI (an MCP resource) names its path percent-encoded, which no path pattern matches.
+    if value.lstrip()[:5].lower() != "file:":
+        return (value,)
+    try:
+        parts = urllib.parse.urlsplit(value.strip())
+    except ValueError:
+        return (value,)
+    host = f"//{parts.netloc}" if parts.netloc and parts.netloc.lower() != "localhost" else ""
+    spellings = [value, host + urllib.parse.unquote(parts.path)]
+    try:
+        spellings.append(host + urllib.request.url2pathname(parts.path))
+    except Exception:  # noqa: BLE001 - Windows raises IndexError on `file::x`
+        pass
+    return tuple(spellings)
+
+
 def _mcp_arguments_reference_studio_credential(arguments) -> bool:
     """True if an MCP call's arguments point at Studio's auth directory. An MCP server runs outside
     the terminal sandbox, so a filesystem server would read the credential the local tools refuse.
@@ -7029,7 +7073,9 @@ def _mcp_arguments_reference_studio_credential(arguments) -> bool:
 
     def walk(value, is_prose: bool = False) -> bool:
         if isinstance(value, str):
-            return False if is_prose else _references_studio_credential(value)
+            return not is_prose and any(
+                _references_studio_credential(spelling) for spelling in _path_spellings(value)
+            )
         if isinstance(value, dict):
             return any(
                 walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
@@ -7055,10 +7101,11 @@ def _mcp_arguments_reference_sensitive(arguments) -> bool:
             # allowlisted: an issue body mentioning a credential file is text to store, not a file to open.
             if is_prose:
                 return False
-            return (
-                _references_sensitive_path(value)
-                or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(value))
-                or bool(_MCP_METADATA_HOST_RE.search(value))
+            return any(
+                _references_sensitive_path(spelling)
+                or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(spelling))
+                or bool(_MCP_METADATA_HOST_RE.search(spelling))
+                for spelling in _path_spellings(value)
             )
         if isinstance(value, dict):
             if any(key_is_credential(k) for k in value):
@@ -7389,6 +7436,8 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
         # A credential noun (read_secret, list_tokens, get_credentials) makes a
         # read-named tool a sensitive disclosure, so it asks too.
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_resource_names_a_secret(name, tool_name, arguments):
             return True
         # A read-named fs tool pointed at a credential path is still a
         # sensitive read (mcp__fs__read_file {"path": "/etc/passwd"}).
@@ -9524,6 +9573,8 @@ def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
         ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
             return True
         if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_resource_names_a_secret(name, tool_name, arguments):
             return True
         if _mcp_arguments_reference_sensitive(arguments):
             return True
@@ -13942,7 +13993,8 @@ def _cached_mcp_catalog() -> list[dict]:
     specs: list[dict] = []
     for server in servers:
         payload = get_cached_tools(server["id"])
-        if payload:
+        # An empty list can still carry resources (a resource-only server).
+        if payload is not None:
             specs.extend(
                 _mcp_specs_for_server(server, [public_tool(server, tool) for tool in payload])
             )
@@ -14154,14 +14206,18 @@ def _mcp_tool_search(arguments) -> str:
     )
 
 
+def _mcp_tool_prefix(server: dict) -> str:
+    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
+    return f"{MCP_TOOL_PREFIX}{server_key}__"
+
+
 def _mcp_tool_names(server: dict, mcp_tools: list[dict]) -> dict[str, str]:
     """Composed function name -> raw MCP name, for the tools this server ships to a model.
 
     Names that already satisfy ``function.name`` are claimed first, so an alias minted for a dotted
     or oversized one can never take a name another tool ships under.
     """
-    server_key = "blender" if server.get("builtin_id") == "blender" else server["id"]
-    prefix = f"{MCP_TOOL_PREFIX}{server_key}__"
+    prefix = _mcp_tool_prefix(server)
     raw_names = [
         tool["name"] for tool in mcp_tools if tool.get("name") and tool_visible_to(tool, "model")
     ]
@@ -14189,6 +14245,103 @@ _MCP_TOOL_ALIASES: dict[str, str] = {}
 
 def _mcp_raw_tool_name(name: str) -> str:
     return _MCP_TOOL_ALIASES.get(name) or name.split("__", 2)[-1]
+
+
+_MCP_RESOURCE_LISTING_CHARS = 4000
+_MCP_TEXT_BLOB_TYPES = ("json", "xml", "yaml", "csv", "javascript", "markdown", "toml")
+
+
+def _mcp_listed_resources(server: dict) -> list[dict]:
+    """Readable resources; none when the server ships its own tool by that name."""
+    tools = get_cached_tools(server["id"])
+    resources = get_cached_resources(server["id"])
+    if tools is None or not resources:
+        return []
+    if any(
+        isinstance(tool, dict)
+        and tool.get("name") == MCP_RESOURCE_TOOL
+        and tool_visible_to(tool, "model")
+        for tool in tools
+    ):
+        return []
+    return resources
+
+
+def _mcp_resource_spec(server: dict, resources: list[dict]) -> dict:
+    display = server.get("display_name") or server["id"]
+    lines = []
+    for resource in resources:
+        line = f"- {resource['uri']}"
+        if resource.get("name") and resource["name"] != resource["uri"]:
+            line += f" ({resource['name']})"
+        if resource.get("description"):
+            line += f": {_mcp_summary(resource['description'])}"
+        lines.append(line)
+    shown, size = [], 0
+    for line in lines:
+        if size + len(line) > _MCP_RESOURCE_LISTING_CHARS:
+            shown.append(f"- ... and {len(lines) - len(shown)} more")
+            break
+        shown.append(line)
+        size += len(line) + 1
+    return {
+        "type": "function",
+        "function": {
+            "name": f"{_mcp_tool_prefix(server)}{MCP_RESOURCE_TOOL}",
+            "description": (
+                f"[{display}] Read a resource this MCP server provides (a file, document or "
+                "data it exposes), by its URI. Resources:\n" + "\n".join(shown)
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "uri": {
+                        "type": "string",
+                        "description": "The resource URI, exactly as listed.",
+                    }
+                },
+                "required": ["uri"],
+            },
+        },
+    }
+
+
+def _mcp_read_resource(server: dict, arguments, url: str, headers, **kwargs) -> str:
+    display = server.get("display_name") or server["id"]
+    listed = [resource["uri"] for resource in _mcp_listed_resources(server)]
+    uri = arguments.get("uri") if isinstance(arguments, dict) else None
+    uri = uri.strip() if isinstance(uri, str) else ""
+    # Only what the server listed: a filesystem server would otherwise read any file:// path.
+    if uri not in listed:
+        return (
+            f"Error: '{uri}' is not a resource '{display}' lists. Pass one of its URIs "
+            f"exactly: {', '.join(listed[:10])}"
+        )
+    try:
+        resource = read_resource_sync(url, headers, uri, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - every failure goes back to the model
+        return f"Error: reading MCP resource '{uri}' failed: {exc or type(exc).__name__}"
+
+    def _shown(text, blob, mime) -> str:
+        if not blob:
+            return text or ""
+        # JSON and text often arrive as blobs; a binary type stays out even when it decodes.
+        mime = str(mime or "").lower()
+        if not mime or mime.startswith("text/") or any(t in mime for t in _MCP_TEXT_BLOB_TYPES):
+            try:
+                return base64.b64decode(blob, validate = True).decode("utf-8")
+            except ValueError:
+                pass
+        return f"[binary {mime or 'content'}, not shown]"
+
+    if not resource["contents"]:
+        body = _shown(resource["text"], resource["blob"], resource["mime_type"])
+    else:
+        body = "\n\n".join(
+            f"[{item['uri']}]\n{_shown(item.get('text'), item.get('blob'), item.get('mimeType'))}"
+            for item in resource["contents"]
+        )
+    return body
 
 
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
@@ -14240,6 +14393,9 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 },
             }
         )
+    resources = _mcp_listed_resources(server)
+    if resources:
+        specs.append(_mcp_resource_spec(server, resources))
     return specs
 
 
@@ -14691,6 +14847,21 @@ def execute_tool(
                 and _image_still_approved(row)
             )
 
+        if tool_name == MCP_RESOURCE_TOOL and _mcp_listed_resources(server):
+            body = _mcp_read_resource(
+                server,
+                arguments,
+                url = url,
+                headers = headers,
+                timeout = effective_timeout,
+                use_oauth = use_oauth,
+                cancel_event = cancel_event,
+                scope = mcp_scope,
+                config_check = _config_current,
+                **oauth_client_kwargs(server),
+            )
+            # As for tool results: a marker anywhere in the text, errors included, would summon a widget.
+            return _fit_result_to_room(_drop_forged_ui_sentinels(body), name)
         result = call_tool_sync(
             url = url,
             headers = headers,

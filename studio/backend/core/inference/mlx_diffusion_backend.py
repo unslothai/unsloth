@@ -660,6 +660,7 @@ class MlxDiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         gpu_ids: Optional[list[int]] = None,
         gpu_ordinal: Optional[int] = None,
+        allow_oversized_load: bool = False,
         **_ignored: Any,
     ) -> dict[str, Any]:
         if isinstance(hf_token, str):
@@ -1281,9 +1282,9 @@ class MlxDiffusionBackend:
         conditioning["reference_resolutions"] = []
         conditioning["notes"] = []
         try:
-            negative = bool(self._rt().supports_guidance(state.model))
+            guided = bool(self._rt().supports_guidance(state.model))
         except Exception:  # noqa: BLE001
-            negative = False
+            guided = False
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -1317,7 +1318,11 @@ class MlxDiffusionBackend:
             },
             "supports_lora": False,
             "supports_controlnet": False,
-            "supports_negative_prompt": negative,
+            "supports_negative_prompt": guided,
+            # CFG, and with it the negative prompt, engages only above guidance 1 (cache_text_encodings, generate).
+            "negative_prompt_min_guidance": 1.0 if guided else None,
+            "supports_guidance": guided,
+            "supports_live_preview": False,
             "prompt_hint": state.family.prompt_hint,
             "workflows": ["txt2img"],
             "conditioning": conditioning,

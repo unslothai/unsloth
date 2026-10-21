@@ -295,6 +295,27 @@ def test_varlen_from_position_ids():
     assert packing_module._varlen_from_position_ids(None) is None
 
 
+def test_get_packed_info_infers_lengths_from_reset_position_ids():
+    cpu = torch.device("cpu")
+    lengths, cu_seqlens, max_seqlen = packing_module.get_packed_info_from_kwargs(
+        {}, cpu, torch.tensor([[0, 1, 2, 0, 1]])
+    )
+    assert lengths.tolist() == [3, 2]
+    assert cu_seqlens.tolist() == [0, 3, 5]
+    assert max_seqlen == 3
+    # Opt-in only, and ordinary or batched positions are not a pack.
+    assert packing_module.get_packed_info_from_kwargs({}, cpu) is None
+    assert packing_module.get_packed_info_from_kwargs({}, cpu, torch.arange(5)[None]) is None
+    assert (
+        packing_module.get_packed_info_from_kwargs({}, cpu, torch.tensor([[0, 1], [0, 1]])) is None
+    )
+    explicit = torch.tensor([4, 1], dtype = torch.int32)
+    lengths, _, _ = packing_module.get_packed_info_from_kwargs(
+        {"packed_seq_lengths": explicit}, cpu, torch.tensor([[0, 1, 2, 0, 1]])
+    )
+    assert lengths.tolist() == [4, 1]
+
+
 def test_seq_idx_from_cu_seqlens_handles_trailing_pad():
     cu = torch.tensor([0, 2, 5], dtype = torch.int32)
     boundaries, seq_idx = packing_module._seq_idx_from_cu_seqlens(cu, total = 8)
@@ -1821,6 +1842,44 @@ def test_enable_padding_free_metadata():
     batch = collator.torch_call(examples)
     assert torch.equal(batch["packed_seq_lengths"], torch.tensor([3, 2], dtype = torch.int32))
     assert trainer.args.remove_unused_columns is False
+
+
+# has_real_accelerator: the body falls back to xpu, so this covers XPU too.
+@pytest.mark.skipif(not has_real_accelerator(), reason = "builds a real model on an accelerator")
+def test_position_only_padding_free_keeps_samples_apart():
+    # TRL's padding-free DPO flattens chosen + rejected into one row with reset position_ids only.
+    device = torch.device("cuda" if torch.cuda.is_available() else "xpu")
+    try:
+        model, _ = FastLanguageModel.from_pretrained(
+            model_name = "hf-internal-testing/tiny-random-LlamaForCausalLM",
+            max_seq_length = 64,
+            load_in_4bit = False,
+            dtype = torch.float32,
+        )
+    except OSError as exc:  # pragma: no cover - offline CI
+        pytest.skip(f"Requires access to tiny llama checkpoint: {exc}")
+    model.to(device)
+    model.train()
+    first, second = 13, 9
+    ids = torch.randint(5, 900, (1, first + second), generator = torch.Generator().manual_seed(0))
+    ids = ids.to(device)
+    arange = lambda n: torch.arange(n, device = device)[None]
+
+    def hidden(input_ids, position_ids):
+        with torch.no_grad():
+            out = model.model(input_ids = input_ids, position_ids = position_ids, use_cache = False)
+        return out.last_hidden_state.float()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
+        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_XFORMERS", False))
+        packed = hidden(ids, torch.cat([arange(first), arange(second)], dim = 1))[0, first:]
+        alone = hidden(ids[:, first:], arange(second))[0]
+        crossed = hidden(ids, arange(first + second))[0, first:]
+    leak = (packed - alone).abs().max().item()
+    control = (crossed - alone).abs().max().item()
+    assert control > 0
+    assert leak <= 1e-3 * control
 
 
 # has_real_accelerator: the body falls back to xpu, so this covers XPU too.
