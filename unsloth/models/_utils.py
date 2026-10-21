@@ -3008,6 +3008,49 @@ def _st_weighted_subfolder_paths(
         return ()
 
 
+def _root_index_weight_subfolders(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    cache_dir = None,
+):
+    """Best-effort: which subfolders does the repo's root safetensors index map weights into? Returns them, or () for a root-only index, no index, and on any failure.
+
+    weights_at_root assumes a root index points at root shards, but an index may point anywhere in the repo: nvidia/Cosmos3-Nano and nvidia/Cosmos3-Edge keep config.json and model.safetensors.index.json at the root while every weight_map entry names a file under transformer/ or vision_encoder/. Pruning those made the download unsatisfiable, and unsloth_zoo's post-download gate then reported it as a network fault, the same shape as the sentence-transformers case above.
+
+    The index is tens of kilobytes (68 KB for Cosmos3-Edge, 113 KB for Cosmos3-Nano) and a sharded load reads it anyway,
+    so the warm fetches it once; a repo without one costs a single 404 lookup per load.
+    """
+    try:
+        import json as _json
+
+        from huggingface_hub import hf_hub_download
+
+        path = hf_hub_download(
+            model_name,
+            "model.safetensors.index.json",
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+        with open(path, "r", encoding = "utf-8") as f:
+            index = _json.load(f)
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(weight_map, dict):
+            return ()
+        folders = set()
+        for filename in weight_map.values():
+            if not isinstance(filename, str):
+                continue
+            filename = filename.strip().replace("\\", "/").strip("/")
+            if "/" in filename:
+                folders.add(filename.rsplit("/", 1)[0])
+        return tuple(sorted(folders))
+    except Exception:
+        return ()
+
+
 def _repo_has_weighted_st_subfolders(
     model_name,
     *,
@@ -3194,12 +3237,20 @@ def maybe_prefetch_hf_snapshot(
 
     # A sentence-transformers repo can hold weights at the root AND in declared module subfolders. Probed once and shared, since the subdir prune and the format prune both span "/" and would drop those weights.
     st_module_paths = ()
+    # A root safetensors index can map weights into subfolders (Cosmos3); those are read by a root load too.
+    index_subfolders = ()
     if (
         weights_at_root
         and not (tokenizer_only or adapter_only or gguf_file)
         and not (isinstance(subfolder, str) and subfolder.strip("/"))
     ):
         st_module_paths = _st_weighted_subfolder_paths(
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
+        )
+        index_subfolders = _root_index_weight_subfolders(
             model_name,
             token = token,
             revision = revision,
@@ -3252,8 +3303,8 @@ def maybe_prefetch_hf_snapshot(
         # subfolder=X: the load resolves every weight under X/, so warm that subfolder plus root aux.
         allow_patterns = [f"{subfolder.strip('/')}/*", *_ROOT_AUX_PREFETCH_PATTERNS]
     elif weights_at_root:
-        # A bare load reads only root weights, so drop subdir weights and keep subdir configs. Except a sentence-transformers model with a root weight AND weighted module subfolders, which the ST load also reads.
-        if not st_module_paths:
+        # A bare load reads only root weights, so drop subdir weights and keep subdir configs. Except a sentence-transformers model with a root weight AND weighted module subfolders, which the ST load also reads, and a root index whose weight_map points into subfolders, which the load reads through that index.
+        if not st_module_paths and not index_subfolders:
             ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
         if snapshot_download_with_xet_fallback is not None:
