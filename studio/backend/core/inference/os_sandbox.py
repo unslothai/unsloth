@@ -858,7 +858,7 @@ def linux_unavailable_remediation() -> str:
             else "install bubblewrap with your distribution's package manager"
         )
         return (
-            f"bubblewrap (bwrap) is not installed. To isolate tool calls, {how}; Studio picks "
+            f"bubblewrap (bwrap) is not installed. To isolate tool calls, {how}; Unsloth picks "
             f"it up within a minute, no restart needed. {_FALLBACK_NOTE}"
         )
     if _linux_userns_blocked_by_apparmor():
@@ -936,7 +936,7 @@ def capability_snapshot(
         backend = sandbox_macos
     else:
         return _unavailable(
-            "OS isolation for Studio tools is available on Linux and macOS only.",
+            "OS isolation for Unsloth tools is available on Linux and macOS only.",
             f"No sandbox backend exists for this platform. {_FALLBACK_NOTE}",
             identity,
         )

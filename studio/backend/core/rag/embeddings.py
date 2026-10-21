@@ -451,7 +451,7 @@ def _refuse_custom_module(
     ):
         raise ValueError(
             f"The model {model_name_or_path} references the module class {class_ref!r}, which is not "
-            "part of Sentence Transformers. Importing it executes third-party code, so Studio refuses "
+            "part of Sentence Transformers. Importing it executes third-party code, so Unsloth refuses "
             "to load it as an embedding model."
         )
 

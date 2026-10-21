@@ -1316,7 +1316,7 @@ def _resolve_companion(
     found = resolve(companion.id, companion.variant, hf_token, network = network)
     if found is None:
         name = companion.id.rsplit("/", 1)[-1]
-        raise RuntimeError(f"{model.display_name} needs {name}, which Studio could not find.")
+        raise RuntimeError(f"{model.display_name} needs {name}, which Unsloth could not find.")
     return found
 
 
