@@ -36,6 +36,10 @@ def _from_diffusers(module: str, name: str):
 def _env(monkeypatch):
     monkeypatch.delenv(mg.MULTIGPU_ENV, raising = False)
     monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
+    # Keep make_selection's real-host filters from collapsing fake [0, 1] selections on a one-GPU host.
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
+    monkeypatch.setattr(mg, "_capability", lambda o: None)
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: False)
     yield
 
 
@@ -1012,6 +1016,18 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
     assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
 
 
+def test_bitwise_equal_on_an_expanded_scalar():
+    t = torch.tensor(941).expand(1)
+    assert t.stride() == (0,)
+    assert mg._bitwise_equal(t, t.clone())
+    assert mg._bitwise_equal(t, torch.tensor(941).expand(1))
+    assert not mg._bitwise_equal(t, torch.tensor([942]))
+    assert mg._bitwise_equal(torch.tensor(float("nan")).expand(1), torch.tensor([float("nan")]))
+    assert not mg._bitwise_equal(torch.tensor(-0.0).expand(1), torch.tensor([0.0]))
+    assert mg._unchanged_since_launch([(t, t.clone())])
+    assert not mg._unchanged_since_launch([(torch.tensor(942).expand(1), t.clone())])
+
+
 def test_bitwise_equal_distinguishes_signed_zero():
     assert mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([0.0]))
     assert mg._bitwise_equal(torch.tensor(0.5), torch.tensor(1.0) / 2)
@@ -1243,7 +1259,7 @@ def _plain_state_pre_hook(module, args, kwargs):
 def test_foreign_root_hook_declines_the_replica():
     dit = _FlagDit()
     dit.register_forward_pre_hook(_plain_state_pre_hook, with_kwargs = True)
-    assert "a hook outside Studio" in mg._hooks_present(dit)
+    assert "a hook outside Unsloth" in mg._hooks_present(dit)
     router, replicas = _router(dit)
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert replicas == [] and router.stats["replica_calls"] == 0
@@ -1823,6 +1839,22 @@ def test_a_card_torch_cannot_address_is_not_a_secondary(monkeypatch):
     assert mg.make_selection(0, [0, 1]) is None
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     assert mg.make_selection(0, [0, 1]) == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+
+
+def test_two_discrete_rocm_cards_split_like_cuda(monkeypatch):
+    """2x 7900 XTX / MI300: a HIP torch with two addressable discrete cards plans the same split CUDA does."""
+    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(mg, "_capability", lambda o: (11, 0))  # gfx1100, as ROCm reports it
+    monkeypatch.setattr(mg, "_rocm_torch", lambda: True)
+    monkeypatch.setattr(mg, "_rocm_bf16", lambda o: True)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
+    selection = mg.make_selection(0, [0, 1])
+    assert selection == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    with mg.selection_scope(selection):
+        plan = _plan()
+    assert plan.offload_policy == dm.OFFLOAD_NONE and plan.secondary_ordinal == 1
 
 
 def test_refinement_keeps_an_explicit_cpu_offload(monkeypatch):

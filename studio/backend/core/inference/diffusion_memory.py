@@ -621,6 +621,7 @@ class MemoryPlan:
     # The single-card plan a split replaced, applied on the primary if the split placement fails (a torchao denoiser
     # cannot take the whole-module offload a blind fallback would choose).
     fallback_plan: Optional["MemoryPlan"] = field(default = None, compare = False, repr = False)
+    layer_split: Optional[Any] = None
 
     @property
     def engages_offload(self) -> bool:
@@ -642,6 +643,11 @@ class MemoryPlan:
             "secondary_ordinal": self.secondary_ordinal,
             "secondary_components": (
                 list(self.secondary_components) if self.secondary_components is not None else None
+            ),
+            **(
+                {"layer_split": self.layer_split.as_public_dict()}
+                if self.layer_split is not None
+                else {}
             ),
         }
 
@@ -1164,6 +1170,7 @@ def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
     free, #7072); unknown readings answer False."""
     if (
         memory.memory_kind != "unified_memory"
+        or str(getattr(memory, "device", None) or "").split(":")[0] != "cuda"
         or not sys.platform.startswith("linux")
         or memory.free_mib is None
     ):
@@ -1839,7 +1846,7 @@ def _unified_memory_shortfall_text(plan: Any, family: Optional[str]) -> Optional
         f"choose Load anyway, or turn on '{UNIFIED_OVERSIZE_SETTING_LABEL}' in "
         f"{UNIFIED_OVERSIZE_SETTING_LOCATION} (API callers can send {UNIFIED_OVERSIZE_REQUEST_FIELD}; "
         f"server installs can set {UNIFIED_OVERSIZE_ENV}=1). An oversized load can exhaust memory, "
-        "swap heavily, stop Studio or make the computer unresponsive."
+        "swap heavily, stop Unsloth or make the computer unresponsive."
     )
 
 
@@ -3404,11 +3411,13 @@ def release_resident_groups(
     logger: Any = None,
     denoisers_only: bool = False,
     reason: str = "an oversized request",
+    device: Any = None,
 ) -> Optional[Callable[[], None]]:
     """Stream resident offload groups again until ``need_mib`` is freed (text encoders first, then the denoiser's
     blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
     A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
-    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them)."""
+    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them).
+    ``device``: only modules resident on that card."""
     released: list = []
     streamed: set = set()
 
@@ -3443,6 +3452,13 @@ def release_resident_groups(
             if getattr(m, "_unsloth_resident_room", None)
             and not (denoisers_only and _is_text_encoder_module(pipe, m))
         ]
+        if device is not None:
+            from .diffusion_vae_oom import _same_card
+            modules = [
+                m
+                for m in modules
+                if _same_card(getattr(m, "_unsloth_resident_device", None) or device, device)
+            ]
         if not modules or int(need_mib) <= 0:
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
@@ -3503,6 +3519,12 @@ def resident_group_mib(pipe: Any) -> int:
     return total >> 20
 
 
+def _any_layer_split(pipe: Any) -> bool:
+    from .diffusion_layer_split import is_layer_split
+    from .diffusion_multigpu import DENOISER_ATTRS
+    return any(is_layer_split(getattr(pipe, name, None)) for name in DENOISER_ATTRS)
+
+
 def hook_resident_denoiser(
     pipe: Any,
     device: Any,
@@ -3520,6 +3542,7 @@ def hook_resident_denoiser(
         transformer is None
         or _offload_groups(transformer)
         or not _pipe_denoisers_hold_torchao(pipe)
+        or _any_layer_split(pipe)
     ):
         return False
     import torch
@@ -3966,11 +3989,21 @@ def apply_memory_plan(
                 )
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
-    elif getattr(plan, "secondary_ordinal", None) is not None:
-        from .diffusion_multigpu import apply_split_plan
-        if not apply_split_plan(pipe, plan, placement = placement, logger = logger):
+    elif (
+        getattr(plan, "secondary_ordinal", None) is not None
+        or getattr(plan, "layer_split", None) is not None
+    ):
+        if getattr(plan, "layer_split", None) is not None:
+            from .diffusion_layer_split_plan import apply_layer_split_plan as _apply_split
+        else:
+            from .diffusion_multigpu import apply_split_plan as _apply_split
+        if not _apply_split(pipe, plan, placement = placement, logger = logger):
             fallback = getattr(plan, "fallback_plan", None)
-            if fallback is not None and getattr(fallback, "secondary_ordinal", None) is None:
+            if (
+                fallback is not None
+                and getattr(fallback, "secondary_ordinal", None) is None
+                and getattr(fallback, "layer_split", None) is None
+            ):
                 # the policy one card would have used (group offload keeps a torchao denoiser loadable)
                 result = apply_memory_plan(
                     pipe, fallback, device = device, placement_device = placement_device, logger = logger
@@ -3991,6 +4024,7 @@ def apply_memory_plan(
                     secondary_ordinal = None,
                     secondary_components = None,
                     fallback_plan = None,
+                    layer_split = None,
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -5023,6 +5057,11 @@ def _apply_group_offload(
         return False
     if not stream_transformer and not stream_text_encoders:
         return False
+    if _any_layer_split(pipe):
+        from .diffusion_layer_split_plan import undo_layer_split
+        undo_layer_split(pipe)
+        if logger is not None:
+            logger.info("diffusion.memory: removed the layer split before applying group offload")
     installed = 0
     # every component's torch forward hooks before this call: an OOM after hooks exist unwinds to this state
     hook_snapshots: list = []
@@ -5245,6 +5284,62 @@ def _apply_group_offload(
                 exc,
             )
         return False
+
+
+def stream_text_encoders_onto(
+    pipe: Any,
+    device: Any,
+    logger: Any = None,
+) -> list[str]:
+    """Leaf-level group offload of every ``text_encoder*`` onto ``device`` and nothing else: the denoisers and the other
+    components are not touched (a layer split places them; ``_apply_group_offload`` would move every unstreamed
+    component onto one card). A text encoder runs once, before step 0, so it pages in for that encode. Returns the
+    streamed names; raises (with this call's hooks removed) when an encoder refuses, and the caller falls back."""
+    import inspect
+
+    import torch
+    from diffusers.hooks import apply_group_offloading
+
+    install_group_offload_buffer_restore()
+    install_group_offload_hooks_eager()
+    onload = torch.device(device)
+    use_stream = onload.type == "cuda"
+    kwargs: dict[str, Any] = {
+        "onload_device": onload,
+        "offload_device": torch.device("cpu"),
+        "offload_type": "leaf_level",
+        "use_stream": use_stream,
+    }
+    params = inspect.signature(apply_group_offloading).parameters
+    if use_stream:
+        if "non_blocking" in params:
+            kwargs["non_blocking"] = True
+        if "record_stream" in params:
+            kwargs["record_stream"] = True
+    encoders = {
+        str(n): m
+        for n, m in (getattr(pipe, "components", {}) or {}).items()
+        if str(n).startswith("text_encoder") and isinstance(m, torch.nn.Module)
+    }
+    if "low_cpu_mem_usage" in params:
+        pin = _streamed_pin_plan(0, sum(_module_host_mib(m) for m in encoders.values()), logger)
+        kwargs["low_cpu_mem_usage"] = not pin[1]
+    done: list[str] = []
+    try:
+        for name, module in encoders.items():
+            module.to("cpu")
+            done.append(name)
+            apply_group_offloading(module, **kwargs)
+            _pin_vision_embedding_device(module)
+    except Exception:
+        for name in done:
+            _remove_group_offload_hooks(encoders[name])
+        raise
+    if logger is not None and done:
+        logger.info(
+            "diffusion.memory: streaming %s onto %s for the encode", ", ".join(done), onload
+        )
+    return done
 
 
 # Generate-time activation guard. The load-time plan cannot know the output resolution: a model is loaded once and

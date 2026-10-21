@@ -3494,6 +3494,7 @@ class FastBaseModel:
             gptq_trainable_quantization_config,
             quantization_config_selects_bnb_4bit,
             sync_unsloth_model_name_bnb_flags,
+            gpt_oss_keeps_checkpoint_quantization,
         )
         from .fp8_to_nf4 import fp8_to_nf4_planner_quantization_config
 
@@ -3538,7 +3539,19 @@ class FastBaseModel:
             keep_task_heads_unquantized(auto_config, auto_model, model_class)
         pop_modelopt_key_mapping(auto_config, kwargs, model_class)
         # Correct UNSLOTH_MODEL_NAME's bnb tokens now the effective bnb state is known (the per-load env was built before remap/disable). gpt-oss only.
-        sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
+        sync_unsloth_model_name_bnb_flags(
+            load_in_4bit,
+            load_in_8bit,
+            config = auto_config,
+            model_name = model_name,
+            token = token,
+            revision = _revision,
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            local_files_only = local_files_only,
+            variant = kwargs.get("variant"),
+            use_safetensors = kwargs.get("use_safetensors"),
+        )
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(
@@ -3784,7 +3797,7 @@ class FastBaseModel:
         # Cannot be None, since HF now checks for the config.
         if load_in_4bit or load_in_8bit:
             # Ignore load_in_4bit / load_in_8bit for MXFP4; better to get the config file.
-            if "gpt-oss-20b" in model_name.lower() or "gpt-oss-120b" in model_name.lower():
+            if gpt_oss_keeps_checkpoint_quantization(model_name, auto_config, load_in_4bit):
                 pass
             else:
                 if user_quantization_config is None:
@@ -4616,6 +4629,8 @@ class FastBaseModel:
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
             _unsloth_install_pretrain_detector(model)
+            # checkpoint_skip_layers / UNSLOTH_GC_KEEP_LAYERS apply to full finetuning too.
+            skip_checkpointing(model, checkpoint_skip_layers)
             return model
         transformers_set_seed(random_state)
 
@@ -5118,6 +5133,8 @@ class FastBaseModel:
                     return _orig_checkpoint(function, *args, **kwargs)
 
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
+            # Already offloads through _offload_activation_hooks: transformers' offload=True would nest it.
+            _nonre_checkpoint._unsloth_offloads = _offload
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
         else:

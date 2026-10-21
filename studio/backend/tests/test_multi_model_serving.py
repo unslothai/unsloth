@@ -438,6 +438,30 @@ def test_a_short_fit_evicts_the_least_recently_used_slot_and_names_it(backends, 
     assert model_slots.slots[-1].request.model_path == "org/C-GGUF"
 
 
+def test_a_load_cancelled_after_a_short_fit_evicts_nothing(backends, monkeypatch):
+    _, extra = backends
+    extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0"), 5.0
+    older = _slot("org/D-GGUF", "Q4_K_M", last_used = 1.0)
+    model_slots.slots.append(older)
+    cancel = threading.Event()
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    short = inf._run_tracked_load_model_impl
+
+    async def load(request, *args, **kwargs):
+        cancel.set()  # the API request is cancelled while the first attempt reports its shortfall
+        return await short(request, *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inf.load_model_gated(
+                request, None, "s", background = True, impl_kwargs = {"load_cancel_event": cancel}
+            )
+        )
+    assert exc.value.status_code == 409 and older in model_slots.slots and older.llama.is_active
+
+
 def test_eviction_takes_as_many_lru_slots_as_the_shortfall_needs(backends, monkeypatch):
     _, extra = backends
     extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0"), 3.0
@@ -1454,6 +1478,69 @@ def test_the_replace_fallback_refuses_while_the_active_model_generates(backends,
     assert excinfo.value.status_code == 409 and seen[0]["cancel"] is False
     assert primary.model_identifier == "org/A-GGUF" and primary.is_loaded
     assert model_slots.slots == []
+
+
+def test_an_automatic_replace_fallback_waits_for_the_active_chats(backends, monkeypatch):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+
+    def refuse(**_kw):
+        raise AssertionError("an automatic switch refused instead of waiting")
+
+    waited = []
+
+    async def wait(**kw):
+        waited.append(primary.model_identifier)
+
+    monkeypatch.setattr(inf, "_raise_or_cancel_active_generations", refuse)
+    monkeypatch.setattr(inf, "_wait_for_model_switch_idle", wait)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    assert asyncio.run(inf.load_model_gated(request, None, "s", background = True)) == "loaded"
+    assert waited == ["org/A-GGUF"] and primary.model_identifier == "org/C-GGUF"
+
+
+def test_an_automatic_replace_fallback_rechecks_the_sidecar_after_the_drain(backends, monkeypatch):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    installing = []
+
+    def sidecar():
+        if installing:
+            raise HTTPException(status_code = 409, detail = "installing")
+
+    async def wait(**kw):
+        installing.append(True)  # a transformers install claims its window meanwhile
+
+    monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", sidecar)
+    monkeypatch.setattr(inf, "_wait_for_model_switch_idle", wait)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inf.load_model_gated(request, None, "s", background = True))
+    assert exc.value.status_code == 409 and primary.model_identifier == "org/A-GGUF"
+
+
+def test_an_automatic_replace_fallback_cancelled_during_the_drain_keeps_the_active_model(
+    backends, monkeypatch
+):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    cancel = threading.Event()
+
+    async def wait(**kw):
+        cancel.set()  # the API request is cancelled while running chats drain
+
+    monkeypatch.setattr(inf, "_wait_for_model_switch_idle", wait)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inf.load_model_gated(
+                request, None, "s", background = True, impl_kwargs = {"load_cancel_event": cancel}
+            )
+        )
+    assert exc.value.status_code == 409 and primary.model_identifier == "org/A-GGUF"
 
 
 def test_training_stops_on_a_kept_model_that_would_not_unload(backends, monkeypatch):

@@ -6,8 +6,8 @@ one image in every fresh server there.
 
 A few of their norm reductions get several configs that sum in different orders, and a cold-cache server benchmarks
 them in its own process on near-equal timings: fresh servers rendered 2-4 variants per seed on an RTX PRO 6000, A100
-and L4. B200 servers were deterministic for FLUX.1 and Qwen-Image but not Z-Image (also pinned there), so the opt-in is
-per (family, compute capability)."""
+and L4. B200 servers were deterministic for FLUX.1 but not Qwen-Image or Z-Image, so the opt-in is per (family,
+compute capability)."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ from core.inference import diffusion_speed as ds  # noqa: E402
 _SM120 = (12, 0)
 _MEASURED_ARCHS = ((8, 0), (8, 9), (12, 0))
 _IMAGE_FAMILIES = ("flux.1", "z-image", "qwen-image", "flux.1-kontext", "qwen-image-edit")
-_B200 = (10, 0)
-_ALSO_ON_B200 = ("z-image",)
+_QWEN_FAMILIES = ("qwen-image", "qwen-image-edit", "qwen-image-layered")
+_B200_PINNED = (*_QWEN_FAMILIES, "z-image")
 
 
 def _family(name):
@@ -67,21 +67,31 @@ def test_image_family_opts_in_on_the_measured_archs(monkeypatch, name, cap):
 
 def test_the_race_families_share_one_arch_list():
     from core.inference import diffusion_families
+
     for name in _IMAGE_FAMILIES:
-        extra = (_B200,) if name in _ALSO_ON_B200 else ()
-        assert (
-            _family(name).filter_reduction_configs_archs
-            == diffusion_families._REDUCTION_RACE_ARCHS + extra
+        expected = (
+            diffusion_families._QWEN_REDUCTION_RACE_ARCHS
+            if name in _B200_PINNED
+            else diffusion_families._REDUCTION_RACE_ARCHS
         )
+        assert tuple(_family(name).filter_reduction_configs_archs) == tuple(expected)
     assert set(diffusion_families._REDUCTION_RACE_ARCHS) == set(_MEASURED_ARCHS)
+    assert set(diffusion_families._QWEN_REDUCTION_RACE_ARCHS) == {*_MEASURED_ARCHS, (10, 0)}
+
+
+@pytest.mark.parametrize("name", _B200_PINNED)
+def test_qwen_image_also_pins_on_b200(monkeypatch, name):
+    _on(monkeypatch, (10, 0))
+    fam = _family(name)
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
 
 
 @pytest.mark.parametrize("cap", [(10, 0), (10, 3), (9, 0), (7, 5), (12, 1), None])
 @pytest.mark.parametrize("name", _IMAGE_FAMILIES)
 def test_image_family_keeps_inductor_pick_elsewhere(monkeypatch, name, cap):
-    # B200 (measured deterministic except Z-Image), B300, H100, T4, other Blackwell parts (unmeasured), no CUDA / ROCm.
-    if cap == _B200 and name in _ALSO_ON_B200:
-        pytest.skip("pinned on B200")
+    if cap == (10, 0) and name in _B200_PINNED:
+        pytest.skip("Qwen-Image and Z-Image pin on B200 (test_qwen_image_also_pins_on_b200)")
     _on(monkeypatch, cap)
     fam = _family(name)
     assert cc.family_filters_reductions(fam) is False

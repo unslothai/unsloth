@@ -121,6 +121,41 @@ def test_the_saved_provider_target_and_key_are_one_snapshot(monkeypatch):
     assert state["key"] == "new-secret"
 
 
+def test_a_model_the_owner_disabled_while_the_request_waited_is_refused(monkeypatch):
+    rows = [
+        {
+            "id": "saved-1",
+            "provider_type": "openai",
+            "display_name": "Shared",
+            "base_url": "https://owner.example/v1",
+            "is_enabled": True,
+            "shared_by_owner": True,
+            "models": models,
+        }
+        for models in (["kept", "dropped"], ["kept"])
+    ]
+    observed = []
+
+    def _get_provider(_provider_id):
+        return dict(rows.pop(0) if len(rows) > 1 else rows[0])
+
+    def _resolve_key(*_args, **_kwargs):
+        observed.append("key")
+        return "owner-secret"
+
+    monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
+    monkeypatch.setattr(inference_routes, "resolve_provider_api_key_or_400", _resolve_key)
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_routes._proxy_to_external_provider(
+                _payload(external_model = "dropped"), _request(), current_subject = "t"
+            )
+        )
+    assert excinfo.value.status_code == 403
+    assert observed == []
+
+
 @pytest.mark.parametrize(
     "handler",
     [

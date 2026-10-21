@@ -28,6 +28,7 @@ from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
 from storage.studio_db import connect_studio_db
 from utils.paths import storage_roots
+from utils.paths.path_utils import normalize_path
 from utils.paths.storage_roots import project_workspaces_root, studio_db_path, workspace_root
 
 from utils.account_context import (
@@ -788,7 +789,7 @@ def _write_grant(path: Path, key: str) -> None:
         )
 
 
-MODEL_NOT_ALLOWED = "This model is not enabled for your account. Ask the Studio owner to allow it."
+MODEL_NOT_ALLOWED = "This model is not enabled for your account. Ask the Unsloth owner to allow it."
 
 _allowlists: dict[str, tuple[int, tuple[str, ...] | None]] = {}
 _allowlists_lock = threading.Lock()
@@ -823,6 +824,39 @@ def model_allowed(repo_id: str) -> bool:
         return True
     repo_id = repo_id.strip().lower()
     return any(fnmatchcase(repo_id, pattern) for pattern in allowlist)
+
+
+def connection_model_allowed(model_id: str) -> bool:
+    allowlist = model_allowlist()
+    if allowlist is None:
+        return True
+    model_id = (model_id or "").strip().lower()
+    untagged = model_id.split(":", 1)[0]
+    # OpenRouter's "latest" aliases carry a leading "~", which an allowlist entry cannot.
+    candidates = {model_id, untagged, untagged.lstrip("~")}
+    return any(fnmatchcase(candidate, pattern) for candidate in candidates for pattern in allowlist)
+
+
+def shared_connection_view(row: dict) -> dict | None:
+    view = {**row, "shared": True, "shared_by_owner": True}
+    models = row.get("models") or []
+    if not models:
+        from core.inference.providers import get_provider_info
+        models = list(
+            (get_provider_info(row.get("provider_type") or "") or {}).get("default_models") or []
+        )
+    view["models"] = [model for model in models if connection_model_allowed(model)]
+    view["available_models"] = [
+        model for model in row.get("available_models") or [] if model in view["models"]
+    ]
+    return view if view["models"] else None
+
+
+def require_connection_model_allowed(config: dict | None, model) -> None:
+    if not config or not config.get("shared_by_owner"):
+        return
+    if not isinstance(model, str) or model not in (config.get("models") or []):
+        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
 
 
 def _reference_repo_id(reference: str) -> str | None:
@@ -878,6 +912,16 @@ def model_visible(
     if not isinstance(reference, str) or not reference:
         return False
     reference = reference.strip()
+    normalized = normalize_path(reference)
+    if normalized != reference:
+        # Loaders open the forward-slash spelling, so both must be visible.
+        return _model_visible(reference, grants, repo_type, offline) and _model_visible(
+            normalized, grants, repo_type, offline
+        )
+    return _model_visible(reference, grants, repo_type, offline)
+
+
+def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> bool:
     access_options = {"offline": True} if offline else {}
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
@@ -925,9 +969,12 @@ def require_model_allowed(reference) -> None:
     """The allowlist alone, for routes that fetch a Hub model without the visibility gate."""
     if not isinstance(reference, str) or model_allowlist() is None:
         return
-    repo_id = _reference_repo_id(reference.strip())
-    if repo_id is not None and not model_allowed(repo_id):
-        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
+    reference = reference.strip()
+    # Loaders open the forward-slash spelling, so both must be allowed.
+    for spelling in dict.fromkeys((reference, normalize_path(reference))):
+        repo_id = _reference_repo_id(spelling)
+        if repo_id is not None and not model_allowed(repo_id):
+            raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
 
 
 def _row_reference(row):
@@ -956,6 +1003,10 @@ def private_directory(path: str, folder: str) -> str:
         return path
     from utils.paths.storage_roots import studio_root
 
+    normalized = normalize_path(path)
+    if normalized != path:
+        # Scanners open the forward-slash spelling, so it must be the account's own too.
+        private_directory(normalized, folder)
     legacy = studio_root() / folder
     target = workspace_root() / folder if Path(path).resolve() == legacy.resolve() else Path(path)
     # The project workspace counts as the account's own, matching within_account().

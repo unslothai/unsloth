@@ -82,6 +82,8 @@ _DSH_PACKAGE = "@deepseek-ai/dsh"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
 _DSH_YOLO_PERMISSION_MODE = "danger-full-access"
+# dsh's pi-ai provider sends max_tokens = contextWindow - its prompt estimate - 4,096 (pi-ai CONTEXT_SAFETY_TOKENS), floored at 1, and dsh's own instructions and tools are about 6,500 tokens: at 8,192 every reply is cut after one token (#14315).
+_DSH_MIN_CONTEXT = 16384
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -4730,7 +4732,7 @@ def _connect(
                 key = _agent_api_key(base, None, minted_only = True)
             if key not in _cached_keys(_key_cache_path(), base, "minted"):
                 typer.echo(
-                    "Warning: Studio only sends a Connection's saved API key for the key "
+                    "Warning: Unsloth Studio only sends a Connection's saved API key for the key "
                     "`unsloth start` issues, so drop --api-key / UNSLOTH_API_KEY unless this "
                     "Connection needs no key.",
                     err = True,
@@ -5222,7 +5224,7 @@ def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
         return {}
     if not window:
         typer.echo(
-            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            "Warning: Unsloth Studio did not report the model's context length, so --max-tokens is ignored.",
             err = True,
         )
         return {}
@@ -7576,6 +7578,16 @@ def dsh(
         launch = launch,
         server_options = server_options,
     )
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if window and int(window) < _DSH_MIN_CONTEXT:
+        typer.echo(
+            f"Warning: {entry['id']} is loaded with {int(window):,} tokens of context, too few "
+            "for DeepSeek Harness: its instructions and tools take about 6,500 and it keeps "
+            "4,096 in reserve, so replies are cut short (at 8,192, after a single token). "
+            f"Load it with --max-seq-length {_DSH_MIN_CONTEXT} or more (a smaller quant if "
+            "that does not fit in memory) and re-run unsloth start dsh.",
+            err = True,
+        )
     with _session_config("dsh", launch, persist = persist) as home:
         patch = home / _DSH_PATCH_FILE
         write_dsh_patch(base, entry, patch, server_options.request_body())
