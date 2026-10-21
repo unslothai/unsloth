@@ -9,7 +9,7 @@ import {
   chatLocalModelOptions,
   isExternalModelId,
   readLastLocalModelLoad,
-  useChatModelRuntime,
+  type useChatModelRuntime,
   useChatRuntimeStore,
   wantsDownloadManagerStaging,
 } from "@/features/chat";
@@ -37,6 +37,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
   type ReactElement,
+  type ReactNode,
   type SetStateAction,
   useCallback,
   useEffect,
@@ -207,15 +208,23 @@ function toModelOptions(
 }
 
 export function ApiModelLoadControls({
+  runtime,
   activeModel,
+  residencyKey,
   onSettled,
   onUnloadActive,
   unloading,
   configRequest = null,
   onConfigRequestAdopted,
   onOpenSettings,
+  onEjectAll,
+  children,
 }: {
+  runtime: ReturnType<typeof useChatModelRuntime>;
   activeModel: string | null | undefined;
+  // Changes on every load or unload the monitor records, which can leave active_model unchanged
+  // (a kept model unloaded, a second one loaded alongside).
+  residencyKey: string;
   onSettled: () => void;
   onUnloadActive: () => void;
   // The page's unload rereads the resident on its second pass, so a load started meanwhile would be unloaded.
@@ -223,9 +232,11 @@ export function ApiModelLoadControls({
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
   onOpenSettings?: () => void;
+  onEjectAll?: () => void;
+  children?: ReactNode;
 }): ReactElement {
-  const { selectModel, loadNpuModel, refresh, ejectModel } =
-    useChatModelRuntime();
+  const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;
+  const loadedCount = useChatRuntimeStore((s) => s.loadedModels.length);
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -273,6 +284,7 @@ export function ApiModelLoadControls({
 
   // An API auto-switch changes the resident model behind Chat's store; this page's own loads
   // reconcile themselves.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: residencyKey is the trigger, not an input
   useEffect(() => {
     if (activeModel === undefined) {
       return;
@@ -281,7 +293,7 @@ export function ApiModelLoadControls({
     if (!useChatRuntimeStore.getState().modelLoading) {
       refresh({ includeLoras: false });
     }
-  }, [activeModel, refresh, refreshLastLoadLabel]);
+  }, [activeModel, residencyKey, refresh, refreshLastLoadLabel]);
 
   const models = useMemo(
     () => toModelOptions(modelsFromStore),
@@ -443,6 +455,8 @@ export function ApiModelLoadControls({
         }}
         // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
         onEject={busy ? undefined : handleEject}
+        onEjectAll={busy || !onEjectAll ? undefined : onEjectAll}
+        loadedCount={loadedCount}
         onFoldersChange={() => {
           refreshLocalModels();
         }}
@@ -469,39 +483,40 @@ export function ApiModelLoadControls({
         <Button
           type="button"
           variant="outline"
-          size="sm"
+          size="icon"
+          aria-label="Run settings"
           aria-haspopup="dialog"
           onClick={onOpenSettings}
           disabled={busy || reloading || !onOpenSettings}
-          className="h-9 gap-1.5 rounded-full"
+          className="rounded-full"
         >
           <HugeiconsIcon
             icon={Settings02Icon}
             strokeWidth={1.75}
             className="size-4"
           />
-          Run settings
         </Button>
       </ToolbarTooltip>
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
         <Button
           type="button"
           variant="outline"
-          size="sm"
+          size="icon"
+          aria-label={reloading ? "Reloading" : "Reload"}
           onClick={() => {
             handleReload();
           }}
           disabled={reloadDisabled}
-          className="h-9 gap-1.5 rounded-full"
+          className="rounded-full"
         >
           <HugeiconsIcon
             icon={ReloadIcon}
             strokeWidth={1.75}
             className={cn("size-4", reloading && "animate-spin")}
           />
-          {reloading ? "Reloading" : "Reload"}
         </Button>
       </ToolbarTooltip>
+      {children}
       {actionError ? (
         <span
           role="alert"

@@ -483,6 +483,18 @@ function ModelSelectorContent({
   >(null);
   const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
 
+  // Cleared during render, as a config request is adopted below: from an effect, a close and
+  // reopen inside the exit animation (a Run settings button clicked with the list open) dropped
+  // the adopted target and showed the list.
+  const [renderedOpen, setRenderedOpen] = useState(open);
+  if (renderedOpen !== open) {
+    setRenderedOpen(open);
+    if (!open) {
+      setConfigTarget(null);
+      setConfigFocus(null);
+    }
+  }
+
   // The picker remounts on each open but this section state does not, so re-derive the default
   // section on the open edge.
   const wasOpen = useRef(open);
@@ -493,10 +505,6 @@ function ModelSelectorContent({
           ? "connected"
           : defaultHubSection(hasAdditionalOnDeviceModels),
       );
-    }
-    if (!open && wasOpen.current) {
-      setConfigTarget(null);
-      setConfigFocus(null);
     }
     wasOpen.current = open;
   }, [open, wantsConnectedDefault, hasAdditionalOnDeviceModels]);

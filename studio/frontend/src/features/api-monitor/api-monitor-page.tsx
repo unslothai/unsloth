@@ -8,15 +8,21 @@ import { apiMonitorTourSteps } from "./tour";
 // Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
-import { SegmentedControl } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { getInferenceStatus, unloadModel } from "@/features/chat/api/chat-api";
 import { resolveInferenceCheckpointId } from "@/features/chat/lib/apply-inference-status-to-store";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import type { ApiMonitorEntry } from "@/features/chat";
+import { type ApiMonitorEntry, useChatModelRuntime } from "@/features/chat";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
@@ -24,6 +30,7 @@ import {
   type ModelConfigHandoffRequest,
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
+import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import {
   lanApiUrls,
   loadLanAccess,
@@ -70,9 +77,13 @@ import {
   runSettingsRequest,
   slotsSettingsRequest,
 } from "./slots-settings-request";
-import { useResidentRunTarget } from "./use-resident-run-target";
+import {
+  monitorSelection,
+  useResidentRunTarget,
+} from "./use-resident-run-target";
 import {
   type MonitorStatusFilter,
+  computeStats,
   filterEntries,
   useApiMonitor,
 } from "./use-api-monitor";
@@ -81,6 +92,8 @@ const API_INFERENCE_PREFIX_RE = /^\/api\/inference/;
 const V1_PREFIX_RE = /^\/v1\//;
 // Bounded because the usual failure is an entry aged out of the ring buffer.
 const DETAIL_FETCH_ATTEMPTS = 3;
+
+const ALL_MODELS = "__all__";
 
 const STATUS_FILTERS: { value: MonitorStatusFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -101,6 +114,16 @@ const SERVER_STATUS: Record<
 
 const PANE_HEIGHT =
   "max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(260px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto";
+
+// Tinted in light so a panel is not a white box on a white page; borderless in dark, where the
+// tone step over the page is the edge (as Settings does).
+const SURFACE_FILL =
+  "bg-[color-mix(in_oklab,var(--muted)_45%,var(--background))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
+const SURFACE = `rounded-xl border border-border/60 dark:border-transparent ${SURFACE_FILL}`;
+// A page-colored seam in dark mode instead of a lighter rule.
+const DIVIDER = "border-border/60 dark:border-background";
+const INSET =
+  "bg-background dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
 function formatTime(value: number): string {
   return new Date(value * 1000).toLocaleTimeString([], {
@@ -182,6 +205,35 @@ function statusTextClass(status: ApiMonitorEntry["status"]): string {
   }
 }
 
+type ServedModel = {
+  /** What a client sends as `model`, quant pinned as the monitor and /v1/models spell it. */
+  name: string;
+  /** What /unload names: a local model's path, else the id. */
+  checkpoint: string;
+  /** The primary server's model, the one the monitor's context and slots describe. */
+  active: boolean;
+};
+
+// Chat's runtime lists every model answering requests; the monitor names only the primary.
+function servedModels(
+  loaded: { id: string; quant?: string | null; checkpoint?: string }[],
+  activeModel: string | null,
+): ServedModel[] {
+  const activeId = monitorSelection(activeModel).id;
+  const rows = loaded.map((model) => ({
+    name:
+      model.quant && !model.id.includes(":")
+        ? `${model.id}:${model.quant}`
+        : model.id,
+    checkpoint: model.checkpoint ?? model.id,
+    active: Boolean(activeId) && modelIdsMatch(model.id, activeId),
+  }));
+  if (activeModel && !rows.some((row) => row.active)) {
+    rows.unshift({ name: activeModel, checkpoint: activeModel, active: true });
+  }
+  return rows.sort((a, b) => Number(b.active) - Number(a.active));
+}
+
 function openApiSettings(): void {
   useSettingsDialogStore.getState().openDialog("api-keys");
 }
@@ -198,7 +250,9 @@ function Stat({
   tone?: "default" | "error" | "active";
 }): ReactElement {
   return (
-    <div className="flex min-w-0 flex-col gap-0.5 bg-card px-4 py-3">
+    <div
+      className={cn("flex min-w-0 flex-col gap-0.5 px-4 py-3", SURFACE_FILL)}
+    >
       <span className="truncate text-ui-12 text-muted-foreground">{label}</span>
       <span
         className={cn(
@@ -490,8 +544,10 @@ function PayloadBlock({
       <pre
         data-reload-snapshot-sensitive
         className={cn(
-          "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
-          tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
+          "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded rounded-lg p-3 text-ui-11 leading-[1.55]",
+          tone === "error"
+            ? "bg-red-500/5 text-red-700 dark:text-red-400"
+            : INSET,
         )}
       >
         {loading && !body ? "Loading…" : shown || "–"}
@@ -524,11 +580,11 @@ function MetricGroup({
   return (
     <section className="flex min-w-0 flex-col gap-2">
       <h3 className="text-ui-12 font-medium text-muted-foreground">{title}</h3>
-      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/60 bg-border/60 sm:grid-cols-3">
+      <dl className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border/60 bg-border/60 sm:grid-cols-3 dark:border-transparent dark:bg-background">
         {items.map((item) => (
           <div
             key={item.label}
-            className="flex min-w-0 flex-col gap-0.5 bg-card px-3 py-2"
+            className={cn("flex min-w-0 flex-col gap-0.5 px-3 py-2", INSET)}
           >
             <dt className="truncate text-ui-11 text-muted-foreground">
               {item.label}
@@ -573,7 +629,8 @@ function RequestDetail({
         <div className="flex min-w-0 items-center gap-2">
           <span
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-full bg-muted px-2 py-0.5 text-ui-11 font-medium capitalize",
+              "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-ui-11 font-medium capitalize",
+              INSET,
               statusTextClass(entry.status),
             )}
           >
@@ -668,7 +725,12 @@ function QuickStart({
   const snippet = quickStartSnippet(baseUrl, model ?? "MODEL_ID");
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
-      <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+      <span
+        className={cn(
+          "flex size-10 items-center justify-center rounded-xl text-muted-foreground",
+          INSET,
+        )}
+      >
         <HugeiconsIcon
           icon={ComputerTerminal01Icon}
           strokeWidth={1.75}
@@ -686,7 +748,12 @@ function QuickStart({
         </p>
       </div>
       <div className="relative w-full max-w-2xl text-left">
-        <pre className="overflow-x-auto scroll-rounded rounded-lg bg-muted/50 py-3 pr-11 pl-3.5 font-mono text-ui-11 leading-[1.6] text-foreground">
+        <pre
+          className={cn(
+            "overflow-x-auto scroll-rounded rounded-lg py-3 pr-11 pl-3.5 font-mono text-ui-11 leading-[1.6] text-foreground",
+            INSET,
+          )}
+        >
           {snippet}
         </pre>
         <div className="absolute top-1.5 right-1.5">
@@ -739,9 +806,20 @@ export function ApiMonitorPage(): ReactElement {
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const lanUrls = usePlatformStore((s) => s.lanUrls);
+  const runtime = useChatModelRuntime();
+  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
   const [unloading, setUnloading] = useState(false);
+  const [ejectingKept, setEjectingKept] = useState(false);
   // block raw unloads while a picker load could finish afterward without a lifecycle guard.
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  const residencyKey = useMemo(
+    () =>
+      entries
+        .filter(isLifecycleEntry)
+        .map((entry) => `${entry.id}:${entry.status}`)
+        .join(","),
+    [entries],
+  );
   const [unloadError, setUnloadError] = useState<string | null>(null);
   const resident = useResidentRunTarget(data?.active_model);
   const [configRequest, setConfigRequest] =
@@ -814,32 +892,57 @@ export function ApiMonitorPage(): ReactElement {
     }
   };
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>("all");
+  const [modelFilter, setModelFilter] = useState<string>(ALL_MODELS);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Requests only: a load row's model is a path or repo, not what a client named.
+  const loggedModels = useMemo(() => {
+    const names = new Set<string>();
+    for (const entry of entries) {
+      if (!isLifecycleEntry(entry) && entry.model) names.add(entry.model);
+    }
+    return [...names].sort();
+  }, [entries]);
+  const effectiveModelFilter =
+    modelFilter !== ALL_MODELS && loggedModels.includes(modelFilter)
+      ? modelFilter
+      : ALL_MODELS;
+  const modelEntries = useMemo(
+    () =>
+      effectiveModelFilter === ALL_MODELS
+        ? entries
+        : entries.filter((entry) => entry.model === effectiveModelFilter),
+    [entries, effectiveModelFilter],
+  );
+  const modelStats = useMemo(
+    () =>
+      effectiveModelFilter === ALL_MODELS ? stats : computeStats(modelEntries),
+    [effectiveModelFilter, stats, modelEntries],
+  );
   const visible = useMemo(
-    () => filterEntries(entries, statusFilter, query),
-    [entries, statusFilter, query],
+    () => filterEntries(modelEntries, statusFilter, query),
+    [modelEntries, statusFilter, query],
   );
   const selected = useMemo(
     () => visible.find((entry) => entry.id === selectedId) ?? null,
     [visible, selectedId],
   );
-  // Same predicate as filterEntries, so a segment's count is what picking it lists.
+  // Same predicate as filterEntries, so a tab's count is what picking it lists.
   const statusCounts = useMemo(() => {
     const counts: Record<MonitorStatusFilter, number> = {
-      all: entries.length,
+      all: modelEntries.length,
       running: 0,
       completed: 0,
       error: 0,
       cancelled: 0,
     };
-    for (const entry of entries) {
+    for (const entry of modelEntries) {
       counts[entry.status] += 1;
     }
     return counts;
-  }, [entries]);
+  }, [modelEntries]);
 
   // Refetch the selected entry while it streams. Keyed on identity and revision, never
   // on `details`: the fetch rewrites it on success, so depending on it loops.
@@ -919,8 +1022,19 @@ export function ApiMonitorPage(): ReactElement {
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
-  const serverStatus = SERVER_STATUS[data?.status ?? "idle"];
   const activeModel = data?.active_model ?? null;
+  const served = useMemo(
+    () => servedModels(loadedModels, activeModel),
+    [loadedModels, activeModel],
+  );
+  // The monitor reads only the primary server, so with that one ejected a kept model can still
+  // be answering while it reports idle.
+  const serverStatus =
+    SERVER_STATUS[
+      data?.status === "idle" && served.length > 0
+        ? "ready"
+        : (data?.status ?? "idle")
+    ];
   // older backends omit the field, so only explicit `false` disables recording.
   const loggingDisabled = data?.logging_enabled === false;
   const queued = data?.queue?.queued ?? 0;
@@ -933,28 +1047,81 @@ export function ApiMonitorPage(): ReactElement {
     "tabular-nums",
     queued > 0 && "text-amber-700 dark:text-amber-500",
   );
-  const filterOptions = STATUS_FILTERS.map((option) => ({
+  const filterTabs = STATUS_FILTERS.map((option) => ({
     value: option.value,
-    label: (
-      <span className="flex items-center gap-1.5">
-        {option.label}
-        {option.value !== "all" && statusCounts[option.value] > 0 ? (
-          <span
-            className={cn(
-              "text-ui-11 tabular-nums text-muted-foreground",
-              option.value === "error" && "text-red-600 dark:text-red-400",
-            )}
-          >
-            {formatCount(statusCounts[option.value])}
+    label:
+      option.value !== "all" && statusCounts[option.value] > 0
+        ? `${option.label} ${formatCount(statusCounts[option.value])}`
+        : option.label,
+  }));
+
+  const ejecting = unloading || ejectingKept;
+  const ejectServed = async (model: ServedModel): Promise<void> => {
+    if (model.active) {
+      await unloadActiveModel();
+      return;
+    }
+    setEjectingKept(true);
+    try {
+      await runtime.ejectModel(model.checkpoint);
+      refresh();
+    } finally {
+      setEjectingKept(false);
+    }
+  };
+  const ejectAll = async (): Promise<void> => {
+    setEjectingKept(true);
+    try {
+      await runtime.ejectAllModels();
+      refresh();
+    } finally {
+      setEjectingKept(false);
+    }
+  };
+  const ejectLabel =
+    served.length > 1
+      ? `Eject all ${served.length} models and free their memory`
+      : served.length === 1
+        ? `Eject ${served[0].name} and free its memory`
+        : "No model is loaded";
+  const activeFacts = (
+    <>
+      {data?.context_length ? (
+        <Fact label="Context">
+          <span className="tabular-nums">
+            {formatCount(data.context_length)} tokens
           </span>
-        ) : null}
-      </span>
-    ),
-  })) as [
-    { value: MonitorStatusFilter; label: ReactElement },
-    { value: MonitorStatusFilter; label: ReactElement },
-    ...{ value: MonitorStatusFilter; label: ReactElement }[],
-  ];
+        </Fact>
+      ) : null}
+      {data?.queue ? (
+        <Fact label="Slots">
+          {canEditSlots ? (
+            <ToolbarTooltip label="Change parallel slots">
+              <button
+                type="button"
+                onClick={() =>
+                  setConfigRequest(
+                    slotsSettingsRequest(
+                      resident,
+                      createModelConfigHandoffRequestId(),
+                    ),
+                  )
+                }
+                className={cn(
+                  slotsClassName,
+                  "w-fit cursor-pointer text-left underline decoration-dotted decoration-muted-foreground/60 underline-offset-4 hover:decoration-foreground",
+                )}
+              >
+                {slotsLabel}
+              </button>
+            </ToolbarTooltip>
+          ) : (
+            <span className={slotsClassName}>{slotsLabel}</span>
+          )}
+        </Fact>
+      ) : null}
+    </>
+  );
 
   return (
     <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-5 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
@@ -965,12 +1132,22 @@ export function ApiMonitorPage(): ReactElement {
             <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
               API
             </h1>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-border/60 px-2.5 py-0.5 text-ui-12 font-medium text-foreground">
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-ui-12 font-medium text-foreground",
+                SURFACE_FILL,
+              )}
+            >
               <span
                 className={cn("size-2 rounded-full", serverStatus.dot)}
                 aria-hidden={true}
               />
               {serverStatus.label}
+              {served.length > 1 ? (
+                <span className="text-muted-foreground">
+                  · {served.length} models
+                </span>
+              ) : null}
             </span>
           </div>
           <p className="text-sm text-muted-foreground">
@@ -978,30 +1155,37 @@ export function ApiMonitorPage(): ReactElement {
             each request live.
           </p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={openApiSettings}
-          className="h-9 gap-1.5 rounded-full"
-        >
-          <HugeiconsIcon
-            icon={Key01Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-          API keys &amp; settings
-        </Button>
+        <ToolbarTooltip label="API keys and settings">
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={openApiSettings}
+            aria-label="API keys and settings"
+            className="rounded-full"
+          >
+            <HugeiconsIcon
+              icon={Key01Icon}
+              strokeWidth={1.75}
+              className="size-4"
+            />
+          </Button>
+        </ToolbarTooltip>
       </header>
 
       {/* Checked first when a client can't reach the API: base URL and what is loaded. */}
       <section
         data-tour="api-endpoint"
-        className="flex flex-col rounded-xl border border-border/60 bg-card"
+        className={cn("flex flex-col", SURFACE)}
       >
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 px-4 py-3.5">
           <div className="flex min-w-0 items-center gap-3">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
+            <span
+              className={cn(
+                "flex size-9 shrink-0 items-center justify-center rounded-lg text-foreground",
+                INSET,
+              )}
+            >
               <HugeiconsIcon
                 icon={ApiIcon}
                 strokeWidth={1.75}
@@ -1018,15 +1202,14 @@ export function ApiMonitorPage(): ReactElement {
               </div>
             </div>
           </div>
-          <div
-            data-tour="api-toolbar"
-            className="flex min-w-0 max-w-full flex-wrap items-center gap-2"
-          >
+          <div data-tour="api-toolbar" className="flex min-w-0 max-w-full">
             <ApiModelLoadControls
+              runtime={runtime}
               activeModel={data?.active_model}
+              residencyKey={residencyKey}
               onSettled={refresh}
               onUnloadActive={unloadActiveModel}
-              unloading={unloading}
+              unloading={ejecting}
               configRequest={configRequest}
               onConfigRequestAdopted={() => setConfigRequest(null)}
               onOpenSettings={
@@ -1040,78 +1223,97 @@ export function ApiMonitorPage(): ReactElement {
                       )
                   : undefined
               }
-            />
-            <ToolbarTooltip
-              label={
-                activeModel
-                  ? `Eject ${activeModel} and free its memory`
-                  : "No model is loaded"
-              }
+              onEjectAll={() => void ejectAll()}
             >
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void unloadActiveModel()}
-                disabled={unloading || modelLoading || !activeModel}
-                className="h-9 gap-1.5 rounded-full"
-              >
-                <HugeiconsIcon
-                  icon={RemoveCircleIcon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-                {unloading ? "Ejecting" : "Eject"}
-              </Button>
-            </ToolbarTooltip>
+              <ToolbarTooltip label={ejectLabel}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={served.length > 1 ? "Eject all models" : "Eject"}
+                  onClick={() =>
+                    void (served.length > 1
+                      ? ejectAll()
+                      : ejectServed(served[0]))
+                  }
+                  disabled={ejecting || modelLoading || served.length === 0}
+                  className="rounded-full"
+                >
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className={cn("size-4", ejecting && "animate-pulse")}
+                  />
+                </Button>
+              </ToolbarTooltip>
+            </ApiModelLoadControls>
           </div>
         </div>
-        <dl className="flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-border/60 px-4 py-2.5">
-          <Fact label="Model" className="max-w-full">
-            {activeModel ? (
-              <>
-                <span className="truncate font-mono">{activeModel}</span>
-                <CopyButton value={activeModel} label="Copy model name" />
-              </>
-            ) : (
-              <span className="text-muted-foreground">None loaded</span>
-            )}
-          </Fact>
-          {data?.context_length ? (
-            <Fact label="Context">
-              <span className="tabular-nums">
-                {formatCount(data.context_length)} tokens
-              </span>
-            </Fact>
-          ) : null}
-          {data?.queue ? (
-            <Fact label="Slots">
-              {canEditSlots ? (
-                <ToolbarTooltip label="Change parallel slots">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setConfigRequest(
-                        slotsSettingsRequest(
-                          resident,
-                          createModelConfigHandoffRequestId(),
-                        ),
-                      )
-                    }
-                    className={cn(
-                      slotsClassName,
-                      "w-fit cursor-pointer text-left underline decoration-dotted decoration-muted-foreground/60 underline-offset-4 hover:decoration-foreground",
-                    )}
-                  >
-                    {slotsLabel}
-                  </button>
-                </ToolbarTooltip>
-              ) : (
-                <span className={slotsClassName}>{slotsLabel}</span>
-              )}
-            </Fact>
-          ) : null}
-        </dl>
+        <div className={cn("border-t px-4 py-2.5", DIVIDER)}>
+          {served.length > 1 ? (
+            <dl className="flex flex-col gap-1.5">
+              <dt className="text-ui-12 text-muted-foreground">
+                {served.length} models answering requests
+              </dt>
+              {served.map((model) => (
+                <dd
+                  key={model.checkpoint}
+                  className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-1"
+                >
+                  <span className="flex min-w-0 items-center gap-1 text-ui-12">
+                    <span
+                      className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                      aria-hidden={true}
+                    />
+                    <span className="ml-1 truncate font-mono text-foreground">
+                      {model.name}
+                    </span>
+                    <CopyButton value={model.name} label="Copy model name" />
+                  </span>
+                  {model.active ? (
+                    <dl className="contents">{activeFacts}</dl>
+                  ) : null}
+                  <span className="ml-auto">
+                    <ToolbarTooltip label={`Eject ${model.name}`}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Eject ${model.name}`}
+                        onClick={() => void ejectServed(model)}
+                        disabled={ejecting || modelLoading}
+                        className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={RemoveCircleIcon}
+                          strokeWidth={1.75}
+                          className="size-3.5"
+                        />
+                      </Button>
+                    </ToolbarTooltip>
+                  </span>
+                </dd>
+              ))}
+            </dl>
+          ) : (
+            <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <Fact label="Model" className="max-w-full">
+                {served.length === 1 ? (
+                  <>
+                    <span className="truncate font-mono">{served[0].name}</span>
+                    <CopyButton
+                      value={served[0].name}
+                      label="Copy model name"
+                    />
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">None loaded</span>
+                )}
+              </Fact>
+              {served[0]?.active ? activeFacts : null}
+            </dl>
+          )}
+        </div>
       </section>
 
       {error ? <Banner>{error}</Banner> : null}
@@ -1121,56 +1323,61 @@ export function ApiMonitorPage(): ReactElement {
 
       <section
         aria-label="Traffic summary"
-        className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60 sm:grid-cols-3 lg:grid-cols-6"
+        className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-border/60 bg-border/60 sm:grid-cols-3 lg:grid-cols-6 dark:border-transparent dark:bg-background"
       >
         <Stat
           label="In flight"
-          value={formatCount(stats.active)}
-          tone={stats.active > 0 ? "active" : "default"}
+          value={formatCount(modelStats.active)}
+          tone={modelStats.active > 0 ? "active" : "default"}
           hint={queued > 0 ? `${formatCount(queued)} queued` : undefined}
         />
         <Stat
           label="Requests"
-          value={formatCount(stats.total)}
+          value={formatCount(modelStats.total)}
           hint={loggingDisabled ? "recording off" : "in the recent log"}
         />
         <Stat
           label="Errors"
-          value={formatCount(stats.errors)}
-          tone={stats.errors > 0 ? "error" : "default"}
+          value={formatCount(modelStats.errors)}
+          tone={modelStats.errors > 0 ? "error" : "default"}
           hint={
-            stats.errorRate != null
-              ? `${Math.round(stats.errorRate * 100)}% of finished`
+            modelStats.errorRate != null
+              ? `${Math.round(modelStats.errorRate * 100)}% of finished`
               : undefined
           }
         />
         <Stat
           label="Avg latency"
-          value={formatDuration(stats.avgDurationMs)}
+          value={formatDuration(modelStats.avgDurationMs)}
           hint={
-            stats.maxDurationMs != null
-              ? `max ${formatDuration(stats.maxDurationMs)}`
+            modelStats.maxDurationMs != null
+              ? `max ${formatDuration(modelStats.maxDurationMs)}`
               : undefined
           }
         />
         <Stat
           label="Generation speed"
           value={
-            stats.tokensPerSecond == null
+            modelStats.tokensPerSecond == null
               ? "–"
-              : `${stats.tokensPerSecond.toFixed(1)} tok/s`
+              : `${modelStats.tokensPerSecond.toFixed(1)} tok/s`
           }
           hint="while decoding"
         />
         <Stat
           label="Tokens"
-          value={formatCount(stats.totalTokens)}
+          value={formatCount(modelStats.totalTokens)}
           hint="prompt + completion"
         />
       </section>
 
-      <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border/60 bg-card">
-        <div className="flex flex-wrap items-center gap-2 border-b border-border/60 px-3 py-2.5">
+      <section className={cn("flex min-h-0 flex-col overflow-hidden", SURFACE)}>
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2 border-b px-3 py-2.5",
+            DIVIDER,
+          )}
+        >
           <div className="relative w-full min-w-0 sm:w-56">
             <HugeiconsIcon
               icon={Search01Icon}
@@ -1184,19 +1391,37 @@ export function ApiMonitorPage(): ReactElement {
               placeholder="Search requests"
               aria-label="Search API requests"
               title="Matches the model, endpoint, prompt, reply or error"
-              className="h-8 rounded-full border-none bg-muted pl-8 shadow-none dark:bg-background"
+              className="pl-8"
             />
           </div>
-          <div className="min-w-0 max-w-full overflow-x-auto">
-            <SegmentedControl
-              value={statusFilter}
-              options={filterOptions}
-              onValueChange={setStatusFilter}
-              ariaLabel="Filter by status"
-              size="compact"
-              className="w-auto"
-            />
-          </div>
+          <PillTabs
+            ariaLabel="Filter by status"
+            tabs={filterTabs}
+            value={statusFilter}
+            onValueChange={(next) =>
+              setStatusFilter(next as MonitorStatusFilter)
+            }
+            fit={true}
+            className="max-w-full overflow-x-auto"
+          />
+          {loggedModels.length > 1 ? (
+            <Select value={effectiveModelFilter} onValueChange={setModelFilter}>
+              <SelectTrigger
+                aria-label="Filter by model"
+                className="h-9 max-w-64 rounded-full"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_MODELS}>All models</SelectItem>
+                {loggedModels.map((model) => (
+                  <SelectItem key={model} value={model}>
+                    {model}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
           <div className="ml-auto flex shrink-0 items-center gap-1">
             <span className="mr-1 text-ui-11 tabular-nums text-muted-foreground">
               {formatCount(visible.length)} of {formatCount(entries.length)}
@@ -1211,7 +1436,7 @@ export function ApiMonitorPage(): ReactElement {
                 aria-pressed={paused}
                 onClick={() => setPaused(!paused)}
                 className={cn(
-                  "h-8 gap-1.5 rounded-full px-2.5",
+                  "h-9 gap-1.5 rounded-full px-3",
                   paused && "text-amber-700 dark:text-amber-500",
                 )}
               >
@@ -1227,11 +1452,11 @@ export function ApiMonitorPage(): ReactElement {
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
+                size="icon"
                 onClick={refresh}
                 disabled={refreshing}
                 aria-label="Refresh"
-                className="size-8 rounded-full p-0"
+                className="rounded-full"
               >
                 <HugeiconsIcon
                   icon={Refresh01Icon}
@@ -1244,14 +1469,14 @@ export function ApiMonitorPage(): ReactElement {
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
+                size="icon"
                 disabled={entries.length === 0}
                 onClick={() => {
                   setSelectedId(null);
                   void clear();
                 }}
                 aria-label="Clear log"
-                className="size-8 rounded-full p-0"
+                className="rounded-full"
               >
                 <HugeiconsIcon
                   icon={Delete02Icon}
@@ -1273,7 +1498,12 @@ export function ApiMonitorPage(): ReactElement {
                 re-enable.
               </p>
             ) : (
-              <QuickStart baseUrl={baseUrl} model={activeModel} />
+              <QuickStart
+                baseUrl={baseUrl}
+                model={
+                  (served.find((m) => m.active) ?? served[0])?.name ?? null
+                }
+              />
             )}
           </div>
         ) : (
@@ -1286,7 +1516,8 @@ export function ApiMonitorPage(): ReactElement {
               onKeyDown={onListKeyDown}
               className={cn(
                 PANE_HEIGHT,
-                "flex flex-col gap-0.5 border-b border-border/60 p-1.5 lg:border-b-0 lg:border-r",
+                DIVIDER,
+                "flex flex-col gap-0.5 border-b p-1.5 lg:border-b-0 lg:border-r",
               )}
             >
               {loading ? (
@@ -1305,6 +1536,7 @@ export function ApiMonitorPage(): ReactElement {
                     onClick={() => {
                       setQuery("");
                       setStatusFilter("all");
+                      setModelFilter(ALL_MODELS);
                     }}
                     className="h-8 rounded-full"
                   >
@@ -1332,7 +1564,12 @@ export function ApiMonitorPage(): ReactElement {
                 />
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-3 px-6 py-10 text-center">
-                  <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                  <span
+                    className={cn(
+                      "flex size-10 items-center justify-center rounded-xl text-muted-foreground",
+                      INSET,
+                    )}
+                  >
                     <HugeiconsIcon
                       icon={CursorPointer02Icon}
                       strokeWidth={1.75}
