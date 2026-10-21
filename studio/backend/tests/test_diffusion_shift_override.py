@@ -122,7 +122,6 @@ def test_flux_node_resolves_mu_at_the_output_size():
         SHIFT_NODE_FLUX, base_shift = 0.5, max_shift = 1.15, width = 1024, height = 1024
     )
     assert got == pytest.approx(math.exp(1.15))
-    # One field alone takes the node's default for the other.
     only_max = requested_flow_shift(SHIFT_NODE_FLUX, max_shift = 2.0, width = 512, height = 512)
     assert only_max == pytest.approx(
         math.exp(_comfy_model_sampling_flux_shift(2.0, COMFY_FLUX_BASE_SHIFT, 512, 512))
@@ -158,13 +157,10 @@ def _flow_euler(**config):
 @pytest.mark.parametrize(
     "config",
     [
-        # FLUX.1-dev / FLUX.2 shape: resolution-dependent mu.
         dict(shift = 3.0, use_dynamic_shifting = True, base_shift = 0.5, max_shift = 1.15),
-        # Qwen-Image-2.1 shape: dynamic plus a terminal stretch.
         dict(
             shift = 1.0, use_dynamic_shifting = True, base_shift = 0.5, max_shift = 0.9, shift_terminal = 0.02
         ),
-        # Z-Image / Lumina shape: static.
         dict(shift = 6.0, use_dynamic_shifting = False),
     ],
 )
@@ -174,7 +170,6 @@ def test_built_schedule_is_comfyui_time_snr_shift(config, shift):
 
     resident = _flow_euler(**config)
     built = scheduler_with_flow_shift(resident, shift)
-    # The resolved value keeps the loaded object; any other is a copy.
     unchanged = not config["use_dynamic_shifting"] and shift == config["shift"]
     assert (built is resident) == unchanged
     assert resident.config.get("shift") == config["shift"]  # the loaded scheduler is not touched
@@ -332,7 +327,6 @@ def test_parameters_text_carries_the_shift_the_run_used():
     }
     assert "Shift:" not in gallery._params_text(meta)
     assert ", Shift: 3.1" in gallery._params_text({**meta, "shift": 3.1})
-    # base / max shift have no infotext key; the recipe chunk keeps them.
     assert (
         "shift" not in gallery._params_text({**meta, "base_shift": 0.5, "max_shift": 1.15}).lower()
     )

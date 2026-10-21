@@ -159,7 +159,6 @@ SHIFT_NODE_SD3 = "sd3"
 # sigma = e^mu / (e^mu + 1/t - 1), the same curve as the static shift e^mu (``flux_mu_shift``).
 SHIFT_NODE_FLUX = "flux"
 SHIFT_NODES = (SHIFT_NODE_SD3, SHIFT_NODE_FLUX)
-# ModelSamplingFlux input defaults and its fixed (x1, x2) token anchors.
 COMFY_FLUX_MAX_SHIFT = 1.15
 COMFY_FLUX_BASE_SHIFT = 0.5
 _COMFY_FLUX_X1 = 256

@@ -269,8 +269,7 @@ export interface DiffusionGenerateRequest {
   controlnet?: ControlNetSpecInput;
   sampler?: string;
   schedule_type?: string;
-  // Flow shift override: `shift` for a "sd3" shift_control, `base_shift` / `max_shift` for "flux". Omitted = the
-  // model's own schedule.
+  // `shift` for "sd3", `base_shift` / `max_shift` for "flux"; omitted = the model's own schedule.
   shift?: number;
   base_shift?: number;
   max_shift?: number;
@@ -365,11 +364,9 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
-  // Flow shift override the run used; null = the model's own schedule.
   shift?: number | null;
   base_shift?: number | null;
   max_shift?: number | null;
-  // Textual-inversion embeddings the prompts used (file stems).
   embeddings?: string[] | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;

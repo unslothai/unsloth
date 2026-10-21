@@ -12146,9 +12146,6 @@ class DiffusionBackend:
         live_preview: Optional[bool] = None,
         sampler: Optional[str] = None,
         schedule_type: Optional[str] = None,
-        # Per-generation flow shift, as the family's ComfyUI node takes it (diffusion_flow_shift): ``shift`` for
-        # ModelSamplingSD3 / AuraFlow families, ``base_shift`` / ``max_shift`` for ModelSamplingFlux ones. All None
-        # keeps the loaded schedule.
         shift: Optional[float] = None,
         base_shift: Optional[float] = None,
         max_shift: Optional[float] = None,
@@ -12597,7 +12594,6 @@ class DiffusionBackend:
                 ):
                     # Qwen-Image true CFG needs a negative present; ComfyUI encodes an empty one.
                     kwargs["negative_prompt"] = ""
-                # Textual inversion: only when a prompt names an embedding file; otherwise nothing is touched.
                 applied_embeddings = diffusion_embeddings.apply(
                     pipe,
                     getattr(state.family, "textual_inversion", None),

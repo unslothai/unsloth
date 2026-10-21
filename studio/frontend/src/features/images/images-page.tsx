@@ -2229,8 +2229,6 @@ export function ImagesPage({
     },
     [samplerChoice, samplerModelKey, samplerOptions],
   );
-  // Shift override (flow-matching models) and textual-inversion embeddings (SDXL): offered only when the loaded
-  // model reports them, and a newly loaded checkpoint starts on its own schedule.
   const shiftControl = !external && status?.loaded ? (status.shift_control ?? null) : null;
   const [shiftState, setShiftState] = useState<{ key: string; value: ShiftValue }>({
     key: "",
@@ -2991,7 +2989,6 @@ export function ImagesPage({
         ...unknownRecipeKeys(recipe),
       ];
       if (tiMatch) {
-        // An installed embedding applies through the restored prompt; a missing one is named as such.
         const { installed, missing } = tiMatch;
         const resolved = new Map<string, string | null>([
           ...installed.map((n): [string, null] => [textualInversionLabel(n), null]),

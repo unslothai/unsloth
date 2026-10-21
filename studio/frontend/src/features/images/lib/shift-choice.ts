@@ -11,7 +11,6 @@ export interface ShiftControl {
   max_shift?: number;
 }
 
-/** Text fields as typed; empty = the model's own schedule. */
 export interface ShiftValue {
   shift: string;
   baseShift: string;
@@ -49,12 +48,10 @@ export function shiftRequestFields(
   };
 }
 
-/** Whether a typed value is out of range (shown as an error state). Empty is valid. */
 export function shiftFieldInvalid(text: string, exclusiveMin: boolean): boolean {
   return text.trim() !== "" && parse(text, 0, exclusiveMin) === undefined;
 }
 
-/** Append ``trigger`` to a prompt as A1111 users write embeddings: comma separated. */
 export function withEmbeddingTrigger(prompt: string, trigger: string): string {
   const trimmed = prompt.trimEnd();
   if (!trimmed) return trigger;

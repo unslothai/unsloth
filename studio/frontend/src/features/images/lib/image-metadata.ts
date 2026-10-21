@@ -784,8 +784,7 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       n !== undefined
     )
       out.inpaint_padding = n;
-    // `TI hashes: "name: hash, ..."` lists the embeddings the prompt used. The prompt names each one, so an
-    // installed embedding applies on a model that takes them; importNotApplied names the rest.
+    // `TI hashes`: the prompt names each embedding, so an installed one applies; importNotApplied names the rest.
     else if (key === "ti hashes") {
       const names: string[] = [];
       for (const item of value.split(",")) {
@@ -794,7 +793,6 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       }
       if (names.length > 0) out.textual_inversions = names;
     }
-    // A flow-matching model's static shift (ComfyUI ModelSamplingSD3 / AuraFlow `shift`).
     else if (key === "shift" && n !== undefined) out.shift = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
     else if (key === "emphasis") {
@@ -905,7 +903,6 @@ export interface RestorableRecipe {
   model_kind?: string;
   sampler?: string;
   schedule_type?: string;
-  // Flow shift override (lib/shift-choice); absent = the model's own schedule.
   shift?: number;
   base_shift?: number;
   max_shift?: number;

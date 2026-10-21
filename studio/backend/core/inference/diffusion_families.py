@@ -139,13 +139,10 @@ class DiffusionFamily:
     comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
-    # ComfyUI node a workflow for this model sets its shift with, for the per-request Shift control (diffusion_flow_shift
-    # SHIFT_NODE_*): "sd3" = ModelSamplingSD3 / AuraFlow (one static shift), "flux" = ModelSamplingFlux (base / max
-    # shift by resolution). None = no Shift control. ``_variants``: (lowercased id substring, node), first match wins.
+    # ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*); None = no Shift control. ``_variants``: (id substring, node), first match wins.
     comfy_shift_node: Optional[str] = None
     comfy_shift_node_variants: tuple[tuple[str, Optional[str]], ...] = field(default_factory = tuple)
-    # Textual-inversion embedding format this family's CLIP text encoders take (diffusion_embeddings KIND_*): "sdxl"
-    # (clip_l + clip_g), "sd1" (one 768-wide CLIP); None = no embeddings.
+    # Textual-inversion format (diffusion_embeddings KIND_*); None = no embeddings.
     textual_inversion: Optional[str] = None
     # (lowercased id substring, ((key, value), ...)) overriding ``base_repo``'s transformer config; first match wins.
     transformer_config_variants: tuple[tuple[str, tuple[tuple[str, Any], ...]], ...] = field(

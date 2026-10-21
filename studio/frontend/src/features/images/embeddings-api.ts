@@ -14,7 +14,6 @@ export interface DiffusionEmbeddingInfo {
   size_bytes: number;
 }
 
-/** List textual-inversion embeddings usable by a model family. */
 export async function listDiffusionEmbeddings(
   family: string,
 ): Promise<{ embeddings: DiffusionEmbeddingInfo[]; embeddings_dir?: string }> {

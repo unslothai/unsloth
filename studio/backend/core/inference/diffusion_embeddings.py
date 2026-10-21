@@ -36,10 +36,8 @@ KIND_SD1 = "sd1"
 KIND_SD2 = "sd2"
 KIND_SDXL = "sdxl"
 _EXTS = (".safetensors",)
-# An embedding is a handful of vectors (KB); anything this big is not one.
 _MAX_BYTES = 64 * 1024 * 1024
 _MAX_VECTORS = 75
-# Prompt keys a diffusers pipeline call may carry text in.
 _PROMPT_KEYS = ("prompt", "prompt_2", "negative_prompt", "negative_prompt_2")
 # Internal token prefix: lower case so a lowercasing tokenizer normaliser cannot split it.
 _TOKEN_PREFIX = "<unsloth-ti-"
@@ -280,11 +278,8 @@ class AppliedEmbeddings:
     """What ``apply`` installed on one pipe; ``restore`` undoes it exactly."""
 
     pipe: Any
-    # (attr, original object) for tokenizers swapped on the pipe
     tokenizers: list[tuple[str, Any]]
-    # (text encoder, original input embedding module)
     encoders: list[tuple[Any, Any]]
-    # stem (lowercase) -> internal token
     tokens: dict[str, str]
     used: list[str]
     skipped: list[str]

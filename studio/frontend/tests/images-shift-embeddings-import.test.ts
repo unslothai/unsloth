@@ -57,7 +57,6 @@ test("a Studio recipe's base / max shift restore on a flux-node model; out-of-ra
     }),
   });
   assert.ok(recipe);
-  // shift / base_shift / max_shift restore and embeddings are informational: none is an unknown key.
   assert.deepEqual(unknownRecipeKeys(recipe), []);
   const settings = recipeSettings(recipe, DEFAULTS);
   assert.deepEqual(shiftRequestFields(FLUX, shiftFromRecipe(settings)), { base_shift: 0.6, max_shift: 1.4 });
@@ -83,7 +82,6 @@ test("TI hashes names stay reported unless an installed embedding matches", () =
     "textual inversion easynegative",
     "textual inversion badhandv4",
   ]);
-  // The backend matches a prompt word to the file stem in any case.
   assert.deepEqual(splitInstalledEmbeddings(r.textual_inversions as string[], ["EasyNegative", "other"]), {
     installed: ["easynegative"],
     missing: ["badhandv4"],
@@ -98,6 +96,5 @@ test("TI hashes names stay reported unless an installed embedding matches", () =
   );
   assert.match(page, /if \(tiNames\.length > 0 && embeddingsEnabled && status\?\.family\)/);
   assert.match(page, /\.\.\.shiftNotApplied\(recipe, shiftControl\),/);
-  // A gallery restore and an import both fill the Shift boxes.
   assert.match(page, /setBatchSize\(image\.batch_size \?\? 1\);\n\s+setShiftValue\(shiftFromRecipe\(image\)\);/);
 });

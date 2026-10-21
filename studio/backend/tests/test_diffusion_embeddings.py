@@ -149,7 +149,6 @@ def _check_pipeline(pipe, kind, emb_dir, tensors_for):
     rewritten = applied.rewrite(call)
     token = applied.tokens["easyneg"]
     assert token in rewritten["negative_prompt"] and "othermodel" in rewritten["negative_prompt"]
-    # Each tokenizer the pipeline encodes with carries the 3-vector expansion, past the base vocabulary.
     for tok_attr, enc_attr in (("tokenizer", "text_encoder"), ("tokenizer_2", "text_encoder_2")):
         tok = getattr(pipe, tok_attr, None)
         if tok is None or enc_attr not in embeds:
@@ -158,7 +157,6 @@ def _check_pipeline(pipe, kind, emb_dir, tensors_for):
         base_n = embeds[enc_attr].num_embeddings
         assert sum(1 for i in ids if i >= base_n) == 3
     with_ti = _encode(pipe, rewritten["prompt"][0], rewritten["negative_prompt"])
-    # The positive prompt names no embedding: its encoding is unchanged; the negative's changes.
     assert torch.equal(with_ti[0], base[0])
     assert not torch.equal(with_ti[1], base[1])
 
