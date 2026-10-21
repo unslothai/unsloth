@@ -5,7 +5,8 @@
 // user moves it, then kept where they left it. Absolute viewport coordinates rather than a
 // transform, so the position survives a reload and can be clamped when the window changes size.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { isDegenerateBox } from "../../hooks/floating-panel-position.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type DragPosition = { left: number; top: number };
 
@@ -92,15 +93,26 @@ export type UseDragPosition = {
 };
 
 
+type Fit = { width: number; height: number; viewport: Viewport };
+
 export function useDragPosition(storageKey: string): UseDragPosition {
-  const [position, setPosition] = useState<DragPosition | null>(() => {
-    if (typeof window === "undefined") return null;
-    const stored = readStored(storageKey);
-    // Clamp on read as well as on resize. The observer below cannot fire until after the first
-    // paint, so a position saved on a wider screen would flash off screen once; zero width/height
-    // keeps at least the top-left corner in view, and the first measurement refines it.
-    return stored ? clampToViewport(stored, 0, 0, viewport()) : null;
-  });
+  // User's spot; clamps never write back, so a shrink or 0x0 minimize cannot lose it.
+  const [chosen, setPosition] = useState<DragPosition | null>(() =>
+    typeof window === "undefined" ? null : readStored(storageKey),
+  );
+  // Zero size until measured keeps a wider-screen spot's top-left corner in view before first paint.
+  const [fit, setFit] = useState<Fit>(() => ({
+    width: 0,
+    height: 0,
+    viewport: typeof window === "undefined" ? { width: 0, height: 0 } : viewport(),
+  }));
+  const position = useMemo(
+    () =>
+      chosen
+        ? clampToViewport(chosen, fit.width, fit.height, fit.viewport)
+        : null,
+    [chosen, fit],
+  );
   // Held from pointerdown to pointerup; dragging only once past the threshold.
   const [pressing, setPressing] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -133,20 +145,22 @@ export function useDragPosition(storageKey: string): UseDragPosition {
   // Returning the same object when nothing changed matters: this also runs from
   // a ResizeObserver, and a fresh object every time would re-render forever.
   const reclamp = useCallback((width: number, height: number) => {
-    setPosition((current) => {
-      if (!current) return current;
-      const next = clampToViewport(current, width, height, viewport());
-      return next.left === current.left && next.top === current.top
+    const view = viewport();
+    if (isDegenerateBox(view)) return;
+    setFit((current) =>
+      current.width === width &&
+      current.height === height &&
+      current.viewport.width === view.width &&
+      current.viewport.height === view.height
         ? current
-        : next;
-    });
+        : { width, height, viewport: view },
+    );
   }, []);
 
   // A window that shrank, or a panel that grew when expanded, would otherwise strand it off screen
   // with nothing able to bring it back. Deliberately not keyed on `position`: it used to be, so
   // every frame of a drag tore the observer down and built a new one, and observing re-measures,
-  // which forced a synchronous layout each time. reclamp is a no-op until the panel has a position,
-  // so attaching on mount costs nothing.
+  // which forced a synchronous layout each time. reclamp returns the same object when unchanged.
   useEffect(() => {
     if (!panelEl) return;
     const measure = () => {

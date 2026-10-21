@@ -810,6 +810,18 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
+    def _prune_open_staging_in_background() -> None:
+        try:
+            from utils.paths.path_utils import prune_open_staging
+            prune_open_staging()
+        except Exception:  # noqa: BLE001
+            _lifespan_log.warning("could not prune open-staging", exc_info = True)
+
+    # Off the startup path: the cache can sit on a slow mount, and a tool launched first runs the same cleanup.
+    threading.Thread(
+        target = _prune_open_staging_in_background, name = "open-staging-prune", daemon = True
+    ).start()
+
     # Warm the OS sandbox probe so the "off" gate has an answer.
     try:
         from core.inference.os_sandbox import start_tool_isolation_warmup
@@ -2913,12 +2925,12 @@ def get_disk_space(
     is about to start.
 
     shutil.disk_usage is statvfs on Linux and macOS and GetDiskFreeSpaceExW on Windows, so this
-    is microseconds on every platform Studio runs on and needs no directory walk. Note that on
+    is microseconds on every platform Unsloth runs on and needs no directory walk. Note that on
     Windows it reports the quota available to the CALLING user, which is the number that decides
     whether the download fits, so that difference is the correct one.
 
     Measured at the models root rather than the filesystem root: those are different volumes
-    whenever HF_HUB_CACHE, or the Studio root, sits on another disk, and the free space that
+    whenever HF_HUB_CACHE, or the Unsloth root, sits on another disk, and the free space that
     matters is the one the bytes are going to.
 
     Both roots that receive bytes are measured, not just the hub one. HF_XET_CACHE is resolved

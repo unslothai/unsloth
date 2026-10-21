@@ -1431,6 +1431,9 @@ class _VideoLoadState:
     # resolves a bare device. Mirrors the image backend.
     placed_ordinal: Optional[int] = None
     gguf_filename: Optional[str] = None
+    # The repo the load actually read ``base_repo`` from (the unsloth mirror on a fresh install): the learned-peak key
+    # names it. None: no load decision (the key falls back to the mirror when the upstream is not cached).
+    fetch_base: Optional[str] = None
     # Content-detected checkpoint variant identifier (LTX-2.3 "ltx-2.3-22b-distilled" / "-dev"), read before the names.
     variant_id: Optional[str] = None
     # Resident MiniMax-H3 denoiser partition, if any.
@@ -3653,6 +3656,7 @@ def _calibration_revision(state: Any) -> Optional[str]:
         getattr(state, "gguf_filename", None),
         getattr(state, "kind", None),
         getattr(state, "base_repo", None),
+        getattr(state, "fetch_base", None),
     )
     try:
         pipe._unsloth_calibration_revision = revision or ""
@@ -4250,7 +4254,7 @@ class VideoBackend:
             raise ValueError(
                 f"'{fam.name}' is a dual-expert model: a single {kind} file covers only "
                 f"one of its two transformers. Pick one expert of a high_noise / low_noise pair "
-                f"(Studio loads its partner from the same folder), or load the diffusers "
+                f"(Unsloth loads its partner from the same folder), or load the diffusers "
                 f"pipeline repo ('{fam.base_repo}')."
             )
         # A missing local checkpoint must fail HERE, before the route evicts a resident model.
@@ -9007,7 +9011,7 @@ class VideoBackend:
             transformer_quant_decline = (
                 f"this GPU's memory plan moves the DiT ({_video_plan_label(plan)}), and "
                 f"'{normalize_transformer_quant(transformer_quant)}' is built as torchao weights here, "
-                "which Studio keeps on a resident DiT only; int8 runs torchao-free under offload. Pick "
+                "which Unsloth keeps on a resident DiT only; int8 runs torchao-free under offload. Pick "
                 "int8, or a resident memory mode (Fast) on a card that holds the quantised DiT"
             )
         elif (
@@ -9690,6 +9694,7 @@ class VideoBackend:
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
                     base_repo = base,
+                    fetch_base = fetch_base,
                     device = device,
                     gpu_ordinal = target.ordinal,
                     placed_ordinal = placed_cuda_ordinal(target),
@@ -10010,7 +10015,7 @@ class VideoBackend:
                 and (h3_int8 if comfy_scheme == TQ_INT8 else h3_fp8) is None
             ):
                 raise RuntimeError(
-                    f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
+                    f"{Path(comfy_checkpoint).name} needs Unsloth's {comfy_scheme} runtime, which this "
                     f"device does not run; dequantized, the denoiser would be the 40 GB bfloat16 model. "
                     f"Load '{fam.base_repo}' instead."
                 )
@@ -10036,7 +10041,7 @@ class VideoBackend:
             if engaged is None and comfy_scheme is not None and not dense_pin:
                 del transformer
                 raise RuntimeError(
-                    f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
+                    f"{Path(comfy_checkpoint).name} needs Unsloth's {comfy_scheme} runtime, which this "
                     f"device does not run; dequantized, the denoiser would be the 40 GB bfloat16 model. "
                     f"Load '{fam.base_repo}' instead."
                 )
@@ -10937,6 +10942,7 @@ class VideoBackend:
                 repo_id = repo_id,
                 display_repo_id = display_repo_id,
                 base_repo = base,
+                fetch_base = fetch_base,
                 device = device,
                 gpu_ordinal = umem_target.ordinal,
                 placed_ordinal = placed_cuda_ordinal(umem_target),

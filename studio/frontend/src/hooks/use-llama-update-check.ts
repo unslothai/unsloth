@@ -3,7 +3,6 @@
 
 import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
-import { notifyModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   signalRunningLlamaJob,
   subscribeToLlamaJobStarted,
@@ -12,6 +11,7 @@ import {
   llamaUpdateAdoptsRunningJob,
   llamaUpdatePresentation,
 } from "@/lib/llama-job-lifecycle";
+import { notifyModelLifecycle } from "@/lib/model-lifecycle-events";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Initial check plus hourly reminders until dismissed or applied.
@@ -40,6 +40,7 @@ export interface LlamaUpdateJob {
   finished_at: string | null;
   // The chained phase installing right now, when the backend reports phases.
   runningPhase: "llama" | "whisper" | "audio" | null;
+  whisperFailed: boolean;
 }
 
 export interface ComponentOffer {
@@ -104,6 +105,9 @@ function parseJob(value: unknown): LlamaUpdateJob {
     started_at: typeof job.started_at === "string" ? job.started_at : null,
     finished_at: typeof job.finished_at === "string" ? job.finished_at : null,
     runningPhase: parseRunningPhase(job.phases),
+    whisperFailed:
+      (job.phases as Record<string, { state?: unknown } | null> | null)?.whisper
+        ?.state === "error",
   };
 }
 
@@ -182,7 +186,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
         typeof s.llama_update_available === "boolean"
           ? s.llama_update_available
           : s.update_available === true && component === "llama.cpp",
-      installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
+      installed_tag:
+        typeof s.installed_tag === "string" ? s.installed_tag : null,
       latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
       update_size_bytes:
         typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
@@ -220,9 +225,8 @@ export function offerKey(status: LlamaUpdateStatus): string {
     llama: status.llama.update_available
       ? [status.llama.installed_tag, status.llama.latest_tag]
       : null,
-    whisper: status.whisper?.update_available
-      ? [status.whisper.installed_tag, status.whisper.latest_tag]
-      : null,
+    // whisper.cpp rides along; null matches keys stored before it joined.
+    whisper: null,
     migration: status.backend_migration_available
       ? [
           status.llama.installed_tag,
@@ -236,6 +240,24 @@ export function offerKey(status: LlamaUpdateStatus): string {
       ? { audio: [status.audio.installed_tag, status.audio.latest_tag] }
       : {}),
   });
+}
+
+/** The previous format recorded the whisper.cpp release in the key; ignore it so a new whisper.cpp release keeps the suppression. */
+export function offerKeyMatches(
+  key: string,
+  status: LlamaUpdateStatus,
+): boolean {
+  const current = offerKey(status);
+  if (key === current) return true;
+  try {
+    const stored: unknown = JSON.parse(key);
+    if (!stored || typeof stored !== "object" || !("whisper" in stored)) {
+      return false;
+    }
+    return JSON.stringify({ ...stored, whisper: null }) === current;
+  } catch {
+    return false;
+  }
 }
 
 function parseOfferSuppression(raw: string | null): OfferSuppression | null {
@@ -419,7 +441,8 @@ export function useLlamaUpdateCheck({
       );
       const suppression = suppressionRef.current;
       const suppressed =
-        suppression?.offerKey === offerKey(next) &&
+        suppression != null &&
+        offerKeyMatches(suppression.offerKey, next) &&
         (suppression.kind === "dismissed" || suppression.until > Date.now());
       setApplying(presentation.applying);
       setVisible(presentation.visible && (presentation.running || !suppressed));
@@ -652,9 +675,9 @@ export function useLlamaUpdateCheck({
     });
   }, [enabled, readStatus, surfaceIfAvailable]);
 
-  const dismiss = useCallback(() => {
+  const dismiss = useCallback((): string | null => {
     const current = statusRef.current;
-    if (!current) return;
+    if (!current) return null;
     const suppression: OfferSuppression = {
       kind: "dismissed",
       offerKey: offerKey(current),
@@ -662,7 +685,22 @@ export function useLlamaUpdateCheck({
     suppressionRef.current = suppression;
     publishOfferSuppression(suppression);
     presentStatus(current);
+    return suppression.offerKey;
   }, [presentStatus]);
+
+  // a later snooze or a skip of another offer is left alone.
+  const undoDismiss = useCallback(
+    (key: string) => {
+      const suppression = suppressionRef.current;
+      if (suppression?.kind !== "dismissed" || suppression.offerKey !== key) {
+        return;
+      }
+      clearSuppression();
+      const current = statusRef.current;
+      if (current) presentStatus(current);
+    },
+    [clearSuppression, presentStatus],
+  );
 
   const snooze = useCallback(() => {
     const current = statusRef.current;
@@ -749,6 +787,7 @@ export function useLlamaUpdateCheck({
     applying: enabled && applying,
     apply,
     dismiss,
+    undoDismiss,
     snooze,
   };
 }

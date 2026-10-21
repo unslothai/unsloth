@@ -82,6 +82,8 @@ _DSH_PACKAGE = "@deepseek-ai/dsh"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
 _DSH_YOLO_PERMISSION_MODE = "danger-full-access"
+# dsh's pi-ai provider sends max_tokens = contextWindow - its prompt estimate - 4,096 (pi-ai CONTEXT_SAFETY_TOKENS), floored at 1, and dsh's own instructions and tools are about 6,500 tokens: at 8,192 every reply is cut after one token (#14315).
+_DSH_MIN_CONTEXT = 16384
 _PI_PROVIDER = "unsloth"
 _SUBAGENT_NAME = "unsloth"
 _SUBAGENT_DESCRIPTION = (
@@ -4730,7 +4732,7 @@ def _connect(
                 key = _agent_api_key(base, None, minted_only = True)
             if key not in _cached_keys(_key_cache_path(), base, "minted"):
                 typer.echo(
-                    "Warning: Studio only sends a Connection's saved API key for the key "
+                    "Warning: Unsloth Studio only sends a Connection's saved API key for the key "
                     "`unsloth start` issues, so drop --api-key / UNSLOTH_API_KEY unless this "
                     "Connection needs no key.",
                     err = True,
@@ -5136,18 +5138,11 @@ def write_openclaw_config(
     gateway.setdefault("mode", "local")
     _subdict(gateway, "auth").setdefault("mode", "none")
     if yolo:
-        # OpenClaw has no --yolo flag, and it gates tool execution on BOTH the tools.exec config AND a host-local approvals file (the stricter wins), so setting only the config still lets the agent prompt or deny. Set both, mirroring `openclaw exec-policy preset yolo`.
+        # OpenClaw has no --yolo flag. Its host approvals document (SQLite since 2026.8.1) falls back to tools.exec for omitted fields, so the config side is enough.
         exec_policy = _subdict(_subdict(config, "tools"), "exec")
         exec_policy["host"] = "gateway"
         exec_policy["security"] = "full"
         exec_policy["ask"] = "off"
-        # Approvals file in OPENCLAW_STATE_DIR (the same as this config's dir). ask=off means nothing is ever prompted, so the runtime socket block is unnecessary here.
-        approvals = path.parent / "exec-approvals.json"
-        _write_private_json(
-            approvals,
-            {"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}},
-        )
-        typer.echo(f"Updated {approvals}")
     else:
         # The no-launch config dir is reused across runs, so a previous --yolo run may have left auto-approval state behind. OpenClaw treats an omitted exec policy as security=full, ask=off on the gateway host, so deleting the keys would keep auto-approval on: a non-yolo run must WRITE a prompting policy. Only a permissive/yolo policy is replaced; a stricter one set by hand survives.
         tools = config.get("tools")
@@ -5165,30 +5160,39 @@ def write_openclaw_config(
             exec_policy.pop("host", None)  # routing only; defaults to the gateway host
             exec_policy["security"] = "allowlist"  # only allowlisted commands skip approval
             exec_policy["ask"] = "on-miss"  # prompt on every non-allowlisted command
-        # Drop the yolo defaults from the host approvals file (a stricter default set by the user or OpenClaw is kept). With a prompting tools.exec the stricter of the two layers wins, so an omitted approvals default still prompts.
-        approvals = path.parent / "exec-approvals.json"
-        if approvals.exists():
-            state = _read_json_object(approvals)
-            if state is not None:
-                defaults = state.get("defaults")
-                # Strip the defaults only when they are exactly the yolo fingerprint; a user-managed mixed policy that merely shares a field (askFallback=full, whose omitted default is deny) must be kept intact.
-                yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
-                is_yolo = isinstance(defaults, dict) and all(
-                    defaults.get(k) == v for k, v in yolo_defaults
-                )
-                if is_yolo:
-                    for k, _ in yolo_defaults:
-                        del defaults[k]
-                    if not defaults:
-                        del state["defaults"]
-                    if set(state) <= {"version"}:
-                        # Nothing left but our own yolo payload: remove it.
-                        approvals.unlink()
-                        typer.echo(f"Removed {approvals}")
-                    else:
-                        # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
-                        _write_private_json(approvals, state)
-                        typer.echo(f"Updated {approvals}")
+    # Older Unsloth wrote --yolo defaults here; OpenClaw 2026.8.1+ refuses every run while this legacy file exists, so drop ours in both modes and keep any other policy.
+    approvals = path.parent / "exec-approvals.json"
+    if approvals.exists():
+        state = _read_json_object(approvals)
+        if state is not None:
+            defaults = state.get("defaults")
+            # Exact yolo fingerprint only: a user policy merely sharing askFallback=full must survive.
+            yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
+            is_yolo = isinstance(defaults, dict) and all(
+                defaults.get(k) == v for k, v in yolo_defaults
+            )
+            if is_yolo:
+                for k, _ in yolo_defaults:
+                    del defaults[k]
+                if not defaults:
+                    del state["defaults"]
+                # Socket metadata and an empty agents map carry no policy (doctor retires such a stub too).
+                if all(
+                    k in ("version", "socket") or (k == "agents" and not v)
+                    for k, v in state.items()
+                ):
+                    approvals.unlink()
+                    typer.echo(f"Removed {approvals}")
+                else:
+                    _write_private_json(approvals, state)
+                    typer.echo(f"Updated {approvals}")
+    if approvals.exists():
+        # The rest is user policy; importing it is OpenClaw's migration, not ours.
+        typer.echo(
+            f"Note: {approvals} is a legacy exec approvals file, which OpenClaw 2026.8.1+ refuses to run with. "
+            f"Import it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
+            err = True,
+        )
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
@@ -5222,7 +5226,7 @@ def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
         return {}
     if not window:
         typer.echo(
-            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            "Warning: Unsloth Studio did not report the model's context length, so --max-tokens is ignored.",
             err = True,
         )
         return {}
@@ -7576,6 +7580,16 @@ def dsh(
         launch = launch,
         server_options = server_options,
     )
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if window and int(window) < _DSH_MIN_CONTEXT:
+        typer.echo(
+            f"Warning: {entry['id']} is loaded with {int(window):,} tokens of context, too few "
+            "for DeepSeek Harness: its instructions and tools take about 6,500 and it keeps "
+            "4,096 in reserve, so replies are cut short (at 8,192, after a single token). "
+            f"Load it with --max-seq-length {_DSH_MIN_CONTEXT} or more (a smaller quant if "
+            "that does not fit in memory) and re-run unsloth start dsh.",
+            err = True,
+        )
     with _session_config("dsh", launch, persist = persist) as home:
         patch = home / _DSH_PATCH_FILE
         write_dsh_patch(base, entry, patch, server_options.request_body())

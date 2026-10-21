@@ -45,7 +45,13 @@ class GitHubRepoSeedSource(SeedSource):
             r = r.strip()
             if not r:
                 continue
-            if r.count("/") != 1 or not all(r.split("/")):
+            # The name becomes a folder under the scraper's base dir: no backslash or dot-only part.
+            if (
+                r.count("/") != 1
+                or not all(r.split("/"))
+                or "\\" in r
+                or any(part in (".", "..") for part in r.split("/"))
+            ):
                 raise ValueError(f"Each repo must be `owner/name`; got {r!r}")
             out.append(r)
         return out

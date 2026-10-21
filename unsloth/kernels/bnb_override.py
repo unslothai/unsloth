@@ -54,12 +54,12 @@ class _NF4Linear(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, weight, quant_state, bias):
         ctx.unsloth_nf4 = (weight, quant_state)
-        return F.linear(x, _U.fast_dequantize(weight, quant_state), bias)
+        return F.linear(x, _U.fast_dequantize(weight, quant_state, dtype = x.dtype), bias)
 
     @staticmethod
     def backward(ctx, dY):
         weight, quant_state = ctx.unsloth_nf4
-        W = _U.fast_dequantize(weight, quant_state)
+        W = _U.fast_dequantize(weight, quant_state, dtype = dY.dtype)
         # bitsandbytes MatMul4Bit.backward: matmul(dY, dequantize_4bit(B).to(dY.dtype)).
         return torch.matmul(dY, W.to(dY.dtype)), None, None, None
 
@@ -74,7 +74,7 @@ def _linear(x, weight, quant_state, bias):
         if bias is not None:
             out = out + bias
         return out.reshape(*x.shape[:-1], N)
-    return F.linear(x, _U.fast_dequantize(weight, quant_state), bias)
+    return F.linear(x, _U.fast_dequantize(weight, quant_state, dtype = x.dtype), bias)
 
 
 def _bnb_ops_traceable():

@@ -197,6 +197,9 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     learned_peak_label,
+    CFG_OFF_PART,
+    cfg_off_peaks_enabled,
+    without_cfg_off,
     live_vae_saver_tag,
     planned_vae_saver_tag,
     stream_window_pad_mib,
@@ -1385,6 +1388,8 @@ class _LoadState:
     eager_patched: bool = False
     # Deferred speed auto: the load stays eager, generate() engages `default` at the 3rd generation
     speed_deferred: bool = False
+    # That deferred engagement compiled the denoiser: LoRAs are off until a reload, which defers again.
+    speed_auto_compiled: bool = False
     # Auto static skip plan for that deferred `default` tier, installed when it engages.
     deferred_static_plan: Optional[dict] = None
     # Successful generations on this load; drives the deferred engagement above.
@@ -2499,7 +2504,7 @@ def _start_peak_probe(state: Any) -> Any:
             # cache (same count): a later peak above that start omits memory a fresh process allocates on its first
             # render
             return None
-        if _live_peak_identity(state) != tuple(identity):
+        if not _peak_identity_matches(state, identity):
             # this render runs a configuration the key does not name (a speed tier or step cache that toggled, a VAE
             # saver the guard engaged for it, another attention backend): its peak belongs to no key
             return None
@@ -2553,14 +2558,26 @@ def _live_peak_identity(state: Any) -> tuple:
             speed = None  # a background compile is still pending: this render runs eager under a compiled tier
     except Exception:  # noqa: BLE001
         speed = None
-    # a family that can run classifier-free guidance records only renders that do (the doubled denoiser batch)
+    # Unknown guidance, or CFG on a family that never runs it, records nothing.
     family_obj = getattr(state, "family", None)
     expects_cfg = bool(getattr(family_obj, "uses_negative_prompt", False))
-    if bool(getattr(pipe, "_unsloth_peak_cfg", expects_cfg)) != expects_cfg:
+    cfg = getattr(pipe, "_unsloth_peak_cfg", expects_cfg)
+    if cfg is None:
         speed = None
+    elif bool(cfg) != expects_cfg:
+        if expects_cfg and cfg_off_peaks_enabled():
+            label = f"{label}|{CFG_OFF_PART}"
+        else:
+            speed = None
     if getattr(pipe, "_unsloth_loras", None):
         speed = None  # LoRA adapters add rank-dependent activations no key names
     return (family, label, speed)
+
+
+def _peak_identity_matches(state: Any, identity: Any) -> bool:
+    """The render runs the configuration the load's identity names (``cfg:off`` aside)."""
+    family, label, speed = _live_peak_identity(state)
+    return (family, without_cfg_off(label), speed) == tuple(identity)
 
 
 def _live_graph_mode(state: Any) -> str:
@@ -2622,15 +2639,41 @@ def _local_weights_digest(path: Any) -> Optional[str]:
 
 
 def _peak_model_identity(
-    repo_id: Any, gguf_filename: Optional[str], kind: Optional[str], base: Any
+    repo_id: Any,
+    gguf_filename: Optional[str],
+    kind: Optional[str],
+    base: Any,
+    fetch_base: Optional[str] = None,
 ) -> str:
     """The exact build for the learned-peak key: the denoiser source and its weights' revision / fingerprint, plus the
     companion base and its revision for a GGUF / single-file load. ``unknown`` (no learned peak used or recorded)
-    when a revision cannot be read."""
+    when a revision cannot be read. ``fetch_base``: the repo the load actually read ``base`` from."""
     from .diffusion_component_sizes import checkpoint_fingerprint
+    from .diffusion_families import mirror_repo
 
+    def _fingerprint(
+        repo: Any,
+        filename: Optional[str] = None,
+        fetched: Optional[str] = None,
+    ) -> tuple[Any, Any]:
+        if fetched and str(fetched) != str(repo):
+            return fetched, checkpoint_fingerprint(fetched, filename)
+        revision = checkpoint_fingerprint(repo, filename)
+        if revision or filename or fetched:
+            return repo, revision
+        # No load decision: a fresh install may hold only the unsloth/ mirror.
+        mirror = mirror_repo(str(repo)) if repo else None
+        if mirror and mirror != str(repo):
+            mirrored = checkpoint_fingerprint(mirror)
+            if mirrored:
+                return mirror, mirrored
+        return repo, revision
+
+    pipeline = (kind or "pipeline") == "pipeline"
+    repo_id, revision = _fingerprint(
+        repo_id, gguf_filename, fetch_base if pipeline and str(base) == str(repo_id) else None
+    )
     source = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
-    revision = checkpoint_fingerprint(repo_id, gguf_filename)
     if not revision:
         return "unknown"
     if str(revision).startswith("local:"):
@@ -2639,8 +2682,8 @@ def _peak_model_identity(
             return "unknown"
         revision = f"{revision}:{weights}"
     identity = f"{source}@{revision}"
-    if (kind or "pipeline") != "pipeline" and base and str(base) != str(repo_id):
-        base_revision = checkpoint_fingerprint(base)
+    if not pipeline and base and str(base) != str(repo_id):
+        base, base_revision = _fingerprint(base, None, fetch_base)
         if not base_revision:
             return "unknown"
         if str(base_revision).startswith("local:"):
@@ -2687,7 +2730,7 @@ def _record_peak_probe(
         peak = probe.finish()
         if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
             return
-        if _live_peak_identity(state) != tuple(identity):
+        if not _peak_identity_matches(state, identity):
             # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
             return
         if cuda_graph.failed_capture_count() != getattr(probe, "failed_captures", 0):
@@ -2702,7 +2745,9 @@ def _record_peak_probe(
             # the SDPA probe could not tell math from a fused kernel: a quadratic peak stored as linear would
             # under-size every larger request
             return
-        family, quant, speed_mode = identity
+        family, quant, speed_mode = _live_peak_identity(
+            state
+        )  # the key this render ran (``cfg:off`` included)
         pipe = state.pipe
         index = getattr(probe.device, "index", None)
         graphs = cuda_graph.live_graph_count(index)
@@ -9505,7 +9550,9 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
-                    peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)
+                    peak_model = _peak_model_identity(
+                        repo_id, gguf_filename, kind, base, fetch_base
+                    )
                     if getattr(pipe, "_unsloth_loras", None):
                         peak_model = (
                             "unknown"  # adapters baked in at load: a build the key cannot name
@@ -9513,6 +9560,10 @@ class DiffusionBackend:
                     try:
                         # the phase-table seed holds only where it was measured
                         pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                        # a CFG-capable family may place from a peak recorded without CFG (``cfg:off``)
+                        pipe._unsloth_peak_expects_cfg = bool(
+                            getattr(fam, "uses_negative_prompt", False)
+                        )
                     except Exception:  # noqa: BLE001
                         pass
                     peak_vae = planned_vae_saver_tag(pipe, plan)
@@ -9572,6 +9623,8 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_learned_peak_mib"),
                                 plan.estimates.get("measured_learned_peak_pixels"),
                                 plan.estimates.get("measured_learned_peak_quadratic"),
+                                plan.estimates.get("measured_static_seed", True),
+                                plan.estimates.get("measured_learned_cfg_off", False),
                             )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
@@ -11637,14 +11690,14 @@ class DiffusionBackend:
 
         if _small_host_int8(pipe):
             raise ValueError(
-                "LoRA is not available on this load: system RAM was too small for the dense model, so Studio "
+                "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "
                 "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Load the "
-                "model with the LoRA selected (Studio then keeps the dense transformer), or use a host with more RAM."
+                "model with the LoRA selected (Unsloth then keeps the dense transformer), or use a host with more RAM."
             )
         if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
             raise ValueError(
                 "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
-                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Studio then "
+                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Unsloth then "
                 "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
             )
         if not diffusion_lora.supports_lora(
@@ -11966,6 +12019,7 @@ class DiffusionBackend:
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
+        object.__setattr__(state, "speed_auto_compiled", bool(speed_applied.get("compiled")))
         object.__setattr__(
             state, "cuda_graphs", tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
         )
@@ -12514,12 +12568,17 @@ class DiffusionBackend:
                         # layers + 1 extra canvas-sized frames beside the output-sized one.
                         guard_condition_pixels += (layer_count + 1) * guard_width * guard_height
                     # past what the measured placement reserved: stream resident groups again for this call
+                    try:
+                        guard_cfg = _negative_prompt_engaged(fam, guidance)
+                    except Exception:  # noqa: BLE001 - unknown: sized as a CFG request
+                        guard_cfg = None
                     extra_mib = measured_request_extra_mib(
                         state.pipe,
                         width = guard_width,
                         height = guard_height,
                         batch_size = guard_batch,
                         condition_pixels = guard_condition_pixels,
+                        cfg = guard_cfg,
                     )
                     if extra_mib > 0:
                         releasable_mib = resident_group_mib(state.pipe)
@@ -13254,6 +13313,7 @@ class DiffusionBackend:
                 "workflows": [],
                 "conditioning": None,
                 "supports_lora": False,
+                "lora_after_reload": False,
                 "supports_controlnet": False,
                 "resolved": None,
                 "generation_defaults": None,
@@ -13265,6 +13325,16 @@ class DiffusionBackend:
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
         speed_optims = int8_gemm_live(state.pipe, speed_optims)
+        lora_gate = dict(
+            engine = "diffusers",
+            family = state.family.name,
+            model_kind = state.kind,
+            transformer_quant = state.transformer_quant,
+        )
+        compiled = "compiled" in (getattr(state, "speed_optims", ()) or ())
+        lora_load_ok = not _small_host_int8(state.pipe) and not comfy_block_runtime_layers(
+            getattr(state.pipe, "transformer", None)
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -13315,15 +13385,13 @@ class DiffusionBackend:
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
-            "supports_lora": diffusion_lora.supports_lora(
-                engine = "diffusers",
-                family = state.family.name,
-                model_kind = state.kind,
-                transformer_quant = state.transformer_quant,
-                compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
-            )
-            and not _small_host_int8(state.pipe)
-            and not comfy_block_runtime_layers(getattr(state.pipe, "transformer", None)),
+            "supports_lora": lora_load_ok
+            and diffusion_lora.supports_lora(compiled = compiled, **lora_gate),
+            # Only Speed=Auto's 3rd-image compile blocks LoRA: a reload stays eager until then.
+            "lora_after_reload": lora_load_ok
+            and compiled
+            and getattr(state, "speed_auto_compiled", False)
+            and diffusion_lora.supports_lora(compiled = False, **lora_gate),
             "small_host": small_host_engaged_on(state.pipe),
             "supports_controlnet": diffusion_controlnet.supports_controlnet(
                 engine = "diffusers",
