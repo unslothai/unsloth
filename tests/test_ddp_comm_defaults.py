@@ -13,26 +13,32 @@ import sys
 import pytest
 import torch
 
-from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
-
 pytest.importorskip("accelerate")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # spawned ranks inherit sys.path
 import _ddp_comm_defaults_worker as worker  # noqa: E402
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "two gloo ranks over TCP localhost")
 
-# BF16/FP16 DDP hooks need CUDA 11+ and NCCL (or XPU/XCCL). On CPU gloo they raise
-# TypeError and sink the whole module-scoped ranks fixture (#14065 CI).
-_BASE_CASES = [
+
+def _bf16_hook_supported():
+    # Mirrors DistributedDataParallel._check_comm_hook: a torch build check, not a GPU or
+    # backend check. CPU wheels refuse bf16_compress_hook with TypeError even on gloo (#14065 CI).
+    try:
+        import torch.distributed as dist
+        built = torch.version.cuda is not None or torch.version.hip is not None
+        return built and dist.is_nccl_available() and torch.cuda.nccl.version() >= (2, 10)
+    except Exception:
+        return False
+
+
+CASES = [
     ("full", "full", {}, {}),
     ("full_off", "full", {"UNSLOTH_DDP_GRADIENT_AS_BUCKET_VIEW": "0"}, {}),
     ("peft", "peft", {}, {}),
-]
-_HOOK_CASES = [
-    ("bf16_hook", "full", {"UNSLOTH_DDP_COMM_HOOK": "bf16"}, {}),
     ("fp16_hook", "peft", {"UNSLOTH_DDP_COMM_HOOK": "fp16"}, {}),
 ]
-CASES = _BASE_CASES + (_HOOK_CASES if has_real_cuda() else [])
+if _bf16_hook_supported():
+    CASES.append(("bf16_hook", "full", {"UNSLOTH_DDP_COMM_HOOK": "bf16"}, {}))
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
 
@@ -118,12 +124,9 @@ def test_lora_keeps_gradients_unaliased(ranks):
     _assert_parity(case, "peft")
 
 
-@pytest.mark.skipif(
-    not has_real_cuda(),
-    reason = "BF16/FP16 DDP comm hooks need CUDA 11+ and NCCL (or XPU/XCCL)",
-)
 def test_comm_hook_opt_in(ranks):
-    for name, kind in (("bf16_hook", "full"), ("fp16_hook", "peft")):
+    hook_cases = [(name, kind) for name, kind, *_ in CASES if name.endswith("_hook")]
+    for name, kind in hook_cases:
         case = ranks[0][name]
         assert case["hooks"] >= 1, name
         _assert_parity(case, kind, exact = False)
