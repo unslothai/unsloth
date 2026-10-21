@@ -55,8 +55,7 @@ def uv_safe_path(path: object) -> str:
         short = _windows_short_path(s)
         if short is not None:
             return short
-        # No 8.3 name (e.g. D:\Program Files with 8.3 creation off): copy it, as
-        # install.ps1's Get-UvSafeRequirementsPath does, or every `-c` uv step fails over to pip.
+        # No 8.3 name (often off on non-system volumes): copy, as install.ps1's Get-UvSafeRequirementsPath does.
     tmp_dir = None
     try:
         if not os.path.isfile(s):
