@@ -265,11 +265,21 @@ try:
 except OSError:
     print("host_unix", "refused")
 """
+    workdir = run_as(ALICE, tools._get_workdir, "chat")
+    confinement = run_as(ALICE, tools._account_confinement)
+    assert confinement.mechanism == "sandbox-exec"
     try:
-        out = run_as(ALICE, tools._python_exec, code, session_id = "chat")
+        result = subprocess.run(
+            confinement.wrap([sys.executable, "-c", code]),
+            cwd = workdir,
+            capture_output = True,
+            text = True,
+            timeout = 60,
+        )
     finally:
         listener.close()
         host_socket.close()
+    out = result.stdout + result.stderr
     for line in (
         "cpus True",
         "dns True",
