@@ -2965,7 +2965,8 @@ function Install-UnslothStudio {
 
     if ($envOverride) {
         try {
-            # Recorded BEFORE the create: the lock later needs to know whether the root pre-existed.
+            # BEFORE the create: the lock later asks whether the root pre-existed, and after the
+            # create every env-mode root does.
             $script:StudioEnvRootPath = $envOverride
             $script:StudioEnvRootExisted = [System.IO.Directory]::Exists($envOverride)
             # .NET API: New-Item -Path treats brackets as wildcards (no -LiteralPath on PS 5.1).
