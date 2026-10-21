@@ -1708,15 +1708,14 @@ def test_cfg_off_keys_are_wired_into_the_load_and_guard():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert (
-        'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))' in src
-    )
-    assert "cfg = guard_cfg," in src
-    assert 'plan.estimates.get("measured_learned_cfg_off", False),' in src
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
-    assert "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)" in src
+    src = "".join(src.split())  # whitespace-free: the formatter may wrap these lines
+    for needle in (
+        'pipe._unsloth_peak_expects_cfg = bool(getattr(fam, "uses_negative_prompt", False))',
+        "cfg = guard_cfg,",
+        'plan.estimates.get("measured_learned_cfg_off", False),',
+        "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)",
+    ):
+        assert "".join(needle.split()) in src, needle
 
 
 def test_render_forced_eager_while_the_compile_is_pending_is_not_probed(monkeypatch):
