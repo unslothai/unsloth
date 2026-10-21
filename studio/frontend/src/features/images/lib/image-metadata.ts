@@ -1111,6 +1111,32 @@ export function matchLoraTags(
   return { loras, unmatched, notes };
 }
 
+/** matchLoraTags against the catalog a paste can see. Without a LoRA-capable model resident the page holds
+ *  no catalog, so the whole local list is fetched rather than reporting every installed adapter missing. */
+export async function matchLoraTagsForImport<
+  T extends { id: string; display_name: string; source?: string },
+>(
+  tags: unknown,
+  catalogLoaded: boolean,
+  loaded: readonly T[],
+  fetchAll: () => Promise<readonly T[]>,
+): Promise<{ loras: string[]; unmatched: string[]; notes: string[] }> {
+  if (catalogLoaded || !Array.isArray(tags) || tags.length === 0)
+    return matchLoraTags(tags, loaded);
+  try {
+    return matchLoraTags(tags, await fetchAll());
+  } catch {
+    const names = (tags as unknown[])
+      .map((t) => (t && typeof t === "object" ? (t as Partial<LoraTag>).name : undefined))
+      .filter((n): n is string => typeof n === "string");
+    return {
+      loras: [],
+      unmatched: [],
+      notes: names.map((n) => `LoRA ${n} (the installed LoRAs could not be listed)`),
+    };
+  }
+}
+
 type ComfyGraph = Record<
   string,
   { class_type?: unknown; inputs?: Record<string, unknown> }

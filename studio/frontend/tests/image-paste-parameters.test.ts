@@ -11,6 +11,7 @@ import {
   importedRecipe,
   isGenerationParametersPaste,
   matchLoraTags,
+  matchLoraTagsForImport,
   parseA1111Parameters,
   pastedParameters,
   recipeSettings,
@@ -283,4 +284,49 @@ test("the Images page wires paste into the same restore path as a drop", () => {
     "features/generation-presets/media-generation-preset-control.tsx",
   );
   assert.match(control, /Paste generation parameters/);
+});
+
+test("LoRA tags pasted before a LoRA-capable model is resident match the whole local catalog", async () => {
+  const local = [{ id: "add-detail-xl", display_name: "Add detail", source: "local" }];
+  const tags = [
+    { name: "add-detail-xl", weight: 0.8 },
+    { name: "missing", weight: 1 },
+  ];
+  let fetched = 0;
+  const fetchAll = async () => {
+    fetched += 1;
+    return local;
+  };
+  // No catalog on the page yet: the installed adapter is found, not reported missing.
+  assert.deepEqual(await matchLoraTagsForImport(tags, false, [], fetchAll), {
+    loras: ["add-detail-xl:0.8"],
+    unmatched: ["missing"],
+    notes: [],
+  });
+  assert.equal(fetched, 1);
+  // A resident catalog is used as is, with no extra request.
+  assert.deepEqual(
+    await matchLoraTagsForImport(tags, true, local, fetchAll),
+    matchLoraTags(tags, local),
+  );
+  assert.deepEqual(await matchLoraTagsForImport(undefined, false, [], fetchAll), {
+    loras: [],
+    unmatched: [],
+    notes: [],
+  });
+  assert.equal(fetched, 1);
+  // The list cannot be read: nothing is called missing.
+  const failed = await matchLoraTagsForImport(tags, false, [], async () => {
+    throw new Error("offline");
+  });
+  assert.deepEqual(failed.unmatched, []);
+  assert.deepEqual(failed.notes, [
+    "LoRA add-detail-xl (the installed LoRAs could not be listed)",
+    "LoRA missing (the installed LoRAs could not be listed)",
+  ]);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(
+    page,
+    /const tagged = await matchLoraTagsForImport\(\n\s+recipe\.lora_tags,\n\s+loraCapable,\n\s+availableLoras,\n\s+\(\) => listDiffusionLoras\(\),\n\s+\);/,
+  );
 });

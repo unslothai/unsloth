@@ -319,7 +319,7 @@ import {
   importedRecipe,
   importNotApplied,
   isGenerationParametersPaste,
-  matchLoraTags,
+  matchLoraTagsForImport,
   newerRecipeSchema,
   pastedParameters,
   pngRecipe,
@@ -2796,8 +2796,13 @@ export function ImagesPage({
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
   const applyImportedRecipe = useCallback(
-    (recipe: ImportedRecipe) => {
-      const tagged = matchLoraTags(recipe.lora_tags, availableLoras);
+    async (recipe: ImportedRecipe) => {
+      const tagged = await matchLoraTagsForImport(
+        recipe.lora_tags,
+        loraCapable,
+        availableLoras,
+        () => listDiffusionLoras(),
+      );
       const settings = recipeSettings(
         tagged.loras.length > 0
           ? { ...recipe, loras: [...(Array.isArray(recipe.loras) ? recipe.loras : []), ...tagged.loras] }
@@ -2890,7 +2895,7 @@ export function ImagesPage({
         });
       }
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
