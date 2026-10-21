@@ -1062,6 +1062,7 @@ def test_wired_unload_clears_the_auto_decision(tmp_path, monkeypatch):
     backend.unload_model()
     # Nothing to reset: the live view is gated on the tensor state every reset clears.
     assert backend._auto_tensor_live is False
+    assert backend._auto_split_decision is None
 
 
 def test_wired_unload_of_a_fake_server_signals_nothing(tmp_path, monkeypatch):
@@ -1179,6 +1180,12 @@ def _record_warnings(monkeypatch):
     return seen
 
 
+def _assert_no_split_state(backend):
+    assert not backend.tensor_parallel
+    assert not backend._auto_tensor_live
+    assert backend._auto_split_decision is None
+
+
 def test_wired_auto_tensor_post_health_failure_is_not_retried(tmp_path, monkeypatch):
     # A healthy tensor server whose load then fails (audio codec setup) is not a tensor
     # failure: relaunching on layer would kill the healthy server for nothing.
@@ -1211,6 +1218,7 @@ def test_wired_auto_tensor_torn_down_mid_load_is_not_retried(tmp_path, monkeypat
     assert not isinstance(result, bool) or result is False
     assert [_split_flag(c) for c in spawns] == ["tensor"]
     assert not [w for w in warnings if "loading without it" in w]
+    _assert_no_split_state(backend)
 
 
 def test_wired_abandoned_auto_tensor_warns_once(tmp_path, monkeypatch):
@@ -1224,6 +1232,8 @@ def test_wired_abandoned_auto_tensor_warns_once(tmp_path, monkeypatch):
     assert result is True
     assert [_split_flag(c) for c in spawns][0] == "tensor"
     assert len([w for w in warnings if "loading without it" in w]) == 1
+    # The rungs of the abandoned attempt never run, so none is announced.
+    assert not [w for w in warnings if "--fit on" in w]
 
 
 def test_wired_scheduler_abort_on_auto_tensor_does_not_block_the_layer_load(tmp_path, monkeypatch):
@@ -1683,3 +1693,70 @@ def test_wired_moe_without_draft_runs_no_gpu_probe(tmp_path, monkeypatch):
     assert _split_flag(cmd) != "tensor"
     assert probed == []
     assert "MoE" in backend._auto_split_decision.reason
+
+
+def test_wired_abandoned_auto_tensor_cancelled_after_its_kill_keeps_no_state(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 20, names = TWO_T4_NAMES
+    )
+    kill = backend._kill_process
+
+    def kill_then_shut_down(*a, **k):
+        proc = backend._process
+        kill(*a, **k)
+        if proc is not None and not getattr(proc, "healthy", True):
+            backend._shutting_down = True
+
+    backend._kill_process = kill_then_shut_down
+    try:
+        result, spawns = _launch_scripted(
+            backend, gguf, _tensor_crashes(["boom"], rc = 1), gpu_memory_mode = "auto", n_ctx = 4096
+        )
+    finally:
+        backend._shutting_down = False
+    assert result is False
+    assert [_split_flag(c) for c in spawns] == ["tensor"]
+    _assert_no_split_state(backend)
+
+
+def test_wired_reload_cancelled_after_the_old_server_dies_keeps_no_state(tmp_path, monkeypatch):
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)
+    assert backend._auto_tensor_live
+    kill = backend._kill_process
+
+    def kill_then_cancel(*a, **k):
+        kill(*a, **k)
+        backend._cancel_event.set()
+
+    backend._kill_process = kill_then_cancel
+    with patch.object(subprocess, "Popen", side_effect = AssertionError("no spawn")):
+        ok = backend.load_model(
+            GgufLoadIntent(
+                gguf_path = str(gguf), model_identifier = "test", gpu_memory_mode = "auto", n_ctx = 8192
+            )
+        )
+    assert ok is False
+    _assert_no_split_state(backend)
+
+
+def test_diffusion_start_drops_the_chat_split_decision(monkeypatch, tmp_path):
+    import test_diffusion_auto_fit_ngl as diffusion
+
+    from core.inference.llama_cpp import _AutoSplitAttempt
+
+    fit_host = diffusion._fit_host
+
+    def host_after_an_auto_tensor_chat(*a, **k):
+        backend = fit_host(*a, **k)
+        backend._tensor_parallel = True
+        backend._auto_split = _AutoSplitAttempt(
+            decision = sp.SplitDecision("tensor", True, "x"), engaged = True
+        )
+        return backend
+
+    monkeypatch.setattr(diffusion, "_fit_host", host_after_an_auto_tensor_chat)
+    _cmd, backend = diffusion._launch(monkeypatch, tmp_path, [(0, 7_800, 8_188)])
+    _assert_no_split_state(backend)

@@ -8548,6 +8548,7 @@ def _load_with_auto_tensor_layer_retry(
             except Exception as exc:
                 if not attempt.engaged:
                     raise
+                self._clear_split_state()
                 if cancelled():
                     if isinstance(exc, _AutoSplitAbandoned):
                         return False
@@ -9710,6 +9711,13 @@ class LlamaCppBackend:
     def tensor_parallel(self) -> bool:
         """Whether --split-mode tensor is active on the loaded server."""
         return self._tensor_parallel
+
+    def _clear_split_state(self) -> None:
+        """No server from the last split decision is running: report none of it."""
+        self._tensor_parallel = False
+        self._auto_split = None
+        self._auto_tensor_split = None
+        self._auto_tensor_split_emitted = None
 
     @property
     def _auto_tensor_live(self) -> bool:
@@ -21065,14 +21073,12 @@ class LlamaCppBackend:
         self._diffusion_requested_ngl = _diffusion_manual_ngl(gpu_memory_mode, gpu_layers)
         self._n_cpu_moe = 0
         self._tensor_split = None
-        self._auto_tensor_split = None
-        self._auto_tensor_split_emitted = None
         self._spill_plan_flags = []
         # Diffusion is never tensor-parallel; clear any state left by a prior TP
         # chat load (load_model phase 1 only kills the process, it doesn't run
         # the unload reset) so /status doesn't misreport TP and an identical
         # re-Apply doesn't reload against stale tensor-parallel state.
-        self._tensor_parallel = False
+        self._clear_split_state()
         # Same reason, sharper consequence: a diffusion runner DOES hold VRAM, so a
         # leftover arch-gate flag would answer holds_no_vram True and let the arbiter
         # run a competing workload into its memory (#7624).
@@ -26245,6 +26251,8 @@ class LlamaCppBackend:
             with self._lock:
                 self._begin_load_warnings()
                 self._kill_process()
+                # Its split state goes with it, so no exit before the next commit reports it.
+                self._clear_split_state()
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
                     self._cleanup_cpu_fallback_runtime()
@@ -33576,6 +33584,9 @@ class LlamaCppBackend:
                         # captured settings while a crashed child leaves is_active false.
                         # Here rather than per rung, so a later rung cannot forget it.
                         self._memory_pending_launch = _mem_settings
+                        if _auto.engaged:
+                            # The caller abandons it; none of the rungs below may run for it.
+                            return False
                         # Read once, like the wait itself: a cleared reference is a
                         # teardown, not a startup crash, and re-reading the
                         # attribute per term would race the shutdown thread again.
@@ -33859,6 +33870,7 @@ class LlamaCppBackend:
                     self._cleanup_failed_cpu_fallback()
                     self._unload_audio_codec()
                     self._healthy = False
+                    self._clear_split_state()
                     self._vram_fraction_pending = None
 
                 def _finish_cancelled_health_wait(message: str) -> bool:
@@ -36633,13 +36645,11 @@ class LlamaCppBackend:
             # pin never leaks into the next (or diffusion) runner.
             self._gpu_ids = None
             self._requested_gpu_ids = None
-            self._tensor_parallel = False
+            self._clear_split_state()
             self._gpu_memory_mode = "auto"
             self._gpu_layers = -1
             self._n_cpu_moe = 0
             self._tensor_split = None
-            self._auto_tensor_split = None
-            self._auto_tensor_split_emitted = None
             self._arch_gate_forced_cpu = False
             self._layer_preserves_tensor_intent = False
             self._speculative_type = None
