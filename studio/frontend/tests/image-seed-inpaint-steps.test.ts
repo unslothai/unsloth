@@ -204,7 +204,7 @@ test("with more gallery pages unloaded, only this session's seed is offered", ()
   assert.equal(reusableSeed(null, [{ seed: 7, created_at: 100 }], true), null);
   assert.equal(reusableSeed(3, pinned, true), 3);
   const page = readSrc("features/images/images-page.tsx");
-  assert.match(page, /reusableSeed\(sessionSeed, images, hasMore\)/);
+  assert.match(page, /reusableSeed\(sessionSeed, images, hasMore \|\| archivedEmpty !== true\)/);
 });
 
 test("an imported Only masked the loaded pipeline cannot crop is reported as not applied", () => {
@@ -243,4 +243,16 @@ test("Only masked on with a model that cannot crop is reported once per model, h
     /if \(missed\.length > 0\) onlyMaskedNotified\.current = onlyMaskedKeyOf\(status\);/,
   );
   assert.doesNotMatch(page, /onlyMaskedRecheck/);
+});
+
+test("the gallery seed fallback waits until the archive is known to be empty", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(
+    page,
+    /if \(sessionSeed !== null \|\| hasMore\) return;\n\s+let cancelled = false;\n\s+getGallery\(0, 1, true\)\n\s+\.then\(\(page\) => \{\n\s+if \(!cancelled\) setArchivedEmpty\(page\.images\.length === 0\);/,
+  );
+  assert.match(page, /if \(!cancelled\) setArchivedEmpty\(false\);/);
+  assert.match(page, /\}, \[sessionSeed, hasMore, images\.length\]\);/);
+  // Unknown or non-empty archive: no gallery seed, so an archived newest image is never skipped.
+  assert.equal(reusableSeed(null, [{ seed: 7, created_at: 1 }], true), null);
 });

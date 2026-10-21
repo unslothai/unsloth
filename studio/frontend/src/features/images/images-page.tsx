@@ -1853,9 +1853,26 @@ export function ImagesPage({
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
+  // The strip lists active images only, so the gallery fallback also needs the archive to be empty: an
+  // archived image may be the newest. Checked again whenever the strip changes (an archive drops a row).
+  const [archivedEmpty, setArchivedEmpty] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (sessionSeed !== null || hasMore) return;
+    let cancelled = false;
+    getGallery(0, 1, true)
+      .then((page) => {
+        if (!cancelled) setArchivedEmpty(page.images.length === 0);
+      })
+      .catch(() => {
+        if (!cancelled) setArchivedEmpty(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionSeed, hasMore, images.length]);
   const lastSeed = useMemo(
-    () => reusableSeed(sessionSeed, images, hasMore),
-    [sessionSeed, images, hasMore],
+    () => reusableSeed(sessionSeed, images, hasMore || archivedEmpty !== true),
+    [sessionSeed, images, hasMore, archivedEmpty],
   );
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     galleryCache.srcById.toRecord(),

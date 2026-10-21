@@ -24,7 +24,7 @@ export function lastSeedOf(run: readonly SeededImage[]): number | null {
   return null;
 }
 
-/** `hasMore`: the gallery is only partly loaded. Pages follow the pin and manual order, not creation
+/** `hasMore`: the gallery is only partly loaded, or may hold records it does not show (archived ones). Pages follow the pin and manual order, not creation
  *  time, so the newest record may be unseen and no gallery seed is offered. */
 export function reusableSeed(
   sessionSeed: number | null,
