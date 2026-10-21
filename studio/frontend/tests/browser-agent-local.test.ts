@@ -77,3 +77,21 @@ test("the agent opens a local address only once the user has typed it in the add
   assert.equal((await navigate("closed-local", "http://localhost:7860/")).ok, false);
   globals.__granted = undefined;
 });
+
+test("a run keeps its own granted tab when another tab of the chat has the same local origin", async () => {
+  globals.__native = false;
+  const store = useBrowserStore.getState();
+  const first = store.openTabIn(store.chat, "http://localhost:7870/")!;
+  const second = store.openTabIn(store.chat, "http://localhost:7870/")!;
+  globals.__granted = new Map([[second, "http://localhost:7870"]]);
+  assert.equal((await navigate("b1", "http://localhost:7870/a")).ok, true);
+  assert.equal(useBrowserStore.getState().activeTabId, second);
+  globals.__granted = new Map([[first, "http://localhost:7870"], [second, "http://localhost:7870"]]);
+  assert.equal((await navigate("b2", "http://localhost:7870/b")).ok, true);
+  assert.equal(useBrowserStore.getState().activeTabId, second);
+  const entry = currentEntry(useBrowserStore.getState().tabs.find((tab) => tab.id === second)!);
+  assert.equal(entry.kind === "web" ? entry.url : undefined, "http://localhost:7870/b");
+  store.closeTab(first);
+  store.closeTab(second);
+  globals.__granted = undefined;
+});
