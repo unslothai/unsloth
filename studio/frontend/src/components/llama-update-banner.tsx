@@ -35,6 +35,7 @@ import { Download } from "lucide-react";
 import {
   type CSSProperties,
   type ReactElement,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -201,6 +202,12 @@ export function LlamaUpdateBanner({
     audio: useNotificationFrequency("audio") === "off",
   };
   const [detailsVersion, setDetailsVersion] = useState<string | null>(null);
+  // the skipped offer, shown in the card's place with an undo for a few seconds.
+  const [skipped, setSkipped] = useState<{
+    key: string;
+    message: string;
+  } | null>(null);
+  const clearSkipped = useCallback(() => setSkipped(null), []);
   // listen regardless of banner preference so muting the UI does not silence cross-tab reload_required resync.
   const { status, visible, applying, apply, dismiss, undoDismiss, snooze } =
     useLlamaUpdateCheck({
@@ -327,18 +334,17 @@ export function LlamaUpdateBanner({
       : "Skip this version";
 
   function handleSkip() {
-    const skippedTag = !bundled && !backendOnly ? primary?.latestTag : null;
+    const skippedTag = bundled || backendOnly ? null : primary?.latestTag;
     const key = dismiss();
-    if (!key) return;
-    toast(
-      skippedTag
+    if (!key) {
+      return;
+    }
+    setSkipped({
+      key,
+      message: skippedTag
         ? `Skipped ${label} ${skippedTag}`
         : `Skipped the ${label} ${bundled ? "updates" : "update"}`,
-      {
-        description: "You will be reminded when a newer version is out.",
-        action: { label: "Undo", onClick: () => undoDismiss(key) },
-      },
-    );
+    });
   }
   // show the backend pair when a migration has no version change.
   const backendPair = backendOnly
@@ -419,9 +425,29 @@ export function LlamaUpdateBanner({
     updateProgress,
     jobSucceeded,
   );
+  // a card that comes back (undo, or a newer offer) retires the notice.
+  useEffect(() => {
+    if (show) {
+      setSkipped(null);
+    }
+  }, [show]);
+
+  if (!show) {
+    return skipped ? (
+      <SkippedNotice
+        message={skipped.message}
+        positioned={positioned}
+        onUndo={() => {
+          undoDismiss(skipped.key);
+          setSkipped(null);
+        }}
+        onExpire={clearSkipped}
+      />
+    ) : null;
+  }
 
   // opacity and transform transitions can flash during gpu layer churn.
-  return show ? (
+  return (
     <div
       className={cn(
         positioned
@@ -550,5 +576,67 @@ export function LlamaUpdateBanner({
         )}
       </div>
     </div>
-  ) : null;
+  );
+}
+
+// long enough to read and reach Undo; hovering holds it open.
+const SKIPPED_NOTICE_MS = 6000;
+
+function SkippedNotice({
+  message,
+  positioned,
+  onUndo,
+  onExpire,
+}: {
+  message: string;
+  positioned: boolean;
+  onUndo: () => void;
+  onExpire: () => void;
+}): ReactElement {
+  const undoRef = useRef<HTMLButtonElement>(null);
+  const [hovered, setHovered] = useState(false);
+  // the skip button is gone, so keyboard focus moves to Undo instead of the page.
+  useEffect(() => {
+    undoRef.current?.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => {
+    if (hovered) {
+      return;
+    }
+    const timer = setTimeout(onExpire, SKIPPED_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [hovered, onExpire]);
+  return (
+    <div
+      className={cn(
+        "w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]",
+        positioned
+          ? "fixed bottom-4 right-4 z-[9998]"
+          : "pointer-events-auto shrink-0",
+      )}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      data-testid="llama-update-skipped"
+    >
+      <div className="flex items-center gap-3 rounded-[24px] bg-white py-2.5 pl-5 pr-3 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
+        {/* <output> carries the implicit status role, so screen readers announce the skip. */}
+        <output
+          className="block min-w-0 grow truncate text-ui-13 text-foreground"
+          title={message}
+        >
+          {message}
+        </output>
+        <Button
+          ref={undoRef}
+          size="sm"
+          variant="ghost"
+          className="h-auto shrink-0 whitespace-nowrap rounded-full px-2.5 py-2 text-ui-13 font-medium text-foreground"
+          onClick={onUndo}
+          data-testid="llama-update-undo-skip"
+        >
+          Undo
+        </Button>
+      </div>
+    </div>
+  );
 }
