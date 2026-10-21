@@ -94,7 +94,7 @@ export function ApiExampleDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="relative min-w-0">
-          <div className="corner-squircle max-h-[60dvh] overflow-auto scroll-rounded rounded-xl bg-muted/40 py-3 pr-11 pl-3 text-ui-12 leading-[1.6] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] [&_[data-streamdown=code-block-header]]:hidden [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_code]:!text-ui-12 [&_pre]:!m-0 [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-12 [&_pre]:!leading-[1.6]">
+          <div className="corner-squircle max-h-[60dvh] overflow-auto scroll-rounded rounded-xl bg-foreground/[0.05] py-3 pr-11 pl-3 text-ui-12 leading-[1.6] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] [&_[data-streamdown=code-block-header]]:hidden [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_code]:!text-ui-12 [&_pre]:!m-0 [&_pre]:!border-0 [&_pre]:!bg-transparent [&_pre]:!p-0 [&_pre]:!text-ui-12 [&_pre]:!leading-[1.6]">
             {sampling ? (
               <Streamdown
                 mode="static"
