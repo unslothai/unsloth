@@ -459,9 +459,10 @@ class ChatBackend:
         # An effort-only template has no off switch: thinking off still renders a low effort.
         always_on = always_on or style == "reasoning_effort"
         thinking = (always_on or enable_thinking) if supports_reasoning else None
-        # Instruct-2507 templates keep <think> handling for history but the models never reason.
+        # Instruct-2507 templates keep <think> handling for history but the models never reason;
+        # their -GGUF ids miss the per-model defaults, so name the non-thinking table directly.
         if re.search(r"qwen3[-_].*instruct[-_]2507", (model_id or "").lower()):
-            thinking = None
+            thinking = False
         sampling = resolve_effective_sampling(
             model_id,
             dict(
