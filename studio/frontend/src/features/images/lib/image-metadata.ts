@@ -746,6 +746,11 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     ...promptEmphasisGroups(negative ?? ""),
   ];
   if (emphasis.length > 0) out.prompt_emphasis = emphasis;
+  // A1111 reads \( \) \[ \] as literal brackets; an engine without its parser keeps the backslash.
+  const escaped = [
+    ...new Set(`${networks.prompt}\n${negative ?? ""}`.match(/\\[()[\]]/g) ?? []),
+  ];
+  if (escaped.length > 0) out.prompt_escaped_brackets = escaped;
   const notApplied: string[] = networks.other.slice();
   const hires: Record<string, string> = {};
   let legacySchedule: string | undefined;
@@ -964,6 +969,7 @@ export const PENDING_RECIPE_KEYS = [
   "hires",
   "lora_tags",
   "prompt_emphasis",
+  "prompt_escaped_brackets",
   "parameters_not_applied",
 ] as const;
 
@@ -1016,6 +1022,14 @@ export function importNotApplied(
     const groups = r.prompt_emphasis.filter((g): g is string => typeof g === "string");
     const shown = groups.slice(0, 3).join(", ") + (groups.length > 3 ? ", ..." : "");
     out.push(`prompt emphasis (${shown}) is passed as plain text`);
+  }
+  if (
+    !parsesEmphasis &&
+    Array.isArray(r.prompt_escaped_brackets) &&
+    r.prompt_escaped_brackets.length > 0
+  ) {
+    const tokens = r.prompt_escaped_brackets.filter((t): t is string => typeof t === "string");
+    out.push(`escaped brackets (${tokens.join(" ")}) are passed with their backslashes`);
   }
   for (const key of Object.keys(RECIPE_BOUNDS) as (keyof typeof RECIPE_BOUNDS)[]) {
     const b = RECIPE_BOUNDS[key];
