@@ -60,6 +60,22 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    # pyproject.toml pins these by hand: torch / torchvision per CUDA extra (with the
+    # matching +cuXXX tag and xformers wheel), and transformers / datasets / bitsandbytes
+    # to tested windows with `!=` exclusions. Dependabot rewrites each whole specifier
+    # (#13833, #14469 collapsed every cuXXX-torchYYY extra to plain torch==2.14.1), so
+    # these move with the version matrix by hand. Advisories still show as alerts.
+    ignore:
+      - dependency-name: "torch"
+      - dependency-name: "torchvision"
+      - dependency-name: "torchaudio"
+      - dependency-name: "xformers"
+      - dependency-name: "bitsandbytes"
+      - dependency-name: "transformers"
+      - dependency-name: "datasets"
+      # A major bump (huggingface-hub 2.x, pymupdf4llm 0.3 -> 1.x) needs its own review.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       python:
         patterns: ["*"]
