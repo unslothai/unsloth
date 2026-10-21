@@ -5705,18 +5705,19 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
         # llama.cpp drops an iGPU from its default list once a discrete GPU is seen.
         (True, None, {1}, set(), set(), False),
         (False, [0], set(), {0}, set(), True),
-        # An explicit selection: llama.cpp turns auto off if ANY selected device lacks
-        # mmap support (src/llama-model.cpp load_tensors), and integrated Vulkan / CUDA
-        # devices report none.
-        (False, [0, 1], set(), {0}, set(), True),
+        # A CUDA/HIP pick is a visibility mask, so the default list over it drops the
+        # APU beside a discrete card (src/llama.cpp llama_prepare_model_devices).
+        (False, [0, 1], set(), {0}, set(), False),
         (False, [0], set(), set(), {0}, True),
         (False, None, set(), set(), {0, 1}, True),
+        # A Vulkan pick is emitted as --device, used as given: auto turns off if ANY
+        # listed device lacks mmap support (src/llama-model.cpp load_tensors).
         (True, [0, 1], {1}, set(), set(), True),
         (True, [0, 1], set(), set(), set(), False),
         (True, [0, 1], {0, 1}, set(), set(), True),
         (True, None, set(), set(), set(), False),
         (True, None, {0, 1}, set(), set(), True),
-        (False, [0, 1], set(), set(), {1}, True),
+        (False, [0, 1], set(), set(), {1}, False),
         (False, [0, 1], set(), set(), set(), False),
         (False, None, set(), set(), set(), False),
         # Unpinned mixed CUDA: the default list drops the iGPU once a dGPU is seen.
@@ -5735,7 +5736,7 @@ def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host
         "vulkan_all_integrated_explicit",
         "vulkan_discrete_default",
         "vulkan_all_integrated_default",
-        "cuda_mixed_explicit",
+        "cuda_mixed_mask",
         "cuda_all_discrete_explicit",
         "cuda_discrete_default",
         "cuda_mixed_default",
@@ -5773,6 +5774,122 @@ def test_lazy_auto_resolves_off_only_where_llama_cpp_does(
         "/m.gguf", caps = caps, extra_args = ["-lzm", "on"], env = {}, auto_resolves_off = got
     )
     assert (auto, on) == ((0 if expected else _QWEN38_PLE), _QWEN38_PLE)
+
+
+def _mixed_cuda_soc_host(monkeypatch):
+    """A discrete card (0) beside an integrated SoC GPU (1) on a CUDA build."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set())
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_integrated_cuda_probe_is_free", staticmethod(lambda: True)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [0, 1])
+    )
+
+
+@pytest.mark.parametrize(
+    "load_kwargs",
+    [dict(), dict(gpu_ids = [0, 1])],
+    ids = ["default_selection", "picker_mask"],
+)
+def test_a_mixed_cuda_host_keeps_the_lazy_discount_through_the_preflight(
+    tmp_path, _moe_cache_host, monkeypatch, load_kwargs
+):
+    """No --device list: llama.cpp's default enumeration over the visible set drops the
+    iGPU once a discrete GPU is seen (src/llama.cpp llama_prepare_model_devices), so lazy
+    auto stays on. The host preflight must agree with the fit rather than treat the GPU
+    inventory, or a CUDA visibility mask, as an explicit device list."""
+    _mixed_cuda_soc_host(monkeypatch)
+    lazy = {"per_layer_token_embd.weight": 12 * _GIB}
+    no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+    backend, cmd = _cache_launch(
+        tmp_path,
+        ram_gib = 12,
+        lazy = lazy,
+        arch = "qwen4exp",
+        caps = no_auto,
+        memory = [(0, 8_000, 16_000), (1, 1_000, 1_000)],
+        host_guard = True,
+        **load_kwargs,
+    )
+    assert _load_mode(cmd) == "none", cmd
+    assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_an_explicit_device_list_naming_an_igpu_turns_lazy_auto_off(monkeypatch):
+    """A real --device list is used as given, iGPU included, so ANY integrated device
+    turns auto off; the same ids as a visibility mask follow the default rule."""
+    _mixed_cuda_soc_host(monkeypatch)
+    backend = LlamaCppBackend()
+    kw = dict(
+        gpu_indices = [0, 1],
+        detected_gpus = [(0, 8_000), (1, 1_000)],
+        shared_gpu_ids = set(),
+        is_vulkan_backend = False,
+    )
+    assert backend._lazy_auto_resolves_off(**kw) is False
+    for extra_args, env in (
+        (["--device", "CUDA0,CUDA1"], {}),
+        ([], {"LLAMA_ARG_DEVICE": "CUDA0,CUDA1"}),
+        (["-dev", "CUDA1"], {}),
+    ):
+        assert backend._lazy_auto_resolves_off(**kw, extra_args = extra_args, env = env) is True, (
+            extra_args,
+            env,
+        )
+    # Naming only the discrete card leaves the iGPU out of the model devices.
+    assert backend._lazy_auto_resolves_off(**kw, extra_args = ["--device", "CUDA0"], env = {}) is False
+    # The masked child re-indexes from 0: CUDA0 under CUDA_VISIBLE_DEVICES=1 is the iGPU.
+    assert (
+        backend._lazy_auto_resolves_off(
+            **kw, extra_args = ["--device", "CUDA0"], env = {"CUDA_VISIBLE_DEVICES": "1"}
+        )
+        is True
+    )
+    # --device none offloads nothing, so no device can turn auto off.
+    assert backend._lazy_auto_resolves_off(**kw, extra_args = ["--device", "none"], env = {}) is False
+    # Vulkan: Studio's own pick is emitted as --device Vulkan<i>, an explicit list.
+    vk = dict(kw, is_vulkan_backend = True, shared_gpu_ids = {1})
+    assert backend._lazy_auto_resolves_off(**vk) is True
+    assert backend._lazy_auto_resolves_off(**dict(vk, gpu_indices = None)) is False
+    # The host preflight passes the inventory, not a pick: only its argv can pin.
+    assert backend._lazy_auto_resolves_off(**vk, device_list = False) is False
+    assert (
+        backend._lazy_auto_resolves_off(
+            **vk, device_list = False, extra_args = ["--device", "Vulkan0,Vulkan1"], env = {}
+        )
+        is True
+    )
+
+
+def test_an_explicit_pick_reaches_every_lazy_decision(tmp_path, _moe_cache_host, monkeypatch):
+    """gpu_ids becomes the child's selection, so the fit's lazy decisions must see it
+    even before the fit narrows anything, as the later checks already do."""
+    _mixed_cuda_soc_host(monkeypatch)
+    seen = []
+    real = LlamaCppBackend._lazy_auto_resolves_off
+
+    def spy(self, **kw):
+        seen.append(kw.get("gpu_indices"))
+        return real(self, **kw)
+
+    monkeypatch.setattr(LlamaCppBackend, "_lazy_auto_resolves_off", spy)
+    lazy = {"per_layer_token_embd.weight": 12 * _GIB}
+    no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+    _cache_launch(
+        tmp_path,
+        ram_gib = 12,
+        lazy = lazy,
+        arch = "qwen4exp",
+        caps = no_auto,
+        memory = [(0, 8_000, 16_000), (1, 1_000, 1_000)],
+        gpu_ids = [0, 1],
+    )
+    assert seen, "no lazy decision ran"
+    assert all(sel is not None and set(sel) <= {0, 1} for sel in seen), seen
 
 
 @pytest.mark.parametrize("lazy_args, warned", [(["-lzm", "on"], False), ([], True)])

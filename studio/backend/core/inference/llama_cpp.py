@@ -11448,17 +11448,38 @@ class LlamaCppBackend:
         shared_gpu_ids: Optional[Iterable[int]],
         is_vulkan_backend: bool,
         probe_integrated_cuda: bool = True,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+        device_list: Optional[bool] = None,
     ) -> bool:
         """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child: ANY
         model device without mmap support (ggml-org/llama.cpp#28160; integrated Vulkan and
-        CUDA devices report none). An explicit selection is checked device by device; the
-        default list holds iGPUs only when no discrete GPU is seen, so there every visible
-        device must be integrated.
+        CUDA devices report none).
+
+        Which devices are model devices follows llama_prepare_model_devices. A real
+        ``--device`` list (argv, then ``LLAMA_ARG_DEVICE``) is used as given, so it is
+        checked device by device. Otherwise llama.cpp enumerates the visible devices and
+        keeps iGPUs only when no discrete GPU is seen, so every visible device must be
+        integrated; a CUDA/HIP visibility mask only narrows that visible set.
+        ``device_list`` says whether ``gpu_indices`` reaches the child as ``--device``:
+        by default only on Vulkan, where Studio pins with ``--device Vulkan<i>``; the
+        host preflight passes False, its ``gpu_indices`` being the inventory.
         ``probe_integrated_cuda`` False uses only a cached SoC answer (no new context)."""
-        try:
-            selected = set(gpu_indices or ())
-        except TypeError:
-            selected = set()
+        selected = None
+        override = self._effective_device_ids(extra_args, env)
+        if override is not None:
+            gpu_names = [d for d in override if d.lower() not in _CPU_DEVICE_VALUES]
+            ordinals = [self._device_ordinal(d) for d in gpu_names]
+            if all(o is not None for o in ordinals):
+                # --device names the child's compact ids; residency is keyed physical.
+                selected = set(self._physical_ordinals(ordinals, env, is_vulkan_backend) or ())
+                if not selected:
+                    return False
+        elif device_list if device_list is not None else is_vulkan_backend:
+            try:
+                selected = set(gpu_indices or ()) or None
+            except TypeError:
+                selected = None
         if selected:
             if is_vulkan_backend:
                 return bool(selected & set(shared_gpu_ids or ()))
@@ -16401,12 +16422,17 @@ class LlamaCppBackend:
                     caps = self.probe_server_capabilities(argv[0]),
                     extra_args = argv,
                     env = _env,
+                    # The reachable rows are the visible set, not a device list: only
+                    # a --device in this argv or env pins the child, as in the fit.
                     auto_resolves_off = self._lazy_auto_resolves_off(
                         gpu_indices = [row[0] for row in gpus] if gpus else None,
                         detected_gpus = gpus,
                         shared_gpu_ids = shared,
                         is_vulkan_backend = bool(shared) or self._is_vulkan_backend(argv[0]),
                         probe_integrated_cuda = False,
+                        extra_args = argv,
+                        env = _env,
+                        device_list = False,
                     ),
                 ),
             )
@@ -29853,11 +29879,18 @@ class LlamaCppBackend:
                             caps = server_caps,
                             extra_args = _child_extras,
                             env = _child_env,
+                            # An explicit pick pins the child even before a fit narrows it.
                             auto_resolves_off = self._lazy_auto_resolves_off(
-                                gpu_indices = gpu_indices,
+                                gpu_indices = (
+                                    gpu_indices
+                                    if gpu_indices is not None or not gpu_ids
+                                    else [int(i) for i in gpu_ids]
+                                ),
                                 detected_gpus = _detected_gpus,
                                 shared_gpu_ids = _shared_gpu_ids,
                                 is_vulkan_backend = is_vulkan_backend,
+                                extra_args = _child_extras,
+                                env = _child_env,
                             ),
                         )
                         _need = (
@@ -30307,11 +30340,18 @@ class LlamaCppBackend:
                         - _kv_bytes(effective_ctx, 0),
                     )
                     # A lazily read table stays mmap'd under every load mode: not pinned RAM.
+                    # An explicit pick pins the child even before a fit narrows it.
                     _fit_lazy_auto_off = self._lazy_auto_resolves_off(
-                        gpu_indices = gpu_indices,
+                        gpu_indices = (
+                            gpu_indices
+                            if gpu_indices is not None or not gpu_ids
+                            else [int(i) for i in gpu_ids]
+                        ),
                         detected_gpus = _detected_gpus,
                         shared_gpu_ids = _shared_gpu_ids,
                         is_vulkan_backend = is_vulkan_backend,
+                        extra_args = _fit_extras,
+                        env = _fit_env,
                     )
                     _fit_lazy_bytes = self._lazy_read_host_bytes(
                         model_path,
