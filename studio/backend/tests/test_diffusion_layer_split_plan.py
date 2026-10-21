@@ -1094,3 +1094,14 @@ def test_windows_rocm_secondary_budget_uses_the_capped_free(monkeypatch):
     assert mg.secondary_resident_limit_mib(1, "auto") < 14 * 1024
     monkeypatch.setattr(hw, "IS_ROCM", False)
     assert mg.secondary_device_memory(1).free_mib == 24 * 1024 - 64
+
+
+def test_rocm_apu_without_the_integrated_flag_gets_no_blocks(monkeypatch, engine):
+    # Windows gfx1153 Krackan Point 2 on a runtime that leaves is_integrated 0: still an APU by its gfx target
+    _cards(monkeypatch)
+    _rocm_host(monkeypatch, {0: _RX7900, 1: ("gfx1153", 0), 2: _RX7900})
+    refined, _ = _refine(_plan(), ordinals = (0, 1, 2))
+    assert refined.layer_split is not None and 1 not in refined.layer_split.cards
+    refined, pipe = _refine(_plan(), ordinals = (0, 1))
+    assert refined.layer_split is None
+    assert lsp.layer_split_status(pipe)["declined"].startswith(lsp.UNIFIED_DECLINE)
