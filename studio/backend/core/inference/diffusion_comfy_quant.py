@@ -293,6 +293,28 @@ _DTYPE_BYTES = {
 }
 
 
+# Original-layout names of modules a DiT keeps in fp32 (Wan's ``time_embedding.N`` loads as ``time_embedder``).
+_KEEP_FP32_ORIGINAL_ALIASES = {"time_embedder": ("time_embedding",)}
+
+
+def keeps_fp32(name: str, keep_fp32: Any = ()) -> bool:
+    """Whether header key ``name`` names a ``_keep_in_fp32_modules`` module, under its diffusers or original name."""
+    keep = tuple(keep_fp32 or ())
+    tokens = str(name).split(".")
+    return any(t in tokens for m in keep for t in (m, *_KEEP_FP32_ORIGINAL_ALIASES.get(m, ())))
+
+
+def keep_fp32_modules_for(fam: Any) -> tuple:
+    """The family transformer's ``_keep_in_fp32_modules`` (the loader refuses fp8 storage for them), else ()."""
+    try:
+        import diffusers
+        cls = getattr(diffusers, getattr(fam, "transformer_class", None) or "", None)
+        keep = getattr(cls, "_keep_in_fp32_modules", None) or ()
+    except Exception:  # noqa: BLE001 -- unknown class: nothing excluded
+        return ()
+    return (keep,) if isinstance(keep, str) else tuple(keep)
+
+
 def fp8_stored_by_header(
     fmt: str,
     shape: Any,
@@ -301,11 +323,7 @@ def fp8_stored_by_header(
 ) -> bool:
     """Header rule for fp8 layers kept as codes, shared by the host RAM estimate and the planner; the loader can only
     widen more (charged live)."""
-    return (
-        fmt in FP8_FORMATS
-        and len(shape or ()) == 2
-        and not any(m in str(name).split(".") for m in (keep_fp32 or ()))
-    )
+    return fmt in FP8_FORMATS and len(shape or ()) == 2 and not keeps_fp32(name, keep_fp32)
 
 
 def comfy_resident_mib(
@@ -324,6 +342,8 @@ def comfy_resident_mib(
     fp8_divisible: int = 0,
     block_divisible: Optional[dict] = None,
     key_map: Any = None,
+    keep_fp32: Any = (),
+    keep_fp32_bytes: Optional[int] = None,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
     weight a runtime keeps costs its stored bytes, one that is dequantized costs ``numel * compute_bytes``
@@ -333,7 +353,10 @@ def comfy_resident_mib(
     an int8 layer whose name holds one of ``exclude_tokens`` is priced dequantized, as Studio's int8 filter
     leaves it, and so is a layer the runtime filter skips (in / out features under ``min_features``, or fp8 features
     not multiples of ``fp8_divisible``). ``key_map`` names layers as the loader's filter sees them (an original-layout
-    file). None when the header cannot be read. Torch-free."""
+    file). ``keep_fp32``: the transformer's ``_keep_in_fp32_modules``; those layers are never fp8-stored and, widened,
+    cost ``keep_fp32_bytes`` per element (4 on an fp16 load, default ``compute_bytes``). None when the header cannot
+    be read. Torch-free."""
+    fp32_bytes = compute_bytes if keep_fp32_bytes is None else int(keep_fp32_bytes)
     try:
         scan = scan if scan is not None else scan_comfy_quant(path)
         if scan is None:
@@ -351,14 +374,22 @@ def comfy_resident_mib(
             return False
         return not divisible or not (out_f % divisible or in_f % divisible)
 
-    def _excluded(key: str, shape: Any) -> bool:
+    def _names(key: str, shape: Any) -> list:
         names = [key]
         if key_map is not None:
             try:
                 names = [k for k, _rows in key_map(key, tuple(shape or ()))] or names
             except ValueError:
                 pass
-        return any(t in n for n in names for t in exclude_tokens)
+        return names
+
+    def _excluded(key: str, shape: Any) -> bool:
+        return any(t in n for n in _names(key, shape) for t in exclude_tokens)
+
+    def _bytes(key: str, shape: Any) -> int:
+        if keep_fp32 and any(keeps_fp32(n, keep_fp32) for n in _names(key, shape)):
+            return fp32_bytes
+        return compute_bytes
 
     def _logical(fmt: str, shape: Any) -> Any:
         if fmt == NVFP4 and len(shape or ()) == 2:
@@ -375,7 +406,13 @@ def comfy_resident_mib(
             and _fits(shape, 0)
         ) or (
             (layer.format == FP8_E4M3 and keep_fp8 and _fits(shape, fp8_divisible))
-            or (fp8_stored and fp8_stored_by_header(layer.format, shape))
+            or (
+                fp8_stored
+                and all(
+                    fp8_stored_by_header(layer.format, shape, n, keep_fp32)
+                    for n in _names(name + ".weight", shape)
+                )
+            )
             or (
                 {NVFP4: keep_nvfp4, MXFP8: keep_mxfp8}.get(layer.format, False)
                 # input smoothing has no runtime Linear: the loader dequantizes such a layer
@@ -397,11 +434,13 @@ def comfy_resident_mib(
         dtype = str(entry.get("dtype", ""))
         stored = numel * _DTYPE_BYTES.get(dtype, 2)
         if key in kept:
-            total += stored if kept[key] else numel * compute_bytes * (2 if key in packed else 1)
+            total += (
+                stored if kept[key] else numel * _bytes(key, shape) * (2 if key in packed else 1)
+            )
         elif key.endswith(COMFY_QUANT_SUFFIX) or any(key.endswith(s) for s in _SCALE_SUFFIXES):
             total += stored
         elif dtype.startswith(("F", "BF")):
-            total += numel * compute_bytes
+            total += numel * _bytes(key, shape)
         else:
             total += stored
     return -(-total // (1024 * 1024)) if total > 0 else None
@@ -1204,9 +1243,7 @@ def load_comfy_quant_transformer(
         return (
             bool(fp8_storage)
             and shape is not None
-            and fp8_stored_by_header(
-                layer.format, shape, layer.name, keep_fp32 if fp16_keep else ()
-            )
+            and fp8_stored_by_header(layer.format, shape, layer.name, keep_fp32)
         )
 
     _widened = {

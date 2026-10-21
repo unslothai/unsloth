@@ -210,6 +210,7 @@ from .diffusion_transformer_quant import (
     transformer_is_quantised,
 )
 from .diffusion import (
+    _comfy_keep_fp32_pricing,
     _family_override_resolved,
     _companion_split_expected,
     _layer_split_expected,
@@ -583,6 +584,7 @@ def _video_comfy_resident_mib(
         exclude_tokens = exclude,
         key_map = _video_comfy_key_map(fam),
         **filters,
+        **_comfy_keep_fp32_pricing(fam, target),
     )
 
 

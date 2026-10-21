@@ -1280,3 +1280,52 @@ def test_a_plan_repriced_larger_under_offload_does_not_force_the_offload_probe(
     )
     assert backend._comfy_priced_offload[path] is False
     assert backend._comfy_offload_for(types.SimpleNamespace(resident = True), path) is False
+
+
+def test_fp8_stored_pricing_widens_keep_fp32_layers_as_the_loader_does(tmp_path):
+    """The loader never stores a ``_keep_in_fp32_modules`` linear (fp32 on an fp16 load), so the stored-size estimate
+    must not price it at one byte, under its diffusers name or Wan's original ``time_embedding.N``."""
+    n = 1024
+    names = ("blocks.0.ffn", "condition_embedder.time_embedder.linear_1", "time_embedding.0")
+    tensors, layers = {}, {}
+    for name in names:
+        tensors[f"{name}.weight"] = torch.zeros(n, n, dtype = torch.float8_e4m3fn)
+        tensors[f"{name}.weight_scale"] = torch.tensor(1.0)
+        layers[name] = {"format": "float8_e4m3fn"}
+    path = _save(
+        tmp_path / "wan.safetensors",
+        tensors,
+        {cq.QUANT_METADATA_KEY: json.dumps({"layers": layers})},
+    )
+    scan = cq.scan_comfy_quant(path)
+    kw = dict(keep_int8 = False, keep_fp8 = False, fp8_stored = True)
+    one = n * n / 2**20  # MiB per layer per byte
+    plain = cq.comfy_resident_mib(path, scan, **kw)
+    assert plain == pytest.approx(3 * one, abs = 1)
+    keep = ("time_embedder", "scale_shift_table")
+    fp16 = cq.comfy_resident_mib(path, scan, **kw, keep_fp32 = keep, keep_fp32_bytes = 4)
+    assert fp16 == pytest.approx(one + 2 * 4 * one, abs = 1)
+    bf16 = cq.comfy_resident_mib(path, scan, **kw, keep_fp32 = keep)
+    assert bf16 == pytest.approx(one + 2 * 2 * one, abs = 1)
+    for name in names[1:]:
+        assert not cq.fp8_stored_by_header("float8_e4m3fn", (n, n), name, keep)
+    assert cq.fp8_stored_by_header("float8_e4m3fn", (n, n), names[0], keep)
+
+
+def test_keep_fp32_modules_come_from_the_family_transformer():
+    wan = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
+    assert "time_embedder" in cq.keep_fp32_modules_for(wan)
+    assert cq.keep_fp32_modules_for(types.SimpleNamespace(transformer_class = "NoSuchModel")) == ()
+    assert cq.keep_fp32_modules_for(types.SimpleNamespace()) == ()
+
+
+def test_planner_prices_keep_fp32_layers_at_fp32_only_on_fp16():
+    from core.inference import diffusion as d
+
+    wan = types.SimpleNamespace(transformer_class = "WanTransformer3DModel")
+    fp16 = d._comfy_keep_fp32_pricing(wan, types.SimpleNamespace(dtype = torch.float16))
+    bf16 = d._comfy_keep_fp32_pricing(wan, types.SimpleNamespace(dtype = torch.bfloat16))
+    assert "time_embedder" in fp16["keep_fp32"] and fp16["keep_fp32_bytes"] == 4
+    assert bf16["keep_fp32_bytes"] is None
+    flux = types.SimpleNamespace(transformer_class = "FluxTransformer2DModel")
+    assert d._comfy_keep_fp32_pricing(flux, types.SimpleNamespace(dtype = torch.float16)) == {}

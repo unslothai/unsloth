@@ -3115,6 +3115,19 @@ def _single_file_fp8_upcast(single_file_path: Any, fam: Any) -> bool:
     return "fp8" in Path(single_file_path).name.lower() if stored is None else stored
 
 
+def _comfy_keep_fp32_pricing(fam: Any, target: Any) -> dict:
+    """``comfy_resident_mib`` kwargs for the DiT's ``_keep_in_fp32_modules``: never stored, fp32 on an fp16 load."""
+    import torch
+
+    from .diffusion_comfy_quant import keep_fp32_modules_for
+
+    keep = keep_fp32_modules_for(fam)
+    if not keep:
+        return {}
+    fp16 = getattr(target, "dtype", None) is torch.float16
+    return {"keep_fp32": keep, "keep_fp32_bytes": 4 if fp16 else None}
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -10126,6 +10139,7 @@ class DiffusionBackend:
                 keep_int8 = comfy_int8_backend(target, name, base, offload = offload) is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base, offload = offload) is not None,
                 fp8_stored = fp8_storage and comfy_fp8_storage(target, lora = lora),
+                **_comfy_keep_fp32_pricing(fam, target),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
                 fp8_divisible = divisible_for_scheme(TQ_FP8),
