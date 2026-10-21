@@ -32,7 +32,7 @@ import {
 } from "@/features/model-picker";
 import { isNpuModelId } from "@/features/npu";
 import { cn } from "@/lib/utils";
-import { ReloadIcon, Settings02Icon } from "@hugeicons/core-free-icons";
+import { ReloadIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Dispatch,
@@ -216,7 +216,6 @@ export function ApiModelLoadControls({
   unloading,
   configRequest = null,
   onConfigRequestAdopted,
-  onOpenSettings,
   onEjectAll,
   children,
 }: {
@@ -231,7 +230,6 @@ export function ApiModelLoadControls({
   unloading: boolean;
   configRequest?: ModelConfigHandoffRequest | null;
   onConfigRequestAdopted?: (requestId: string) => void;
-  onOpenSettings?: () => void;
   onEjectAll?: () => void;
   children?: ReactNode;
 }): ReactElement {
@@ -479,30 +477,6 @@ export function ApiModelLoadControls({
         className="h-9 max-w-full rounded-full sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"
         contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
-      <ToolbarTooltip
-        label={
-          activeModel
-            ? "Model run settings"
-            : "Load a model to change its run settings"
-        }
-      >
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          aria-label="Run settings"
-          aria-haspopup="dialog"
-          onClick={onOpenSettings}
-          disabled={busy || reloading || !onOpenSettings}
-          className="rounded-full"
-        >
-          <HugeiconsIcon
-            icon={Settings02Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-        </Button>
-      </ToolbarTooltip>
       <ToolbarTooltip label={reloadTitle(lastLoadLabel, Boolean(activeModel))}>
         <Button
           type="button"

@@ -55,6 +55,7 @@ import {
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
+  Settings02Icon,
   Timer01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -78,6 +79,7 @@ import { unloadResident } from "./unload-resident";
 import {
   residentHasRunSettings,
   residentHasSlotsSetting,
+  keptRunSettingsRequest,
   runSettingsRequest,
   slotsSettingsRequest,
 } from "./slots-settings-request";
@@ -251,6 +253,7 @@ type ServedModel = {
   checkpoint: string;
   /** The primary server's model, the one the monitor's context and slots describe. */
   active: boolean;
+  quant: string | null;
 };
 
 // Chat's runtime lists every model answering requests; the monitor names only the primary.
@@ -266,9 +269,15 @@ function servedModels(
         : model.id,
     checkpoint: model.checkpoint ?? model.id,
     active: Boolean(activeId) && modelIdsMatch(model.id, activeId),
+    quant: model.quant ?? null,
   }));
   if (activeModel && !rows.some((row) => row.active)) {
-    rows.unshift({ name: activeModel, checkpoint: activeModel, active: true });
+    rows.unshift({
+      name: activeModel,
+      checkpoint: activeModel,
+      active: true,
+      quant: monitorSelection(activeModel).ggufVariant,
+    });
   }
   return rows.sort((a, b) => Number(b.active) - Number(a.active));
 }
@@ -347,8 +356,8 @@ function CopyButton({
           "size-7 shrink-0 rounded-full p-0",
           revealOnHover &&
             !copied &&
-            // Collapsed too, so a hidden button leaves no gap before the next name.
-            "h-7 w-0 border-0 opacity-0 group-hover/copy:w-7 group-hover/copy:opacity-100 focus-visible:w-7 focus-visible:opacity-100 pointer-coarse:w-7 pointer-coarse:opacity-100",
+            // Opacity only: the slot stays, so revealing it moves nothing, and hovering it counts.
+            "opacity-0 group-hover/copy:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100",
         )}
       >
         <HugeiconsIcon
@@ -1148,6 +1157,36 @@ export function ApiMonitorPage(): ReactElement {
       setEjectingKept(false);
     }
   };
+  // The resident opens on its live settings; a kept model on what it has saved, as its row in
+  // the picker does. Either way Run saves and reloads that model alone.
+  const openRunSettings = (model: ServedModel): void => {
+    const requestId = createModelConfigHandoffRequestId();
+    setConfigRequest(
+      model.active && canEditSettings
+        ? runSettingsRequest(resident, requestId)
+        : keptRunSettingsRequest(model, requestId),
+    );
+  };
+  const settingsButton = (model: ServedModel): ReactElement => (
+    <ToolbarTooltip label={`Run settings for ${model.name}`}>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label={`Run settings for ${model.name}`}
+        aria-haspopup="dialog"
+        onClick={() => openRunSettings(model)}
+        disabled={ejecting || modelLoading}
+        className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
+      >
+        <HugeiconsIcon
+          icon={Settings02Icon}
+          strokeWidth={1.75}
+          className="size-3.5"
+        />
+      </Button>
+    </ToolbarTooltip>
+  );
   const ejectLabel =
     served.length > 1
       ? `Eject all ${served.length} models and free their memory`
@@ -1286,17 +1325,6 @@ export function ApiMonitorPage(): ReactElement {
               unloading={ejecting}
               configRequest={configRequest}
               onConfigRequestAdopted={() => setConfigRequest(null)}
-              onOpenSettings={
-                canEditSettings
-                  ? () =>
-                      setConfigRequest(
-                        runSettingsRequest(
-                          resident,
-                          createModelConfigHandoffRequestId(),
-                        ),
-                      )
-                  : undefined
-              }
               onEjectAll={() => void ejectAll()}
             >
               <ToolbarTooltip label={ejectLabel}>
@@ -1352,6 +1380,7 @@ export function ApiMonitorPage(): ReactElement {
                       revealOnHover={true}
                     />
                   </span>
+                  {settingsButton(model)}
                   {model.active ? (
                     <dl className="contents">{activeFacts}</dl>
                   ) : null}
@@ -1388,6 +1417,7 @@ export function ApiMonitorPage(): ReactElement {
                       label="Copy model name"
                       revealOnHover={true}
                     />
+                    {settingsButton(served[0])}
                   </>
                 ) : (
                   <span className="text-muted-foreground">None loaded</span>

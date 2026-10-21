@@ -75,6 +75,26 @@ export function runSettingsRequest(
   };
 }
 
+/** Run settings for a model kept loaded beside the resident: what the picker's own row gear opens,
+ *  so Run saves its settings and reloads that model. */
+export function keptRunSettingsRequest(
+  model: { checkpoint: string; quant: string | null },
+  requestId: string,
+): ModelConfigHandoffRequest {
+  return {
+    requestId,
+    id: model.checkpoint,
+    focus: "advanced",
+    meta: {
+      source: "local",
+      isLora: false,
+      ggufVariant: model.quant ?? undefined,
+      isGguf: model.quant != null,
+      isDownloaded: true,
+    },
+  };
+}
+
 /** Opens the resident's Run settings on Parallel Slots, so Run saves and reloads as it does there. */
 export function slotsSettingsRequest(
   resident: ResidentRunTarget | null,
