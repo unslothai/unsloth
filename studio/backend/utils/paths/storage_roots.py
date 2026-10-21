@@ -21,6 +21,7 @@ import tempfile
 from loggers import get_logger
 from utils.account_context import current_account, is_owner_context
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
+from utils.paths.private_tmp import private_tmp_dir, private_tmp_path
 
 logger = get_logger(__name__)
 
@@ -368,11 +369,12 @@ def project_workspaces_root() -> Path:
 
 
 def shared_tmp_root() -> Path:
-    return Path(tempfile.gettempdir()) / "unsloth-studio"
+    return private_tmp_path("unsloth-studio")
 
 
 def tmp_root() -> Path:
-    root = shared_tmp_root()
+    # Created and checked here: on a shared /tmp another account could own or plant the root.
+    root = private_tmp_dir("unsloth-studio")
     if is_owner_context():
         return root
     return root / "accounts" / current_account().account_id

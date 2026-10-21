@@ -335,8 +335,21 @@ def _walk_for_host_channels(
         return f"{unreadable[0]} cannot be fully inspected"
     for found, total, path in links.values():
         if found < total:
-            return f"contains a file hard-linked from outside it: {path}"
+            return f"{_HARD_LINKED}{path}"
     return None
+
+
+_HARD_LINKED = "contains a file hard-linked from outside it: "
+
+
+def _broke_staged_links() -> bool:
+    # An older backend on the same home can stage an "Open in default app" link after this one started.
+    try:
+        from utils.paths.path_utils import prune_open_staging
+        prune_open_staging()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 _scan_lock = threading.Lock()
@@ -520,6 +533,12 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
         _overran_workdirs.add(key)
         return (WORKDIR_SCAN_INCOMPLETE,)
     _overran_workdirs.discard(key)
+    if hazard is not None and hazard.startswith(_HARD_LINKED) and _broke_staged_links():
+        # The hazard stands unless a full rescan proves it gone.
+        try:
+            hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+        except _ScanBudgetExceeded:
+            pass
     if hazard is not None:
         raise WorkdirUnsafeError(f"the session workdir {hazard}")
     return ()
@@ -635,6 +654,7 @@ def model_library_roots() -> tuple[str, ...]:
         return ()
     state = studio_state_roots()
     forbidden = _never_a_model_library()
+    hf_homes = _hf_home_roots()
     kept: list[str] = []
     for path in candidates:
         if not path or not os.path.isabs(path):
@@ -647,11 +667,56 @@ def model_library_roots() -> tuple[str, ...]:
         # A whole-folder grant would skip the gate's credential prompt inside it.
         if tool_path_approval._references_sensitive_path(real + os.sep):
             continue
+        # The root check can't see an HF home's token / stored_tokens at this folder's top.
+        if any(_is_within(home, real) for home in hf_homes) or _holds_a_credential_file(real):
+            continue
         if any(_paths_overlap(real, root) for root in state):
             continue
         if real not in kept:
             kept.append(real)
     return tuple(kept)
+
+
+_CREDENTIAL_BASENAMES = (".env",)  # plus the approval gate's own list, read at call time
+
+
+def _hf_home_roots() -> tuple[str, ...]:
+    homes: list[str] = []
+    try:
+        from utils.hf_cache_settings import known_hf_cache_homes
+
+        # Cache history and download homes often hold only hub bytes; a home counts once it holds a token.
+        for home in known_hf_cache_homes():
+            home = os.path.realpath(str(home))
+            if any(
+                os.path.lexists(os.path.join(home, name)) for name in ("token", "stored_tokens")
+            ):
+                homes.append(home)
+    except Exception:  # noqa: BLE001 - never fail a launch over the cache settings
+        pass
+    # HF_TOKEN_PATH moves token, and stored_tokens beside it, out of the HF home.
+    token_path = os.environ.get("HF_TOKEN_PATH")
+    if token_path and token_path != os.devnull:
+        token_path = os.path.expanduser(os.path.expandvars(token_path))
+        if os.path.isabs(token_path):
+            homes.append(os.path.dirname(os.path.realpath(token_path)))
+    return tuple(homes)
+
+
+def _is_within(path: str, root: str) -> bool:
+    if sys.platform in ("darwin", "win32"):
+        # Case-insensitive volumes; over-matching on a case-sensitive one only skips a grant.
+        path, root = path.casefold(), root.casefold()
+    try:
+        return os.path.commonpath([path, root]) == root
+    except ValueError:
+        return False
+
+
+def _holds_a_credential_file(folder: str) -> bool:
+    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
+    names = (*_CREDENTIAL_BASENAMES, *sorted(approval_names))
+    return any(os.path.lexists(os.path.join(folder, name)) for name in names)
 
 
 def _is_filesystem_root(path: str, pathmod: Any = None) -> bool:
@@ -967,7 +1032,7 @@ def capability_snapshot(
         environment_fingerprint = identity,
         remediation = (
             "Python and Terminal run with OS isolation. The network is not confined; a tool "
-            "call can still reach the internet."
+            "call can still reach the internet and services listening on this machine's loopback."
         ),
     )
 

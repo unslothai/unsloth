@@ -273,3 +273,14 @@ def test_out_of_range_seeds_are_refused(seed):
 def test_the_whole_uint32_pin_range_is_accepted(seed):
     payload = ChatSettingsPayload.model_validate({"inferenceParams": {"seed": seed}})
     assert payload.model_dump(exclude_unset = True) == {"inferenceParams": {"seed": seed}}
+
+
+def test_forgetting_a_model_s_params_names_its_keys():
+    payload = ChatSettingsPayload.model_validate(
+        {"forgetInferenceParamsByModel": {"qwen": ["temperature", "systemPrompt"]}}
+    )
+    assert payload.model_dump(exclude_unset = True) == {
+        "forgetInferenceParamsByModel": {"qwen": ["temperature", "systemPrompt"]}
+    }
+    with pytest.raises(ValidationError):
+        ChatSettingsPayload.model_validate({"forgetInferenceParamsByModel": ["qwen"]})

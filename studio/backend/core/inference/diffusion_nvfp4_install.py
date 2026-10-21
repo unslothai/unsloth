@@ -172,14 +172,16 @@ ENV_LOCK_TIMEOUT_S = 900.0
 
 
 def _env_lock_path() -> str:
-    """One lock file per environment: next to its site-packages when writable, else in the temp dir."""
+    """One lock file per environment: next to its site-packages when writable, else in a per-user temp folder."""
     import hashlib
+
+    from utils.paths.private_tmp import private_tmp_dir
 
     name = ".unsloth-flashinfer-install.lock"
     if os.access(sys.prefix, os.W_OK):
         return os.path.join(sys.prefix, name)
     digest = hashlib.sha256(os.path.realpath(sys.prefix).encode()).hexdigest()[:16]
-    return os.path.join(tempfile.gettempdir(), f"{name}.{digest}")
+    return os.path.join(private_tmp_dir("unsloth-flashinfer-lock"), f"{name}.{digest}")
 
 
 @contextlib.contextmanager

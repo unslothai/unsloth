@@ -813,6 +813,39 @@ def model_allowed(repo_id: str) -> bool:
     return any(fnmatchcase(repo_id, pattern) for pattern in allowlist)
 
 
+def connection_model_allowed(model_id: str) -> bool:
+    allowlist = model_allowlist()
+    if allowlist is None:
+        return True
+    model_id = (model_id or "").strip().lower()
+    untagged = model_id.split(":", 1)[0]
+    # OpenRouter's "latest" aliases carry a leading "~", which an allowlist entry cannot.
+    candidates = {model_id, untagged, untagged.lstrip("~")}
+    return any(fnmatchcase(candidate, pattern) for candidate in candidates for pattern in allowlist)
+
+
+def shared_connection_view(row: dict) -> dict | None:
+    view = {**row, "shared": True, "shared_by_owner": True}
+    models = row.get("models") or []
+    if not models:
+        from core.inference.providers import get_provider_info
+        models = list(
+            (get_provider_info(row.get("provider_type") or "") or {}).get("default_models") or []
+        )
+    view["models"] = [model for model in models if connection_model_allowed(model)]
+    view["available_models"] = [
+        model for model in row.get("available_models") or [] if model in view["models"]
+    ]
+    return view if view["models"] else None
+
+
+def require_connection_model_allowed(config: dict | None, model) -> None:
+    if not config or not config.get("shared_by_owner"):
+        return
+    if not isinstance(model, str) or model not in (config.get("models") or []):
+        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
+
+
 def _reference_repo_id(reference: str) -> str | None:
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
@@ -877,6 +910,11 @@ def model_visible(
 
 def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> bool:
     access_options = {"offline": True} if offline else {}
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before any exists()/resolve(): touching a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(reference):
+        return False
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
         try:
@@ -914,7 +952,12 @@ def require_model_access(
 ) -> None:
     access_options = {"offline": True} if offline else {}
     if not model_visible(reference, repo_type = repo_type, **access_options):
-        if repo_type == "model":
+        from utils.paths.path_utils import is_network_or_device_path
+
+        # The allowlist check below resolves the reference on disk: not for a share path.
+        if repo_type == "model" and not (
+            isinstance(reference, str) and is_network_or_device_path(reference)
+        ):
             require_model_allowed(reference)
         raise HTTPException(status_code = 404, detail = "Model not found")
 
@@ -955,7 +998,12 @@ def private_directory(path: str, folder: str) -> str:
     """Rebase import-time owner defaults; refuse account-external scans."""
     if not managed_account():
         return path
+    from utils.paths.path_utils import is_network_or_device_path
     from utils.paths.storage_roots import studio_root
+
+    # Before resolve(): touching a share path is already an outbound SMB sign-in.
+    if is_network_or_device_path(path):
+        raise HTTPException(status_code = 404, detail = "Directory not found")
 
     normalized = normalize_path(path)
     if normalized != path:
@@ -994,6 +1042,21 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
 
 
 def require_media_references(request) -> None:
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before the resolve()/is_dir() calls below: touching a share path is already an outbound SMB sign-in.
+    fields = (
+        "model_path",
+        "gguf_filename",
+        "transformer_prequant_path",
+        "text_encoder_file",
+        "vae_file",
+    )
+    for name in fields:
+        value = getattr(request, name, None)
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if isinstance(item, str) and is_network_or_device_path(item):
+                raise HTTPException(status_code = 404, detail = "Model not found")
     require_media_adapters(request)
     for name in ("gguf_filename", "transformer_prequant_path"):
         reference = getattr(request, name, None)

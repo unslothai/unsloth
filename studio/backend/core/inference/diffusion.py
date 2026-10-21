@@ -1251,6 +1251,9 @@ class _LoadState:
     eager_patched: bool = False
     # Deferred speed auto: generate() engages `default` at the 3rd generation.
     speed_deferred: bool = False
+    # That deferred engagement compiled the denoiser: LoRAs are off until a reload, which defers again.
+    speed_auto_compiled: bool = False
+    # Auto static skip plan for that deferred `default` tier, installed when it engages.
     deferred_static_plan: Optional[dict] = None
     generation_count: int = 0
     compile_cache_ctx: Any = None
@@ -10831,6 +10834,7 @@ class DiffusionBackend:
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
+        object.__setattr__(state, "speed_auto_compiled", bool(speed_applied.get("compiled")))
         object.__setattr__(
             state, "cuda_graphs", tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
         )
@@ -11982,6 +11986,7 @@ class DiffusionBackend:
                 "workflows": [],
                 "conditioning": None,
                 "supports_lora": False,
+                "lora_after_reload": False,
                 "supports_controlnet": False,
                 "resolved": None,
                 "generation_defaults": None,
@@ -11993,6 +11998,16 @@ class DiffusionBackend:
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
         speed_optims = int8_gemm_live(state.pipe, speed_optims)
+        lora_gate = dict(
+            engine = "diffusers",
+            family = state.family.name,
+            model_kind = state.kind,
+            transformer_quant = state.transformer_quant,
+        )
+        compiled = "compiled" in (getattr(state, "speed_optims", ()) or ())
+        lora_load_ok = not _small_host_int8(state.pipe) and not comfy_block_runtime_layers(
+            getattr(state.pipe, "transformer", None)
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -12043,15 +12058,13 @@ class DiffusionBackend:
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
-            "supports_lora": diffusion_lora.supports_lora(
-                engine = "diffusers",
-                family = state.family.name,
-                model_kind = state.kind,
-                transformer_quant = state.transformer_quant,
-                compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
-            )
-            and not _small_host_int8(state.pipe)
-            and not comfy_block_runtime_layers(getattr(state.pipe, "transformer", None)),
+            "supports_lora": lora_load_ok
+            and diffusion_lora.supports_lora(compiled = compiled, **lora_gate),
+            # Only Speed=Auto's 3rd-image compile blocks LoRA: a reload stays eager until then.
+            "lora_after_reload": lora_load_ok
+            and compiled
+            and getattr(state, "speed_auto_compiled", False)
+            and diffusion_lora.supports_lora(compiled = False, **lora_gate),
             "small_host": small_host_engaged_on(state.pipe),
             "supports_controlnet": diffusion_controlnet.supports_controlnet(
                 engine = "diffusers",

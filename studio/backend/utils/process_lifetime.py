@@ -777,8 +777,29 @@ def collect_descendants_known(
     """known is False when the walk failed; an unreadable walk must never be read as no children."""
     if not pid:
         return [], True
-    # Windows never clears a stale creator pid, so check each candidate against its own
-    # parent's creation time (a child cannot predate its parent). Unreadable candidates are skipped.
+    if not is_signalable_pid(pid):
+        # Below the floor. Every process on the host descends from init, so walking pid 1
+        # hands the whole machine to a caller that is about to SIGTERM what it gets back:
+        # a stand-in process with pid 1 in a test did exactly that and took the user's
+        # session down. Nothing under init is ours by descent.
+        return [], True
+    # Windows records the creating pid on a process and never clears it, not even when
+    # that parent exits and its number is handed to something else, so the raw table
+    # lists strangers created by an earlier holder of this pid as children of it. A real
+    # descendant cannot predate the process that created it, so each candidate is
+    # ordered against ITS OWN immediate parent, not only against the root.
+    #
+    # The root floor alone is not enough, and the difference is a real machine:
+    # the root starts at t=100, a stranger U starts at t=200 under some unrelated
+    # pid P, P exits, at t=300 P's number is reused for a genuine Unsloth child, and
+    # U still records P as its creator. U is later than the root, so a root-only floor
+    # admits it and taskkill /T /F reaches U and everything under it. Ordering U
+    # against P's CURRENT creation time (300) rejects it, because a child cannot
+    # predate its parent. Each step of the walk carries the parent's own creation
+    # time down, so the check holds at every depth rather than only at the first.
+    #
+    # Without a readable floor this claims nothing at all, and an unreadable candidate
+    # is skipped rather than assumed to be ours: a tree kill is not a place to guess.
     if _is_windows():
         return _windows_collect_descendants_known(pid)
     # POSIX: the kernel rewrites parent links on reparent, so no floor is needed.

@@ -4427,6 +4427,7 @@ class UnslothTrainer:
             )
 
             data_collator = None
+            audio_response_masker = None
             if is_deepseek_ocr:
                 logger.info("Detected DeepSeek OCR model\n")
                 if not _ensure_deepseek_ocr_installed():
@@ -4480,6 +4481,32 @@ class UnslothTrainer:
                 processor = self.tokenizer
 
                 audio_col_name = getattr(self, "_audio_vlm_audio_col", "audio")
+                if training_args.get("train_on_completions", False) and not training_args.get(
+                    "is_cpt", False
+                ):
+                    from unsloth.chat_templates import train_on_responses_only
+
+                    def _build_response_masker(holder, **kwargs):
+                        holder.masker = train_on_responses_only(
+                            None, tokenizer = processor, return_function = True, **kwargs
+                        )
+                        return holder
+
+                    def _notify_masking(level, message):
+                        if level == "warning":
+                            logger.warning(message)
+                        else:
+                            logger.info(f"{message}\n")
+
+                    # Same marker policy as the text path: auto-detect, template table, else full sequences.
+                    holder, audio_masking_applied = apply_completion_masking(
+                        types.SimpleNamespace(processing_class = processor, masker = None),
+                        self.model_name,
+                        _build_response_masker,
+                        notify = _notify_masking,
+                    )
+                    if audio_masking_applied:
+                        audio_response_masker = holder.masker
 
                 def audio_vlm_collate_fn(examples):
                     texts = []
@@ -4507,6 +4534,8 @@ class UnslothTrainer:
                         if token_id is not None:
                             labels[labels == token_id] = -100
                     batch["labels"] = labels
+                    if audio_response_masker is not None:
+                        batch["labels"] = audio_response_masker(batch)["labels"]
                     return batch
 
                 data_collator = audio_vlm_collate_fn
@@ -4957,6 +4986,8 @@ class UnslothTrainer:
             else:
                 if train_on_responses_enabled and is_deepseek_ocr:
                     logger.info("Train on responses handled by DeepSeek OCR collator\n")
+                elif train_on_responses_enabled and audio_response_masker is not None:
+                    logger.info("Train on responses handled by audio VLM collator\n")
                 else:
                     logger.info("Training on full sequences (including prompts)\n")
 

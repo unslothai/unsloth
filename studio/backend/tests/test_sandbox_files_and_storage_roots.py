@@ -4,8 +4,10 @@
 """Chat files live under UNSLOTH_STUDIO_HOME and can be listed, fetched and cleaned up with the chat."""
 
 import asyncio
+import errno
 import functools
 import hashlib
+import io
 import json
 import os
 import re
@@ -6283,7 +6285,227 @@ def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkey
     (opened,) = [cmd[-1] for cmd in launched]
     assert not opened.startswith(os.path.realpath(sandbox))
     assert os.path.basename(opened) == "report.pdf"
-    assert os.path.samefile(opened, sandbox / "outputs" / "report.pdf")
+    assert Path(opened).read_bytes() == b"%PDF-1.4"
+
+
+def test_opening_a_sandbox_file_keeps_the_chat_able_to_run_tools(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    (sandbox / "chart.png").write_bytes(b"\x89PNG")
+    assert _open(inference, "chart.png") == {"status": "ok"}
+    assert len(launched) == 1
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+
+
+def _stage_like_an_older_build(
+    tmp_path,
+    sandbox,
+    name = "chart.png",
+):
+    linked = tmp_path / "cache" / "open-staging" / "linked"
+    linked.mkdir(parents = True)
+    (sandbox / name).write_bytes(b"\x89PNG")
+    os.link(sandbox / name, linked / name)
+    return linked
+
+
+def test_opening_a_file_clears_old_staged_files(tmp_path, monkeypatch):
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    staging = tmp_path / "cache" / "open-staging"
+    old, recent = staging / "old", staging / "recent"
+    for entry in (old, recent):
+        entry.mkdir(parents = True)
+        (entry / "notes.txt").write_text("x", encoding = "utf-8")
+    day_ago = time.time() - 25 * 60 * 60
+    os.utime(old, (day_ago, day_ago))
+    (sandbox / "report.pdf").write_bytes(b"%PDF-1.4")
+    assert _open(inference, "report.pdf") == {"status": "ok"}
+    assert not old.exists()
+    assert recent.exists()
+
+
+# The longest name a filesystem allows, so the swap cannot lengthen it.
+@pytest.mark.parametrize("name", ["chart.png", "r" * 251 + ".pdf"])
+def test_startup_clears_a_hard_link_an_older_build_staged(tmp_path, monkeypatch, name):
+    import inspect
+
+    from core.inference import os_sandbox
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    linked = _stage_like_an_older_build(tmp_path, sandbox, name)
+    path_utils.prune_open_staging()
+    assert os.listdir(linked) == []
+    assert os.stat(sandbox / name).st_nlink == 1
+    assert (sandbox / name).read_bytes() == b"\x89PNG"
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+
+    import main
+
+    source = inspect.getsource(main.lifespan)
+    assert "prune_open_staging()" in source
+    assert "threading.Thread(" in source and "target = _prune_open_staging_in_background" in source
+
+
+def test_an_app_saving_while_a_legacy_link_is_replaced_keeps_its_save(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    real_mkstemp = tempfile.mkstemp
+
+    def app_saves_meanwhile(*args, **kwargs):
+        saved = linked / "chart.png.saving"
+        saved.write_bytes(b"edited in the app")
+        os.replace(saved, linked / "chart.png")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkstemp", app_saves_meanwhile)
+    path_utils.prune_open_staging()
+    assert (linked / "chart.png").read_bytes() == b"edited in the app"
+    assert os.listdir(linked) == ["chart.png"]
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+
+
+def test_a_sibling_backend_breaking_legacy_links_is_not_raced(tmp_path, monkeypatch):
+    from utils.cache_cleanup import _try_lock, _unlock
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    _stage_like_an_older_build(tmp_path, sandbox)
+    sibling = os.open(tmp_path / "cache" / "open-staging.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    _try_lock(sibling)
+    path_utils.prune_open_staging()
+    assert os.stat(sandbox / "chart.png").st_nlink == 2
+    _unlock(sibling)
+    path_utils.prune_open_staging()
+    assert os.stat(sandbox / "chart.png").st_nlink == 1
+
+
+def test_a_link_an_older_sibling_stages_after_startup_does_not_block_tools(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    path_utils.prune_open_staging()
+    linked = _stage_like_an_older_build(tmp_path, sandbox)
+    assert os_sandbox.scan_workdir_for_host_channels(str(sandbox)) == ()
+    assert os.listdir(linked) == []
+
+    (tmp_path / "elsewhere").mkdir()
+    os.link(sandbox / "chart.png", tmp_path / "elsewhere" / "chart.png")
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "hard-linked from outside"):
+        os_sandbox.scan_workdir_for_host_channels(str(sandbox))
+
+
+def test_a_rescan_that_runs_out_of_time_keeps_the_hard_link_refusal(tmp_path, monkeypatch):
+    from core.inference import os_sandbox
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    (sandbox / "chart.png").write_bytes(b"\x89PNG")
+    (tmp_path / "elsewhere").mkdir()
+    os.link(sandbox / "chart.png", tmp_path / "elsewhere" / "chart.png")
+    real_scan = os_sandbox._hazard_within_wall_clock
+    scans = []
+
+    def second_scan_overruns(*args, **kwargs):
+        scans.append(args)
+        if len(scans) > 1:
+            raise os_sandbox._ScanBudgetExceeded("over budget")
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(os_sandbox, "_hazard_within_wall_clock", second_scan_overruns)
+    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "hard-linked from outside"):
+        os_sandbox.scan_workdir_for_host_channels(str(sandbox))
+    assert len(scans) == 2
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
+def test_a_symlinked_staging_entry_is_not_walked(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.txt").write_bytes(b"shared")
+    os.link(outside / "a.txt", outside / "b.txt")
+    (tmp_path / "cache" / "open-staging").mkdir(parents = True)
+    (tmp_path / "cache" / "open-staging" / "redirect").symlink_to(outside, target_is_directory = True)
+    path_utils.prune_open_staging()
+    assert os.stat(outside / "a.txt").st_ino == os.stat(outside / "b.txt").st_ino
+    assert sorted(os.listdir(outside)) == ["a.txt", "b.txt"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
+def test_a_symlinked_staging_root_is_left_alone(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    elsewhere = tmp_path / "elsewhere"
+    recent, old = elsewhere / "recent", elsewhere / "old"
+    for folder in (recent, old):
+        folder.mkdir(parents = True)
+    (recent / "a.txt").write_bytes(b"shared")
+    os.link(recent / "a.txt", recent / "b.txt")
+    day_ago = time.time() - 25 * 60 * 60
+    os.utime(old, (day_ago, day_ago))
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "open-staging").symlink_to(elsewhere, target_is_directory = True)
+    path_utils.prune_open_staging()
+    path_utils._prune_open_staging(tmp_path / "cache" / "open-staging")
+    assert sorted(os.listdir(recent)) == ["a.txt", "b.txt"]
+    assert old.exists()
+
+
+def test_legacy_links_wait_when_the_staging_lock_cannot_be_taken(tmp_path, monkeypatch):
+    from utils import cache_cleanup
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    sandbox.mkdir(parents = True)
+    _stage_like_an_older_build(tmp_path, sandbox)
+
+    def no_locks_here(fd):
+        raise OSError(errno.ENOSYS, "locking not supported")
+
+    monkeypatch.setattr(cache_cleanup, "_try_lock", no_locks_here)
+    path_utils.prune_open_staging()
+    assert os.stat(sandbox / "chart.png").st_nlink == 2
+
+
+def test_a_failed_copy_leaves_nothing_staged(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    report = tmp_path / "sandbox" / "report.pdf"
+    report.parent.mkdir()
+    report.write_bytes(b"%PDF-1.4")
+
+    class DiskFull(io.BytesIO):
+        def read(self, *args):
+            raise OSError(28, "No space left on device")
+
+    def fdopen_then_fail(fd, *args, **kwargs):
+        os.close(fd)
+        return DiskFull()
+
+    monkeypatch.setattr(os, "fdopen", fdopen_then_fail)
+    with pytest.raises(OSError):
+        path_utils._stage_for_open(report, report.parent)
+    assert list((tmp_path / "cache" / "open-staging").iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -6344,17 +6566,100 @@ def test_a_file_swapped_for_a_link_after_the_check_opens_what_was_checked(tmp_pa
     report.write_bytes(b"%PDF-1.4 checked")
     app = tmp_path / "Evil.app"
     app.write_text("x", encoding = "utf-8")
-    real_link = os.link
+    real_fdopen = os.fdopen
 
-    def swap_then_link(src, dst, **kwargs):
-        os.unlink(src)
-        os.symlink(app, src)
-        return real_link(src, dst, **kwargs)
+    def swap_then_open(fd, *args, **kwargs):
+        os.unlink(report)
+        os.symlink(app, report)
+        return real_fdopen(fd, *args, **kwargs)
 
-    monkeypatch.setattr(path_utils.os, "link", swap_then_link)
+    monkeypatch.setattr(os, "fdopen", swap_then_open)
     staged = path_utils._stage_for_open(report, report.parent)
     assert not staged.is_symlink()
     assert staged.read_bytes() == b"%PDF-1.4 checked"
+
+
+def test_a_file_still_being_written_is_staged_as_it_was_opened(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    log = tmp_path / "sandbox" / "run.log"
+    log.parent.mkdir()
+    log.write_bytes(b"line 1\n")
+    real_fdopen = os.fdopen
+
+    def append_then_open(fd, *args, **kwargs):
+        with open(log, "ab") as handle:
+            handle.write(b"line 2\n")
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", append_then_open)
+    staged = path_utils._stage_for_open(log, log.parent)
+    assert staged.read_bytes() == b"line 1\n"
+
+
+def test_a_file_cut_short_while_staging_is_not_handed_over_half_copied(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    table = tmp_path / "sandbox" / "rows.csv"
+    table.parent.mkdir()
+    table.write_bytes(b"a,b\n1,2\n")
+    real_fdopen = os.fdopen
+
+    def truncate_then_open(fd, *args, **kwargs):
+        os.truncate(table, 4)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", truncate_then_open)
+    with pytest.raises(OSError):
+        path_utils._stage_for_open(table, table.parent)
+    assert list((tmp_path / "cache" / "open-staging").iterdir()) == []
+
+
+def test_opening_a_file_again_reuses_its_copy_until_either_changes(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    video = tmp_path / "sandbox" / "clip.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"frames v1")
+    first = path_utils._stage_for_open(video, video.parent)
+    assert path_utils._stage_for_open(video, video.parent) == first
+    assert len(list((tmp_path / "cache" / "open-staging").iterdir())) == 1
+
+    first.write_bytes(b"frames v0")
+    edited = path_utils._stage_for_open(video, video.parent)
+    assert edited != first and edited.read_bytes() == b"frames v1"
+
+    # Same size and, as on a coarse-timestamp volume, the same mtime.
+    before = video.stat()
+    video.write_bytes(b"frames v2")
+    os.utime(video, ns = (before.st_atime_ns, before.st_mtime_ns))
+    changed = path_utils._stage_for_open(video, video.parent)
+    assert changed not in (first, edited) and changed.read_bytes() == b"frames v2"
+
+
+def test_reopening_after_many_edits_compares_one_earlier_copy(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    table = tmp_path / "sandbox" / "rows.csv"
+    table.parent.mkdir()
+    for version in range(5):
+        table.write_bytes(b"a,b\n1,%d\n" % version)
+        path_utils._stage_for_open(table, table.parent)
+    compared = []
+    real_same_bytes = path_utils._same_bytes
+
+    def counting(*args):
+        compared.append(args)
+        return real_same_bytes(*args)
+
+    monkeypatch.setattr(path_utils, "_same_bytes", counting)
+    table.write_bytes(b"a,b\n1,9\n")
+    path_utils._stage_for_open(table, table.parent)
+    assert len(compared) == 1
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
