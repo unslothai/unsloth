@@ -313,8 +313,11 @@ export const BUDGET = {
   // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
   // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_066_583,
-  rawBytes: 6_862_784,
+  // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
+  // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
+  // 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_066_721,
+  rawBytes: 6_863_207,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
