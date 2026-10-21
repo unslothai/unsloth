@@ -410,6 +410,9 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = _profile_table("scheme_deny", q
 # ``FamilyProfile.auto_prefer``: a family's head of the ``auto`` order, ahead of ``_AUTO_LADDER``.
 _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = _profile_table("auto_prefer", quant = True)
 
+# ``FamilyProfile.auto_scheme_skip``: schemes left out of the family's ``auto`` order (explicit requests unaffected).
+_FAMILY_AUTO_SKIP: dict[str, frozenset[str]] = _profile_table("auto_scheme_skip", quant = True)
+
 
 # AUTO keeps bf16 while it fits for these (``FamilyProfile.auto_bf16_when_resident``: measured with both sides compiled,
 # INT8 was at most ~5% faster and failed the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
@@ -1192,9 +1195,10 @@ def _auto_scheme_order(
                 if prefer.backend is None or _nvfp4_backend_is(device, prefer.backend):
                     head = prefer.schemes
     order: list[str] = []
+    skip = _FAMILY_AUTO_SKIP.get(str(family or "").strip().lower(), frozenset())
     # Filtered here so the NVFP4 switch reaches every reader of the order.
     for scheme in without_nvfp4(head + tier):
-        if scheme not in order:
+        if scheme not in order and scheme not in skip:
             order.append(scheme)
     return tuple(order)
 

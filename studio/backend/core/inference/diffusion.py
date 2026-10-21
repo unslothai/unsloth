@@ -10283,15 +10283,31 @@ class DiffusionBackend:
             pipe.to(device)
             return pipe
         if getattr(fam, "name", None) == MOSS_IMAGE_FAMILY_NAME:
-            # Remote-code repos: the in-tree port, assembled per component.
+            # Remote-code repos: the in-tree port, assembled per component, with the hosted pre-cast encoder when the
+            # request resolves to one (krea's branch below, same reason).
             from .diffusion_moss_image import load_moss_image_pipeline
 
+            moss_te = None
+            if target is not None:
+                moss_te = te_prequant_pipe_kwargs(
+                    fam,
+                    base,
+                    te_quant_mode = te_quant_mode,
+                    target = target,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    logger = logger,
+                    local_files_only = local_files_only,
+                    dense_source = base_local_dir or (base if local_files_only else None),
+                    config_source = base_local_dir,
+                ).get("text_encoder")
             check_cancelled()
             pipe = load_moss_image_pipeline(
                 base_local_dir or base,
                 dtype,
                 hf_token = hf_token,
                 transformer = transformer,
+                text_encoder = moss_te,
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
             )

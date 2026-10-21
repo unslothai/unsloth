@@ -354,9 +354,21 @@ _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
-# MOSS-Image transformer-quant keep-list, empty until the quant track measures one (plans/moss_quant.md). Baked into
-# hosted artifacts once they exist, so freeze it before building any.
-_MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ()
+# MOSS-Image transformer-quant keep-list for every scheme (plans/moss_quant.md, baked into the hosted files): the whole
+# text_embedder (projection + 2 refiner blocks), the timestep MLP and the shared / head AdaLN modulations stay bf16;
+# the 252 block Linears (q/k/v/o/ffn_up_gate/ffn_down) quantise. int8 ConvRot with it scored LPIPS 0.058 against the
+# bf16 port (12 prompts, 1-ulp floor 0.041), against 0.077 with the generic exclusions alone and 0.075 keeping only
+# text_embedder.proj. video_embedder / final_linear_video sit under the 512-feature floor and stay bf16 anyway.
+_MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
+# The 252 rotated Linears of the hosted int8 ConvRot builds (every input width is a multiple of 256).
+_MOSS_IMAGE_CONVROT_SUFFIXES = (
+    "proj.q",
+    "proj.k",
+    "proj.v",
+    "proj.o",
+    "proj.ffn_up_gate",
+    "proj.ffn_down",
+)
 
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
@@ -1230,10 +1242,21 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = MOSS_IMAGE_FAMILY_NAME,
         label = "MOSS-Image",
         profile = FamilyProfile(
-            # Quant keep-list placeholder, filled by the MOSS quant track (plans/moss_quant.md) once measured: the
-            # shared modulation, timestep MLP, embedders and the output head are the candidates (ComfyUI's quantised
-            # checkpoints keep them high precision).
             quant_exclude_tokens = _MOSS_IMAGE_QUANT_KEEP,
+            # Required, not optional: plain int8 with the same keep-list scored 0.111 against ConvRot's 0.058 (SFT).
+            int8_convrot = ConvRotSpec(
+                group = 256,
+                suffixes = _MOSS_IMAGE_CONVROT_SUFFIXES,
+                filename = "MOSS-Image-SFT-INT8-ConvRot.safetensors",
+                repo = "unsloth/MOSS-Image-SFT-FP8",
+                variant_repos = ("unsloth/MOSS-Image-Base-FP8",),
+                default_on = True,
+            ),
+            # The Base builds record family "moss-image-base"; the quant tables answer to it too.
+            quant_names = ("moss-image-base",),
+            # fp8 scored 0.163 on both SFT and Base (7x int8 ConvRot's summed local error), mxfp8 was not measured:
+            # explicit picks only.
+            auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
             # The FLUX.2 VAE and the same 2x2 packed, BatchNorm-normalised 128-channel latent.
             preview_factors = "flux2",
         ),
@@ -1241,6 +1264,24 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "MOSSImageTransformer",
         base_repo = "OpenMOSS-Team/MOSS-Image-SFT",
         named_variant_bases = ("OpenMOSS-Team/MOSS-Image-Base",),
+        prequant_repos = (
+            ("int8", "unsloth/MOSS-Image-SFT-FP8"),
+            ("fp8", "unsloth/MOSS-Image-SFT-FP8"),
+        ),
+        prequant_filenames = (
+            ("int8", "MOSS-Image-SFT-INT8.safetensors"),
+            ("fp8", "MOSS-Image-SFT-FP8.safetensors"),
+        ),
+        # Base differs from SFT only in its transformer shards and has its own builds (MOSS-Image-Base-*.safetensors).
+        prequant_variant_repos = (
+            ("openmoss-team/moss-image-base", "int8", "unsloth/MOSS-Image-Base-FP8"),
+            ("openmoss-team/moss-image-base", "fp8", "unsloth/MOSS-Image-Base-FP8"),
+        ),
+        # Any other scheme on Base quantises Base's own weights, never SFT's file.
+        prequant_excluded_bases = ("openmoss-team/moss-image-base",),
+        # Qwen3.5-9B int8 ConvRot (16.79 -> 11.49 GB): LPIPS 0.059 against the bf16 encoder (bf16 DiT, 12 prompts),
+        # text rendering intact. Without the hosted file the automatic default keeps the dense bf16 encoder.
+        te_quant_auto = "int8",
         aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
         prompt_hint = (
             "MOSS-Image reads plain captions, tag lists or JSON layouts; raise CFG (3 to 6) for short prompts."
@@ -1252,7 +1293,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # transient workspace on the first 1024^2 decode (B200), then settled on a 4x slower plan (0.34 vs 0.08 s warm)
         # with different pixels, so the family keeps cuDNN's heuristic pick.
         cudnn_benchmark = False,
-        # Assembled per component from the diffusers folders; no transformer-only single file or GGUF yet.
+        # Assembled per component from the diffusers folders. The hosted builds are transformer state dicts seeded into
+        # that assembly; no transformer-only single-file pick and no diffusers GGUF route (sd.cpp runs the GGUFs).
         pipeline_only = True,
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE

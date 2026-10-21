@@ -2352,7 +2352,11 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -2365,11 +2369,15 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
     "pad": [],
     "zero_row": []
    },
-   "convrot_default_on": false,
+   "convrot_default_on": true,
    "fp8": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -2378,18 +2386,31 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
     "pad": [],
     "zero_row": []
    },
    "int8": {
-    "convrot_filename": null,
-    "convrot_repo": null,
+    "convrot_filename": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
+    "convrot_repo": "unsloth/MOSS-Image-SFT-FP8",
     "convrot_spec": [
-     0,
-     []
+     256,
+     [
+      "proj.q",
+      "proj.k",
+      "proj.v",
+      "proj.o",
+      "proj.ffn_up_gate",
+      "proj.ffn_down"
+     ]
     ],
-    "convrot_variant_repos": [],
+    "convrot_variant_repos": [
+     "unsloth/MOSS-Image-Base-FP8"
+    ],
     "exclude": [
      "norm",
      "_mod",
@@ -2398,7 +2419,10 @@
      "guidance_embed",
      "time_text_embed",
      "pooled",
-     "time_embed"
+     "time_embed",
+     "text_embedder",
+     "time_embedding",
+     "modulation"
     ],
     "pad": [],
     "zero_row": []
@@ -2411,7 +2435,11 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -2423,7 +2451,11 @@
      []
     ],
     "convrot_variant_repos": [],
-    "exclude": [],
+    "exclude": [
+     "text_embedder",
+     "time_embedding",
+     "modulation"
+    ],
     "pad": [],
     "zero_row": []
    },
@@ -3618,6 +3650,28 @@
    "time_embed"
   ],
   "int8_family_convrot": {
+   "moss-image": [
+    256,
+    [
+     "proj.q",
+     "proj.k",
+     "proj.v",
+     "proj.o",
+     "proj.ffn_up_gate",
+     "proj.ffn_down"
+    ]
+   ],
+   "moss-image-base": [
+    256,
+    [
+     "proj.q",
+     "proj.k",
+     "proj.v",
+     "proj.o",
+     "proj.ffn_up_gate",
+     "proj.ffn_down"
+    ]
+   ],
    "qwen-image-2.1": [
     256,
     [
@@ -3646,20 +3700,32 @@
   },
   "int8_family_convrot_default_on": [
    "ltx-2.5",
+   "moss-image",
+   "moss-image-base",
    "qwen-image-2.1",
    "z-image"
   ],
   "int8_family_convrot_filename": {
+   "moss-image": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
+   "moss-image-base": "MOSS-Image-SFT-INT8-ConvRot.safetensors",
    "qwen-image-2.1": "Qwen-Image-2.1-INT8-ConvRot.safetensors",
    "z-image": "Z-Image-Turbo-INT8-ConvRot.safetensors"
   },
   "int8_family_convrot_repo": {
+   "moss-image": "unsloth/MOSS-Image-SFT-FP8",
+   "moss-image-base": "unsloth/MOSS-Image-SFT-FP8",
    "qwen-image-2.1": "unsloth/Qwen-Image-2.1-FP8",
    "z-image": "unsloth/Z-Image-Turbo-FP8"
   },
   "int8_family_convrot_variant_repos": {
    "ltx-2.5": [
     "unsloth/LTX-2.5-FP8"
+   ],
+   "moss-image": [
+    "unsloth/MOSS-Image-Base-FP8"
+   ],
+   "moss-image-base": [
+    "unsloth/MOSS-Image-Base-FP8"
    ],
    "qwen-image-2.1": [
     "unsloth/Qwen-Image-2.1-Turbo-FP8"

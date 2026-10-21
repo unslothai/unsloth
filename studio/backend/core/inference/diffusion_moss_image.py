@@ -68,6 +68,13 @@ def _env_off(name: str) -> bool:
 # ---------------------------------------------------------------------------------------------------------------------
 
 
+def _compute_dtype(linear: nn.Module) -> torch.dtype:
+    """The dtype a Linear's input is cast to: the reference casts to ``weight.dtype``, which is the storage dtype under
+    diffusers' ``GGUFLinear`` (uint8), so a ``compute_dtype`` the layer declares wins. Same dtype for a plain Linear."""
+    declared = getattr(linear, "compute_dtype", None)
+    return declared if isinstance(declared, torch.dtype) else linear.weight.dtype
+
+
 class _RMSNorm(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -92,6 +99,21 @@ def _validate_skip_layers(
     if any(type(index) is not int or not 0 <= index < depth for index in layers):
         raise ValueError(f"{name} must contain integer block indices in [0, {depth}).")
     return frozenset(layers)
+
+
+def _length_dynamic(*tensors) -> None:
+    """Hint dim 1 (the text length) of the refiner block inputs as dynamic. The pipeline refines the text once per render
+    OUTSIDE ``forward`` (``refine_text``), where Studio's per-forward prompt-length arming does not reach, so the
+    compiled text block otherwise specialised on the first length and recompiled on the uncond one. A no-op eagerly."""
+    try:
+        if torch.compiler.is_compiling():
+            return
+        from torch._dynamo import maybe_mark_dynamic
+    except Exception:  # noqa: BLE001 - no dynamo, nothing to hint
+        return
+    for tensor in tensors:
+        if isinstance(tensor, torch.Tensor) and tensor.dim() > 1:
+            maybe_mark_dynamic(tensor, 1)
 
 
 def _rope_tables(rope):
@@ -187,7 +209,8 @@ class _TextProjection(nn.Module):
         self.blocks = nn.ModuleList([_TextBlock(dim, ffn_dim, heads) for _ in range(2)])
 
     def forward(self, x, rope):
-        x = self.proj(x.to(self.proj.weight.dtype))
+        x = self.proj(x.to(_compute_dtype(self.proj)))
+        _length_dynamic(x, *rope)
         for block in self.blocks:
             x = block(x, rope)
         return x
@@ -211,7 +234,7 @@ class _Block(nn.Module, _AttentionMixin):
     def forward(self, x, rope, modulation):
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = self.norm1(x) * (1 + scale_a[:, None]) + shift_a[:, None]
-        dtype = self.proj["q"].weight.dtype
+        dtype = _compute_dtype(self.proj["q"])
         y = y.to(dtype)
         q = self.q_norm(self.proj["q"](y).unflatten(-1, (self.heads, -1))).flatten(2)
         k = self.k_norm(self.proj["k"](y).unflatten(-1, (self.heads, -1))).flatten(2)
@@ -356,7 +379,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         return self.load_state_dict(state_dict, strict = True)
 
     def _activation_dtype(self):
-        return self.video_embedder.weight.dtype
+        return _compute_dtype(self.video_embedder)
 
     def refine_text(self, encoder_hidden_states):
         """The text refiner over [B, L, text_dim] at full length L (no padding): [B, L, dim]. Depends on neither the
@@ -374,11 +397,11 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         freq = 10000 ** (-torch.arange(half, device = times.device, dtype = torch.float64) / half)
         phase = times.double()[:, None] * freq
         embedding = torch.cat((phase.cos(), phase.sin()), -1).float()
-        time = self.time_embedding(embedding.to(self.time_embedding[0].weight.dtype)).float()
-        mod = self.shared_block_modulation(time.to(self.shared_block_modulation.weight.dtype)).view(
-            batch, 6, -1
-        )
-        head = self.video_head_modulation(time.to(self.video_head_modulation.weight.dtype)).view(
+        time = self.time_embedding(embedding.to(_compute_dtype(self.time_embedding[0]))).float()
+        mod = self.shared_block_modulation(
+            time.to(_compute_dtype(self.shared_block_modulation))
+        ).view(batch, 6, -1)
+        head = self.video_head_modulation(time.to(_compute_dtype(self.video_head_modulation))).view(
             batch, 2, -1
         )
         return mod, head
@@ -426,7 +449,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
             if length == 0:
                 raise ValueError("Each sample needs at least one valid text token.")
             video = hidden_states[index : index + 1].flatten(2).transpose(1, 2)
-            video = self.video_embedder(video.to(self.video_embedder.weight.dtype).contiguous())
+            video = self.video_embedder(video.to(_compute_dtype(self.video_embedder)).contiguous())
             # The reference casts RoPE to the video activation dtype.
             full_tables, text_tables = self.rope.tables(height, width, length, device, video.dtype)
             text = self.text_embedder(context, text_tables) if refined_text is None else context
@@ -437,7 +460,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
                     x = layer(x, full_tables, sample_mod)
             x = self.final_norm_video(x[:, : height * width].to(self.final_norm_video.weight.dtype))
             x = x * (1 + head[index : index + 1, 1, None]) + head[index : index + 1, 0, None]
-            x = self.final_linear_video(x.to(self.final_linear_video.weight.dtype))
+            x = self.final_linear_video(x.to(_compute_dtype(self.final_linear_video)))
             outputs.append(x.transpose(1, 2).reshape(1, -1, height, width))
         sample = outputs[0] if batch == 1 else torch.cat(outputs)
         if not return_dict:
@@ -905,6 +928,35 @@ def _live_cache_dir() -> Optional[str]:
         return None
 
 
+def _tokenizer_class(repo_id: str, common: dict[str, Any]) -> Any:
+    """The tokenizer class ``tokenizer/tokenizer_config.json`` names (Qwen2Tokenizer), else ``AutoTokenizer``.
+    transformers 5.x's ``AutoTokenizer`` on a repo id first reads a ROOT ``config.json``, which these repos do not
+    ship, so an offline load from the cache failed before reaching the tokenizer files."""
+    import json
+
+    import transformers
+
+    try:
+        if os.path.isdir(str(repo_id)):
+            path = os.path.join(str(repo_id), "tokenizer", "tokenizer_config.json")
+        else:
+            from huggingface_hub import hf_hub_download
+            path = hf_hub_download(
+                repo_id,
+                "tokenizer_config.json",
+                subfolder = "tokenizer",
+                cache_dir = common.get("cache_dir"),
+                token = common.get("token"),
+                local_files_only = bool(common.get("local_files_only")),
+            )
+        with open(path, encoding = "utf-8") as fh:
+            name = json.load(fh).get("tokenizer_class")
+    except Exception:  # noqa: BLE001 - AutoTokenizer reports the real error
+        name = None
+    cls = getattr(transformers, str(name), None) if name else None
+    return cls if isinstance(cls, type) else transformers.AutoTokenizer
+
+
 def drop_vision_tower(text_encoder: Any) -> bool:
     """Free Qwen3.5's vision tower (~0.4 B params): MOSS feeds the encoder text only, and the text forward never touches
     it (images enter only through ``pixel_values``). True when it was dropped."""
@@ -990,7 +1042,6 @@ def load_moss_image_pipeline(
     check_cancelled()
     assert_transformers_supported()
     import diffusers
-    from transformers import AutoTokenizer
 
     common: dict[str, Any] = {"local_files_only": local_files_only}
     cache_dir = _live_cache_dir()
@@ -998,11 +1049,17 @@ def load_moss_image_pipeline(
         common["cache_dir"] = cache_dir
     if hf_token:
         common["token"] = hf_token
-    tokenizer = AutoTokenizer.from_pretrained(repo_id, subfolder = "tokenizer", **common)
+    tokenizer = _tokenizer_class(repo_id, common).from_pretrained(
+        repo_id, subfolder = "tokenizer", **common
+    )
     check_cancelled()
     if text_encoder is None:
         text_encoder = load_moss_image_text_encoder(repo_id, dtype, **common)
         check_cancelled()
+    else:
+        # A pre-cast build (the hosted int8 ConvRot encoder) carries the vision tower and needs the same guard.
+        drop_vision_tower(text_encoder)
+        install_gdn_offload_guard(text_encoder)
     if transformer is None:
         transformer = MOSSImageTransformer.from_pretrained(
             repo_id, subfolder = "transformer", torch_dtype = dtype, **common
