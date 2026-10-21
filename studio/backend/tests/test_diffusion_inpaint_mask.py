@@ -157,8 +157,6 @@ def test_a1111_parameters_text():
     assert "Mask blur: 4, Inpaint area: Only masked, Masked area padding: 32" in text
 
 
-
-
 class _CropInpaintPipe(_FakeInpaintPipe):
     def __call__(
         self,
