@@ -170,8 +170,19 @@ def _adapter_base_changed_error(config: dict) -> str | None:
         return None
     from utils.models.model_config import get_base_model_from_lora
 
-    if (get_base_model_from_lora(str(config.get("model_name") or "")) or "") != pinned:
+    # The folder the loader reads: a cached Hub snapshot, not the repo id it came from.
+    if (
+        get_base_model_from_lora(str(_resolve_cached_model_load_name(config) or "")) or ""
+    ) != pinned:
         return "The adapter's base model changed after the run was checked. Start the run again."
+    return None
+
+
+def _escaping_weights_error(config: dict) -> str | None:
+    from utils.security.file_security import escaping_weight_references
+    for key in ("model_name", "model_local_path", "model_snapshot_path", "adapter_base_pin"):
+        if config.get(key) and escaping_weight_references(config[key]):
+            return "This model's weight index names files outside its folder."
     return None
 
 
@@ -1914,6 +1925,12 @@ def _ensure_mamba_ssm(
     )
 
 
+# Integrated-only Radeon names for the other APU targets, as whole tokens (a substring would read "RX 7600M" as "600M"):
+# 820M Krackan Point 2 (gfx1153), 8040S Strix Halo (gfx1151), 780M / 760M / 740M Phoenix / Hawk Point (gfx1103),
+# 680M / 660M Rembrandt (gfx1035), 610M Raphael / Dragon Range / Mendocino (gfx1036 / gfx1037).
+_ROCM_APU_NAME_RE = re.compile(r"(?<![\w-])(?:820m|8040s|780m|760m|740m|680m|660m|610m)(?!\w)")
+
+
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
     """Classify a ROCm device as unified-memory (APU) or discrete, returning ``(gcn_arch,
     is_unified)``. ``gcn_arch`` is the canonical arch string (e.g. ``"gfx1151"``) when a known
@@ -1959,6 +1976,7 @@ def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
         or "8050s" in dev_lower
         or "860m" in dev_lower
         or "840m" in dev_lower
+        or _ROCM_APU_NAME_RE.search(dev_lower) is not None
     )
     return gcn_arch, is_unified
 
@@ -4185,6 +4203,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     if not _validate_training_worker_config(config, event_queue):
         return
+    # Before any backend dispatch: the MLX, decision and embedding runners load these weights too.
+    weights_error = _escaping_weights_error(config)
+    if weights_error:
+        event_queue.put({"type": "error", "error": weights_error, "stack": "", "ts": time.time()})
+        return
 
     model_name = config["model_name"]
     model_load_target = _resolve_cached_model_load_name(config)
@@ -5082,7 +5105,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         from utils.hf_xet_fallback import start_watchdog
 
         # Recheck right before the load: the adapter folder may have been edited since start (#13140).
-        base_error = _adapter_base_changed_error(config)
+        base_error = _adapter_base_changed_error(config) or _escaping_weights_error(config)
         if base_error:
             event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
             return

@@ -338,8 +338,21 @@ def _walk_for_host_channels(
         return f"{unreadable[0]} cannot be fully inspected"
     for found, total, path in links.values():
         if found < total:
-            return f"contains a file hard-linked from outside it: {path}"
+            return f"{_HARD_LINKED}{path}"
     return None
+
+
+_HARD_LINKED = "contains a file hard-linked from outside it: "
+
+
+def _broke_staged_links() -> bool:
+    # An older backend on the same home can stage an "Open in default app" link after this one started.
+    try:
+        from utils.paths.path_utils import prune_open_staging
+        prune_open_staging()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 _scan_lock = threading.Lock()
@@ -462,7 +475,12 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
             return ()
         if not _looks_like_our_scratch_dir(scratch):
             return ()
-        for base, dirs, names in os.walk(scratch, followlinks = False):
+        # By directory fd: the jail can swap a directory for a link mid-sweep. Windows has no fwalk.
+        if hasattr(os, "fwalk"):
+            walk = os.fwalk(scratch, follow_symlinks = False)
+        else:
+            walk = ((*step, None) for step in os.walk(scratch, followlinks = False))
+        for base, dirs, names, dirfd in walk:
             dirs[:] = [name for name in dirs if not os.path.ismount(os.path.join(base, name))]
             for name in names:
                 if deadline is not None and time.monotonic() > deadline:
@@ -470,7 +488,7 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
                     return tuple(removed)
                 path = os.path.join(base, name)
                 try:
-                    entry = os.lstat(path)
+                    entry = os.lstat(path) if dirfd is None else os.lstat(name, dir_fd = dirfd)
                 except OSError:
                     continue
                 mode = entry.st_mode
@@ -485,7 +503,14 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
                     )
                     continue
                 try:
-                    os.unlink(path)
+                    if dirfd is None:
+                        os.unlink(path)
+                    else:
+                        # The probe went by path: unlink only the entry the walk saw.
+                        again = os.lstat(name, dir_fd = dirfd)
+                        if (again.st_dev, again.st_ino) != (entry.st_dev, entry.st_ino):
+                            continue
+                        os.unlink(name, dir_fd = dirfd)
                 except OSError:
                     continue
                 removed.append(path)
@@ -515,6 +540,12 @@ def scan_workdir_for_host_channels(workdir: str) -> tuple[str, ...]:
         _overran_workdirs.add(key)
         return (WORKDIR_SCAN_INCOMPLETE,)
     _overran_workdirs.discard(key)
+    if hazard is not None and hazard.startswith(_HARD_LINKED) and _broke_staged_links():
+        # The hazard stands unless a full rescan proves it gone.
+        try:
+            hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+        except _ScanBudgetExceeded:
+            pass
     if hazard is not None:
         raise WorkdirUnsafeError(f"the session workdir {hazard}")
     return ()
@@ -846,7 +877,7 @@ def linux_unavailable_remediation() -> str:
             else "install bubblewrap with your distribution's package manager"
         )
         return (
-            f"bubblewrap (bwrap) is not installed. To isolate tool calls, {how}; Studio picks "
+            f"bubblewrap (bwrap) is not installed. To isolate tool calls, {how}; Unsloth picks "
             f"it up within a minute, no restart needed. {_FALLBACK_NOTE}"
         )
     if _linux_userns_blocked_by_apparmor():
@@ -924,14 +955,25 @@ def capability_snapshot(
         backend = sandbox_macos
     else:
         return _unavailable(
-            "OS isolation for Studio tools is available on Linux and macOS only.",
+            "OS isolation for Unsloth tools is available on Linux and macOS only.",
             f"No sandbox backend exists for this platform. {_FALLBACK_NOTE}",
             identity,
         )
 
-    from .sandbox_probe import probe
+    from .sandbox_probe import UndecidedReason, probe
 
     available, reason = probe(backend, force = force)
+    if not available and isinstance(reason, UndecidedReason):
+        # Tool code can exhaust the host; that says nothing about the backend, so auto must not fall back on it.
+        return replace(
+            _unavailable(
+                reason,
+                "The sandbox check ran out of host resources (disk space, memory or open files). "
+                "Free them and try again.",
+                identity,
+            ),
+            protection_state = "undecided",
+        )
     if not available:
         remediation = (
             linux_unavailable_remediation()
@@ -1232,6 +1274,12 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         raise SandboxBuildError("execution cancelled before sandbox launch")
 
     if not capability.available:
+        if capability.protection_state == "undecided":
+            # Typed as a build failure: tools.py re-raises it rather than falling back to the host.
+            raise SandboxBuildError(
+                f"OS_ISOLATION_UNAVAILABLE: {capability.reason}",
+                remediation = capability.remediation,
+            )
         if plan.requested_mode == "required":
             raise SandboxUnavailableError(
                 f"OS_ISOLATION_UNAVAILABLE: {capability.reason}",
