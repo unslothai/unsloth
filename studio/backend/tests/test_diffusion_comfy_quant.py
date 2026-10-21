@@ -443,9 +443,15 @@ def test_fp8_layers_dequantize_with_their_scale(tmp_path, monkeypatch):
     tensors.update({f"{layer}.weight": codes, f"{layer}.scale_weight": scale.reshape(1)})
     tensors["scaled_fp8"] = torch.zeros(2, dtype = torch.float8_e4m3fn)
     path = _save(tmp_path / "legacy_fp8_scaled.safetensors", tensors)
-    model = _load(path)
+    model = _load(path, fp8_storage = False)
     assert torch.equal(model.blocks[0].to_out.weight, codes.float() * scale)
     assert model._unsloth_comfy_quant["dequantized"] == 1
+    # stored as fp8 instead (the default): the same weight, rebuilt per forward from the codes the file holds
+    stored = _load(path)
+    assert stored._unsloth_comfy_quant["dequantized"] == 0
+    assert stored._unsloth_comfy_quant["fp8_stored"] == 1
+    assert torch.equal(stored.blocks[0].to_out.weight, codes.float() * scale)
+    assert torch.equal(stored.blocks[0].to_out.weight_q, codes.view(torch.uint8))
 
 
 def test_a_converter_that_mixes_columns_is_refused(comfy_file, monkeypatch):
@@ -591,7 +597,7 @@ def test_fp8_native_backend_keeps_codes_and_computes_the_dense_product(tmp_path,
 def test_fp8_without_a_runtime_dequantizes(tmp_path, monkeypatch):
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     path, _dense, tensors = _fp8_file(tmp_path)
-    model = _load_bf16(path, fp8_backend = None)
+    model = _load_bf16(path, fp8_backend = None, fp8_storage = False)
     assert model._unsloth_comfy_quant["fp8"] == 0
     assert model._unsloth_comfy_quant["dequantized"] == 6
     w = tensors["blocks.0.out.weight"].float() * tensors["blocks.0.out.weight_scale"]
@@ -601,11 +607,122 @@ def test_fp8_without_a_runtime_dequantizes(tmp_path, monkeypatch):
 def test_e5m2_and_non_bf16_pipelines_dequantize(tmp_path, monkeypatch):
     monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
     path, _dense, _tensors = _fp8_file(tmp_path, fmt = "float8_e5m2")
-    assert _load_bf16(path, fp8_backend = "torchao")._unsloth_comfy_quant["fp8"] == 0
+    assert (
+        _load_bf16(path, fp8_backend = "torchao", fp8_storage = False)._unsloth_comfy_quant["fp8"] == 0
+    )
     path, _dense, _tensors = _fp8_file(tmp_path)
-    model = _load(path, fp8_backend = "torchao")  # float32 pipeline
+    model = _load(path, fp8_backend = "torchao", fp8_storage = False)  # float32 pipeline
     assert model._unsloth_comfy_quant["fp8"] == 0
     assert model._unsloth_comfy_quant["dequantized"] == 6
+
+
+def _linear_bytes(model) -> int:
+    """Bytes the model's Linear-shaped weights hold (dense ``weight`` or stored ``weight_q`` + ``weight_scale``)."""
+    total = 0
+    for name, tensor in model.state_dict().items():
+        if name.endswith((".weight", ".weight_q", ".weight_scale")) and not name.startswith(
+            "norm."
+        ):
+            total += tensor.numel() * tensor.element_size()
+    return total
+
+
+@pytest.mark.parametrize(
+    "fmt, dtype",
+    [
+        ("float8_e4m3fn", torch.bfloat16),
+        ("float8_e4m3fn", torch.float16),
+        ("float8_e4m3fn", torch.float32),
+        ("float8_e5m2", torch.bfloat16),
+    ],
+)
+@pytest.mark.parametrize("per_row", [False, True])
+def test_fp8_without_a_runtime_stays_fp8_and_matches_the_dequant_exactly(
+    tmp_path, monkeypatch, fmt, dtype, per_row
+):
+    """No fp8 GEMM (older GPU, fp16 / fp32 pipeline, e5m2, offload): the codes stay 1 byte per weight and the
+    forward rebuilds the very weight the load-time dequant held, so every output is bit-identical."""
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, tensors = _fp8_file(tmp_path, fmt = fmt, per_row = per_row)
+
+    def load(**kwargs):
+        return cq.load_comfy_quant_transformer(
+            _Tiny,
+            path,
+            cq.refuse_comfy_quant(path),
+            {"torch_dtype": dtype, "config": "base/repo", "subfolder": "transformer"},
+            family = "z-image",
+            int8_backend = None,
+            fp8_backend = None,
+            **kwargs,
+        )
+
+    widened = load(fp8_storage = False)
+    stored = load()  # the default
+    assert widened._unsloth_comfy_quant["dequantized"] == 6
+    assert stored._unsloth_comfy_quant["dequantized"] == 0
+    assert stored._unsloth_comfy_quant["fp8_stored"] == 10
+    assert stored._unsloth_comfy_quant["fp8"] == 0  # storage is not an fp8 runtime
+    assert getattr(stored, "_unsloth_runtime_quant", None) is None
+    for b in range(2):
+        for leaf in ("to_q", "to_k", "to_v", "to_out"):
+            layer = getattr(stored.blocks[b], leaf)
+            assert layer.weight_q.dtype is torch.uint8 and layer.fp8_format == fmt
+            assert layer.weight_scale.view(torch.float32).shape == (DIM,)
+            assert torch.equal(layer.weight, getattr(widened.blocks[b], leaf).weight)
+    # half the bytes of a 16-bit dequant (a quarter of fp32), plus a 4-byte scale per row
+    rows = 2 * (4 * DIM + 2 * DIM)
+    assert _linear_bytes(stored) == rows * DIM + rows * 4
+    assert _linear_bytes(widened) == rows * DIM * torch.finfo(dtype).bits // 8
+    x = torch.randn(3, 7, DIM).to(dtype)
+    for b in range(2):
+        for leaf in ("to_q", "to_out"):
+            got = getattr(stored.blocks[b], leaf)(x)
+            want = getattr(widened.blocks[b], leaf)(x)
+            assert got.dtype is dtype and torch.equal(got, want)
+        got = stored.blocks[b].adaLN_modulation(x)
+        assert torch.equal(got, widened.blocks[b].adaLN_modulation(x))
+    # the kill switch widens at load, as before
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    assert load()._unsloth_comfy_quant["dequantized"] == 6
+
+
+def test_fp8_storage_follows_the_device_lora_and_kill_switch(monkeypatch):
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    cuda = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    assert cq.comfy_fp8_storage(cuda) is True
+    assert cq.comfy_fp8_storage(types.SimpleNamespace(device = "cpu")) is True
+    assert cq.comfy_fp8_storage(None) is True
+    # MPS has no float8 dtypes; a LoRA needs dense Linears to attach to
+    assert cq.comfy_fp8_storage(types.SimpleNamespace(device = "mps")) is False
+    assert cq.comfy_fp8_storage(cuda, lora = True) is False
+    for off in ("0", "off", "false"):
+        monkeypatch.setenv(cq.FP8_STORAGE_ENV, off)
+        assert cq.comfy_fp8_storage(cuda) is False
+
+
+def test_fp8_storage_keeps_fp32_modules_and_the_torchao_layers_apart(tmp_path, monkeypatch):
+    """Next to an fp8 GEMM runtime, only the layers it skips are stored; a fp16 pipeline's fp32-kept Linears widen
+    to fp32 exactly as before."""
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, _tensors = _fp8_file(tmp_path)
+
+    class _Keep(_Tiny):
+        _keep_in_fp32_modules = ["adaLN_modulation"]
+
+    model = cq.load_comfy_quant_transformer(
+        _Keep,
+        path,
+        cq.refuse_comfy_quant(path),
+        {"torch_dtype": torch.float16, "config": "base/repo", "subfolder": "transformer"},
+        family = "z-image",
+        int8_backend = None,
+        fp8_backend = None,
+    )
+    assert model._unsloth_comfy_quant["fp8_stored"] == 8
+    assert model._unsloth_comfy_quant["dequantized"] == 2
+    assert type(model.blocks[0].adaLN_modulation[0]) is nn.Linear
+    assert model.blocks[0].adaLN_modulation[0].weight.dtype is torch.float32
 
 
 @pytest.mark.parametrize(
@@ -843,3 +960,25 @@ def test_buffers_built_in_init_follow_the_compute_dtype(comfy_file):
     )
     assert model.freqs.dtype == torch.bfloat16
     assert model.blocks[0].to_q.weight_q.dtype == torch.int8
+
+
+def test_a_lora_on_stored_fp8_layers_is_refused_with_the_way_out(tmp_path, monkeypatch):
+    """Stored fp8 Linears are not nn.Linear, so a generation-time adapter has nothing to attach to: refused by name,
+    as for the nvfp4 / mxfp8 runtime layers, and the status says LoRA needs a reload with it selected."""
+    import threading
+
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(cq, "_mapping", lambda cls: (_convert, _sfm()))
+    path, _dense, _tensors = _fp8_file(tmp_path)
+    model = _load_bf16(path, fp8_backend = None)
+    assert cq.fp8_stored_layers(model) == 10
+    assert cq.fp8_stored_layers(_load_bf16(path, fp8_backend = None, fp8_storage = False)) == 0
+    assert cq.fp8_stored_layers(None) == 0
+    pipe = types.SimpleNamespace(transformer = model, _unsloth_loras = ())
+    state = types.SimpleNamespace(pipe = pipe, transformer_quant = None)
+    backend = DiffusionBackend.__new__(DiffusionBackend)
+    with pytest.raises(ValueError, match = "stored as fp8"):
+        DiffusionBackend._apply_loras(backend, state, [("some/lora", 1.0)], threading.Event())
+    # no adapter requested: nothing to refuse
+    DiffusionBackend._apply_loras(backend, state, [], threading.Event())

@@ -361,8 +361,11 @@ from .diffusion_comfy_block import (
 )
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
+    comfy_fp8_storage,
     comfy_int8_backend,
     comfy_torchao_quantized,
+    fp8_stored_layers,
+    pipe_fp8_stored_layers,
     load_comfy_quant_transformer,
     refuse_comfy_quant,
 )
@@ -2837,11 +2840,15 @@ def _denoiser_hooked(pipe: Any) -> bool:
 
 
 def _torchao_render_needs_no_grad(state: Any) -> bool:
-    """inference_mode rejects moving torchao weights between devices, so offloaded quant renders use no_grad."""
+    """inference_mode rejects moving torchao weights between devices, so offloaded quant renders use no_grad.
+    Stored fp8 layers too: their codes are plain buffers, and a buffer the offload hook moves under inference_mode
+    is an inference tensor it cannot version, so every offload would copy the codes back to fresh host memory."""
     if getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE:
         return False
     return bool(
-        getattr(state, "transformer_quant", None) or getattr(state, "text_encoder_quant", None)
+        getattr(state, "transformer_quant", None)
+        or getattr(state, "text_encoder_quant", None)
+        or pipe_fp8_stored_layers(getattr(state, "pipe", None))
     )
 
 
@@ -8734,6 +8741,9 @@ class DiffusionBackend:
                                     target = target,
                                     fast_accum = transformer_quant_fast_accum,
                                     logger = logger,
+                                    fp8_storage = comfy_fp8_storage(
+                                        target, lora = _has_active_lora(loras)
+                                    ),
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
                             else:
@@ -8744,7 +8754,13 @@ class DiffusionBackend:
                                     == "Krea2Transformer2DModel"
                                 ):
                                     transformer = load_original_layout_transformer(
-                                        transformer_cls, single_file_path, sf_kwargs, logger
+                                        transformer_cls,
+                                        single_file_path,
+                                        sf_kwargs,
+                                        logger,
+                                        fp8_storage = comfy_fp8_storage(
+                                            target, lora = _has_active_lora(loras)
+                                        ),
                                     )
                                 else:
                                     # A safetensors single-file (fp8) carries its own dtype: no GGUF dequant config.
@@ -10052,7 +10068,9 @@ class DiffusionBackend:
                 single_file_path,
                 scan,
                 keep_int8 = comfy_int8_backend(target, name, base) is not None,
-                keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+                # an fp8 layer no fp8 GEMM takes stays stored as fp8 (comfy_fp8_storage) unless a LoRA needs it dense
+                keep_fp8 = comfy_fp8_backend(target, name, base) is not None
+                or comfy_fp8_storage(target, lora = lora),
                 # the loader's runtime filter: layers it skips are priced dequantized
                 min_features = DEFAULT_MIN_LINEAR_FEATURES,
                 fp8_divisible = divisible_for_scheme(TQ_FP8),
@@ -11262,6 +11280,13 @@ class DiffusionBackend:
                 fp8_upcast = not getattr(fam, "single_file_is_pipeline", False) and (
                     "fp8" in Path(single_file_path).name.lower() if single_file_path else False
                 )
+                if (
+                    fp8_upcast
+                    and fam.name == KREA2_FAMILY_NAME
+                    and comfy_fp8_storage(target, lora = lora)
+                ):
+                    # Krea 2's original-layout loader keeps a plain fp8 file's Linears fp8 (fp8_storage)
+                    fp8_upcast = False
                 transformer_resident = estimate_safetensors_dense_mib(
                     file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                 )
@@ -11676,6 +11701,12 @@ class DiffusionBackend:
                 "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
                 "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Unsloth then "
                 "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
+            )
+        if fp8_stored_layers(getattr(pipe, "transformer", None)):
+            raise ValueError(
+                "LoRA is not available on this load: the file's fp8 layers are stored as fp8 and widened per layer "
+                "(this GPU has no fp8 GEMM), which cannot carry adapters. Load the file with the LoRA selected "
+                "(Unsloth then widens those layers at load), or set UNSLOTH_DIFFUSION_FP8_STORAGE=0."
             )
         if not diffusion_lora.supports_lora(
             engine = "diffusers",
@@ -13304,8 +13335,10 @@ class DiffusionBackend:
             transformer_quant = state.transformer_quant,
         )
         compiled = "compiled" in (getattr(state, "speed_optims", ()) or ())
-        lora_load_ok = not _small_host_int8(state.pipe) and not comfy_block_runtime_layers(
-            getattr(state.pipe, "transformer", None)
+        lora_load_ok = (
+            not _small_host_int8(state.pipe)
+            and not comfy_block_runtime_layers(getattr(state.pipe, "transformer", None))
+            and not fp8_stored_layers(getattr(state.pipe, "transformer", None))
         )
         return {
             "loaded": True,

@@ -354,10 +354,14 @@ def load_original_layout_transformer(
     path: str,
     sf_kwargs: dict,
     logger: Any = None,
+    *,
+    fp8_storage: bool = False,
 ) -> Any:
     """Load a plain original-layout safetensors file for a class without ``from_single_file``
     (Krea 2 on diffusers 0.40). ``sf_kwargs`` = the ``from_single_file`` kwargs. Cast like
-    ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes."""
+    ``from_pretrained`` (``_keep_in_fp32_modules`` stay fp32); strict on keys and shapes. With
+    ``fp8_storage`` (``diffusion_comfy_quant.comfy_fp8_storage``) an fp8 Linear weight stays fp8 and widens per layer
+    in the forward (``NativeWeightOnlyLinear`` with unit scales: the same weight the cast would hold)."""
     import torch
     from accelerate import init_empty_weights
     from diffusers.loaders import single_file_model as sfm
@@ -399,7 +403,10 @@ def load_original_layout_transformer(
     keep = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
     if isinstance(keep, str):
         keep = [keep]
-    for key, value in converted.items():
+    fp8_dtypes = {getattr(torch, n) for n in ("float8_e4m3fn", "float8_e5m2") if hasattr(torch, n)}
+    modules = dict(model.named_modules()) if fp8_storage else {}
+    stored: list = []
+    for key, value in list(converted.items()):
         want = torch.float32 if any(m in key.split(".") for m in keep) else dtype
         if not value.is_floating_point():
             continue
@@ -407,13 +414,43 @@ def load_original_layout_transformer(
             raise ValueError(
                 f"{key}: {tuple(value.shape)} in the file, {tuple(wanted[key].shape)} in the model"
             )
+        fqn = key[: -len(".weight")]
+        if (
+            value.dtype in fp8_dtypes
+            and want == dtype
+            and key.endswith(".weight")
+            and isinstance(modules.get(fqn), torch.nn.Linear)
+        ):
+            stored.append(fqn)
+            continue
         if value.dtype != want:
             converted[key] = value.to(want)
+    if stored:
+        from .diffusion_native_quant import NATIVE_FP8, native_linear_class
+        cls = native_linear_class()
+        for fqn in stored:
+            parent_name, _, leaf = fqn.rpartition(".")
+            parent = model.get_submodule(parent_name) if parent_name else model
+            codes = converted.pop(fqn + ".weight")
+            layer = cls(
+                getattr(parent, leaf).to(dtype),
+                NATIVE_FP8,
+                codes = codes,
+                scale = torch.ones(codes.shape[0], 1, dtype = torch.float32),
+            )
+            setattr(parent, leaf, layer)
+            converted[fqn + ".weight_q"] = layer.weight_q
+            converted[fqn + ".weight_scale"] = layer.weight_scale
     model.load_state_dict(converted, strict = True, assign = True)
+    if stored:
+        from .diffusion_comfy_quant import FP8_STORED_ATTR
+        setattr(model, FP8_STORED_ATTR, len(stored))
     model.eval()
     if logger is not None:
         logger.info(
-            "diffusion.single_file: %s loaded from an original-layout file",
+            "diffusion.single_file: %s loaded from an original-layout file (%d fp8 layers stored as fp8, "
+            "widened per layer)",
             transformer_cls.__name__,
+            len(stored),
         )
     return model

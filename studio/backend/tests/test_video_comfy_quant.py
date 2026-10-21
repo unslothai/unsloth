@@ -413,16 +413,29 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True)) == {
         "int8_backend": "torchao",
         "fp8_backend": "torchao",
+        "fp8_storage": True,
     }
-    # either plan offloading the DiT means the hooks move it: int8 takes the torchao-free twin, fp8 dequantizes
+    # either plan offloading the DiT means the hooks move it: int8 takes the torchao-free twin, fp8 has no GEMM
+    # and stays stored as fp8, widened per layer
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False)) == {
         "int8_backend": "native",
         "fp8_backend": None,
+        "fp8_storage": True,
     }
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), keep = False) == {
         "int8_backend": None,
         "fp8_backend": None,
+        "fp8_storage": False,
     }
+    # H3 keeps its torchao-or-dequantize rule
+    h3 = types.SimpleNamespace(name = "minimax-h3")
+    assert (
+        vid._video_comfy_backends(h3, "b", None, _plan(True), _plan(False))["fp8_storage"] is False
+    )
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    assert (
+        vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False))["fp8_storage"] is False
+    )
 
 
 def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
@@ -442,8 +455,11 @@ def test_video_plan_size_prices_only_what_runs_quantized(monkeypatch, tmp_path):
         vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
     )  # 1 MiB of codes + scale + config
     monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
-    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
+    # no fp8 GEMM: the codes stay stored as fp8 (widened per layer), priced at their stored size
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, keep = False) == 3
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 3
     assert n == 2**20
 
 
@@ -679,6 +695,9 @@ def test_offloaded_plan_size_prices_fp8_that_only_runs_resident(monkeypatch, tmp
         vid, "comfy_fp8_backend", lambda *a, offload = False, **k: None if offload else "torchao"
     )
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan) == 2
+    # offloaded: no torchao fp8, but the codes stay stored as fp8 and move with the hooks
+    assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2
+    monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 3
 
 
