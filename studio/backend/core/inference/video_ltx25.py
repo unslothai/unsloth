@@ -562,7 +562,9 @@ def ltx25_transformer_config_dir() -> str:
     import json
     import tempfile
 
-    root = Path(tempfile.gettempdir()) / "unsloth_ltx25_config"
+    from utils.paths.private_tmp import private_tmp_dir
+
+    root = private_tmp_dir("unsloth_ltx25_config")
     target = root / "transformer" / "config.json"
     payload = json.dumps(
         {"_class_name": "LTX2VideoTransformer3DModel", **LTX25_TRANSFORMER_CONFIG},
@@ -778,8 +780,8 @@ def ltx25_te_outcome(client: Any) -> Any:
 def sidecar_missing_message(venv_dir: str) -> str:
     return (
         "LTX-2.5's text encoder is a Gemma 4 model (Gemma4UnifiedForConditionalGeneration) that needs transformers "
-        f">= {TEXT_ENCODER_MIN_TRANSFORMERS}. Studio keeps that in its transformers 5.10 sidecar at '{venv_dir}', "
-        "which is missing and could not be installed. Re-run the Studio installer (or check the network so Studio "
+        f">= {TEXT_ENCODER_MIN_TRANSFORMERS}. Unsloth keeps that in its transformers 5.10 sidecar at '{venv_dir}', "
+        "which is missing and could not be installed. Re-run the Unsloth installer (or check the network so Unsloth "
         "can rebuild the sidecar), then load LTX-2.5 again."
     )
 

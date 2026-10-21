@@ -549,6 +549,10 @@ class ChatSettingsPayload(BaseModel):
     # Last-used params per checkpoint id. Deep-merged per key, so patching one
     # model cannot drop another's.
     inferenceParamsByModel: Optional[dict[str, ChatInferenceSettings]] = None
+    # Per model id, keys of the entry above removed before this patch merges; never stored.
+    forgetInferenceParamsByModel: Optional[
+        dict[str, Annotated[list[str], Field(max_length = 64)]]
+    ] = Field(default = None, max_length = 1_000)
     rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
@@ -1403,7 +1407,7 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         ):
             raise HTTPException(
                 status_code = 400,
-                detail = "Studio's own folders cannot be used as a project folder.",
+                detail = "Unsloth's own folders cannot be used as a project folder.",
             )
     if not os.access(path, os.W_OK):
         raise HTTPException(status_code = 400, detail = "The folder is not writable.")

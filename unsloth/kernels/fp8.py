@@ -762,8 +762,14 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
     ):
         # Uneven tiling, rectangular blocks, or an uncompilable fp8 dtype: the triton kernel uses one
         # BLOCK_SIZE for both axes, so it mis-indexes when block_size[0] != [1].
-        if kernel_fp8_unsupported and torch.version.hip is None and weight_scale.ndim == 2:
-            # NVIDIA below sm89: one triton pass over the e4m3fn bytes, bit-identical to the torch loop.
+        if (
+            torch.version.hip is None
+            and weight.is_cuda
+            and weight.dtype == torch.float8_e4m3fn
+            and weight_scale.ndim == 2
+        ):
+            # NVIDIA, any arch (below sm89, or ragged / rectangular blocks): one triton pass over the
+            # e4m3fn bytes, bit-identical to the torch loop.
             return _e4m3fn_bytes_dequant(
                 weight, weight_scale, int(block_size[0]), int(block_size[1]), out_dtype
             )

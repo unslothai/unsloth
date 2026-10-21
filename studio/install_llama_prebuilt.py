@@ -3085,23 +3085,34 @@ def _windows_display_adapter_in_registry(needles: tuple[tuple[str, str], ...]) -
     return False
 
 
+@functools.lru_cache(maxsize = 1)
+def _darwin_hw_optional_arm64() -> bool:
+    """sysctl hw.optional.arm64 read in-process (no subprocess on the launch preflight)."""
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        value = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if (
+            libc.sysctlbyname(
+                b"hw.optional.arm64", ctypes.byref(value), ctypes.byref(size), None, 0
+            )
+            == 0
+        ):
+            return value.value == 1
+    except (OSError, AttributeError, TypeError, ValueError):
+        pass
+    return False
+
+
 def _host_machine(system: str) -> str:
     """platform.machine(), but arm64 under Rosetta: macos-x64 is built without Metal."""
     machine = platform.machine().lower()
     if system != "Darwin" or machine != "x86_64":
         return machine
-    try:
-        result = subprocess.run(
-            ["sysctl", "-n", "hw.optional.arm64"],
-            capture_output = True,
-            text = True,
-            timeout = 5,
-        )
-        if result.returncode == 0 and result.stdout.strip() == "1":
-            return "arm64"
-    except Exception:
-        pass
-    return machine
+    return "arm64" if _darwin_hw_optional_arm64() else machine
 
 
 def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:

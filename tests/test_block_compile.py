@@ -131,6 +131,28 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     assert calls == []
 
 
+def test_stop_recomputation_does_not_demote(monkeypatch):
+    """#14063: checkpoint early-stop is control flow; demoting on it raised CheckpointError."""
+    from torch.utils.checkpoint import _StopRecomputationError
+
+    M = _load()
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            raise _StopRecomputationError()
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    with pytest.raises(_StopRecomputationError):
+        layer(torch.randn(2, 4, 8, requires_grad = True))
+    assert layer._unsloth_block_mode == M._FIRST_MODE
+    assert layer.__dict__.get("_unsloth_block_checked", 0) == 0
+
+
 def test_cache_calls_keep_the_stock_forward(monkeypatch):
     from transformers.cache_utils import DynamicCache
 

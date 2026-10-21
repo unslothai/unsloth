@@ -426,7 +426,7 @@ def _native_unavailable(checkpoint: Checkpoint, native: Checkpoint | None) -> st
     if binary is None:
         return "llama-server is not installed."
     if _binary_key(binary) in _incapable:
-        return "This llama.cpp build cannot serve decision models; update llama.cpp in Studio."
+        return "This llama.cpp build cannot serve decision models; update llama.cpp in Unsloth."
     return None
 
 

@@ -74,3 +74,19 @@ def test_the_compile_arms_only_its_own_sources():
     }
     for name, sources in dt._FAMILY_SOURCES.items():
         assert dt.PROMPT_LENGTH_POLICY[name] == sources, name
+
+
+def test_qwen_image_arms_its_sources_on_the_dynamic_tier_too():
+    class Qwen:
+        pass
+
+    class Flux3:
+        pass
+
+    Qwen.__name__ = "QwenImageTransformer2DModel"
+    Flux3.__name__ = "Flux3Transformer2DModel"
+    if not dt.supported():
+        return
+    assert dt._armed_when_dynamic(Qwen()) and not dt._armed_when_dynamic(Flux3())
+    assert dt.fingerprint(Qwen(), True) == dt.fingerprint(Qwen(), None)
+    assert dt.fingerprint(Flux3(), True) != dt.fingerprint(Flux3(), None)
