@@ -356,10 +356,8 @@
 	   a softer feel. Dark mode (further down) keeps parity with the
 	   muted-text token. */
 	--panel-slider-fg-base: #9a9a9c;
-	/* Every slider (components/ui/slider.tsx, native media ranges; the Hub
-	   range filter takes only the sizes): one look in every palette, filled
-	   with the accent. The track is translucent so it sits the same step off
-	   any surface (#eaeaea on #fafafa). */
+	/* Every slider; the Hub range filter takes only the sizes. The translucent
+	   track sits the same step off any surface. */
 	--slider-fill: var(--control-accent);
 	--slider-track: rgb(0 0 0 / calc(0.065 * var(--contrast-wash-gain, 1)));
 	--slider-thumb: #ffffff;
@@ -571,7 +569,7 @@
 	--panel-surface-fg-muted: #b0b0b0;
 	/* Dark-mode slider tone matches muted text. */
 	--panel-slider-fg-base: #b0b0b0;
-	/* Accent softened toward grey; #2e2e2e on #242424; flat white thumb. */
+	/* Accent softened toward grey; flat white thumb. */
 	--slider-fill: color-mix(in oklab, var(--control-accent) 75%, #a0a0a0);
 	--slider-track: rgb(255 255 255 / calc(0.045 * var(--contrast-wash-gain, 1)));
 	--slider-thumb-hover: #dcdcdc;

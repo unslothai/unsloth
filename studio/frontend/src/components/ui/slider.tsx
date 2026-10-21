@@ -59,8 +59,7 @@ function Slider({
   );
   const isSingleThumbHorizontal =
     values.length === 1 && orientation === "horizontal";
-  // The thumb follows the UI size (--slider-thumb-size), so the fill measures it
-  // rather than assuming 20px. offsetWidth ignores the hover/press transforms.
+  // The thumb scales with the UI size, so the fill measures it.
   const thumbRef = React.useRef<HTMLSpanElement | null>(null);
   const [thumbWidth, setThumbWidth] = React.useState(THUMB_SIZE_PX);
   React.useLayoutEffect(() => {
