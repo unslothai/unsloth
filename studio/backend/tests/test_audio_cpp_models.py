@@ -1547,7 +1547,13 @@ def test_supertonic_gets_the_language_top_level_as_a_code():
     for keys in (None, frozenset({"speed", "num_inference_steps", "text_chunk_size", "seed"})):
         model = _speech_model("supertonic", request_keys = keys)
         b, srv = _backend_with(model, SPEECH_WAV)
-        for given, sent in (("de", "de"), (" de-DE ", "de"), ("German", "de"), ("auto", None)):
+        for given, sent in (
+            ("de", "de"),
+            (" de-DE ", "de"),
+            ("German", "de"),
+            ("hindi", "hi"),
+            ("auto", None),
+        ):
             b.generate_audio_response("Hallo", language = given)
             body = srv.calls[-1][1]
             assert body.get("language") == sent and "language" not in body.get("options", {})

@@ -209,6 +209,32 @@ def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> Aud
 _READS_TOP_LEVEL_LANGUAGE = frozenset({"voxcpm1", "audio8_tts", "supertonic"})
 # Supertonic's tokenizer refuses anything but a bare ISO code (src/models/supertonic/tokenizer_text.cpp).
 _LANGUAGE_CODE_FAMILIES = frozenset({"supertonic"})
+# English names of the languages Supertonic reads (model_specs/supertonic.json).
+_CODE_LANGUAGE_NAMES = {
+    **_LANGUAGE_NAMES,
+    "ar": "Arabic",
+    "bg": "Bulgarian",
+    "cs": "Czech",
+    "da": "Danish",
+    "el": "Greek",
+    "et": "Estonian",
+    "fi": "Finnish",
+    "hi": "Hindi",
+    "hr": "Croatian",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "lt": "Lithuanian",
+    "lv": "Latvian",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "ro": "Romanian",
+    "sk": "Slovak",
+    "sl": "Slovenian",
+    "sv": "Swedish",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "vi": "Vietnamese",
+}
 
 
 def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
@@ -351,7 +377,7 @@ def language_code(language: Optional[str]) -> Optional[str]:
     text = str(language or "").strip()
     if not text or text.lower() == "auto":
         return None
-    for code, name in _LANGUAGE_NAMES.items():
+    for code, name in _CODE_LANGUAGE_NAMES.items():
         if name.lower() == text.lower():
             return code
     return text.lower().replace("_", "-").split("-", 1)[0]
