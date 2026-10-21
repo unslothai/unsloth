@@ -34,6 +34,7 @@ from transformers import __version__ as transformers_version
 from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
+from .float8_training import convert_model_to_float8_training, resolve_float8_training
 from .mistral_format import (
     MistralFormatRedirect,
     is_mistral_format_view,
@@ -1201,6 +1202,13 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = distributed_device_map
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
+        if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
+            raise ValueError(
+                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
+                "their base weights frozen, so there is no fp8 training step to take."
+            )
+        if not full_finetuning:
+            kwargs.pop("float8_training", None)
         if load_in_8bit or full_finetuning or qat_scheme is not None:
             delegated, tokenizer = FastModel.from_pretrained(
                 on_model_resolved = on_model_resolved,
@@ -2090,6 +2098,12 @@ class FastModel(FastBaseModel):
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
+        float8_training = resolve_float8_training(kwargs.pop("float8_training", None))
+        if float8_training is not None and not full_finetuning:
+            raise ValueError(
+                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
+                "their base weights frozen, so there is no fp8 training step to take."
+            )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -2366,6 +2380,9 @@ class FastModel(FastBaseModel):
                 **({"config": user_config} if user_config is not None else {}),
                 **kwargs,
             )
+            if float8_training is not None:
+                converted = convert_model_to_float8_training(model, float8_training)
+                print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
@@ -3396,6 +3413,9 @@ class FastModel(FastBaseModel):
         model = _drop_float16_overflowing_attention_dropout(model, dtype)
         # Loaded adapters skip get_peft_model.
         _ignore_block_swap_params_for_ddp(model)
+        if float8_training is not None:
+            converted = convert_model_to_float8_training(model, float8_training)
+            print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
         return _mark_requested_float32(model, user_float32), tokenizer
