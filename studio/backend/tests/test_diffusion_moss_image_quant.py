@@ -145,10 +145,29 @@ def test_auto_never_picks_fp8_but_an_explicit_fp8_is_allowed(family):
     assert "fp8" in tq._auto_scheme_order("qwen-image-2.1", "cuda", (10, 0))
 
 
-def test_auto_keeps_quantising_a_5b_dit_that_fits():
-    """No small-model bf16 rule: the denoiser compiles regionally and has no auto_bf16_when_resident reason."""
-    from core.inference.diffusion import _auto_keeps_bf16_reason
-    assert _auto_keeps_bf16_reason(_fam(), "pipeline") is None
+def test_auto_keeps_the_5b_dit_bf16_while_it_fits():
+    """Small-DiT rule (as FLUX.2 / FLUX.3-klein, Z-Image): bf16 while a resident plan fits, INT8-ConvRot once bf16
+    would offload, an explicit precision honoured (the rule reads only AUTO)."""
+    from types import SimpleNamespace
+
+    from core.inference.diffusion import _auto_keeps_bf16_reason, _auto_quant_eager_reason
+    from core.inference.diffusion_transformer_quant import auto_bf16_when_resident_reason
+
+    fam = _fam()
+    assert "0.049 vs 0.025" in auto_bf16_when_resident_reason("moss-image")
+    # The Base builds record "moss-image-base"; the family row is the one that decides.
+    assert _auto_keeps_bf16_reason(fam, "pipeline") is not None
+    assert _auto_keeps_bf16_reason(fam, "gguf") is None
+
+    def plan(policy, required, budget):
+        return SimpleNamespace(
+            offload_policy = policy,
+            estimates = {"resident_required_mib": required, "safe_device_budget_mib": budget},
+        )
+
+    assert _auto_quant_eager_reason(fam, plan("none", 36060, 156376)) is not None
+    assert _auto_quant_eager_reason(fam, plan("none", 36060, 20000)) is None
+    assert _auto_quant_eager_reason(fam, plan("group", 36060, 20000)) is None
 
 
 def test_text_encoder_file_and_equivalence():

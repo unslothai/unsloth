@@ -322,6 +322,10 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
+# MOSS-Image's 5.1B DiT is a small denoiser: bf16 while it fits, INT8-ConvRot only when bf16 would offload. B200, 14
+# prompts at 1024^2 / 50 steps, LPIPS-alex mean against the eager bf16 port: Studio bf16 0.025, INT8-ConvRot 0.049. Same
+# rule as the other small DiTs (FLUX.2 / FLUX.3-klein, Z-Image).
+_MOSS_IMAGE_BF16_WHEN_RESIDENT = "a small denoiser stays bf16 while it fits (INT8-ConvRot doubles LPIPS against the reference: 0.049 vs 0.025)"
 
 # FLUX.1's sd-cli encoders are BFL's own diffusers files, read as-is: sd.cpp loads the CLIP-L text_encoder and the
 # sharded T5 through its index (the shards sit beside it in the snapshot). The shards are listed so every fetch,
@@ -1264,6 +1268,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             # fp8 scored 0.163 on both SFT and Base (7x int8 ConvRot's summed local error), mxfp8 was not measured:
             # explicit picks only.
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
+            auto_bf16_when_resident = _MOSS_IMAGE_BF16_WHEN_RESIDENT,
             # The FLUX.2 VAE and the same 2x2 packed, BatchNorm-normalised 128-channel latent.
             preview_factors = "flux2",
         ),

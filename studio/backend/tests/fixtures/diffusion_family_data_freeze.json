@@ -2360,7 +2360,7 @@
     "pad": [],
     "zero_row": []
    },
-   "auto_bf16_when_resident": null,
+   "auto_bf16_when_resident": "a small denoiser stays bf16 while it fits (INT8-ConvRot doubles LPIPS against the reference: 0.049 vs 0.025)",
    "bf16": {
     "convrot_filename": null,
     "convrot_repo": null,
@@ -3528,7 +3528,9 @@
   ],
   "family_auto_bf16_when_resident": {
    "hidream-i1": "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail",
-   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
+   "lumina-2": "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail",
+   "moss-image": "a small denoiser stays bf16 while it fits (INT8-ConvRot doubles LPIPS against the reference: 0.049 vs 0.025)",
+   "moss-image-base": "a small denoiser stays bf16 while it fits (INT8-ConvRot doubles LPIPS against the reference: 0.049 vs 0.025)"
   },
   "family_auto_prefer": {
    "flux.1": {
