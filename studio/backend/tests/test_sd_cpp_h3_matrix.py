@@ -83,6 +83,7 @@ def h3_host(monkeypatch, tmp_path):
         help_text: str | None,
         managed: bool = False,
         lists_accelerator: bool = True,
+        paravirtual: bool = False,
     ):
         monkeypatch.setattr(
             sd_cpp_engine.sys, "platform", "linux" if platform == "wsl" else platform
@@ -92,6 +93,9 @@ def h3_host(monkeypatch, tmp_path):
             "resolve_diffusion_device_target",
             lambda: types.SimpleNamespace(backend = backend, device = device, dtype = None),
         )
+        from core.inference import sd_cpp_args
+
+        monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: paravirtual)
         monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: True)
         monkeypatch.setattr(sd_cpp_backend, "is_managed_binary", lambda _b: managed)
         monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
@@ -194,6 +198,22 @@ def test_h3_preflight_admits_a_capable_build_and_downloads_once(
     assert backend_obj._state is not None
     # A GPU target keeps its device when the build offers an accelerator; CPU/MPS are unchanged.
     assert backend_obj._state.device == device
+
+
+def test_h3_on_a_paravirtual_mac_commits_cpu_and_drops_the_video_claim(h3_host, monkeypatch):
+    # sd.cpp runs a paravirtual Metal GPU on the CPU backend, so the load must not keep the VIDEO claim.
+    from core.inference import gpu_arbiter
+
+    released = []
+    monkeypatch.setattr(
+        gpu_arbiter, "release_if", lambda owner, pred: released.append(owner) or pred()
+    )
+    host = h3_host(
+        platform = "darwin", backend = "mps", device = "mps", help_text = _H3_HELP, paravirtual = True
+    )
+    backend_obj = host.run()
+    assert backend_obj._state is not None and backend_obj._state.device == "cpu"
+    assert released == [gpu_arbiter.VIDEO]
 
 
 @pytest.mark.parametrize("platform", PLATFORMS)
@@ -425,3 +445,55 @@ def test_h3_cancellation_precedes_the_binary_install(h3_host, platform, hw_label
         sd_cpp_backend.ensure_h3_sd_cpp_binary = original
     assert ensures == []
     assert host.downloads == []
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", [h for h in HARDWARE if h[1] == "rocm"])
+def test_h3_revet_catches_a_managed_tree_rebuilt_for_another_accelerator(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """A ROCm build installed over the tree mid-download answers the boolean re-vet exactly as the Vulkan rung did."""
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
+
+    def _accelerator_of(binary):
+        return "rocm" if swapped["done"] else "vulkan"
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", _accelerator_of)
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    with pytest.raises(RuntimeError, match = "built for a different accelerator"):
+        host.run()
+
+
+@pytest.mark.parametrize("platform", PLATFORMS)
+@pytest.mark.parametrize("hw_label,backend,device", [h for h in HARDWARE if h[1] == "rocm"])
+def test_h3_revet_does_not_invent_a_change_for_an_unrecorded_tree(
+    h3_host, platform, hw_label, backend, device, monkeypatch
+):
+    """None is "cannot tell", not "it changed"; refusing on it would refuse every SD_CLI_PATH build."""
+    host, real_probe, sd_cpp_backend, swapped = _shared_setup_1(backend, device, h3_host, platform)
+
+    import utils.hf_xet_fallback as xet
+
+    real_download = xet.hf_hub_download_with_xet_fallback
+
+    def _download(*args, **kwargs):
+        swapped["done"] = True
+        return real_download(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "_installed_accelerator_of",
+        lambda binary: None if swapped["done"] else "vulkan",
+    )
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+
+    host.run()

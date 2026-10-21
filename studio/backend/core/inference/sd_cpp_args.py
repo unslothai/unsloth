@@ -13,6 +13,7 @@ one knob drives both engines. Ref: sd.cpp ``examples/cli`` and ``docs/z_image.md
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Optional
@@ -31,7 +32,17 @@ _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "flux.2-klein": ("--llm",),
     "flux.2-dev": ("--llm",),
     "qwen-image": ("--qwen2vl",),
+    "qwen-image-edit": ("--qwen2vl",),
+    "qwen-image-layered": ("--qwen2vl",),
+    # 2.1 conditions on Qwen3-VL, which sd-cli takes through --llm. --qwen2vl is an alias of --llm
+    # that also turns on Qwen2-VL's vision path, so it is the wrong door even though both names
+    # reach the same field.
+    "qwen-image-2.1": ("--llm",),
+    # Qwen3-VL-4B through --llm, as qwen-image-2.1.
+    "flux.3-klein": ("--llm",),
+    "flux.3-klein-base": ("--llm",),
     "flux.1": ("--clip_l", "--t5xxl"),
+    "flux.1-kontext": ("--clip_l", "--t5xxl"),
 }
 
 
@@ -88,6 +99,8 @@ class SdCppGenParams:
     ref_images: tuple[str, ...] = ()
     lora_dir: Optional[str] = None
     lora_apply_mode: Optional[str] = None
+    # Qwen-Image-Layered layer count; sd.cpp returns layers + 1 images (first = input reconstruction). None = its default 3.
+    qwen_image_layers: Optional[int] = None
 
 
 @dataclass(frozen = True)
@@ -126,51 +139,222 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa +
-# --diffusion-conv-direct (numerically exact; direct conv took z-image Q8_0 sampling 56.1 -> 51.3 s). max keeps it
-# (profiles chain).
+# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
 NATIVE_SPEED_MODES = (NATIVE_SPEED_OFF, NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX)
 
 
-def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
+def native_speed_flags(
+    speed_mode: Optional[str],
+    backend_args: Optional[Sequence[str]] = None,
+    accelerator: Optional[str] = None,
+) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
-    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site."""
+    ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
+    ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
+        if not conv_direct_wanted(backend_args or (), accelerator):
+            return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+# Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
+_CONV_DIRECT_SLOW_BACKENDS = ("vulkan", "rocm", "hip")
+
+
+def conv_direct_wanted(backend_args: Sequence[str] = (), accelerator: Optional[str] = None) -> bool:
+    """``UNSLOTH_SD_CPP_CONV_DIRECT`` = 1/0 forces it (Metal too); else off on Metal, and a ``--backend diffusion=``
+    pin beats ``accelerator``."""
+    import os
+
+    forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
+    if forced in ("1", "on", "true", "yes"):
+        return True
+    if forced in ("0", "off", "false", "no"):
+        return False
+    if _runs_on_apple_metal(backend_args):
+        return False
+    args = list(backend_args)
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    name = (target or accelerator or "").strip().lower().rstrip("0123456789")
+    return name not in _CONV_DIRECT_SLOW_BACKENDS
+
+
+def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
+    """The backend the diffusion module gets from ``--backend`` specs: ``diffusion=`` beats a bare default; None = auto-fit."""
+    explicit = default = None
+    for spec in specs:
+        for part in str(spec).split(","):
+            key, sep, value = part.strip().partition("=")
+            if not sep:
+                default = key or default
+            elif key.strip().lower() == "diffusion":
+                explicit = value.strip()
+    return explicit or default
+
+
+def _runs_on_apple_metal(backend_args: Sequence[str] = ()) -> bool:
+    """True when sd.cpp runs the diffusion model on Apple Metal (macOS; an explicit ``--backend`` for it decides,
+    else an Apple Silicon machine whose GPU is not paravirtual).
+
+    Direct conv is not used there: ggml-metal's CONV_2D trips the GPU watchdog on an SD1.5 UNet."""
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    args = list(backend_args)
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    if target is not None:
+        return target.lower() != "cpu"
+    return apple_silicon_machine() and not metal_is_paravirtual()
+
+
+@functools.lru_cache(maxsize = 1)
+def apple_silicon_machine() -> bool:
+    """True on an Apple Silicon Mac, including an x86_64 Python under Rosetta (``hw.optional.arm64``, as install.sh)."""
+    import platform
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        return True
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc = ctypes.CDLL(ctypes.util.find_library("c"))
+        value = ctypes.c_int(0)
+        size = ctypes.c_size_t(ctypes.sizeof(value))
+        if (
+            libc.sysctlbyname(
+                b"hw.optional.arm64", ctypes.byref(value), ctypes.byref(size), None, 0
+            )
+            == 0
+        ):
+            return value.value == 1
+    except Exception:  # noqa: BLE001 -- no answer means an Intel Mac
+        pass
+    return False
+
+
+def forces_cpu_backend(device: Optional[str]) -> bool:
+    """True when an sd.cpp run on resolved ``device`` is placed on the CPU backend (a paravirtual Mac GPU)."""
+    return device == "mps" and metal_is_paravirtual()
 
 
 # Kill switch for the Metal text-encoder placement below (1/true keeps the encoder on Metal).
 _METAL_TE_ON_GPU_ENV = "UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU"
 
 
+@functools.lru_cache(maxsize = 1)
+def metal_is_paravirtual() -> bool:
+    """True when this Mac's Metal device is Apple's paravirtual GPU (a macOS VM). Reuses the llama.cpp probe."""
+    import sys
+
+    if sys.platform != "darwin":
+        return False
+    try:
+        from core.inference.llama_cpp import _metal_device_is_paravirtual
+    except Exception:  # noqa: BLE001 -- no probe means no evidence of a VM
+        return False
+    try:
+        return bool(_metal_device_is_paravirtual())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def metal_text_encoder_flags() -> list[str]:
-    """Keep the TEXT ENCODER on CPU when sd.cpp runs on Apple Metal, else nothing.
+    """Placement flags for sd.cpp on Apple Metal, else nothing.
 
-    ggml's Metal backend gates RMS_NORM on contiguous rows and calls ``GGML_ABORT`` when that does
-    not hold, with no per-op CPU fallback, so an LLM text encoder (Qwen3 for FLUX.2 / Z-Image, T5
-    for FLUX.1) takes the whole sd-server process down mid-generation:
-        ggml_metal_op_encode_impl: error: unsupported op 'RMS_NORM' -> ggml_abort
-        LLMEmbedder::encode_prompt -> LLMRunner::compute -> GGMLRunner::compute
-
-    Observed on macos-14 arm64 with FLUX.2-klein-4B Q2_K: the model loads on ``mps`` and the first
-    generation dies with exit code -6. The encoder runs once per prompt while the DiT runs every
-    step, so pinning only the encoder keeps Metal for the part that matters. Set
-    ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` to opt back in once ggml grows the kernel."""
+    A paravirtual GPU gets ``--backend cpu``: the bundled ggml segfaults there on CPU-fallback buffers. Otherwise the
+    text encoder stays on the CPU (``--clip-on-cpu``) since ggml-metal can abort an LLM encoder;
+    ``UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU=1`` keeps it on Metal."""
     import os
     import sys
 
     if sys.platform != "darwin":
         return []
+    if metal_is_paravirtual():
+        return list(CPU_BACKEND_FLAGS)
     if os.environ.get(_METAL_TE_ON_GPU_ENV, "").strip().lower() in ("1", "true", "yes", "on"):
         return []
     return ["--clip-on-cpu"]
+
+
+def metal_placement_flags(offload: Sequence[str]) -> list[str]:
+    """``metal_text_encoder_flags()`` minus what ``offload`` already says.
+
+    ``--backend cpu`` is a flag pair: per-item filtering would leave a dangling ``cpu``, so an explicit pin drops it."""
+    flags = metal_text_encoder_flags()
+    if flags == list(CPU_BACKEND_FLAGS):
+        return [] if "--backend" in offload else flags
+    return [f for f in flags if f not in offload]
+
+
+# 1 / 0 forces sd.cpp's --mmap on / off on macOS; unset decides from the installed build (``mac_mmap_flags``).
+SD_CPP_MMAP_ENV = "UNSLOTH_DIFFUSION_SD_CPP_MMAP"
+# leejet/stable-diffusion.cpp#2037 (master-907) maps mmapped weights through Metal device buffers. Older builds accept
+# --mmap but hand Metal a CPU buffer it cannot address, so the flag is only safe from this build on.
+METAL_MMAP_MIN_BUILD = 907
+_INSTALL_RECORD = ".unsloth-sd-cpp-install.json"
+
+
+def sd_cpp_build_number(tag: Optional[str]) -> Optional[int]:
+    """``N`` of a ``master-N-<sha>[-u<sha>]`` release tag, else None."""
+    import re
+
+    m = re.match(r"^master-(\d+)(?:-|$)", str(tag or "").strip())
+    return int(m.group(1)) if m else None
+
+
+@functools.lru_cache(maxsize = 8)
+def _installed_sd_cpp_tag(binary: str) -> Optional[str]:
+    """The release tag Studio's installer recorded next to ``binary`` (the binary sits at or a few levels under the
+    install root). None for a binary the installer did not place (``SD_CLI_PATH``, PATH, a source build)."""
+    import json
+    from pathlib import Path
+
+    try:
+        path = Path(binary).resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    for parent in list(path.parents)[:3]:
+        try:
+            with open(parent / _INSTALL_RECORD, "r", encoding = "utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        tag = rec.get("tag") if isinstance(rec, dict) else None
+        return tag if isinstance(tag, str) and tag else None
+    return None
+
+
+def mac_mmap_flags(binary: Optional[str], extra_args: Optional[Sequence[str]] = None) -> list[str]:
+    """``["--mmap"]`` on macOS when ``binary`` maps weights correctly on Metal, else nothing.
+
+    With it, GGUF / safetensors weights stay clean file-backed pages (Metal wraps them in place, the CPU backend reads
+    them in place) instead of a second anonymous copy, which on unified memory is the copy that swaps: upstream measured
+    a Qwen-Image 2.1 Q4_K_M peak footprint of 10.2 -> 1.4 GB on an M1 Pro, pixel-identical. Fails closed on a build it
+    cannot date; ``UNSLOTH_DIFFUSION_SD_CPP_MMAP`` = 1 / 0 forces it either way."""
+    import os
+    import sys
+
+    if sys.platform != "darwin" or "--mmap" in (extra_args or ()):
+        return []
+    forced = os.environ.get(SD_CPP_MMAP_ENV, "").strip().lower()
+    if forced in ("0", "false", "no", "off"):
+        return []
+    if forced in ("1", "true", "yes", "on"):
+        return ["--mmap"]
+    build = sd_cpp_build_number(_installed_sd_cpp_tag(str(binary))) if binary else None
+    return ["--mmap"] if build is not None and build >= METAL_MMAP_MIN_BUILD else []
 
 
 # Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
@@ -186,6 +370,160 @@ GRAPH_CUT_VRAM_FLAGS: tuple[str, ...] = ("--max-vram", "-1")
 GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 # The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
+
+# The committed "-1" is a placeholder (live server signatures compare on it); a launch swaps it for an explicit GiB
+# budget read before the spawn, so the 2 GiB reserve also covers the child's own CUDA context and cuBLAS workspaces.
+# Other negative values (UMA pinned-weight reserve) are applied by sd.cpp itself and never replaced.
+GRAPH_CUT_BUDGET_RESERVE_BYTES = 2 << 30
+GRAPH_CUT_MIN_BUDGET_BYTES = 1 << 30
+GRAPH_CUT_RETRY_SCALE = 0.75
+GRAPH_CUT_EXPLICIT_BUDGET_ENV = "UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET"
+
+
+def explicit_vram_budget_enabled(env: Optional[dict] = None) -> bool:
+    """Kill switch: ``UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET=0`` keeps sd.cpp's own "-1" free-VRAM reading."""
+    import os
+
+    environ = os.environ if env is None else env
+    return str(environ.get(GRAPH_CUT_EXPLICIT_BUDGET_ENV, "")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def graph_cut_budget_gib(
+    free_bytes: Optional[int],
+    *,
+    reserve_bytes: int = GRAPH_CUT_BUDGET_RESERVE_BYTES,
+    scale: float = 1.0,
+) -> Optional[float]:
+    """``--max-vram`` GiB for ``free_bytes`` free, or None (keep "-1"). Rounded DOWN so it never exceeds the plan."""
+    if free_bytes is None:
+        return None
+    budget = (int(free_bytes) - int(reserve_bytes)) * float(scale)
+    if budget < GRAPH_CUT_MIN_BUDGET_BYTES:
+        return None
+    return int(budget / float(1 << 30) * 100) / 100.0
+
+
+def _format_gib(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def max_vram_value(flags: Sequence[str]) -> Optional[str]:
+    items = list(flags)
+    for i, flag in enumerate(items):
+        if flag == "--max-vram":
+            return items[i + 1] if i + 1 < len(items) else None
+    return None
+
+
+def max_vram_is_auto(value: Optional[str]) -> bool:
+    if value is None or "=" in value or "," in value:
+        return False
+    try:
+        return float(value) < 0
+    except ValueError:
+        return False
+
+
+def max_vram_is_placeholder(value: Optional[str]) -> bool:
+    """Only the committed ``-1``; a computed UMA reserve (``-17.05``) is sd.cpp's to apply, not a placeholder."""
+    if not max_vram_is_auto(value):
+        return False
+    return float(value) == float(GRAPH_CUT_VRAM_FLAGS[1])  # type: ignore[arg-type]
+
+
+def with_max_vram_budget(
+    flags: Sequence[str], budget: "Optional[float | dict[str, float]]"
+) -> list[str]:
+    """Replace only the ``-1`` placeholder (dict -> ``cuda0=6.25,cuda1=12.50``), never a user or UMA-fit value."""
+    out = list(flags)
+    if not budget:
+        return out
+    for i, flag in enumerate(out):
+        if flag != "--max-vram" or i + 1 >= len(out) or not max_vram_is_placeholder(out[i + 1]):
+            continue
+        if isinstance(budget, dict):
+            out[i + 1] = ",".join(f"{name}={_format_gib(gib)}" for name, gib in budget.items())
+        else:
+            out[i + 1] = _format_gib(float(budget))
+    return out
+
+
+def explicit_max_vram_gib(flags: Sequence[str]) -> "Optional[float | dict[str, float]]":
+    value = max_vram_value(flags)
+    if value is None or max_vram_is_auto(value):
+        return None
+    try:
+        if "=" in value:
+            out: dict[str, float] = {}
+            for part in value.split(","):
+                name, _, gib = part.partition("=")
+                out[name.strip()] = float(gib)
+            return out
+        gib = float(value)
+    except ValueError:
+        return None
+    return gib if gib > 0 else None
+
+
+def scaled_vram_budget(
+    budget: "float | dict[str, float]", scale: float
+) -> "Optional[float | dict[str, float]]":
+    """``budget * scale`` per device, or None once any device falls below ``GRAPH_CUT_MIN_BUDGET_BYTES``."""
+    floor_gib = GRAPH_CUT_MIN_BUDGET_BYTES / float(1 << 30)
+
+    def one(gib: float) -> Optional[float]:
+        value = int(float(gib) * float(scale) * 100) / 100.0
+        return value if value >= floor_gib else None
+
+    if isinstance(budget, dict):
+        out = {name: one(gib) for name, gib in budget.items()}
+        if not out or any(v is None for v in out.values()):
+            return None
+        return out  # type: ignore[return-value]
+    return one(float(budget))
+
+
+# Not the model manager's "cannot make enough memory available": completed renders print it too.
+_DEVICE_OOM_MARKERS: tuple[str, ...] = (
+    "erroroutofdevicememory",
+    "out_of_device_memory",
+    "cudaerrormemoryallocation",
+    "hiperroroutofmemory",
+    "failed to allocate cuda",
+    "failed to allocate rocm",
+    "failed to allocate vulkan",
+    "failed to allocate metal",
+    "failed during workspace capacity check",
+    "failed during workspace allocation",
+    "failed during allocated capacity check",
+)
+# Bare "out of memory" counts only beside a device API name; host OOM is not cured by a smaller VRAM budget.
+_DEVICE_OOM_CONTEXT: tuple[str, ...] = ("cuda", "hip", "rocm", "vulkan", "metal", "ggml_backend")
+_HOST_OOM_MARKERS: tuple[str, ...] = (
+    "host malloc",
+    "host memory",
+    "out_of_host_memory",
+    "bad_alloc",
+    "cannot allocate memory",
+)
+
+
+def is_device_oom_text(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    for line in str(text).lower().splitlines():
+        if any(marker in line for marker in _HOST_OOM_MARKERS):
+            continue
+        if any(marker in line for marker in _DEVICE_OOM_MARKERS):
+            return True
+        if "out of memory" in line and any(word in line for word in _DEVICE_OOM_CONTEXT):
+            return True
+    return False
 
 
 def device_backend_flags(
@@ -328,6 +666,7 @@ def build_sd_cpp_command(
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
         ("--llm", files.llm),
+        ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
     ):
         if value:
@@ -344,6 +683,8 @@ def build_sd_cpp_command(
         cmd += ["--mask", params.mask]
     for ref in params.ref_images:
         cmd += ["--ref-image", ref]
+    if params.qwen_image_layers is not None:
+        cmd += ["--qwen-image-layers", str(int(params.qwen_image_layers))]
     # LoRA: the directory to scan; individual LoRAs are <lora:name:w> tags in prompt.
     if params.lora_dir:
         cmd += ["--lora-model-dir", params.lora_dir]
@@ -380,7 +721,8 @@ def build_sd_cpp_command(
     offload = list(offload or [])
     if offload:
         cmd += offload
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    cmd += metal_placement_flags(offload)
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -395,6 +737,7 @@ def build_sd_cpp_video_command(
     *,
     output_path: str,
     offload: Optional[list[str]] = None,
+    threads: Optional[int] = None,
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
 ) -> list[str]:
@@ -469,10 +812,13 @@ def build_sd_cpp_video_command(
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     cmd += ["--output", output_path]
+    if threads is not None:
+        cmd += ["--threads", str(int(threads))]
     offload = list(offload or [])
     if offload:
         cmd += offload
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    cmd += metal_placement_flags(offload)
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd.append("-v")
     if extra_args:
@@ -511,6 +857,9 @@ def build_sd_cpp_upscale_command(
     if params.tile_size is not None:
         cmd += ["--upscale-tile-size", str(int(params.tile_size))]
     cmd += ["--output", output_path]
+    # Same paravirtual-GPU CPU placement as generation; an explicit --backend in extra_args wins.
+    if metal_is_paravirtual() and "--backend" not in (extra_args or ()):
+        cmd += list(CPU_BACKEND_FLAGS)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -531,6 +880,7 @@ def build_sd_cpp_server_command(
     scratch_dir: Optional[str] = None,
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
+    accelerator: Optional[str] = None,
 ) -> list[str]:
     """Build the ``sd-server`` argv: model + hardware/server flags only.
 
@@ -547,10 +897,13 @@ def build_sd_cpp_server_command(
     cmd: list[str] = [binary, "--diffusion-model", files.diffusion_model]
     for flag, value in (
         ("--vae", files.vae),
+        # Without it a resident H3 vid_gen server renders a silent clip.
+        ("--audio-vae", files.audio_vae),
         ("--clip_l", files.clip_l),
         ("--clip_g", files.clip_g),
         ("--t5xxl", files.t5xxl),
         ("--llm", files.llm),
+        ("--llm_vision", files.llm_vision),
         ("--qwen2vl", files.qwen2vl),
     ):
         if value:
@@ -574,8 +927,13 @@ def build_sd_cpp_server_command(
     if offload:
         cmd += offload
     # De-dup speed flags against offload (may already include --diffusion-fa).
-    cmd += [f for f in native_speed_flags(native_speed) if f not in offload]
-    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
+    placement = metal_placement_flags(offload)
+    backend_args = [*offload, *placement, *(extra_args or ())]
+    cmd += [
+        f for f in native_speed_flags(native_speed, backend_args, accelerator) if f not in offload
+    ]
+    cmd += placement
+    cmd += mac_mmap_flags(binary, extra_args)
     if verbose:
         cmd += ["-v"]
     if extra_args:
@@ -598,6 +956,9 @@ def build_img_gen_request(
     distilled_guidance: Optional[float] = None,
     output_format: str = "png",
     lora: Optional[list[dict]] = None,
+    ref_images: Optional[list[str]] = None,
+    qwen_image_layers: Optional[int] = None,
+    custom_sigmas: Optional[list[float]] = None,
 ) -> dict:
     """Build the ``POST /sdcpp/v1/img_gen`` JSON body for one text-to-image request.
 
@@ -621,6 +982,9 @@ def build_img_gen_request(
         sample_params["sample_method"] = str(sample_method)
     if flow_shift is not None:
         sample_params["flow_shift"] = float(flow_shift)
+    if custom_sigmas:
+        # Same key the server's sample_params parser reads for sd-cli's --sigmas.
+        sample_params["custom_sigmas"] = [float(s) for s in custom_sigmas]
     if guidance:
         sample_params["guidance"] = guidance
 
@@ -640,6 +1004,76 @@ def build_img_gen_request(
     # ``<lora:>`` tags are unsupported server-side), so LoRAs are staged here.
     if lora:
         req["lora"] = lora
+    # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.
+    if ref_images:
+        req["ref_images"] = list(ref_images)
+    if qwen_image_layers is not None:
+        req["qwen_image_layers"] = int(qwen_image_layers)
+    return req
+
+
+def sd_cli_output_paths(output_path: str, num_results: int) -> list[str]:
+    """The files one ``sd-cli`` image run writes for ``--output output_path``: the path itself for a
+    single result, else ``<stem>_<i><ext>`` from 0 (``examples/cli/main.cpp`` ``save_results``).
+    A layered generation is the multi-result case: layers + 1 images from one run."""
+    if num_results <= 1:
+        return [output_path]
+    stem, dot, ext = output_path.rpartition(".")
+    if not dot or "/" in ext or "\\" in ext:
+        stem, ext = output_path, "png"
+    return [f"{stem}_{i}.{ext}" for i in range(num_results)]
+
+
+def h3_server_eligible(params: "SdCppVideoGenParams") -> bool:
+    """False for reference videos / audio: path-only sd-cli flags with no ``vid_gen`` JSON field."""
+    return not (params.ref_videos or params.ref_video_audios or params.ref_audios)
+
+
+def build_vid_gen_request(
+    params: "SdCppVideoGenParams",
+    *,
+    images_b64: Optional[dict[str, str]] = None,
+    ref_images_b64: Optional[list[str]] = None,
+    output_compression: int = 90,
+) -> dict:
+    """``POST /sdcpp/v1/vid_gen`` body equivalent to ``build_sd_cpp_video_command`` (same pixels for the same seed).
+
+    AVI: needs no WebM build, as the CUDA prebuilt's sd-cli writes. ``--rng cpu`` is a server context flag, passed at
+    spawn."""
+    if not (params.prompt or "").strip():
+        raise ValueError("prompt is required")
+    if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
+        raise ValueError("width, height, and num_frames must be positive")
+    if not h3_server_eligible(params):
+        raise ValueError("reference videos and audio are not accepted by the sd-server vid_gen API")
+    images = dict(images_b64 or {})
+    if (images.get("init_image") or images.get("end_image")) and ref_images_b64:
+        raise ValueError(
+            "MiniMax-H3 keyframes and references cannot be combined: they run against "
+            "different denoiser partitions."
+        )
+    sample_params: dict = {"guidance": {"txt_cfg": float(params.cfg_scale)}}
+    if params.steps is not None:
+        sample_params["sample_steps"] = int(params.steps)
+    if params.flow_shift is not None:
+        sample_params["flow_shift"] = float(params.flow_shift)
+    req: dict = {
+        "prompt": params.prompt,
+        "width": int(params.width),
+        "height": int(params.height),
+        "video_frames": int(params.num_frames),
+        "fps": int(params.fps),
+        "sample_params": sample_params,
+        "output_format": "avi",
+        "output_compression": int(output_compression),
+    }
+    if params.seed is not None:
+        req["seed"] = int(params.seed)
+    for key in ("init_image", "end_image"):
+        if images.get(key):
+            req[key] = images[key]
+    if ref_images_b64:
+        req["ref_images"] = list(ref_images_b64)
     return req
 
 

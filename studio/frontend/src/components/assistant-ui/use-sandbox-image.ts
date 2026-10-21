@@ -8,7 +8,7 @@ import { type RefObject, useEffect, useRef, useState } from "react";
 
 export type SandboxImageState =
   | { status: "idle" }
-  | { status: "loaded"; url: string }
+  | { status: "loaded"; url: string; blob: Blob }
   | { status: "failed" };
 
 const IDLE: SandboxImageState = { status: "idle" };
@@ -20,14 +20,18 @@ const IDLE: SandboxImageState = { status: "idle" };
  * `<img src>` hitting it straight gets a 401 and the renderer's "Image not available" placeholder.
  * Pass the URL from `sandboxFilePath()`/`markdownSandboxImageSrc()` and render what comes back.
  *
+ * Any element can hold the ref (a `<video>` for a generated clip); it only marks where the file shows.
+ *
  * Keyed by url: an element that moves to another file reads idle rather than showing the previous
  * file's blob, and a stale response can never write state for a url it was not fetched for.
  */
-export function useSandboxImage(url: string | null): {
-  ref: RefObject<HTMLImageElement | null>;
+export function useSandboxImage<T extends Element = HTMLImageElement>(
+  url: string | null,
+): {
+  ref: RefObject<T | null>;
   state: SandboxImageState;
 } {
-  const ref = useRef<HTMLImageElement>(null);
+  const ref = useRef<T>(null);
   const [state, setState] = useState<{
     url: string | null;
     load: SandboxImageState;
@@ -79,7 +83,7 @@ export function useSandboxImage(url: string | null): {
         objectUrl = URL.createObjectURL(blob);
         setState({
           url,
-          load: { status: "loaded", url: objectUrl },
+          load: { status: "loaded", url: objectUrl, blob },
           signal: controller.signal,
         });
       })

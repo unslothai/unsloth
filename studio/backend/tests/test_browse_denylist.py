@@ -16,6 +16,7 @@ import ast
 import ntpath
 import os
 import posixpath
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -37,6 +38,17 @@ class _HTTPException(Exception):
         self.detail = detail
 
 
+_WIN_ENV_OS = SimpleNamespace(
+    sep = "\\",
+    environ = {
+        "SystemRoot": r"C:\Windows",
+        "ProgramFiles": r"C:\Program Files",
+        "ProgramFiles(x86)": r"C:\Program Files (x86)",
+    },
+    path = SimpleNamespace(normcase = ntpath.normcase),
+)
+
+
 def _extract_is_denied_windows():
     """is_denied_system_path (+ _denied_path_prefixes) from studio_db.py under Windows semantics (ntpath) on a POSIX host."""
     src = (_BACKEND_ROOT / "storage" / "studio_db.py").read_text(encoding = "utf-8")
@@ -50,17 +62,8 @@ def _extract_is_denied_windows():
     module = ast.Module(body = funcs, type_ignores = [])
     ast.fix_missing_locations(module)
 
-    win_os = SimpleNamespace(
-        sep = "\\",
-        environ = {
-            "SystemRoot": r"C:\Windows",
-            "ProgramFiles": r"C:\Program Files",
-            "ProgramFiles(x86)": r"C:\Program Files (x86)",
-        },
-        path = SimpleNamespace(normcase = ntpath.normcase),
-    )
     ns = {
-        "os": win_os,
+        "os": _WIN_ENV_OS,
         "platform": SimpleNamespace(system = lambda: "Windows"),
         # /run has no Windows analog, so the carve-out is never reached.
         "is_linux_run_media_path": lambda _p: False,
@@ -151,6 +154,64 @@ def test_is_denied_system_path_windows_denies_system_dirs(path):
 def test_is_denied_system_path_windows_allows_non_system(path):
     is_denied = _extract_is_denied_windows()
     assert is_denied(path) is False
+
+
+# A POSIX or macOS host simulated on Windows still joins with os.sep "\\", so these only run there.
+_POSIX_SEP = pytest.mark.skipif(sys.platform == "win32", reason = "simulates a POSIX host")
+
+
+@pytest.mark.parametrize(
+    "system, path, denied",
+    [
+        ("Windows", r"\\?\C:\Windows\Temp\x", True),
+        ("Windows", r"\\?\c:\program files\y", True),
+        ("Windows", r"\\?\C:\WINDOWS", True),
+        ("Windows", r"\\?\D:\models", False),
+        ("Windows", r"\\?\UNC\server\share\Windows", False),
+        pytest.param("Darwin", "/LIBRARY/x", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/library", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/private/TMP/x", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/SYSTEM/Volumes", True, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/Users/me/Library-Backup", False, marks = _POSIX_SEP),
+        pytest.param("Darwin", "/Volumes/Drive/library", False, marks = _POSIX_SEP),
+    ],
+)
+def test_is_denied_system_path_sees_through_spelling(system, path, denied, monkeypatch):
+    legacy = studio_db.is_denied_system_path
+    if system == "Windows":
+        legacy = _extract_is_denied_windows()
+        monkeypatch.setattr(scan_folders, "os", _WIN_ENV_OS)
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: system)
+    assert legacy(path) is denied
+    assert scan_folders.is_denied_system_path(path) is denied
+
+
+@_POSIX_SEP
+def test_is_within_any_compares_like_the_disk(monkeypatch):
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Darwin")
+    assert scan_folders.is_within_any("/Users/Me/Library/CACHES/x", ["/Users/me/Library/Caches"])
+    assert not scan_folders.is_within_any("/Users/me/Library/Caches2", ["/Users/me/Library/Caches"])
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Linux")
+    assert not scan_folders.is_within_any("/TMP/x", ["/tmp"])
+    assert scan_folders.is_within_any("/tmp", ["/tmp/"])
+
+
+@_POSIX_SEP
+def test_a_case_sensitive_macos_volume_keeps_case_apart(monkeypatch):
+    monkeypatch.setattr(scan_folders.platform, "system", lambda: "Darwin")
+    for module in (scan_folders, studio_db):
+        monkeypatch.setattr(module, "macos_volume_ignores_case", lambda path: False)
+    for check in (studio_db.is_denied_system_path, scan_folders.is_denied_system_path):
+        assert check("/Library/x") and not check("/library/models")
+    assert not scan_folders.is_within_any(
+        "/Users/Me/Library/CACHES/x", ["/Users/me/Library/Caches"]
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason = "asks the real macOS volume")
+def test_macos_volume_case_is_asked_of_the_nearest_existing_folder():
+    from utils.paths.path_utils import macos_volume_ignores_case
+    assert macos_volume_ignores_case("/no/such/folder/here") == macos_volume_ignores_case("/")
 
 
 # _resolve_browse_target -- real-FS integration (legacy browser)

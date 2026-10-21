@@ -40,6 +40,8 @@ export type ShortcutId =
   | "switchToAudio"
   | "switchToExport"
   | "findInPage"
+  | "newBrowserTab"
+  | "toggleBrowserFullView"
   | "toggleApiMonitor"
   | "toggleSidebar"
   | "openMcpServers"
@@ -56,10 +58,13 @@ export type ShortcutId =
   | "openProjectPicker"
   | "startDictation"
   | "sendMessage"
+  | "queueMessage"
+  | "steerMessage"
   | "toggleFastMode"
   | "copyChatAsMarkdown"
   | "copySessionId"
   | "forkChat"
+  | "openCommandPalette"
   | "searchChats"
   | "renameChat"
   | "openKeyboardShortcuts";
@@ -85,8 +90,7 @@ export interface ShortcutDef {
   webOnly?: boolean;
 }
 
-/** `code` is KeyboardEvent.code, so a binding survives a layout change. `mod`
- *  is Cmd on macOS and Ctrl elsewhere. */
+/** `code` as eventCode reads it; `mod` is Cmd on macOS and Ctrl elsewhere. */
 export interface ShortcutBinding {
   code: string;
   mod: boolean;
@@ -189,6 +193,11 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // counts the sidebar and composer as page, and does not exist on the desktop build. Cancellable
   // in every engine this ships on, so the handler wins it; Settings still flags it.
   def("findInPage", "Mod+KeyF"),
+  // ChatGPT's chord for its browser's new tab. Chrome and Firefox take it for bookmarks, but
+  // cancellably, and a chat has no bookmarks to show.
+  def("newBrowserTab", "Mod+Shift+KeyB"),
+  // ChatGPT's chord for its browser's full view; no browser claims ⇧⌘F.
+  def("toggleBrowserFullView", "Mod+Shift+KeyF"),
   // ⌥⌘U is view source on macOS, so U keeps its mnemonic on ⌃⇧ there instead. Off macOS it gives
   // U up altogether: three actions wanted that letter and only two chords carry it safely there,
   // so the two that mean "unread" have them and this one takes M for monitor.
@@ -223,6 +232,10 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+KeyV",
   }),
   def("sendMessage", null),
+  // Unassigned: ⌘⏎ already sends with the opposite follow-up, and these two
+  // name the behaviour instead of flipping it. Chat settings picks the default.
+  def("queueMessage", null),
+  def("steerMessage", null),
   def("toggleFastMode", null),
 
   def("copyChatAsMarkdown", null),
@@ -231,6 +244,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     nonMacDefaultBinding: "Mod+Alt+KeyC",
   }),
   def("forkChat", null),
+  // Takes the browser's Print, like find above takes its Find: printing a chat
+  // shell is of no use, and the event is cancellable in every engine.
+  def("openCommandPalette", "Mod+KeyP"),
   // No ⇧⌘P alternate: it is the command-menu chord everywhere else, but in
   // Firefox it opens a private window, and ⌘K is the one people reach for.
   def("searchChats", "Mod+KeyK"),
@@ -473,7 +489,7 @@ export function bindingFromEvent(
   },
   mac = isMacPlatform(),
 ): ShortcutBinding | null {
-  const code = event.code || keyToCode(event.key ?? "");
+  const code = eventCode(event, mac);
   if (!code || isModifierCode(code)) return null;
   // Off macOS there is nowhere to put Meta: matchesBinding rejects an event carrying it, so
   // recording Super+Alt+K would persist plain Alt+K -- a chord the user did not choose, which then
@@ -524,6 +540,33 @@ function keyToCode(key: string): string {
   return punctuation[key] ?? key;
 }
 
+function typedPunctuation(
+  event: { code: string; key?: string; altKey: boolean },
+  mac: boolean,
+): string {
+  const key = event.key ?? "";
+  if ((mac && event.altKey) || key.length !== 1) return "";
+  if (event.code.startsWith("Numpad")) return "";
+  const typed = keyToCode(key);
+  return typed === key || /^(Key|Digit)/.test(typed) ? "" : typed;
+}
+
+/** The Latin letter a key types, as the browser's own Ctrl+C reads it (Dvorak, #14035), else the
+ *  punctuation a letter position types, else the position. Option on macOS rewrites the key. */
+function eventCode(
+  event: { code: string; key?: string; altKey: boolean },
+  mac: boolean,
+): string {
+  const code = event.code || keyToCode(event.key ?? "");
+  const key = event.key ?? "";
+  if ((mac && event.altKey) || key.length !== 1 || code.startsWith("Numpad")) {
+    return code;
+  }
+  if (/^[a-z]$/i.test(key)) return `Key${key.toUpperCase()}`;
+  if (/^Key[A-Z]$/.test(code)) return typedPunctuation(event, mac) || code;
+  return code;
+}
+
 export function matchesBinding(
   binding: ShortcutBinding,
   event: {
@@ -537,8 +580,13 @@ export function matchesBinding(
   },
   mac = isMacPlatform(),
 ): boolean {
-  const code = event.code || keyToCode(event.key ?? "");
-  if (code !== binding.code) return false;
+  // Also the punctuation typed (Dvorak's / sits on [). Not recorded: German types / with Shift.
+  if (
+    eventCode(event, mac) !== binding.code &&
+    typedPunctuation(event, mac) !== binding.code
+  ) {
+    return false;
+  }
   // Off macOS a Ctrl chord is unreachable, and without this a value stored on
   // a Mac would fall through the checks below and fire on the bare key.
   if (!mac && binding.ctrl) return false;
@@ -554,6 +602,24 @@ export function matchesBinding(
     return false;
   }
   return event.shiftKey === binding.shift && event.altKey === binding.alt;
+}
+
+/**
+ * Whether `bound` answers to everything `pressed` holds: the same key, with no modifier
+ * missing. For searching the list by chord, where the press narrows as modifiers are
+ * added: N finds ⌘N and ⇧⌘N, ⌘N drops the ones without ⌘, and ⇧⌘N finds only itself.
+ * Not matchesBinding, which is exact because a keypress must run one action.
+ */
+export function keystrokeMatchesBinding(
+  pressed: ShortcutBinding,
+  bound: ShortcutBinding,
+): boolean {
+  if (pressed.code !== bound.code) return false;
+  if (pressed.mod && !bound.mod) return false;
+  if (pressed.ctrl && !bound.ctrl) return false;
+  if (pressed.shift && !bound.shift) return false;
+  if (pressed.alt && !bound.alt) return false;
+  return true;
 }
 
 /** Human label for a code: "KeyO" -> "O", "Comma" -> ",", "ArrowUp" -> "↑". */

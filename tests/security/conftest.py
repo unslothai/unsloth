@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 
-# Make `scripts/` importable so tests can grab scanner constants directly.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -61,19 +60,7 @@ class _BlockedSocket(socket.socket):
 
 @pytest.fixture(autouse = True)
 def network_blocker():
-    """Swap socket.socket for the blocker, restored after each test.
-
-    Per test, not per session. A session-scoped fixture in a directory conftest
-    applies only to this directory, but it tears down when the SESSION ends, so
-    the patch outlived the suite that wanted it and every later test that
-    reaches the network died on a socket this file replaced. `security` sorts
-    before `version_compat` and `vllm_compat`, whose pinned-symbol checks fetch
-    upstream sources, so a full run lost about 1300 of them:
-
-        RuntimeError: network access blocked by tests/security/conftest.py
-
-    They passed alone and failed together, in that order only.
-    """
+    """Per test, not per session: a session-scoped patch outlived tests/security and broke later suites."""
     original = socket.socket
     socket.socket = _BlockedSocket  # type: ignore[assignment]
     try:
@@ -90,3 +77,33 @@ def repo_root() -> Path:
 @pytest.fixture(scope = "session")
 def fixtures_dir() -> Path:
     return Path(__file__).resolve().parent / "fixtures"
+
+
+# The fixtures embed the May-12 IOC on purpose, so committed archives trip AV on GitHub's zip.
+# _build.py is deterministic, so building at session start reproduces the same bytes.
+_GENERATED_ARCHIVES = ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz")
+
+
+@pytest.fixture(scope = "session", autouse = True)
+def _build_archive_fixtures() -> None:
+    """Autouse and session-scoped because many tests read fixtures/ paths directly; it patches nothing."""
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    if str(fixtures) not in sys.path:
+        sys.path.insert(0, str(fixtures))
+    import _build  # noqa: PLC0415 -- fixtures/ is only importable once the path is set above
+
+    try:
+        _build.build_all()
+    except OSError as exc:
+        raise RuntimeError(
+            f"could not build the archive fixtures in {fixtures}: {exc}. They are generated "
+            "rather than committed (see the comment above this fixture), so the security suite "
+            "needs that directory to be writable."
+        ) from exc
+
+    missing = [name for name in _GENERATED_ARCHIVES if not (fixtures / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            f"_build.build_all() did not produce {missing}; the fixture builder and the names "
+            "the tests read have drifted apart."
+        )

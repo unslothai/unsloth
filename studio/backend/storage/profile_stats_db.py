@@ -14,17 +14,21 @@ in that single pass, then memoised against per-source count/timestamp fingerprin
 is free until history changes.
 """
 
+import csv
+import io
 import json
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loggers import get_logger
 
 from storage.api_usage_db import canonical_api_subject
 from storage.studio_db import count_chat_message_attachments, get_connection
+from utils.account_context import current_account_id
+from utils.paths import studio_db_path
 
 logger = get_logger(__name__)
 
@@ -42,8 +46,22 @@ RECENT_RUNS = 5
 # mid-stream still refreshes promptly.
 CACHE_TTL_SECONDS = 20.0
 
+USAGE_CSV_COLUMNS = (
+    "time",
+    "date",
+    "source",
+    "model",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "cached_tokens",
+)
+
+# (created_at_ms, source, model_id, prompt, completion, total, cached) for each counted response.
+UsageSink = Callable[[int, str, str, int, int, int, int], None]
+
 _cache_lock = threading.Lock()
-_cache: dict[str, Any] = {"fingerprint": None, "expires_at": 0.0, "payload": None}
+_cache: dict[str, dict[str, Any]] = {}
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -191,7 +209,12 @@ class _ApiUsageFold:
         self.requests = 0
 
 
-def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
+def _fold_api_usage(
+    conn,
+    zone,
+    subject: str,
+    on_usage: Optional[UsageSink] = None,
+) -> _ApiUsageFold:
     fold = _ApiUsageFold()
     rows = conn.execute(
         """
@@ -212,12 +235,15 @@ def _fold_api_usage(conn, zone, subject: str) -> _ApiUsageFold:
         fold.total_tokens += total_tokens
         fold.requests += 1
 
-        stamp = _local_stamp(_as_int(row["created_at"]), zone)
+        created_at = _as_int(row["created_at"])
+        stamp = _local_stamp(created_at, zone)
         if stamp is not None:
             day = stamp.date()
             fold.by_day[day] = fold.by_day.get(day, 0) + total_tokens
 
         model_id = _clean_str(row["model"])
+        if on_usage is not None:
+            on_usage(created_at, "api", model_id, prompt_tokens, completion_tokens, total_tokens, 0)
         if model_id:
             model = fold.models.setdefault(
                 model_id,
@@ -290,7 +316,11 @@ def _surviving_original_keys(conn) -> set[tuple[str, int, str]]:
     return {(row["thread_id"], _as_int(row["created_at"]), row["role"]) for row in rows}
 
 
-def _fold_messages(conn, zone) -> _MessageFold:
+def _fold_messages(
+    conn,
+    zone,
+    on_usage: Optional[UsageSink] = None,
+) -> _MessageFold:
     fold = _MessageFold()
     keepers = _fork_keepers(conn)
     surviving = _surviving_original_keys(conn)
@@ -403,12 +433,11 @@ def _fold_messages(conn, zone) -> _MessageFold:
             if total_tokens == 0:
                 total_tokens = prompt_tokens + completion_tokens
 
+            cached_tokens = _as_int(usage.get("cachedTokens")) or _as_int(server.get("cache_n"))
             fold.prompt_tokens += prompt_tokens
             fold.completion_tokens += completion_tokens
             fold.total_tokens += total_tokens
-            fold.cached_tokens += _as_int(usage.get("cachedTokens")) or _as_int(
-                server.get("cache_n")
-            )
+            fold.cached_tokens += cached_tokens
             fold.tool_calls += _as_int(timing.get("toolCallCount"))
             message_tokens = total_tokens
 
@@ -421,6 +450,16 @@ def _fold_messages(conn, zone) -> _MessageFold:
             )
             if model_id:
                 fold.note_model(model_id, message_tokens)
+            if on_usage is not None:
+                on_usage(
+                    created_at,
+                    "chat",
+                    model_id,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    cached_tokens,
+                )
 
             speed = _as_float(timing.get("tokensPerSecond"))
             # llama.cpp reports absurd rates on no-op turns; ignore those.
@@ -613,15 +652,24 @@ def compute_profile_stats(
     subject = canonical_api_subject(subject)
     conn = get_connection()
     try:
-        fingerprint = (_fingerprint(conn, subject), days, tz_offset_minutes, tz_name)
+        # The path is in the fingerprint, so a reused account id cannot read another database.
+        fingerprint = (
+            str(studio_db_path()),
+            _fingerprint(conn, subject),
+            days,
+            tz_offset_minutes,
+            tz_name,
+        )
         now = time.monotonic()
+        account_id = current_account_id()
         with _cache_lock:
+            cached = _cache.get(account_id)
             if (
-                _cache["payload"] is not None
-                and _cache["fingerprint"] == fingerprint
-                and _cache["expires_at"] > now
+                cached is not None
+                and cached["fingerprint"] == fingerprint
+                and cached["expires_at"] > now
             ):
-                return _cache["payload"]
+                return cached["payload"]
 
         started = time.perf_counter()
         fold = _fold_messages(conn, zone)
@@ -712,17 +760,69 @@ def compute_profile_stats(
         )
 
         with _cache_lock:
-            _cache["fingerprint"] = fingerprint
-            _cache["expires_at"] = time.monotonic() + CACHE_TTL_SECONDS
-            _cache["payload"] = payload
+            _cache[account_id] = {
+                "fingerprint": fingerprint,
+                "expires_at": time.monotonic() + CACHE_TTL_SECONDS,
+                "payload": payload,
+            }
         return payload
     finally:
         conn.close()
 
 
 def invalidate_profile_stats_cache() -> None:
-    """Drop the memoised payload (used by tests and after history wipes)."""
     with _cache_lock:
-        _cache["fingerprint"] = None
-        _cache["expires_at"] = 0.0
-        _cache["payload"] = None
+        _cache.pop(current_account_id(), None)
+
+
+def _csv_text(value: str) -> str:
+    """Model ids are client-supplied; a leading formula character would run as a formula in a spreadsheet."""
+    return "'" + value if value[:1] in ("=", "+", "-", "@", "\t", "\r") else value
+
+
+def export_usage_csv(
+    tz_offset_minutes: int = 0,
+    tz_name: str = "",
+    *,
+    subject: str = "",
+) -> str:
+    """One CSV row per counted chat response or API request, oldest first, in the caller's timezone.
+    Counted by the same folds as ``compute_profile_stats`` with the same scoping (chat install-wide,
+    API receipts only for ``subject``), so the totals match the Profile tab."""
+    tz_offset_minutes = max(
+        -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)
+    )
+    zone = _resolve_zone(tz_name, tz_offset_minutes)
+    subject = canonical_api_subject(subject)
+    rows: list[tuple[int, str, str, int, int, int, int]] = []
+
+    def collect(*row) -> None:
+        if row[3] or row[4] or row[5]:
+            rows.append(row)
+
+    conn = get_connection()
+    try:
+        _fold_messages(conn, zone, on_usage = collect)
+        _fold_api_usage(conn, zone, subject, on_usage = collect)
+    finally:
+        conn.close()
+    rows.sort(key = lambda row: row[0])
+
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator = "\n")
+    writer.writerow(USAGE_CSV_COLUMNS)
+    for created_at, source, model_id, prompt, completion, total, cached in rows:
+        stamp = _local_stamp(created_at, zone)
+        writer.writerow(
+            [
+                stamp.strftime("%Y-%m-%d %H:%M:%S") if stamp else "",
+                _iso(stamp.date()) if stamp else "",
+                source,
+                _csv_text(model_id),
+                prompt,
+                completion,
+                total,
+                cached,
+            ]
+        )
+    return out.getvalue()

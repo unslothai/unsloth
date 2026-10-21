@@ -34,5 +34,8 @@ test("the unload API still takes the engine and model that scoping needs", () =>
 test("the device preference travels with every load and transcribe", () => {
   // A load that omits it reads as "no opinion", so the setting never applies.
   assert.match(adapter, /device: resolvedDevice/);
-  assert.match(adapter, /params\.set\("device", settings\.sttDevice\)/);
+  assert.match(
+    adapter,
+    /params\.set\("device", options\.device \?\? settings\.sttDevice\)/,
+  );
 });

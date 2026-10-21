@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useState } from "react";
+import { normalizeDenseQuantSchemes } from "@/lib/dense-quant-schemes";
+import {
+  type ReportedOffloadFitTier,
+  normalizeReportedOffloadFitTiers,
+} from "@/lib/offload-fit-tiers";
 import {
   type GpuIndexKind,
   type PinnableGpuContext,
@@ -46,6 +51,21 @@ export interface GpuInfo {
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
   backend: string;
+  /** Backend-reported dense quant capability. False until system info arrives. */
+  denseQuantSupported: boolean;
+  /** The dense quant schemes the backend says this host can run, best first ("fp8", "int8"). Empty
+   *  until system info arrives, and on a backend too old to report the field. */
+  denseQuantSchemes: readonly string[];
+  /** False until system info arrives, and on backends that do not report it. */
+  nvfp4Diffusion: boolean;
+  /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") this host runs natively. Empty until system info arrives. */
+  checkpointQuantFormats: readonly string[];
+  /** Group offload can stream torchao weights. Absent or false until resolved and on older backends. */
+  quantisedStreaming?: boolean;
+  /** Backend-reported extra Diffusers offload tiers per lower-cased repo id. Empty on older backends. */
+  extraOffloadFitTiers?: Readonly<
+    Record<string, readonly ReportedOffloadFitTier[]>
+  >;
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -81,6 +101,11 @@ const DEFAULT_GPU: GpuInfo = {
   sharedMemory: false,
   unifiedMemory: false,
   backend: "",
+  denseQuantSupported: false,
+  denseQuantSchemes: [],
+  nvfp4Diffusion: false,
+  checkpointQuantFormats: [],
+  quantisedStreaming: false,
   name: "Unknown",
   memoryTotalGb: 0,
   memorySharedGb: 0,
@@ -106,6 +131,16 @@ function toGpuInfo(
   // path: unified-memory math still needs a RAM budget to work with.
   const base = {
     backend: data?.device_backend ?? "",
+    denseQuantSupported: data?.dense_quant_supported === true,
+    denseQuantSchemes: normalizeDenseQuantSchemes(data?.dense_quant_schemes),
+    nvfp4Diffusion: data?.nvfp4_diffusion === true,
+    checkpointQuantFormats: normalizeDenseQuantSchemes(
+      data?.checkpoint_quant_formats,
+    ),
+    quantisedStreaming: data?.quantised_streaming === true,
+    extraOffloadFitTiers: normalizeReportedOffloadFitTiers(
+      data?.diffusers_offload_tiers,
+    ),
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
@@ -125,20 +160,12 @@ function toGpuInfo(
   const loadDevice = pickLoadDevice(devices);
   return {
     ...base,
-    // Folded, not raw `shared_memory`: hardware.py sets that flag only on Windows, so a Linux ROCm
-    // APU arrives unified true / shared false and its GTT window was never subtracted here. The
-    // RAM tier then offered the very bytes the window is a view INTO as a second budget.
+    // Raw: `gpuSharedHostMemoryGb` folds the two flags itself. Folding here first also
+    // collapsed a multi-socket unified host's pools into one, so it subtracted one
+    // socket's worth and offered the rest again as a RAM budget.
     systemRamAvailableGb: systemRamAvailableOutsideSharedPoolGb(
       base.systemRamAvailableGb,
-      gpuSharedHostMemoryGb(
-        devices.map((device) => ({
-          ...device,
-          shared_memory: sharesHostMemory({
-            sharedMemory: device.shared_memory === true,
-            unifiedMemory: device.unified_memory === true,
-          }),
-        })),
-      ),
+      gpuSharedHostMemoryGb(devices),
     ),
     sharedMemory: memoryTotals.shared > 0 && memoryTotals.dedicated === 0,
     // Additive, and deliberately some() where sharedMemory above is "no dedicated pool at all": one
@@ -240,6 +267,27 @@ function toGpuDevices(
     }));
 }
 
+/**
+ * Carry the previous `denseQuantSchemes` array forward when its contents are unchanged.
+ *
+ * `refresh_memory=true` re-probes `memory.available_gb`, so nearly every poll yields a new snapshot,
+ * but this list is a hardware capability that does not move. Consumers memoise the media picker's
+ * option list on it (`useImageModels`, `curatedRowLabelFor`), so an equal-but-fresh array detached
+ * and re-created every row on every probe.
+ */
+export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
+  const held = current.denseQuantSchemes;
+  const fresh = next.denseQuantSchemes;
+  if (held === fresh) return next;
+  if (
+    held.length === fresh.length &&
+    held.every((scheme, index) => scheme === fresh[index])
+  ) {
+    return { ...next, denseQuantSchemes: held };
+  }
+  return next;
+}
+
 /** Aggregate GPU info from /api/system; shares one module-level fetch across all GPU hooks. */
 function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
   const cachedSystem = getCachedSystemInfo();
@@ -254,7 +302,9 @@ function useGpuInfoSource(source: "gpu" | "inference_gpu"): GpuInfo {
       if (cancelled) return;
       const next = toGpuInfo(data, source);
       setGpu((current) =>
-        JSON.stringify(current) === JSON.stringify(next) ? current : next,
+        JSON.stringify(current) === JSON.stringify(next)
+          ? current
+          : withStableSchemes(current, next),
       );
     };
     const update = () => {
@@ -286,6 +336,19 @@ export function useGpuInfo(): GpuInfo {
 /** GGUF inference GPU info, including a separately installed Vulkan backend. */
 export function useInferenceGpuInfo(): GpuInfo {
   return useGpuInfoSource("inference_gpu");
+}
+
+/** Optional engines launch on torch's physical CUDA/ROCm ids (`useGpuDevices(true)`), never a Vulkan ordinal. */
+export function isEngineGpuDevice(device: SystemGpuDevice): boolean {
+  return device.diffusionPinnable;
+}
+
+/** Where the backend puts an optional engine given no GPUs: the first one Studio sees. */
+export function defaultEngineGpuIds(): number[] {
+  const first = toGpuDevices(getCachedSystemInfo(), true).find(
+    isEngineGpuDevice,
+  );
+  return first ? [first.index] : [0];
 }
 
 /** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */

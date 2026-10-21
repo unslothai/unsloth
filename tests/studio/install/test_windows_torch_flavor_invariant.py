@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Structural cover for the Windows torch-flavor invariant on the update path.
-
-The behavioural tests for _ensure_expected_torch_flavor live in test_cuda_repair.py.
-This file asserts the parts that are not a Python call: that setup.ps1 hands the flavor
-over before it invokes the stack, that setup.ps1 no longer wipes a healthy cu* venv when
-nvidia-smi fails to answer, that the repair specs and the mismatch line stay identical to
-install.ps1's, that the manifest round-trips the flavor, and that none of it reaches the
-Linux/macOS branch of install_python_stack(). Source/AST only -- no Windows required."""
+"""Source/AST checks for the Windows torch-flavor invariant on the update path; no Windows needed."""
 
 import ast
 import importlib.util
@@ -48,29 +41,21 @@ def _line_of(source: str, needle: str) -> int:
 
 
 def _publication_block() -> str:
-    """The whole flavor-publication block, delimited by the section that follows it.
-
-    Sliced by its end marker rather than a character count: a count silently
-    truncates the moment a comment inside the block grows, and a test that reads
-    half the block passes for the wrong reason.
-    """
+    """Sliced between two section markers, since a fixed character count breaks when a comment grows."""
     start = _SETUP_SRC.index("# ── Publish the torch flavor this run settled on ──")
     end = _SETUP_SRC.index("# Ordered heavy dependency installation", start)
     return _SETUP_SRC[start:end]
 
 
 class TestSetupPs1NoWipeEscape:
-    """A direct `studio update` has no rollback copy -- only install.ps1 makes one -- so a
-    wipe there is unrecoverable. Every way the bounded nvidia-smi probe can come back
-    empty on a working NVIDIA box collapses the expected tag to "cpu", and a healthy cu124
-    venv then reads as stale."""
+    """A failed nvidia-smi probe must not wipe a healthy cu* venv; direct updates have no rollback."""
 
     def test_the_escape_sits_ahead_of_the_wipe(self):
         escape = _line_of(_SETUP_SRC, "nvidia-smi did not answer, but this venv holds a")
-        wipe = _line_of(_SETUP_SRC, "Remove-Item -LiteralPath $VenvDir -Recurse -Force")
+        wipe = _line_of(_SETUP_SRC, "Rename-Item -LiteralPath $VenvDir")
         stale = _line_of(_SETUP_SRC, "Stale venv detected ($reason) -- rebuilding...")
         assert escape < stale < wipe, (
-            "the no-wipe escape must be evaluated before the stale-venv branch that deletes "
+            "the no-wipe escape must be evaluated before the stale-venv branch that replaces "
             f"the venv (escape={escape}, stale={stale}, wipe={wipe})"
         )
 
@@ -90,20 +75,19 @@ class TestSetupPs1NoWipeEscape:
             "-not $_pinnedIdx",  # a cpu index PIN is deliberate and still rebuilds
             "Test-CudaFamilyLeaf $installedTorchTag",  # only a cu* wheel is preserved
             "-not $HasNvidiaSmi",  # only when the NVIDIA probe gave no answer
-            '$expectedTorchTag -eq "cpu"',  # ... and that is why the expectation collapsed
+            '$expectedTorchTag -eq "cpu"',
         ):
             assert clause in condition, f"the escape must be gated on {clause!r}"
 
     def test_the_installed_tag_is_tested_before_the_variables_it_implies(self):
-        # $_pinnedIdx and $expectedTorchTag are assigned only inside `if (-not $shouldRebuild)`, so under
-        # Set-StrictMode the other -and order is a fatal read.
+        # $_pinnedIdx/$expectedTorchTag are assigned only inside `if (-not $shouldRebuild)`;
+        # any other -and order is fatal under Set-StrictMode.
         start = _SETUP_SRC.index("if ($shouldRebuild -and -not $InstallerManagedSetup -and\n")
         condition = _SETUP_SRC[start : _SETUP_SRC.index("{", start)]
         assert condition.index("$installedTorchTag -and") < condition.index("$_pinnedIdx")
         assert condition.index("$installedTorchTag -and") < condition.index("$expectedTorchTag")
 
     def test_an_xpu_venv_keeps_its_own_escape(self):
-        # Regression guard: the pre-existing XPU escape must not have been folded in.
         assert "Keeping the installed Intel XPU environment" in _SETUP_SRC
 
 
@@ -115,8 +99,7 @@ class TestSetupPs1PublishesTheFlavor:
         assert export < handoff and index < handoff
 
     def test_the_rocm_index_decides_before_the_leaf(self):
-        # The AMD Windows path installs from repo.amd.com while $TorchInstallIndexUrl still
-        # points at /cpu, so the leaf alone would publish the wrong flavor.
+        # The AMD path installs from repo.amd.com while the index URL still points at /cpu.
         block = _SETUP_SRC[_SETUP_SRC.index("$_expectedTag = if ($ROCmIndexUrl)") :][:600]
         assert block.startswith('$_expectedTag = if ($ROCmIndexUrl) { "rocm" }')
         assert "Test-CudaFamilyLeaf $_expectedLeaf" in block
@@ -128,20 +111,8 @@ class TestSetupPs1PublishesTheFlavor:
         assert "if (-not $NoTorchMode) {" in _publication_block()
 
     def test_unsetting_does_not_depend_on_the_powershell_version(self):
-        """`$env:X = ""` is not a portable unset, so it must not be used here.
-
-        Windows PowerShell 5.1 and PowerShell 7.0-7.4 delete the entry when it is
-        assigned an empty string. PowerShell 7.5 took .NET 9's change and KEEPS the
-        name with an empty value; only $null removes it there. Both spellings still
-        read as unset through the two readers on the Python side, which test
-        truthiness rather than presence, so this is about not shipping a line whose
-        meaning depends on which PowerShell the user happens to have installed.
-        Remove-Item behaves identically on every version.
-
-        Deleting rather than blanking also matters on its own: a value inherited
-        from the caller's shell must not survive a run that decided it cannot name
-        this host's flavor, or the stack enforces a stale expectation.
-        """
+        """Unset with Remove-Item: empty assignment keeps the name on PowerShell 7.5 and deletes it
+        on 5.1."""
         block = _publication_block()
         for name in (
             "UNSLOTH_EXPECTED_TORCH_TAG",
@@ -224,11 +195,7 @@ def _install_stack_ast():
 
 
 def _calls_in(node) -> list:
-    """Every plain function name called under `node`, in source order.
-
-    Depth first, not ast.walk: walk is breadth first, so a nested call reads as if it came
-    after its own siblings and the assertions below would encode the wrong order.
-    """
+    """Depth first, not ast.walk: breadth-first order would place nested calls after their siblings."""
     names = []
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
         names.append(node.func.id)
@@ -238,12 +205,7 @@ def _calls_in(node) -> list:
 
 
 def _guards_containing(call_name: str) -> list:
-    """Every TOP-LEVEL `if` in install_python_stack() whose body calls `call_name`.
-
-    Plural on purpose: the four existing repair helpers run at two points (the step-2b
-    check and the step-13 final pass), so a test that took the first match would silently
-    assert about the wrong one. Top level only, or a guard's own nested `if` counts twice.
-    """
+    """Every top-level if calling call_name: repairs run at two points, so one match is not enough."""
     found = [
         node
         for node in _install_stack_ast().body
@@ -271,7 +233,7 @@ class TestStepThirteenWiring:
         )
 
     def test_the_existing_repair_set_is_untouched(self):
-        # Step 2b (which Windows enters; the four helpers return early there) and the Linux-only step 13.
+        # Step 2b (Windows enters it; the four helpers return early) and Linux-only step 13.
         guards = _guards_containing("_ensure_cuda_torch")
         assert [ast.unparse(guard.test) for guard in guards] == [
             "not IS_MACOS and (not NO_TORCH)",
@@ -288,16 +250,19 @@ class TestStepThirteenWiring:
             calls = _calls_in(guard)
             assert [c for c in calls if c in repairs] == repairs
             assert calls[:2] == ["_progress", "_torch_step_label"]
-        # str() is the label coercion around the probe, not a step.
+        # str() coerces the probe label and does not represent a step.
         step13 = [c for c in _calls_in(guards[1]) if c != "str"]
-        # Step 13 also re-selects torchao when a repair moved the torch label, which both the
-        # spec and the leaf are read from. Nothing else may join the set.
+        # repairs refresh torchao and flash-attn for final torch (#13244), then evict incompatible
+        # xFormers (#11545). causal-conv1d and mamba-ssm install when a model needs them, not here.
         assert step13 == (
             ["_progress", "_torch_step_label", "_probe_installed_torch_version"]
             + repairs
             + ["_probe_installed_torch_version", "_note", "_install_torchao_for_torch"]
+            + ["_ensure_flash_attn", "_remove_stale_ssm_kernels"]
+            + ["_evict_xformers_built_for_another_torch", "_evict_xformers_requiring_another_torch"]
         ), step13
         assert "_install_torchao_for_torch" not in _calls_in(guards[0])
+        assert "_ensure_flash_attn" not in _calls_in(guards[0])
 
     def test_the_invariant_is_wired_in_exactly_once(self):
         body = ast.unparse(_install_stack_ast())
@@ -305,11 +270,7 @@ class TestStepThirteenWiring:
 
 
 def _base_total(**flags) -> int:
-    """Re-execute install_python_stack()'s step-total arithmetic under given flags.
-
-    Read out of the function rather than duplicated, so a step added without a matching
-    total fails here instead of drawing a progress bar past 100%.
-    """
+    """re-execute the source step-total arithmetic so new steps cannot silently push progress past 100%."""
     lines = _STACK_SRC.splitlines()
     start = next(i for i, line in enumerate(lines) if line.strip().startswith("base_total = "))
     end = next(i for i, line in enumerate(lines) if line.strip().startswith("base_requirements ="))
@@ -328,16 +289,25 @@ def _base_total(**flags) -> int:
 
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
-        assert _base_total(IS_WINDOWS = True) == 15
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 13
+        # Both carry the Windows-only accelerate repair (8c), which ignores NO_TORCH; the
+        # no-torch case also gets the runtime-deps slot an update announces separately. Both also
+        # carry the diffusers main slot (11c), which is spent on every path including opting out.
+        # causal-conv1d and mamba-ssm have no slot: they install when a model needs them.
+        assert _base_total(IS_WINDOWS = True) == 18
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 16
 
     @pytest.mark.parametrize(
         "flags,total",
         [
-            ({}, 17),  # Linux, torch
-            ({"NO_TORCH": True}, 14),  # Linux, GGUF-only
-            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 14),  # Apple Silicon
-            ({"IS_MACOS": True}, 13),  # Intel Mac
+            ({}, 18),  # Linux, torch
+            ({"NO_TORCH": True}, 16),  # Linux, GGUF-only (incl. the no-torch runtime step)
+            # Two MLX slots (install + re-resolve) plus the grammar engine (11d).
+            ({"IS_MACOS": True, "IS_MAC_ARM": True}, 17),  # Apple Silicon
+            (
+                {"IS_MACOS": True, "IS_MAC_ARM": True, "NO_TORCH": True},
+                16,
+            ),  # Apple Silicon, GGUF-only
+            ({"IS_MACOS": True}, 14),  # Intel Mac
         ],
     )
     def test_the_other_platform_totals_include_torchcodec(self, flags, total):
@@ -399,15 +369,16 @@ class TestManifestRecordsTheFlavor:
         helper = helper[: helper.index("\ndef ", 1)]
         assert 'return _RECORDED_TORCH_TAG or ""' in helper
 
-    def test_a_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
-        # The wheel came from a mirror whose leaf names no family, so the previous record
-        # describes a venv that no longer exists and would hand a later unpinned run a flavor
-        # to "repair" the mirror's build back to.
+    def test_a_usable_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
+        # A mirror leaf naming no family makes the previous record stale; record the resident build.
         helper = _STACK_SRC[_STACK_SRC.index("def _recordable_torch_flavor_tag(") :]
         helper = helper[: helper.index("\ndef ", 1)]
-        assert "_explicit_unknown_family_torch_index_url() is not None" in helper
-        assert helper.index("_explicit_unknown_family_torch_index_url") < helper.index(
-            "_RECORDED_TORCH_TAG"
+        assert "if _explicit_torch_index_is_unusable():" in helper
+        assert "return _resident_torch_flavor_tag()" in helper
+        assert helper.index("_explicit_torch_index_is_unusable") < helper.index("if resolved:")
+        assert "if _explicit_unknown_family_torch_index_url():" in helper
+        assert helper.index("_explicit_unknown_family_torch_index_url") < helper.rindex(
+            'return _RECORDED_TORCH_TAG or ""'
         ), "the mirror check has to come before the carry-forward"
 
     def test_the_record_is_read_before_the_manifest_is_dropped(self):
@@ -415,7 +386,7 @@ class TestManifestRecordsTheFlavor:
         read = _line_of(
             _STACK_SRC, "_RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()"
         )
-        drop = _line_of(_STACK_SRC, "if not install_manifest.remove_manifest():")
+        drop = _line_of(_STACK_SRC, "if install_manifest.remove_manifest():")
         assert read < drop
         assert (
             "def install_python_stack"
@@ -440,8 +411,7 @@ class TestTheFlavorProvenance:
         )
 
     def test_a_backend_the_caller_stated_is_not_marked_derived(self):
-        # On a GPU-less host the resolved value is cpu too, so a stated choice and the
-        # automatic one are indistinguishable unless install.sh checks BEFORE overwriting.
+        # On a GPU-less host the resolved value is cpu too, so check before overwriting.
         source = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         assert "_torch_backend_was_stated" in source
         check = source.index("_torch_backend_was_stated=true")
@@ -460,8 +430,7 @@ class TestTheFlavorProvenance:
         assert "resolved" in pinned
 
     def test_an_untagged_xpu_runtime_counts_as_a_gpu_build(self):
-        # An untagged source or conda XPU build carries its runtime in torch.version.xpu and
-        # nowhere else, and calling it CPU-only fails the update outright.
+        # Source/conda XPU builds expose their runtime only in torch.version.xpu.
         assert "getattr(_v, 'xpu', '')" in _STACK_SRC
         verdict = _STACK_SRC[_STACK_SRC.index("def _torch_build_is_gpu(") :]
         verdict = verdict[: verdict.index("\ndef ", 1)]
@@ -469,13 +438,7 @@ class TestTheFlavorProvenance:
 
 
 class TestABrokenTorchForcesItsOwnReinstall:
-    """$script:TorchImportDefinitivelyFailed is raised when the probe reports an import
-    ERROR rather than a timeout, so the wheel on disk is the suspect and not the driver.
-    Every consumer of it lives inside `if (-not $SkipPythonDeps)`, and the XPU and CPU
-    arms did not consult it at all: an unimportable +xpu wheel still reports its on-disk
-    tag as "xpu", so no flavour change is seen, the bounded range is satisfied, and the
-    resolver keeps it. The run then writes a completion manifest over a venv that cannot
-    import torch."""
+    """A definitive import failure forces a reinstall, since the wheel on disk is the suspect."""
 
     def test_the_flag_clears_the_dependency_skip(self):
         clear = _SETUP_SRC.index(
@@ -497,9 +460,8 @@ class TestABrokenTorchForcesItsOwnReinstall:
             f"other order leaves the reinstall announced but unreachable"
         )
 
-    @pytest.mark.parametrize("force_var", ["$xpuForce", "$cpuForce"])
+    @pytest.mark.parametrize("force_var", ["$rocmForce", "$xpuForce", "$cpuForce"])
     def test_every_conditional_force_gate_reads_the_flag(self, force_var):
-        # The ROCm arm forces unconditionally, so only these two have a gate to miss.
         assignments = [
             line
             for line in _SETUP_SRC.splitlines()
@@ -515,13 +477,6 @@ class TestABrokenTorchForcesItsOwnReinstall:
             f"{force_var} never forces on a definitively unimportable wheel, so the "
             f"resolver keeps it: its on-disk tag is unchanged and the range is satisfied"
         )
-
-    def test_the_rocm_arm_needs_no_gate(self):
-        rocm = _SETUP_SRC[_SETUP_SRC.index("if ($ROCmIndexUrl) {") :]
-        rocm = rocm[: rocm.index("if ($XpuIndexUrl) {")]
-        assert (
-            "--force-reinstall" in rocm and "$rocmForce" not in rocm
-        ), "the ROCm arm forces every time, so a broken wheel is already replaced there"
 
     def test_the_flag_is_still_raised_where_the_import_definitively_failed(self):
         assert "$script:TorchImportDefinitivelyFailed = $true" in _SETUP_SRC
@@ -554,7 +509,8 @@ class TestAnUnknownMirrorPinNamesNoFlavor:
     def test_the_expectation_stops_before_the_stale_manifest(self):
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
         body = body[: body.index("\ndef ", 1)]
-        guard = body.index("_explicit_unknown_family_torch_index_url() is not None")
+        guard = body.index("unknown_pin = _explicit_unknown_family_torch_index_url()")
+        assert body.index("if unknown_pin is not None") > guard
         record = body.index("if _RECORDED_TORCH_TAG:")
         assert guard < record, (
             "the guard has to run BEFORE the manifest fallback, or the stale tag is "
@@ -566,7 +522,7 @@ class TestAnUnknownMirrorPinNamesNoFlavor:
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
         body = body[: body.index("\ndef ", 1)]
         assert body.index("UNSLOTH_EXPECTED_TORCH_TAG") < body.index(
-            "_explicit_unknown_family_torch_index_url() is not None"
+            "unknown_pin = _explicit_unknown_family_torch_index_url()"
         ), "the setup handover describes the index this run installed from"
 
 
@@ -607,3 +563,81 @@ class TestPinProvenanceMustBeABoolean:
             encoding = "utf-8",
         )
         assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is True
+
+
+def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
+    """The ROCm arm forces --force-reinstall only on the same conditions as the XPU and CPU arms."""
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index('substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."')
+    end = text.index('substep "GPU ROCm PyTorch installed', start)
+    arm = text[start:end]
+    assert "--force-reinstall --index-url $ROCmIndexUrl" not in arm
+    assert arm.count("@rocmForce --index-url $ROCmIndexUrl") == 2
+    assert 'if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }' in arm
+    assert "if ($script:PinChangedForceReinstall) { $rocmForce" in arm
+    assert "if ($script:TorchImportDefinitivelyFailed) { $rocmForce" in arm
+    # This runs before the Python pass, so honour UNSLOTH_STUDIO_FULL_DEPS here too.
+    assert '@("1", "true", "yes", "on") -contains' in arm
+    assert '"$($env:UNSLOTH_STUDIO_FULL_DEPS)".Trim().ToLowerInvariant()' in arm
+    # A PyPI companion satisfies its pin without ROCm; only a forced reinstall replaces it.
+    companion = arm[arm.index("$_companionNames = ") :]
+    companion = companion[: companion.index("while ($true)")]
+    # Both spellings: Windows on ARM installs no torchaudio, so it is not probed there.
+    assert "('torchvision', 'torchaudio')" in companion
+    assert "('torchvision',)" in companion
+    assert "$WinArm64NoAudio" in companion
+    # +cpu, +cuNNN and +xpu companions beside a ROCm torch all force the trio.
+    assert "t.startswith('cpu') or t.startswith('cu') or t.startswith('xpu')" in companion
+    assert '$rocmForce = @("--force-reinstall")' in companion
+    assert '"' not in companion[companion.index("-Code ") + 7 : companion.index("print(")]
+
+
+def test_the_rocm_trio_is_reinstalled_when_the_architecture_index_moves():
+    """The +rocm tag names only the family, so the recorded index is compared to catch an arch change."""
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    force = text.index("$_recordedRocmIndex -ne $_rocmIndexIdentity")
+    record = text.index("Set-Content -LiteralPath $script:RocmIndexRecord")
+    installed = text.index('$env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"')
+    assert force < installed < record
+    # A mirror URL may carry userinfo or a token; the record and message must not.
+    record_line = text[record : text.index("\n", record)]
+    assert "Get-IndexIdentity $ROCmIndexUrl" in record_line
+    assert "$ROCmIndexUrl.TrimEnd" not in record_line
+    message = text.index("the ROCm trio was installed from $_recordedRocmIndex")
+    message_line = text[message : text.index("\n", message)]
+    assert "$ROCmIndexUrl" not in message_line
+    identity = text[
+        text.index("function Get-IndexIdentity") : text.index("function Test-RocmGfx211Leaf")
+    ]
+    assert "]+@', '$1'" in identity and "-split '[?#]'" in identity
+    # The record follows the install, never precedes it: a failed trio must not be recorded.
+    failed = text.index("AMD ROCm PyTorch install failed -- falling back to CPU")
+    assert failed < record
+
+
+class TestSetupPs1WindowsOnArmCudaPreservation:
+    """The WoA CUDA shortcut applies only to an inferred expectation, never to an explicit pin."""
+
+    _GUARD = "if ((Test-WinArm64Venv) -and $installedTorchTag -and"
+
+    def _condition(self) -> str:
+        start = _SETUP_SRC.index(self._GUARD)
+        return _SETUP_SRC[start : _SETUP_SRC.index("{", start + len(self._GUARD))]
+
+    def test_any_explicit_pin_is_exempt(self):
+        condition = self._condition()
+        assert "-not $_pinnedIdx" in condition
+        assert (
+            "$_woaCpuPinned" not in condition
+        ), "a cu129 mirror pin is as much an instruction as a /cpu one"
+
+    def test_the_exemption_reads_a_variable_that_is_always_assigned(self):
+        # $_pinLeaf is assigned only inside `if ($_pinnedIdx)`: fatal under Set-StrictMode.
+        block = _SETUP_SRC[: _SETUP_SRC.index(self._GUARD)]
+        assert "$_pinnedIdx = Get-PinnedTorchIndexUrl" in block
+        assert "$_pinLeaf" not in self._condition()
+
+    def test_it_still_sits_ahead_of_the_pin_branch(self):
+        shortcut = _line_of(_SETUP_SRC, self._GUARD)
+        pin_branch = _line_of(_SETUP_SRC, "Torch-index pin changed ($installedTorchTag)")
+        assert shortcut < pin_branch

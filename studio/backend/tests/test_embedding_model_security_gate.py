@@ -388,6 +388,9 @@ def test_active_backend_is_llama_reflects_cache_and_resolver(monkeypatch):
 def test_settings_scan_scopes_module_subdirs(monkeypatch):
     # The settings scan must pass the ST module dirs (0_Transformer/) as load roots so a
     # pickle directly under one blocks; assert those subdirs reach evaluate_file_security.
+    from utils import utils as studio_utils
+
+    monkeypatch.setattr(studio_utils, "hf_env_offline", lambda: False)
     saved: dict = {}
     monkeypatch.setattr(settings, "default_embedding_model", lambda: "unsloth/default-embed")
     monkeypatch.setattr(settings, "validate_embedding_model", lambda v: v)
@@ -458,6 +461,8 @@ def test_clean_repo_saves_under_force(client, monkeypatch):
         "loaded": False,
         # Nor is any other model, so the Unload control stays hidden too.
         "backend_loaded": False,
+        "embedding_device": "auto",
+        "embedding_device_locked": False,
     }
 
 
@@ -643,6 +648,9 @@ def test_the_resolved_repo_is_what_gets_verified_and_scanned(client, monkeypatch
     is_embedding_model and the malware scan against the literal name: a repo that
     usually does not exist (fail-open, or a forceable 409) or, worse, a different
     top-level repo that does."""
+    from utils import utils as studio_utils
+
+    monkeypatch.setattr(studio_utils, "hf_env_offline", lambda: False)
     c, saved = client
     seen = {}
 
@@ -746,3 +754,186 @@ def test_offline_cached_acceptance_still_asks_who_is_asking(client, monkeypatch)
     assert r.status_code == 409
     assert saved.get("model") != "acme/private-embedder"
     hf_tokens.reset_repo_access_cache()
+
+
+def _custom_module_repo(tmp_path):
+    """A local embedding repo whose modules.json names a repo-hosted module class. Importing it
+    drops a marker file, so a test can tell whether the repo's code ran."""
+    import json
+
+    marker = tmp_path / "ran.txt"
+    (tmp_path / "custom_mod.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('ran')\n"
+        "class Pooling:\n"
+        "    pass\n"
+    )
+    (tmp_path / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": "", "type": "custom_mod.Pooling"}])
+    )
+    return marker
+
+
+def test_st_gate_refuses_repo_hosted_module_class_on_local_path(tmp_path):
+    # sentence-transformers < 6 trusted repo code for any local path (CVE-2026-68770), and the
+    # embedder loads the cached snapshot directory. The gate must refuse before the code runs.
+    st = pytest.importorskip("sentence_transformers")
+    import core.rag.embeddings as embeddings
+
+    marker = _custom_module_repo(tmp_path)
+    embeddings._gate_st_custom_modules()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        st.SentenceTransformer(str(tmp_path), device = "cpu")
+    assert not marker.exists()
+
+
+def test_st_gate_allows_stock_classes_and_explicit_trust(tmp_path):
+    st = pytest.importorskip("sentence_transformers")
+    import core.rag.embeddings as embeddings
+
+    embeddings._gate_st_custom_modules()
+    owner = next(
+        c for c in st.SentenceTransformer.__mro__ if "_load_module_class_from_ref" in vars(c)
+    )
+    resolve = vars(owner)["_load_module_class_from_ref"]
+    model = object.__new__(st.SentenceTransformer)
+    pooling = resolve(
+        model, "sentence_transformers.models.Pooling", str(tmp_path), False, None, None
+    )
+    assert pooling.__name__ == "Pooling"
+    # An explicit opt-in still reaches the original resolver.
+    _custom_module_repo(tmp_path)
+    resolve(model, "custom_mod.Pooling", str(tmp_path), True, None, None)
+
+
+def test_st_gate_is_idempotent():
+    st = pytest.importorskip("sentence_transformers")
+    import core.rag.embeddings as embeddings
+
+    embeddings._gate_st_custom_modules()
+    owner = next(
+        c for c in st.SentenceTransformer.__mro__ if "_load_module_class_from_ref" in vars(c)
+    )
+    first = vars(owner)["_load_module_class_from_ref"]
+    embeddings._gate_st_custom_modules()
+    assert vars(owner)["_load_module_class_from_ref"] is first
+    if int(st.__version__.split(".")[0]) < 6:
+        assert getattr(first, embeddings._ST_GATE_MARKER, False)
+        assert not getattr(first.__wrapped__, embeddings._ST_GATE_MARKER, False)
+
+
+def test_st_gate_covers_router_sub_module_types():
+    # sentence-transformers 5.0-5.4 Router resolves its sub-module types with import_from_string,
+    # past both class resolvers, so the gate has to cover that name too.
+    st = pytest.importorskip("sentence_transformers")
+    if int(st.__version__.split(".")[0]) >= 6:
+        pytest.skip("sentence-transformers 6 gates this itself")
+    import importlib
+
+    import core.rag.embeddings as embeddings
+
+    router = importlib.import_module("sentence_transformers.models.Router")
+    if not hasattr(router, "import_from_string"):
+        pytest.skip("this Router resolves sub-modules through the gated import_module_class")
+    embeddings._gate_st_custom_modules()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        router.import_from_string("custom_mod.Pooling")
+    assert router.import_from_string("sentence_transformers.models.Pooling").__name__ == "Pooling"
+
+
+def _pre_six_module(name):
+    st = pytest.importorskip("sentence_transformers")
+    if int(st.__version__.split(".")[0]) >= 6:
+        pytest.skip("sentence-transformers 6 gates this itself")
+    import importlib
+
+    module = importlib.import_module(f"sentence_transformers.models.{name}")
+    if not hasattr(module, "import_from_string"):
+        pytest.skip(f"this {name} does not resolve its config through import_from_string")
+    return module
+
+
+def _marker_package(tmp_path, monkeypatch, name):
+    marker = tmp_path / f"{name}.ran"
+    pkg = tmp_path / "site" / name
+    pkg.mkdir(parents = True)
+    (pkg / "__init__.py").write_text(
+        f"open({str(marker)!r}, 'w').write('ran')\n"
+        "def act():\n"
+        "    return None\n"
+        "class Tok:\n"
+        "    @staticmethod\n"
+        "    def load(path):\n"
+        "        return Tok()\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    return marker
+
+
+def test_st_gate_covers_dense_activation_function(tmp_path, monkeypatch):
+    # Dense.load imports and calls config["activation_function"] below 6.0.
+    import json
+
+    dense = _pre_six_module("Dense")
+    import core.rag.embeddings as embeddings
+
+    marker = _marker_package(tmp_path, monkeypatch, "dense_payload_mod")
+    folder = tmp_path / "2_Dense"
+    folder.mkdir()
+    (folder / "config.json").write_text(
+        json.dumps(
+            {"in_features": 4, "out_features": 4, "activation_function": "dense_payload_mod.act"}
+        )
+    )
+    embeddings._gate_st_custom_modules()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        dense.Dense.load(str(folder))
+    assert not marker.exists()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        dense.import_from_string("os.getcwd")
+
+
+def test_st_gate_keeps_a_real_dense_module_loading(tmp_path):
+    torch = pytest.importorskip("torch")
+    dense = _pre_six_module("Dense")
+    import core.rag.embeddings as embeddings
+
+    embeddings._gate_st_custom_modules()
+    saved = dense.Dense(4, 4, activation_function = torch.nn.Tanh())
+    (tmp_path / "2_Dense").mkdir()
+    saved.save(str(tmp_path / "2_Dense"))
+    loaded = dense.Dense.load(str(tmp_path / "2_Dense"))
+    assert isinstance(loaded.activation_function, torch.nn.Tanh)
+
+
+def test_st_gate_covers_word_embeddings_tokenizer_class(tmp_path, monkeypatch):
+    import json
+
+    word = _pre_six_module("WordEmbeddings")
+    import core.rag.embeddings as embeddings
+
+    marker = _marker_package(tmp_path, monkeypatch, "word_payload_mod")
+    folder = tmp_path / "0_WordEmbeddings"
+    folder.mkdir()
+    (folder / "wordembedding_config.json").write_text(
+        json.dumps({"tokenizer_class": "word_payload_mod.Tok", "update_embeddings": False})
+    )
+    embeddings._gate_st_custom_modules()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        word.WordEmbeddings.load(str(folder))
+    assert not marker.exists()
+    tok = "sentence_transformers.models.tokenizer.WhitespaceTokenizer.WhitespaceTokenizer"
+    assert word.import_from_string(tok).__name__ == "WhitespaceTokenizer"
+
+
+def test_st_gate_module_loader_wrappers_are_idempotent():
+    import core.rag.embeddings as embeddings
+
+    modules = [_pre_six_module(name) for name in ("Router", "Dense", "WordEmbeddings")]
+    embeddings._gate_st_custom_modules()
+    first = [module.import_from_string for module in modules]
+    embeddings._gate_st_custom_modules()
+    for module, wrapper in zip(modules, first):
+        assert module.import_from_string is wrapper
+        assert getattr(wrapper, embeddings._ST_GATE_MARKER, False)
+        assert not getattr(wrapper.__wrapped__, embeddings._ST_GATE_MARKER, False)

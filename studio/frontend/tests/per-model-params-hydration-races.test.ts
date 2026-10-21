@@ -214,3 +214,32 @@ test("a model left before hydration keeps the globals it was running with", asyn
   assert.equal(params.temperature, 0.33);
   assert.equal(params.systemPrompt, "A's prompt");
 });
+
+// #10671: the global set A inherits records its Max as Max, as every other
+// snapshot of a model on Max does.
+test("a model left before hydration on Max inherits Max, not its window", async () => {
+  const { REMEMBERED_MAX_TOKENS_MAX } = await import(
+    "../src/features/chat/lib/per-model-params.ts"
+  );
+  settingsHttp.settings = { inferenceParams: { maxTokens: 30000 } };
+  reset({ checkpoint: A, maxTokens: 30000 });
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  const resident = useChatRuntimeStore.getState();
+  resident.setParams(
+    { ...resident.params, checkpoint: A, maxTokens: 30000 },
+    { fromModelDefaults: true, maxTokensCap: 30000 },
+  );
+  const store = useChatRuntimeStore.getState();
+  store.setParams(
+    { ...store.params, checkpoint: B, maxTokens: 8192 },
+    { fromModelDefaults: true },
+  );
+  settingsHttp.release?.();
+  await hydrating;
+
+  assert.equal(
+    useChatRuntimeStore.getState().paramsByModel[A]?.maxTokens,
+    REMEMBERED_MAX_TOKENS_MAX,
+  );
+});

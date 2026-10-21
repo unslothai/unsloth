@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+from collections import OrderedDict
 
 import pytest
 from fastapi import HTTPException
@@ -12,7 +13,7 @@ from storage import mcp_servers_db
 
 def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
 
 
 # ── storage: mcp_servers_db ─────────────────────────────────────────
@@ -525,7 +526,9 @@ def test_changes_from_payload_tristate_headers():
 # ── core/inference/tools: MCP wiring ────────────────────────────────
 
 
-def test_mcp_specs_skip_oversized_names():
+def test_mcp_specs_alias_oversized_names():
+    import hashlib
+
     from core.inference.tools import _mcp_specs_for_server
 
     server = {"id": "s" * 30, "display_name": "S"}
@@ -534,9 +537,14 @@ def test_mcp_specs_skip_oversized_names():
         {"name": "x" * 40, "description": "too long"},
     ]
     specs = _mcp_specs_for_server(server, tools)
-    assert len(specs) == 1
-    assert specs[0]["function"]["name"].endswith("__ok")
-    assert len(specs[0]["function"]["name"]) <= 64
+    digest = hashlib.sha256(b"x" * 40).hexdigest()[:8]
+    assert [spec["function"]["name"] for spec in specs] == [
+        f"mcp__{'s' * 30}__ok",
+        f"mcp__{'s' * 30}__{'x' * 18}_{digest}",
+    ]
+    assert len(specs[1]["function"]["name"]) == 64
+    assert specs[1]["function"]["description"] == f"[S] ({'x' * 40}) too long"
+    assert specs[0]["function"]["description"] == "[S] fine"
 
 
 def test_execute_tool_malformed_mcp_name():
@@ -568,8 +576,10 @@ def test_execute_tool_disabled_server(tmp_path, monkeypatch):
     assert execute_tool("mcp__srv1__do_thing", {}) == "Error: MCP server 'A' is disabled"
 
 
-def test_mcp_specs_skip_invalid_openai_function_names():
+def test_mcp_specs_alias_invalid_openai_function_names():
     """OpenAI requires function.name ^[a-zA-Z0-9_-]{1,64}$; bad names 400 the request."""
+    import re
+
     from core.inference.tools import _mcp_specs_for_server
 
     server = {"id": "srv", "display_name": "S"}
@@ -580,9 +590,168 @@ def test_mcp_specs_skip_invalid_openai_function_names():
         {"name": "has space"},
         {"name": "good-dash_ok"},
     ]
-    specs = _mcp_specs_for_server(server, tools)
-    names = {s["function"]["name"] for s in specs}
-    assert {"mcp__srv__ok", "mcp__srv__good-dash_ok"} == names
+    names = [s["function"]["name"] for s in _mcp_specs_for_server(server, tools)]
+    assert names[0] == "mcp__srv__ok"
+    assert names[4] == "mcp__srv__good-dash_ok"
+    assert [name.rsplit("_", 1)[0] for name in names[1:4]] == [
+        "mcp__srv__with_dot",
+        "mcp__srv__weird_slash",
+        "mcp__srv__has_space",
+    ]
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name) for name in names)
+
+
+def test_mcp_specs_aliases_stay_unique_and_never_take_a_valid_name():
+    import hashlib
+
+    from core.inference.tools import _mcp_specs_for_server
+
+    taken = "with_dot_" + hashlib.sha256(b"with.dot").hexdigest()[:8]
+    tools = [
+        {"name": "a.b"},
+        {"name": "a/b"},
+        {"name": "a_b"},
+        {"name": "with.dot"},
+        {"name": taken},
+    ]
+    specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, tools)
+    assert [spec["function"]["name"] for spec in specs] == [
+        "mcp__srv__a_b_" + hashlib.sha256(b"a.b").hexdigest()[:8],
+        "mcp__srv__a_b_" + hashlib.sha256(b"a/b").hexdigest()[:8],
+        "mcp__srv__a_b",
+        f"mcp__srv__{taken}",
+    ]
+
+
+def _cache_backstage_tools(tmp_path, monkeypatch, raw_names):
+    from core.inference import mcp_client
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "0123456789abcdef",
+        display_name = "Backstage",
+        url = "https://backstage/mcp",
+        is_enabled = True,
+    )
+    tools = [{"name": name} for name in raw_names]
+    mcp_client.cache_tools("0123456789abcdef", tools)
+    return mcp_servers_db.get_server("0123456789abcdef"), tools
+
+
+def test_execute_tool_dispatches_an_alias_to_the_raw_mcp_name(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    raw_names = [
+        "get_weather",
+        "catalog.get-catalog-entity",
+        "summarize_repository_pull_request_review_comments",
+        "get_repository_branch_protection_rules_v1",
+        "get_repository_branch_protection_rules_v12",
+    ]
+    server, tools = _cache_backstage_tools(tmp_path, monkeypatch, raw_names)
+    calls = []
+
+    def fake_call_tool_sync(**kwargs):
+        calls.append(kwargs["name"])
+        return "ok"
+
+    monkeypatch.setattr(tools_mod, "call_tool_sync", fake_call_tool_sync)
+    names = [spec["function"]["name"] for spec in tools_mod._mcp_specs_for_server(server, tools)]
+    assert names[0] == "mcp__0123456789abcdef__get_weather"
+    assert names[3] == "mcp__0123456789abcdef__get_repository_branch_protection_rules_v1"
+    assert len(set(names)) == 5
+    assert [tools_mod.execute_tool(name, {}) for name in names] == ["ok"] * 5
+    assert calls == raw_names
+    # A deleted server must not put the alias spelling in front of the user either.
+    mcp_servers_db.delete_server(server["id"])
+    assert tools_mod.execute_tool(names[1], {}) == (
+        "Error: MCP server for tool 'catalog.get-catalog-entity' not found"
+    )
+
+
+def test_mcp_approval_classifies_an_alias_by_its_raw_name(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    server, tools = _cache_backstage_tools(
+        tmp_path, monkeypatch, ["get_repository_branch_protection_rules_then_delete"]
+    )
+    alias = tools_mod._mcp_specs_for_server(server, tools)[0]["function"]["name"]
+    unresolved = "mcp__missing__" + alias.split("__", 2)[2]
+    assert not tools_mod.is_potentially_unsafe_tool_call(unresolved, {})
+    assert not tools_mod.is_high_risk_tool_call(unresolved, {})
+    assert tools_mod.is_potentially_unsafe_tool_call(alias, {})
+    assert tools_mod.is_high_risk_tool_call(alias, {})
+
+
+def test_mcp_alias_is_shown_to_the_user_by_its_raw_name(tmp_path, monkeypatch):
+    from core.inference import studio_tool_loop
+    from core.inference import tool_loop_controller as controller
+    from core.inference.tools import _mcp_specs_for_server
+
+    raw = "catalog.get-catalog-entity"
+    server, tools = _cache_backstage_tools(tmp_path, monkeypatch, ["get_weather", raw])
+    plain, alias = [spec["function"]["name"] for spec in _mcp_specs_for_server(server, tools)]
+    assert alias != f"mcp__{server['id']}__{raw}"
+    assert controller.mcp_display_parts(plain) == ("Backstage", "get_weather")
+    assert controller.mcp_display_parts(alias) == ("Backstage", raw)
+    assert controller.status_for_tool(alias, {}) == f"Calling: Backstage · {raw}"
+    assert controller.awaiting_approval_status(alias) == f"Waiting for approval: Backstage · {raw}"
+    decision = controller.ToolLoopController(tools = None).prepare_call(
+        {"function": {"name": alias, "arguments": {}}}
+    )
+    for provenance in (
+        decision.provenance,
+        controller.provisional_tool_provenance(alias),
+        studio_tool_loop._unrun_provenance(alias, 0),
+    ):
+        assert provenance["mcp_server"] == "Backstage"
+        assert provenance["mcp_tool"] == raw
+    assert controller.provisional_tool_provenance(plain)["mcp_tool"] == "get_weather"
+
+
+def test_in_flight_alias_still_dispatches_after_the_tool_cache_is_evicted(tmp_path, monkeypatch):
+    from core.inference import mcp_client
+    from core.inference import tool_loop_controller as controller
+    from core.inference import tools as tools_mod
+
+    server, tools = _cache_backstage_tools(
+        tmp_path, monkeypatch, ["catalog.get-catalog-entity", "delete.catalog-entity"]
+    )
+    calls = []
+    monkeypatch.setattr(
+        tools_mod, "call_tool_sync", lambda **kwargs: calls.append(kwargs["name"]) or "ok"
+    )
+    names = [spec["function"]["name"] for spec in tools_mod._mcp_specs_for_server(server, tools)]
+    mcp_servers_db.update_server(server["id"], {"headers_json": '{"Authorization": "Bearer new"}'})
+    mcp_client.invalidate_tool_cache(server["id"])
+    assert mcp_client.get_cached_tools(server["id"]) is None
+    assert tools_mod.is_potentially_unsafe_tool_call(names[1], {})
+    assert controller.mcp_display_parts(names[0]) == ("Backstage", "catalog.get-catalog-entity")
+    assert tools_mod.execute_tool(names[0], {}) == "ok"
+    assert calls == ["catalog.get-catalog-entity"]
+
+
+def test_a_direct_name_is_not_resolved_through_a_retired_alias(tmp_path, monkeypatch):
+    import hashlib
+
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_ALIASES", {})
+    server, tools = _cache_backstage_tools(tmp_path, monkeypatch, ["with.dot"])
+    alias = tools_mod._mcp_specs_for_server(server, tools)[0]["function"]["name"]
+    taken = "with_dot_" + hashlib.sha256(b"with.dot").hexdigest()[:8]
+    assert alias == f"mcp__{server['id']}__{taken}"
+    calls = []
+    monkeypatch.setattr(
+        tools_mod, "call_tool_sync", lambda **kwargs: calls.append(kwargs["name"]) or "ok"
+    )
+    refreshed = [{"name": taken}]
+    mcp_client.cache_tools(server["id"], refreshed)
+    assert tools_mod._mcp_specs_for_server(server, refreshed)[0]["function"]["name"] == alias
+    assert tools_mod.execute_tool(alias, {}) == "ok"
+    assert calls == [taken]
 
 
 def test_mcp_specs_skip_empty_tool_name():
@@ -1192,6 +1361,32 @@ def test_get_enabled_mcp_tools_caches_discovery(tmp_path, monkeypatch):
     assert len(calls) == 1  # probed once, cache hit on the second send
     assert [t["function"]["name"] for t in first] == ["mcp__s1__echo"]
     assert first == second
+
+
+def test_disabled_decision_api_hides_saved_decisions_tools(tmp_path, monkeypatch):
+    from core.inference import mcp_client
+    from core.inference import tools as tools_mod
+    from utils import systemone_settings
+    import asyncio
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(
+        id = "decisions",
+        display_name = "Unsloth Decisions",
+        url = "http://127.0.0.1:8888/mcp/decisions/",
+        is_enabled = True,
+    )
+    mcp_client.cache_tools("decisions", _one_tool("decide"))
+    monkeypatch.setattr(systemone_settings, "get_enabled", lambda: False)
+
+    assert tools_mod.cached_mcp_tools() == ([], True)
+    assert asyncio.run(tools_mod.get_enabled_mcp_tools()) == []
+
+    monkeypatch.setattr(systemone_settings, "get_enabled", lambda: True)
+    cached, complete = tools_mod.cached_mcp_tools()
+    assert complete is True
+    assert [tool["function"]["name"] for tool in cached] == ["mcp__decisions__decide"]
 
 
 def test_get_enabled_mcp_tools_does_not_cache_failures(tmp_path, monkeypatch):
@@ -1999,3 +2194,511 @@ def test_adversarial_display_names_do_not_break_provenance(tmp_path, monkeypatch
 
     # Stored verbatim; escaping is the renderer's job.
     assert provisional_tool_provenance("mcp__srv1__run")["mcp_server"] == display
+
+
+def _big_mcp_tool():
+    return {
+        "name": "query",
+        "description": "Query rows. Use SQL mode by default.\nLong details follow.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "anyOf": [
+                        {
+                            "type": "object",
+                            "properties": {"q": {"type": "string", "description": "x" * 900}},
+                        },
+                        {"type": "object"},
+                    ]
+                },
+                "mode": {"type": "string", "enum": ["sql", "rows"], "description": "y" * 800},
+                "tags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["data"],
+        },
+    }
+
+
+def _cache_server_tools(tmp_path, monkeypatch, tools):
+    from core.inference import mcp_client, tools as tools_mod
+
+    _reset_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(tools_mod, "_MCP_LOADED_THREADS", OrderedDict())
+    mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a.example/mcp")
+    mcp_client.cache_tools("srv1", tools)
+
+
+@pytest.fixture
+def listing_window():
+    from core.inference import tools as tools_mod
+
+    tokens = []
+
+    def _set(context_tokens):
+        tokens.append(tools_mod._MCP_LISTING_CONTEXT_TOKENS.set(context_tokens))
+        return context_tokens
+
+    yield _set
+    for token in reversed(tokens):
+        tools_mod._MCP_LISTING_CONTEXT_TOKENS.reset(token)
+
+
+@pytest.fixture
+def searching(monkeypatch, listing_window):
+    from core.inference import tools as tools_mod
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_SEARCH_SHARE", 0.0)
+    return listing_window(100_000)
+
+
+_PING = {
+    "name": "ping",
+    "description": "Ping. Returns pong.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"n": {"type": "integer", "description": "count"}},
+    },
+}
+
+
+def _names(specs):
+    return [s["function"]["name"] for s in specs]
+
+
+def _search_spec(specs):
+    return next(s for s in specs if s["function"]["name"] == "mcp_tool_search")
+
+
+def test_mcp_listing_stays_full_when_it_fits_the_window(tmp_path, monkeypatch, listing_window):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [_PING, _big_mcp_tool()])
+    unsized = tools_mod.cached_mcp_tools()[0]
+    assert _names(unsized) == ["mcp__srv1__ping", "mcp__srv1__query"]
+    assert unsized[1]["function"]["parameters"] == _big_mcp_tool()["inputSchema"]
+
+    listing_window(1_000_000)
+    assert tools_mod.cached_mcp_tools()[0] == unsized
+
+    listing_window(1_000)
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert _names(specs) == ["mcp_tool_search"]
+    # Too small to name them within its share, so it only counts them.
+    assert _search_spec(specs)["function"]["description"].endswith(
+        "Tools:\n2 tools, found by searching."
+    )
+
+
+def test_mcp_listing_defers_every_tool_past_its_share(tmp_path, monkeypatch, listing_window):
+    from core.inference import mcp_client, tools as tools_mod
+
+    huge = dict(_big_mcp_tool(), name = "huge")
+    huge["inputSchema"] = dict(huge["inputSchema"], description = "z" * 20_000)
+    _cache_server_tools(tmp_path, monkeypatch, [_PING, _big_mcp_tool(), huge])
+    mcp_servers_db.create_server(id = "srv2", display_name = "B", url = "https://b.example/mcp")
+    mcp_client.cache_tools("srv2", [{"name": "echo"}])
+    full = tools_mod.cached_mcp_tools()[0]
+    full_tokens = tools_mod._text_token_cost(json.dumps(full, separators = (",", ":")), 10_000)
+
+    # Over the share by a little: the small tools are deferred too, so none is called in place of a deferred one.
+    listing_window(int(full_tokens * 0.9 / tools_mod._MCP_TOOL_SEARCH_SHARE))
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert _names(specs) == ["mcp_tool_search"]
+    assert _search_spec(specs)["function"]["description"].endswith(
+        "Tools:\nA:\n- ping: Ping.\n- query: Query rows.\n- huge: Query rows.\nB:\n- echo"
+    )
+    listing_window(int(full_tokens * 1.1 / tools_mod._MCP_TOOL_SEARCH_SHARE))
+    assert tools_mod.cached_mcp_tools()[0] == full
+
+
+def test_mcp_tool_search_lists_a_bounded_number_of_names(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_SEARCH_MAX_NAMES", 2)
+    spec = tools_mod._mcp_tool_search_spec(
+        [("A", [("a", "Does a."), ("b", ""), ("c", "")]), ("B", [("d", "")])]
+    )
+    assert spec["function"]["description"].endswith(
+        "Tools:\nA:\n- a: Does a.\n- b\n- and 1 more\nB:\n- and 1 more"
+    )
+
+
+def test_mcp_summary_caps_a_description_without_a_sentence_end():
+    from core.inference.tools import _mcp_summary
+
+    assert _mcp_summary("  Fetch a page\n by id.  Then more. ") == "Fetch a page by id."
+    assert _mcp_summary("## Overview\n\nCreates pages. Details.") == "Overview Creates pages."
+    long = _mcp_summary("word " * 100)
+    assert len(long) == 240 and long.endswith("...")
+
+
+def test_mcp_tool_lists_offer_the_search_tool_only_when_something_was_deferred(
+    tmp_path, monkeypatch, searching
+):
+    import asyncio
+
+    from core.inference import mcp_client, tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [])
+    assert tools_mod.cached_mcp_tools() == ([], True)
+
+    mcp_client.cache_tools("srv1", [{"name": "ping"}, _big_mcp_tool()])
+    names = _names(tools_mod.cached_mcp_tools()[0])
+    assert names == ["mcp_tool_search"]
+    assert _names(asyncio.run(tools_mod.get_enabled_mcp_tools())) == names
+
+
+_NOTES = [
+    _PING,
+    _big_mcp_tool(),
+    {"name": "create-pages", "description": "Create one or more pages in a workspace."},
+    {"name": "move-pages", "description": "Move pages to a new parent page."},
+    {"name": "get-users", "description": "List the users in the workspace."},
+]
+
+
+def test_mcp_tool_search_loads_exact_names_then_ranked_matches(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    search = tools_mod.mcp_tool_search_specs
+
+    assert _names(search({"query": "mcp__srv1__query"})) == ["mcp__srv1__query"]
+    assert _names(search({"query": "move-pages, get-users"})) == [
+        "mcp__srv1__move-pages",
+        "mcp__srv1__get-users",
+    ]
+    assert _names(search({"query": "create a new page"}))[0] == "mcp__srv1__create-pages"
+    assert _names(search({"query": "move my page under another parent", "limit": 1})) == [
+        "mcp__srv1__move-pages"
+    ]
+    assert _names(search({"query": "who are the users"})) == ["mcp__srv1__get-users"]
+    # An exact name loads whatever the ranked matches are (openai/codex#21503).
+    assert _names(search({"query": "ping and the users", "limit": 1})) == ["mcp__srv1__ping"]
+    assert search({"query": "  "}) == search({}) == []
+
+    out = tools_mod.execute_tool("mcp_tool_search", {"query": "query rows with sql"})
+    assert out.startswith("Loaded 1 MCP tool. Call the one that fits directly")
+    assert "- mcp__srv1__query: [A] Query rows." in out
+    assert tools_mod.execute_tool("mcp_tool_search", {"query": "zzzz"}).startswith(
+        "No MCP tool matched 'zzzz'."
+    )
+    assert tools_mod.execute_tool("mcp_tool_search", {}).startswith(
+        "Error: mcp_tool_search needs a query"
+    )
+    assert not tools_mod.is_potentially_unsafe_tool_call("mcp_tool_search", {"query": "x"})
+    assert not tools_mod.is_high_risk_tool_call("mcp_tool_search", {"query": "x"})
+
+
+def test_mcp_listing_lists_the_tools_the_user_message_asks_for(tmp_path, monkeypatch, searching):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+
+    def listing_for(messages, thread_id = None):
+        ctx = contextvars.copy_context()
+        ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, thread_id, messages)
+        return ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0]))
+
+    ask = [{"role": "user", "content": "Move my roadmap page under the Archive page."}]
+    listed = listing_for(ask)
+    assert listed[:2] == ["mcp_tool_search", "mcp__srv1__move-pages"]
+    assert len(listed) <= 1 + tools_mod._MCP_TOOL_PRELOAD
+    assert listing_for([{"role": "user", "content": "hello"}]) == ["mcp_tool_search"]
+    # Nothing ranked fits a window this small, so only the search tool is listed.
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 0.0)
+    assert listing_for(ask) == ["mcp_tool_search"]
+
+
+def test_mcp_listing_matches_a_write_verb_to_the_tool_named_with_another(
+    tmp_path, monkeypatch, searching
+):
+    """ "Add a comment" lists create-comments, not only the update/fetch siblings sharing its noun (#13601)."""
+    import contextvars
+
+    from core.inference import tools as tools_mod
+
+    catalog = [
+        {"name": "search-pages", "description": "Search pages in the workspace by title or text."},
+        {"name": "fetch-page", "description": "Fetch a page and its content by page id."},
+        {"name": "fetch-comment", "description": "Fetch one comment on a page by comment id."},
+        {"name": "search-comments", "description": "Search comments on a page."},
+        {"name": "update-comment", "description": "Update the text of a comment by comment id."},
+        {
+            "name": "create-comments",
+            "description": "Start a discussion on a page, or reply to one.",
+        },
+        {"name": "delete-page", "description": "Move a page to the trash."},
+    ]
+    _cache_server_tools(tmp_path, monkeypatch, catalog)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD", 3)
+
+    def listing_for(prompt):
+        ctx = contextvars.copy_context()
+        messages = [{"role": "user", "content": prompt}]
+        ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, None, messages)
+        return ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0]))
+
+    add = listing_for("Add a comment to the Roadmap Q3 page saying the launch moved to September.")
+    assert "mcp__srv1__create-comments" in add
+    assert "mcp__srv1__delete-page" in listing_for("Remove the Roadmap Q3 page.")
+    assert "mcp__srv1__update-comment" in listing_for("Edit my comment on the Roadmap page.")
+    # Read verbs are not expanded, so "find" does not pull every search tool in.
+    assert tools_mod._MCP_VERB_SYNONYMS.get("find") is None
+    assert tools_mod._MCP_VERB_SYNONYMS.get("news") is None
+
+
+def test_mcp_tool_search_exact_name_loads_it_on_every_server(tmp_path, monkeypatch):
+    from core.inference import mcp_client, tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, [{"name": "search", "description": "Search A."}])
+    mcp_servers_db.create_server(id = "srv2", display_name = "B", url = "https://b.example/mcp")
+    mcp_client.cache_tools("srv2", [{"name": "search", "description": "Search B."}])
+    assert _names(tools_mod.mcp_tool_search_specs({"query": "search"})) == [
+        "mcp__srv1__search",
+        "mcp__srv2__search",
+    ]
+
+
+def test_mcp_tool_search_never_finds_an_app_only_tool(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    hidden = {
+        "name": "widget_refresh",
+        "description": "Refresh the widget.",
+        "_meta": {"ui": {"visibility": ["app"]}},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [_big_mcp_tool(), hidden])
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert "widget_refresh" not in json.dumps(specs)
+    assert tools_mod.mcp_tool_search_specs({"query": "refresh the widget"}) == []
+    assert tools_mod.mcp_tool_spec("mcp__srv1__widget_refresh") is None
+
+
+def test_mcp_tool_search_finds_an_alias_by_its_raw_name(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    tool = dict(_big_mcp_tool(), name = "catalog.query")
+    _cache_server_tools(tmp_path, monkeypatch, [tool])
+    found = tools_mod.mcp_tool_search_specs({"query": "catalog.query"})
+    assert len(found) == 1
+    assert found[0]["function"]["name"] != "mcp__srv1__catalog.query"
+    assert found[0]["function"]["parameters"] == tool["inputSchema"]
+
+
+def test_controller_loads_searched_and_named_mcp_tools(tmp_path, monkeypatch, searching):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+
+    def listing_for(thread_id):
+        ctx = contextvars.copy_context()
+        ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, thread_id)
+        return ctx.run(lambda: tools_mod.cached_mcp_tools()[0])
+
+    listing = listing_for("thread-1")
+    assert _names(listing) == ["mcp_tool_search"]
+
+    controller = ToolLoopController(tools = listing, thread_id = "thread-1")
+    call = {
+        "function": {"name": "mcp_tool_search", "arguments": '{"query": "move pages", "limit": 1}'}
+    }
+    decision = controller.prepare_call(call)
+    controller.record_result(
+        decision, tools_mod.execute_tool("mcp_tool_search", decision.arguments)
+    )
+    active = controller.active_tools()
+    assert _names(active) == ["mcp_tool_search", "mcp__srv1__move-pages"]
+    assert active[1] == tools_mod.mcp_tool_spec("mcp__srv1__move-pages")
+
+    # A deferred tool named without a search loads too, typed by its full schema.
+    named = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__ping", "arguments": '{"n": "3"}'}}
+    )
+    assert named.action == "execute" and named.arguments == {"n": 3}
+    assert "mcp__srv1__ping" in _names(controller.active_tools())
+
+    # Later turns of the thread list the tools it ran, newest first; a tool only loaded is not relisted.
+    assert _names(listing_for("thread-1")) == ["mcp_tool_search"]
+    controller.record_result(named, "pong")
+    moved = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__move-pages", "arguments": "{}"}}
+    )
+    controller.record_result(moved, "moved")
+    assert _names(listing_for("thread-1")) == [
+        "mcp_tool_search",
+        "mcp__srv1__move-pages",
+        "mcp__srv1__ping",
+    ]
+    assert _names(listing_for("thread-2")) == ["mcp_tool_search"]
+    # Relisted tools share the preload room, so a small window drops them rather than overflow.
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 0.0)
+    assert _names(listing_for("thread-1")) == ["mcp_tool_search"]
+
+
+def test_a_search_loads_only_what_fits_the_window(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    big = [dict(_big_mcp_tool(), name = f"query-{i}") for i in range(4)]
+    _cache_server_tools(tmp_path, monkeypatch, big)
+    cost = tools_mod._text_token_cost(json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query-0")), 1)
+    window = lambda share: lambda: int(share * cost / tools_mod._MCP_TOOL_LOAD_SHARE)  # noqa: E731
+    monkeypatch.setattr(tools_mod, "_window_context_tokens", window(2.5))
+    assert len(tools_mod.mcp_tool_search_specs({"query": "query rows"})) == 2
+
+    monkeypatch.setattr(tools_mod, "_window_context_tokens", window(0.5))
+    assert tools_mod.mcp_tool_search_specs({"query": "query rows"}) == []
+    out = tools_mod.execute_tool("mcp_tool_search", {"query": "query rows"})
+    assert out.startswith("Error: the matching MCP tools (mcp__srv1__query-0, ")
+    assert out.endswith("are too large for this model's context window.")
+
+
+def test_controller_retires_older_loads_to_stay_within_the_window(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    big = [dict(_big_mcp_tool(), name = f"query-{i}") for i in range(4)]
+    _cache_server_tools(tmp_path, monkeypatch, big)
+    cost = tools_mod._text_token_cost(json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query-0")), 1)
+    monkeypatch.setattr(
+        tools_mod,
+        "_window_context_tokens",
+        lambda: int(2.5 * cost / tools_mod._MCP_TOOL_LOAD_SHARE),
+    )
+    controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    for name in ("query-0", "query-1", "query-2"):
+        decision = controller.prepare_call(
+            {"function": {"name": "mcp_tool_search", "arguments": json.dumps({"query": name})}}
+        )
+        controller.record_result(decision, "Loaded")
+    assert _names(controller.active_tools()) == [
+        "mcp_tool_search",
+        "mcp__srv1__query-1",
+        "mcp__srv1__query-2",
+    ]
+    assert (
+        controller.prepare_call(
+            {"function": {"name": "mcp__srv1__query-0", "arguments": "{}"}}
+        ).action
+        == "execute"
+    )
+    assert _names(controller.active_tools())[1:] == ["mcp__srv1__query-2", "mcp__srv1__query-0"]
+
+
+def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+
+    def listing_for(messages, tool_choice = None):
+        ctx = contextvars.copy_context()
+        ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, None, messages, tool_choice)
+        return ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0]))
+
+    forced = {"type": "function", "function": {"name": "mcp__srv1__get-users"}}
+    assert listing_for(None, forced) == ["mcp_tool_search", "mcp__srv1__get-users"]
+
+    monkeypatch.setattr(
+        tools_mod, "image_mapping", lambda server, tool: tool and tool.get("name") == "ping"
+    )
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+    asked = [{"role": "user", "content": [{"type": "text", "text": "hi"}, image]}]
+    assert listing_for(asked) == ["mcp_tool_search", "mcp__srv1__ping"]
+    # Without an attachment the mapped tool is deferred like any other.
+    assert listing_for([{"role": "user", "content": "hi"}]) == ["mcp_tool_search"]
+    # A tool-only image is sent as mcp_image, never in the messages.
+    ctx = contextvars.copy_context()
+    hi = [{"role": "user", "content": "hi"}]
+    ctx.run(
+        tools_mod.set_mcp_listing_context_tokens,
+        searching,
+        None,
+        hi,
+        None,
+        "data:image/png;base64,AA==",
+    )
+    assert ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0])) == [
+        "mcp_tool_search",
+        "mcp__srv1__ping",
+    ]
+
+
+def test_the_search_declaration_fits_its_share_of_the_window(tmp_path, monkeypatch, listing_window):
+    from core.inference import tools as tools_mod
+
+    # One token a character, as CJK summaries cost.
+    wide = [{"name": f"t{i}", "description": "\u8868" * 200 + "\u3002"} for i in range(40)]
+    _cache_server_tools(tmp_path, monkeypatch, wide)
+    ctx = listing_window(20_000)
+    specs = tools_mod.cached_mcp_tools()[0]
+    assert _names(specs) == ["mcp_tool_search"]
+    cost = tools_mod._text_token_cost(json.dumps(specs, separators = (",", ":")), ctx)
+    assert cost <= ctx * tools_mod._MCP_TOOL_SEARCH_SHARE
+
+
+def test_malformed_schemas_and_limits_do_not_break_the_search(tmp_path, monkeypatch):
+    from core.inference import tools as tools_mod
+
+    odd = {
+        "name": "odd",
+        "description": "Odd rows.",
+        "inputSchema": {"type": "object", "properties": "x"},
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [odd])
+    assert _names(
+        tools_mod.mcp_tool_search_specs({"query": "odd rows", "limit": float("inf")})
+    ) == ["mcp__srv1__odd"]
+
+
+def test_the_search_tool_names_tools_within_a_character_budget():
+    from core.inference import tools as tools_mod
+
+    catalog = [("A", [("t" * 60, "s" * 80) for _ in range(10)])]
+    description = tools_mod._mcp_tool_search_spec(catalog, 500)["function"]["description"]
+    assert description.count("- " + "t" * 60) == 3
+    assert description.endswith("- and 7 more")
+
+
+def test_a_repeated_search_runs_again_and_tools_run_unsearched_are_remembered(
+    tmp_path, monkeypatch
+):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    call = {"function": {"name": "mcp_tool_search", "arguments": '{"query": "move pages"}'}}
+    controller.record_result(controller.prepare_call(call), "Loaded")
+    assert controller.prepare_call(call).action == "execute"
+
+    # A catalog listed in full has no search tool, and what the thread ran is still remembered.
+    full = ToolLoopController(tools = tools_mod.cached_mcp_tools()[0], thread_id = "t9")
+    ran = full.prepare_call({"function": {"name": "mcp__srv1__get-users", "arguments": "{}"}})
+    full.record_result(ran, "users")
+    ctx = contextvars.copy_context()
+    ctx.run(tools_mod.set_mcp_listing_context_tokens, 100_000, "t9")
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_SEARCH_SHARE", 0.0)
+    assert ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0])) == [
+        "mcp_tool_search",
+        "mcp__srv1__get-users",
+    ]
+
+
+def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monkeypatch):
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    controller = ToolLoopController(tools = [])
+    decision = controller.prepare_call({"function": {"name": "mcp__srv1__ping", "arguments": "{}"}})
+    assert decision.action == "disabled"
+    assert controller.active_tools() == []

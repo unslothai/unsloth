@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+from utils.paths.storage_roots import workspace_root
+
 import os
 from pathlib import Path
 from typing import Optional
@@ -21,7 +24,7 @@ from hub.utils.paths import (
     well_known_model_dirs,
 )
 from utils.paths.external_media import (
-    linux_run_media_mount_roots,
+    linux_external_mount_roots,
     macos_volume_roots,
     windows_drive_roots,
 )
@@ -39,6 +42,8 @@ def _build_browse_allowlist(
     *media_roots* / *drive_roots* let the caller pass already-probed
     removable-media and Windows drive roots so they aren't scanned again (a
     disconnected mapped drive can make each probe slow); probed here when ``None``."""
+    if account_access.managed_account():
+        return [workspace_root().resolve()]
     from hub.storage.scan_folders import list_scan_folders
 
     candidates: list[Path] = []
@@ -56,7 +61,7 @@ def _build_browse_allowlist(
 
     _add(Path.home())
     if media_roots is None:
-        media_roots = [*linux_run_media_mount_roots(), *macos_volume_roots()]
+        media_roots = [*linux_external_mount_roots(), *macos_volume_roots()]
     if drive_roots is None:
         drive_roots = windows_drive_roots()
     for p in media_roots:
@@ -83,7 +88,7 @@ def _build_browse_allowlist(
         _add(outputs_root())
         _add(exports_root())
     except Exception as exc:  # noqa: BLE001 -- best-effort
-        logger.debug("browse-folders: studio roots unavailable: %s", exc)
+        logger.debug("browse-folders: Unsloth roots unavailable: %s", exc)
     try:
         for folder in list_scan_folders():
             p = folder.get("path")

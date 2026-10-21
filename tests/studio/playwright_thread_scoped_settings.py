@@ -1,28 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-chat settings: the composer pills and permission level follow the chat.
-
-Drives two saved chats through the real UI and asserts each keeps its own modes across a
-switch and a reload, that a chat's edits leave the installation defaults (and so every new
-chat) alone, and that a chat which stored nothing still opens on those defaults.
-
-Needs no model: with nothing loaded the Search and Code pills stay clickable, which is what
-lets this run in seconds rather than behind a GGUF download.
-
-    BASE_URL=http://127.0.0.1:18921 STUDIO_NEW_PW=... \
-        python tests/studio/playwright_thread_scoped_settings.py
-"""
+"""Per-chat settings checks; with no model loaded the Search and Code pills stay clickable."""
 
 import json
 import os
-import re
 import sys
 import time
 import uuid
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _playwright_robust import (  # noqa: E402
+    install_wall_clock_watchdog,
+    report_failing_step,
+    step_budget_s,
+    wait_for_settled,
+    wait_until,
+)
 
 BASE = os.environ["BASE_URL"]
 NEW = os.environ["STUDIO_NEW_PW"]
@@ -31,8 +28,7 @@ ART.mkdir(parents = True, exist_ok = True)
 
 TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TIMEOUT_MS", "30000"))
 
-# The installation-wide slots the per-chat edits below must not touch. The legacy confirm toggle is here on purpose:
-# loadPermissionMode falls back to it, so writing it would leak globally.
+# loadPermissionMode falls back to the legacy confirm toggle, so writing it would leak globally.
 GLOBAL_KEYS = (
     "unsloth_chat_tools_enabled",
     "unsloth_chat_code_tools_enabled",
@@ -40,12 +36,50 @@ GLOBAL_KEYS = (
     "unsloth_chat_confirm_tool_calls",
 )
 
+STEP_BUDGET_S = step_budget_s(max(180.0, 6 * TIMEOUT_MS / 1000))
+SIGN_IN_BUDGET_S = step_budget_s(max(360.0, 12 * TIMEOUT_MS / 1000))
+WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "600"))
+# Both writes are debounced 400 ms (chat-runtime-store.ts), so /api/chat must stay quiet longer.
+CHAT_QUIET_S = 0.6
+
 _step = [0]
+_watchdog = None
 
 
-def step(message):
+def step(message, budget_s = None):
     _step[0] += 1
-    print(f"[thread-settings] STEP {_step[0]}: {message}", flush = True)
+    name = f"{_step[0]}: {message}"
+    print(f"[thread-settings] STEP {name}", flush = True)
+    if _watchdog is not None:
+        _watchdog.begin_step(name, STEP_BUDGET_S if budget_s is None else budget_s)
+
+
+# Counted in the page: Playwright request events left some open forever across sign-in.
+CHAT_TRAFFIC_JS = """
+(() => {
+    const traffic = (window.__chatTraffic = { inflight: 0, last: performance.now() });
+    const realFetch = window.fetch;
+    window.fetch = function (input, init) {
+        let path = "";
+        try {
+            path = new URL(String((input && input.url) || input), location.href).pathname;
+        } catch (_e) {}
+        if (!path.startsWith("/api/chat/threads") && !path.startsWith("/api/chat/settings")) {
+            return realFetch.apply(this, arguments);
+        }
+        traffic.inflight += 1;
+        traffic.last = performance.now();
+        const done = () => {
+            traffic.inflight -= 1;
+            traffic.last = performance.now();
+        };
+        return realFetch.apply(this, arguments).then(
+            (response) => { done(); return response; },
+            (error) => { done(); throw error; },
+        );
+    };
+})();
+"""
 
 
 def fail(message):
@@ -90,7 +124,7 @@ def api(
 
 
 def sign_in(page):
-    step("sign in, then land on /chat")
+    step("sign in, then land on /chat", SIGN_IN_BUDGET_S)
     page.goto(f"{BASE}/change-password", wait_until = "domcontentloaded", timeout = 60_000)
     try:
         page.locator("#new-password").wait_for(state = "visible", timeout = 15_000)
@@ -121,12 +155,7 @@ def sign_in(page):
 
 
 def app_created_thread_id():
-    """The id a chat started in the app really carries.
-
-    assistant-ui mints `__LOCALID_<id>` for a thread before its first send, the thread list
-    adapter hands that same string back as the remoteId, and the row keeps it as its primary
-    key. The prefix therefore says nothing about whether a row exists.
-    """
+    """Thread id as the app stores it (__LOCALID_<id>); the prefix does not show whether a row exists."""
     return f"__LOCALID_{uuid.uuid4().hex}"
 
 
@@ -216,14 +245,7 @@ def open_thread(page, thread_id):
 
 
 def unload_any_model(page, token):
-    """Leave no model loaded, so the capability-gated pills stay clickable.
-
-    The Search and Code pills are disabled when a model is loaded that cannot run tools
-    (`modelLoaded && !(supportsTools || supportsBuiltinWebSearch)`), and this file drives
-    both. In CI an earlier step in the same job leaves a small GGUF resident, which has
-    no tool support, so every pill click here would time out on a disabled button. With
-    nothing loaded the pills are pre-selectable, which is the state this test is about.
-    """
+    """Search and Code pills are disabled while a model without tool support is loaded, so unload it."""
     status = page.evaluate(
         """async ({ base, token }) => {
             const res = await fetch(base + "/api/inference/status", {
@@ -254,7 +276,33 @@ def unload_any_model(page, token):
         }""",
         {"base": BASE, "token": token, "modelPath": loaded},
     )
-    page.wait_for_timeout(1500)
+    try:
+        wait_until(
+            lambda: not _loaded_model(page, token),
+            timeout_s = 60,
+            what = f"{loaded!r} to unload",
+            interval_s = 0.25,
+            page = page,
+        )
+    except TimeoutError as exc:
+        print(f"[thread-settings] WARN {exc}", flush = True)
+
+
+def _loaded_model(page, token):
+    status = (
+        page.evaluate(
+            """async ({ base, token }) => {
+            const res = await fetch(base + "/api/inference/status", {
+                headers: { Authorization: "Bearer " + token },
+            });
+            if (!res.ok) return null;
+            return await res.json();
+        }""",
+            {"base": BASE, "token": token},
+        )
+        or {}
+    )
+    return status.get("model_identifier") or (status.get("loaded") or [None])[0]
 
 
 def settle(page):
@@ -262,8 +310,16 @@ def settle(page):
     page.locator('button[data-pill-label="Search"]:visible').first.wait_for(
         state = "visible", timeout = TIMEOUT_MS
     )
-    # the snapshot arrives on a GET, and the pin write is debounced behind it.
-    page.wait_for_timeout(1200)
+    page.wait_for_function(
+        """([quietMs]) => {
+            const traffic = window.__chatTraffic;
+            return !!traffic && traffic.inflight === 0
+                && performance.now() - traffic.last >= quietMs;
+        }""",
+        arg = [CHAT_QUIET_S * 1000],
+        polling = 50,
+        timeout = TIMEOUT_MS,
+    )
 
 
 def pill(page, label):
@@ -283,7 +339,7 @@ def choose_permission(page, label):
 
 
 def expect_pills(page, where, search, code, permission):
-    for label, wanted in (("Search", search), ("Code", code)):
+    for label, wanted in (("Search", search), ("Tools", code)):
         expect(pill(page, label)).to_have_attribute(
             "data-active", "true" if wanted else "false", timeout = TIMEOUT_MS
         )
@@ -303,14 +359,28 @@ def read_globals(page):
     )
 
 
-def check_reasoning_page_navigation(page, token):
-    step("saved reasoning pages render the selected source range")
+def _wait_globals(page, expected):
+    """Polls up to 10 s for the Search default to read expected; on timeout the caller's check reports."""
+    try:
+        wait_until(
+            lambda: read_globals(page)["unsloth_chat_tools_enabled"] == expected,
+            timeout_s = 10,
+            what = f"the Search default to read {expected}",
+            interval_s = 0.1,
+            page = page,
+        )
+    except TimeoutError:
+        pass
+
+
+def check_reasoning_transcript(page, token):
+    step("saved reasoning scrolls continuously with bounded content and full-source copy")
     source = "\n\n".join(
         f"Step {index:04d}. Compare this observation with the preceding reasoning "
         "and keep the complete trace available for inspection."
         for index in range(400)
     )
-    thread_id = seed_thread(page, token, "Reasoning page navigation")
+    thread_id = seed_thread(page, token, "Continuous reasoning transcript")
     messages = api(page, f"/api/chat/threads/{thread_id}/messages", token = token)["messages"]
     messages.append(
         {
@@ -333,38 +403,65 @@ def check_reasoning_page_navigation(page, token):
         body = {"messages": messages},
     )
     open_thread(page, thread_id)
-    page.get_by_role("button", name = "Thought for 0 seconds", exact = True).click()
-    navigation = page.get_by_role("navigation", name = "Reasoning pages")
+    # By slot, not label: the trigger's product copy has been reworded before.
+    trigger = page.locator('[data-slot="reasoning-trigger"]').first
+    if trigger.get_attribute("data-state") == "open":
+        trigger.click()
+        expect(page.locator('[data-slot="reasoning-transcript"]')).to_have_count(0)
+    trigger.click()
     body = page.locator('[data-slot="reasoning-text"]')
+    transcript = page.locator('[data-slot="reasoning-transcript"]')
+    expect(transcript).to_be_visible()
+    expect(page.locator('[data-slot="reasoning-page-navigation"]')).to_have_count(0)
+    expect(body).to_contain_text("Step 0000.")
+    assert len(body.inner_text()) < 20000, "saved reasoning mounted the entire trace"
 
-    def expect_selected_page():
-        expect(navigation).to_be_visible()
-        match = re.search(r"(\d+)–(\d+) of (\d+)", navigation.inner_text())
-        assert match, "missing reasoning source range"
-        start, end, total = map(int, match.groups())
-        assert total == len(source)
-        assert 0 < end - start + 1 <= 8192
-        expect(body).to_have_text(source[start - 1 : end].replace("\n", ""))
-        return start, end
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+    page.get_by_role("button", name = "Copy reasoning", exact = True).click()
+    expect(page.get_by_role("button", name = "Copied", exact = True)).to_be_visible()
+    assert page.evaluate("navigator.clipboard.readText()") == source
 
-    latest = expect_selected_page()
-    navigation.get_by_role("button", name = "Earlier", exact = True).click()
-    earlier = expect_selected_page()
-    assert earlier[1] < latest[0]
-    navigation.get_by_role("button", name = "Earlier", exact = True).click()
-    oldest = expect_selected_page()
-    assert oldest[1] < earlier[0]
-    navigation.get_by_role("button", name = "Newer", exact = True).click()
-    assert expect_selected_page() == earlier
-    navigation.get_by_role("button", name = "Latest", exact = True).click()
-    assert expect_selected_page() == latest
+    viewport = page.locator(".aui-thread-viewport")
+    box = viewport.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    # A virtualized transcript grows as estimated passages mount, so one wheel does not reach the end.
+    for _ in range(12):
+        page.mouse.wheel(0, 100000)
+        page.wait_for_timeout(250)
+        if "Step 0399." in body.inner_text():
+            break
+    expect(body).to_contain_text("Step 0399.")
+    assert len(body.inner_text()) < 20000, "scrolling mounted the entire trace"
     expect(page.get_by_text("The final answer stays separate.", exact = True)).to_be_visible()
+    expect(body).not_to_contain_text("The final answer stays separate.")
+
+    trigger.click()
+    expect(transcript).to_have_count(0)
+    wait_for_settled(trigger)
+    header_top = trigger.bounding_box()["y"]
+    trigger.click()
+    expect(body).to_contain_text("Step 0000.")
+    wait_for_settled(trigger)
+    assert abs(trigger.bounding_box()["y"] - header_top) < 3, "reopening moved the header"
 
 
 def main():
+    global _watchdog
+    _watchdog = install_wall_clock_watchdog(WALL_TIMEOUT_S, label = "thread-settings")
+    report_failing_step(_watchdog, label = "thread-settings")
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport = {"width": 1280, "height": 900})
+        context.add_init_script(CHAT_TRAFFIC_JS)
+        # "Run automatically" only applies immediately when the OS sandbox works; stub it for the host.
+        context.route(
+            "**/api/sandbox/capability*",
+            lambda route: route.fulfill(
+                status = 200,
+                content_type = "application/json",
+                body = json.dumps({"python_os_isolated": True, "terminal_os_isolated": True}),
+            ),
+        )
         page = context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
         page_errors = []
@@ -377,23 +474,21 @@ def main():
         page.goto(f"{BASE}/chat", wait_until = "domcontentloaded", timeout = 60_000)
 
         step("an unsaved chat still edits the installation defaults")
-        # plain /chat runs on a runtime-made thread id with no row: treating that as an open
-        # chat would stop every toggle made before the first message from persisting at all.
+        # Plain /chat has a runtime-made thread id with no row; it must not count as an open chat.
         settle(page)
         pill(page, "Search").click()
-        page.wait_for_timeout(600)
+        _wait_globals(page, "true")
         enabled_globals = read_globals(page)
         if enabled_globals["unsloth_chat_tools_enabled"] != "true":
             fail(f"an unsaved chat's edit never reached the defaults: {enabled_globals!r}")
         pill(page, "Search").click()
-        page.wait_for_timeout(600)
+        _wait_globals(page, "false")
         disabled_globals = read_globals(page)
         if disabled_globals["unsloth_chat_tools_enabled"] != "false":
             fail(f"toggling back never reached the defaults: {disabled_globals!r}")
 
         step("pin the installation default every later step compares against")
-        # The install is shared, not fresh: earlier UI tests run on the same Unsloth home and
-        # leave a permission level behind, so the default is set here rather than assumed.
+        # Earlier UI tests share this Unsloth home and leave a permission level behind.
         choose_permission(page, "Approve for me")
         print(
             f"[thread-settings]   defaults now {read_globals(page)!r}",
@@ -401,9 +496,7 @@ def main():
         )
 
         step("seed two saved chats")
-        # Both id shapes are real: chats started in the app keep their `__LOCALID_` id as the row's primary key,
-        # imported and older rows do not. Seeding only uuids is what let this run miss the prefix being read as
-        # "no row yet".
+        # App-created chats keep their `__LOCALID_` id as the row key; imported ones do not. Seed both.
         thread_a = seed_thread(page, token, "Chat A", app_created_thread_id())
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
@@ -432,8 +525,8 @@ def main():
         open_thread(page, thread_b)
         expect_pills(page, "B on first open", False, False, "Approve for me")
 
-        step("set Chat B to Code on, Run automatically")
-        pill(page, "Code").click()
+        step("set Chat B to Tools on, Run automatically")
+        pill(page, "Tools").click()
         choose_permission(page, "Run automatically")
         expect_pills(page, "B after editing", False, True, "Run automatically")
         shoot(page, "02-chat-b-edited")
@@ -454,8 +547,7 @@ def main():
         expect_pills(page, "B after switching back", False, True, "Run automatically")
 
         step("and a sidebar switch, with no reload, does the same")
-        # The reload-free path is the one users take, and the only one where the store still holds the outgoing chat's
-        # values when the incoming snapshot is applied.
+        # Only the reload-free path has the outgoing chat's values in the store when the snapshot applies.
         open_thread_in_page(page, "Chat A")
         expect_pills(page, "A after an in-page switch", True, False, "Ask for approval")
         open_thread_in_page(page, "Chat B")
@@ -463,8 +555,6 @@ def main():
         shoot(page, "03-in-page-switch")
 
         step("leaving a chat for a new one restores the installation defaults in place")
-        # No reload here either, so the defaults have to come from the captured copy rather than from the store being
-        # rebuilt out of localStorage.
         new_chat_in_page(page)
         expect_pills(page, "new chat after an in-page switch", False, False, "Approve for me")
 
@@ -481,9 +571,9 @@ def main():
             fail("the installation defaults changed at some point during the run")
 
         step("a chat edited before it had modes of its own keeps the new defaults")
-        # no chat is open, so this moves the defaults every snapshot-less chat follows.
+        # No chat is open, so this moves the defaults every snapshot-less chat follows.
         pill(page, "Search").click()
-        page.wait_for_timeout(600)
+        _wait_globals(page, "true")
         moved = read_globals(page)
         if moved["unsloth_chat_tools_enabled"] != "true":
             fail(f"a new-chat edit did not reach the defaults: {moved!r}")
@@ -517,7 +607,7 @@ def main():
             if thread.get("settings") is not None:
                 fail(f"thread listing carries a settings snapshot: {thread['id']}")
 
-        check_reasoning_page_navigation(page, token)
+        check_reasoning_transcript(page, token)
 
         if page_errors:
             fail(f"page errors during the run: {page_errors[:3]!r}")
@@ -525,6 +615,7 @@ def main():
         context.close()
         browser.close()
 
+    _watchdog.cancel()
     print("[thread-settings] PASS", flush = True)
 
 

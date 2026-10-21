@@ -8,11 +8,18 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatBytes, useHubModelSearch } from "@/features/hub";
 import { useDebouncedValue, useWheelScrollRef } from "@/hooks";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { Search01Icon } from "@hugeicons/core-free-icons";
+import {
+  CheckmarkCircle02Icon,
+  PinIcon,
+  PinOffIcon,
+  RemoveCircleIcon,
+  Search01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { PipelineType } from "@huggingface/hub";
 import { type ReactElement, useMemo, useState } from "react";
@@ -23,6 +30,9 @@ const EMBEDDING_TASKS: readonly PipelineType[] = [
   "sentence-similarity",
   "feature-extraction",
 ];
+/** Listed first on the empty search, ahead of unsloth's embedders by downloads, where a new
+ *  release would sit at the bottom. The older embeddinggemma-300m follows it from the listing. */
+const PINNED_EMBEDDING_MODELS: readonly string[] = ["unsloth/embeddinggemma-2"];
 type EmbeddingModelPickerProps = {
   value: string;
   /** Fires once, on a pick. Typing is a search, not a selection. */
@@ -31,10 +41,17 @@ type EmbeddingModelPickerProps = {
   defaultModel?: string;
   /** Repos already on disk, for the on-device dot. */
   cachedModels?: ReadonlySet<string>;
+  /** Models pinned to the RAG menu; each row toggles its own pin. */
+  pinnedModels?: readonly string[];
+  onTogglePin?: (model: string) => void;
   accessToken?: string;
   disabled?: boolean;
   /** Held open with a spinner while the pick is resolved and saved. */
   busy?: boolean;
+  /** The selected model is in memory: green tick on the trigger. */
+  loaded?: boolean;
+  /** Something is resident; set to offer eject on trigger hover, as the chat model picker does. */
+  onEject?: () => void;
   className?: string;
 };
 
@@ -83,9 +100,13 @@ export function EmbeddingModelPicker({
   onSelect,
   defaultModel,
   cachedModels,
+  pinnedModels,
+  onTogglePin,
   accessToken,
   disabled,
   busy,
+  loaded,
+  onEject,
   className,
 }: EmbeddingModelPickerProps): ReactElement {
   const t = useT();
@@ -100,6 +121,7 @@ export function EmbeddingModelPicker({
     excludeGguf: true,
     enabled: open && !disabled,
     ownerScope: debouncedQuery ? "all" : "unsloth",
+    priorityIds: PINNED_EMBEDDING_MODELS,
   });
 
   const items = useMemo(() => {
@@ -119,8 +141,12 @@ export function EmbeddingModelPicker({
     if (fallback && !rows.some((row) => row.id === fallback)) {
       rows.push({ id: fallback, sizeBytes: null });
     }
+    // Pinned models stay listed, so they can be unpinned here.
+    for (const pin of pinnedModels ?? []) {
+      if (!rows.some((row) => row.id === pin)) rows.push({ id: pin, sizeBytes: null });
+    }
     return rows;
-  }, [results, value, defaultModel]);
+  }, [results, value, defaultModel, pinnedModels]);
 
   const pick = (model: string) => {
     setOpen(false);
@@ -145,9 +171,39 @@ export function EmbeddingModelPicker({
           data-testid="embedding-model-trigger"
           aria-label={t("settings.general.rag.embeddingModel")}
           disabled={disabled || busy}
-          className={`border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${className ?? ""}`}
+          className={`group/trigger border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border pr-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${onEject ? "pl-2.5" : "pl-3.5"} ${className ?? ""}`}
         >
-          <span className="truncate">{value}</span>
+          {onEject ? (
+            // As on the chat model picker: tick at rest, eject on hover. Keyboard and screen reader
+            // users get the Eject button at the foot of the list; a button can't nest in the trigger.
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <span
+                  aria-hidden={true}
+                  data-eject-hit={true}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEject();
+                  }}
+                  className="-my-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+                >
+                  <HugeiconsIcon
+                    icon={loaded ? CheckmarkCircle02Icon : RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className={`size-3.5 group-hover/trigger:hidden ${loaded ? "text-emerald-500" : "text-muted-foreground"}`}
+                  />
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className="hidden size-3.5 text-red-500 group-hover/trigger:block"
+                  />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">{t("settings.general.rag.ejectModel")}</TooltipContent>
+            </Tooltip>
+          ) : null}
+          <span className="min-w-0 flex-1 truncate text-left">{value}</span>
           {busy ? (
             <Spinner className="size-3.5 shrink-0" />
           ) : (
@@ -202,46 +258,97 @@ export function EmbeddingModelPicker({
               {t("settings.general.rag.noResults")}
             </div>
           ) : (
-            items.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => pick(item.id)}
-                aria-selected={item.id === value}
-                className={`flex w-full items-center justify-between gap-3 rounded-full px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
-                  item.id === value ? "bg-accent font-medium" : ""
-                }`}
-              >
-                <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                  {/* Same green dot the Hub marks an on-device row with. */}
-                  {isOnDevice(cachedModels, item.id) ? (
-                    <span
-                      // A bare span is generic, and ARIA-in-HTML forbids naming
-                      // one, so Safari and Firefox drop the label and the dot goes
-                      // unannounced. Same role the Hub's own on-device dot carries.
-                      role="img"
-                      aria-label={t("settings.general.rag.onDevice")}
-                      className="size-[5px] shrink-0 rounded-full bg-status-success"
-                    />
-                  ) : null}
-                  <span className="truncate font-mono text-ui-11">
-                    {item.id}
-                  </span>
-                  {item.id === defaultModel ? (
-                    <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
-                      {t("settings.general.rag.recommended")}
+            items.map((item) => {
+              const pinned = pinnedModels?.includes(item.id) ?? false;
+              return (
+                <div
+                  key={item.id}
+                  className={`group/row flex items-center rounded-full transition-colors hover:bg-muted ${
+                    item.id === value ? "bg-accent font-medium" : ""
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => pick(item.id)}
+                    aria-selected={item.id === value}
+                    className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-full py-1.5 pl-2.5 text-left"
+                  >
+                    <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                      {/* Same green dot the Hub marks an on-device row with. */}
+                      {isOnDevice(cachedModels, item.id) ? (
+                        <span
+                          // A bare span is generic, and ARIA-in-HTML forbids naming
+                          // one, so Safari and Firefox drop the label and the dot goes
+                          // unannounced. Same role the Hub's own on-device dot carries.
+                          role="img"
+                          aria-label={t("settings.general.rag.onDevice")}
+                          className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
+                        />
+                      ) : null}
+                      <span className="truncate font-mono text-ui-11">
+                        {item.id}
+                      </span>
+                      {item.id === defaultModel ? (
+                        <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
+                          {t("settings.general.rag.recommended")}
+                        </span>
+                      ) : null}
                     </span>
-                  ) : null}
-                </span>
-                {item.sizeBytes ? (
-                  <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
-                    {formatBytes(item.sizeBytes)}
-                  </span>
-                ) : null}
-              </button>
-            ))
+                    {item.sizeBytes ? (
+                      <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
+                        {formatBytes(item.sizeBytes)}
+                      </span>
+                    ) : null}
+                  </button>
+                  {onTogglePin ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild={true}>
+                        <button
+                          type="button"
+                          onClick={() => onTogglePin(item.id)}
+                          aria-pressed={pinned}
+                          aria-label={t(
+                            pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin",
+                          )}
+                          // As on Recents: grey, unpin glyph once pinned. Hover only until then; always shown on touch.
+                          className={`mr-1 ml-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                            pinned ? "" : "opacity-0 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100"
+                          }`}
+                        >
+                          <HugeiconsIcon
+                            icon={pinned ? PinOffIcon : PinIcon}
+                            strokeWidth={1.75}
+                            className="size-3.5"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        {t(pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin")}
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <span className="w-2.5 shrink-0" />
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
+        {onEject ? (
+          <div className="border-t border-border/60 p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onEject();
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-full px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground focus-visible:outline-none"
+            >
+              <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} className="size-3.5" />
+              {t("settings.general.rag.ejectModel")}
+            </button>
+          </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );

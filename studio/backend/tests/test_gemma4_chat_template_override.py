@@ -100,6 +100,8 @@ def _detect_reasoning_flags():
         ("unsloth/gemma-4-E4B-it-GGUF", True),
         ("unsloth/gemma-4-31B-it-GGUF", True),
         ("unsloth/gemma-4-26B-A4B-it-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-12B-it-qat-GGUF", True),
         ("UNSLOTH/GEMMA-4-E2B-IT-GGUF", True),  # case-insensitive
         ("gemma-4-E2B-it-GGUF", True),  # owner-less shorthand -> unsloth/
         ("gemma-4-31B-it-GGUF", True),  # owner-less shorthand -> unsloth/
@@ -108,6 +110,8 @@ def _detect_reasoning_flags():
         ("google/gemma-4-31B-it-GGUF", False),  # not unsloth
         ("unsloth/Qwen3.5-9B-MTP-GGUF", False),
         ("/home/user/models/gemma-4-E2B.Q4_K_M.gguf", False),  # local path
+        ("/scan/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/abc", True),  # repo snapshot
+        ("C:\\scan\\models--google--gemma-4-31B-it-GGUF\\snapshots\\abc", False),
         ("", False),
         (None, False),
     ],
@@ -125,7 +129,12 @@ def test_is_unsloth_gemma4_gguf(model_id, expected):
         ("unsloth/gemma-4-E2B-it-GGUF", True),
         ("unsloth/gemma-4-E4B-it-GGUF", True),
         ("UNSLOTH/GEMMA-4-E4B-IT-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-qat-mobile-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-qat-mobile-GGUF", True),
         ("unsloth/gemma-4-12b-it-GGUF", False),
+        ("unsloth/gemma-4-12B-it-qat-GGUF", False),
         ("unsloth/gemma-4-26B-A4B-it-GGUF", False),
         ("unsloth/gemma-4-31B-it-GGUF", False),
         ("unsloth/gemma-3-4b-it-GGUF", False),
@@ -140,6 +149,19 @@ def test_resolver_returns_edge_template_for_e2b_e4b():
         out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
         assert out == EDGE
         assert out != BUNDLED
+
+
+def test_resolver_routes_qat_repos_by_family():
+    # The QAT repos are named like the plain ones plus "-qat", and the edge
+    # template has to follow them: an E2B/E4B QAT model that gets the standard
+    # template is handed an empty thought block on thinking-off (issue #12708).
+    for mid in ("unsloth/gemma-4-E2B-it-qat-GGUF", "unsloth/gemma-4-E4B-it-qat-GGUF"):
+        out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
+        assert out == EDGE
+    out = resolve_effective_chat_template_override(
+        model_identifier = "unsloth/gemma-4-12B-it-qat-GGUF", user_override = None
+    )
+    assert out == BUNDLED
 
 
 def test_resolver_handles_owner_less_shorthand():
@@ -292,21 +314,49 @@ def test_current_tool_reasoning_survives_a_suppressed_call_result(tpl):
     assert rendered.index("SECRET_THOUGHT") < rendered.index("The duplicate call was not executed.")
 
 
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_model_thinks_again_after_a_tool_result(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    assert _render_with(tpl, messages, enable_thinking = True).endswith(
+        "<tool_response|><|channel>thought\n"
+    )
+    assert _render_with(tpl, messages, enable_thinking = False).endswith("<tool_response|>")
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_closed_tool_turn_reopens_the_model_turn(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[1]["content"] = "Let me check."
+    assert _render_with(tpl, messages, enable_thinking = True).endswith(
+        "Let me check.<turn|>\n<|turn>model\n"
+    )
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_consecutive_assistant_content_keeps_its_separator(tpl):
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
+    assert "first\nsecond<turn|>" in _render_with(tpl, messages)
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_completed_tool_turn_continuation_keeps_its_separator(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[1]["content"] = "Let me check."
+    messages.append({"role": "assistant", "content": "The answer is 42."})
+    assert "Let me check.\nThe answer is 42.<turn|>" in _render_with(tpl, messages)
+
+
 def test_enable_thinking_gates_think_token():
     assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
 
 
-# ── Reload dedup interaction (why the route resolves the effective override) ──
-
-
 def test_already_in_target_state_consistent_with_bundled_override():
-    """The backend dedup compares the incoming override against the live one.
-
-    The route resolves the bundled template up front so a re-load that omits
-    ``chat_template_override`` still matches (no spurious reload), while a raw
-    ``None`` would not.
-    """
+    """the bundled template replaces None before dedup to prevent needless reloads"""
     LlamaCppBackend, GgufLoadIntent = _import_backend()
 
     class _FakeProcess:

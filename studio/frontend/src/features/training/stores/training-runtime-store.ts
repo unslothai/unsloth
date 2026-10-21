@@ -64,6 +64,7 @@ const initialState: TrainingRuntimeState = {
   startRequestId: null,
   startError: null,
   startModelName: null,
+  modelDownloadRepoId: null,
   startDatasetName: null,
   startHfToken: null,
   startProjectName: null,
@@ -79,6 +80,7 @@ const initialState: TrainingRuntimeState = {
   progressPercent: 0,
   elapsedSeconds: null,
   etaSeconds: null,
+  sessionStartStep: 0,
   currentGradNorm: null,
   currentNumTokens: null,
   outputDir: null,
@@ -88,6 +90,7 @@ const initialState: TrainingRuntimeState = {
   evalLossHistory: [],
   resetGeneration: 0,
   stopRequested: false,
+  configureRequest: 0,
   selectedHistoryRunId: null,
   currentRunViewActive: false,
 };
@@ -253,7 +256,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           return state;
         }
         acquired = true;
-        return { isStarting: true, startRequestId };
+        return { isStarting: true, startRequestId, modelDownloadRepoId: null };
       });
       return acquired;
     },
@@ -284,6 +287,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       set((state) => ({
         ...initialState,
         hasHydrated: state.hasHydrated,
+        configureRequest: state.configureRequest,
         lossHistory: [],
         lrHistory: [],
         gradNormHistory: [],
@@ -308,6 +312,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           warnings: [],
           startError: null,
           phase: "configuring",
+          modelDownloadRepoId: null,
           isStarting: false,
           startRequestId,
           sseConnected: false,
@@ -321,6 +326,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           progressPercent: 0,
           elapsedSeconds: null,
           etaSeconds: null,
+          sessionStartStep: 0,
           currentGradNorm: null,
           currentNumTokens: null,
           outputDir: null,
@@ -400,6 +406,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               progressPercent: 0,
               elapsedSeconds: null,
               etaSeconds: null,
+              sessionStartStep: 0,
               currentGradNorm: null,
               currentNumTokens: null,
               outputDir: null,
@@ -458,6 +465,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
             canApplyDetailMetrics && detailEpoch !== null
               ? Math.max(detailEpoch, runtimeState.currentEpoch)
               : runtimeState.currentEpoch,
+          modelDownloadRepoId: payload.details?.model_download_repo_id ?? null,
           outputDir:
             payload.details?.output_dir !== undefined
               ? payload.details.output_dir
@@ -579,6 +587,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               : state.currentEpoch,
           elapsedSeconds: payload.elapsed_seconds,
           etaSeconds: payload.eta_seconds,
+          sessionStartStep: payload.session_start_step ?? state.sessionStartStep,
           currentGradNorm,
           currentNumTokens: payload.num_tokens,
           firstStepReceived: state.firstStepReceived || step > 0,
@@ -619,6 +628,7 @@ if (typeof window !== "undefined") {
     useTrainingRuntimeStore.setState({
       startHfToken: null,
       startModelName: null,
+      modelDownloadRepoId: null,
       startDatasetName: null,
       startProjectName: null,
     });

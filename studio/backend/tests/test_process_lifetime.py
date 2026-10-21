@@ -240,6 +240,176 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
         proc.kill()
 
 
+def _fake_pyav_frame(monkeypatch):
+    import threading
+    import types
+
+    frame = types.ModuleType("av.video.frame")
+    frame._thread_local = threading.local()
+    monkeypatch.setitem(sys.modules, "av.video.frame", frame)
+    return frame
+
+
+def test_a_fork_frees_other_threads_cached_scalers_in_the_parent(monkeypatch):
+    """PyAV 19+ caches a scaler per thread; one freed in a fork child waits on FFmpeg threads it does not have."""
+    import threading
+
+    frame = _fake_pyav_frame(monkeypatch)
+    freed_in = []
+
+    class Scaler:
+        def __del__(self):
+            freed_in.append(os.getpid())
+
+    cached, stop = threading.Event(), threading.Event()
+
+    def video_worker():
+        frame._thread_local.reformatter = Scaler()
+        cached.set()
+        stop.wait()  # an idle pool thread keeps its cache
+
+    worker = threading.Thread(target = video_worker, daemon = True)
+    worker.start()
+    try:
+        assert cached.wait(5), "the worker never cached its scaler"
+        pl._suspend_native_caches()
+        # Freed now, in this process, though the thread that cached it is still alive.
+        assert freed_in == [os.getpid()]
+    finally:
+        pl._resume_native_caches_in_parent()
+        stop.set()
+        worker.join(5)
+    assert type(frame._thread_local) is threading.local
+
+
+def test_nothing_is_cached_into_a_fork_while_the_old_scalers_are_freed(monkeypatch):
+    """Freeing a scaler releases the GIL, so another thread can reformat (and cache) before the fork happens."""
+    frame = _fake_pyav_frame(monkeypatch)
+
+    class Scaler:
+        def __del__(self):
+            # What a reformat on another thread does while this one is in sws_freeContext.
+            frame._thread_local.reformatter = "cached during the fork"
+
+    frame._thread_local.reformatter = Scaler()
+    try:
+        pl._suspend_native_caches()
+        assert getattr(frame._thread_local, "reformatter", None) is None
+    finally:
+        pl._resume_native_caches_in_parent()
+    frame._thread_local.reformatter = "cached after the fork"
+    assert frame._thread_local.reformatter == "cached after the fork"
+
+
+def test_overlapping_forks_keep_caching_off_until_the_last_returns(monkeypatch):
+    import threading
+
+    frame = _fake_pyav_frame(monkeypatch)
+    pl._suspend_native_caches()
+    pl._suspend_native_caches()  # a second thread forking before the first one's fork returned
+    pl._resume_native_caches_in_parent()
+    assert type(frame._thread_local) is pl._UncachedReformatters
+    pl._resume_native_caches_in_parent()
+    assert type(frame._thread_local) is threading.local
+    pl._resume_native_caches_in_parent()  # an unpaired resume cannot go negative
+    pl._suspend_native_caches()
+    assert type(frame._thread_local) is pl._UncachedReformatters
+    pl._resume_native_caches_in_parent()
+
+
+def test_the_hooks_are_registered_at_import(tmp_path):
+    """At import, so forks that bring their own preexec_fn or call os.fork directly are covered too."""
+    if not hasattr(os, "register_at_fork"):
+        pytest.skip("os.register_at_fork is POSIX-only")
+    probe = (
+        "import os, sys\n"
+        "registered = []\n"
+        "os.register_at_fork = lambda **kw: registered.append(sorted((k, v.__name__) for k, v in kw.items()))\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "import utils.process_lifetime\n"
+        "print(registered)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output = True, text = True, timeout = 60)
+    ours = [
+        ("after_in_child", "_resume_native_caches_in_child"),
+        ("after_in_parent", "_resume_native_caches_in_parent"),
+        ("before", "_suspend_native_caches"),
+    ]
+    assert str(ours) in out.stdout, out.stdout + out.stderr
+
+
+_SPAWN_AFTER_REFORMAT = """
+import os, signal, subprocess, sys, threading
+sys.path.insert(0, {backend!r})
+import av, numpy as np
+from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
+
+ready, stop, errors = threading.Event(), threading.Event(), []
+
+
+def video_worker():
+    try:
+        frame = av.VideoFrame.from_ndarray(np.zeros((720, 1280, 3), dtype = np.uint8), format = "rgb24")
+        frame.reformat(format = "yuv420p", width = 640, height = 360)
+    except Exception as exc:
+        errors.append(repr(exc))
+    ready.set()
+    stop.wait()
+
+
+def fork_once(how):
+    if how == "spawner":
+        return spawn_on_lifetime_thread(lambda: subprocess.Popen(["true"], **child_popen_kwargs())).wait()
+    if how == "own_preexec":
+        return subprocess.Popen(["true"], preexec_fn = lambda: None).wait()
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    return os.waitpid(pid, 0)[1]
+
+
+threading.Thread(target = video_worker, daemon = True).start()
+if not ready.wait(30) or errors:
+    print("worker failed", errors, flush = True)
+    os._exit(4)
+box = []
+t = threading.Thread(target = lambda: box.append(fork_once({how!r})), daemon = True)
+t.start()
+t.join(30)
+if t.is_alive():
+    print("hung", flush = True)
+    # The stuck child never reached PDEATHSIG, so it would outlive this script.
+    for tid in os.listdir("/proc/self/task"):
+        try:
+            with open(f"/proc/self/task/{{tid}}/children") as handle:
+                kids = handle.read().split()
+        except OSError:
+            continue
+        for kid in kids:
+            try:
+                os.kill(int(kid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    os._exit(3)
+print("exit", box[0], flush = True)
+"""
+
+
+@pytest.mark.skipif(not IS_LINUX, reason = "the fork-then-Python spawn paths are Linux-only here")
+@pytest.mark.parametrize("how", ["spawner", "own_preexec", "os_fork"])
+def test_a_fork_after_a_video_reformat_still_completes(tmp_path, how):
+    """A pool thread that reformatted one frame used to hang the next fork whose child runs Python before exec."""
+    pytest.importorskip("av")
+    pytest.importorskip("numpy")
+    script = tmp_path / "fork_after_reformat.py"
+    script.write_text(_SPAWN_AFTER_REFORMAT.format(backend = str(_BACKEND), how = how))
+    # The hang is in a child that never execs, so bound the whole scenario from outside.
+    result = subprocess.run(
+        [sys.executable, str(script)], capture_output = True, text = True, timeout = 120
+    )
+    assert result.stdout.strip() == "exit 0", result.stdout + result.stderr
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object")
 def test_windows_job_kills_child_when_parent_dies(tmp_path):
     # Real kill-on-job-close: the parent installs the job and assigns itself, a
@@ -337,7 +507,8 @@ def test_terminate_all_skips_recycled_pid(monkeypatch):
 
 
 @pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
-def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
+@pytest.mark.parametrize("lifetime_thread", [False, True])
+def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path, lifetime_thread):
     # multiprocessing workers can't take a preexec_fn, so the child binds itself
     # via bind_current_process_to_parent_lifetime(). Killing the parent must reap
     # it (the gap reviewers found in adopt_pid alone).
@@ -345,13 +516,17 @@ def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
     mid.write_text(
         "import sys, time, multiprocessing as mp\n"
         f"sys.path.insert(0, {str(_BACKEND)!r})\n"
-        "from utils.process_lifetime import bind_current_process_to_parent_lifetime\n"
-        "def _child():\n"
+        "from utils.process_lifetime import bind_current_process_to_parent_lifetime, spawn_on_lifetime_thread\n"
+        "def _child(ready):\n"
         "    bind_current_process_to_parent_lifetime()\n"
+        "    ready.set()\n"
         "    time.sleep(300)\n"
         "if __name__ == '__main__':\n"
-        "    p = mp.get_context('spawn').Process(target = _child, daemon = True)\n"
-        "    p.start()\n"
+        "    ctx = mp.get_context('spawn')\n"
+        "    ready = ctx.Event()\n"
+        "    p = ctx.Process(target = _child, args = (ready,), daemon = True)\n"
+        f"    {'spawn_on_lifetime_thread(p.start)' if lifetime_thread else 'p.start()'}\n"
+        "    assert ready.wait(10), 'child did not arm its parent-death signal'\n"
         "    print(p.pid, flush = True)\n"
         "    time.sleep(300)\n"
     )

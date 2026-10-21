@@ -10,7 +10,6 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
-# Load studio/install_llama_prebuilt.py the same way the sibling suite does.
 _MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 _SPEC = importlib.util.spec_from_file_location(
     "studio_install_llama_prebuilt_followups", _MODULE_PATH
@@ -87,16 +86,12 @@ def _run_detect_host(
     for p in patches:
         p.start()
     try:
-        # Don't let the host's CUDA_VISIBLE_DEVICES leak in unless the scenario sets it.
         if env is None or "CUDA_VISIBLE_DEVICES" not in env:
             prebuilt_mod.os.environ.pop("CUDA_VISIBLE_DEVICES", None)
         return detect_host()
     finally:
         for p in patches:
             p.stop()
-
-
-# ── install_llama_prebuilt.detect_host(): /proc NVIDIA fallback ──────────────
 
 
 class TestDetectHostProcFallback:
@@ -142,9 +137,6 @@ class TestDetectHostProcFallback:
         assert host.has_physical_nvidia is False
 
 
-# ── install_llama_prebuilt.detect_host(): NVIDIA precedence over ROCm ────────
-
-
 class TestDetectHostNvidiaPrecedence:
     def test_rocm_probe_skipped_when_proc_nvidia_present(self):
         """rocminfo reports gfx1100, but a proc-detected NVIDIA GPU wins."""
@@ -165,9 +157,6 @@ class TestDetectHostNvidiaPrecedence:
         )
         assert host.has_usable_nvidia is False
         assert host.has_rocm is True
-
-
-# ── _apply_host_overrides: forwarded --rocm-gfx / --has-rocm still win ───────
 
 
 class TestOverridesStillWin:
@@ -192,9 +181,6 @@ class TestOverridesStillWin:
         assert overridden.has_rocm is False
 
 
-# ── setup.sh source-level guarantees ────────────────────────────────────────
-
-
 class TestSetupShHardening:
     @pytest.fixture(scope = "class")
     def setup_src(self) -> str:
@@ -204,12 +190,17 @@ class TestSetupShHardening:
         assert "_setup_has_usable_nvidia_gpu()" in setup_src
 
     def test_helper_uses_proc_fallback(self, setup_src):
-        start = setup_src.find("_setup_has_usable_nvidia_gpu()")
+        start = setup_src.find("_setup_has_physical_nvidia_gpu()")
         end = setup_src.find("\n}", start)
         body = setup_src[start:end]
         assert (
             "/proc/driver/nvidia/gpus" in body
-        ), "_setup_has_usable_nvidia_gpu must fall back to /proc/driver/nvidia/gpus"
+        ), "_setup_has_physical_nvidia_gpu must fall back to /proc/driver/nvidia/gpus"
+        start = setup_src.find("_setup_has_usable_nvidia_gpu() {")
+        end = setup_src.find("\n}", start)
+        assert (
+            "_setup_has_physical_nvidia_gpu" in setup_src[start:end]
+        ), "_setup_has_usable_nvidia_gpu must reach the fallback through the physical probe"
 
     def test_gpu_summary_uses_helper(self, setup_src):
         assert "if _setup_has_usable_nvidia_gpu; then" in setup_src
@@ -222,14 +213,17 @@ class TestSetupShHardening:
         assert "timeout 10" in body
         assert "command -v timeout" in body
 
-    def test_cuda_source_build_gated_on_usable_nvidia(self, setup_src):
-        """The nvcc source-build search must be gated on _setup_nvidia_usable."""
-        anchor = setup_src.find('NVCC_PATH=""\n')
-        assert anchor >= 0
-        window = setup_src[anchor : anchor + 700]
+    def test_cuda_source_build_gated_on_a_real_nvidia_gpu(self, setup_src):
+        """nvcc is searched in one function, twice, and a toolkit alone must never select a CUDA build."""
+        anchor = setup_src.find("_select_nvcc() {")
+        assert anchor >= 0, "the nvcc search must be one function, not two copies"
+        window = setup_src[anchor : setup_src.find('_BUILD_DESC="building"', anchor)]
+        assert window.count("_select_nvcc\n") == 2, "one pass for usable, one for masked"
+        assert 'if [ "$_setup_nvidia_usable" = true ]; then' in window
         assert (
-            'if [ "$_setup_nvidia_usable" = true ]' in window
-        ), "CUDA toolkit search must require a usable NVIDIA GPU, not just nvcc"
+            '[ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_physical" = true ]' in window
+        ), "the masked retry must come after ROCm and require a physically present card"
+        assert window.index("hipcc") < window.rindex("_select_nvcc")
 
     def test_nvidia_helper_honours_hidden_cvd(self, setup_src):
         """_setup_has_usable_nvidia_gpu must consult the hidden-CVD helper so CVD ""/-1 suppresses NVIDIA before AMD gating."""
@@ -249,9 +243,7 @@ class TestSetupShHardening:
         ), "ROCm toolkit search must require a detected AMD GPU, not just hipcc"
 
     def test_compute_cap_probe_timeout_wrapped(self, setup_src):
-        # nvidia-smi is now a variable ($_smi_bin), so check the wrapper precedes
-        # the probe rather than matching a literal. The string also appears in a
-        # comment, so scan all occurrences and accept if any is wrapped.
+        # nvidia-smi is $_smi_bin and also appears in a comment, so accept any wrapped occurrence.
         wrapped = False
         start = 0
         while True:
@@ -271,9 +263,6 @@ class TestSetupShHardening:
         assert "_setup_run_smi nvidia-smi" in body
 
 
-# TEST: install.sh -- UNSLOTH_TORCH_BACKEND classified on the final path segment
-
-
 class TestBackendExportLeafClassification:
     """A mirror base path containing "rocm"/"gfx" must not mislabel a cu*/cpu index; classification uses TORCH_INDEX_URL's leaf only."""
 
@@ -284,8 +273,6 @@ class TestBackendExportLeafClassification:
     def test_export_block_uses_leaf(self, install_src):
         anchor = install_src.find("_torch_index_leaf=")
         assert anchor >= 0, "backend export must classify on the final path segment"
-        # Wide enough to clear the provenance check that now sits between the leaf normalisation
-        # and the case arms.
         window = install_src[anchor : anchor + 1600]
         assert 'export UNSLOTH_TORCH_BACKEND="rocm"' in window
         assert 'export UNSLOTH_TORCH_BACKEND="cpu"' in window
@@ -298,7 +285,6 @@ class TestBackendExportLeafClassification:
         src = (PACKAGE_ROOT / "install.sh").read_text(encoding = "utf-8")
         anchor = src.find("_torch_index_leaf=")
         block = src[anchor : src.find("esac", anchor) + 4]
-        # Drive the extracted block with adversarial mirror URLs.
         script.write_text(
             "#!/bin/sh\n"
             'TORCH_INDEX_URL="$1"\n' + block + "\n"
@@ -318,9 +304,6 @@ class TestBackendExportLeafClassification:
                 ["sh", str(script), url], capture_output = True, text = True, timeout = 30
             ).stdout.strip()
             assert out == expected, f"{url} classified as {out!r}, expected {expected!r}"
-
-
-# TEST: CUDA_VISIBLE_DEVICES=""/-1 hides NVIDIA in every usable-GPU helper
 
 
 _STACK_PATH = PACKAGE_ROOT / "studio" / "install_python_stack.py"
@@ -457,10 +440,86 @@ class TestHiddenCvdNotUsable:
         out = self._run_sh_helper(
             tmp_path,
             src,
-            ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_usable_nvidia_gpu"],
+            [
+                "_setup_run_smi",
+                "_setup_cvd_hides_nvidia",
+                "_setup_has_physical_nvidia_gpu",
+                "_setup_has_usable_nvidia_gpu",
+            ],
             cvd,
         )
         assert out == expected
+
+
+class TestSetupShPhysicalNvidiaSurvivesTheMask:
+    """The nvcc source-build search is gated on this probe, so it has to answer true under
+    a mask that makes the usable probe answer false. Gated on usable, a masked host
+    compiled a CPU-only binary and activated it over the tree permanently."""
+
+    @pytest.mark.parametrize("cvd", [None, "", "-1", "0"])
+    def test_the_physical_probe_ignores_every_mask(self, tmp_path, cvd):
+        src = SETUP_SH.read_text(encoding = "utf-8")
+        out = TestHiddenCvdNotUsable()._run_sh_helper(
+            tmp_path,
+            src,
+            ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_physical_nvidia_gpu"],
+            cvd,
+        )
+        assert out == "usable"
+
+
+class TestSetupShSourceBuildBackendChoice:
+    """Masked NVIDIA is tried after ROCm, so it cannot take the build from a visible AMD GPU."""
+
+    @staticmethod
+    def _decide(
+        tmp_path,
+        usable,
+        physical,
+        amd,
+        hipcc = "false",
+        nvcc = "true",
+    ):
+        import subprocess as sp
+
+        src = SETUP_SH.read_text(encoding = "utf-8")
+        start = src.index("_select_nvcc() {")
+        end = src.index('_BUILD_DESC="building"', start)
+        body = src[start:end]
+        script = tmp_path / "decide.sh"
+        script.write_text(
+            "#!/bin/bash\n"
+            f"_setup_nvidia_usable={usable}\n"
+            f"_setup_nvidia_physical={physical}\n"
+            f"_setup_amd_detected={amd}\n"
+            'GPU_BACKEND=""\nNVCC_PATH=""\nROCM_HIPCC=""\n'
+            f'command() {{ if [ "$2" = nvcc ]; then {nvcc}; '
+            f'elif [ "$2" = hipcc ]; then {hipcc}; else return 1; fi; }}\n'
+            "ls() { return 1; }\n"
+            f"{body}\n"
+            'echo "${GPU_BACKEND:-cpu}"\n'
+        )
+        return sp.run(
+            ["bash", str(script)], capture_output = True, text = True, timeout = 30
+        ).stdout.strip()
+
+    @pytest.mark.parametrize(
+        "usable, physical, amd, hipcc, expected",
+        [
+            ("true", "true", "false", "false", "cuda"),  # visible NVIDIA, no AMD
+            ("true", "true", "true", "true", "cuda"),  # visible NVIDIA wins over AMD
+            ("false", "true", "false", "false", "cuda"),  # masked NVIDIA beats a CPU build
+            ("false", "true", "true", "true", "rocm"),  # masked NVIDIA yields to a usable AMD
+            ("false", "true", "true", "false", "cuda"),  # ... but not when ROCm cannot build
+            ("false", "false", "true", "true", "rocm"),  # AMD only
+            ("false", "false", "false", "false", "cpu"),  # a toolkit with no GPU is refused
+        ],
+    )
+    def test_the_source_build_backend(self, tmp_path, usable, physical, amd, hipcc, expected):
+        assert self._decide(tmp_path, usable, physical, amd, hipcc) == expected
+
+    def test_a_toolkit_without_any_gpu_never_selects_cuda(self, tmp_path):
+        assert self._decide(tmp_path, "false", "false", "false", nvcc = "true") == "cpu"
 
 
 class TestRedactInstallOutput:
@@ -494,7 +553,6 @@ class TestRedactInstallOutput:
         assert out == "https://host/whl/cu128?token=<redacted>#<redacted> done"
 
     def test_bare_hash_comment_untouched(self):
-        # The fragment redaction is URL-anchored: a shell comment in tool output survives.
         assert (
             stack_mod._redact_install_output("# retrying with --no-cache-dir")
             == "# retrying with --no-cache-dir"

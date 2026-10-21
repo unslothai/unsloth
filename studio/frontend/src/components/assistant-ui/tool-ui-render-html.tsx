@@ -3,11 +3,7 @@
 
 "use client";
 
-import {
-  ArtifactCard,
-  useChatArtifactsStore,
-  useSelectedChatArtifact,
-} from "@/features/chat";
+import { ArtifactCard } from "@/features/chat";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
@@ -15,7 +11,7 @@ import {
 } from "@assistant-ui/react";
 import { BrowserIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useEffect } from "react";
+import { memo } from "react";
 import { isToolCallRunning } from "./tool-arg-text";
 
 // Per Context7 assistant-ui docs: tool UIs read streaming args via
@@ -38,7 +34,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const code = typeof parsedArgs.code === "string" ? parsedArgs.code : "";
   const hasCode = code.trim().length > 0;
   const title =
-    typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML canvas";
+    typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML preview";
   const isRunning = isToolCallRunning(status);
   const codeIsStreaming = propStatus.code === "streaming";
 
@@ -50,7 +46,6 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
     result.startsWith("Error:")
       ? result
       : null;
-  const messageId = useAuiState(({ message }) => message.id) ?? null;
   const isMessageRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
@@ -68,32 +63,6 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const shouldAutoOpenArtifact =
     (isLiveGeneratingArtifact && (hasCode || isRunning || codeIsStreaming)) ||
     (hasCode && messageCreatedThisSession);
-  const selectedArtifact = useSelectedChatArtifact();
-  const closeArtifactSurface = useChatArtifactsStore(
-    (state) => state.closeArtifactSurface,
-  );
-
-  useEffect(() => {
-    if (!errorText) {
-      return;
-    }
-    if (!(messageId && toolCallId)) {
-      return;
-    }
-    if (selectedArtifact?.sourceToolCallId !== toolCallId) {
-      return;
-    }
-    if (selectedArtifact?.sourceMessageId !== messageId) {
-      return;
-    }
-    closeArtifactSurface();
-  }, [
-    closeArtifactSurface,
-    errorText,
-    messageId,
-    selectedArtifact,
-    toolCallId,
-  ]);
 
   if (hasCode || (isLiveGeneratingArtifact && !errorText)) {
     return (
@@ -109,7 +78,7 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   }
 
   return (
-    <div className="relative my-2 flex min-h-[52px] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">
+    <div className="relative my-2 flex min-h-[calc(52px*var(--ui-space-scale,1))] w-full max-w-md items-center overflow-hidden rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-left dark:bg-muted/10">
       <div className="relative z-10 flex min-w-0 flex-1 items-center gap-2.5">
         <HugeiconsIcon
           icon={BrowserIcon}
@@ -119,16 +88,16 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
         <span className="grid min-w-0 flex-1 gap-1">
           <span className="truncate text-sm font-medium leading-tight text-foreground">
             {errorText
-              ? "Canvas error"
+              ? "HTML preview error"
               : isStaleGeneratingArtifact
-                ? "Canvas interrupted"
-                : "Canvas unavailable"}
+                ? "HTML preview interrupted"
+                : "HTML preview unavailable"}
           </span>
           <span className="truncate text-ui-11 leading-none text-muted-foreground">
             {errorText ??
               (isStaleGeneratingArtifact
                 ? "Refresh stopped this preview"
-                : "HTML canvas")}
+                : "HTML preview")}
           </span>
         </span>
       </div>

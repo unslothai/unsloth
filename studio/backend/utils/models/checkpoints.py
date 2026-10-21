@@ -3,12 +3,16 @@
 
 """Checkpoint scanning utilities for discovering training runs and checkpoints."""
 
+from __future__ import annotations
+
 import json
+import os
 import re
 import structlog
 from loggers import get_logger
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+from hub.utils.hf_tokens import HfTokenArg
 from storage.studio_db import get_connection
 from utils.training_runs import (
     build_default_output_dir_name,
@@ -16,6 +20,7 @@ from utils.training_runs import (
     model_segment_from_default_output_dir_name,
 )
 from utils.paths import outputs_root, resolve_output_dir
+from utils.paths.storage_roots import own_entry, within_account
 
 logger = get_logger(__name__)
 
@@ -126,7 +131,7 @@ def _infer_base_model_from_history(checkpoint_dir: Path) -> Optional[str]:
 def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     """Read loss from the last log_history entry of trainer_state.json, or None."""
     trainer_state = checkpoint_path / "trainer_state.json"
-    if not trainer_state.exists():
+    if not own_entry(trainer_state):
         return None
     try:
         with open(trainer_state, encoding = "utf-8-sig") as f:
@@ -139,19 +144,121 @@ def _read_checkpoint_loss(checkpoint_path: Path) -> Optional[float]:
     return None
 
 
+def parse_adapter_features(
+    adapter_path: str, probe_weights: bool = True
+) -> Optional[Dict[str, Optional[bool]]]:
+    """Adapter feature flags (PEFT or MLX config) for the export UI; None without a config.
+
+    ``full_state`` is tri-state: no config marker proves absence (PEFT saves embedding state only
+    as weight keys), so a negative needs the weight-header probe and stays None without it.
+    """
+    cfg_path = os.path.join(adapter_path, "adapter_config.json")
+    try:
+        with open(cfg_path, "r", encoding = "utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+
+    def _flag(value):
+        return isinstance(value, bool) and value
+
+    def _filled(value):
+        return isinstance(value, (dict, list)) and len(value) > 0
+
+    full_state: Optional[bool] = _filled(cfg.get("full_state_modules")) or _filled(
+        cfg.get("modules_to_save")
+    )
+    if not full_state:
+        full_state = None
+        if probe_weights:
+            for weights, is_adapter_key in (
+                (
+                    os.path.join(adapter_path, "adapter_model.safetensors"),
+                    lambda key: ".lora_" in key,
+                ),
+                (
+                    os.path.join(adapter_path, "adapters.safetensors"),
+                    lambda key: key.endswith((".lora_a", ".lora_b", ".m")),
+                ),
+            ):
+                if not os.path.exists(weights):
+                    continue
+                try:
+                    from safetensors import safe_open
+                    with safe_open(weights, framework = "numpy") as f:
+                        full_state = any(not is_adapter_key(key) for key in f.keys())
+                except Exception:
+                    full_state = None
+                break
+    return {
+        "dora": _flag(cfg.get("use_dora")) or str(cfg.get("fine_tune_type", "")).lower() == "dora",
+        "full_state": full_state,
+        "moe_target_parameters": _filled(cfg.get("target_parameters")),
+        "non_uniform": _filled(cfg.get("rank_pattern"))
+        or _filled(cfg.get("alpha_pattern"))
+        or _filled(cfg.get("unsloth_mlx_lora_module_ranks"))
+        or _filled(cfg.get("unsloth_mlx_lora_module_scales")),
+    }
+
+
+# Both probe every outputs folder, so an unreadable one is skipped, not fatal to the scan.
+def _has_own_model(path: Path) -> bool:
+    try:
+        return own_entry(path / "config.json") or own_entry(path / "adapter_config.json")
+    except OSError:
+        return False
+
+
+# unsloth.models.decision.is_decision_checkpoint's Laya rule; Clef folders carry config.json or adapter_config.json.
+_LAYA_FILES = ("rl_agent_config.json", "model.safetensors")
+_LAYA_DIRS = ("encoder", "tokenizer")
+
+
+def _is_own_laya_run(path: Path) -> bool:
+    try:
+        return all(
+            own_entry(path / name) and (path / name).is_file() for name in _LAYA_FILES
+        ) and all((path / name).is_dir() for name in _LAYA_DIRS)
+    except OSError:
+        return False
+
+
+def _checkpoint_dirs(run_dir: Path, include_decision: bool = False) -> List[Path]:
+    try:
+        return sorted(
+            (
+                sub
+                for sub in run_dir.iterdir()
+                if sub.is_dir()
+                and sub.name.startswith("checkpoint-")
+                and within_account(sub)
+                and (_has_own_model(sub) or (include_decision and _is_own_laya_run(sub)))
+            ),
+            key = _checkpoint_sort_key,
+        )
+    except OSError:
+        return []
+
+
 def scan_checkpoints(
-    outputs_dir: str = str(outputs_root()),
+    outputs_dir: str | None = None, include_decision: bool = False
 ) -> List[Tuple[str, List[Tuple[str, str, Optional[float]]], dict]]:
     """Scan outputs folder for training runs and their checkpoints.
+
+    ``include_decision`` also lists Laya decision runs (GGUF export only; chat cannot load them).
 
     Returns:
         [(model_name, [(display_name, checkpoint_path, loss), ...], metadata), ...]
         metadata keys (optional): base_model, peft_type, lora_rank.
-        First checkpoint entry is the main adapter; its loss mirrors the latest
-        (highest-step) intermediate checkpoint. Numbered checkpoints are sorted
+        First entry is the main adapter (loss mirrors the highest-step checkpoint)
+        only when the run has a final save. Numbered checkpoints are sorted
         by numeric step descending; non-numbered checkpoint-* dirs keep the
         previous lexicographic directory order.
     """
+    if outputs_dir is None:
+        outputs_dir = str(outputs_root())
     models = []
     outputs_path = resolve_output_dir(outputs_dir)
 
@@ -163,27 +270,43 @@ def scan_checkpoints(
         for item in outputs_path.iterdir():
             if not item.is_dir():
                 continue
-
-            config_file = item / "config.json"
-            adapter_config = item / "adapter_config.json"
-
-            if not (config_file.exists() or adapter_config.exists()):
+            if not within_account(item):
                 continue
+
+            has_root_model = _has_own_model(item) or (include_decision and _is_own_laya_run(item))
+            valid_checkpoints = _checkpoint_dirs(item, include_decision)
+            # A cancelled or crashed run has no final save but can still have checkpoints.
+            if not has_root_model and not valid_checkpoints:
+                continue
+
+            meta_dir = item if has_root_model else valid_checkpoints[0]
+            config_file = meta_dir / "config.json"
+            adapter_config = meta_dir / "adapter_config.json"
+            laya_config = meta_dir / "rl_agent_config.json"
 
             # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
             try:
-                if adapter_config.exists():
+                if own_entry(adapter_config):
                     cfg = json.loads(adapter_config.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("base_model_name_or_path")
                     metadata["peft_type"] = cfg.get("peft_type")
                     metadata["lora_rank"] = cfg.get("r")
-                elif config_file.exists():
+                    metadata["adapter_features"] = parse_adapter_features(
+                        str(meta_dir), probe_weights = False
+                    )
+                elif own_entry(config_file):
                     cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
+                elif include_decision and own_entry(laya_config):
+                    laya = json.loads(laya_config.read_text(encoding = "utf-8-sig"))
+                    training = (
+                        laya.get("training") if isinstance(laya.get("training"), dict) else {}
+                    )
+                    metadata["base_model"] = training.get("base") or laya.get("encoder")
 
                 # Detect BNB quantization from config.json
-                if config_file.exists():
+                if own_entry(config_file):
                     if "cfg" not in dir():
                         cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     quant_cfg = cfg.get("quantization_config")
@@ -210,37 +333,12 @@ def scan_checkpoints(
                     else:
                         metadata["base_model"] = name_part
 
-            # Valid training run.
-            checkpoints = []
-
-            # Main adapter placeholder — loss filled from the last checkpoint below.
-            checkpoints.append((item.name, str(item), None))
-
-            # Scan for intermediate checkpoints (checkpoint-N subdirs).
-            valid_checkpoints = []
-            for sub in item.iterdir():
-                if not sub.is_dir() or not sub.name.startswith("checkpoint-"):
-                    continue
-                sub_config = sub / "config.json"
-                sub_adapter = sub / "adapter_config.json"
-                if sub_config.exists() or sub_adapter.exists():
-                    valid_checkpoints.append(sub)
-
-            intermediate_checkpoints = []
-            for sub in sorted(valid_checkpoints, key = _checkpoint_sort_key):
-                loss = _read_checkpoint_loss(sub)
-                intermediate_checkpoints.append((sub.name, str(sub), loss))
-
-            checkpoints.extend(intermediate_checkpoints)
-
-            # Assign the latest checkpoint's loss to the main adapter entry.
-            if intermediate_checkpoints:
-                last_checkpoint_loss = intermediate_checkpoints[0][2]
-                checkpoints[0] = (
-                    checkpoints[0][0],
-                    checkpoints[0][1],
-                    last_checkpoint_loss,
-                )
+            checkpoints = [
+                (sub.name, str(sub), _read_checkpoint_loss(sub)) for sub in valid_checkpoints
+            ]
+            if has_root_model:
+                latest_loss = checkpoints[0][2] if checkpoints else None
+                checkpoints.insert(0, (item.name, str(item), latest_loss))
 
             models.append((item.name, checkpoints, metadata))
             logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
@@ -258,6 +356,57 @@ def scan_checkpoints(
 
 def _is_model_dir(path: Path) -> bool:
     return (path / "config.json").exists() or (path / "adapter_config.json").exists()
+
+
+def is_unquantized_full_model_dir(path: str | Path) -> bool:
+    model_dir = Path(path)
+    try:
+        if (model_dir / "adapter_config.json").exists():
+            return False
+        config = json.loads((model_dir / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def _hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
+    """config.json of a Hub model repo; None for an adapter repo or on any lookup failure."""
+    try:
+        from huggingface_hub import file_exists, hf_hub_download
+
+        # An adapter repo carries a base config.json too, so a remote LoRA would read as a full model.
+        if file_exists(repo_id, "adapter_config.json", token = hf_token):
+            return None
+        path = hf_hub_download(repo_id, "config.json", token = hf_token)
+        return json.loads(Path(path).read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+
+
+def is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
+    """Whether a local or Hub checkpoint is an unquantized full model.
+
+    False when unsure, so the caller keeps the 4-bit load that used to fit."""
+    try:
+        is_local = Path(checkpoint_path).exists()
+    except OSError:
+        return False
+    if is_local:
+        return is_unquantized_full_model_dir(checkpoint_path)
+    config = _hub_model_config(checkpoint_path, hf_token)
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
+def is_full_finetune_output(path: Optional[str]) -> bool:
+    if not path:
+        return False
+    try:
+        # Below 3.13 a symlink loop comes back as RuntimeError, not OSError, whatever
+        # `strict` says, and both callers run this outside any handler.
+        Path(path).resolve().relative_to(outputs_root().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return is_unquantized_full_model_dir(path)
 
 
 def has_preview_model(output_dir: Optional[str]) -> bool:
@@ -298,7 +447,9 @@ def resolve_preview_checkpoint(run: str, checkpoint: Optional[str] = None) -> Pa
     return path
 
 
-def list_preview_targets(outputs_dir: str = str(outputs_root())) -> List[dict]:
+def list_preview_targets(outputs_dir: str | None = None) -> List[dict]:
+    if outputs_dir is None:
+        outputs_dir = str(outputs_root())
     targets: List[dict] = []
     for run_name, checkpoints, metadata in scan_checkpoints(outputs_dir):
         for display_name, path, loss in checkpoints:

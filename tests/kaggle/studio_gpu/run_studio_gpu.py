@@ -1,63 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Unsloth Studio, end to end, on a real CUDA GPU.
-
-Unsloth has no CUDA coverage anywhere in CI. Every Unsloth workflow in this
-repo runs on ``ubuntu-latest``, ``macos-15`` or ``windows-latest``; macOS
-gives Metal some hardware, and the CUDA path is exercised by nothing. The
-existing inference smoke deliberately uses a 270M GGUF *because* it has to
-decode on a CPU. This payload is the other half: it runs Unsloth on a Kaggle
-T4 and asserts the three things that only a GPU can answer.
-
-What it asserts
----------------
-**A. GGUF inference is on the GPU, and tool calling works.** A model is
-loaded with an explicit manual GPU-layer pin and then the payload tries three
-independent ways to catch a CPU fallback -- process-level VRAM from
-nvidia-smi, llama.cpp's own offload line, and device-wide VRAM growth. See
-``gpu_assert.offload_verdict``: "the model returned text" is not evidence,
-and no evidence at all is a failure rather than a pass. Then tool calling,
-through ``/v1/chat/completions`` with ``tool_choice: "required"``, asserting
-the model came back with ``finish_reason == "tool_calls"`` and a parseable
-argument object.
-
-**B. A LoRA training run finishes and leaves an adapter.** Started through
-``POST /api/train/start`` -- the same call Unsloth's own Train button makes --
-and judged on three things, none of which is the phase alone: the run reaches
-phase ``completed``, its ``metric_history`` holds a loss for every step it
-claimed to take, and ``adapter_model.safetensors`` exists on disk above a size
-floor. A run that formats its dataset down to zero rows reaches ``completed``
-too, which is why the step count is checked; a save that silently no-ops
-leaves a config and no weights, which is why the file is checked.
-
-**C. GGUF export runs against a CUDA llama.cpp build and the result loads.**
-The adapter from B is exported to GGUF, the output is checked for the GGUF
-magic rather than merely for existence, and then it is loaded back into
-Unsloth and asked to generate. "It loads" is asserted by loading it, not by
-its file size.
-
-Then the repo's existing ``tests/studio/playwright_chat_ui.py`` is driven
-against the same server, so the browser path is exercised by the driver that
-already exists rather than by new automation. It runs LAST because its final
-phase clicks "Stop server" and asserts the port closes.
-
-Kaggle specifics
-----------------
-``/kaggle/working`` is 19.5 GB and is also what ``kernels output`` ships
-back; the home directory and ``/tmp`` share a ~1 TB overlay. So
-``UNSLOTH_STUDIO_HOME``, the HF cache, the llama.cpp build and every model
-live on the overlay, and only the evidence -- kilobytes of JSON, a log tail
-and screenshots -- is ever written under ``/kaggle/working``.
-
-No credential is printed. The bootstrap password is read from Unsloth's own
-auth directory, handed to ``/api/auth/login``, and never logged, never
-returned, and never written to the report or the evidence bundle.
-
-Usage:
-    python run_studio_gpu.py --outdir /kaggle/working/studio_gpu_out \\
-        --repo-root ~/unsloth --studio-home ~/studio_home
-"""
+"""Unsloth Studio end to end on a real CUDA GPU: GGUF offload, LoRA training, and GGUF export."""
 
 from __future__ import annotations
 
@@ -86,6 +30,7 @@ from gpu_assert import (  # noqa: E402
     is_cuda_install,
     offload_verdict,
     parse_compute_apps,
+    listed_pids,
 )
 from studio_client import (  # noqa: E402
     Studio,
@@ -103,43 +48,31 @@ from studio_client import (  # noqa: E402
 RESULT_PREFIX = "T4_SMOKE_REPORT "
 EVIDENCE_PREFIX = "STUDIO_GPU_EVIDENCE_B64 "
 
-# Base64 characters per printed line. Large enough that a multi-megabyte
-# bundle is not tens of thousands of lines, small enough that no single line
-# is unreasonable for a notebook cell output to carry.
 EVIDENCE_CHUNK = 4096
 
-# Ceiling on the evidence bundle. It travels back inside the executed
-# notebook's cell output, which is the only channel the shared launcher
-# collects, so it competes with the notebook itself for the download.
+# Evidence travels inside notebook cell output, the only channel the launcher collects.
 MAX_EVIDENCE_BYTES = 2_500_000
 
-# Last resort when the redacted logs alone are over the cap: keep the tail of
-# each, which is where a failure's traceback is, rather than dropping them.
 MAX_LOG_TAIL_BYTES = 400_000
 
-# Free space the payload refuses to start without. A CUDA llama.cpp bundle,
-# a torch stack, two models and a merged 16-bit export do not fit in much
-# less, and running out halfway produces a failure that reads like a code bug.
+# Running out of disk halfway produces a failure that reads like a code bug.
 MIN_FREE_GB = 25.0
 
-# The CUDA llama.cpp bundle is a large download and an extraction, and it runs
-# once per session before anything needs it. Generous, because the cost of
-# being too tight is a red that reads like a selection bug.
 LLAMA_CPP_INSTALL_TIMEOUT_S = 900.0
-# How long to let VRAM fall after an unload before calling it the baseline.
-# 12 x 2.5s bounds the wait at 30s, which is well past the ~3s a llama-server
-# takes to exit on the models this harness loads, without stalling the run if
-# something else on the card is holding memory.
+# The UI timeout measures silence, so pass the driver a total instead. ~6x a healthy pass,
+# inside the 120 min job; SIGKILL would lose the driver's stderr.
+UI_DRIVER_TOTAL_TIMEOUT_S = 3600.0
+UI_DRIVER_PROC_TIMEOUT_S = UI_DRIVER_TOTAL_TIMEOUT_S + 300.0
+# 12 x 2.5s bounds the wait at 30s, well past a llama-server exit.
 VRAM_SETTLE_POLL_S = 2.5
 VRAM_SETTLE_SAMPLES = 12
-# Driver readings jitter by a few MiB between samples; only a real drop counts.
 VRAM_SETTLE_TOLERANCE_MIB = 16.0
+# One quiet interval may be a stall, which would leave the previous model in the baseline.
+VRAM_SETTLE_QUIET_POLLS = 2
 
 CANARY = "__UNSLOTH_STUDIO__!!!"
 
-# The tool the model is asked to call. Deliberately trivial and deliberately
-# not answerable from parametric knowledge, so "it replied with prose" and
-# "it emitted a tool call" cannot be confused.
+# Not answerable from parametric knowledge, so prose and a tool call cannot be confused.
 WEATHER_TOOL = {
     "type": "function",
     "function": {
@@ -159,26 +92,38 @@ def log(msg: str) -> None:
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
-    """Run a command, answering an absent binary the way a failure answers.
-
-    Every caller here judges on ``returncode``, and a box with no nvidia-smi
-    at all -- a session Kaggle handed no driver -- otherwise raised
-    FileNotFoundError out of ``environment()`` inside ``finish()``, so the run
-    ended with a traceback and no report instead of a preflight that says
-    there is no GPU.
-    """
+    """Run a command; a missing binary returns a 127 CompletedProcess instead of raising OSError."""
     try:
         return subprocess.run(cmd, capture_output = True, text = True, **kw)
     except OSError as exc:
         return subprocess.CompletedProcess(cmd, 127, "", f"{type(exc).__name__}: {exc}")
 
 
+def visible_device_selector() -> str | None:
+    """CUDA_VISIBLE_DEVICES as an nvidia-smi -i selector; nvidia-smi itself ignores that variable."""
+    raw = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return None
+    return ",".join(part.strip() for part in raw.split(",") if part.strip())
+
+
+def _scoped(cmd: list[str]) -> list[str] | None:
+    """`cmd` restricted to the visible cards, or None when none are visible at all."""
+    selector = visible_device_selector()
+    if selector is None:
+        return cmd
+    if not selector:
+        # An empty CUDA_VISIBLE_DEVICES means no card is visible, not every card.
+        return None
+    return [cmd[0], "-i", selector, *cmd[1:]]
+
+
 def nvidia_used_mib() -> float | None:
-    """Device-wide VRAM in use, summed over every visible GPU."""
-    proc = run(
-        ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
-        timeout = 60,
-    )
+    """VRAM in use, summed over the cards this process can actually see."""
+    cmd = _scoped(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"])
+    if cmd is None:
+        return None
+    proc = run(cmd, timeout = 60)
     if proc.returncode != 0:
         return None
     total = 0.0
@@ -195,34 +140,21 @@ def nvidia_used_mib() -> float | None:
     return total if seen else None
 
 
+def card_is_shared(apps_before: dict[int, int] | None, listed_before: set[int] | None) -> bool:
+    """True if a pid was on the card before launch; a device-wide VRAM delta then is not this run's."""
+    return bool(apps_before) or bool(listed_before)
+
+
 def cli_run_gpu_failure(
     apps_before: dict[int, int] | None,
     apps_after: dict[int, int] | None,
     baseline: float | None,
     settled: float | None,
+    listed_before: set[int] | None = None,
+    listed_after: set[int] | None = None,
 ) -> tuple[str | None, dict]:
-    """Did a model actually reach the card? Returns (failure or None, detail).
-
-    WHICH RULER, and this one has now been wrong in both directions.
-
-    The device total is a SHARED reading. On kernel
-    unsloth-probe-studio-full2-815a0c it was sampled too early and read 0.0 MiB
-    on a server that did have the weights; the fix was to sample after a served
-    completion. On unsloth-probe-full-concurrent-417238 it read **-182.0 MiB**
-    -- and the same report carried `compute_apps {"6841": 2628}`, so the model
-    was on the card and 2.6 GB of it. That run was the first with
-    --studio-concurrent, so a training leg shared the card and freed memory
-    inside the window. A shared counter cannot attribute, and subtracting two of
-    its samples is not a measurement of THIS process.
-
-    So the verdict comes off the pids that APPEARED during the window, which is
-    per-process and immune to a co-tenant. A pid already on the card before the
-    launch is excluded, or a co-tenant holding gigabytes would satisfy the claim
-    on its own -- which is the same failure in a new costume.
-
-    The device delta is still recorded, and is still the fallback for an
-    nvidia-smi that answers a total but cannot enumerate processes.
-    """
+    """Judge the card by pids that appeared during the window; the shared device total is only a
+    fallback."""
     detail: dict = {}
     if baseline is not None and settled is not None:
         detail["vram_delta_mib"] = round(settled - baseline, 1)
@@ -230,6 +162,13 @@ def cli_run_gpu_failure(
     if apps_after is None:
         if baseline is None or settled is None:
             return "nvidia-smi did not answer, so GPU use is unmeasured", detail
+        if card_is_shared(apps_before, listed_before):
+            detail["card_shared_before_launch"] = True
+            return (
+                "nvidia-smi could not attribute any process, and another was already on "
+                "the card before the launch -- the device total is a shared counter, so "
+                "GPU use is unmeasured rather than proven"
+            ), detail
         if settled - baseline < 200.0:
             return (
                 f"device VRAM grew by {settled - baseline:.1f} MiB across the "
@@ -239,11 +178,49 @@ def cli_run_gpu_failure(
             ), detail
         return None, detail
 
-    before = apps_before or {}
+    # Every pid present before the launch is excluded, attributed or not.
+    before = set(apps_before or {}) | set(listed_before or ())
     appeared = {pid: mib for pid, mib in apps_after.items() if pid not in before}
     detail["compute_apps_appeared"] = appeared
     grew = sum(appeared.values())
     detail["process_vram_mib"] = grew
+    # A new pid without a figure: defer to the device-wide delta.
+    if listed_before is not None and listed_after is not None:
+        appeared_unattributed = sorted((listed_after - set(listed_before)) - set(apps_after))
+        if appeared_unattributed:
+            detail["compute_apps_unattributed"] = appeared_unattributed
+            if baseline is None or settled is None:
+                return (
+                    "nvidia-smi listed a new process but could not say how much "
+                    "memory it holds, and gave no device total either, so GPU use "
+                    "is unmeasured"
+                ), detail
+            if card_is_shared(apps_before, listed_before):
+                detail["card_shared_before_launch"] = True
+                return (
+                    f"nvidia-smi could not attribute the new process "
+                    f"{appeared_unattributed}, and another was already on the card "
+                    f"before the launch -- the device total is a shared counter, so "
+                    f"GPU use is unmeasured rather than proven"
+                ), detail
+            if settled - baseline < 200.0:
+                if grew >= 200.0:
+                    # The device total cannot overrule a direct per-process reading;
+                    # this is a hedge, not a pass.
+                    return (
+                        f"the device total moved {settled - baseline:.1f} MiB while "
+                        f"{sorted(appeared)} appeared holding {grew} MiB and "
+                        f"{appeared_unattributed} could not be attributed at all -- the "
+                        f"two rulers disagree, so GPU use is unmeasured rather than "
+                        f"disproven"
+                    ), detail
+                return (
+                    f"device VRAM grew by {settled - baseline:.1f} MiB across the "
+                    f"launch and a served completion, and nvidia-smi could not "
+                    f"attribute the new process {appeared_unattributed} -- "
+                    f"`unsloth run` served from the CPU"
+                ), detail
+            return None, detail
     if grew < 200.0:
         return (
             f"no process appeared on the GPU holding more than {grew} MiB "
@@ -254,22 +231,59 @@ def cli_run_gpu_failure(
     return None, detail
 
 
-def nvidia_compute_apps() -> dict[int, int] | None:
-    proc = run(
-        ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"],
-        timeout = 60,
+def nvidia_compute_apps_listing() -> tuple[dict[int, int], set[int]] | None:
+    """Returns (pids with figures, all listed pids) or None; a listed pid with no figure is on the card."""
+    cmd = _scoped(
+        ["nvidia-smi", "--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"]
     )
+    if cmd is None:
+        return None
+    proc = run(cmd, timeout = 60)
     if proc.returncode != 0:
         return None
-    return parse_compute_apps(proc.stdout)
+    return parse_compute_apps(proc.stdout), listed_pids(proc.stdout)
+
+
+def attributed_apps(listing: tuple[dict[int, int], set[int]] | None) -> dict[int, int] | None:
+    """The readable figures from a listing, or None when it cannot attribute at all."""
+    if listing is None:
+        return None
+    apps, listed = listing
+    if not apps and listed:
+        # WDDM and unified-memory parts report [N/A] for every process.
+        return None
+    return apps
+
+
+def nvidia_compute_apps() -> dict[int, int] | None:
+    return attributed_apps(nvidia_compute_apps_listing())
+
+
+def wait_for_card_to_settle() -> None:
+    """Wait for the stopped server's pids to exit and VRAM to hold still, so the baseline is not
+    inflated."""
+    listing = nvidia_compute_apps_listing()
+    resident = listing[1] if listing else set()
+    previous_mib = nvidia_used_mib()
+    quiet = 0
+    for _ in range(VRAM_SETTLE_SAMPLES):
+        time.sleep(VRAM_SETTLE_POLL_S)
+        listing = nvidia_compute_apps_listing()
+        current_mib = nvidia_used_mib()
+        fell = (
+            previous_mib is not None
+            and current_mib is not None
+            and current_mib < previous_mib - VRAM_SETTLE_TOLERANCE_MIB
+        )
+        previous_mib = current_mib
+        quiet = 0 if fell else quiet + 1
+        still_there = resident & (listing[1] if listing else set())
+        if quiet >= VRAM_SETTLE_QUIET_POLLS and not still_there:
+            return
 
 
 def visible_device_indices() -> list[int] | None:
-    """The physical card indices CUDA_VISIBLE_DEVICES exposes, or None if unset.
-
-    An empty string is a deliberate "no cards", which is different from unset
-    and must not read as "all of them".
-    """
+    """Physical indices CUDA_VISIBLE_DEVICES exposes, None if unset; an empty value means no cards."""
     raw = os.environ.get("CUDA_VISIBLE_DEVICES")
     if raw is None:
         return None
@@ -281,29 +295,13 @@ def visible_device_indices() -> list[int] | None:
         try:
             out.append(int(part))
         except ValueError:
-            # A UUID form (GPU-xxxx) selects a card this cannot map to an
-            # nvidia-smi row index. Returning None would report every card as
-            # usable, which is the failure being fixed, so an unparseable entry
-            # counts as one card rather than as all of them.
+            # A UUID entry counts as one card, not all of them.
             out.append(-1)
     return out
 
 
 def gpu_inventory() -> list[str]:
-    """The cards THIS PROCESS can use, not the cards the box has.
-
-    `nvidia-smi` enumerates PHYSICAL devices and ignores CUDA_VISIBLE_DEVICES,
-    and reading it as "what is available" produced a false claim on kernel
-    unsloth-probe-full-concurrent-417238. build_kernel.py pins every payload
-    with `CUDA_VISIBLE_DEVICES = str(gpu_index)`, and under --studio-concurrent
-    that includes Studio -- so the run recorded `cards_visible: 2` and
-    `tensor_split_over_two_cards: True` for a server that had ONE card, and sent
-    `tensor_split: [1.0, 1.0]` asking llama.cpp to split across a device that
-    was not there. It loaded anyway, so the assertion passed green.
-
-    That field exists precisely to stop a check keeping its name while testing
-    less. It was sized from the wrong instrument and did exactly that.
-    """
+    """Cards this process can use, not all physical ones: nvidia-smi ignores CUDA_VISIBLE_DEVICES."""
     proc = run(
         ["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader"],
         timeout = 60,
@@ -314,19 +312,11 @@ def gpu_inventory() -> list[str]:
     visible = visible_device_indices()
     if visible is None:
         return rows
-    # Index into the physical rows where we can; an index nvidia-smi does not
-    # have, or the UUID sentinel, still counts as one card so the COUNT stays
-    # right even when the description cannot be recovered.
     return [rows[i] if 0 <= i < len(rows) else "visible GPU (details unavailable)" for i in visible]
 
 
 def log_paths(server_log: Path, studio_home: Path) -> list[Path]:
-    """Every file Unsloth or a llama-server child may be writing to.
-
-    llama.cpp's offload line lands in whichever of these the server's stderr
-    was wired to, and which one that is depends on how Unsloth was started, so
-    both are read.
-    """
+    """Every log Unsloth or a llama-server child may write to; the offload line can land in any of them."""
     candidates = [server_log]
     log_dir = studio_home / "logs"
     if log_dir.is_dir():
@@ -335,13 +325,7 @@ def log_paths(server_log: Path, studio_home: Path) -> list[Path]:
 
 
 def log_marks(server_log: Path, studio_home: Path) -> dict[str, int]:
-    """Current size of every log, to read forward from later.
-
-    Taken immediately before a model load so the evidence gathered afterwards
-    belongs to THAT load. Without it, a reload whose own log line never
-    appeared inherited the previous load's ``offloaded N/M layers`` and the
-    verdict passed on evidence from a different model.
-    """
+    """Log sizes taken before a model load, so offload evidence read afterwards belongs to that load."""
     marks: dict[str, int] = {}
     for path in log_paths(server_log, studio_home):
         try:
@@ -358,12 +342,7 @@ def studio_log_text(
     *,
     since: dict[str, int] | None = None,
 ) -> str:
-    """Everything Unsloth and its llama-server children wrote, as one string.
-
-    ``since`` is a ``log_marks()`` snapshot; each file is then read from the
-    offset it had then, so only what this load produced comes back. A file
-    that has since shrunk was rotated or truncated, and is read whole.
-    """
+    """Log text since a log_marks() snapshot, read from each saved offset; a shrunk file is read whole."""
     parts: list[str] = []
     for path in log_paths(server_log, studio_home):
         start = (since or {}).get(str(path), 0)
@@ -381,14 +360,7 @@ def studio_log_text(
 
 
 def llama_server_pids() -> list[int]:
-    """PIDs of the llama-server children Unsloth started, from /proc.
-
-    ``GET /api/inference/status`` does not carry one: ``InferenceStatusResponse``
-    declares neither ``llama_server_pid`` nor ``pid``, and FastAPI drops
-    anything the response model does not declare, so the process-level VRAM
-    probe never had a pid to match and could never contribute evidence.
-    Reading the process table gives it one back.
-    """
+    """PIDs of llama-server children, read from /proc; the status API carries no pid to match."""
     pids: list[int] = []
     proc_root = Path("/proc")
     if not proc_root.is_dir():
@@ -406,6 +378,55 @@ def llama_server_pids() -> list[int]:
     return pids
 
 
+def llama_server_argvs() -> dict[int, list[str]]:
+    """Full argv of each llama-server child, split on NUL so a model path with spaces stays one argument."""
+    out: dict[int, list[str]] = {}
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return out
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes().decode("utf-8", errors = "replace")
+        except OSError:
+            continue
+        argv = [part for part in raw.split("\x00") if part]
+        if not argv:
+            continue
+        if "llama-server" in Path(argv[0]).name:
+            out[int(entry.name)] = argv
+    return out
+
+
+def argv_flag(argv: list[str], name: str) -> str | None:
+    """Value of name in argv (--flag v or --flag=v); None if absent, and raises on a duplicate flag."""
+    hits: list[str] = []
+    for i, token in enumerate(argv):
+        if token == name:
+            if i + 1 < len(argv):
+                hits.append(argv[i + 1])
+        elif token.startswith(name + "="):
+            hits.append(token.split("=", 1)[1])
+    if len(hits) > 1:
+        raise ValueError(f"{name} appears {len(hits)} times: {hits}")
+    return hits[0] if hits else None
+
+
+def split_ratio(raw: str | None) -> tuple[float, ...] | None:
+    """Normalize a --tensor-split value to proportions, so 3,1 and 75,25 compare equal."""
+    if raw is None:
+        return None
+    try:
+        values = [float(part) for part in raw.split(",")]
+    except ValueError:
+        return None
+    total = sum(values)
+    if total <= 0:
+        return None
+    return tuple(round(v / total, 6) for v in values)
+
+
 class Payload:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -421,41 +442,19 @@ class Payload:
         self.assertions: list[dict] = []
         self.failures: list[str] = []
         self.started = time.time()
-        # Every secret this run has minted or read. Unsloth's startup banner
-        # prints the bootstrap password to stdout, and stdout here is
-        # studio.log, and studio.log travels home in the evidence bundle. The
-        # value is ephemeral and local to a kernel that is destroyed minutes
-        # later, but "ephemeral" is not the same as "fine to publish in a CI
-        # artifact", so every log that leaves this machine is scrubbed of it.
+        # Studio's banner prints the bootstrap password into studio.log, which ships in
+        # evidence; scrub it.
         self.secrets: set[str] = set()
 
-        # Resolved and registered HERE, before anything can log it. `auto`
-        # mints a fresh one per run rather than carrying a constant, because a
-        # constant in a repo is a credential whether or not it is ever reachable.
+        # Registered before anything can log it; minted per run since a repo constant is a credential.
         if self.args.studio_password == "auto":
             self.args.studio_password = "ci-" + secrets_module.token_urlsafe(18)
         if self.args.studio_password:
             self.secrets.add(self.args.studio_password)
 
-    # ---------------------------------------------------------------- report
-
     def record(self, name: str, passed: bool, detail: dict) -> bool:
-        # Per-assertion wall clock, because this payload is now the longest
-        # thing in the kernel and nothing said where the time went. Measured on
-        # unsloth-probe-full-concurrent-417238: 1487.5s across 19 assertions,
-        # and the report carried no breakdown at all, so every question about
-        # shortening Studio was guesswork.
-        #
-        # It is elapsed-since-the-previous-record, NOT a timer around the
-        # assertion body, and the name says so. The assertions run back to
-        # back, so the two are the same to within the bookkeeping between them;
-        # the first entry measures from process start, which is the setup
-        # before any assertion and is worth seeing rather than hiding.
-        #
-        # Both reads are `getattr` with a default: `record` is driven directly
-        # by several CPU guards against stub objects that have no clock, and a
-        # hard `self.started` turns every one of them into an AttributeError
-        # about timing instead of a result about the rule they test.
+        # Elapsed since the previous record, not a timer around the body.
+        # getattr defaults: CPU guards call record on stubs with no clock.
         now = time.time()
         started = getattr(self, "started", now)
         previous = getattr(self, "_last_record_at", started)
@@ -513,8 +512,6 @@ class Payload:
         env["llama_cpp_install_kind"] = install_kind(marker)
         return env
 
-    # ------------------------------------------------------------- preflight
-
     def preflight(self) -> bool:
         failures: list[str] = []
         detail: dict = {}
@@ -552,18 +549,9 @@ class Payload:
         detail["failures"] = failures
         return self.record("preflight", not failures, detail)
 
-    # ---------------------------------------------------------------- server
-
     def studio_command(self) -> list[str]:
-        """The `unsloth` entry point of the interpreter running this payload.
-
-        NOT ``shutil.which("unsloth")``. This payload runs under the Unsloth
-        venv's Python and that venv's ``bin`` is not on PATH, so a global
-        ``unsloth`` anywhere on PATH would win the lookup and the run would
-        measure some other installation instead of the checkout under test.
-        The console script sits next to ``sys.executable``; if it is missing,
-        the same interpreter runs the module directly.
-        """
+        """The unsloth script beside sys.executable, not shutil.which, so a global install is not
+        measured."""
         bin_dir = Path(sys.executable).parent
         for name in ("unsloth", "unsloth.exe"):
             candidate = bin_dir / name
@@ -574,27 +562,13 @@ class Payload:
             head = [sys.executable, "-c", "from unsloth_cli import app; app()"]
         cmd = head + ["studio", "-H", "127.0.0.1", "-p", str(self.args.port)]
         if self.args.studio_password:
-            # The HEADLESS path, and it is a feature rather than a convenience
-            # here: `--password` sets the INITIAL admin password when none is
-            # set yet, which is exactly the shape a server started by a script
-            # is in. Without it the only way in is the bootstrap password
-            # Studio seeds into a file and prints to its own log, and a
-            # deployment that has to read a log to log in is not one anybody
-            # scripts twice.
-            #
-            # The value is generated per run and registered as a secret before
-            # this is ever called, so it is scrubbed out of every log and
-            # evidence bundle that leaves the machine. It is still visible in
-            # this session's process list, which the flag's own help says; that
-            # is acceptable for a single-tenant CI kernel and would not be on a
-            # shared host.
+            # --password sets the initial admin password headlessly. Generated per run and scrubbed
+            # from logs; visible in the process list, acceptable on a single-tenant CI kernel.
             cmd += ["--password", self.args.studio_password]
         return cmd
 
     def start_server(self) -> bool:
-        # An absent auth directory is what re-seeds the bootstrap password;
-        # `reset-password` does not. Same thing the repo's own
-        # boot-studio-api-only.sh does, for the same reason.
+        # An absent auth directory re-seeds the bootstrap password; reset-password does not.
         shutil.rmtree(self.studio_home / "auth", ignore_errors = True)
 
         env = dict(os.environ)
@@ -605,11 +579,7 @@ class Payload:
 
         cmd = self.studio_command()
         log(f"starting Unsloth: {' '.join(cmd)}")
-        # Append, never truncate. assert_chat_ui() restarts the server to
-        # re-seed the account, and a "wb" here threw away every backend log
-        # from the inference, training and export assertions before the
-        # evidence bundle was built -- so a GPU failure followed by the normal
-        # UI phase shipped an artifact containing only the UI session.
+        # Append: assert_chat_ui restarts the server, and truncation would lose earlier evidence.
         handle = open(self.server_log, "ab")
         self.proc = subprocess.Popen(
             cmd,
@@ -652,8 +622,7 @@ class Payload:
         return text
 
     def log_tail(self, lines: int) -> str:
-        # Unsloth's startup banner prints the bootstrap password, and this tail
-        # is put in front of a human on a pull request when startup fails.
+        # The startup banner prints the bootstrap password, and this tail is shown on a pull request.
         self.remember_bootstrap()
         try:
             text = self.server_log.read_text(encoding = "utf-8", errors = "replace")
@@ -664,11 +633,7 @@ class Payload:
     def authenticate(self) -> bool:
         failures: list[str] = []
         if self.args.studio_password:
-            # Log in with the password we PASSED, which is the assertion: if
-            # --password had been ignored, Studio would have seeded a bootstrap
-            # password instead and this login would fail. A run that fell back
-            # to the bootstrap on failure would pass while proving the flag does
-            # nothing, so there is deliberately no fallback.
+            # Log in with the password we passed; no bootstrap fallback, or an ignored flag would pass.
             try:
                 self.studio.login(self.args.studio_password)
             except StudioError as exc:
@@ -684,9 +649,7 @@ class Payload:
         if not path.is_file():
             failures.append(f"no bootstrap password was seeded at {path}")
             return self.record("authenticate", False, {"failures": failures})
-        # Read, use, drop. The value is never logged and never reaches the
-        # report; it is remembered only so it can be scrubbed out of the logs
-        # that do leave this machine.
+        # Never logged; remembered only so it can be scrubbed.
         password = self.remember_bootstrap() or ""
         try:
             self.studio.login(password)
@@ -708,33 +671,14 @@ class Payload:
         except subprocess.TimeoutExpired:
             self.proc.kill()
 
-    # ----------------------------------------------------------- assertion A
-
     def settled_baseline(self) -> float | None:
-        """VRAM after anything already loaded has been evicted and freed.
-
-        `POST /load` with `force` unloads the previous model as its first act,
-        so sampling the baseline just before the request puts that release
-        INSIDE the measured window. Run 7 read `device_vram_delta_mib: -1866.0`
-        for the GGUF export probe: a 531 MB model loading while a 3004 MiB chat
-        model left, reported as negative growth and scored as a failure to
-        reach the GPU. The load was fine; the ruler was wrong.
-
-        Unloading first and waiting for the number to stop falling makes the
-        delta measure one thing. Best-effort throughout: an unload that fails
-        leaves the old baseline behaviour rather than aborting the probe, and
-        the delta is only ever evidence, never the sole assertion.
-        """
+        """Unload any loaded model, then wait for VRAM to settle, so the load's delta excludes the
+        eviction."""
         code, body = self.studio.get("/api/inference/status")
         active = None
         if code == 200 and isinstance(body, dict):
-            # Field names from InferenceStatusResponse, not from guesswork.
-            # `model_identifier` is documented as the LOADABLE identifier,
-            # which is what /unload's `model_path` wants; `active_model` is a
-            # display string and only a fallback. Run 8 read three names that
-            # the response has never carried, so `active` was always None, no
-            # unload was ever sent, and the delta came back byte-identical to
-            # run 7 -- a fix that ran and did nothing.
+            # Field names from InferenceStatusResponse: model_identifier is what /unload's
+            # model_path wants.
             active = body.get("model_identifier") or body.get("active_model")
             if not active:
                 loaded = body.get("loaded")
@@ -749,9 +693,7 @@ class Payload:
                 )
             except StudioError:
                 pass
-        # Freeing is asynchronous: llama-server exits and the driver reclaims
-        # afterwards, so an immediate read still sees the old model resident.
-        # Settle on two consecutive samples that did not drop.
+        # Freeing is asynchronous: settle on two consecutive samples that did not drop.
         previous = nvidia_used_mib()
         for _ in range(VRAM_SETTLE_SAMPLES):
             time.sleep(VRAM_SETTLE_POLL_S)
@@ -770,11 +712,7 @@ class Payload:
             "model_path": model_path,
             "is_lora": False,
             "max_seq_length": 2048,
-            # Manual, not Auto. Auto (`gpu_layers: -1`) delegates placement to
-            # llama.cpp's fitter, and a fitter that decided on zero layers is
-            # indistinguishable in the response from one that filled the card.
-            # Pinning states the intent, so `status.gpu_layers` coming back
-            # different is itself a finding.
+            # Manual, not Auto: a fitter choosing zero layers is indistinguishable in the response.
             "gpu_memory_mode": "manual",
             "gpu_layers": self.args.gpu_layers,
             "force": True,
@@ -784,8 +722,7 @@ class Payload:
 
         failures: list[str] = []
         status_body: dict = {}
-        # Everything already in the logs belongs to an EARLIER load. Only what
-        # is written past this mark is evidence about this one.
+        # Only log lines past this mark are evidence about this load.
         marks = log_marks(self.server_log, self.studio_home)
         try:
             self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
@@ -800,8 +737,7 @@ class Payload:
         after = nvidia_used_mib()
         delta = None if (before is None or after is None) else after - before
 
-        # The status response declares no pid field, so the processes are
-        # discovered here instead. See llama_server_pids().
+        # The status response has no pid field.
         server_pids = llama_server_pids()
         verdict = offload_verdict(
             server_pid = None,
@@ -816,20 +752,14 @@ class Payload:
         requested = self.args.gpu_layers
         effective = status_body.get("gpu_layers")
         if isinstance(effective, int) and effective not in (requested, -1):
-            # Not a failure on its own: llama.cpp clamps a pin to the model's
-            # block count, which is the common and correct reason for this.
+            # llama.cpp clamps a pin to the model's block count, so this alone is not a failure.
             verdict["evidence"].append(
                 f"requested gpu_layers={requested}, Unsloth reports {effective} "
                 f"(a clamp to the model's layer count looks like this)"
             )
 
-        # Speculative decoding, read off the status rather than inferred from
-        # the repo name. Pointing --chat-model at an MTP repo does NOT prove the
-        # drafter engaged: if the companion is missing, llama.cpp was built
-        # without MTP, or the drafter was downgraded for VRAM, the main GGUF
-        # loads and generates exactly as it does otherwise and every assertion
-        # here stays green. `spec_fallback_reason` is what names which of those
-        # happened, so it is recorded whether or not it fires.
+        # Read off the status: an MTP repo can silently serve without its drafter.
+        # spec_fallback_reason names why, so record it always.
         spec = {
             "drafter_kind": status_body.get("spec_drafter_kind"),
             "fallback_reason": status_body.get("spec_fallback_reason"),
@@ -880,13 +810,7 @@ class Payload:
             elif not text.strip():
                 detail["failures"].append("the model on the GPU returned empty content")
 
-            # The MTP claim, checked rather than assumed from the repo name.
-            # An MTP repo whose drafter never engaged serves ordinary decoding
-            # and passes everything above it, so selecting the repo is a request
-            # and this is the result. The reason is named rather than reported
-            # as "MTP off", because "llama.cpp has no MTP support" and "the
-            # drafter was downgraded for VRAM" are different findings and only
-            # one of them is about this leg.
+            # An MTP repo whose drafter never engaged passes everything above; name the reason.
             spec = detail.get("spec_decoding") or {}
             if "MTP" in (self.args.chat_model or "").upper() and spec.get("drafter_kind") != "mtp":
                 detail["failures"].append(
@@ -901,29 +825,7 @@ class Payload:
         return self.record("gpu_inference", not detail["failures"], detail)
 
     def assert_server_flags(self) -> bool:
-        """Reload with a quantized KV cache and a two-card split, and check what
-        was APPLIED rather than what was asked for.
-
-        Studio's own status distinguishes the two, which is the point: it
-        carries `cache_type_kv` for the live server alongside a coverage field
-        and a reason for anything it could not apply. So a request that was
-        silently dropped is visible, and a check that only asserted "the load
-        succeeded" would pass on exactly that.
-
-        `tensor_split` over two T4s is the flag the brief asks about and the
-        one nothing here has ever exercised. The split is sized to the cards
-        that are VISIBLE, because --studio-concurrent pins this half to one
-        card so it can share with a training leg, and the report says which of
-        the two it did: a single-card run records
-        `tensor_split_over_two_cards: false` with a note rather than passing
-        under the same name. A check that keeps its name while quietly testing
-        less is the failure this file exists against.
-
-        The context length is pinned to `--studio-ctx` (2048 by default) rather
-        than left at the model default, because an unconstrained context on a
-        14.56GB card is how a KV-cache test turns into an OOM about something
-        else.
-        """
+        """Reload with KV-cache and tensor_split flags and check what was applied, not what was asked."""
         failures: list[str] = []
         cards = gpu_inventory()
         detail: dict = {"requested": {}, "cards_visible": len(cards)}
@@ -934,20 +836,9 @@ class Payload:
             "gpu_memory_mode": "manual",
             "gpu_layers": self.args.gpu_layers,
             "force": True,
-            # q8_0 rather than a fancier width: it is the one every llama.cpp
-            # build supports, so a refusal here is about the MODEL's cache
-            # layout and not about the binary.
+            # q8_0 is supported by every llama.cpp build, so a refusal is about the model's cache layout.
             "cache_type_kv": "q8_0",
-            # One weight per VISIBLE card, even. The values are relative
-            # weights, not byte counts.
-            #
-            # Sized rather than hardcoded to two, because --studio-concurrent
-            # pins this half to a single card so it can share with a training
-            # leg: build_kernel.py's run_one sets CUDA_VISIBLE_DEVICES to the
-            # card it was admitted on. Sending [1.0, 1.0] to a one-card server
-            # asks llama.cpp to split across a device that is not there, and
-            # what comes back is a failure about the load rather than about the
-            # flag.
+            # Relative weights, one per visible card: --studio-concurrent pins this half to one card.
             "tensor_split": [1.0] * max(1, len(cards)),
         }
         if self.args.chat_variant:
@@ -955,11 +846,7 @@ class Payload:
         detail["requested"] = {
             k: body[k] for k in ("max_seq_length", "cache_type_kv", "tensor_split")
         }
-        # STATED, not silent. Under --studio-concurrent this half runs on one
-        # card so it can share with a training leg, and a split over one device
-        # is not the two-card flag the brief asks about. Recording it as
-        # exercised when it was not is how a check keeps its name and loses its
-        # meaning; a reader of this report can see which machine it ran on.
+        # Stated, not silent: a one-card split is not the two-card flag.
         detail["tensor_split_over_two_cards"] = len(cards) >= 2
         if len(cards) < 2:
             detail["tensor_split_note"] = (
@@ -990,9 +877,7 @@ class Payload:
         }
         detail["applied"] = applied
 
-        # 1. the KV cache type actually in force. Reported rather than asserted
-        #    equal: a model whose cache layout cannot be quantized is entitled
-        #    to refuse, and Studio says so. What is NOT acceptable is silence.
+        # 1. KV cache type in force. Reported, not asserted: a model may refuse, but must say so.
         got_cache = (applied.get("cache_type_kv") or "").lower()
         if not got_cache:
             failures.append(
@@ -1001,7 +886,6 @@ class Payload:
                 "was honoured, downgraded or ignored"
             )
         elif got_cache != "q8_0":
-            # Not a failure by itself -- but it must come with a reason.
             reason = status.get("kv_quant_reason") or status.get("mlx_kv_quant_reason")
             detail["cache_downgrade_reason"] = reason
             if not reason:
@@ -1011,10 +895,7 @@ class Payload:
                     f"exists for"
                 )
 
-        # 2. the context length is the one that was pinned. llama-server admits
-        #    a prompt on n_ctx alone, so a server running at the model default
-        #    behaves differently from one at 2048 and the difference is
-        #    invisible in a chat response.
+        # 2. Context length is the pinned one; llama-server admits prompts on n_ctx alone.
         ctx = applied.get("context_length")
         if ctx is None:
             failures.append("the status reports no context_length")
@@ -1024,9 +905,7 @@ class Payload:
                 f"was requested, so the pin did not take"
             )
 
-        # 3. it is still on the GPU. A tensor split that fell back to CPU would
-        #    otherwise report a healthy server and prove nothing about either
-        #    card.
+        # 3. Still on the GPU: a CPU fallback would otherwise look healthy.
         used = nvidia_used_mib()
         detail["gpu_used_mib"] = used
         if used is not None and used < 200:
@@ -1039,28 +918,269 @@ class Payload:
         detail["failures"] = failures
         return self.record("server_flags", not failures, detail)
 
+    _TP_FILE = "studio/backend/core/inference/llama_cpp.py"
+
+    def _auto_tp_load(self, ratio: list[float] | None, *, force: bool) -> dict:
+        """One auto-mode tensor-parallel load; uses force_reload, as LoadRequest silently drops force."""
+        body: dict = {
+            "model_path": self.args.chat_model,
+            "is_lora": False,
+            "max_seq_length": self.args.studio_ctx,
+            "gpu_memory_mode": "auto",
+            "tensor_parallel": True,
+            # f16: a quantized KV on llama.cpp older than b9455 makes the backend drop tensor mode.
+            "cache_type_kv": "f16",
+            "force_reload": force,
+        }
+        if ratio is not None:
+            body["tensor_split"] = list(ratio)
+        if self.args.chat_variant:
+            body["gguf_variant"] = self.args.chat_variant
+        cards = gpu_inventory()
+        if len(cards) >= 2:
+            body["gpu_ids"] = list(range(len(cards)))
+
+        before = llama_server_argvs()
+        self.studio.expect("POST", "/api/inference/load", body, timeout = self.args.load_timeout)
+        code, status = self.studio.get("/api/inference/status")
+        argvs = llama_server_argvs()
+        # A relaunch gets a new pid, so take the newest server.
+        pid = None
+        if argvs:
+            fresh = [p for p in argvs if p not in before] or list(argvs)
+            pid = max(fresh)
+        argv = argvs.get(pid, []) if pid is not None else []
+        try:
+            split_mode = argv_flag(argv, "--split-mode")
+            tensor_split = argv_flag(argv, "--tensor-split")
+            duplicate = None
+        except ValueError as exc:
+            split_mode = tensor_split = None
+            duplicate = str(exc)
+        return {
+            "requested_ratio": list(ratio) if ratio is not None else None,
+            "status_code": code,
+            "status_tensor_parallel": (status or {}).get("tensor_parallel")
+            if isinstance(status, dict)
+            else None,
+            # What /status says the split is, beside the actual argv.
+            "status_tensor_split": (status or {}).get("tensor_split")
+            if isinstance(status, dict)
+            else None,
+            "llama_server_pid": pid,
+            "split_mode": split_mode,
+            "tensor_split": tensor_split,
+            "tensor_split_ratio": split_ratio(tensor_split),
+            "duplicate_flag": duplicate,
+            "cards_visible": len(cards),
+            "compute_apps": nvidia_compute_apps(),
+        }
+
+    def _checkout_tp_file(self, ref: str) -> tuple[bool, str]:
+        """Put ONE file at ``ref``. The two legs then differ by the PR, and by
+        nothing else: same install, same binary, same weights, same session."""
+        fetch = run(
+            ["git", "-C", str(self.repo_root), "fetch", "--depth", "1", "origin", ref],
+            timeout = 600,
+        )
+        checkout = run(
+            ["git", "-C", str(self.repo_root), "checkout", ref, "--", self._TP_FILE],
+            timeout = 120,
+        )
+        blob = run(
+            ["git", "-C", str(self.repo_root), "hash-object", self._TP_FILE],
+            timeout = 120,
+        )
+        ok = checkout.returncode == 0
+        return ok, (
+            blob.stdout or ""
+        ).strip() or f"checkout rc={checkout.returncode} " f"fetch rc={fetch.returncode}"
+
+    def _restart_for_leg(self, label: str) -> bool:
+        """Restart Unsloth: an editable install only takes effect in a new process, not in a reused
+        server."""
+        self.stop_server()
+        for _ in range(60):
+            if not llama_server_pids():
+                break
+            time.sleep(1)
+        if not self.start_server():
+            log(f"{label}: Unsloth did not come back up")
+            return False
+        return self.authenticate()
+
+    def assert_auto_tensor_split(self) -> bool:
+        """The per-GPU ratio must reach the live llama-server argv in auto mode; status cannot show it."""
+        failures: list[str] = []
+        cards = gpu_inventory()
+        detail: dict = {"cards_visible": len(cards), "legs": {}}
+        if len(cards) < 2:
+            detail["failures"] = [
+                f"only {len(cards)} card visible, so auto tensor-parallel placement "
+                f"was NOT exercised; this proves nothing about "
+                f"unslothai/unsloth#10355"
+            ]
+            detail["void"] = True
+            return self.record("auto_tensor_split", False, detail)
+
+        ratio = [float(x) for x in self.args.auto_split_ratio.split(",")]
+        other = list(reversed(ratio))
+
+        first = self._auto_tp_load(ratio, force = True)
+        detail["legs"]["requested"] = first
+        if first.get("duplicate_flag"):
+            failures.append(f"the launch argv is ambiguous: {first['duplicate_flag']}")
+        if first.get("status_tensor_parallel") is not True:
+            failures.append(
+                f"status reports tensor_parallel={first.get('status_tensor_parallel')!r} "
+                f"after an auto tensor-parallel load, so the mode was dropped and the "
+                f"split has nothing to be applied to"
+            )
+        if first.get("split_mode") != "tensor":
+            failures.append(f"the live llama-server has --split-mode {first.get('split_mode')!r}")
+        if first.get("tensor_split") is None:
+            failures.append(
+                f"the live llama-server has NO --tensor-split after a load that asked "
+                f"for {ratio}. This is unslothai/unsloth#10355: auto mode emitted "
+                f"--split-mode tensor and dropped the ratio"
+            )
+        elif first.get("tensor_split_ratio") != split_ratio(",".join(str(x) for x in ratio)):
+            failures.append(
+                f"--tensor-split is {first.get('tensor_split')!r}, which is not the "
+                f"proportion {ratio} that was asked for"
+            )
+        else:
+            # The API must also report the split; users cannot read /proc.
+            reported = first.get("status_tensor_split")
+            if reported is None:
+                failures.append(
+                    f"the live llama-server runs --tensor-split "
+                    f"{first.get('tensor_split')!r} and /api/inference/status reports "
+                    f"tensor_split: null, so the applied ratio is invisible to every "
+                    f"client"
+                )
+            elif split_ratio(",".join(str(x) for x in reported)) != first.get("tensor_split_ratio"):
+                failures.append(
+                    f"/api/inference/status reports tensor_split {reported!r} while the "
+                    f"live llama-server runs {first.get('tensor_split')!r}"
+                )
+
+        # Must still serve: a CPU fallback also answers chat.
+        try:
+            completion = self.studio.expect(
+                "POST",
+                "/v1/chat/completions",
+                {
+                    "model": self.args.chat_model,
+                    "messages": [{"role": "user", "content": "Say OK."}],
+                    # Generous: a reasoning model spends tight budgets on thinking and returns
+                    # empty content.
+                    "max_tokens": 256,
+                    "stream": False,
+                },
+                timeout = self.args.chat_timeout,
+            )
+            choice = (completion.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            # Either channel counts as decoding: `reasoning_content` holds a thinking model's tokens.
+            text = (message.get("content") or "") + (message.get("reasoning_content") or "")
+            usage = completion.get("usage") or {}
+            detail["completion_chars"] = len(text)
+            detail["completion_tokens"] = usage.get("completion_tokens")
+            detail["finish_reason"] = choice.get("finish_reason")
+            if not text.strip() and not usage.get("completion_tokens"):
+                failures.append(
+                    f"the split server decoded nothing: finish_reason="
+                    f"{choice.get('finish_reason')!r}, usage={usage}"
+                )
+        except StudioError as exc:
+            failures.append(f"the split server could not serve a completion: {exc}"[:600])
+
+        apps = first.get("compute_apps")
+        pid = first.get("llama_server_pid")
+        if isinstance(apps, dict) and pid is not None and pid not in apps:
+            # Evidence only: nvidia-smi's per-process view is empty in some containers.
+            detail["note_compute_apps"] = (
+                f"nvidia-smi lists no compute app for pid {pid}; GPU residency is "
+                f"unproven here, see the gpu_inference assertion"
+            )
+
+        repeat = self._auto_tp_load(ratio, force = False)
+        detail["legs"]["repeat_same_ratio"] = repeat
+        if repeat.get("llama_server_pid") != first.get("llama_server_pid"):
+            failures.append(
+                f"an IDENTICAL auto request replaced the server "
+                f"(pid {first.get('llama_server_pid')} -> "
+                f"{repeat.get('llama_server_pid')}). Nothing changed, so this "
+                f"reloads the model on every request"
+            )
+
+        changed = self._auto_tp_load(other, force = False)
+        detail["legs"]["changed_ratio"] = changed
+        if changed.get("llama_server_pid") == first.get("llama_server_pid"):
+            failures.append(
+                f"asking for {other} reused the server launched for {ratio}, so the "
+                f"new ratio was silently ignored"
+            )
+        elif changed.get("tensor_split_ratio") != split_ratio(",".join(str(x) for x in other)):
+            failures.append(
+                f"after changing the ratio to {other} the live argv carries "
+                f"{changed.get('tensor_split')!r}"
+            )
+
+        detail["failures"] = failures
+        return self.record("auto_tensor_split", not failures, detail)
+
+    def assert_auto_tensor_split_baseline(self) -> bool:
+        """The merge-base must reproduce the defect, or the head result proves nothing and the run
+        is void."""
+        ok, blob = self._checkout_tp_file(self.args.base_sha)
+        detail: dict = {"base_sha": self.args.base_sha, "blob": blob}
+        if not ok:
+            detail["failures"] = [f"could not put {self._TP_FILE} at the base revision: {blob}"]
+            detail["void"] = True
+            return self.record("auto_tensor_split_baseline", False, detail)
+        if not self._restart_for_leg("baseline"):
+            detail["failures"] = ["Unsloth did not restart on the base revision"]
+            detail["void"] = True
+            return self.record("auto_tensor_split_baseline", False, detail)
+
+        ratio = [float(x) for x in self.args.auto_split_ratio.split(",")]
+        probe = self._auto_tp_load(ratio, force = True)
+        detail["probe"] = probe
+        failures: list[str] = []
+        if probe.get("split_mode") != "tensor":
+            failures.append(
+                f"the base revision did not enter tensor mode at all "
+                f"(--split-mode {probe.get('split_mode')!r}), so the two legs do not "
+                f"differ by the PR and this comparison is void"
+            )
+            detail["void"] = True
+        elif probe.get("tensor_split") is not None:
+            failures.append(
+                f"the base revision ALREADY emits --tensor-split "
+                f"{probe.get('tensor_split')!r}, so #10355 does not reproduce on this "
+                f"hardware and the head result proves nothing"
+            )
+            detail["void"] = True
+        detail["bug_reproduced"] = not failures
+        detail["failures"] = failures
+        return self.record("auto_tensor_split_baseline", not failures, detail)
+
+    def restore_head_revision(self) -> bool:
+        ok, blob = self._checkout_tp_file(self.args.head_sha or "HEAD")
+        self.record(
+            "auto_tensor_split_head_restored",
+            ok,
+            {
+                "blob": blob,
+                "failures": [] if ok else [f"could not restore {self._TP_FILE}: {blob}"],
+            },
+        )
+        return ok and self._restart_for_leg("head")
+
     def assert_compaction(self) -> bool:
-        """A conversation past the window must COMPACT, and a short one must not.
-
-        The context length is pinned to `--studio-ctx` by `assert_server_flags`
-        immediately above, so this is the one place the payload knows what the
-        window is and can overflow it deliberately.
-
-        Studio reports the fit on the completion itself, as `context_truncated`
-        with `dropped_messages`, so the claim is readable without a browser.
-        The rule is a PAIR, and the second half is what makes the first mean
-        anything:
-
-        * a conversation built past the budget comes back 200 with
-          `dropped_messages > 0` -- it was shortened, not refused;
-        * a two-message conversation comes back with nothing dropped.
-
-        Asserting only the first passes on a server that reports truncation
-        unconditionally, which is indistinguishable from working and is the
-        failure this file keeps being caught by. Asserting only the second
-        passes on a server that never compacts at all and returns a
-        context-length error instead.
-        """
+        """Compaction needs both checks: a long conversation must drop messages and a short one must not."""
         failures: list[str] = []
         detail: dict = {}
 
@@ -1075,11 +1195,7 @@ class Payload:
             except (TypeError, ValueError):
                 return 0
 
-        # Distinct filler, so nothing can be deduplicated or cached into
-        # fitting. Sized past `studio_ctx` by a wide margin rather than a
-        # narrow one: the budget subtracts the reply reserve and the template's
-        # own framing, so a prompt that merely equals the context length is not
-        # reliably over it.
+        # Distinct filler, sized well past studio_ctx since the budget subtracts reserve and framing.
         long_messages = []
         for i in range(40):
             long_messages.append(
@@ -1092,15 +1208,8 @@ class Payload:
             long_messages.append({"role": "assistant", "content": f"Noted fact {i}."})
         long_messages.append({"role": "user", "content": "Reply with one word."})
 
-        # `context_overflow` defaults to "error", and that default is CORRECT:
-        # a conversation past the window comes back 400 with
-        # code=context_length_exceeded so a client's own trim loop can see it.
-        # Compaction is a policy you ask for, and asking for it is the thing
-        # under test. Measured the hard way on kernel
-        # unsloth-probe-studio-full2-815a0c, where this assertion failed a
-        # documented default. "truncate_oldest" is the policy that applies to a
-        # plain chat; "truncate_middle" is limited to client-tool and
-        # response_format passthrough (studio/backend/models/inference.py).
+        # context_overflow defaults to "error" (correct); compaction must be requested.
+        # truncate_middle only applies to client-tool and response_format passthrough.
         code, body = self.chat(long_messages, max_tokens = 32, context_overflow = "truncate_oldest")
         detail["context_overflow"] = "truncate_oldest"
         detail["long_status"] = code
@@ -1121,17 +1230,10 @@ class Payload:
                 f"compaction happened and the reply used a prompt nobody sized"
             )
 
-        # The POLICY control: the same over-length conversation with the
-        # default `context_overflow` must be REFUSED. Without this, the check
-        # above passes on a server that compacts everything regardless of what
-        # was asked for, and the field name in the request would be decorative.
+        # Policy control: the default must refuse, or the field would be decorative.
         code, body = self.chat(long_messages, max_tokens = 32)
         detail["long_status_default_policy"] = code
-        # The CODE, not just the 400. `openai_error_body` always emits the key
-        # and leaves it None for an unclassified failure, so a validation error
-        # or a code-less generation error is also a 400 and would satisfy a
-        # status-only check while proving nothing about the overflow semantics
-        # this failure text promises.
+        # Check the code, not just 400: openai_error_body leaves it None for other failures.
         refusal_code = None
         if isinstance(body, dict):
             refusal_code = (body.get("error") or {}).get("code")
@@ -1146,8 +1248,7 @@ class Payload:
                 f"truncate_oldest above proved nothing"
             )
 
-        # The LENGTH control, and it is not optional either: without it a
-        # server that always claims truncation passes the first check.
+        # Length control: otherwise a server that always claims truncation passes.
         code, body = self.chat([{"role": "user", "content": "Say hi."}], max_tokens = 16)
         detail["short_status"] = code
         short_dropped = _dropped(body)
@@ -1165,24 +1266,7 @@ class Payload:
         return self.record("compaction", not failures, detail)
 
     def assert_api_key(self) -> bool:
-        """Mint an API key and DRIVE it, which is the half that can be wrong.
-
-        Creating a key proves the endpoint returns a string. Whether that
-        string authenticates anything is a separate question, and the answer
-        that matters: an API key Studio issues and then rejects is worse than
-        no API key, because the failure surfaces in a user's integration rather
-        than here.
-
-        Three claims, in order of what each rules out:
-
-        1. the key is minted and returned ONCE (the raw value is not
-           retrievable later, by design);
-        2. a request carrying ONLY that key succeeds -- the session bearer
-           token is set aside for the call, or this would pass on the token and
-           say nothing about the key;
-        3. a request carrying a corrupted key FAILS. Without that, a server
-           that ignores the header entirely passes claim 2.
-        """
+        """Drive a minted API key alone, not the session token; a corrupted key must be refused."""
         failures: list[str] = []
         detail: dict = {}
         raw_key = None
@@ -1211,9 +1295,7 @@ class Payload:
             self.secrets.add(raw_key)
             saved = self.studio.token
             try:
-                # The key AS the bearer, with the session token set aside. If
-                # the session token were left in place this would pass on the
-                # token and prove nothing.
+                # Session token set aside, or this would pass on the token.
                 self.studio.token = raw_key
                 code, body = self.studio.get("/api/auth/api-keys")
                 detail["key_auth_status"] = code
@@ -1223,8 +1305,7 @@ class Payload:
                         f"{code} {str(body)[:200]}"
                     )
 
-                # And a corrupted key must be REJECTED. Without this, a server
-                # that ignores the header entirely passes the check above.
+                # A corrupted key must be rejected, or a server ignoring the header passes.
                 self.studio.token = raw_key[:-4] + "0000" if len(raw_key) > 8 else "bogus"
                 code, _ = self.studio.get("/api/auth/api-keys")
                 detail["bad_key_status"] = code
@@ -1285,36 +1366,8 @@ class Payload:
         return self.record("tool_calling", not failures, detail)
 
     def assert_code_execution(self) -> bool:
-        """The python tool must RUN, and the proof is a file on disk.
-
-        `assert_tool_calling` above proves the model can EMIT a call. That is a
-        different claim: a weather tool is never executed by Studio at all, the
-        caller is expected to run it. The local `python` tool is executed by
-        Studio itself, in a per-session sandbox, and the interesting failure is
-        the loop offering the tool and never running it -- which looks
-        identical from the response text, because the model will happily
-        narrate a result it never received.
-
-        So the evidence is not the prose. A token is minted here, the model is
-        asked to write it to a file, and this reads it back out of
-        `<studio home>/sandbox`, where `sandbox_root()` puts the per-session
-        working directories. Nothing in the reply can fake that; only an
-        executed `open(...).write(...)` puts those bytes on this disk.
-
-        Two settings are not incidental and must not be "simplified":
-
-        * `permission_mode = "off"`. `routes/inference.py` REJECTS a local
-          python/terminal tool under `ask`, and under `auto` or an omitted
-          default, with a 400 -- there is no confirmation channel here. The
-          run would fail on configuration and look like a broken tool.
-        * `tool_choice` is left alone. Forcing it would prove the schema is
-          reachable, not that the loop runs what it selected, and the file is
-          the claim either way.
-
-        The filename is not asserted, only the CONTENT: a small local model
-        rewording a path is not a Studio defect, and any file carrying the
-        token was written by code that ran.
-        """
+        """Proof is a token file on disk written by the executed python tool; permission_mode must
+        be off."""
         failures: list[str] = []
         detail: dict = {}
 
@@ -1350,7 +1403,6 @@ class Payload:
             detail["finish_reason"] = choice.get("finish_reason")
             detail["reply"] = (message.get("content") or "")[:300]
 
-        # The claim, read off the filesystem rather than off the reply.
         written = []
         if sandbox.exists():
             for path in sandbox.rglob("*"):
@@ -1378,22 +1430,8 @@ class Payload:
         return self.record("code_execution", not failures, detail)
 
     def assert_web_search(self) -> bool:
-        """The web_search tool must be EXECUTED, and the log is where that shows.
-
-        Same shape as `assert_code_execution` and a different instrument,
-        because a web search leaves nothing on disk to read back. Studio logs
-        `execute_tool: name=...` from INSIDE `execute_tool`, so the line is
-        emitted by execution rather than by selection -- a loop that offered
-        the tool and never ran it produces no such line, which is the failure
-        worth catching.
-
-        What is deliberately NOT asserted: that the search returned results.
-        `_web_search` fans out through ddgs with no API key, and a provider
-        rate-limiting a Kaggle egress IP is a fact about the day, not a Studio
-        defect. Failing on it would put a red in front of every PR for
-        something no reader could act on. The reply and the result count are
-        recorded so a human can see which happened.
-        """
+        """Execution is shown by the execute_tool: name=web_search log line; search results are not
+        asserted."""
         failures: list[str] = []
         detail: dict = {}
 
@@ -1427,16 +1465,8 @@ class Payload:
                 [{"role": "user", "content": prompt}],
                 enable_tools = True,
                 permission_mode = "off",
-                # Forced BY NAME. `tool_choice: "required"` was tried first and
-                # changed nothing -- kernel unsloth-probe-studio-r3-0b85d4
-                # returned the same parametric answer, "The current version of
-                # the Linux kernel is 6.10", with executions 0. A bare
-                # "required" says only that some tool must be called; the dict
-                # form pins the function, and
-                # `chat_template_helpers.forced_tool_name` reads exactly this
-                # shape. Without a force this measures whether a 2B model
-                # DECIDES to search, which is a model property rather than a
-                # Studio one.
+                # Forced by name: tool_choice "required" did not force web_search;
+                # chat_template_helpers.forced_tool_name reads this dict shape.
                 tool_choice = {"type": "function", "function": {"name": "web_search"}},
                 max_tokens = 512,
                 **selection,
@@ -1453,12 +1483,9 @@ class Payload:
                 after = self.server_log.read_text(encoding = "utf-8", errors = "replace")
             except OSError:
                 after = ""
-            # Only what THIS request wrote, so an earlier attempt's tool call
-            # cannot be read as this one's evidence.
             fresh = after[len(before) :]
             record["executions"] = fresh.count(marker)
-            # Any tool at all, which separates "the loop ran and chose
-            # something else" from "the loop never ran".
+            # Separates "chose another tool" from "the loop never ran".
             record["any_tool_executions"] = fresh.count("execute_tool: name=")
             attempts.append(record)
             if record["executions"]:
@@ -1475,8 +1502,6 @@ class Payload:
 
         detail["failures"] = failures
         return self.record("web_search", not failures, detail)
-
-    # ----------------------------------------------------------- assertion B
 
     def assert_training(self) -> bool:
         failures: list[str] = []
@@ -1499,14 +1524,11 @@ class Payload:
             "num_epochs": 0,
             "batch_size": 1,
             "gradient_accumulation_steps": 1,
-            # A string, not a float: TrainingStartRequest.learning_rate is
-            # declared as str and a float here is a 422.
+            # TrainingStartRequest.learning_rate is a str; a float is a 422.
             "learning_rate": "2e-4",
             "lora_r": 8,
             "lora_alpha": 16,
-            # Above max_steps on purpose. An intermediate checkpoint would
-            # double the disk this run needs and add nothing: the assertion is
-            # about the final adapter.
+            # Above max_steps so no intermediate checkpoint wastes disk.
             "save_steps": 10_000,
             "random_seed": 3407,
         }
@@ -1542,10 +1564,7 @@ class Payload:
             accept = _accept,
             deadline_s = self.args.train_deadline,
             interval_s = 5.0,
-            # An Unsloth that died mid-training answers every status request
-            # with an error, which wait_for retries -- for the whole 1200s
-            # deadline, out of a 70-minute session, before reporting it as
-            # slowness rather than as death.
+            # A dead server makes wait_for retry for the whole deadline; fail fast instead.
             alive = self.server_alive,
         )
         status = last if isinstance(last, dict) else {}
@@ -1559,13 +1578,8 @@ class Payload:
         elif terminal_reason["why"]:
             failures.append(terminal_reason["why"])
         else:
-            # `completed` is the worker's own bookkeeping. These two are the
-            # run's output, and they are what a false green would have to
-            # forge.
             if detail["nonfinite_losses"]:
-                # A T4 has no bf16, so this trains in fp16, and an fp16 run
-                # that diverges still reaches `completed` and still saves an
-                # adapter. NaN is not a loss.
+                # T4 has no bf16; a diverged fp16 run still completes and saves an adapter.
                 failures.append(
                     f"{detail['nonfinite_losses']} of the logged losses are NaN or "
                     f"infinite, so the run diverged rather than trained"
@@ -1584,26 +1598,8 @@ class Payload:
         detail["failures"] = failures
         return self.record("lora_training", not failures, detail)
 
-    # ----------------------------------------------------------- assertion C
-
     def install_llama_cpp(self) -> bool:
-        """Put a CUDA llama.cpp under STUDIO_HOME before anything asks for one.
-
-        Four hardware runs reported ``install_kind=None`` and failed the export
-        assertion for it, and the reason was never subtle: nothing had ever
-        installed a llama.cpp at all. The export route falls back to whatever
-        it can find, so the assertion was measuring an absence.
-
-        Its own assertion rather than a step inside the export one, because
-        "the CUDA bundle would not install on this box" and "the CUDA bundle
-        installed and the export against it failed" are different findings and
-        only the second is about exporting.
-
-        A failure here is NOT fatal to the run. The export assertion still
-        executes and still reports the install_kind it found, so a box where
-        the bundle cannot be installed produces the same honest red it did
-        before rather than skipping the export entirely.
-        """
+        """Install a CUDA llama.cpp into STUDIO_HOME as its own check; its failure does not stop the run."""
         detail: dict = {}
         installer = self.repo_root / "studio" / "install_llama_prebuilt.py"
         detail["installer"] = str(installer)
@@ -1615,16 +1611,11 @@ class Payload:
             )
 
         install_dir = self.studio_home / "llama.cpp"
-        # What was there BEFORE. build_kernel.py runs `install.sh --local`,
-        # which its own comment says puts a llama.cpp on disk, so "None after
-        # install.sh" and "a CPU bundle after install.sh" are different bugs
-        # and this step would hide the difference by fixing both. Recording the
-        # prior state keeps the original question answerable.
+        # Record the prior state: build_kernel.py's install.sh --local may already have installed one.
         detail["install_kind_before"] = install_kind(llama_cpp_marker(self.studio_home))
         env = dict(os.environ)
         env["UNSLOTH_STUDIO_HOME"] = str(self.studio_home)
-        # `run` already applies capture_output and text; passing them again is
-        # a TypeError, and it is one no test here would reach.
+        # `run` already sets capture_output and text; passing them again is a TypeError.
         try:
             proc = run(
                 [sys.executable, str(installer), "--install-dir", str(install_dir)],
@@ -1644,8 +1635,6 @@ class Payload:
                 },
             )
         detail["returncode"] = proc.returncode
-        # The selection log is the whole diagnostic when a CUDA host gets a CPU
-        # bundle: install_llama_prebuilt.py explains its choice line by line.
         detail["stdout_tail"] = self.scrub(proc.stdout or "")[-2000:]
         detail["stderr_tail"] = self.scrub(proc.stderr or "")[-2000:]
 
@@ -1656,10 +1645,7 @@ class Payload:
         if proc.returncode != 0:
             failures.append(f"the llama.cpp installer exited {proc.returncode}")
         elif not is_cuda_install(kind):
-            # Reaching here means the installer SUCCEEDED and still chose a
-            # non-CUDA bundle on a box with a working NVIDIA driver, which is
-            # the selection regression this leg exists to catch. Distinct from
-            # the installer failing, so it is worded distinctly.
+            # Installer succeeded but chose a non-CUDA bundle: the selection regression this leg catches.
             failures.append(
                 f"the installer succeeded but selected install_kind={kind!r} on a CUDA "
                 f"box; see stdout_tail for its linux_cuda_selection lines"
@@ -1675,12 +1661,7 @@ class Payload:
         kind = install_kind(marker)
         detail["llama_cpp_install_kind"] = kind
         if not is_cuda_install(kind):
-            # Stated as a failure rather than a skip. The whole point of
-            # running this leg on a T4 is that the CUDA bundle is the one that
-            # gets installed here; a CPU bundle on a machine with a working
-            # NVIDIA driver means the selection in install_llama_prebuilt.py
-            # demoted itself, which is exactly the regression no other job can
-            # see.
+            # A CPU bundle on a working NVIDIA host is a failure, not a skip.
             failures.append(
                 f"the llama.cpp install on this box is install_kind={kind!r}, not a CUDA "
                 f"bundle, so the export ran against the same CPU build every other CI job "
@@ -1726,13 +1707,8 @@ class Payload:
             detail["failures"] = failures
             return self.record("gguf_export", False, detail)
         except OSError as exc:
-            # The route is blocking (routes/export.py awaits the whole export
-            # in a thread), and the transport timeout is SHORTER than the
-            # export deadline. A merge-convert-quantize that runs past it left
-            # the backend still working while this raised an unhandled
-            # TimeoutError and crashed the payload. The operation is in
-            # flight, not failed: fall through to the status poll, which
-            # already knows how to tell "finished" from "never started".
+            # The transport timeout is shorter than the export deadline; the export is still in flight,
+            # so fall through to the status poll.
             detail["export_request_timeout"] = f"{type(exc).__name__}: {exc}"
             log(f"the export request timed out in transport ({type(exc).__name__}); still polling")
 
@@ -1779,8 +1755,7 @@ class Payload:
                     )
 
         if not failures and gguf is not None:
-            # "and loads" is asserted by loading it. A size check would pass
-            # for a file llama.cpp cannot open.
+            # Asserted by loading: a size check passes for a file llama.cpp cannot open.
             reload_detail = self.load_model(str(gguf), variant = None, label = "exported")
             detail["reload"] = reload_detail
             if reload_detail["failures"]:
@@ -1806,17 +1781,9 @@ class Payload:
         detail["failures"] = failures
         return self.record("gguf_export", not failures, detail)
 
-    # Every tab in Studio, and the backing endpoint its first render calls.
-    # A tab whose router failed to import does not render a broken panel; the
-    # route is simply absent and the request 404s, which is what this looks for.
-    # Named by tab so a failure says which one, and kept as a mapping so a new
-    # tab that is not covered here is visible as an omission rather than
-    # invisible.
+    # A tab whose router failed to import 404s on its backing endpoint.
     TAB_ENDPOINTS = (
-        # NOT /jobs/current: that legitimately 404s when no job is running,
-        # so it would be red on correct behaviour. This one is unconditional
-        # and lives in the same router package, so an import failure takes it
-        # down with everything else.
+        # Not /jobs/current, which legitimately 404s when idle.
         ("data_designer", "/api/data-recipe/seed/github/env-token"),
         ("image_creation", "/api/inference/images/status"),
         ("image_creation_gallery", "/api/inference/images/gallery"),
@@ -1830,24 +1797,8 @@ class Payload:
     )
 
     def assert_tabs(self) -> bool:
-        """Every tab's backing endpoint answers.
-
-        This is a smoke and it is honest about being one: it does not click
-        through the UI, it asks each tab's own first request. What it catches
-        is the failure that actually happens -- a route module that raised on
-        import, so the router was never mounted and the tab renders an error
-        the moment it is opened. That is invisible to every other assertion
-        here, all of which touch inference, training and export only.
-
-        A 404 is the specific signal, so it is separated from other statuses
-        in the record rather than folded into "not 200": a 500 is a live route
-        with a broken handler and a 404 is a route that does not exist, and
-        they lead a reader to different places.
-
-        An endpoint answering 200 with a non-object is a failure too. Several
-        of these are declared with a `response_model`, so a bare string or null
-        means something upstream is substituting for the real handler.
-        """
+        """Smoke each tab's first endpoint; 404 (route missing) and 500 (broken handler) are
+        reported apart."""
         failures: list[str] = []
         detail: dict = {"checked": len(self.TAB_ENDPOINTS)}
         results: dict = {}
@@ -1879,30 +1830,8 @@ class Payload:
         return self.record("tabs", not failures, detail)
 
     def assert_lora_vs_base(self, gguf: str | None) -> bool:
-        """The exported model must answer DIFFERENTLY from the base it came from.
-
-        This is the comparison an export check cannot make on its own. The GGUF
-        assertion proves a file was produced, carries the magic, loads on the
-        GPU and generates -- and every one of those is true of an export that
-        silently merged nothing and shipped the base weights. A no-op merge is
-        the regression here, and it is invisible to file size, to the magic and
-        to "it generated text".
-
-        Greedy decoding at temperature 0 makes it visible: identical weights
-        answer identically, so a difference is the adapter.
-
-        **The determinism control is not optional and comes first.** If the
-        SAME weights, loaded twice, do not reproduce their own answer, then a
-        difference between two models says nothing, and this reports that it
-        could not compare rather than passing on the noise. Two loads of the
-        base, then one of the export: the claim is only made once the
-        instrument has been shown to be steady.
-
-        The canary is REPORTED rather than asserted. Studio's training run is a
-        handful of steps and whether that is enough to learn a specific string
-        is a property of the run length, not of the export path -- asserting it
-        would be a red about training tuning wearing an export label.
-        """
+        """Export must answer differently from its base; a base-twice control first rules out
+        nondeterminism."""
         failures: list[str] = []
         detail: dict = {"gguf": gguf}
         prompt = [{"role": "user", "content": "What is the Unsloth Studio Kaggle canary?"}]
@@ -1960,28 +1889,7 @@ class Payload:
         return self.record("lora_vs_base", not failures, detail)
 
     def assert_image_generation(self) -> bool:
-        """The image tab, end to end: load, generate, and download the PNG.
-
-        Last priority and the smallest possible run -- 256x256 (the schema's
-        floor) at 2 steps -- because the claim is that the path executes, not
-        that the picture is good.
-
-        "Nothing errored" is not the check. A diffusion pipeline that fails
-        mid-way still writes a gallery record and still returns 200, and a
-        pipeline whose weights never loaded produces a FLAT image, which is a
-        valid PNG. So the evidence is the file:
-
-        * the bytes start with the PNG magic, so what the download endpoint
-          serves is really a PNG rather than a JSON error with a 200 on it;
-        * the IHDR chunk says 256x256, read out of the header rather than
-          taken from the gallery record -- the record repeats what was asked
-          for, and the file says what was made;
-        * the image is not one flat colour. A pipeline that produced nothing
-          returns a uniform frame, which compresses to almost nothing, so this
-          is checked on the decoded extrema where PIL is available and on a
-          compressed-size floor where it is not. Both are recorded, so a
-          reader can see which one ruled.
-        """
+        """Check the downloaded file itself: PNG magic, 256x256 from its IHDR, and not a flat colour."""
         import urllib.error
         import urllib.request
 
@@ -2001,14 +1909,7 @@ class Payload:
                 detail["failures"] = failures
                 return self.record("image_generation", False, detail)
 
-            # The load is ASYNCHRONOUS. It answers 200 having only accepted the
-            # request, and generating against it answers 409 "No diffusion
-            # model is loaded." -- measured on kernel
-            # unsloth-probe-studio-r3-0b85d4, where load_status was 200 and
-            # generate_status was 409 twelve lines later. So wait for
-            # `images/status` to say `loaded`, and carry `load-progress` while
-            # waiting: a download that stalls or errors is then reported as
-            # what it is instead of arriving as a generation failure.
+            # The load is asynchronous: generating before images/status says loaded returns 409.
             deadline = time.time() + self.args.export_deadline
             status: dict = {}
             progress: dict = {}
@@ -2062,8 +1963,7 @@ class Payload:
             detail["record"] = {k: record.get(k) for k in ("id", "width", "height", "steps")}
             image_id = record.get("id")
 
-            # The PNG itself, fetched raw. The JSON client decodes to utf-8,
-            # which would corrupt the bytes the whole check is about.
+            # Fetched raw: the JSON client decodes to utf-8 and would corrupt the bytes.
             request = urllib.request.Request(
                 f"http://127.0.0.1:{self.args.port}/api/inference/images/gallery/{image_id}/file"
             )
@@ -2080,8 +1980,7 @@ class Payload:
                     f"served is not a PNG: {png[:16]!r}"
                 )
             else:
-                # IHDR is fixed-offset: 8 magic, 4 length, 4 type, then width
-                # and height as big-endian uint32.
+                # IHDR is fixed-offset: 8 magic, 4 length, 4 type, then big-endian width and height.
                 width = int.from_bytes(png[16:20], "big")
                 height = int.from_bytes(png[20:24], "big")
                 detail["png_size"] = [width, height]
@@ -2114,8 +2013,7 @@ class Payload:
         except BaseException as exc:  # noqa: BLE001
             failures.append(f"the image path raised: {type(exc).__name__}: {exc}"[:300])
         finally:
-            # Always, or a diffusion pipeline holds the card for whatever runs
-            # next and that failure lands on the wrong assertion.
+            # Always unload, or the pipeline holds the card and the next assertion fails.
             try:
                 self.studio.post("/api/inference/images/unload", {}, timeout = 120)
             except BaseException:  # noqa: BLE001
@@ -2125,33 +2023,8 @@ class Payload:
         return self.record("image_generation", not failures, detail)
 
     def assert_cloudflare(self) -> bool:
-        """`unsloth run --cloudflare`: a public URL that serves, and refuses.
-
-        This is the only assertion in the payload that reaches the public
-        internet, so what it claims is deliberately narrow and what it refuses
-        to claim is stated:
-
-        1. cloudflared is fetched and a quick tunnel is established, and the
-           URL printed is a real `*.trycloudflare.com` host rather than the
-           `api.trycloudflare.com` that appears in cloudflared's own FAILURE
-           lines -- that is a live trap, and Studio's own regex carries the
-           same negative lookahead for it;
-        2. the tunnel SERVES: `/api/health` answers through the public URL,
-           which is what separates "a URL was printed" from "a URL that works";
-        3. the tunnel REFUSES an unauthenticated request. A public URL onto a
-           CI machine is only defensible if it is behind auth, and this is the
-           check that says so rather than assuming it.
-
-        `--host 0.0.0.0` is not incidental. Studio raises a quick tunnel for
-        WILDCARD binds; on 127.0.0.1 there is nothing to publish and no URL is
-        printed, which would read as a broken feature.
-
-        A tunnel that cannot be established AT ALL is reported rather than
-        failed, and the reason is carried from the log. Kaggle egress to
-        cloudflared's release host is not something this repo controls, and the
-        directive asks for this "if possible". The narrowness is enforced: the
-        excuse applies only when NO url was printed, and never once one was.
-        """
+        """Public URL must serve health and refuse unauthenticated requests; no URL at all is only
+        reported."""
         failures: list[str] = []
         detail: dict = {}
         port = self.args.port + 2
@@ -2167,7 +2040,7 @@ class Payload:
             self.args.chat_model,
             "--port",
             str(port),
-            # WILDCARD. A loopback bind publishes nothing and prints no URL.
+            # Wildcard: a loopback bind publishes nothing and prints no URL.
             "--host",
             "0.0.0.0",
             "--api-only",
@@ -2211,9 +2084,7 @@ class Payload:
                     if api_key:
                         self.secrets.add(api_key)
                 if url is None:
-                    # The SAME negative lookahead Studio's own matcher uses.
-                    # `api.trycloudflare.com` appears in cloudflared's failure
-                    # lines and is never a usable tunnel.
+                    # Same negative lookahead as Studio: api.trycloudflare.com appears in failure lines.
                     found = re.search(r"https://(?!api\.)[A-Za-z0-9-]+\.trycloudflare\.com", text)
                     if found:
                         url = found.group(0)
@@ -2223,30 +2094,23 @@ class Payload:
 
             detail["tunnel_url_seen"] = bool(url)
             if url is None:
-                # Reported, not failed, and ONLY here: nothing was published,
-                # so there is nothing to have gone wrong with. The reason comes
-                # off the log rather than being assumed.
                 tail = log_path.read_text(encoding = "utf-8", errors = "replace")[-600:]
                 detail["no_tunnel_reason"] = self.scrub(tail)
                 detail["reported_not_failed"] = True
             else:
-                # The host is a secret in the sense that matters here: it is a
-                # live public route to this machine, and the artifact is read
-                # by people who are not running it.
+                # The tunnel URL is a live public route to this machine; scrub it.
                 self.secrets.add(url)
                 public = Studio(url, timeout = 30.0)
                 code, body = public.get("/api/health", auth = False)
                 detail["public_health_status"] = code
-                # A tunnel that resolves but serves Cloudflare's own error page
-                # answers 530, which is a URL that does not work.
+                # A Cloudflare error page answers 530.
                 if code != 200:
                     failures.append(
                         f"the quick tunnel URL answered HTTP {code} on /api/health, "
                         f"so a URL was published that does not serve"
                     )
 
-                # And it must REFUSE. A public URL onto a CI box is only
-                # defensible behind auth, so this is asserted, not assumed.
+                # A public URL onto a CI box is only defensible behind auth, so assert refusal.
                 code, _ = public.post(
                     "/v1/chat/completions",
                     {
@@ -2276,35 +2140,8 @@ class Payload:
         detail["failures"] = failures
         return self.record("cloudflare", not failures, detail)
 
-    # ------------------------------------------------------ existing drivers
-
     def assert_cli_run(self) -> bool:
-        """`unsloth run`: a model server started from the CLI, driven by its key.
-
-        This is the headless path a user scripts, and nothing in CI covers it.
-        It is a different launch from `unsloth studio`: `run` starts the
-        backend, waits for health, mints an API key IN-PROCESS, and then loads
-        the model over HTTP. Any of those four can break without the others
-        noticing, and the command still prints a banner.
-
-        Four claims, and each rules out a way the previous one passes hollow:
-
-        1. the server becomes healthy on the port it was given;
-        2. the model reaches the GPU -- measured as device VRAM growth across
-           the launch, not as a line in the banner. `--api-only` on a card the
-           chat-UI phase has already emptied makes that delta this launch's;
-        3. the key the command minted AUTHENTICATES a real completion, and the
-           completion is non-empty. A key that is printed and rejected is
-           worse than no key, because the failure surfaces in a user's
-           integration rather than here;
-        4. a CORRUPTED key is refused. Without it, a server ignoring the header
-           entirely passes claim 3.
-
-        `--start-api-key-marker` is how the key is obtained: it prints
-        `UNSLOTH_START_API_KEY: <key>`, which is the mechanism `unsloth start`
-        itself uses. The value is registered as a secret the moment it is read,
-        before anything scrubs a log on the way into the evidence bundle.
-        """
+        """unsloth run: healthy server, VRAM growth on launch, minted key works, corrupted key refused."""
         failures: list[str] = []
         detail: dict = {}
         port = self.args.port + 1
@@ -2313,10 +2150,11 @@ class Payload:
 
         baseline = nvidia_used_mib()
         detail["vram_before_mib"] = baseline
-        # The per-process reading is taken alongside the device one because the
-        # device one is only valid when this payload owns the card, and under
-        # --studio-concurrent it does not. See the verdict below.
-        apps_before = nvidia_compute_apps() or {}
+        # The device reading is only valid when this payload owns the card
+        # (not under --studio-concurrent).
+        _listing_before = nvidia_compute_apps_listing()
+        apps_before = attributed_apps(_listing_before) or {}
+        listed_before = _listing_before[1] if _listing_before else None
         detail["compute_apps_before"] = apps_before
 
         head = self.studio_command()[:1] or [sys.executable]
@@ -2330,8 +2168,6 @@ class Payload:
             str(port),
             "--host",
             "127.0.0.1",
-            # Headless: no UI to serve and no browser to open, which is the
-            # shape this path is for.
             "--api-only",
             # Never a public URL from CI. --secure would imply one.
             "--no-cloudflare",
@@ -2410,8 +2246,7 @@ class Payload:
                 elif not text.strip():
                     failures.append("the CLI-served model returned empty content")
 
-                # And a corrupted key must be refused, or the check above
-                # passes on a server that ignores the header.
+                # A corrupted key must be refused, or a server ignoring the header passes.
                 client.token = api_key[:-4] + "0000" if len(api_key) > 8 else "bogus"
                 code, _ = client.post(
                     "/v1/chat/completions",
@@ -2429,24 +2264,20 @@ class Payload:
                         f"check above passes whatever is sent"
                     )
 
-            # AFTER a completion has come back, not after the API-key banner.
-            # `unsloth run` prints the key while it is still starting, and on
-            # kernel unsloth-probe-studio-full2-815a0c the sample landed before
-            # llama-server had the weights anywhere: 0.0 MiB of growth on a
-            # launch whose own log says
-            # `Starting llama-server: ... -ngl -1 --fit off`, which is Studio
-            # asking for every layer on the card. A served completion is the
-            # only cheap proof the weights are resident, so the ruler goes
-            # after it.
+            # After a completion: `unsloth run` prints the key before weights are resident.
             settled = nvidia_used_mib()
             detail["vram_after_mib"] = settled
-            apps_after = nvidia_compute_apps()
+            _listing_after = nvidia_compute_apps_listing()
+            apps_after = attributed_apps(_listing_after)
+            listed_after = _listing_after[1] if _listing_after else None
             detail["compute_apps"] = apps_after
             failure, measured = cli_run_gpu_failure(
                 apps_before,
                 apps_after,
                 baseline,
                 settled,
+                listed_before,
+                listed_after,
             )
             detail.update(measured)
             if failure:
@@ -2470,21 +2301,9 @@ class Payload:
         failures: list[str] = []
         detail: dict = {"driver": str(driver)}
 
-        # RE-SEED the account before handing over. The driver's first UI step is
-        # "change-password through UI (Setup your account)", which waits for
-        # #new-password on the forced-change form -- and authenticate() has to
-        # retire the bootstrap password over the API to get past that same gate,
-        # so by now Unsloth shows an ordinary login and the field never appears.
-        # Kernel unsloth-t4-ci-412345d2 failed the API assertions on the gate;
-        # 9ddd8ae4 fixed those and failed the driver on a stale password;
-        # 9c1a3b (this run) fixed the password and failed the driver on the form
-        # being gone. The two needs are opposites -- the API wants the change
-        # DONE, the driver wants it PENDING -- so they cannot share one account.
-        #
-        # A restart is the cheap way to give the driver what it expects:
-        # start_server() removes $STUDIO_HOME/auth, which is what re-seeds the
-        # bootstrap password, and this assertion runs last and stops the server
-        # anyway, so nothing after it needs the API session.
+        # Re-seed: the UI driver needs the forced password change pending, which the API
+        # already completed.
+        # start_server() removes $STUDIO_HOME/auth, re-seeding the bootstrap password.
         self.stop_server()
         if not self.start_server():
             failures.append("Unsloth did not come back after the restart that re-seeds the account")
@@ -2506,23 +2325,16 @@ class Payload:
         env.update(
             {
                 "BASE_URL": self.base_url,
-                # The freshly re-seeded bootstrap password: the driver rotates
-                # it through the UI and then asserts the old one stops working.
-                # Passed through the environment of one child, written nowhere.
+                # Passed only through one child's environment, written nowhere.
                 "STUDIO_OLD_PW": current,
                 "STUDIO_NEW_PW": rotated,
                 "PW_ART_DIR": str(self.art_dir),
                 "GGUF_REPO": self.args.chat_model,
                 "GGUF_VARIANT": self.args.chat_variant or "",
-                # Not strict: STRICT turns a set of cosmetic soft checks
-                # (typeahead ordering, theme cycling, nav labels) into hard
-                # failures, and none of them is what this leg is spending GPU
-                # quota to learn.
+                # Not strict: STRICT hardens cosmetic soft checks this leg does not care about.
                 "STUDIO_UI_STRICT": "0",
-                # The defaults are sized for a warm ubuntu-latest runner with
-                # a cached 270M model. Here the model is larger and the box is
-                # busier.
                 "STUDIO_UI_WALL_TIMEOUT_S": str(self.args.ui_wall_timeout),
+                "STUDIO_UI_TOTAL_TIMEOUT_S": str(UI_DRIVER_TOTAL_TIMEOUT_S),
                 "STUDIO_UI_LOAD_TIMEOUT_MS": "600000",
                 "STUDIO_UI_TURN_TIMEOUT_MS": "180000",
                 "PYTHONUNBUFFERED": "1",
@@ -2537,7 +2349,7 @@ class Payload:
                 env = env,
                 capture_output = True,
                 text = True,
-                timeout = self.args.ui_wall_timeout + 300,
+                timeout = UI_DRIVER_PROC_TIMEOUT_S,
             )
             rc, out, err = proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
@@ -2561,29 +2373,13 @@ class Payload:
         detail["failures"] = failures
         return self.record("chat_ui_driver", not failures, detail)
 
-    # -------------------------------------------------------------- evidence
-
     def redacted(self, path: Path) -> bytes:
-        """A log file with every credential this run knows about removed.
-
-        Unsloth's startup banner prints the bootstrap password, and the chat
-        driver's own log echoes what it was given. Both files leave this
-        machine as a CI artifact, so both are rewritten on the way out. The
-        replacement is a fixed marker rather than a same-length blank, so the
-        redaction is visible to whoever reads the artifact.
-        """
+        """Scrub credentials from logs before they leave as artifacts, using a visible fixed marker."""
         self.remember_bootstrap()
         return self.scrub(path.read_text(encoding = "utf-8", errors = "replace")).encode("utf-8")
 
     def emit_evidence(self, passed: bool) -> None:
-        """Ship the artifacts back inside the notebook's own cell output.
-
-        The shared launcher collects executed notebooks and the kernel log and
-        nothing else, so a PNG on the Kaggle filesystem is a PNG nobody will
-        ever see. Encoding the bundle into stdout is what gets it home. Logs
-        and the report always travel; screenshots only on failure, because on
-        a pass they are megabytes nobody reads.
-        """
+        """Encode the evidence bundle into stdout, the only path home; screenshots ship only on failure."""
 
         def _pack(*, with_screenshots: bool, log_tail_bytes: int | None = None) -> bytes:
             buf = io.BytesIO()
@@ -2593,9 +2389,7 @@ class Payload:
                     "unsloth_cloudflare.log",
                     "playwright_chat_ui.log",
                     "studio.log",
-                    # `unsloth run` prints the API key it mints; redacted() is
-                    # what keeps it out of the artifact, and a file nobody
-                    # packs is a file nobody redacts either.
+                    # `unsloth run` prints the API key; files must be packed to be redacted.
                     "unsloth_run.log",
                 ):
                     path = self.outdir / name
@@ -2622,11 +2416,7 @@ class Payload:
 
         blob = _pack(with_screenshots = not passed)
         if len(blob) > MAX_EVIDENCE_BYTES:
-            # Screenshots are what blow the cap, so screenshots are what goes.
-            # The earlier version rebuilt with the report ALONE while saying it
-            # was shipping logs, which discarded studio.log and
-            # playwright_chat_ui.log in exactly the failing runs that need
-            # them.
+            # Drop screenshots, not logs, when over the cap.
             log(f"evidence bundle is {len(blob)} bytes, over the cap; shipping logs only")
             blob = _pack(with_screenshots = False)
         if len(blob) > MAX_EVIDENCE_BYTES:
@@ -2638,30 +2428,62 @@ class Payload:
         for index, chunk in enumerate(chunks):
             print(f"{EVIDENCE_PREFIX}{index + 1}/{len(chunks)} {chunk}", flush = True)
 
-    # ------------------------------------------------------------------ main
+    def execute_legs(self) -> int:
+        """Run only the assertions named by --legs, in order; unknown names are refused up front."""
+        available = {
+            "auto_tensor_split": self.assert_auto_tensor_split,
+            "gpu_inference": self.assert_gpu_inference,
+            "tool_calling": self.assert_tool_calling,
+            "code_execution": self.assert_code_execution,
+            "web_search": self.assert_web_search,
+            "server_flags": self.assert_server_flags,
+            "compaction": self.assert_compaction,
+            "api_key": self.assert_api_key,
+            "tabs": self.assert_tabs,
+        }
+        wanted = [name.strip() for name in self.args.legs.split(",") if name.strip()]
+        unknown = [name for name in wanted if name not in available]
+        if unknown:
+            self.record(
+                "legs",
+                False,
+                {
+                    "requested": wanted,
+                    "failures": [
+                        f"unknown assertion(s) {unknown}; this run measured nothing. "
+                        f"Known: {sorted(available)}"
+                    ],
+                },
+            )
+            return self.finish()
+
+        # Baseline leg first on its own revision, so head differs by one file.
+        if self.args.base_sha and "auto_tensor_split" in wanted:
+            self.assert_auto_tensor_split_baseline()
+            if not self.restore_head_revision():
+                return self.finish()
+
+        for name in wanted:
+            available[name]()
+        return self.finish()
 
     def execute(self) -> int:
         if not self.preflight():
             return self.finish()
-        # Before the server, so the export route sees a llama.cpp that was
-        # already there rather than one that appeared underneath it. Its
-        # result is recorded and deliberately not checked: a box where the
-        # bundle will not install should still run every other assertion and
-        # report the export failing for the reason it actually failed.
+        # Before the server; result recorded but not checked so other assertions still run.
         self.install_llama_cpp()
         if not self.start_server():
             return self.finish()
         if not self.authenticate():
             return self.finish()
 
-        # Before the GPU work: it needs nothing but a logged-in session, and
-        # putting it after a 20-minute training run would mean a training
-        # failure hides whether API keys work at all.
+        if self.args.legs:
+            return self.execute_legs()
+
+        # Before GPU work so a training failure cannot hide API key results.
         self.assert_api_key()
 
-        # Before any model work: these are pure route checks that need only a
-        # logged-in session, and putting them after a 20-minute training run
-        # would mean a training failure hides whether the tabs exist at all.
+        # Before model work so a training failure cannot hide missing tabs.
         self.assert_tabs()
 
         gpu_ok = self.assert_gpu_inference()
@@ -2670,8 +2492,6 @@ class Payload:
             self.assert_code_execution()
             self.assert_web_search()
         else:
-            # Tool calling on a CPU fallback would be a green tick for a
-            # question nobody asked. Skip it and say so.
             self.record(
                 "tool_calling",
                 False,
@@ -2688,15 +2508,10 @@ class Payload:
                 {"failures": ["skipped: the model was not on the GPU, so this proves nothing"]},
             )
 
-        # AFTER the GPU inference assertions and BEFORE training: it reloads
-        # the chat model with different flags, so running it earlier would
-        # change the model the inference checks measured, and running it after
-        # training would put a reload between the adapter and the export.
+        # After GPU inference and before training: it reloads the chat model with different flags.
         if gpu_ok:
             self.assert_server_flags()
-            # AFTER the reload, because that is what pins the window to
-            # --studio-ctx: a compaction check against an unknown context
-            # length cannot say whether the prompt was over it.
+            # After the reload, which pins the window to --studio-ctx.
             self.assert_compaction()
         else:
             self.record(
@@ -2727,39 +2542,26 @@ class Payload:
                 adapter_dir = entry.get("output_dir")
         self.assert_gguf_export(adapter_dir if trained else None)
 
-        # Straight after, and it reads the export's own recorded path: the
-        # comparison is only meaningful against the file that assertion made.
         exported_gguf = None
         for entry in self.assertions:
             if entry["name"] == "gguf_export":
                 exported_gguf = entry.get("gguf")
         self.assert_lora_vs_base(exported_gguf)
 
-        # BEFORE the UI driver, because assert_chat_ui ends by stopping the
-        # server and every request below it would then be refused at the
-        # socket. Measured on kernel unsloth-probe-studio-full2-815a0c, where
-        # this assertion reported `URLError: Connection refused` and read as a
-        # broken image path on a server that had simply been shut down.
-        # Placed after all the language work regardless: a diffusion pipeline
-        # is the largest single thing this payload puts on a T4, and it is
-        # unloaded in a finally either way.
+        # Before the UI driver, which ends by stopping the server.
         if self.args.image_generation:
             self.assert_image_generation()
 
         if not self.args.skip_ui:
             self.assert_chat_ui()
 
-        # LAST, and the order is the design. `unsloth run` starts a SECOND
-        # backend against the same studio home, and two backends sharing one
-        # home's state is not a configuration anybody ships. assert_chat_ui
-        # ends by stopping the server, so by here the port is free, the card is
-        # empty, and the VRAM delta below measures this launch alone.
+        # Last: `unsloth run` starts a second backend on the same home. Stop and wait first,
+        # since a stopping server is briefly still listed and resident.
+        self.stop_server()
+        wait_for_card_to_settle()
         self.assert_cli_run()
 
-        # LAST of all, and the only thing here that touches the public
-        # internet. Its own launch rather than a flag on the one above,
-        # because the tunnel needs a WILDCARD bind and assert_cli_run's claim
-        # is about a loopback server.
+        # Its own wildcard launch; assert_cli_run's claim is about a loopback server.
         if self.args.cloudflare_check:
             self.assert_cloudflare()
         else:
@@ -2776,10 +2578,7 @@ class Payload:
             json.dumps(report, indent = 2), encoding = "utf-8"
         )
         self.stop_server()
-        # Evidence FIRST, then the report line. The launcher's extract_reports
-        # keeps the first report it sees for each label|model, so a crash in
-        # emit_evidence after a pass was printed published PASS and left the
-        # corrected failing report to be ignored.
+        # Evidence first: extract_reports keeps the first report per label|model.
         try:
             self.emit_evidence(report["passed"])
         except Exception as exc:  # noqa: BLE001
@@ -2800,9 +2599,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--studio-home", required = True, help = "UNSLOTH_STUDIO_HOME for this run")
     ap.add_argument("--port", type = int, default = 18902)
     ap.add_argument(
-        # 2048 constrains the runs, as the brief asks. It also keeps the
-        # KV-cache check about the cache: an unconstrained context on a 14.56GB
-        # card turns it into an OOM about something else.
+        # 2048 also keeps the KV-cache check from becoming an OOM on a 14.56GB card.
         "--studio-ctx",
         dest = "studio_ctx",
         type = int,
@@ -2816,9 +2613,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help = "diffusion repo for the image-generation assertion",
     )
     ap.add_argument(
-        # OFF by default: it is the last-priority item and it pulls a diffusion
-        # checkpoint the rest of the payload has no use for. A dispatch that
-        # wants it says so.
         "--image-generation",
         dest = "image_generation",
         action = "store_true",
@@ -2826,8 +2620,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help = "load a diffusion model and generate one 256x256 image at 2 steps",
     )
     ap.add_argument(
-        # On by default because the directive asks for it, and off-able because
-        # it is the one assertion here that reaches the public internet.
+        # Off-able: the one assertion that reaches the public internet.
         "--no-cloudflare-check",
         dest = "cloudflare_check",
         action = "store_false",
@@ -2835,15 +2628,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help = "skip the quick-tunnel assertion (it opens a public URL)",
     )
     ap.add_argument(
-        # Empty means "use the bootstrap password", which is the behaviour this
-        # payload had before. A caller passes `auto` to have one generated.
+        # Empty means use the bootstrap password; `auto` generates one.
         "--studio-password",
         default = "",
         help = "start Studio with --password and log in with it; 'auto' generates one",
     )
-    # MTP-GGUF, not the plain GGUF: multi-token prediction is a distinct
-    # serving path in llama.cpp, and a leg pointed at the plain repo cannot
-    # tell whether it works.
+    # MTP-GGUF: multi-token prediction is a distinct llama.cpp serving path.
     ap.add_argument("--chat-model", default = "unsloth/Qwen3.5-2B-MTP-GGUF")
     ap.add_argument("--chat-variant", default = "UD-Q4_K_XL")
     ap.add_argument("--train-model", default = "unsloth/Qwen3.5-2B")
@@ -2867,6 +2657,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--skip-ui",
         action = "store_true",
         help = "do not drive playwright_chat_ui.py (for debugging the API assertions alone)",
+    )
+    ap.add_argument(
+        "--legs",
+        default = "",
+        help = "comma-separated assertion names to run, in the order listed here; "
+        "empty runs the standard set. A focused run of one flag on real "
+        "multi-GPU hardware does not need a 20-minute training leg to be "
+        "meaningful, and a Kaggle session has a ceiling.",
+    )
+    ap.add_argument(
+        "--auto-split-ratio",
+        default = "3,1",
+        help = "the per-GPU ratio the auto tensor-parallel check asks for. Skewed "
+        "on purpose: an even ratio is what the planner emits anyway, so it "
+        "cannot tell a forwarded ratio from a default one.",
+    )
+    ap.add_argument(
+        "--base-sha",
+        default = "",
+        help = "run the auto tensor-parallel check against this revision FIRST, with "
+        "only studio/backend/core/inference/llama_cpp.py swapped, so the two "
+        "legs differ by the change under test and by nothing else. The base "
+        "leg must reproduce the defect or the comparison is void.",
+    )
+    ap.add_argument(
+        "--head-sha",
+        default = "",
+        help = "the revision to restore after a --base-sha leg (default: HEAD).",
     )
     return ap.parse_args(argv)
 

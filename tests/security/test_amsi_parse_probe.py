@@ -1,0 +1,833 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The AMSI probe must keep its positive control and must compile the installer, never invoke it."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import textwrap
+from pathlib import Path
+
+import pytest
+import yaml
+
+# Use the shared runner: direct pwsh calls share one startup cache across xdist workers.
+# tests/studio/test_pwsh_calls_use_the_shared_runner.py enforces this.
+from unsloth_pwsh_runner import run_pwsh
+
+
+REPO = Path(__file__).resolve().parents[2]
+PROBE = REPO / ".github" / "scripts" / "Probe-AmsiParse.ps1"
+WORKFLOW = REPO / ".github" / "workflows" / "windows-amsi-defender-differential-ci.yml"
+
+
+def _probe_text() -> str:
+    return PROBE.read_text(encoding = "utf-8")
+
+
+def test_the_probe_exists() -> None:
+    assert PROBE.is_file(), f"missing {PROBE.relative_to(REPO)}"
+
+
+def test_the_probe_parses() -> None:
+    """It is invoked by a workflow under Windows PowerShell 5.1, where a syntax error would surface
+    as "the probe wrote no result" and be indistinguishable from an absent scanner."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    probe = (
+        "$errors = $null; $tokens = $null; "
+        "$null = [System.Management.Automation.Language.Parser]::ParseFile("
+        "$env:UNSLOTH_TARGET, [ref]$tokens, [ref]$errors); "
+        "if ($errors.Count) { $errors | ForEach-Object { $_.Message }; exit 1 }"
+    )
+    import os
+
+    result = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = {**os.environ, "UNSLOTH_TARGET": str(PROBE)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_probe_compiles_but_never_invokes() -> None:
+    """It is handed the real installer. Running it would install, from a commit nobody reviewed."""
+    text = _probe_text()
+    code = "\n".join(
+        line
+        for line in text.splitlines()
+        if not line.strip().startswith("#") and not line.strip().startswith(".")
+    )
+    for banned in (
+        "Invoke-Expression",
+        ".Invoke()",
+        "InvokeReturnAsIs",
+        "Start-Process",
+        "& $sb",
+        "iex ",
+    ):
+        assert banned not in code, (
+            f"the probe contains {banned!r}. It must submit text to the compiler and stop there: "
+            f"it is handed install.ps1, so invoking would run a full install inside a measurement."
+        )
+    assert "[scriptblock]::Create" in code, (
+        "the probe no longer submits anything to the compiler, which is the only way to ask AMSI "
+        "the question. Compilation is the AMSI trigger; execution is not needed and is not wanted."
+    )
+
+
+def test_the_positive_control_is_present_and_split() -> None:
+    """Split the AMSI test sample so this repository does not itself carry the detection signature."""
+    text = _probe_text()
+    assert "$Control" in text, "the probe lost its -Control switch"
+    assert "7e72c3ce" in text, (
+        "the AMSI test sample is gone. Without it a runner with no live provider returns 'not "
+        "blocked' for everything, which is indistinguishable from a clean verdict."
+    )
+    assert "7e72c3ce-861b-4339-8740-0ac1484c1386" not in text, (
+        "the AMSI test sample appears as one literal. Assemble it from fragments, the way "
+        "Microsoft's own documentation does, so this repository is not a sample of it."
+    )
+
+
+def test_a_block_is_matched_on_the_error_id_and_not_on_message_text() -> None:
+    """Message text is localised. install.rs already keys on the id, and this follows it."""
+    text = _probe_text()
+    assert "ScriptContainedMaliciousContent" in text
+    assert "ScriptHasAdminBlockedContent" in text, (
+        "an administrative policy block is a different cause with a different fix from a signature "
+        "match, and collapsing them loses the only distinction that tells a user what to do"
+    )
+    assert "FullyQualifiedErrorId" in text
+
+
+def test_the_probe_never_exits_non_zero_on_a_detection() -> None:
+    """Whether a detection is a failure depends on the controls and on which side it appeared on,
+    and the caller holds both. A probe that exits non-zero on a detection cannot establish a
+    baseline, which is the first thing this lane needs to do."""
+    text = _probe_text()
+    assert re.search(r"^exit 0\s*$", text, re.M), "the probe must end by exiting zero"
+    assert "exit 1" not in text, (
+        "the probe decides a verdict. It must report and let the workflow decide, because the "
+        "workflow is the only place that knows whether the control fired."
+    )
+
+
+def test_the_workflow_exists_and_is_valid_yaml() -> None:
+    assert WORKFLOW.is_file()
+    data = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    assert list(data["jobs"]) == ["measure"]
+
+
+def test_the_lane_is_never_a_required_check_by_schedule_alone() -> None:
+    """Definitions change daily and outside our control. A required check that a Microsoft
+    definition push can turn red is a release-blocking hazard, so the scheduled run exists to
+    notice a new signature, not to gate a merge."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    assert "schedule:" in body
+    assert "required check" in body, (
+        "the workflow no longer records that it must not be a required check, which is the one "
+        "thing a reader needs to know before wiring it into branch protection"
+    )
+
+
+def test_an_absent_scanner_warns_and_never_reports_clean() -> None:
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    for needle, why in (
+        ("COULD NOT MEASURE", "the unmeasured outcome has to be named, or it reads as clean"),
+        ("positive control", "both halves are gated on a control"),
+        ("EICAR", "the file-scan half needs its own control"),
+        ("did NOT fire", "the control failing has to be reported explicitly"),
+    ):
+        assert needle in body, f"{why}: {needle!r} is gone"
+    # The EICAR literal must be split here too, for the same reason as the AMSI sample.
+    assert (
+        "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*" not in body
+    ), "EICAR appears as one literal in the workflow; assemble it from fragments"
+
+
+def test_the_probe_runs_under_windows_powershell_five_one() -> None:
+    """pwsh 7 is a different host with a different AMSI integration, so its answer does not
+    transfer, and 5.1 is what install.rs spawns and what the #10805 reporter ran."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    assert "WindowsPowerShell\\v1.0\\powershell.exe" in body
+    assert (
+        "-ExecutionPolicy RemoteSigned" in body
+    ), "the lane that exists to remove relaxed execution policies must not use one itself"
+    assert "Bypass" not in body.replace(
+        "ScriptHasAdminBlockedContent", ""
+    ), "the workflow relaxes an execution policy somewhere"
+
+
+def test_the_probe_reports_on_a_host_without_amsi_rather_than_crashing() -> None:
+    """On a host with no AMSI provider the probe must still write well-formed JSON, not crash."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "result.json"
+        target = Path(tmp) / "sample.ps1"
+        target.write_text("Write-Output 'hello'\n", encoding = "utf-8")
+        result = run_pwsh(
+            [
+                pwsh,
+                "-NoProfile",
+                "-File",
+                str(PROBE),
+                "-Control",
+                "-Path",
+                str(target),
+                "-OutFile",
+                str(out),
+            ],
+            capture_output = True,
+            text = True,
+            timeout = 180,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert out.is_file(), f"the probe wrote no result file:\n{result.stdout}{result.stderr}"
+        data = json.loads(out.read_text(encoding = "utf-8"))
+
+    labels = [r["label"] for r in data["results"]]
+    assert any(l.startswith("control") for l in labels), "the control is missing from the output"
+    assert str(target) in labels or any(str(target) in l for l in labels)
+    for row in data["results"]:
+        assert row["blocked"] is False, (
+            "something was reported blocked on a host with no AMSI provider, which means the "
+            "'blocked' flag is being set by something other than a scanner verdict"
+        )
+
+
+def test_the_laid_out_copies_keep_the_bytes_that_ship(tmp_path: Path) -> None:
+    """Scanned copies must keep the shipped bytes; a PowerShell text round trip alters line endings."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    start = body.index("$psi = New-Object System.Diagnostics.ProcessStartInfo")
+    end = body.index("$laid++", start)
+    snippet = textwrap.dedent(body[start:end])
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # CRLF, a byte that is not valid UTF-8, two trailing blank lines and no final newline: each one
+    # is separately destroyed by the text round trip.
+    blob = b"Write-Host 'one'\r\nWrite-Host 'two \xff'\r\n\r\n\r\nWrite-Host 'three'"
+    (repo / "install.ps1").write_bytes(blob)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+    for argv in (
+        ["git", "init", "-q"],
+        # autocrlf off so checkout cannot normalise line endings; only the extraction is tested.
+        ["git", "config", "core.autocrlf", "false"],
+        ["git", "add", "install.ps1"],
+        ["git", "commit", "-qm", "b"],
+    ):
+        subprocess.run(argv, cwd = repo, check = True, env = env)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd = repo, check = True, capture_output = True, text = True
+    ).stdout.strip()
+
+    dest = tmp_path / "copy.ps1"
+    script = tmp_path / "lay.ps1"
+    script.write_text(
+        f"$sha = '{sha}'\n$f = 'install.ps1'\n$dest = '{dest.as_posix()}'\n" + snippet,
+        encoding = "utf-8",
+    )
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        cwd = str(repo),
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert done.returncode == 0, f"{done.stdout}\n{done.stderr}"
+    assert dest.read_bytes() == blob, (
+        "the laid-out copy is not the committed blob, so the scanner is judging bytes this project "
+        "never serves"
+    )
+
+    # Read the COMMITTED blob: Windows autocrlf rewrites install.ps1 to CRLF on disk.
+    shipped = subprocess.run(
+        ["git", "show", "HEAD:install.ps1"],
+        cwd = REPO,
+        check = True,
+        capture_output = True,
+    ).stdout
+    assert b"\r\n" not in shipped, (
+        "install.ps1 now contains CRLF, so the assumption this lane is built on no longer holds. "
+        "Check .gitattributes before changing the workflow: a committed Authenticode signature over "
+        "CRLF-rewritten content reads as HashMismatch, which is worse than unsigned."
+    )
+    assert shipped[:3] != b"\xef\xbb\xbf", "install.ps1 gained a BOM"
+
+
+def test_the_mark_of_the_web_is_written_the_documented_way() -> None:
+    """Use -Stream Zone.Identifier; a suffix on -LiteralPath can fail silently under SilentlyContinue."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    assert "-Stream Zone.Identifier" in body, (
+        "the mark-of-the-web stamp no longer uses -Stream, which is the only documented way to "
+        "address an alternate data stream"
+    )
+    # Strip comment lines first, so prose that names the banned form does not trip the ban.
+    code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
+    assert (
+        ':Zone.Identifier"' not in code
+    ), "the workflow appends a stream name to a path again; use -Stream"
+    assert "was scanned WITHOUT mark-of-the-web" in body, (
+        "a failed stamp is no longer reported. A scan of a MyComputer-zone file is a weaker test "
+        "than this lane claims to run, and a reader has to know which one they got."
+    )
+
+
+def _amsi_step_script() -> str:
+    """The body of the step that turns probe results into a verdict, as CI runs it."""
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    for step in workflow["jobs"]["measure"]["steps"]:
+        if step.get("id") == "amsi":
+            return step["run"]
+    raise AssertionError(
+        "the workflow no longer has a step with id 'amsi'. This test drives the REAL verdict logic "
+        "by extracting it, so that it cannot pass against a copy that has drifted from CI."
+    )
+
+
+def _verdict_logic() -> str:
+    """Everything from the per-row control onwards, with the row collection left to the caller."""
+    script = _amsi_step_script()
+    marker = "# The control decides whether any of this means anything"
+    assert (
+        marker in script
+    ), "the per-row control block is gone from the workflow, so there is nothing to exercise"
+    return script[script.index(marker) :]
+
+
+def _run_verdict(
+    tmp_path: Path,
+    rows_ps: str,
+    no_result_ps: str = "@()",
+) -> tuple[int, str]:
+    """Run the extracted verdict logic against synthetic probe rows."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    out = tmp_path / "github_output"
+    out.write_text("", encoding = "utf-8")
+    script = tmp_path / "verdict.ps1"
+    script.write_text(
+        f"$env:GITHUB_OUTPUT = '{out.as_posix()}'\n"
+        f"$rows = {rows_ps}\n"
+        f"$noResult = {no_result_ps}\n" + _verdict_logic(),
+        encoding = "utf-8",
+    )
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    return done.returncode, done.stdout + done.stderr + out.read_text(encoding = "utf-8")
+
+
+def _row(side: str, name: str, *, control: bool, result: str) -> str:
+    control_ps = (
+        f"@{{ label = 'control (AMSI test sample)'; blocked = ${str(control).lower()}; errorId = "
+        f"$(if (${str(control).lower()}) {{ 'ScriptContainedMaliciousContent' }} else {{ '' }}) }}"
+    )
+    return (
+        f"[pscustomobject]@{{ side = '{side}'; name = '{name}'; "
+        f"data = [pscustomobject]@{{ results = @({control_ps}, {result}) }} }}"
+    )
+
+
+_COMPILED = "@{ label = 'f.ps1'; blocked = $false; errorId = '' }"
+_BLOCKED = "@{ label = 'f.ps1'; blocked = $true; errorId = 'ScriptContainedMaliciousContent' }"
+_SYNTAX = "@{ label = 'f.ps1'; blocked = $false; errorId = 'ExpectedExpression' }"
+_MISSING = "@{ label = 'f.ps1'; blocked = $false; errorId = ''; missing = $true }"
+_UNREADABLE = "@{ label = 'f.ps1'; blocked = $false; errorId = ''; unreadable = $true }"
+
+
+@pytest.mark.parametrize(
+    ("label", "head", "head_control", "expect_code", "expect_text"),
+    [
+        ("both sides compiled", _COMPILED, True, 0, "verdict=clean"),
+        ("head refused by a provider", _BLOCKED, True, 1, "AMSI refused head/"),
+        ("head did not compile", _SYNTAX, True, 1, "verdict=broken"),
+        ("head file missing", _MISSING, True, 0, "verdict=unmeasured"),
+        ("head file unreadable", _UNREADABLE, True, 0, "verdict=unmeasured"),
+        ("head control silent", _COMPILED, False, 0, "verdict=unmeasured"),
+    ],
+)
+def test_the_head_verdict_is_never_clean_unless_head_was_really_measured(
+    tmp_path: Path, label: str, head: str, head_control: bool, expect_code: int, expect_text: str
+) -> None:
+    """A head measurement that fails for any reason must never publish a clean verdict."""
+    rows = (
+        f"@({_row('base', 'install.ps1', control = True, result = _COMPILED)}, "
+        + _row("head", "install.ps1", control = head_control, result = head)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == expect_code, f"{label}: expected exit {expect_code}, got {code}\n{text}"
+    assert expect_text in text, f"{label}: expected {expect_text!r} in output\n{text}"
+    if expect_text != "verdict=clean":
+        assert "verdict=clean" not in text, f"{label}: published a clean verdict anyway\n{text}"
+
+
+def test_a_probe_that_wrote_no_result_is_not_silently_dropped(tmp_path: Path) -> None:
+    """The row simply vanished before, and a head file that vanishes leaves zero blocked: clean."""
+    rows = (
+        f"@({_row('base', 'install.ps1', control = True, result = _COMPILED)}, "
+        + _row("head", "install.ps1", control = True, result = _COMPILED)
+        + ")"
+    )
+    code, text = _run_verdict(
+        tmp_path, rows, no_result_ps = "@('head/setup.ps1 [the probe wrote no result]')"
+    )
+    assert code == 0
+    assert "verdict=unmeasured" in text, text
+    assert "verdict=clean" not in text, text
+
+
+def test_a_control_firing_elsewhere_does_not_vouch_for_this_process(tmp_path: Path) -> None:
+    """AMSI is per process, so a control fired by the base run must not vouch for the head process."""
+    rows = (
+        f"@({_row('base', 'install.ps1', control = True, result = _BLOCKED)}, "
+        + _row("head", "install.ps1", control = False, result = _COMPILED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 0
+    assert "verdict=unmeasured" in text, text
+    assert "verdict=clean" not in text, text
+
+
+@pytest.mark.parametrize(
+    ("label", "base_result", "base_control", "expect"),
+    [
+        ("base compiled the same file", _COMPILED, True, "This change introduced it"),
+        (
+            "base was refused for the same file",
+            _BLOCKED,
+            True,
+            "pre-existing rather than introduced",
+        ),
+        ("base row is not validly measured", _COMPILED, False, "cannot be said from this run"),
+        ("base did not compile the same file", _SYNTAX, True, "cannot be said from this run"),
+    ],
+)
+def test_causality_is_decided_per_script_and_only_against_a_valid_base(
+    tmp_path: Path, label: str, base_result: str, base_control: bool, expect: str
+) -> None:
+    """Introduced-vs-pre-existing is decided per script, and only against a validly measured base row."""
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control = base_control, result = base_result)
+        + ", "
+        + _row("head", "install.ps1", control = True, result = _BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1, f"{label}: a refused head script must fail the job\n{text}"
+    assert expect in text, f"{label}: expected {expect!r}\n{text}"
+
+
+def test_a_block_on_a_different_base_script_is_not_called_pre_existing(tmp_path: Path) -> None:
+    """The count-based version's exact failure: base blocked on setup.ps1, head blocked on
+    install.ps1, and the run announced the install.ps1 block as pre-existing."""
+    rows = (
+        "@("
+        + _row("base", "setup.ps1", control = True, result = _BLOCKED)
+        + ", "
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control = True, result = _BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1
+    assert "This change introduced it" in text, text
+    assert "pre-existing" not in text.split("install.ps1")[-1], text
+
+
+def test_a_real_block_is_reported_even_when_another_row_is_unmeasured(tmp_path: Path) -> None:
+    """An unmeasured row is a warning, but a real block elsewhere must still be reported."""
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control = True, result = _BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(
+        tmp_path, rows, no_result_ps = "@('head/setup.ps1 [the probe wrote no result]')"
+    )
+    assert code == 1, f"a refused head script did not fail the job\n{text}"
+    assert "AMSI refused head/install.ps1" in text, text
+    assert "could not measure head/setup.ps1" in text, "the coverage gap was not reported too"
+    assert "verdict=clean" not in text, text
+
+
+def test_a_parse_error_is_classified_even_when_the_control_is_silent(tmp_path: Path) -> None:
+    """A parse error is a property of the script, so it is reported even when no AMSI control fired."""
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control = False, result = _SYNTAX)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1, f"a candidate that does not parse was not reported\n{text}"
+    assert "verdict=broken" in text, text
+
+
+def test_a_block_claimed_without_a_live_control_is_not_trusted(tmp_path: Path) -> None:
+    """The other side of the same reordering: only BLOCKED needs the control, and it still needs it."""
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control = False, result = _BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 0, text
+    assert "verdict=unmeasured" in text, text
+    assert "verdict=clean" not in text, text
+
+
+def test_a_parse_error_is_reported_even_when_no_control_fired_anywhere(tmp_path: Path) -> None:
+    """Compile verdicts come before the no-control gate: a parse error does not depend on AMSI."""
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control = False, result = _COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control = False, result = _SYNTAX)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1, f"a candidate that does not parse was filed as unmeasured\n{text}"
+    assert "verdict=broken" in text, text
+
+
+def test_cloud_readiness_is_decided_by_maps_and_reports_bafs_separately() -> None:
+    """Cloud readiness is decided by MAPS, since block-at-first-sight needs an on-access open."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    start = body.index("$cloudReady = $false")
+    end = body.index("if ($cloudReady) {", start)
+    gate = body[start:end]
+    assert "$cloudReady = $true" in gate
+    assert "ValidateMapsConnection" in gate, "readiness no longer verifies the MAPS connection"
+    assert gate.index("ValidateMapsConnection") < gate.index(
+        "$cloudReady = $true"
+    ), "readiness is decided before the MAPS connection is validated"
+    assert "DisableBlockAtFirstSeen" in gate, (
+        "the block-at-first-sight preference is no longer reported at all, so a reader cannot tell "
+        "which configuration produced the verdict"
+    )
+    assert "elseif ($pref.DisableBlockAtFirstSeen)" not in gate, (
+        "block-at-first-sight is gating readiness again, which mislabels a MAPS-reachable runner as "
+        "local signatures only"
+    )
+    assert "$bafsNote" in gate and "$cloudNote = " in gate
+
+
+def test_a_real_block_is_still_reported_when_another_script_fails_to_parse(tmp_path: Path) -> None:
+    """A parse failure must not exit before real AMSI blocks are derived and reported."""
+    rows = (
+        "@("
+        + _row("base", "install.ps1", control = True, result = _COMPILED)
+        + ", "
+        + _row("head", "install.ps1", control = True, result = _SYNTAX)
+        + ", "
+        + _row("head", "setup.ps1", control = True, result = _BLOCKED)
+        + ")"
+    )
+    code, text = _run_verdict(tmp_path, rows)
+    assert code == 1, text
+    assert "verdict=broken" in text, text
+    assert "AMSI also refused the candidate" in text, (
+        "a genuine AMSI refusal was suppressed because another script failed to parse:\n" + text
+    )
+
+
+def test_an_unparseable_probe_result_is_not_silently_dropped() -> None:
+    """An unparseable probe result must not become a null row that drops out of the measured set."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    start = body.index("$json = Join-Path $out")
+    end = body.index("if ($rows.Count -eq 0)", start)
+    collection = body[start:end]
+    assert (
+        "ConvertFrom-Json -ErrorAction Stop" in collection
+    ), "the probe result is still parsed without erroring, so an invalid file yields a null row"
+    assert "could not be parsed" in collection, (
+        "a parse failure is not routed into the no-result list, so it shrinks the measured set "
+        "instead of being accounted for"
+    )
+    assert (
+        "carries no results" in collection
+    ), "a payload that parses but has no results is still accepted as a measured row"
+
+
+def test_the_defender_control_is_scanned_the_way_the_candidates_are() -> None:
+    """The Defender control must be scanned with the candidates' command, or it vouches for nothing."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    scans = [line for line in body.splitlines() if "-Scan -ScanType 3" in line]
+    assert scans, "nothing scans any more"
+    for line in scans:
+        assert "-DisableRemediation" in line, (
+            f"this scan does not use the same flags as the others, so the control and the "
+            f"measurement are not comparable:\n{line.strip()}"
+        )
+
+
+def test_the_laid_out_copies_are_exempt_before_they_are_written() -> None:
+    """Exempt the copies from real-time scanning before writing them, not just before the scan."""
+    import yaml as _yaml
+
+    workflow = _yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    steps = workflow["jobs"]["measure"]["steps"]
+    names = [str(s.get("name", "")) for s in steps]
+    runs = [str(s.get("run", "")) for s in steps]
+
+    exclude_at = next(
+        (i for i, r in enumerate(runs) if "Add-MpPreference -ExclusionPath" in r), None
+    )
+    assert exclude_at is not None, "nothing exempts the comparison directory any more"
+    layout_at = next(i for i, n in enumerate(names) if "Lay out both sides" in n)
+    amsi_at = next(i for i, n in enumerate(names) if "Ask AMSI" in n)
+    assert exclude_at < layout_at, (
+        "the exclusion is added after the copies are written, so real-time protection can "
+        "quarantine one before it is ever measured"
+    )
+    assert exclude_at < amsi_at, "the exclusion is added after the copies are opened"
+    assert (
+        "Get-MpPreference" in runs[exclude_at]
+    ), "the exclusion is never read back, so a refusal is silent"
+
+
+def test_both_loops_measure_the_expected_set_not_the_survivors() -> None:
+    """Measure the layout manifest's set, not the survivors, so a quarantined copy cannot vanish."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    assert "manifest.json" in body, "the layout step no longer records what it laid out"
+    assert (
+        body.count("Get-UnslothExpected") >= 3
+    ), "not every measurement loop reads the expected set"
+    assert (
+        "foreach ($file in (Get-ChildItem -LiteralPath (Join-Path $env:ROOT $side)" not in body
+    ), "a measurement loop still enumerates whatever survived on disk"
+    assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
+    assert '$unscanned += "$v' in body, "a vanished copy never reaches the Defender verdict"
+    assert '$noResult += "$v' in body, "a vanished copy never reaches the AMSI verdict"
+    assert '$unscanned += "$v' in body, "a vanished copy never reaches the Defender verdict"
+
+
+def test_the_probe_decodes_the_installer_as_utf8(tmp_path: Path) -> None:
+    """Decode the installer as UTF-8: Windows PowerShell 5.1 reads BOM-less files as ANSI."""
+    body = PROBE.read_text(encoding = "utf-8")
+    assert (
+        "Get-Content -Raw -LiteralPath $file" not in body
+    ), "the probe still reads the candidate with Get-Content's default encoding"
+    assert "UTF8Encoding" in body, "the probe does not decode the candidate as UTF-8"
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+    sample = tmp_path / "sample.ps1"
+    sample.write_bytes("Write-Host 'café — 中文'\n".encode("utf-8"))
+    probe = (
+        "$t = [System.IO.File]::ReadAllText($env:UNSLOTH_SAMPLE, "
+        "[System.Text.UTF8Encoding]::new($false)); "
+        "if ($t -match 'café' -and $t -match '中文') { 'OK' } else { 'MOJIBAKE'; exit 1 }"
+    )
+    import os as _os
+
+    done = run_pwsh(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+        env = {**_os.environ, "UNSLOTH_SAMPLE": str(sample)},
+    )
+    assert done.returncode == 0 and "OK" in done.stdout, f"{done.stdout}\n{done.stderr}"
+
+
+def test_the_defender_lane_does_not_claim_block_at_first_sight() -> None:
+    """Exempting the copies from on-access scanning rules out block-at-first-sight; only MAPS applies."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    printed = [
+        line
+        for line in body.splitlines()
+        if "Write-Host" in line and "block-at-first-sight" in line.lower()
+    ]
+    for line in printed:
+        assert (
+            "not block-at-first-sight" in line or "does not act" in line
+        ), f"this line still tells the reader block-at-first-sight was exercised:\n{line.strip()}"
+    assert (
+        "ON-DEMAND cloud scan" in body
+    ), "the lane no longer says what kind of cloud scan it actually performed"
+
+
+def test_the_probe_reports_the_inner_parse_error_id(tmp_path: Path) -> None:
+    """Read ScriptContainedMaliciousContent from the inner ParseException, not the outer record."""
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("pwsh is unavailable")
+
+    bad = tmp_path / "broken.ps1"
+    bad.write_text("if (\n", encoding = "utf-8")
+    out = tmp_path / "result.json"
+    done = run_pwsh(
+        [
+            pwsh,
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(PROBE),
+            "-Path",
+            str(bad),
+            "-OutFile",
+            str(out),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 180,
+    )
+    assert out.exists(), f"the probe wrote no result:\n{done.stdout}\n{done.stderr}"
+    data = json.loads(out.read_text(encoding = "utf-8"))
+    row = next(r for r in data["results"] if not str(r["label"]).startswith("control"))
+    assert row["blocked"] is False, "a syntax error was misreported as a scanner verdict"
+    assert "IfStatementMissingCondition" in str(row["errorId"]), (
+        f"the probe recorded only the outer generic id, so a real AMSI refusal would be invisible "
+        f"too: {row['errorId']!r}"
+    )
+
+
+def test_the_defender_verdict_assigns_causality_per_script() -> None:
+    """Defender must assign causality per script and compare against base, not drop base results."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    defender = body[body.index("Ask Defender's file scanner") :]
+    defender = defender[: defender.index("Upload the measurements")]
+    assert (
+        "$defState" in defender
+    ), "the Defender half records no per-script state to compare against"
+    assert '$defState["base|$name"]' in defender, (
+        "the Defender verdict does not look up the matching base script, so it cannot tell an "
+        "introduced detection from a pre-existing one"
+    )
+    for phrase in ("pre-existing rather than introduced", "This change introduced it"):
+        assert phrase in defender, f"the Defender verdict never says {phrase!r}"
+    assert (
+        "is flagged on the merge base and clean on the candidate" in defender
+    ), "a base-only detection is still reported as a neutral clean head"
+
+
+def test_the_defender_control_never_infers_a_block_from_an_exception() -> None:
+    """Exceptions around the EICAR write and scan must never be read as a detected block."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    defender = body[body.index("Ask Defender's file scanner") :]
+    defender = defender[: defender.index("Upload the measurements")]
+    control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
+    # Every live-declaration must be preceded by a Test-Path on the control file.
+    lines = control.splitlines()
+    for i, line in enumerate(lines):
+        if "$fired = $true" not in line:
+            continue
+        window = "\n".join(lines[max(0, i - 6) : i])
+        assert "Test-Path -LiteralPath $controlFile" in window, (
+            "this sets the control live without first observing that the control file is gone:\n"
+            + window
+            + "\n"
+            + line
+        )
+    assert (
+        "so this was not a Defender block" in control
+    ), "a failed control write no longer reports itself as something other than a block"
+    assert (
+        "there is no positive control" in control
+    ), "a control scan that cannot be launched no longer says the control did not run"
+
+
+def test_the_defender_control_writes_a_benign_canary_first() -> None:
+    """An absent EICAR file proves nothing unless a benign same-size canary writes successfully first."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    defender = body[body.index("Ask Defender's file scanner") :]
+    control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
+    assert "$canaryFile" in control, "there is no benign canary, so absence is not attributable"
+    assert control.index("$canaryOk") < control.index("$controlFile -Encoding ascii"), (
+        "the canary is written after the EICAR file, so a failed directory cannot be ruled out "
+        "before the EICAR write is interpreted"
+    )
+    assert (
+        "no positive control" in control
+    ), "an unwritable control directory no longer reports that there is no positive control"
+    # Both writes must be terminating, or Continue carries a failure past the check.
+    writes = [line for line in control.splitlines() if "Set-Content -LiteralPath $c" in line]
+    assert len(writes) == 2, writes
+    for line in writes:
+        block = control[control.index(line) : control.index(line) + 400]
+        assert "-ErrorAction Stop" in block, f"this write is non-terminating:\n{line.strip()}"
+
+
+def test_the_control_fires_only_through_the_command_the_candidates_are_read_with() -> None:
+    """The control must sit in the exempt root and be found by the candidates' MpCmdRun scan."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    defender = body[body.index("Ask Defender's file scanner") :]
+    control = defender[: defender.index("EICAR proves the LOCAL engine scans")]
+    assert "$controlDir = Join-Path $env:ROOT 'defender-control'" in control, (
+        "the control is not inside the on-access exclusion, so real-time protection can take it "
+        "away before the on-demand scan reads it"
+    )
+    lines = control.splitlines()
+    fired = [
+        i for i, line in enumerate(lines) if "$fired = [bool]" in line or "$fired = $true" in line
+    ]
+    assert len(fired) == 1, "the control fires from more than one place again:\n" + "\n".join(
+        lines[i].strip() for i in fired
+    )
+    assert "$controlOut -match" in lines[fired[0]], (
+        f"the control is set live by something other than the on-demand scan output: "
+        f"{lines[fired[0]].strip()}"
+    )
+    assert (
+        "the measurement path is unproven" in control
+    ), "a control removed before the scan no longer says the measurement path went unproven"
+
+
+def test_a_missing_layout_manifest_cannot_produce_a_clean_verdict() -> None:
+    """A missing manifest.json means the expected set is unknown, which must itself reach the verdict."""
+    body = WORKFLOW.read_text(encoding = "utf-8")
+    assert (
+        body.count("$script:UnslothUnknownExpected") >= 6
+    ), "the unknown-expected-set condition is not tracked in both halves"
+    for half, feeds in (
+        ("Ask AMSI, under Windows PowerShell 5.1", "$noResult +="),
+        ("Ask Defender's file scanner", "$unscanned +="),
+    ):
+        start = body.index(half)
+        end = body.index("- name:", start + 10)
+        # The step bodies run past the next `- name:` marker for the AMSI half, so take the whole
+        # remainder for it and cut at the upload step instead.
+        chunk = (
+            body[start : body.index("Upload the measurements")] if "AMSI" in half else body[start:]
+        )
+        loop = chunk[chunk.index("foreach ($side in $script:UnslothUnknownExpected)") :]
+        loop = loop[: loop.index("}")]
+        assert feeds in loop, f"{half}: the unknown expected set does not reach the verdict"

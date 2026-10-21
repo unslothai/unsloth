@@ -17,6 +17,9 @@ interface ExternalProvidersState {
   setConnectionsEnabled: (enabled: boolean) => void;
 }
 
+/** Connection ids whose settings save is awaiting the backend; auto reload holds its writes. */
+export const providerSavesInFlight = new Set<string>();
+
 export const useExternalProvidersStore = create<ExternalProvidersState>(
   (set) => ({
     providers: loadExternalProviders(),

@@ -22,7 +22,7 @@ function PickerLoadMoreButton({
         disabled={disabled}
         onClick={onLoadMore}
         className={cn(
-          "inline-flex h-7 items-center rounded-full border border-border/70 px-3 text-ui-11 font-medium text-foreground transition-colors hover:bg-foreground/[0.05] disabled:cursor-not-allowed disabled:opacity-50",
+          "inline-flex h-7 items-center rounded-full border border-border/70 px-3 text-ui-11 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] disabled:cursor-not-allowed disabled:opacity-50",
           PICKER_OPTION_FOCUS_VISIBLE_CLASS,
         )}
       >

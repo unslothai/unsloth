@@ -18,11 +18,15 @@ export function listStoredChatMessages(threadId: string): Promise<unknown[]> {
   return Promise.resolve(messagesByThread.get(threadId) ?? []);
 }
 
-export function batchListChatMessages(): Promise<Map<string, unknown[]>> {
+export function batchListChatMessages(
+  threadIds: string[],
+): Promise<Map<string, unknown[]>> {
   if (batchFails) {
     return Promise.reject(new Error("batch read failed"));
   }
-  return Promise.resolve(new Map(messagesByThread));
+  return Promise.resolve(
+    new Map(threadIds.map((id) => [id, messagesByThread.get(id) ?? []])),
+  );
 }
 
 export function configureChatSearchHistoryStub(options: {

@@ -1,21 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared descriptor-parameterized tests for studio/prebuilt_core.py.
+"""Component-agnostic prebuilt_core tests run against whisper's and a llama-flavored descriptor."""
 
-Runs the component-agnostic core against BOTH shipped descriptors -- the real
-whisper descriptor exported by install_whisper_prebuilt and a llama-flavored
-descriptor built here the way a hypothetical third ggml-family component would
-plug in (descriptor only, no installer module). Covers os/arch selection,
-checksum fail-closed behavior, extraction guards, the resolver payload, and the
-ops monkeypatch seam, so a new component gets this coverage for free.
-
-The llama installer's shipped release-plan machinery is intentionally NOT
-routed through the generic flow (its characterization suites pin it); the
-llama descriptor here exercises the canonical dialect a future migration
-would use, including the "no fallback backend -> report no prebuilt" policy.
-"""
-
+import contextlib
+import http.client
 import importlib.util
 import io
 import json
@@ -58,8 +47,7 @@ LLAMA_DESCRIPTOR = core.ComponentDescriptor(
     sha256_asset_name = "llama-prebuilt-sha256.json",
     metadata_filename = "UNSLOTH_LLAMA_PREBUILT_INFO.json",
     user_agent = "unsloth-studio-llama-prebuilt",
-    # A GPU-selection miss reports "no prebuilt" so the caller can fall back to a source build instead of silently
-    # degrading to CPU.
+    # A GPU-selection miss reports 'no prebuilt' so the caller source-builds instead of using CPU.
     fallback_backend = None,
     server_binary_name = lambda host: "llama-server",
     runtime_bin_dir = lambda install_dir, host: install_dir / "build" / "bin",
@@ -72,7 +60,7 @@ class Component:
     def __init__(self, descriptor):
         self.descriptor = descriptor
         self.namespace = core.component_namespace(descriptor)
-        self.namespace["log"] = lambda message: None  # keep test output quiet
+        self.namespace["log"] = lambda message: None
         self.ops = core.ModuleOps(self.namespace)
 
     @property
@@ -115,8 +103,7 @@ def make_host(
             rocm_gfx = rocm_gfx,
             macos_version = macos_version,
         )
-    # Descriptor-only component: the core default host_platform_tokens hook reads .os_token/.arch_token off a plain host
-    # object.
+    # Descriptor-only component: the default host_platform_tokens hook reads .os_token/.arch_token.
     return SimpleNamespace(
         os_token = os_token,
         arch_token = arch_token,
@@ -154,14 +141,12 @@ def manifest_for(component, artifacts, **extra):
     return payload
 
 
-# ── Manifest parsing ──
 def test_parse_manifest_normalizes(component):
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(), "not-a-dict", {"os": "linux"}]), label = "m"
     )
     assert manifest["component"] == component.descriptor.component
     assert manifest["upstream_tag"] == "v1.0.0"
-    # Non-dict entries and entries without an asset name are dropped.
     assert [a["asset"] for a in manifest["artifacts"]] == ["bundle.tar.gz"]
 
 
@@ -182,14 +167,12 @@ def test_parse_manifest_rejects_unknown_schema(component):
 def test_parse_manifest_rejects_non_object(component):
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_manifest(["nope"], label = "m")
-    # An object without an 'artifacts' list is rejected too.
     with pytest.raises(core.PrebuiltFallback):
         component.ops.parse_manifest(
             {"schema_version": 1, "component": component.descriptor.component}, label = "m"
         )
 
 
-# ── Selection matrix ──
 def test_select_cpu_first_match(component):
     manifest = component.ops.parse_manifest(
         manifest_for(
@@ -215,9 +198,7 @@ def test_select_respects_os_arch(component):
 
 
 def test_fallback_policy_differs_per_descriptor(component):
-    # No asset for the requested backend: whisper degrades to the CPU asset of
-    # the same release, the llama-flavored descriptor reports no prebuilt
-    # (source-build fallback).
+    # No asset for the backend: whisper degrades to CPU; the llama-flavored descriptor reports none.
     manifest = component.ops.parse_manifest(
         manifest_for(component, [artifact(backend = "cpu", asset = "cpu.tar.gz")]), label = "m"
     )
@@ -329,20 +310,17 @@ def test_macos_min_os_ok_helper_handles_prefix_and_bare(component):
     # The live manifest format is 'macos-<ver>'; the prefix must be stripped.
     assert component.ops.macos_min_os_ok(host14, "macos-14.0") is True
     assert component.ops.macos_min_os_ok(host14, "macos-15.0") is False
-    assert component.ops.macos_min_os_ok(host14, "13.3") is True  # bare also parses
-    assert component.ops.macos_min_os_ok(host14, None) is True  # unknown -> defer
+    assert component.ops.macos_min_os_ok(host14, "13.3") is True
+    assert component.ops.macos_min_os_ok(host14, None) is True
     host_unknown = _arm_mac_host(component, None)
     assert component.ops.macos_min_os_ok(host_unknown, "macos-15.0") is True
 
 
-# ── Backend resolution ──
 def test_resolve_backend_auto_and_validation(component):
     gpu_host = make_host(component, has_usable_nvidia = True)
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = False) == "cuda"
     assert component.ops.resolve_backend(gpu_host, "auto", cpu_fallback = True) == "cpu"
-    # cpu-fallback wins over an explicit backend too.
     assert component.ops.resolve_backend(gpu_host, "cuda", cpu_fallback = True) == "cpu"
-    # An explicit supported backend passes through untouched.
     assert component.ops.resolve_backend(gpu_host, "vulkan", cpu_fallback = False) == "vulkan"
     mac_host = make_host(
         component, os_token = "macos", arch_token = "arm64", is_macos = True, is_apple_silicon = True
@@ -359,7 +337,6 @@ def test_resolve_backend_auto_and_validation(component):
         component.ops.resolve_backend(gpu_host, "tpu", cpu_fallback = False)
 
 
-# ── Checksum index: fail closed ──
 def _index_for(
     component,
     tag = "v1",
@@ -424,7 +401,6 @@ def test_expected_sha256_manifest_disagreement_fails_closed(component):
     )
 
 
-# ── Extraction guards ──
 def test_extract_archive_rejects_traversal(tmp_path):
     archive = tmp_path / "evil.tar.gz"
     with tarfile.open(archive, "w:gz") as tar:
@@ -561,7 +537,6 @@ def test_restore_tar_exec_bits(tmp_path):
     assert extracted.stat().st_mode & 0o111
 
 
-# ── Resolver payload ──
 def _fake_release(component, artifacts):
     ns = component.namespace
     manifest = component.ops.parse_manifest(manifest_for(component, artifacts), label = "m")
@@ -629,7 +604,6 @@ def test_emit_resolver_output_formats(capsys):
     assert json.loads(capsys.readouterr().out) == {"prebuilt_available": False}
 
 
-# ── Marker / fingerprint ──
 def test_install_fingerprint_is_stable_and_sensitive(component):
     kwargs = dict(
         published_repo = component.descriptor.published_repo,
@@ -666,14 +640,12 @@ def test_write_and_match_marker(component, tmp_path):
     bin_dir = component.ops.runtime_bin_dir(install_dir, host)
     bin_dir.mkdir(parents = True)
     component.ops.write_prebuilt_metadata(install_dir, selection)
-    # Marker alone is not enough:
     assert not component.ops.existing_install_matches(install_dir, host, selection)
     (bin_dir / component.ops.server_binary_name(host)).write_bytes(b"bin")
     marker = json.loads((install_dir / component.descriptor.metadata_filename).read_text())
     assert marker["component"] == component.descriptor.component
     assert marker["install_fingerprint"] == selection.fingerprint()
     assert component.ops.existing_install_matches(install_dir, host, selection)
-    # A different selection (new sha) must force a reinstall.
     other = core.InstallSelection(
         **{
             **selection.__dict__,
@@ -706,7 +678,7 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
         linked_from = "/llama/build/bin",
         linked_libraries = ("libggml.so.0", "libggml-base.so.0"),
     )
-    assert slim.fingerprint() == selection.fingerprint()  # no change to the computation
+    assert slim.fingerprint() == selection.fingerprint()
 
     fat_dir, slim_dir = tmp_path / "fat", tmp_path / "slim"
     fat_dir.mkdir(), slim_dir.mkdir()
@@ -729,8 +701,7 @@ def test_slim_selection_fields_are_additive(component, tmp_path):
 
 
 def test_core_slim_hooks_default_inert(component, tmp_path):
-    # A component without its own hooks stages nothing extra and adds no resolver fields (llama's probe output must stay
-    # byte-identical).
+    # A hookless component adds nothing: llama's probe output must stay byte-identical.
     assert component.ops.resolver_payload_extra({"install_kind": "slim"}) == {}
     host = make_host(component)
     selection = object()
@@ -760,9 +731,6 @@ def test_busy_activation_restores_previous_install(monkeypatch, tmp_path):
     assert not list(tmp_path.glob(".whisper.cpp.old-*"))
 
 
-# ── Host/GPU token helpers (component-independent core functions) ──
-# Value tables moved verbatim from the llama characterization suite; these are pure functions with no
-# descriptor sensitivity, so they run unparameterized.
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -833,12 +801,12 @@ _GPU_ROWS = [
 @pytest.mark.parametrize(
     "visible,expected_indices",
     [
-        (None, [0, 1, 2]),  # no filter returns all
+        (None, [0, 1, 2]),
         ([], []),
-        (["0", "2"], [0, 2]),  # filter by index
+        (["0", "2"], [0, 2]),
         (["gpu-bbb"], [1]),  # UUID match is case insensitive
-        (["0", "0"], [0]),  # same device requested twice is deduplicated
-        (["99"], []),  # unknown token matches nothing
+        (["0", "0"], [0]),
+        (["99"], []),
     ],
 )
 def test_select_visible_gpu_rows(visible, expected_indices):
@@ -884,23 +852,21 @@ def test_host_is_blackwell_includes_datacenter_parts():
     assert core.host_is_blackwell(_caps_host(["10.3"])) is True  # B300 sm_103
     assert core.host_is_blackwell(_caps_host(["12.0"])) is True  # RTX 50 sm_120
     assert core.host_is_blackwell(_caps_host(["12.1"])) is True  # DGX Spark sm_121
-    assert core.host_is_blackwell(_caps_host(["9.0"])) is False  # Hopper
-    assert core.host_is_blackwell(_caps_host(["8.0"])) is False  # Ampere
-    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True  # highest cap wins
+    assert core.host_is_blackwell(_caps_host(["9.0"])) is False
+    assert core.host_is_blackwell(_caps_host(["8.0"])) is False
+    assert core.host_is_blackwell(_caps_host(["9.0", "10.0"])) is True
 
 
 def test_blackwell_min_toolkit_is_sm_aware():
     # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
     f = core.blackwell_min_toolkit_for_host
-    assert f(_caps_host(["10.0"])) == (12, 8)  # B200
-    assert f(_caps_host(["12.0"])) == (12, 8)  # RTX 50
+    assert f(_caps_host(["10.0"])) == (12, 8)
+    assert f(_caps_host(["12.0"])) == (12, 8)
     assert f(_caps_host(["10.3"])) == (12, 9)  # B300
     assert f(_caps_host(["12.1"])) == (12, 9)  # DGX Spark
-    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
+    assert f(_caps_host(["10.0", "10.3"])) == (12, 9)
 
 
-# The ops seam ──
-# ── The ops seam ──
 def test_module_ops_prefers_module_globals_over_core_defaults(component):
     ns = dict(component.namespace)
     calls = []
@@ -912,7 +878,6 @@ def test_module_ops_prefers_module_globals_over_core_defaults(component):
     ns["download_file"] = fake_download_file
     ops = core.ModuleOps(ns)
     assert ops.download_file is fake_download_file
-    # Core defaults still resolve (and come back bound) for everything else.
     assert callable(ops.fetch_json)
     with pytest.raises(AttributeError):
         _ = ops.does_not_exist_anywhere
@@ -964,3 +929,228 @@ def test_github_api_403_without_a_reachable_reset_makes_one_request():
         )
 
     assert len(requests) == 1
+
+
+# urllib wraps only a failure to SEND in URLError; getresponse()/read errors arrive raw.
+_DROPPED_CONNECTIONS = [
+    http.client.RemoteDisconnected("Remote end closed connection without response"),
+    ConnectionResetError(104, "Connection reset by peer"),
+    ConnectionAbortedError(10053, "An established connection was aborted"),
+    http.client.IncompleteRead(b"partial", 1024),
+]
+
+_NODE_SPEC = importlib.util.spec_from_file_location(
+    "studio_install_node_prebuilt_for_core", STUDIO_DIR / "install_node_prebuilt.py"
+)
+assert _NODE_SPEC is not None and _NODE_SPEC.loader is not None
+install_node_prebuilt = importlib.util.module_from_spec(_NODE_SPEC)
+sys.modules[_NODE_SPEC.name] = install_node_prebuilt
+_NODE_SPEC.loader.exec_module(install_node_prebuilt)
+
+
+@pytest.mark.parametrize("exc", _DROPPED_CONNECTIONS, ids = lambda e: type(e).__name__)
+@pytest.mark.parametrize(
+    "classify",
+    [core.is_retryable_url_error, install_node_prebuilt.is_retryable_url_error],
+    ids = ["prebuilt_core", "install_node_prebuilt"],
+)
+def test_a_dropped_connection_is_retried(classify, exc):
+    assert classify(exc) is True
+
+
+@pytest.mark.parametrize(
+    "classify",
+    [core.is_retryable_url_error, install_node_prebuilt.is_retryable_url_error],
+    ids = ["prebuilt_core", "install_node_prebuilt"],
+)
+def test_a_programming_error_is_still_not_retried(classify):
+    assert classify(ValueError("bad url")) is False
+    assert classify(FileNotFoundError("gone")) is False
+
+
+class _Response:
+    def __init__(
+        self,
+        body,
+        *,
+        fail_after = None,
+    ):
+        self._body = io.BytesIO(body)
+        self._fail_after = fail_after
+        self.headers = {"Content-Length": str(len(body))}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size = -1):
+        if self._fail_after is not None and self._body.tell() >= self._fail_after:
+            raise ConnectionResetError(104, "Connection reset by peer")
+        return self._body.read(size)
+
+
+@pytest.mark.parametrize("where", ["before the response", "mid-body"])
+def test_a_download_that_drops_once_is_retried_to_completion(monkeypatch, tmp_path, where):
+    component = Component(LLAMA_DESCRIPTOR)
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    body = b"x" * (3 << 20)
+    requests = []
+
+    class Opener:
+        def open(
+            self,
+            request,
+            timeout = None,
+        ):
+            requests.append(request.full_url)
+            if len(requests) == 1:
+                if where == "before the response":
+                    raise http.client.RemoteDisconnected(
+                        "Remote end closed connection without response"
+                    )
+                return _Response(body, fail_after = 1 << 20)
+            return _Response(body)
+
+    component.namespace["_URL_OPENER"] = Opener()
+    destination = tmp_path / "app-windows-x64-cpu.zip"
+    core.download_file(
+        component.ops,
+        "https://github.com/unslothai/llama.cpp/releases/download/b1/a.zip",
+        destination,
+    )
+
+    assert len(requests) == 2
+    assert destination.read_bytes() == body
+    assert [p.name for p in tmp_path.iterdir()] == [destination.name]
+
+
+def test_a_settle_does_not_hold_a_finished_launch_for_the_install_timeout(tmp_path):
+    """A busy lock makes the settle give up quickly, not wait out the install timeout."""
+    install_dir = tmp_path / "component"
+    install_dir.mkdir()
+    server = install_dir / "server"
+    server.write_text("", encoding = "utf-8")
+    events = []
+    asked = []
+
+    @contextlib.contextmanager
+    def busy_lock(path, *, timeout = None):
+        asked.append(timeout)
+        raise core.BusyInstallConflict("held elsewhere")
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+    ops = SimpleNamespace(
+        COMPONENT = "test",
+        existing_install_matches = lambda d, h, s: True,
+        install_lock = busy_lock,
+        install_lock_path = lambda d: d / "lock",
+        kept_install_needs_settling = lambda d: True,
+        settle_kept_install = lambda d: events.append("settled"),
+        _install_from_bundle = lambda d, h, b, s: events.append("installed"),
+        installed_server_path = lambda d, h: server,
+        log = lambda message: events.append(message),
+    )
+    bundle = SimpleNamespace(release_tag = "b1")
+    selection = SimpleNamespace(backend = "cpu")
+    rc = core.install_selected_prebuilt(
+        ops, install_dir, host = None, bundle = bundle, selection = selection, force = False
+    )
+    assert rc == 0
+    assert "installed" not in events, "a kept install was reinstalled over a busy lock"
+    assert "settled" not in events
+    assert asked == [core.SETTLE_LOCK_TIMEOUT_SECONDS]
+    assert core.SETTLE_LOCK_TIMEOUT_SECONDS < core.INSTALL_LOCK_TIMEOUT_SECONDS
+
+
+def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
+    """A keep that changed under the lock must fall through to full re-validation, not report success."""
+    install_dir = tmp_path / "component"
+    install_dir.mkdir()
+    server = install_dir / "server"
+    server.write_text("", encoding = "utf-8")
+    # pre-lock keep, the settle's re-check, the locked path's re-check
+    answers = iter([True, False, False])
+    events = []
+    ops = SimpleNamespace(
+        COMPONENT = "test",
+        existing_install_matches = lambda d, h, s: next(answers),
+        install_lock = lambda path, **kwargs: contextlib.nullcontext(),
+        install_lock_path = lambda d: d / "lock",
+        kept_install_needs_settling = lambda d: True,
+        settle_kept_install = lambda d: events.append("settled"),
+        _install_from_bundle = lambda d, h, b, s: events.append("installed"),
+        installed_server_path = lambda d, h: server,
+        log = lambda message: events.append(message),
+    )
+    bundle = SimpleNamespace(release_tag = "b1")
+    selection = SimpleNamespace(backend = "cpu")
+    rc = core.install_selected_prebuilt(
+        ops, install_dir, host = None, bundle = bundle, selection = selection, force = False
+    )
+    assert rc == 0
+    assert "settled" not in events
+    assert "installed" in events
+
+
+@pytest.mark.skipif(not hasattr(core.os, "chown"), reason = "os.chown is POSIX only")
+def test_a_live_marker_rewrite_keeps_the_group_when_the_owner_is_refused(tmp_path, monkeypatch):
+    """A non-root member of a group-shared install can hand the temp file to the
+    marker's group, but not to its owner; asking for both refuses the call before the
+    group is applied and os.replace installs the member's primary group instead. So the
+    combined call is tried first, for the root case that can honour it, and the group-only
+    call is the fallback."""
+    marker = tmp_path / "MARKER.json"
+    marker.write_text('{"a": 1}', encoding = "utf-8")
+    original = marker.stat()
+    calls = []
+
+    def refusing(path, uid, gid):
+        calls.append((uid, gid))
+        if uid != -1:
+            raise PermissionError("a non-root member may not give a file away")
+
+    monkeypatch.setattr(core.os, "chown", refusing)
+    core.write_live_marker(marker, {"a": 1, "b": 2})
+    assert json.loads(marker.read_text(encoding = "utf-8")) == {"a": 1, "b": 2}
+    assert calls == [(original.st_uid, original.st_gid), (-1, original.st_gid)]
+    assert not list(tmp_path.glob("MARKER.json.tmp-*"))
+
+
+def test_a_walk_back_is_recorded_with_the_host_version_that_decided_it():
+    """prebuilt_core.WalkBack: the marker-only re-check may hold an install on a Mac
+    below the newest release's floor current only while the newest release is the one
+    skipped AND the host is the macOS version that skipped it."""
+    mac = SimpleNamespace(is_macos = True, macos_version = (14, 7))
+    assert core.macos_version_label(mac) == "14.7"
+    assert core.macos_version_label(SimpleNamespace(is_macos = True, macos_version = None)) is None
+    assert core.macos_version_label(SimpleNamespace(is_macos = False, macos_version = (14, 7))) is None
+    walk_back = core.walk_back_for(mac, "r2")
+    assert walk_back == core.WalkBack(release_tag = "r2", macos_version = "14.7")
+    assert core.walk_back_for(mac, None) is None
+    assert core.walk_back_for(SimpleNamespace(is_macos = False, macos_version = None), "r2") is None
+    marker = {"release_tag": "r1", **walk_back.marker_fields()}
+    assert core.marker_walk_back(marker) == walk_back
+    assert core.marker_walk_back({"release_tag": "r1", "walked_back_from": "r2"}) is None
+    assert core.walk_back_stands(marker, mac, "r2") is True
+    assert core.walk_back_stands(marker, mac, "r3") is False
+    assert core.walk_back_stands(marker, mac, None) is False
+    assert (
+        core.walk_back_stands(marker, SimpleNamespace(is_macos = True, macos_version = (15, 0)), "r2")
+        is False
+    )
+    assert (
+        core.walk_back_stands(marker, SimpleNamespace(is_macos = False, macos_version = None), "r2")
+        is False
+    )
+    assert core.walk_back_patch({}, walk_back) == walk_back.marker_fields()
+    assert core.walk_back_patch(marker, walk_back) == {}
+    assert core.walk_back_patch({"walked_back_from": "r2"}, walk_back) == {
+        "walked_back_on_macos": "14.7"
+    }
+    assert core.walk_back_patch(marker, None) == {
+        "walked_back_from": None,
+        "walked_back_on_macos": None,
+    }
+    assert core.walk_back_patch({}, None) == {}

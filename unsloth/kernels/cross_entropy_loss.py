@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import functools
 import triton
 import triton.language as tl
 import torch
@@ -20,6 +21,7 @@ from .utils import (
     torch_gpu_device,
     is_cdna,
 )
+from .rope_embedding import _eviction_hints_ok
 from transformers.models.llama.modeling_llama import logger
 from unsloth_zoo.utils import Version
 
@@ -31,7 +33,7 @@ from unsloth_zoo.loss_utils import (
 
 def _cross_entropy_forward(
     logits_ptr,
-    logits_row_stride,
+    logits_row_stride: tl.constexpr,  # VOCAB_SIZE
     loss_ptr,
     logsumexp_ptr,
     labels_ptr,
@@ -111,6 +113,21 @@ _cross_entropy_forward = triton.heuristics(
 )(_cross_entropy_forward)
 
 
+@functools.lru_cache(maxsize = None)
+def _chunked_evict_at(device_type, index):
+    # Read-once chunks: evict_first helps T4 / L4 / A100, hurts H100 and B200; ROCm unmeasured.
+    if device_type != "cuda" or torch.version.hip is not None:
+        return ""
+    return "" if torch.cuda.get_device_capability(index)[0] in (9, 10) else "evict_first"
+
+
+def _chunked_evict_policy(device):
+    if not _eviction_hints_ok(device):
+        return ""
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return _chunked_evict_at(device.type, index)
+
+
 def _chunked_cross_entropy_forward(
     logits_ptr,
     logits_row_stride: tl.constexpr,
@@ -124,6 +141,7 @@ def _chunked_cross_entropy_forward(
     SOFTCAP: tl.constexpr,
     DO_LOGIT_SCALING: tl.constexpr,
     LOGIT_SCALE: tl.constexpr,
+    EVICT: tl.constexpr,
 ):
     """
     256K vocab divided in 4 chunks
@@ -160,7 +178,9 @@ def _chunked_cross_entropy_forward(
     mask = col_offsets < VOCAB_SIZE
 
     label_idx = tl.load(labels_ptr).to(tl.int32)
-    logits = tl.load(logits_ptr + col_offsets, mask = mask, other = -float("inf")).to(tl.float32)
+    logits = tl.load(
+        logits_ptr + col_offsets, mask = mask, other = -float("inf"), eviction_policy = EVICT
+    ).to(tl.float32)
 
     # Cohere logit scaling t * x; Gemma 2 softcapping t * tanh(1/t * x).
     # Do logit scaling for Cohere
@@ -202,6 +222,7 @@ _chunked_cross_entropy_forward = triton.heuristics(
 def _cross_entropy_backward(
     logits_ptr,
     logits_row_stride: tl.constexpr,
+    dlogits_ptr,
     dloss_ptr,
     dloss_row_stride: tl.constexpr,
     logsumexp_ptr,
@@ -232,6 +253,7 @@ def _cross_entropy_backward(
     block_idx = tl.program_id(1)
 
     logits_ptr += row_idx * triton_cast(logits_row_stride, tl.int64)
+    dlogits_ptr += row_idx * triton_cast(logits_row_stride, tl.int64)
     dloss_ptr += row_idx * dloss_row_stride
     col_offsets = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
     mask = col_offsets < VOCAB_SIZE
@@ -273,7 +295,7 @@ def _cross_entropy_backward(
         y = y * (1.0 - partial * partial)
 
     # If y == 0 then dC/dx = 0, and it is already masked to 0, so dloss = 0.
-    tl.store(logits_ptr + col_offsets, dloss * y, mask = mask)
+    tl.store(dlogits_ptr + col_offsets, dloss * y, mask = mask)
 
 
 _cross_entropy_backward = triton.jit(_cross_entropy_backward)
@@ -298,7 +320,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         vocab_size: int
         n_rows, vocab_size = logits.shape
         device = logits.device
-        labels = labels.to(device)
+        logits = logits.contiguous()
+        labels = labels.to(device).contiguous()
 
         div, mod = divmod(vocab_size, MAX_FUSED_SIZE)
         n_chunks: int = div + (mod != 0)
@@ -330,6 +353,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE = logit_scaling,
                     num_warps = num_warps,
+                    enable_fp_fusion = True,
                 )
         else:
             # For large vocabs > 65336 like Gemma 256K
@@ -361,7 +385,9 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     SOFTCAP = logit_softcapping,
                     DO_LOGIT_SCALING = DO_LOGIT_SCALING,
                     LOGIT_SCALE = logit_scaling,
+                    EVICT = _chunked_evict_policy(device),
                     num_warps = 32 if not is_cdna() else 16,
+                    enable_fp_fusion = True,
                 )
             # logsumexp(chunked_logsumexp) - x, with the -x done separately.
             logsumexp = torch.logsumexp(logsumexp, dim = 1)
@@ -381,6 +407,8 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         n_rows: int
         vocab_size: int
         n_rows, vocab_size = logits.shape
+        # Preserve saved logits for other losses and repeated backward calls.
+        dlogits = torch.empty_like(logits)
 
         BLOCK_SIZE: int = 4096
         div: int
@@ -397,6 +425,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
             ](
                 logits,
                 logits.stride(0),
+                dlogits,
                 dlosses,
                 dlosses.stride(0),
                 logsumexp,
@@ -408,9 +437,10 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                 DO_LOGIT_SCALING = ctx.DO_LOGIT_SCALING,
                 LOGIT_SCALE = ctx.logit_scaling,
                 num_warps = 8,
+                enable_fp_fusion = True,
             )
         return (
-            logits,
+            dlogits,
             None,
             None,
             None,
@@ -436,8 +466,8 @@ def fast_cross_entropy_loss(
 
     device = logits.device
     loss = Fast_CrossEntropyLoss.apply(
-        logits.view(batch * seq_len, d),
-        labels.view(-1),
+        logits.reshape(batch * seq_len, d),
+        labels.reshape(-1),
         logit_softcapping,
         logit_scaling,
     )
@@ -445,6 +475,10 @@ def fast_cross_entropy_loss(
         n_items = torch.count_nonzero(labels != -100)
     if torch.is_tensor(n_items):
         n_items = n_items.to(device)
+        # No labelled tokens (all -100): loss 0 and zero grads, not 0 / 0 = NaN.
+        n_items = torch.where(n_items == 0, torch.ones_like(n_items), n_items)
+    elif n_items == 0:
+        n_items = 1
     return loss.sum() / n_items
 
 

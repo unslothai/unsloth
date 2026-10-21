@@ -1,41 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read conditions out of frontend source without pinning the text that spells them.
+"""Compares frontend guard conditions, not exact text, so rewraps and renames do not break tests."""
 
-Several tests in this directory protect a frontend contract by reading a `.ts` or `.tsx`
-file and asserting on what it says. Done as an exact substring that is a trap: prettier
-rewraps a guard the moment it gains a condition, a binding gets renamed, and a test that
-was protecting real behaviour goes red over a refactor that changed none of it. Three tests
-broke that way on `main` inside one week.
-
-So compare CONDITIONS. Blank out the parts of the source that only look like code, pull out
-the guard bodies, split them into operands, and ask whether the operands the contract needs
-are present. A rename, a rewrap, an added clause and a redundant paren all survive that;
-dropping a condition does not, which is the whole point.
-
-None of this is a JavaScript parser, and it is not trying to be. It handles the constructs
-that appear in the files these tests actually read, and fails loudly rather than silently
-when it meets something it cannot represent.
-"""
-
+import itertools
 import re
 
 
 def blank_literals_and_comments(source: str) -> str:
-    """`source` with comments and the INSIDE of string literals blanked, length preserved.
-
-    Every earlier version of this scan handled one of these and was defeated by the other.
-    Stripping comments with a regex eats a `//` that lives inside a URL string; tracking
-    quotes without stripping comments lets a commented-out guard count as live; and doing
-    both separately still counts a guard-shaped STRING as a live guard, which masks a real
-    condition being dropped. One pass settles all three: walk the source once, and replace
-    comment bodies and literal contents with spaces so offsets and delimiters still line up.
-
-    Regex literals are left alone. Telling `/` as division from `/` as a regex needs real
-    parsing, and no guard this module is pointed at contains one; a guard that did would be
-    read with its slashes intact, which is visible rather than silent.
-    """
+    """Blanks comments and string contents in one pass, keeping length so offsets still line up."""
     out, i, n = [], 0, len(source)
     while i < n:
         char, nxt = source[i], source[i + 1 : i + 2]
@@ -119,15 +92,7 @@ def balanced(text: str) -> bool:
 
 
 def split_operands(text: str, operator: str) -> list[str]:
-    """`text` split on `operator` at depth zero, each operand unwrapped and flattened.
-
-    Redundant grouping is not a contract change: `(a || b) || c` guards exactly what
-    `a || b || c` guards. Splitting at depth zero alone would hand back `(a || b)` whole and
-    report the guard incomplete, turning a harmless regroup into a red build.
-
-    Recursion only follows a split that made progress. An operator sitting inside a string
-    literal survives every unwrap, so recursing on "contains the operator" never terminates.
-    """
+    """Splits at depth zero and unwraps redundant parens, recursing only when a split makes progress."""
     operands = []
     for part in depth_zero_split(text, operator):
         part = part.strip()
@@ -145,21 +110,7 @@ def split_operands(text: str, operator: str) -> list[str]:
 def assert_guard_holds(
     source: str, keyword: str, operator: str, required: set[str], *, expected: int
 ) -> None:
-    """Exactly `expected` `keyword` guards must join all of `required` with `operator`.
-
-    Four things this must not do, each of which it did at some point:
-
-    - Take the first `keyword` in the slice: an unrelated earlier `if` gets parsed instead.
-    - Stop at the first `)`: a condition holding a call closes a paren of its own, which
-      truncates the body.
-    - Split on both `||` and `&&`: the operator carries the meaning, since an OR guard
-      flipped to AND stops short-circuiting.
-    - Accept the first guard that matches, or demand every guard mentioning a condition
-      holds them all. These slices carry the guard twice, so accepting one lets the other
-      rot; but nearby guards legitimately test a subset, so requiring all of them is wrong
-      too. Counting the complete ones catches a dropped condition in either copy and leaves
-      the neighbours alone.
-    """
+    """Counts exactly the complete guards, not the first match, and splits only on the given operator."""
     complete = [
         body
         for body in parenthesised_bodies(source, keyword)
@@ -171,28 +122,107 @@ def assert_guard_holds(
     )
 
 
-def binding_joining(source: str, operator: str, required: set[str]) -> str | None:
-    """Name of the first `const NAME = ...` whose operands cover `required`, else None.
+# A line ending in one of these continues onto the next (Prettier breaks `a &&\n  b` there).
+_CONTINUES = ("&&", "||", "??", "?", ":", ",", "+", "-", "*", "/", "=", "(", "[", "{", ".")
 
-    Declarations are LOCATED in the blanked source, so a commented-out or quoted copy
-    cannot answer, and then READ from the original at the same offsets, because blanking
-    is length-preserving. Reading the blanked text instead would be self-defeating here:
-    it empties string literals, and `status === "running"` is a required operand.
-    """
+
+def _declaration_bodies(source: str):
+    """Ends each const at a depth-zero semicolon or a balanced line end, since semicolons are rare."""
     blanked = blank_literals_and_comments(source)
-    for match in re.finditer(r"const (\w+) =([^;]*);", blanked):
-        operand_text = source[match.start(2) : match.end(2)]
-        if required <= set(split_operands(re.sub(r"\s+", " ", operand_text), operator)):
-            return match.group(1)
+    for match in re.finditer(r"\bconst (\w+)\s*=(?!=)", blanked):
+        i, depth, n = match.end(), 0, len(blanked)
+        while i < n:
+            char = blanked[i]
+            if char in "([{":
+                depth += 1
+            elif char in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and char == ";":
+                break
+            elif depth == 0 and char == "\n":
+                so_far = blanked[match.end() : i].rstrip()
+                if so_far and not so_far.endswith(_CONTINUES):
+                    break
+            i += 1
+        yield match.group(1), source[match.end() : i]
+
+
+def binding_joining(source: str, operator: str, required: set[str]) -> str | None:
+    """Name of the first `const NAME = ...` whose operands cover `required`, else None."""
+    for name, body in _declaration_bodies(source):
+        if required <= set(split_operands(re.sub(r"\s+", " ", body), operator)):
+            return name
     return None
 
 
-def gates_the_markup(source: str, name: str) -> bool:
-    """True when `name` conditions mounted markup, by `&&` or by a ternary's TRUE arm.
+def expand_bindings(
+    source: str,
+    expression: str,
+    *,
+    stop = (),
+    limit: int = 8,
+) -> str:
+    """Inlines local consts down to the stop names, so behaviour is compared, not how it is spelled."""
+    bodies = {
+        name: re.sub(r"\s+", " ", body).strip()
+        for name, body in _declaration_bodies(source)
+        if name not in stop
+    }
+    for _ in range(limit):
+        grown = re.sub(
+            r"\b\w+\b",
+            lambda match: f"({bodies[match.group(0)]})"
+            if match.group(0) in bodies
+            else match.group(0),
+            expression,
+        )
+        if grown == expression:
+            return expression
+        expression = grown
+    raise AssertionError(f"{expression!r} never stopped expanding; a binding cycle?")
 
-    The ternary arm matters: `{gate ? null : <Shell />}` reads as a guard and inverts one,
-    mounting exactly when the gate is false. Accepting any `?` would pass that.
-    """
+
+def boolean_table(expression: str, names) -> dict:
+    """Truth table of a boolean-only JS expression; other operators raise rather than mistranslate."""
+    python = re.sub(r"\bundefined\b", "False", expression)
+    python = python.replace("&&", " and ").replace("||", " or ").replace("!", " not ")
+    leftover = re.sub(r"\b(?:and|or|not|False)\b|[()\s]|\b[A-Za-z_]\w*\b", "", python)
+    assert not leftover, f"{expression!r} is not a plain boolean expression: {leftover!r} left"
+    reads = set(re.findall(r"\b[A-Za-z_]\w*\b", python)) - {"and", "or", "not", "False"}
+    assert reads <= set(
+        names
+    ), f"{expression!r} reads names this contract does not cover: {sorted(reads - set(names))}"
+    table = {}
+    for combination in itertools.product((False, True), repeat = len(names)):
+        table[combination] = bool(
+            eval(python, {"__builtins__": {}}, dict(zip(names, combination)))  # noqa: S307
+        )
+    return table
+
+
+def attribute_expressions(source: str, attribute: str) -> list[str]:
+    """Finds attribute={...} expressions in blanked source, so comments and strings cannot match."""
+    blanked = blank_literals_and_comments(source)
+    found = []
+    for match in re.finditer(rf"(?<![\w-]){re.escape(attribute)}\s*=\s*{{", blanked):
+        depth, i = 0, match.end() - 1
+        while i < len(blanked):
+            char = blanked[i]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    found.append(re.sub(r"\s+", " ", source[match.end() : i]).strip())
+                    break
+            i += 1
+    return found
+
+
+def gates_the_markup(source: str, name: str) -> bool:
+    """Only && or a ternary's true arm counts as gating; a null true arm inverts it, mounting on false."""
     if re.search(rf"{{\s*{re.escape(name)}\s*&&", source):
         return True
     arm = re.search(rf"{{\s*{re.escape(name)}\s*\?(.*)", source, re.S)

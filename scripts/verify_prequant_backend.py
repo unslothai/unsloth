@@ -84,6 +84,7 @@ def _lpips(ref, arr):
 
 def run(mode, steps, seed, res):
     sys.path.insert(0, str(BACKEND))
+    os.environ["UNSLOTH_NVFP4_DIFFUSION"] = "1"
     import torch
     import diffusers
     from core.inference.diffusion_prequant import (

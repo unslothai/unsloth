@@ -7,13 +7,31 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { App } from "./app/app";
 import {
+  applyCodeBlockContainment,
+  watchCodeBlockContainmentOverride,
+} from "./components/assistant-ui/code-block-containment";
+import {
   applyMathBlockContainment,
   watchMathBlockContainmentOverride,
 } from "./components/assistant-ui/math-block-containment";
+import {
+  applyReasoningRowContainment,
+  watchReasoningRowContainmentOverride,
+} from "./components/assistant-ui/reasoning-row-containment";
 import { fetchDeviceType } from "./config/env";
+import { refreshSession } from "./features/auth/api";
+import {
+  applyInterfaceScaleBeforeFirstPaint,
+  useInterfaceScaleStore,
+} from "./features/settings/stores/interface-scale-store";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
+import { setHubSessionRefresh } from "./lib/hf-endpoint";
+import { watchInputModality } from "./lib/input-modality";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
+import { watchSpellCheck } from "./lib/spellcheck";
+
+setHubSessionRefresh(refreshSession);
 
 const rootElement = document.getElementById("root");
 if (!rootElement) {
@@ -46,9 +64,17 @@ applyMathBlockContainment();
 // And keep watching, so a devtools flip of `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` reapplies instead of
 // leaving the session measuring the arm it was already in.
 watchMathBlockContainmentOverride();
+applyCodeBlockContainment();
+watchCodeBlockContainmentOverride();
+applyReasoningRowContainment();
+watchReasoningRowContainmentOverride();
 
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
+watchInputModality(window);
+
+// Before the first render, so a disabled spell check never flashes underlines.
+watchSpellCheck(window);
 
 function renderApp(): void {
   root.render(
@@ -59,8 +85,13 @@ function renderApp(): void {
 }
 
 const localeInitialization = initializeLocale();
-if (typeof localeInitialization !== "string") {
-  localeInitialization.then(renderApp);
+const interfaceScaleInitialization = applyInterfaceScaleBeforeFirstPaint(
+  useInterfaceScaleStore.getState().scale,
+);
+if (typeof localeInitialization !== "string" || isTauri) {
+  Promise.all([localeInitialization, interfaceScaleInitialization]).then(
+    renderApp,
+  );
 } else {
   renderApp();
 }

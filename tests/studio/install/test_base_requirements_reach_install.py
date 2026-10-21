@@ -108,11 +108,7 @@ class TestSharedBaseSelection:
 
     @pytest.mark.parametrize("mode", ["missing", "unreadable"])
     def test_an_unusable_file_does_not_take_down_the_install(self, tmp_path, monkeypatch, mode):
-        """This runs before the manifest is dropped, so raising here aborts with a traceback.
-
-        The unreadable case raises from a patched read rather than chmod(0o000):
-        root ignores the mode bits and Windows does not implement them at all.
-        """
+        """An unusable base.txt must not abort the install; the read is patched, as root ignores chmod."""
         if mode == "unreadable":
             (tmp_path / "base.txt").write_text(_EXTRA_PIN, encoding = "utf-8")
 
@@ -126,7 +122,13 @@ class TestSharedBaseSelection:
 
 
 class TestSharedBasePhase:
-    def _run(self, req: Path | None, *, skip_base: bool) -> tuple[list[Path], list[str]]:
+    def _run(
+        self,
+        req: Path | None,
+        *,
+        skip_base: bool,
+        satisfied: bool = False,
+    ) -> tuple[list[Path], list[str]]:
         installs: list[Path] = []
         progress: list[str] = []
 
@@ -146,6 +148,8 @@ class TestSharedBasePhase:
             "_step": lambda *_args, **_kwargs: None,
             "_LABEL": "python",
             "pip_install": record_install,
+            "_requirements_satisfied": lambda *_args, **_kwargs: satisfied,
+            "_record_step": lambda *_args, **_kwargs: None,
         }
         exec(compile(module, "<shared base phase>", "exec"), namespace)
         return installs, progress
@@ -156,6 +160,16 @@ class TestSharedBasePhase:
         req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
         installs, _progress = self._run(req, skip_base = skip_base)
         assert installs == [req]
+
+    @pytest.mark.parametrize("skip_base", [False, True])
+    def test_an_already_satisfied_file_still_spends_the_slot(self, tmp_path, skip_base):
+        """A skipped step must cost nothing but its progress slot: the denominator
+        cannot depend on how much of the install was already there."""
+        req = tmp_path / "base.txt"
+        req.write_text(_EXTRA_PIN + "\n", encoding = "utf-8")
+        installs, progress = self._run(req, skip_base = skip_base, satisfied = True)
+        assert installs == []
+        assert progress == (["base requirements (satisfied, skipped)"] if skip_base else [])
 
     def test_shell_handoff_owns_the_progress_slot_when_shared_work_exists(self, tmp_path):
         req = tmp_path / "base.txt"

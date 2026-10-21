@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A test that reaches the reinstall skip without pinning the installed-wheel pair reads
-the machine running pytest, so it passes on a bare laptop and fails on any host that
-already has AMD per-arch torch. Three cases in TestEnsureRocmTorch did.
-
-_installed_rocm_wheel_family and _torch_requires_rocm_sdk go to importlib.metadata for the
-RUNNING interpreter, which is the venv being repaired at install time and the test runner
-here. This file fakes the metadata layer, never the functions, so their parsing still runs.
-"""
+"""Fakes only importlib.metadata so ROCm/bnb helpers parse fake metadata, not the host's torch install."""
 
 from __future__ import annotations
 
@@ -104,14 +97,18 @@ def _route(
     env: "dict | None" = None,
     family: "str | None" = None,
     torch_owns_rocm: bool = False,
+    bnb_provenance: "str | None" = None,
 ) -> str:
     """Every pip argument _ensure_rocm_torch() produced, as one string. ``family`` /
-    ``torch_owns_rocm`` pin the installed-wheel pair; the defaults are "no ROCm installed"."""
+    ``torch_owns_rocm`` / ``bnb_provenance`` pin what is installed; the defaults are
+    "no ROCm and no keepable bitsandbytes installed"."""
     pip, pip_try = MagicMock(), MagicMock(return_value = True)
     probe = MagicMock(returncode = 0, stdout = _MARK + torch_line + "\n")
     buf = io.StringIO()
 
     stack_mod._invalidate_torch_runtime_probe()
+    # Each call here is its own pass, so reset the per-pass cache.
+    stack_mod._BNB_ROCM_PASS_PROVENANCE = None
     with (
         patch.dict(os.environ, env or {}, clear = False),
         patch.object(stack_mod, "IS_WINDOWS", False),
@@ -128,6 +125,8 @@ def _route(
         patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
         patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = family),
         patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = torch_owns_rocm),
+        # Pin bnb provenance too, or the verdict depends on whether the runner has bitsandbytes.
+        patch.object(stack_mod, "_installed_bnb_provenance", return_value = bnb_provenance),
         patch.object(stack_mod.os.path, "isdir", return_value = True),
         patch.object(stack_mod.subprocess, "run", return_value = probe),
     ):
@@ -151,7 +150,6 @@ def _route(
     return str(pip.call_args_list) + str(pip_try.call_args_list)
 
 
-# The generic-ROCm hosts are the interesting ones: that is where the skip arms live.
 HOSTS = {
     "gfx1103-cpu-torch": ("gfx1103", "2.10.0+cpu||"),
     "gfx1103-generic-rocm": ("gfx1103", "2.10.0+rocm7.1|7.1|"),
@@ -161,8 +159,8 @@ HOSTS = {
 
 @pytest.mark.parametrize("host", sorted(HOSTS))
 def test_pinning_the_pair_makes_this_machine_irrelevant(host):
-    """Pinning the pair is SUFFICIENT isolation. Not "routing ignores what is installed" --
-    at install time it must not; the claim is that these two functions are the only door."""
+    """Pinning them is SUFFICIENT isolation. Not "routing ignores what is installed" --
+    at install time it must not; the claim is that these functions are the only door."""
     gfx, torch_line = HOSTS[host]
     with ambient("bare"):
         expected = _route(gfx, torch_line)
@@ -171,9 +169,9 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
             got = _route(gfx, torch_line)
         assert got == expected, (
             f"{host} routes differently when the interpreter running the tests is in the "
-            f"{state!r} state, even though the installed-wheel pair is pinned. Something in "
-            f"_ensure_rocm_torch now reads this venv by a path those two functions do not "
-            f"cover, so the suite's verdict depends on who runs it.\n"
+            f"{state!r} state, even though what is installed is pinned. Something in "
+            f"_ensure_rocm_torch now reads this venv by a path those three functions do "
+            f"not cover, so the suite's verdict depends on who runs it.\n"
             f"  bare: {expected}\n  {state}: {got}"
         )
 
@@ -183,8 +181,7 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
     [
         (None, False, True),
         ("gfx110x-all", True, False),
-        # Family matches but torch does not own it: the orphan, so the running torch is the
-        # generic build with no gfx1103 kernels and the skip must not fire.
+        # Orphan family: the running torch is generic with no gfx1103 kernels, so no skip.
         ("gfx110x-all", False, True),
         ("gfx120x-all", True, True),
     ],
@@ -193,9 +190,10 @@ def test_pinning_the_pair_makes_this_machine_irrelevant(host):
 def test_the_installed_family_decides_the_skip(family, torch_owns_rocm, expect_reinstall):
     """The other half: without this, pinning both to None would satisfy the test above while
     the feature they gate quietly stopped working."""
+    # 2.11.0: gfx110X-all is floored, so a 2.10 build would reinstall for the floor.
     with ambient("bare"):
         calls = _route(
-            "gfx1103", "2.10.0+rocm7.13.0|7.13|", family = family, torch_owns_rocm = torch_owns_rocm
+            "gfx1103", "2.11.0+rocm7.13.0|7.13|", family = family, torch_owns_rocm = torch_owns_rocm
         )
     rerouted = "repo.amd.com/rocm/whl/gfx110X-all/" in calls
     assert rerouted is expect_reinstall, (
@@ -216,5 +214,4 @@ def test_the_states_are_distinguishable():
         assert stack_mod._installed_rocm_wheel_family() == "gfx110x-all"
         assert stack_mod._torch_requires_rocm_sdk() is False
     with ambient("two-families-after-switch"):
-        # Two runtimes, no `rocm` to arbitrate: unknowable, not a guess.
         assert stack_mod._installed_rocm_wheel_family() is None

@@ -1,16 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""The Docker Hub page is repository metadata, not something a push writes, so it
-only changes when the publish workflow PATCHes it. These pin that the README in the
-tree describes the images that actually ship and that the sync step cannot report
-success while the page stays stale.
-"""
+"""The Hub page changes only via the publish PATCH, so the sync step must fail if the page is stale."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,6 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
 HUB_README = REPO_ROOT / "docker" / "DOCKERHUB.md"
 REPO_README = REPO_ROOT / "README.md"
+
+DEFAULT_SECRET = "not-a-secret"
 
 
 def test_the_hub_readme_describes_the_shipped_images():
@@ -38,8 +37,7 @@ def test_the_hub_readme_describes_the_shipped_images():
         "UNSLOTH_STUDIO_PASSWORD",
     ):
         assert needle in text, f"the Hub README no longer mentions {needle!r}"
-    # the previous image's conventions, none of which exist in this one
-    # Studio writes the generated password to a file and does not print it itself
+    # old-image conventions are invalid; Studio writes generated passwords to a file
     for stale in (
         "USER_PASSWORD",
         "/workspace/work",
@@ -50,15 +48,90 @@ def test_the_hub_readme_describes_the_shipped_images():
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
 
 
+def test_the_hub_readme_runs_a_script_in_the_mounted_dir():
+    text = HUB_README.read_text(encoding = "utf-8")
+    section = text[text.index("### Scripts") :]
+    start = section.index("```")
+    command = section[start : section.index("```", start + 3)]
+    assert "python /workspace/host/train.py" in command
+    assert "-w /workspace/host" in command
+
+
+def test_the_hub_readme_explains_the_studio_volume():
+    """the Studio volume keeps data, not code, with migration, rollback, and `docker rm` limits."""
+    text = HUB_README.read_text(encoding = "utf-8")
+    for needle in (
+        "-v unsloth-studio:/opt/unsloth-studio",
+        "/opt/unsloth-studio-app",
+        ".unsloth-studio-legacy/",
+        "UNSLOTH_STUDIO_KEEP_LEGACY=0",
+        "unsloth-studio-update",
+        "named volume, not a bind mount of a Windows or macOS host directory",
+    ):
+        assert needle in text, f"the Hub README no longer mentions {needle!r}"
+    assert "including the `unsloth-studio` volume" in text
+    # Check the section that runs the image: the earlier teaser carries the same links.
+    running = [
+        s for s in _docker_sections(REPO_README.read_text(encoding = "utf-8")) if "docker run" in s
+    ]
+    assert len(running) == 1, "expected exactly one README Docker section with a docker run"
+    quick_start = running[0]
+    assert "-v unsloth-studio:/opt/unsloth-studio" in quick_start
+    assert "https://hub.docker.com/r/unsloth/unsloth)" in quick_start
+    assert "https://unsloth.ai/docs/get-started/install/docker" in quick_start
+
+
+def test_the_quick_starts_keep_the_workspace():
+    hub = HUB_README.read_text(encoding = "utf-8")
+    hub_quick_start = hub[hub.index("## Quick start") : hub.index("### Before that")]
+    running = [
+        s for s in _docker_sections(REPO_README.read_text(encoding = "utf-8")) if "docker run" in s
+    ]
+    core = hub[hub.index("### Notebooks only") : hub.index("### Scripts")]
+    for quick_start in (hub_quick_start, core, *running):
+        assert "-v unsloth-workspace:/workspace " in quick_start, quick_start
+    cpu = hub[hub.index("### CPU-only hosts") : hub.index("## Tags")]
+    assert "-v unsloth-workspace:/workspace unsloth/unsloth\n" in cpu, cpu
+    rocm = (HUB_README.parent / "DOCKERHUB-ROCM.md").read_text(encoding = "utf-8")
+    shells = [b for b in rocm.split("```bash")[1:] if "docker run --rm -it" in b]
+    assert len(shells) == 2 and all(
+        "-v unsloth-workspace-rocm:/workspace " in b for b in shells
+    ), shells
+
+
+def _docker_sections(text: str) -> list[str]:
+    """Returns every Docker section: the one with the run command is not always the first."""
+    sections = []
+    start = text.find("#### Docker")
+    while start >= 0:
+        end = text.find("####", start + len("#### Docker"))
+        sections.append(text[start : end if end >= 0 else len(text)])
+        start = text.find("#### Docker", start + 1)
+    return sections
+
+
 def test_the_repo_readme_run_command_matches_the_image():
     text = REPO_README.read_text(encoding = "utf-8")
-    start = text.index("#### Docker")
-    section = text[start : text.index("####", start + 1)]
-    assert "unsloth/unsloth:core" in section
+    sections = _docker_sections(text)
+    assert sections, "the README no longer has a `#### Docker` section"
+    running = [s for s in sections if "docker run" in s]
+    assert len(running) == 1, (
+        f"expected exactly one `#### Docker` section carrying a `docker run`, found "
+        f"{len(running)} of {len(sections)} Docker sections. Pin the other one too or fold "
+        f"them together; a second unpinned run command is how the README goes stale."
+    )
+    section = running[0]
+    # The run command starts `latest` (Studio). Notebook-only users need `core`, and this
+    # section is the only place the README tells them it exists.
+    assert "unsloth/unsloth:core" in section, (
+        "the README Docker section that runs the image no longer names the `unsloth/unsloth:core` "
+        "tag; keep a pointer to it for notebook-only users"
+    )
     assert "/workspace/host" in section
     assert "--ipc=host" in section
     for stale in ("2222:22", "/workspace/work"):
-        assert stale not in section, f"the README run command still has {stale!r}"
+        for other in sections:
+            assert stale not in other, f"a README Docker section still has {stale!r}"
 
 
 @pytest.fixture(scope = "module")
@@ -83,23 +156,24 @@ def test_the_sync_runs_only_when_latest_moved(sync_job: dict):
 
 
 def _run_sync(
-    step: str,
+    step: dict,
     tmp_path: Path,
     *,
     live_after_patch: str,
     token: str = "tok",
-    secret: str = "not-a-secret",
+    secret: str = DEFAULT_SECRET,
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "curl.log"
-    # what the Hub reports after the PATCH; a file, so the README's backticks and
-    # dollar signs never pass through the stub's shell
     live = tmp_path / "live.json"
     live.write_text(json.dumps({"full_description": live_after_patch}), encoding = "utf-8")
     (bin_dir / "curl").write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {log}\n"
+        # The token request body is sent on stdin (--data-binary @-), so log it from there;
+        # only read stdin when that flag is present, since cat would hang.
+        f"case \"$*\" in *'--data-binary @-'*) cat >> {log} ;; esac\n"
         'case "$*" in\n'
         f'  *auth/token*) printf \'{{"access_token": "{token}"}}\' ;;\n'
         "  *-X\\ PATCH*) out=''; while [ $# -gt 0 ]; do [ \"$1\" = -o ] && out=$2; shift; done; : > \"$out\"; printf '200' ;;\n"
@@ -110,14 +184,23 @@ def _run_sync(
     (bin_dir / "curl").chmod(0o755)
     (tmp_path / "docker").mkdir()
     shutil.copy(HUB_README, tmp_path / "docker" / "DOCKERHUB.md")
-    script = step.replace("${{ secrets.DOCKER_API_KEY }}", secret).replace(
-        "${{ env.REGISTRY_USERNAME }}", "unsloth"
+    script = (
+        step["run"]
+        .replace("${{ secrets.DOCKER_API_KEY }}", secret)
+        .replace("${{ env.REGISTRY_USERNAME }}", "unsloth")
     )
     assert "${{" not in script, "unexpanded expression in the sync step"
     env = dict(os.environ)
     env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
     env["REGISTRY_USERNAME"] = "unsloth"
     env["IMAGE_NAME"] = "unsloth/unsloth"
+    # Bind the step's env: too; expand only the expected secret so a wrong name fails.
+    for name, value in (step.get("env") or {}).items():
+        env[name] = re.sub(r"\$\{\{\s*secrets\.DOCKER_API_KEY\s*\}\}", secret, str(value))
+        assert "${{" not in env[name], (
+            f"the step's env {name} reads {value!r}, which is not the secret this "
+            f"harness knows how to supply"
+        )
     res = subprocess.run(
         ["bash", "-e", "-c", script],
         capture_output = True,
@@ -130,20 +213,20 @@ def _run_sync(
 
 
 def test_the_sync_patches_the_readme_and_confirms_it(sync_job: dict, tmp_path: Path):
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert res.returncode == 0, res.stdout + res.stderr
     assert "-X PATCH https://hub.docker.com/v2/namespaces/unsloth/repositories/unsloth" in log
     assert "Authorization: Bearer tok" in log
+    assert (
+        f'"secret": "{DEFAULT_SECRET}"' in log
+    ), "the token request carried no body, so this proves nothing about who it authenticates as"
     assert '"identifier": "unsloth"' in log, "the organization token authenticates as the org"
 
 
 def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_path: Path):
-    """Docker Hub rejects every organization access token on
-    /v2/repositories/{owner}/{repo}/ with 403 "token issued from organization access
-    token is not allowed", whatever its scopes; only the namespace-scoped route
-    accepts it. That 403 failed the sync on every publish before this test existed."""
-    step = sync_job["steps"][-1]["run"]
+    """Docker Hub rejects org access tokens on legacy /v2/repositories, so sync uses the namespace route."""
+    step = sync_job["steps"][-1]
     _, log = _run_sync(step, tmp_path, live_after_patch = HUB_README.read_text(encoding = "utf-8"))
     assert "/v2/repositories/" not in log
     assert "/v2/namespaces/unsloth/repositories/unsloth" in log
@@ -152,14 +235,41 @@ def test_the_sync_never_touches_the_legacy_repository_route(sync_job: dict, tmp_
 def test_the_sync_fails_when_the_page_did_not_change(sync_job: dict, tmp_path: Path):
     """A 200 from PATCH is not proof. The page is read back and compared, so a token
     without description rights cannot leave the job green and the page stale."""
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, _ = _run_sync(step, tmp_path, live_after_patch = "# the old page")
     assert res.returncode != 0, "the sync reported success while the page stayed stale"
     assert "does not match" in res.stdout + res.stderr
 
 
 def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
-    step = sync_job["steps"][-1]["run"]
+    step = sync_job["steps"][-1]
     res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"
+
+
+def test_the_hub_readme_matches_what_each_image_ships():
+    text = HUB_README.read_text(encoding = "utf-8")
+    assert "The `latest` image adds whisper.cpp" in text
+    assert "audio.cpp (CUDA build on `linux/amd64`)" in text
+    studio_df = (HUB_README.parent / "Dockerfile.studio").read_text(encoding = "utf-8")
+    assert 'amd64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="cuda"' in studio_df
+    assert 'UNSLOTH_AUDIO_CPP_ACCELERATOR="${AUDIO_CPP_ACCELERATOR}"' in studio_df
+    assert "`UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub" in text
+    assert "`UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all" in text
+    assert "On `core`, `--user <uid>:<gid>` is supported" in text
+    assert "AGPL-3.0" in text and "Apache-2.0" in text
+
+
+def test_both_images_declare_both_licenses():
+    """metadata-action labels both images Apache-2.0, but they carry Studio's AGPL-3.0 code."""
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    assert text.count("org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only") == 2
+
+
+def test_the_studio_image_does_not_ship_the_uv_download_cache():
+    """install.sh's uv cache sits under the Studio home, which /root/.cache never reached: ~9 GB baked into :latest."""
+    body = (REPO_ROOT / "docker" / "Dockerfile.studio").read_text(encoding = "utf-8")
+    assert "rm -rf" in body
+    cleanup = body[body.index("rm -rf") :]
+    assert '"${UV_CACHE_DIR:-${UNSLOTH_STUDIO_HOME}/cache/uv}"' in cleanup

@@ -1,28 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""Fake CPU training runs for the Unsloth-patched SFT / GRPO / DPO trainers.
-
-The patch-run canary (test_trl_grpo_fake_run.py) only compiles + inspects the
-generated trainer source. This goes one layer deeper: it actually runs
-`trainer.train()` for a couple of steps on a CPU-only runner, under the CUDA
-spoof, wrapping a plain (tiny, random-weight) HF model in the Unsloth-patched
-trainer. That exercises the real train() loop at runtime -- data collation,
-generation (GRPO), the injected `_get_per_token_logps_and_entropies`, loss,
-backward, optimizer -- so a TRL or transformers change that breaks the loop
-(not just the source structure) surfaces here. No GPU, no meaningful numerics.
-
-What it does NOT cover: Unsloth's Triton/GPU-optimized model kernels (the
-FastLanguageModel fast path) cannot run on CPU, so this validates the
-trainer-transform + orchestration layer with a standard forward, not the
-optimized kernels.
-"""
+"""Runs real train() steps on CPU with a tiny random model; Triton/GPU kernels are not covered."""
 
 from __future__ import annotations
 
 import os
 
-# CPU-only: no torch.compile / dynamo (it reaches into the CUDA accelerator), no Unsloth kernel compile, no mixed
-# precision. Must be set before torch/unsloth.
+# CPU-only: no compile/dynamo or mixed precision. Must be set before torch/unsloth import.
 os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
@@ -36,8 +20,7 @@ from pathlib import Path
 import pytest
 
 
-# torch is needed for everything below (daily-fresh-fetch collects this dir with only pytest installed); skip the whole
-# module cleanly when it is absent.
+# daily-fresh-fetch collects this dir with only pytest installed.
 if importlib.util.find_spec("torch") is None:
     pytest.skip(
         "torch not installed; fake CPU train needs the real runtime", allow_module_level = True
@@ -53,10 +36,8 @@ _spoof.apply()
 import torch  # noqa: E402
 
 
-# The generated GRPO trainer hard-decorates hot functions with @torch.compile, which dynamo processes even under the
-# disable env vars, reaching into torch.accelerator (real CUDA) on a GPU-less box. Make torch.compile an eager
-# passthrough before unsloth generates/imports the trainer -- same logic, no dynamo. (An eager CPU run is exactly what
-# we want here.)
+# The generated GRPO trainer hard-decorates with @torch.compile, which reaches real CUDA via dynamo;
+# make it an eager passthrough before unsloth generates the trainer.
 def _eager_compile(
     model = None,
     *args,
@@ -75,18 +56,10 @@ def _is_cuda_dev(d):
 
 
 def _fake_cpu_gpu(mp):
-    """Make this process behave like a GPU-less box, undoably.
-
-    Everything here is a mutation of a global that outlives the module, so it
-    goes through the caller's MonkeyPatch: applied for the duration of this
-    module's tests and reverted afterwards. Applied at import time instead, a
-    GPU test collected from anywhere else in the same session silently gets CPU
-    tensors out of `device = "cuda"` and can pass without testing anything.
-    """
+    """Spoofs a GPU-less box via the caller's MonkeyPatch so it reverts; import-time patching would leak."""
     mp.setattr(torch, "compile", _eager_compile)
 
-    # Belt-and-suspenders: if any @torch.compile still routes through dynamo, let it fall back to eager instead of
-    # crashing, and stop its stream-capture probe from reaching torch.accelerator -> real CUDA on a GPU-less box.
+    # Fallback: let dynamo fall back to eager and skip its stream-capture probe on GPU-less boxes.
     try:
         # Aliased: a bare `import torch._dynamo` would rebind `torch` as a local.
         import torch._dynamo as _dynamo
@@ -97,9 +70,7 @@ def _fake_cpu_gpu(mp):
     if hasattr(torch, "accelerator"):
         mp.setattr(torch.accelerator, "is_available", lambda *a, **k: False)
 
-    # Redirect any `device="cuda"` tensor allocation / `.to("cuda")` / `.cuda()` to CPU.
-    # The aggressive spoof deliberately keeps real allocators, but a fake CPU train needs cuda-targeted ops (e.g.
-    # inductor's init_gpu_context does `torch.empty(1, device="cuda")`) to land on CPU instead of erroring.
+    # Redirect cuda allocations to CPU: the spoof keeps real allocators, but inductor allocates on cuda.
     for _name in (
         "empty",
         "zeros",
@@ -140,7 +111,6 @@ def _fake_cpu_gpu(mp):
     mp.setattr(torch.Tensor, "to", _to_cpu)
     mp.setattr(torch.Tensor, "cuda", lambda self, *a, **k: self)
 
-    # Extra CUDA stubs the aggressive spoof lacks, needed to walk a real train():
     # Adam's _cuda_graph_capture_health_check() probes stream capture.
     mp.setattr(torch.cuda, "is_current_stream_capturing", lambda *a, **k: False, raising = False)
     try:
@@ -149,8 +119,7 @@ def _fake_cpu_gpu(mp):
     except Exception:
         pass
 
-    # A broken libmlx.so in the shared site-packages crashes transformers' Mac-only is_mlx_array probe on Linux; disable
-    # it.
+    # A broken libmlx.so in shared site-packages crashes transformers' is_mlx_array probe on Linux.
     try:
         import transformers.utils.generic as _g
         mp.setattr(_g, "_is_mlx_available", False, raising = False)
@@ -160,45 +129,23 @@ def _fake_cpu_gpu(mp):
 
 @pytest.fixture(scope = "module", autouse = True)
 def _cpu_only_torch():
-    """Hold the GPU-less spoof for this module only.
-
-    Module scoped so it is in place before the per-test `_require_stack` imports
-    unsloth and before any trainer is generated, which is the whole reason the
-    patches used to sit at import time.
-    """
+    """Module-scoped so the spoof is in place before _require_stack imports unsloth and builds trainers."""
     with pytest.MonkeyPatch.context() as mp:
         _fake_cpu_gpu(mp)
         yield mp
 
 
-# Dense (non-MoE) tiny model on purpose: MoE models route through Unsloth's
-# grouped_gemm Triton kernel, which is CUDA-only and cannot run on a CPU runner.
+# Dense model on purpose: MoE routes through a CUDA-only Triton kernel.
 _MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 
 
 def _guard_finite_logits(model):
-    """Keep the LM head logits finite so GRPO sampling can't crash.
-
-    ``test_grpo_trains_on_cpu`` samples completions from a tiny, *untrained*
-    random model on CPU. Driven autoregressively -- and nudged by the fake
-    reward's optimizer step between the two train steps -- such a model can emit
-    non-finite logits, so ``torch.multinomial`` inside ``generate()``
-    intermittently raises "probability tensor contains either `inf`, `nan` or
-    element < 0". That is a well-known nondeterministic sampling failure, not an
-    Unsloth/TRL regression: the Trainer already fixes the seed, but CPU reduction
-    order is not bit-reproducible, so the blow-up still surfaces every so often.
-
-    Sanitize the logits to a finite, bounded range (out of place, so autograd
-    stays valid) before they reach the sampler. This test asserts the train loop
-    runs end to end, not the (deliberately meaningless) numerics, so bounding the
-    logits changes nothing it checks while making the run reliable.
-    """
+    """Bounds logits to a finite range so torch.multinomial in GRPO sampling never sees inf or nan."""
 
     def _finite_logits_hook(_module, _inputs, output):
         logits = getattr(output, "logits", None)
         if logits is None:
             return output
-        # nan_to_num maps nan -> 0 and the infinities to large finite values; clamp then bounds everything to [-30, 30].
         output.logits = torch.nan_to_num(logits).clamp(-30.0, 30.0)
         return output
 
@@ -212,14 +159,19 @@ def _load_plain():
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
+        # No dtype kwarg: `dtype=` fails at the 4.52.4 floor, `torch_dtype=` is deprecated from 4.57.6.
         tok = AutoTokenizer.from_pretrained(_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
-    except OSError as e:  # hub unreachable / model missing
+        model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
+    except OSError as e:
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    got = next(model.parameters()).dtype
+    assert got == torch.float32, (
+        f"the cast after load left the model in {got}, not float32. These tests compare "
+        f"losses, so a silent dtype change is a silent change of what they measure."
+    )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    # Unsloth's GRPO path calls model.for_training()/for_inference() (added by FastLanguageModel). A plain HF model
-    # lacks them; supply minimal train/eval equivalents so the loop proceeds without the optimized wrapper.
+    # Unsloth's GRPO path calls model.for_training()/for_inference(), which plain HF models lack.
     if not hasattr(model, "for_training"):
         model.for_training = lambda *a, **k: model.train()
     if not hasattr(model, "for_inference"):
@@ -232,14 +184,10 @@ def _require_stack(_cpu_only_torch):
     global torch  # the `import torch._dynamo` below would otherwise shadow it as local
     if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
         pytest.skip("unsloth or trl not installed")
-    # A real import failure is a regression we want to surface, so do not guard it.
     import unsloth  # noqa: F401  -- patches TRL trainers to the Unsloth variants
 
-    # `import unsloth` reinstalls the real torch.compile (overwriting the eager passthrough set at module load), so the
-    # GRPO hot path (chunked_selective_log_softmax) would really compile -- and inductor picks the spoofed CUDA device,
-    # crashing on device props (`gcnArchName`). Re-apply the eager passthrough and flip dynamo's call-time kill switch
-    # so every @torch.compile runs eager regardless of when it was decorated. CPU eager is what we want. Through the
-    # module's MonkeyPatch, so both are undone with the rest of it.
+    # `import unsloth` reinstalls the real torch.compile, so re-apply the eager passthrough and
+    # flip dynamo's kill switch (inductor would crash on the spoofed device).
     _cpu_only_torch.setattr(torch, "compile", _eager_compile)
     try:
         import torch._dynamo  # noqa: E402
@@ -273,15 +221,22 @@ def test_sft_trains_on_cpu(tmp_path):
     SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
 
+def _skip_if_unsloth_refuses_grpo():
+    # Unsloth refuses GRPO below trl 0.20.0; the floor lane runs below it.
+    import trl
+    from packaging.version import Version
+    if Version(trl.__version__) < Version("0.20.0"):
+        pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< 0.20.0)")
+
+
 def test_grpo_trains_on_cpu(tmp_path):
+    _skip_if_unsloth_refuses_grpo()
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
     assert GRPOTrainer.__name__ == "UnslothGRPOTrainer", "GRPO patch did not apply"
     model, tok = _load_plain()
-    # GRPO is the only canary that autoregressively samples completions, so it is the only one that can hit the
-    # non-finite-logits multinomial crash. Install the guard here (not in _load_plain) so the SFT/DPO canaries keep
-    # asserting against the model's true, unclamped outputs.
+    # Only GRPO samples, so only it needs the finite-logits guard; SFT/DPO keep raw outputs.
     _guard_finite_logits(model)
     ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
     cfg = GRPOConfig(
@@ -315,6 +270,15 @@ def test_dpo_trains_on_cpu(tmp_path):
     from trl import DPOConfig, DPOTrainer
 
     assert DPOTrainer.__name__ == "UnslothDPOTrainer", "DPO patch did not apply"
+    import inspect
+
+    from trl.trainer import dpo_trainer
+
+    # TRL 1.15 scores DPO through its fused LM head, a Triton kernel with no CPU path, so
+    # plain TRL cannot train DPO on a CPU either. Only skip when that is what the installed
+    # TRL does, so an older TRL still has to train here.
+    if "fused_lm_head=True" in inspect.getsource(dpo_trainer):
+        pytest.skip("this TRL computes DPO log-probs with a Triton GPU kernel only")
     model, tok = _load_plain()
     ds = Dataset.from_list(
         [{"prompt": "Hi", "chosen": " hello friend", "rejected": " go away"}] * 8
@@ -333,3 +297,194 @@ def test_dpo_trains_on_cpu(tmp_path):
         optim = "adamw_torch",
     )
     DPOTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
+
+
+def test_grpo_evaluates_with_an_explicit_eval_batch_size(tmp_path):
+    """Shrinking an explicit eval batch of 8 to the train batch of 2 split num_generations = 4 groups."""
+    _skip_if_unsloth_refuses_grpo()
+    from datasets import Dataset
+    from trl import GRPOConfig, GRPOTrainer
+
+    model, tok = _load_plain()
+    _guard_finite_logits(model)
+    ds = Dataset.from_list([{"prompt": "hi there"}] * 8)
+    cfg = GRPOConfig(
+        output_dir = str(tmp_path / "ci_grpo_eval"),
+        per_device_train_batch_size = 2,
+        gradient_accumulation_steps = 2,
+        per_device_eval_batch_size = 8,
+        num_generations = 4,
+        eval_strategy = "steps",
+        max_completion_length = 8,
+        report_to = "none",
+        temperature = 1.0,
+        beta = 0.0,
+        save_strategy = "no",
+        use_cpu = True,
+        use_vllm = False,
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
+    )
+    trainer = GRPOTrainer(
+        model = model,
+        processing_class = tok,
+        reward_funcs = [lambda completions, **k: [float(len(c)) for c in completions]],
+        args = cfg,
+        train_dataset = ds,
+        eval_dataset = ds,
+    )
+    assert trainer.args.per_device_eval_batch_size == 8
+    assert "eval_loss" in trainer.evaluate()
+
+
+def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
+    _skip_if_unsloth_refuses_grpo()
+    """The canary above proves the GRPO trainer runs. It does NOT prove Unsloth's own
+    ``get_batch_samples`` runs, because ``_load_plain`` never goes through the loader that
+    installs it, so ``Trainer.get_batch_samples`` stays stock transformers.
+
+    That gap is not theoretical. unsloth-zoo#1217 rewrote a list-safe
+    ``"labels" in batch_samples[0]`` into ``batch_samples[0].get("labels")``, and GRPO's
+    collator is the identity, so every element of ``batch_samples`` is a list of dicts and
+    every GRPO run died at step 0 with ``AttributeError: 'list' object has no attribute
+    'get'``. It sat on main for a day, invisible to this file, and was found by accident.
+
+    So install the patch the way a real run does, assert it took, and take real steps.
+    """
+    from datasets import Dataset
+    from transformers import Trainer
+    from trl import GRPOConfig, GRPOTrainer
+
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    # patch_gradient_accumulation_fix mutates Trainer, which test_trl_loss_normalization_contract.py
+    # inspects in the same process; snapshot the whole class dict to restore it.
+    trainer_attributes_before = dict(Trainer.__dict__)
+    seen = {"calls": 0, "list_batches": 0}
+
+    # The patch call is inside the try so a mid-patch raise cannot leave Trainer partially patched.
+    try:
+        patch_gradient_accumulation_fix(Trainer)
+        assert Trainer.get_batch_samples.__name__ == "_unsloth_get_batch_samples", (
+            "the batch sampler under test was never installed; this canary would pass "
+            "against any zoo at all"
+        )
+
+        patched = Trainer.get_batch_samples
+
+        def counting(self, epoch_iterator, num_batches, *args, **kwargs):
+            seen["calls"] += 1
+            result = patched(self, epoch_iterator, num_batches, *args, **kwargs)
+            batch_samples = result[0] if isinstance(result, tuple) else result
+            if batch_samples and isinstance(batch_samples[0], list):
+                seen["list_batches"] += 1
+            return result
+
+        Trainer.get_batch_samples = counting
+
+        model, tok = _load_plain()
+        _guard_finite_logits(model)
+        ds = Dataset.from_list([{"prompt": "hi there"}] * 4)
+        cfg = GRPOConfig(
+            output_dir = str(tmp_path / "ci_grpo_patched"),
+            per_device_train_batch_size = 2,
+            num_generations = 2,
+            max_steps = 2,
+            max_completion_length = 8,
+            logging_steps = 1,
+            report_to = "none",
+            temperature = 1.0,
+            beta = 0.0,
+            save_strategy = "no",
+            use_cpu = True,
+            use_vllm = False,
+            fp16 = False,
+            bf16 = False,
+            optim = "adamw_torch",
+        )
+        GRPOTrainer(
+            model = model,
+            processing_class = tok,
+            reward_funcs = [lambda completions, **k: [float(len(c)) for c in completions]],
+            args = cfg,
+            train_dataset = ds,
+        ).train()
+    finally:
+        for name in [n for n in Trainer.__dict__ if n not in trainer_attributes_before]:
+            delattr(Trainer, name)
+        for name, value in trainer_attributes_before.items():
+            if Trainer.__dict__.get(name) is not value:
+                setattr(Trainer, name, value)
+
+    # `is`, not `==`: a wrapper that compares equal still counts as a leak.
+    leaked = [n for n in Trainer.__dict__ if n not in trainer_attributes_before]
+    not_restored = [
+        n for n, v in trainer_attributes_before.items() if Trainer.__dict__.get(n) is not v
+    ]
+    assert not leaked and not not_restored, (
+        "this canary left the Trainer class patched, so any later test in the same process "
+        "that reads upstream's own methods is reading Unsloth's instead: "
+        f"added {leaked}, not restored {not_restored}"
+    )
+
+    assert seen["calls"] > 0, "the patched batch sampler was never entered"
+    # TRL's GRPO collator is the identity, so batches are lists of dicts.
+    assert seen["list_batches"] > 0, (
+        "no batch arrived as a list, so this canary is not exercising the GRPO collator "
+        "shape and would not have caught unsloth-zoo#1217"
+    )
+
+
+def test_sft_applies_trl_router_aux_loss_coef(tmp_path):
+    """The MoE forward must apply SFTConfig.router_aux_loss_coef, not the checkpoint value cached at init."""
+    import inspect
+    from datasets import Dataset
+    from trl import SFTConfig, SFTTrainer
+    from transformers import AutoTokenizer, MixtralConfig, MixtralForCausalLM
+
+    if "router_aux_loss_coef" not in inspect.signature(SFTConfig).parameters:
+        pytest.skip("SFTConfig has no router_aux_loss_coef before TRL 1.7")
+    try:
+        tok = AutoTokenizer.from_pretrained(_MODEL)
+    except OSError as e:
+        pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    tok.pad_token = tok.pad_token or tok.eos_token
+    config = MixtralConfig(
+        vocab_size = len(tok),
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        router_aux_loss_coef = 0.02,
+    )
+    torch.manual_seed(0)
+    model = MixtralForCausalLM(config)
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 8)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_moe"),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+        router_aux_loss_coef = 0.05,
+    )
+    SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds)
+    ids = tok(["The quick brown fox jumps over the lazy dog."], return_tensors = "pt").input_ids
+    model.train()
+    with torch.no_grad():
+        on = model(input_ids = ids, labels = ids, output_router_logits = True)
+        off = model(input_ids = ids, labels = ids, output_router_logits = False)
+    applied = (float(on.loss) - float(off.loss)) / float(on.aux_loss)
+    assert (
+        abs(applied - 0.05) < 1e-4
+    ), f"applied aux coefficient {applied}, expected SFTConfig's 0.05"

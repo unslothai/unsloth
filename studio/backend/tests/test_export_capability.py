@@ -38,11 +38,32 @@ def _patch(monkeypatch, *, torch: bool, device, apple: bool):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
     monkeypatch.setattr(hw, "get_device", lambda: device)
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: apple)
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: False)
+
+
+def test_rosetta_export_gives_the_native_arm64_remedy(monkeypatch):
+    # is_apple_silicon() is False in an x86_64 process, so this fell through to no_accelerator.
+    _patch(monkeypatch, torch = True, device = hw.DeviceType.CPU, apple = False)
+    monkeypatch.setattr(hw, "_running_under_rosetta", lambda: True)
+    monkeypatch.setattr(hw.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("rosetta", None))
+    cap = hw.export_capability()
+    assert cap["export_supported"] is False
+    assert cap["export_unsupported_reason"] == "rosetta"
+    assert "arm64" in cap["export_unsupported_message"]
 
 
 def test_cpu_with_torch_unsupported_no_accelerator(monkeypatch):
     # PyTorch present but no accelerator: unsupported with no_accelerator, not "PyTorch missing".
     _patch(monkeypatch, torch = True, device = hw.DeviceType.CPU, apple = False)
+    # Both branches below sit AFTER the gpu-present-but-unusable one, so they are only
+    # reachable on a host with no accelerator at all. The verdict is module state that
+    # detection writes and that current_chat_only_verdict() re-derives from a 60 second
+    # inventory cache, so without pinning it here this reads whatever an earlier test in
+    # the same worker left behind: a run that has already faked an NVIDIA host answers
+    # "torch_cpu_build" and never reaches the branch being asserted. The rest of this file
+    # already pins the verdict wherever it matters.
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_gpu", None))
     cap = hw.export_capability()
     assert cap["export_supported"] is False
     assert cap["export_unsupported_reason"] == "no_accelerator"
@@ -72,6 +93,14 @@ def test_mlx_without_torch_supports_export(monkeypatch):
 
 def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
     _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = False)
+    # Both branches below sit AFTER the gpu-present-but-unusable one, so they are only
+    # reachable on a host with no accelerator at all. The verdict is module state that
+    # detection writes and that current_chat_only_verdict() re-derives from a 60 second
+    # inventory cache, so without pinning it here this reads whatever an earlier test in
+    # the same worker left behind: a run that has already faked an NVIDIA host answers
+    # "torch_cpu_build" and never reaches the branch being asserted. The rest of this file
+    # already pins the verdict wherever it matters.
+    monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_gpu", None))
     cap = hw.export_capability()
     assert cap["export_supported"] is False
     assert cap["export_unsupported_reason"] == "pytorch_not_installed"

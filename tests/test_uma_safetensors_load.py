@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Unit tests for the UMA safetensors clone-then-move fast load.
-
-The module loads in isolation with a fake ``transformers.modeling_utils``. The
-CUDA correctness check needs a GPU; gating, passthrough, idempotency and opt-out
-are GPU-free. The gate is lazy (wrapper-time), so the wrapper installs
-everywhere and passes through when it's off.
-"""
+"""Tests the UMA safetensors fast load; the gate is read at wrapper time, so off means passthrough."""
 
 from __future__ import annotations
 
@@ -17,6 +11,9 @@ import types
 from pathlib import Path
 
 import pytest
+from real_accelerator import (
+    has_real_cuda,
+)
 
 torch = pytest.importorskip("torch")
 safetensors_torch = pytest.importorskip("safetensors.torch")
@@ -151,7 +148,6 @@ def test_patch_installs_and_is_idempotent(uma, force_uma, monkeypatch):
     assert uma.patch_unified_memory_safetensors_load() is True
     wrapped = fake_mu.safe_open
     assert getattr(wrapped, "_unsloth_uma_clone", False) is True
-    # second call must not double-wrap
     assert uma.patch_unified_memory_safetensors_load() is True
     assert fake_mu.safe_open is wrapped
 
@@ -161,7 +157,6 @@ def test_cpu_target_is_passthrough(uma, force_uma, monkeypatch, tiny_safetensors
     force_uma(True)
     fake_mu = _install_fake_modeling_utils(monkeypatch, safetensors.safe_open)
     uma.patch_unified_memory_safetensors_load()
-    # device="cpu" must NOT be intercepted -> identical data, still on CPU.
     with fake_mu.safe_open(str(path), framework = "pt", device = "cpu") as f:
         for key, expected in tensors.items():
             got = f.get_slice(key)[:]
@@ -170,7 +165,7 @@ def test_cpu_target_is_passthrough(uma, force_uma, monkeypatch, tiny_safetensors
 
 
 @pytest.mark.skipif(
-    not (hasattr(torch, "cuda") and torch.cuda.is_available()),
+    not has_real_cuda(),
     reason = "needs a GPU for the host->device clone-and-move path",
 )
 def test_cuda_target_clones_and_moves(uma, force_uma, monkeypatch, tiny_safetensors):
@@ -178,7 +173,6 @@ def test_cuda_target_clones_and_moves(uma, force_uma, monkeypatch, tiny_safetens
     force_uma(True)
     fake_mu = _install_fake_modeling_utils(monkeypatch, safetensors.safe_open)
     uma.patch_unified_memory_safetensors_load()
-    # device="cuda" IS intercepted -> tensors land on cuda, byte-identical.
     with fake_mu.safe_open(str(path), framework = "pt", device = "cuda") as f:
         for key, expected in tensors.items():
             got = f.get_slice(key)[:]
@@ -190,7 +184,7 @@ def test_cuda_target_clones_and_moves(uma, force_uma, monkeypatch, tiny_safetens
 
 
 @pytest.mark.skipif(
-    not (hasattr(torch, "cuda") and torch.cuda.is_available()),
+    not has_real_cuda(),
     reason = "needs a GPU for the low-memory fallback path",
 )
 def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_safetensors):
@@ -198,8 +192,7 @@ def test_low_memory_falls_back_to_direct_move(uma, force_uma, monkeypatch, tiny_
     force_uma(True)
     fake_mu = _install_fake_modeling_utils(monkeypatch, safetensors.safe_open)
     uma.patch_unified_memory_safetensors_load()
-    # Clone OOMs (transient CPU doubling on a constrained UMA box): the wrapper must fall back to
-    # the direct move and still succeed.
+    # Clone can OOM on a constrained UMA box; the wrapper must fall back to the direct move.
     real_clone = torch.Tensor.clone
 
     def _oom_clone(self, *a, **k):

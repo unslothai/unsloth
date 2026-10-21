@@ -16,7 +16,12 @@ actually accessed, so standalone helpers stay unit-testable without the full
 inference stack.
 """
 
+import os
 from typing import TYPE_CHECKING
+
+# Same ROCm AOTriton opt-in as main.py, for entry points that skip main.py: without it gfx1151 refuses fused
+# SDPA and runs MATH. torch reads it at the first SDPA dispatch; `setdefault` keeps an explicit "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 __all__ = [
     "InferenceBackend",

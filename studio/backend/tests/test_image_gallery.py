@@ -7,6 +7,7 @@ listing order, safe id handling, and delete/clear."""
 from __future__ import annotations
 
 import base64
+import errno
 import io
 import os
 
@@ -62,6 +63,22 @@ def test_save_embeds_recipe_and_round_trips():
     assert listed[0]["prompt"] == "a sloth" and listed[0]["seed"] == 7
 
 
+def test_listing_reads_the_recipe_without_decoding_pixels(monkeypatch):
+    from PIL import PngImagePlugin
+
+    for i in range(3):
+        gallery.save(_img(), _meta(seed = i))
+    loads = []
+    real_load = PngImagePlugin.PngImageFile.load
+    monkeypatch.setattr(
+        PngImagePlugin.PngImageFile,
+        "load",
+        lambda self, *a, **k: loads.append(1) or real_load(self, *a, **k),
+    )
+    assert sorted(r["seed"] for r in gallery.list_images()) == [0, 1, 2]
+    assert loads == []
+
+
 def _save_with_mtime(prompt: str, t: float) -> dict:
     record = gallery.save(_img(), _meta(prompt = prompt, created_at = t))
     # Listing orders by mtime; set it explicitly so a tight test loop can't tie it.
@@ -95,6 +112,20 @@ def test_negative_prompt_recorded_in_parameters():
         assert "Negative prompt: blurry" in im.text["parameters"]
 
 
+def test_parameters_carry_strength_version_and_the_recipe_the_engine():
+    # Upscale's strength is its denoise, like the img2img workflows; plain txt2img has none.
+    for workflow, expected in (("upscale", True), ("edit", True), ("txt2img", False)):
+        record = gallery.save(_img(), _meta(workflow = workflow, strength = 0.35))
+        raw = base64.b64decode(gallery.image_b64(record["id"]))
+        with Image.open(io.BytesIO(raw)) as im:
+            params = im.text["parameters"]
+            recipe = _json.loads(im.text["unsloth"])
+        assert ("Denoising strength: 0.35" in params) is expected, (workflow, params)
+        assert ", Version: Unsloth " in params
+        assert recipe["generator"].startswith("Unsloth")
+        assert "engine" in recipe
+
+
 def test_delete_and_clear():
     a = gallery.save(_img(), _meta(prompt = "a"))
     gallery.save(_img(), _meta(prompt = "b"))
@@ -103,6 +134,23 @@ def test_delete_and_clear():
     assert len(gallery.list_images()) == 1
     assert gallery.clear() == 1
     assert gallery.list_images() == []
+
+
+@pytest.mark.parametrize("stage", ["read", "unlink"])
+def test_delete_does_not_report_an_io_failure_as_a_missing_image(monkeypatch, stage):
+    record = gallery.save(_img(), _meta())
+    path = gallery.image_path(record["id"])
+
+    def refuse(*args, **kwargs):
+        raise PermissionError(errno.EACCES, "read-only gallery")
+
+    if stage == "read":
+        monkeypatch.setattr(Image, "open", refuse)
+    else:
+        monkeypatch.setattr(type(path), "unlink", refuse)
+    with pytest.raises(PermissionError, match = "read-only gallery"):
+        gallery.delete(record["id"])
+    assert path.exists()
 
 
 def test_clear_preserves_foreign_png():
@@ -231,6 +279,18 @@ def test_records_carry_default_flags():
     assert record["pinned"] is False and record["archived"] is False
 
 
+def test_records_carry_the_listing_sort_key():
+    # A batch shares one created_at; the listing sorts by mtime, so records must say so.
+    a = gallery.save(_img(), _meta(created_at = 100.0))
+    b = gallery.save(_img(), _meta(created_at = 100.0))
+    os.utime(gallery.gallery_dir() / f"{a['id']}.png", (150.0, 150.0))
+    os.utime(gallery.gallery_dir() / f"{b['id']}.png", (120.0, 120.0))
+    assert [(r["id"], r["order_at"]) for r in gallery.list_images()] == [
+        (a["id"], 150.0),
+        (b["id"], 120.0),
+    ]
+
+
 def test_pinned_images_sort_ahead_of_newer_ones():
     old = _save_with_mtime("old", 100.0)
     _save_with_mtime("new", 200.0)
@@ -301,11 +361,35 @@ def test_set_flags_refuses_a_foreign_or_unknown_id():
     assert gallery.set_flags("foreign", pinned = True) is None
 
 
-def test_delete_prunes_the_flag_entry():
+@pytest.mark.parametrize("missing_at", [None, "lookup", "read", "unlink"])
+def test_delete_prunes_the_flag_entry(monkeypatch, missing_at):
     record = _save_with_mtime("a", 100.0)
-    gallery.set_flags(record["id"], pinned = True)
-    assert gallery.delete(record["id"]) is True
-    assert gallery_flags.read(gallery.gallery_dir()) == {}
+    other = _save_with_mtime("keep", 200.0)
+    gallery.set_flags(record["id"], pinned = True, archived = True)
+    gallery.set_flags(other["id"], archived = True)
+    path = gallery.image_path(record["id"])
+    if missing_at == "lookup":
+        path.unlink()
+    elif missing_at == "read":
+        read_meta = gallery._read_meta
+
+        def disappear_before_read(candidate, **kwargs):
+            candidate.unlink()
+            return read_meta(candidate, **kwargs)
+
+        monkeypatch.setattr(gallery, "_read_meta", disappear_before_read)
+    elif missing_at == "unlink":
+        unlink = type(path).unlink
+
+        def disappear_before_unlink(candidate, **kwargs):
+            if candidate == path:
+                unlink(candidate)
+            return unlink(candidate, **kwargs)
+
+        monkeypatch.setattr(type(path), "unlink", disappear_before_unlink)
+    assert gallery.delete(record["id"]) is (missing_at is None)
+    assert gallery_flags.read(gallery.gallery_dir()) == {other["id"]: {"archived": True}}
+    assert gallery.image_path(other["id"]) is not None
 
 
 def test_clear_spares_archived_images():
@@ -453,3 +537,179 @@ def test_archiving_during_a_clear_never_leaves_a_deleted_image_reported_as_archi
     # Either the archive won (reported success, file kept) or the clear won (reported gone, file
     # deleted). "Reported success but deleted" is the outcome this must never produce.
     assert said_ok == survived
+
+
+def test_save_looks_up_the_folder_after_encoding(tmp_path, monkeypatch):
+    order = []
+    encode = gallery._png_bytes
+    monkeypatch.setattr(gallery, "_png_bytes", lambda *a: order.append("encode") or encode(*a))
+    monkeypatch.setattr(gallery, "gallery_dir", lambda: order.append("dir") or tmp_path)
+    gallery.save(Image.new("RGB", (4, 4)), {"prompt": "p"})
+    assert order[:2] == ["encode", "dir"]
+
+
+def test_thumbnail_is_a_downscaled_webp_of_the_png():
+    record = gallery.save(Image.new("RGB", (64, 32), (200, 10, 10)), _meta())
+    data = gallery.thumbnail(gallery.image_path(record["id"]), 16)
+    with Image.open(io.BytesIO(data)) as im:
+        assert im.format == "WEBP"
+        assert im.size == (16, 8)
+
+
+def _noisy(size = 128):
+    # Incompressible-ish content so the deflate level changes the encoded bytes.
+    import random
+    rng = random.Random(1234)
+    return Image.frombytes(
+        "RGB", (size, size), bytes(rng.randrange(256) for _ in range(size * size * 3))
+    )
+
+
+def _encode(image, level):
+    from PIL.PngImagePlugin import PngInfo
+
+    info = PngInfo()
+    info.add_text("unsloth", _json.dumps(_meta()))
+    info.add_text("parameters", gallery._params_text(_meta()))
+    buf = io.BytesIO()
+    image.save(buf, format = "PNG", pnginfo = info, compress_level = level)
+    return buf.getvalue()
+
+
+def test_gallery_png_uses_fast_deflate_by_default(monkeypatch):
+    # The gallery encode is on the request path after the last denoise step; the default level must be the fast one.
+    monkeypatch.delenv(gallery.PNG_COMPRESS_LEVEL_ENV, raising = False)
+    image = _noisy()
+    data = gallery._png_bytes(image, _meta())
+    assert data == _encode(image, 1)
+    assert data != _encode(image, 6)
+
+
+def test_gallery_png_level_kill_switch_restores_pillow_default(monkeypatch):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, "6")
+    image = _noisy()
+    assert gallery._png_bytes(image, _meta()) == _encode(image, 6)
+
+
+@pytest.mark.parametrize("raw", ["", "fast", "-1", "10"])
+def test_gallery_png_level_rejects_invalid_values(monkeypatch, raw):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, raw)
+    assert gallery.png_compress_level() == 1
+
+
+@pytest.mark.parametrize("level", ["0", "1", "6", "9"])
+def test_gallery_png_is_lossless_at_any_level(monkeypatch, level):
+    monkeypatch.setenv(gallery.PNG_COMPRESS_LEVEL_ENV, level)
+    image = _noisy(64)
+    record = gallery.save(image, _meta())
+    raw = base64.b64decode(gallery.image_b64(record["id"]))
+    with Image.open(io.BytesIO(raw)) as im:
+        assert im.convert("RGB").tobytes() == image.tobytes()
+        assert _json.loads(im.text["unsloth"])["seed"] == 7
+
+
+def _recipe_keys_written() -> set[str]:
+    """Every key a generation route puts in an image's recipe, read from the routes' source."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse(
+        (Path(__file__).resolve().parents[1] / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
+    )
+    keys: set[str] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        local_dicts = {
+            t.id: node.value
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+            for t in node.targets
+            if isinstance(t, ast.Name)
+        }
+        for call in ast.walk(fn):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "save"
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "image_gallery"
+                and len(call.args) > 1
+                and isinstance(call.args[1], ast.Dict)
+            ):
+                continue
+            pending = [call.args[1]]
+            while pending:
+                d = pending.pop()
+                for k, v in zip(d.keys, d.values):
+                    if k is None and isinstance(v, ast.Name) and v.id in local_dicts:
+                        pending.append(local_dicts[v.id])
+                    elif isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        keys.add(k.value)
+    return keys
+
+
+def test_every_recipe_key_is_known_to_the_image_import():
+    # Adding a setting to the recipe without teaching "Load settings from an image" about it would
+    # make the import report a current image's own setting as unsupported.
+    import re
+    from pathlib import Path
+
+    written = _recipe_keys_written()
+    assert {"prompt", "seed", "sampler", "strength"} <= written, written
+    meta = gallery.save(
+        _img(),
+        {
+            "prompt": "p",
+            "width": 8,
+            "height": 8,
+            "steps": 1,
+            "guidance": 0,
+            "seed": 1,
+            "created_at": 1.0,
+        },
+    )
+    written |= set(gallery._read_meta(gallery.gallery_dir() / f"{meta['id']}.png"))
+    ts = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "src"
+        / "features"
+        / "images"
+        / "lib"
+        / "image-metadata.ts"
+    ).read_text(encoding = "utf-8")
+    known: set[str] = set()
+    for name in ("APPLIED_RECIPE_KEYS", "INFO_RECIPE_KEYS"):
+        body = re.search(rf"export const {name} = \[(.*?)\] as const;", ts, re.S)
+        assert body, name
+        known |= set(re.findall(r'"([a-z_]+)"', body.group(1)))
+    assert sorted(written - known) == []
+    version = re.search(r"export const RECIPE_SCHEMA_VERSION = (\d+);", ts)
+    assert version and int(version.group(1)) == gallery.RECIPE_SCHEMA_VERSION
+
+
+def test_connection_images_record_no_local_engine(monkeypatch):
+    monkeypatch.setattr(gallery, "_engine", lambda: "diffusers")
+    base = {
+        "prompt": "p",
+        "width": 8,
+        "height": 8,
+        "steps": 1,
+        "guidance": 0,
+        "seed": 1,
+        "created_at": 1.0,
+    }
+    local = gallery.save(_img(), dict(base))
+    remote = gallery.save(_img(), {**base, "model_kind": "connection"})
+    assert local["engine"] == "diffusers"
+    assert remote["engine"] is None
+
+
+def test_parameters_chunk_carries_the_encoded_caption():
+    meta = {**_meta(), "prompt": "a cat", "enhanced_prompt": "A tabby cat on a sunlit sill."}
+    text = gallery._params_text(meta)
+    assert text.splitlines()[0] == "A tabby cat on a sunlit sill."
+    assert gallery._params_text({**_meta(), "prompt": "a cat"}).splitlines()[0] == "a cat"

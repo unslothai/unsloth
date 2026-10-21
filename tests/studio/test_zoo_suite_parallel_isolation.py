@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Guard the parallel zoo run and the serial reruns for tests that cannot share workers."""
+"""Guards the zoo split: all three pins must still run, and both Core jobs must share an environment."""
 
 from __future__ import annotations
 
@@ -8,12 +8,18 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 WORKFLOW = (
     Path(__file__).resolve().parents[2] / ".github" / "workflows" / "consolidated-tests-ci.yml"
 )
+ACTION = (
+    Path(__file__).resolve().parents[2] / ".github" / "actions" / "core-cpu-setup" / "action.yml"
+)
 
-# (ignored path, why it cannot share a worker with the rest of the suite)
+CORE_JOBS = ("consolidated", "consolidated-zoo")
+SETUP_ACTION = "./.github/actions/core-cpu-setup"
+
 ISOLATED = [
     ("tests/test_mlx_generate.py", "8 failures under xdist that serial does not produce"),
     (
@@ -32,8 +38,9 @@ ISOLATED = [
 
 ZOO_MARKER = "--dist loadfile tests/"
 
-# Deselected because it needs a GPU.
-MLX_DESELECT = (
+# Was deselected while the zoo fixture did not stub model.trainable_parameters(). The zoo
+# fixed the fixture, and it passes on CPU in the serial mlx group, so it must run there.
+MLX_FORMERLY_DESELECTED = (
     "tests/test_mlx_finetune_last_n_layers.py::"
     "test_get_peft_model_passes_finetune_last_n_layers_through"
 )
@@ -141,12 +148,17 @@ def test_the_deselects_survive_on_the_parallel_run() -> None:
     """Keep each deselect with the command that owns its file."""
     cmd = _zoo_parallel()
     assert (
-        cmd.count("--deselect") == 2
-    ), f"the parallel zoo run carries {cmd.count('--deselect')} deselects, expected 2"
+        cmd.count("--deselect") == 1
+    ), f"the parallel zoo run carries {cmd.count('--deselect')} deselects, expected 1"
+    assert "test_merge_lora_moves_cpu_inputs_to_active_device" in cmd
+
+
+def test_the_mlx_group_runs_the_last_n_layers_test() -> None:
+    """A deselect of a test that passes hides it; this one passes on CPU since the zoo fix."""
     group = _zoo_mlx_group()
-    assert MLX_DESELECT in group, (
-        f"{MLX_DESELECT} is deselected nowhere now that test_mlx_finetune_last_n_layers.py "
-        f"runs in the serial mlx group, so it fails on a GPU-less runner instead"
+    assert MLX_FORMERLY_DESELECTED not in group, (
+        f"{MLX_FORMERLY_DESELECTED} is deselected again, but it passes in the serial mlx "
+        f"group on a GPU-less runner"
     )
 
 
@@ -163,7 +175,6 @@ def test_the_mlx_group_runs_serially_and_skips_the_per_file_three() -> None:
     assert (
         "-n " not in _zoo_mlx_group()
     ), "the mlx group runs under xdist, which is the arrangement it exists to avoid"
-    # Per-file exclusions are applied while building the group, not on pytest itself.
     text = WORKFLOW.read_text(encoding = "utf-8")
     for path, _ in ISOLATED:
         name = path.rsplit("/", 1)[-1]
@@ -185,6 +196,133 @@ def test_an_empty_mlx_group_stops_the_step_instead_of_collecting_everything() ->
         "nothing checks that the mlx group glob matched anything, so an empty glob "
         "silently turns this step into a serial run of the entire suite"
     )
+
+
+def _doc() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+
+
+def _job(jid: str) -> dict:
+    jobs = _doc()["jobs"]
+    assert jid in jobs, f"{jid} is gone from the workflow; the split it guards is undone"
+    return jobs[jid]
+
+
+def _job_commands(jid: str) -> list[str]:
+    """Every `python -m pytest ...` invocation inside one job, continuations resolved."""
+    found = []
+    for step in _job(jid)["steps"]:
+        joined = re.sub(r"\\\s*\n\s*", " ", str(step.get("run", "")))
+        found += [
+            " ".join(line.split())
+            for line in joined.splitlines()
+            if "python -m pytest" in line and not line.lstrip().startswith("#")
+        ]
+    return found
+
+
+def _preamble(jid: str) -> list[dict]:
+    """The steps up to and including the shared setup action, which every job repeats."""
+    out: list[dict] = []
+    for step in _job(jid)["steps"]:
+        out.append(step)
+        if str(step.get("uses", "")) == SETUP_ACTION:
+            return out
+    raise AssertionError(
+        f"{jid} never calls {SETUP_ACTION}, so it no longer installs the environment "
+        f"the other half of Core installs"
+    )
+
+
+def test_the_zoo_suite_runs_beside_core_and_not_inside_it() -> None:
+    """The point of the split. Back inside `consolidated` it is 7.6 min of serial wait."""
+    inside = [c for c in _job_commands("consolidated") if ZOO_MARKER in c]
+    assert not inside, (
+        f"the zoo suite is running inside the `consolidated` cell again ({inside}), so "
+        f"every pull request waits through it before the rest of Core can finish"
+    )
+    beside = [c for c in _job_commands("consolidated-zoo") if ZOO_MARKER in c]
+    assert (
+        len(beside) == 1
+    ), f"expected the parallel zoo run in the `consolidated-zoo` job, found {len(beside)}"
+
+
+def test_the_zoo_job_runs_every_zoo_step_that_left_the_cell() -> None:
+    """Two steps moved. A move that drops one is a silent deletion of its tests."""
+    zoo = " \n".join(_job_commands("consolidated-zoo"))
+    assert "_zoo_apply_fused_lm_head_shim.py" in zoo, (
+        "unsloth_zoo.compiler.test_apply_fused_lm_head moved out of the consolidated "
+        "cell but is not run by the zoo job either, so it runs nowhere"
+    )
+    for path, _ in ISOLATED:
+        assert path in zoo, (
+            f"{path}'s serial rerun is not in the zoo job. It is ignored by the parallel "
+            f"run, so wherever its rerun went, it has to have gone with it"
+        )
+
+
+@pytest.mark.parametrize("jid", CORE_JOBS)
+def test_both_halves_of_core_run_the_same_three_combos(jid: str) -> None:
+    """Coverage is '3 pins x the same suite'. A matrix that drifts quietly ends that."""
+    expected = _doc()["jobs"]["consolidated"]["strategy"]["matrix"]["combo"]
+    assert [c["id"] for c in expected] == [
+        "t4576-trl0latest",
+        "tlatest5-trl1latest",
+        "pyproject",
+    ], "the Core combo ids changed; update this guard deliberately, not by accident"
+    assert _job(jid)["strategy"]["matrix"]["combo"] == expected, (
+        f"{jid}'s matrix no longer matches `consolidated`'s. GitHub Actions has no way to "
+        f"share a matrix between jobs, so these are two copies, and a copy that drifts "
+        f"means the two halves of Core are testing different (transformers, TRL) pins "
+        f"while still reporting as one gate"
+    )
+
+
+def test_both_halves_of_core_share_one_install_preamble() -> None:
+    """The per-job preamble steps must match across both Core jobs, or the zoo job tests another stack."""
+    a, b = (_preamble(jid) for jid in CORE_JOBS)
+    assert len(a) == len(b), (
+        f"the two Core jobs run {len(a)} and {len(b)} preamble steps. They install the "
+        f"same environment, so their preambles have to be the same steps in the same order"
+    )
+    for left, right in zip(a, b):
+        # The pip cache restore is compared whole, name included: consolidated-zoo
+        # borrows consolidated's entry read-only (see test_pip_cache_naming.py).
+        assert left == right, (
+            f"the Core preambles have drifted at step "
+            f"{left.get('name') or left.get('uses')!r}:\n  consolidated:      {left}\n"
+            f"  consolidated-zoo:  {right}"
+        )
+
+
+def test_both_halves_of_core_share_one_environment_and_one_runner() -> None:
+    """The env and runs-on must match: ubuntu-latest queues far longer than other Ubuntu labels."""
+    a, b = (_job(jid) for jid in CORE_JOBS)
+    assert a["env"] == b["env"], (
+        f"the two Core jobs no longer share a job-level env:\n  only in consolidated: "
+        f"{ {k: v for k, v in a['env'].items() if b['env'].get(k) != v} }\n"
+        f"  only in consolidated-zoo: "
+        f"{ {k: v for k, v in b['env'].items() if a['env'].get(k) != v} }"
+    )
+    assert a["runs-on"] == b["runs-on"], (
+        f"the two halves of Core run on different labels ({a['runs-on']} vs "
+        f"{b['runs-on']}), so one of them queues behind a backlog the other skips"
+    )
+
+
+def test_the_shared_preamble_is_not_also_inlined() -> None:
+    """A caller that re-adds an install step is how one definition becomes two."""
+    body = "\n".join(str(step.get("run", "")) for jid in CORE_JOBS for step in _job(jid)["steps"])
+    for marker in ("pip install -e .", "download.pytorch.org/whl/cpu", "git clone"):
+        assert marker not in body, (
+            f"{marker!r} is inlined in a Core job again. The install lives in "
+            f"{SETUP_ACTION} so both halves cannot drift apart; a second copy is the "
+            f"drift, and it is silent until the two jobs disagree about a version"
+        )
+    action = yaml.safe_load(ACTION.read_text(encoding = "utf-8"))
+    run = "\n".join(str(step.get("run", "")) for step in action["runs"]["steps"])
+    for marker in ("pip install -e .", "download.pytorch.org/whl/cpu", "git clone"):
+        assert marker in run, f"{SETUP_ACTION} no longer does {marker!r}"
 
 
 def test_a_skipped_isolated_file_is_named_in_the_log() -> None:

@@ -427,6 +427,28 @@ class TestConsentGate:
         assert d.blocked is True
         assert d.approvable is False
 
+    def test_managed_account_is_refused_before_the_scan(self, monkeypatch):
+        from utils.account_context import AccountContext, run_as
+
+        monkeypatch.delenv(consent.MANAGED_REMOTE_CODE_OVERRIDE, raising = False)
+        with (
+            patch.object(consent, "_config_has_auto_map", return_value = True),
+            patch.object(
+                consent, "repo_remote_code_files", return_value = {"m.py": "import torch\n"}
+            ),
+            patch.object(consent, "scan_remote_code_files") as scan,
+        ):
+            d = run_as(
+                AccountContext("b" * 32, "bob"),
+                evaluate_remote_code_consent_for_targets,
+                ["org/model"],
+                trust_remote_code = True,
+                approved_fingerprint = "anything",
+            )
+        assert d.blocked is True and d.approvable is False
+        assert d.reason == consent.MANAGED_REMOTE_CODE_REFUSAL
+        scan.assert_not_called()
+
     def test_medium_severity_blocks_pending_approval(self):
         # A MEDIUM finding is approvable but blocks until pinned, so trust_remote_code=True alone
         # cannot run flagged code. MEDIUM is rarely emitted, so the scan result is mocked.
@@ -1949,3 +1971,21 @@ class TestDiscardRemoteCodeDownload:
         src = (_BACKEND / "routes/models.py").read_text(encoding = "utf-8")
         assert "created_by_scan" in src
         assert "discard-remote-code" in src
+
+
+class TestModelFileCountsAsRemoteCode:
+    """mlx-lm / mlx-vlm exec_module a config's ``model_file`` with no trust check, so it is remote
+    code exactly like ``auto_map`` and must reach the scan and approval dialog."""
+
+    def test_local_model_file_is_remote_code(self, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_file": "custom_model.py"}))
+        (tmp_path / "custom_model.py").write_text("class Model: pass\nclass ModelArgs: pass\n")
+        assert consent._config_has_auto_map(str(tmp_path)) is True
+
+    def test_plain_local_config_is_not_remote_code(self, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
+        assert consent._config_has_auto_map(str(tmp_path)) is False
+
+    def test_empty_model_file_is_not_remote_code(self, tmp_path):
+        (tmp_path / "config.json").write_text(json.dumps({"model_file": ""}))
+        assert consent._config_has_auto_map(str(tmp_path)) is False

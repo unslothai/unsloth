@@ -17,6 +17,7 @@ and a stubbed ``hf_hub_download`` fails the test if anything tries to fetch a wh
 from __future__ import annotations
 
 import inspect
+import re
 import threading
 import time
 import types
@@ -796,6 +797,9 @@ def test_the_load_refuses_before_prefetching_or_unloading_anything(monkeypatch, 
 # ── the sibling hole: the native text-encoder pick ─────────────────────────────
 
 
+from core.inference.diffusion_families import _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS  # noqa: E402
+
+
 def test_the_native_encoder_follows_the_header_over_the_filename():
     # A renamed or hand-picked 9B checkpoint says nothing in its id, and the 4B encoder fails deep
     # inside sd-cli. The header knows.
@@ -809,7 +813,8 @@ def test_the_native_encoder_follows_the_header_over_the_filename():
 
     assert by_name == fam.sd_cpp_text_encoders  # today's answer: the 4B encoder
     assert by_header != by_name
-    assert any("9B" in repo for repo, _f, _k in by_header)
+    # The 9B checkpoint reads Qwen3-8B.
+    assert by_header == _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
 
 
 def test_the_header_also_overrides_a_misleading_9b_filename():
@@ -835,7 +840,7 @@ def test_an_unmapped_or_absent_inner_dim_keeps_the_filename_rule():
             )
             == nine_b
         )
-    assert any("9B" in repo for repo, _f, _k in nine_b)
+    assert nine_b == _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
 
 
 def test_a_stalled_response_header_cannot_hold_the_picker_open(monkeypatch):
@@ -1058,6 +1063,23 @@ def test_a_runnable_media_pick_in_the_same_repo_still_loads(monkeypatch):
 
     assert diffusion_compat.speech_pick_refusal(CSM_REPO, DENOISER_FILE) is None
     diffusion_compat.assert_pick_is_not_speech(CSM_REPO, DENOISER_FILE)
+
+
+TE_REPO = "ponpoke/flux2-klein-9b-uncensored-text-encoder"
+TE_FILE = "flux2-klein-9b-uncensored-q4_k_m.gguf"
+
+
+def test_an_undownloaded_text_encoder_pick_is_refused_before_any_download(monkeypatch):
+    """#9875: the repo name matches flux.2-klein, so without this the Qwen3 encoder loads as the denoiser and dies
+    with "Cannot copy out of meta tensor" after the download and the teardown."""
+    requests = _stub_range_reads(monkeypatch, {TE_FILE: _arch_header("qwen3")})
+
+    with pytest.raises(ValueError) as excinfo:
+        diffusion_compat.assert_pick_is_not_speech(TE_REPO, TE_FILE)
+
+    detail = str(excinfo.value)
+    assert TE_FILE in detail and "text encoder (qwen3 GGUF)" in detail
+    assert len(requests) == 1
 
 
 def test_an_unreadable_speech_header_fails_open(monkeypatch):
@@ -1411,16 +1433,22 @@ def test_both_media_routes_refuse_a_speech_pick_before_taking_the_gpu():
 
     # The CALL, not the import line at the top of each route, which names acquire_for far earlier.
     for source, acquire, label in (
-        (inspect.getsource(video_route.load_video_model_gated), "acquire_for(VIDEO", "video"),
+        (
+            inspect.getsource(video_route.load_video_model_gated),
+            r"acquire_for_request\(\s*VIDEO\b",
+            "video",
+        ),
         (
             inspect.getsource(inference_route.load_diffusion_model_gated),
-            "acquire_for(DIFFUSION",
+            r"acquire_for_request\(\s*DIFFUSION\b",
             "images",
         ),
     ):
         assert "assert_pick_is_not_speech" in source, label
-        assert acquire in source, label
-        assert source.index("assert_pick_is_not_speech") < source.index(acquire), label
+        # The call may wrap its arguments over several lines (e.g. with policy_kwargs).
+        call = re.search(acquire, source)
+        assert call is not None, label
+        assert source.index("assert_pick_is_not_speech") < call.start(), label
 
 
 def test_an_automatic_image_load_keeps_the_pre_eviction_preflight_offline():
@@ -1704,3 +1732,22 @@ def test_the_chat_backend_does_not_import_pyyaml_to_learn_the_speech_verdict():
         assert not hasattr(
             gguf_metadata, name
         ), f"{name} must be imported from utils.gguf_archs, not through utils.models"
+
+
+def test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder():
+    """The no-GPU route's encoder is pinned by FILENAME, and a name that is not in the repo is
+    not an error anyone sees at config time: the fetch 404s mid-load, after the denoiser has
+    already been staged. Pin the Dynamic 2.0 rung by exact name so a rename or a drop to the
+    uniform quant has to break this rather than a user's load."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam.sd_cpp_text_encoders == (
+        (
+            "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+            "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf",
+            "llm",
+        ),
+        # The vision projector native editing needs, pinned by name for the same reason.
+        ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision"),
+    )

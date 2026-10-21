@@ -1,41 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drift guards for the AMD gfx tables that are duplicated across the installers.
-
-The same three tables are hand-copied into up to seven places each:
-
-  gfx -> AMD index family   install.sh (_amd_arch_index_family_for_gfx)
-                            install.ps1 ($archFamilyMap)
-                            studio/setup.ps1 ($archFamilyMap)
-                            studio/install_python_stack.py (_GFX_TO_AMD_INDEX_ARCH)
-
-  GPU name -> gfx           install.sh (_infer_amd_gfx_arch_from_gpu_name)
-                            install.sh (case "$_gpu_disp_mkt", detection banner + env tip)
-                            studio/setup.sh (_setup_supported_gfx_from_name)
-                            install.ps1 ($nameArchTable)
-                            studio/setup.ps1 ($nameArchTable)
-                            studio/install_python_stack.py (_WIN_GPU_NAME_ARCH_TABLE)
-                            tests/_zoo_rocm_spoof.py (_PROFILES, inverted gfx -> name)
-
-  torch>=2.11 pin allowlist install.sh (case "$_torch_index_leaf")
-                            install.ps1 ($_pinGfx211)
-                            studio/setup.ps1 (Test-RocmPinLeaf211)
-
-Every copy carries a "kept in sync with" comment and nothing enforced it, which is
-how the routing family of bugs kept recurring: #7264 / #7280 (Strix left on the
-generic rocm7.2 index), #7293 / #7300 (fixed in one installer at a time) and #7277
-(RDNA2 gfx1030-1036 added to install.ps1 / setup.ps1 / install_python_stack.py --
-install.sh had to follow separately). Half-applied edits are invisible until an AMD
-user on the missed path gets CPU-only PyTorch.
-
-These tests parse each copy out of its source file and compare them, so a table
-edited in one place fails CI naming the file that was missed.
-
-Counting the copies by hand is itself unreliable -- the in-code "kept in sync
-with" comments claimed four when there were seven -- so TestNoUnregisteredArchTable
-below rediscovers them by scanning the repo instead of trusting this list.
-"""
+"""Drift guards for gfx tables hand-copied across the installers; each copy is parsed and compared."""
 
 import ast
 import fnmatch
@@ -68,9 +34,6 @@ def _load_stack_module():
 
 
 stack_mod = _load_stack_module()
-
-
-# ── Source extraction helpers ────────────────────────────────────────────────
 
 
 def _sh_function_body(source: str, name: str) -> str:
@@ -124,9 +87,6 @@ def _strip_sh_comment(line: str) -> str:
     """Drop a trailing `# ...` comment. Safe here: no table line contains a '#'
     inside a pattern."""
     return line.split("#", 1)[0]
-
-
-# ── Table 1: gfx -> AMD index family ─────────────────────────────────────────
 
 
 def _gfx_family_map_sh() -> dict[str, str]:
@@ -224,13 +184,8 @@ class TestSupportedWheelArchList:
         )
 
 
-# ── Table 2: GPU marketing name -> gfx ───────────────────────────────────────
-#
-# Each copy is an ordered, first-match-wins table. The shell copies use case
-# globs (case-sensitive); the PowerShell copies use -match regexes
-# (case-insensitive, and the only place a negative lookahead is available).
-# Rather than diff the patterns -- which legitimately differ in syntax -- run
-# every copy against the same real GPU names and require the same answer.
+# Copies are first-match-wins: shell case globs (case-sensitive), PowerShell -match (insensitive).
+# Run every copy against the same real names instead of diffing patterns.
 def _name_table_sh_function(source: str, name: str) -> list[tuple[list[str], str]]:
     body = _sh_function_body(source, name)
     rows: list[tuple[list[str], str]] = []
@@ -279,14 +234,11 @@ def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
     return None
 
 
-# Real strings as amd-smi / rocm-smi / WMI report them, including the two ordering traps: "RX 9070 XT" must beat the
-# bare "9070" arm, and "RX 7700S" must beat the "RX 7700" arm.
+# Ordering traps: 'RX 9070 XT' must beat bare '9070', 'RX 7700S' must beat 'RX 7700'.
 _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 9070 XT", "gfx120X-all"),
     ("AMD Radeon RX 9070", "gfx120X-all"),
-    # Workstation Navi 48, gfx1201 per rocminfo in #7624 / #7307.
-    # Its name holds neither "9070" nor "9080", so every table returned None and a host without the HIP SDK, where name
-    # inference is the only path left, got CPU torch ("not detected", PR #8398).
+    # Navi 48 workstation, gfx1201; its name has neither 9070 nor 9080.
     ("AMD Radeon AI PRO R9700", "gfx120X-all"),
     ("AMD Radeon RX 9060 XT", "gfx120X-all"),
     ("AMD Radeon 8060S Graphics", "gfx1151"),
@@ -306,14 +258,14 @@ _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 6700 XT", "gfx103X-all"),
     ("AMD Radeon RX 6600 XT", "gfx103X-all"),
     ("AMD Radeon RX 6500 XT", "gfx103X-all"),
+    ("AMD Radeon RX 6950 XT", "gfx103X-all"),
+    ("AMD Radeon RX 6850M XT", "gfx103X-all"),
+    ("AMD Radeon RX 6550M", "gfx103X-all"),
+    ("AMD Radeon RX 6450M", "gfx103X-all"),
+    ("AMD Radeon PRO W6300", "gfx103X-all"),
 ]
 
-# Exact gfx ids, transcribed from AMD's ROCm compatibility matrix (the "Radeon GPU" list at
-# rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html), NOT from the installer tables.
-# Three of these were wrong until the commit that added this table: RX 9070 (non-XT) said gfx1200, RX 7800 XT / 7700 XT
-# / PRO W7700 said gfx1100, and PRO V710 said gfx1102.
-# The APU rows were added after that: Krackan Point (860M / 840M) said gfx1150 but is gfx1152, and unlike the three
-# above that one DID change the wheel, since gfx1150 and gfx1152 are separate index leaves on repo.amd.com.
+# Transcribed from AMD's ROCm compatibility matrix, NOT from the installer tables.
 _AMD_DOCUMENTED_ARCH = {
     # RDNA 4 -- Navi 48 is gfx1201, Navi 44 is gfx1200.
     "AMD Radeon RX 9070 XT": "gfx1201",
@@ -321,8 +273,7 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 9070": "gfx1201",
     "AMD Radeon RX 9060 XT": "gfx1200",
     "AMD Radeon RX 9060": "gfx1200",
-    # Navi 48 again, as the R9000 series workstation card.
-    # own rocminfo output (#7624, #7307), not from these tables.
+    # Navi 48 as the R9000 workstation card (rocminfo in #7624/#7307).
     "AMD Radeon AI PRO R9700": "gfx1201",
     "AMD Radeon RX 7900 XTX": "gfx1100",
     "AMD Radeon PRO W7900": "gfx1100",
@@ -334,9 +285,7 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 7600 XT": "gfx1102",
     "AMD Radeon RX 7700S": "gfx1102",
     "AMD Radeon PRO W7600": "gfx1102",
-    # RDNA 3.5 APUs
-    # Strix Point is gfx1150, Krackan Point (860M/840M) is gfx1152, per AMD's own lemonade GPU table
-    # (src/cpp/server/system_info.cpp).
+    # Strix Point is gfx1150, Krackan Point (860M/840M) is gfx1152 (AMD lemonade GPU table).
     "AMD Radeon 8060S Graphics": "gfx1151",
     "AMD Radeon 890M Graphics": "gfx1150",
     "AMD Radeon 880M Graphics": "gfx1150",
@@ -351,9 +300,7 @@ def _name_tables() -> dict[str, object]:
         "install.sh:_infer_amd_gfx_arch_from_gpu_name": _name_table_sh_function(
             install_sh, "_infer_amd_gfx_arch_from_gpu_name"
         ),
-        # install.sh carries the table TWICE.
-        # The second copy drives the detection banner and, more importantly, the "Tip: set UNSLOTH_ROCM_GFX_ARCH=<arch>"
-        # line, so a wrong id there gets pasted into a user's environment where it becomes authoritative.
+        # install.sh's second copy drives the 'Tip: set UNSLOTH_ROCM_GFX_ARCH' line users paste.
         "install.sh:_gpu_disp_gfx": _name_table_sh_case(
             install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"
         ),
@@ -363,10 +310,7 @@ def _name_tables() -> dict[str, object]:
         "install.ps1": _name_table_ps(_INSTALL_PS1),
         "studio/setup.ps1": _name_table_ps(_SETUP_PS1),
         "studio/install_python_stack.py": list(stack_mod._WIN_GPU_NAME_ARCH_TABLE),
-        # The backend carries the seventh copy: it decides whether a Windows adapter the
-        # DirectX registry did not give an AdapterFamily is one a repair could help, and
-        # answering that from a stale table would offer the repair to a card no wheel
-        # index covers (or withhold it from one that is covered).
+        # The backend's copy decides whether a Windows adapter without AdapterFamily can be repaired.
         "studio/backend/utils/hardware/hardware.py": _name_table_py_literal(
             PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py",
             "_GPU_NAME_GFX_TABLE",
@@ -394,11 +338,7 @@ def _name_table_py_literal(path: Path, name: str) -> list:
 
 
 def _spoof_profiles() -> dict[str, str]:
-    """gfx -> marketing name out of tests/_zoo_rocm_spoof.py::_PROFILES.
-
-    Parsed with ast rather than imported: that module spoofs torch.cuda and the
-    AMD identity as an import side effect, which would poison every test sharing
-    the process."""
+    """Parsed with ast: importing the spoof module would spoof torch.cuda for every test in the process."""
     tree = ast.parse(_SPOOF_PY.read_text(encoding = "utf-8"))
     for node in tree.body:
         target = node.target if isinstance(node, ast.AnnAssign) else None
@@ -407,23 +347,15 @@ def _spoof_profiles() -> dict[str, str]:
     raise AssertionError("_PROFILES not found in tests/_zoo_rocm_spoof.py")
 
 
-# The spoof fixture states the mapping backwards (gfx -> the name torch should report), so it is the one copy written
-# from the hardware's point of view instead of the installer's.
-# That makes it a useful independent witness: it had gfx1101 -> "RX 7800 XT" and gfx1201 -> "RX 9070 XT" correct while
-# all six installer copies were wrong, and nothing compared the two.
-# RX 6700 XT is a known, deliberate divergence rather than drift.
-# AMD's compatibility matrix documents no consumer RX 6000 card and no gfx1031 at all (only "AMD Radeon PRO W6800
-# (gfx1030)"), the installer arm is commented "gfx103X family", and no code consumes the exact id
+# The spoof fixture maps gfx -> name, an independent witness. RX 6700 XT is a deliberate
+# divergence: AMD documents no gfx1031 and nothing consumes the exact id.
 _SPOOF_DIVERGENCES = {
     "gfx1031": "installers group Navi 22 into the gfx1030 arm; see comment above",
 }
 
 
 def _resolve(where: str, rows, gpu_name: str) -> str | None:
-    """Shell copies are case globs; the PowerShell and Python copies are both
-    ordered first-match regex tables evaluated case-insensitively, so _match_ps
-    models either one. `where` may be "<file>:<symbol>" for the files that carry
-    the table more than once."""
+    """Shell tables are case globs; PowerShell and Python tables are ordered first-match regexes."""
     return (
         _match_sh(rows, gpu_name)
         if where.split(":")[0].endswith(".sh")
@@ -499,20 +431,20 @@ class TestGpuNameArchParity:
         """Every arch a name table can produce must be routable to an AMD wheel
         index, else detection succeeds and the install still lands on CPU torch."""
         families = stack_mod._GFX_TO_AMD_INDEX_ARCH
+        # RDNA 1 is Windows-only (multi-arch index, #11614); Linux tables must not produce it.
+        multiarch = stack_mod._WINDOWS_MULTIARCH_GFX
+        linux_copies = ("install.sh", "studio/setup.sh")
         for where, rows in _name_tables().items():
             for arch in {arch for _, arch in rows}:
+                if arch in multiarch and not where.startswith(linux_copies):
+                    assert (
+                        stack_mod._windows_rocm_index_url(arch) is not None
+                    ), f"{where}: {arch} has no Windows route"
+                    continue
                 assert arch in families, f"{where}: {arch} has no entry in _GFX_TO_AMD_INDEX_ARCH"
 
     def test_every_documented_gpu_resolves_somewhere(self):
-        """The reverse of the AMD check above. That one asks "do the tables get
-        the documented cards right"; this asks "is a documented card missing
-        entirely", which is a silent CPU fallback rather than a wrong id.
-
-        This cannot notice a GPU AMD shipped that nobody transcribed into
-        _AMD_DOCUMENTED_ARCH -- doing that honestly would mean fetching AMD's
-        matrix at test time, which makes the suite non-hermetic and offline
-        runners fail. It does catch a card added to the ground-truth list, or to
-        one installer, without the tables being completed."""
+        """A documented GPU missing from every table silently falls back to CPU, not a wrong id."""
         for gpu_name in sorted(_AMD_DOCUMENTED_ARCH):
             for where, rows in _name_tables().items():
                 assert (
@@ -521,10 +453,7 @@ class TestGpuNameArchParity:
 
 
 class TestSpoofFixtureParity:
-    """tests/_zoo_rocm_spoof.py is the seventh copy of the name/gfx mapping and
-    was outside every drift guard. It is the fixture other ROCm tests build their
-    fake AMD host from, so if it and the installers disagree, those tests exercise
-    a machine that cannot exist."""
+    """Spoof fixture is another copy of the mapping; drift makes other ROCm tests use an impossible host."""
 
     def test_spoof_profiles_parse(self):
         profiles = _spoof_profiles()
@@ -556,16 +485,12 @@ class TestSpoofFixtureParity:
             assert answers != {gfx}, f"{gfx} now agrees everywhere; drop it from _SPOOF_DIVERGENCES"
 
 
-# A table line names a card and gives its arch.
-# ── The meta-guard: find copies nobody registered ────────────────────────────
-
 _MKT_NAME = re.compile(r"(RX\s*\d{4}|PRO\s*[WV]\d{3,4}|\b90[5-8]0\b)", re.IGNORECASE)
 _GFX_ID = re.compile(r"gfx1[0-2][0-9a-z]{1,2}")
 
 # Skip dirs of third-party or generated code; scanning them is slow and any hit would not be ours to fix.
 _SCAN_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "build", "dist", "__pycache__"}
 
-# Every file allowed to carry a name/arch table, as a repo-relative posix path.
 _REGISTERED_TABLE_FILES = {
     "install.sh",
     "install.ps1",
@@ -576,21 +501,12 @@ _REGISTERED_TABLE_FILES = {
     "tests/_zoo_rocm_spoof.py",
 }
 
-# Three or more such lines means a table.
-# One or two means prose: the two known single-line hits are comments ("Verified on gfx1151 (Radeon 8060S)" in
-# scripts/install_rocm_wsl_strixhalo.sh, and a parenthetical in studio/install_llama_prebuilt.py).
+# Three or more lines means a table; the known one/two-line hits are prose.
 _TABLE_LINE_THRESHOLD = 3
 
 
 def _under_cargo_output(path: Path, root: Path) -> bool:
-    """Whether `path` sits inside a Cargo `target/` directory.
-
-    Not in _SCAN_SKIP_DIRS because "target" is too generic to skip by name alone, so
-    the pairing with a sibling Cargo.toml is what identifies build output. tauri copies
-    install.sh into studio/src-tauri/target/debug/, so without this the guard fails for
-    anyone who ran `cargo build` before pytest, on their own build output rather than on
-    a real copy. CI never saw it because it builds and tests in separate jobs.
-    """
+    """Matches Cargo build output (target/ beside Cargo.toml), since tauri copies install.sh into it."""
     for parent in path.parents:
         if parent == root.parent:
             break
@@ -609,9 +525,7 @@ def _files_carrying_a_name_arch_table(root: Path = PACKAGE_ROOT) -> dict[str, in
             continue
         if _under_cargo_output(path, root):
             continue
-        # Tests that *assert* on the tables quote card names next to gfx ids by nature.
-        # Fixtures like _zoo_rocm_spoof.py do not start with test_ and so stay in scope, which is how the seventh copy
-        # surfaced.
+        # Tests quote names beside ids by nature; non-test_ fixtures like _zoo_rocm_spoof.py stay in scope.
         if path.name.startswith("test_"):
             continue
         try:
@@ -667,15 +581,12 @@ class TestNoUnregisteredArchTable:
         ), f"cargo build output is still scanned: {found}"
 
 
-# ── Table 3: the torch>=2.11 pin allowlist ───────────────────────────────────
-
-
 class TestTorch211PinAllowlistParity:
-    """gfx120X-all / gfx1151 / gfx1150 / gfx1152 (and rocm7.2) ship the null
+    """gfx120X-all / gfx1151 / gfx1150 / gfx1152 / gfx103X-all / gfx110X-all (and rocm7.2) ship the null
     _grouped_mm kernel below torch 2.11, so all three installers must raise the
     same floor. A leaf missing from one copy reintroduces the crash there."""
 
-    _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+    _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 
     def test_install_sh_pins_the_same_leaves(self):
         source = _INSTALL_SH.read_text(encoding = "utf-8")
@@ -705,10 +616,7 @@ class TestTorch211PinAllowlistParity:
 
 
 class TestShadowingIntegratedGfxParity:
-    """The shadowing-APU skip (#7776) exists twice: studio/setup.ps1 resolves the
-    arch and builds $ROCmIndexUrl before it ever invokes the Python stack
-    installer, so both copies of the list have to agree or one entry point keeps
-    installing the iGPU's wheel family."""
+    """The iGPU skip is in four entry points that must agree, or one keeps installing the iGPU's wheels."""
 
     _STRIX = {"gfx1150", "gfx1151", "gfx1152"}
 
@@ -727,20 +635,141 @@ class TestShadowingIntegratedGfxParity:
                 return set(ast.literal_eval(node.value.args[0]))
         raise AssertionError("SHADOWING_INTEGRATED_GFX not found in install_llama_prebuilt.py")
 
+    def _install_sh_list(self):
+        body = _sh_function_body(
+            _INSTALL_SH.read_text(encoding = "utf-8"), "_amd_gfx_is_shadowing_integrated"
+        )
+        m = re.search(r"\n\s*(gfx[^)]*)\)\s*return 0", body)
+        assert m, "the shadowing-APU arm was not found in _amd_gfx_is_shadowing_integrated"
+        return {arch.strip() for arch in m.group(1).split("|")}
+
+    def test_install_sh_matches_install_python_stack(self):
+        # install.sh's family pick is final: _ensure_rocm_torch returns early for a non-ROCm one.
+        assert self._install_sh_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
     def test_setup_ps1_matches_install_python_stack(self):
         assert self._setup_ps1_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
     def test_install_llama_prebuilt_matches_install_python_stack(self):
-        # _apply_host_overrides() honours setup's repick only for these arches, so drift re-splits torch and llama.cpp
-        # across two GPUs on a mixed host.
+        # _apply_host_overrides() honours setup's repick only for these, or torch and llama split GPUs.
         assert self._prebuilt_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
     def test_strix_is_excluded_from_every_copy(self):
-        # Supported training targets, not shadowing APUs: listing them would silently redirect
-        # Strix hosts.
+        # Strix arches are training targets; listing them would silently redirect Strix hosts.
         assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
         assert not (self._STRIX & self._setup_ps1_list())
         assert not (self._STRIX & self._prebuilt_list())
+        assert not (self._STRIX & self._install_sh_list())
+
+
+def _sh_call_site_offsets(source: str, helper: str) -> list[int]:
+    """Offsets where `helper` is invoked, excluding its definition and comments."""
+    offsets = []
+    for match in re.finditer(re.escape(helper), source):
+        line_start = source.rfind("\n", 0, match.start()) + 1
+        line_end = source.find("\n", match.start())
+        line = source[line_start : line_end if line_end != -1 else len(source)]
+        before = line[: match.start() - line_start]
+        if "#" in before:
+            continue
+        if re.match(rf"\s*{re.escape(helper)}\s*\(\)", line):
+            continue
+        offsets.append(match.start())
+    return offsets
+
+
+class TestShadowingPreferenceIsApplied:
+    """Parity is not enough: each entry point must reach the preference helper, not merely define it."""
+
+    _VISIBILITY_ENV = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+    _SHELL_RESOLVERS = ("install.sh", "studio/setup.sh")
+
+    def _shadowing_arm(self, path: Path) -> set[str]:
+        body = _sh_function_body(
+            path.read_text(encoding = "utf-8"), "_amd_gfx_is_shadowing_integrated"
+        )
+        m = re.search(r"\n\s*(gfx[^)]*)\)\s*return 0", body)
+        assert m, f"the shadowing-APU arm was not found in {path.name}"
+        return {arch.strip() for arch in m.group(1).split("|")}
+
+    def test_setup_sh_defines_the_same_shadowing_table(self):
+        """studio/setup.sh was the copy that did not exist at all (#11143)."""
+        assert self._shadowing_arm(_SETUP_SH) == set(stack_mod._SHADOWING_INTEGRATED_GFX)
+
+    @pytest.mark.parametrize("rel", _SHELL_RESOLVERS)
+    def test_every_shell_gfx_resolver_calls_the_preference(self, rel):
+        source = (PACKAGE_ROOT / rel).read_text(encoding = "utf-8")
+        assert "_amd_prefer_discrete_gfx() {" in source, (
+            f"{rel} resolves an AMD gfx arch but does not define _amd_prefer_discrete_gfx; "
+            "a table without the preference leaves a hybrid host on its iGPU (#7776, #11143)"
+        )
+        assert _sh_call_site_offsets(source, "_amd_prefer_discrete_gfx"), (
+            f"{rel} defines _amd_prefer_discrete_gfx but never calls it, so the arch it "
+            "forwards is still whatever enumerated first"
+        )
+
+    # The argv-append sites: a bare '--rocm-gfx' also matches an earlier comment.
+    _ROCM_GFX_FORWARDS = ("_PREBUILT_CMD+=(--rocm-gfx", "_WHISPER_CMD+=(--rocm-gfx")
+
+    def test_setup_sh_applies_the_preference_before_forwarding_rocm_gfx(self):
+        """Both consumers read $_setup_gfx, so the repick must precede both."""
+        source = _SETUP_SH.read_text(encoding = "utf-8")
+        calls = _sh_call_site_offsets(source, "_amd_prefer_discrete_gfx")
+        assert calls, "studio/setup.sh never calls _amd_prefer_discrete_gfx"
+        forwards = {}
+        for needle in self._ROCM_GFX_FORWARDS:
+            at = source.find(needle)
+            assert at != -1, f"studio/setup.sh no longer forwards via {needle}"
+            forwards[needle] = at
+        late = {n: at for n, at in forwards.items() if at < min(calls)}
+        assert not late, (
+            f"studio/setup.sh repicks the arch only after forwarding it via {sorted(late)}, "
+            "so that consumer still receives the iGPU's arch"
+        )
+
+    def test_pick_rocm_gfx_target_consults_the_shadowing_table(self):
+        """install_llama_prebuilt.py holds the table; this is the function that has
+        to read it. It ended `return _tokens[0]` with no preference at all."""
+        tree = ast.parse(_PREBUILT_PY.read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_pick_rocm_gfx_target":
+                names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+                assert "SHADOWING_INTEGRATED_GFX" in names, (
+                    "_pick_rocm_gfx_target does not consult SHADOWING_INTEGRATED_GFX, so a "
+                    "leading iGPU still wins on a hybrid host (#11143)"
+                )
+                return
+        raise AssertionError("_pick_rocm_gfx_target not found in install_llama_prebuilt.py")
+
+    @pytest.mark.parametrize("rel", _SHELL_RESOLVERS)
+    def test_an_explicit_visibility_mask_is_honoured_by_each_shell_copy(self, rel):
+        """`HIP_VISIBLE_DEVICES=1` is the documented #7624 / #7669 workaround; a repick
+        that second-guesses a mask would break it."""
+        body = _sh_function_body(
+            (PACKAGE_ROOT / rel).read_text(encoding = "utf-8"), "_amd_prefer_discrete_gfx"
+        )
+        missing = [env for env in self._VISIBILITY_ENV if env not in body]
+        assert not missing, f"{rel}'s _amd_prefer_discrete_gfx ignores {missing}"
+
+    def test_pick_rocm_gfx_target_honours_an_explicit_visibility_mask(self):
+        source = _PREBUILT_PY.read_text(encoding = "utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_pick_rocm_gfx_target":
+                body = ast.get_source_segment(source, node) or ""
+                missing = [env for env in self._VISIBILITY_ENV if env not in body]
+                assert not missing, f"_pick_rocm_gfx_target ignores {missing}"
+                return
+        raise AssertionError("_pick_rocm_gfx_target not found in install_llama_prebuilt.py")
+
+    def test_gfx906_is_never_a_repick_candidate(self):
+        """Naming gfx906 on a mixed host strands BOTH cards."""
+        for rel in self._SHELL_RESOLVERS:
+            body = _sh_function_body(
+                (PACKAGE_ROOT / rel).read_text(encoding = "utf-8"), "_amd_prefer_discrete_gfx"
+            )
+            assert "gfx906" in body, f"{rel}'s repick does not exclude gfx906"
 
 
 if __name__ == "__main__":

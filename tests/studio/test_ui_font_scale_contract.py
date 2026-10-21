@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""UI font size scaling contracts (Settings > Appearance).
-
-The preference must scale typography through the --ui-font-scale tokens,
-never by mutating the root font size, so rem-based layout stays put. These
-contracts also act as the guard against reintroducing raw pixel typography
-that would silently ignore the preference.
-"""
+"""Typography scales via the --ui-font-scale tokens, never the root font size, so rem layout holds."""
 
 import re
 from pathlib import Path
@@ -19,18 +13,28 @@ STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
 UTILS = (SRC / "lib/utils.ts").read_text(encoding = "utf-8")
 
-# Raw numeric fontSize props are only allowed where a scaled stylesheet rule (.recharts-text) overrides the presentation
-# attribute at render time.
+# Raw fontSize props are allowed only where a scaled .recharts-text rule overrides them.
 FONTSIZE_PROP_ALLOWED_DIRS = (
     "features/studio/sections/charts",
     "features/studio/sections/training-section.tsx",
 )
 
-# Non-visible typography that intentionally stays fixed.
 FONTSIZE_STYLE_ALLOWLIST = {
     # Offscreen textarea; 12pt+ suppresses the iOS focus zoom. Never rendered.
     "lib/copy-to-clipboard.ts",
 }
+
+# Sizes a container query's em breakpoint, not text (--ui-space-scale derives
+# from --ui-font-scale); children reset to the 1rem they would inherit.
+CSS_FONTSIZE_LAYOUT_RULES = {
+    (".browser-panel", "font-size: calc(1rem * var(--ui-space-scale, 1));"),
+    (".browser-panel > *", "font-size: 1rem;"),
+}
+
+
+def _css_selector_before(text, pos):
+    head = re.sub(r"/\*.*?\*/", "", text[:pos].rsplit("{", 1)[0], flags = re.S)
+    return re.split(r"[{};]", head)[-1].strip()
 
 
 def _frontend_sources():
@@ -40,29 +44,19 @@ def _frontend_sources():
 
 
 def _rel(path):
-    """Source-relative path with forward slashes on every OS.
-
-    The allowlists above are written with "/", so a plain str(relative_to(SRC))
-    silently stops matching on Windows and every allowlisted file reports as an
-    offender. Keeping the separator normalised here also keeps failure messages
-    identical across platforms.
-    """
+    """Forward-slash path relative to the source root, so allowlist entries also match on Windows."""
     return path.relative_to(SRC).as_posix()
 
 
 def test_preference_writes_a_scale_not_the_root_font_size():
     assert 'setVar("--ui-font-scale"' in STORE
     assert 'el.setAttribute("data-ui-font-size"' in STORE
-    # Older builds set an inline root font-size; the applier must clear it.
     assert 'style.removeProperty("font-size")' in STORE
     assert "style.fontSize" not in STORE
 
 
 def test_css_default_scale_matches_the_store_default():
-    """index.css carries the default as a scale, the store carries it as a px
-    size, and the applier only drops data-ui-font-size at the store's value.
-    Derive the scale so the two cannot drift: when they did, everything
-    rendered at one size while the preference control called it another."""
+    """Derives the CSS default scale from the store's px default so the two cannot drift apart."""
     rng = re.search(r"UI_FONT_SIZE_RANGE = \{ min: (\d+), max: (\d+), default: (\d+) \}", STORE)
     assert rng is not None
     base = re.search(r"const UI_FONT_SIZE_CSS_BASE = (\d+);", STORE)
@@ -71,7 +65,15 @@ def test_css_default_scale_matches_the_store_default():
     assert "effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default" in STORE
     assert "effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE" in STORE
     scale = int(rng.group(3)) / int(base.group(1))
-    assert f"--ui-font-scale: {scale:g};" in INDEX_CSS
+    # The default lives in index.css's fallback for --ui-font-scale, derived from the stored scale.
+    assert (
+        f"--ui-font-scale: calc(var(--ui-font-size-scale, {scale:g}) * var(--ui-interface-scale, 1));"
+    ) in INDEX_CSS
+    # One setter call: the default branch's `setVar("--ui-font-size-scale", null)` does not count.
+    assert re.search(
+        r'setVar\(\s*"--ui-font-size-scale",\s*String\(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE\),?\s*\)',
+        STORE,
+    ), "a custom font size no longer writes --ui-font-size-scale"
 
 
 def test_named_text_tokens_scale():
@@ -126,26 +128,15 @@ def test_cn_knows_the_ui_typography_tokens():
 
 
 def test_icons_follow_the_ui_font_size_itself():
-    """Standard glyphs render at --ui-icon-size, which follows the UI font
-    size itself: matches it below the 16px CSS scale base and grows at half the
-    change above it (setting 20 gives 18px icons), so icons track the text
-    when shrinking and read slightly smaller than it when growing. Sub 16px
-    glyphs keep their proportions through the same curve as a factor.
-    Sonner toast text and action labels are text, so they follow at full
-    rate everywhere."""
-    assert (
-        "--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), "
-        "calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));"
-    ) in INDEX_CSS
+    """Icons scale at the same linear rate as text via --ui-icon-size, not at half rate above 16px."""
+    assert "--ui-icon-size: calc(1rem * var(--ui-font-scale, 1));" in INDEX_CSS
     assert "--icon-size: var(--ui-icon-size);" in INDEX_CSS
     assert "& svg.size-4 { width: var(--ui-icon-size); height: var(--ui-icon-size); }" in INDEX_CSS
     assert "font-size: calc(13px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
     assert "font-size: calc(12px * var(--ui-font-scale, 1)) !important;" in INDEX_CSS
-    # Menu rules that outrank the scoped block must carry the token too, without flattening the smaller thinking ticks.
     assert "width: var(--ui-icon-size) !important;" in INDEX_CSS
     assert "svg:not(.unsloth-tick) {" in INDEX_CSS
-    # Oversized art glyphs stay proportional instead of uniform.
-    assert "& svg.size-6 { width: min(calc(1.5rem" in INDEX_CSS
+    assert "& svg.size-6 { width: calc(1.5rem * var(--ui-font-scale, 1));" in INDEX_CSS
     for scope in (
         "[data-slot='dropdown-menu-content']",
         "[data-slot='select-content']",
@@ -178,11 +169,14 @@ def test_css_font_sizes_reference_the_scale():
         for m in re.finditer(r"(font-size|line-height):[^;{}]*;", text):
             decl = m.group(0)
             if re.search(r"[0-9.]+(px|rem)", decl) is None:
-                continue  # unitless ratios and vars scale naturally
+                continue
             if "--ui-font-scale" in decl:
                 continue
             if "1px" in decl:
                 continue  # library layout tricks (KaTeX-style), not text
+            selector = _css_selector_before(text, m.start())
+            if (selector, decl.strip()) in CSS_FONTSIZE_LAYOUT_RULES:
+                continue
             offenders.append(f"{_rel(path)}: {decl.strip()[:80]}")
     assert offenders == [], (
         "CSS typography must multiply by var(--ui-font-scale, 1) or be "

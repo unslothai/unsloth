@@ -23,8 +23,8 @@
 #   (c) Guide drift                    -- preflight passed + install ok, but
 #       the documented `unsloth start` flow produced no/garbled output.
 #
-# Agents covered (6): claude, codex, hermes, openclaw, opencode, pi.
-#   - All six have a `unsloth start <agent>` recipe, so each cell obtains its
+# Agents covered (8): claude, codex, hermes, openclaw, opencode, pi, dsh, vibe.
+#   - All eight have a `unsloth start <agent>` recipe, so each cell obtains its
 #     env + command from `unsloth start <agent> --no-launch` and runs THAT
 #     (self-updating: a recipe change is exercised automatically).
 
@@ -60,6 +60,18 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      # Every connection cell installs through install-unsloth-local, and install.sh
+      # --local hands off to studio/setup.sh, which runs the installer modules below.
+      # They pick the llama-server binary that serve-unsloth-run.sh and
+      # assert-prompt-cache.sh measure; pyproject.toml and the backend requirements
+      # decide what is installed.
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
@@ -90,6 +102,18 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      # Every connection cell installs through install-unsloth-local, and install.sh
+      # --local hands off to studio/setup.sh, which runs the installer modules below.
+      # They pick the llama-server binary that serve-unsloth-run.sh and
+      # assert-prompt-cache.sh measure; pyproject.toml and the backend requirements
+      # decide what is installed.
+      - 'studio/setup.sh'
+      - 'studio/install_*.py'
+      - 'studio/prebuilt_core.py'
+      - 'studio/nvidia_probe.py'
+      - 'studio/node_prebuilt_pins.json'
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/actions/install-unsloth-local/action.yml'
       # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
@@ -110,12 +134,11 @@ concurrency:
   # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
   # only one pending run, so without this a merge burst silently drops the nightly:
   # cancel-in-progress protects the running run, never the pending one.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -160,7 +183,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh]
+        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh, vibe]
         opencode_channel: [stable]
         include:
           # OpenClaw needs Node 24; everything else is happy on 22.
@@ -202,7 +225,7 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: ${{ matrix.node || '22' }}
 
@@ -365,7 +388,7 @@ jobs:
       - name: Upload logs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: connection-${{ matrix.agent }}-${{ matrix.opencode_channel }}-log
           path: |
@@ -402,7 +425,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh]
+        agent: [claude, codex, hermes, openclaw, opencode, pi, dsh, vibe]
         include:
           - agent: openclaw
             node: '24'
@@ -441,7 +464,7 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: ${{ matrix.node || '22' }}
 
@@ -575,7 +598,7 @@ jobs:
       - name: Upload logs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: file-edit-${{ matrix.agent }}-log
           path: |
@@ -634,7 +657,7 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -753,7 +776,7 @@ jobs:
       - name: Upload logs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: resume-${{ matrix.agent }}-log
           path: |
@@ -804,7 +827,7 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq || { apt-get update && apt-get install -y --no-install-recommends libcurl4-openssl-dev libssl-dev jq; }'
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -912,7 +935,7 @@ jobs:
       - name: Upload logs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: prompt-cache-log
           path: |

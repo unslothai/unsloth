@@ -9,6 +9,8 @@ import threading
 import time
 from typing import Any, Optional
 
+from utils.account_context import current_account_id
+
 EMBEDDING_MODEL_SETTING_KEY = "rag_embedding_model"
 # The GGUF repo the picker resolved for that model, stored so the loader opens what was actually downloaded instead of re-deriving a name that may not exist.
 EMBEDDING_GGUF_SETTING_KEY = "rag_embedding_gguf_repo"
@@ -24,20 +26,39 @@ _CACHE_TTL_S = 2.0
 _StoredState = tuple[
     Optional[str], Optional[str], Optional[str], Optional[str], bool, Optional[dict]
 ]
-# (override model, resolved model, GGUF repo, backend, download pending, raw record). The raw record is carried so a conditional write compares against exactly what is stored: a reconstruction never matches a record written by a build with one field fewer.
-_cached: tuple[float, _StoredState] | None = None
-# Bumped on every write/invalidate. A reader captures it before the DB read and only fills the cache if it is unchanged afterward, so a read that overlapped a save cannot repopulate the cache with the pre-save value for the whole TTL.
-_generation = 0
+# (override model, resolved model, GGUF repo, backend, download pending, raw record).
+# The raw record is carried so a conditional write compares against exactly what is stored: a reconstruction never
+# matches a record written by a build with one field fewer.
+_cached: dict[tuple[str, str], tuple[float, _StoredState]] = {}
+_CACHE_MAX = 256
+# Bumped on every write/invalidate. A reader captures it before the DB read and
+# only fills the cache if it is unchanged afterward, so a read that overlapped a
+# save cannot repopulate the cache with the pre-save value for the whole TTL.
+_generation: dict[tuple[str, str], int] = {}
 _lock = threading.Lock()
-# Per-model, process-local: the last (gguf_repo, backend, download_pending, files) seen for each model. The one stored record belongs to whichever model was saved last; see remembered_gguf_repo.
-_resolved_gguf_memo: dict[str, tuple[Optional[str], Optional[str], bool, Optional[list]]] = {}
+# Per-model, process-local: the last (gguf_repo, backend, download_pending, files)
+# seen for each model. The one stored record belongs to whichever model was saved
+# last; see remembered_gguf_repo.
+_resolved_gguf_memo: dict[
+    tuple[str, str], tuple[Optional[str], Optional[str], bool, Optional[list]]
+] = {}
+
+
+def _store_cached(key: tuple[str, str], value: _StoredState) -> None:
+    now = time.monotonic()
+    if key not in _cached and len(_cached) >= _CACHE_MAX:
+        for stale in [k for k, (at, _v) in _cached.items() if now - at >= _CACHE_TTL_S]:
+            del _cached[stale]
+        while len(_cached) >= _CACHE_MAX:
+            _cached.pop(next(iter(_cached)))
+    _cached[key] = (now, value)
 
 
 def _invalidate_cache() -> None:
-    global _cached, _generation
+    key = (current_account_id(), EMBEDDING_RESOLUTION_SETTING_KEY)
     with _lock:
-        _cached = None
-        _generation += 1
+        _cached.pop(key, None)
+        _generation[key] = _generation.get(key, 0) + 1
 
 
 def default_embedding_model() -> str:
@@ -89,12 +110,17 @@ def get_stored_gguf_repo(model: str) -> str | None:
 def _remember_resolution(model: str, stored: _StoredState) -> None:
     """Keep this process's last resolved repo/backend/pending/files for ``model``."""
     with _lock:
-        _resolved_gguf_memo[model] = (stored[2], stored[3], stored[4], _files_of(stored[5]))
+        _resolved_gguf_memo[(current_account_id(), model)] = (
+            stored[2],
+            stored[3],
+            stored[4],
+            _files_of(stored[5]),
+        )
 
 
 def _remembered(model: str) -> tuple[str | None, str | None, bool, list | None] | None:
     with _lock:
-        return _resolved_gguf_memo.get(model)
+        return _resolved_gguf_memo.get((current_account_id(), model))
 
 
 def _files_of(resolution: Optional[dict]) -> Optional[list]:
@@ -171,15 +197,20 @@ def get_stored_embedding_model() -> str | None:
     return _get_stored_state()[0]
 
 
-def _get_stored_state() -> _StoredState:
-    """Read the override and its resolved artifact association as one snapshot. The resolution is one JSON value so its model/repo/backend can never be torn; the legacy individual fields are read in the same SQL statement for compatibility with builds from before the atomic record existed."""
-    global _cached
+def _get_stored_state(fresh: bool = False) -> _StoredState:
+    """Read the override and its resolved artifact association as one snapshot.
+
+    The resolution is one JSON value so its model/repo/backend can never be
+    torn. The legacy individual fields are read in the same SQL statement for
+    compatibility with builds from before the atomic record existed.
+    """
+    key = (current_account_id(), EMBEDDING_RESOLUTION_SETTING_KEY)
     now = time.monotonic()
     with _lock:
-        cached = _cached
-        if cached is not None and now - cached[0] < _CACHE_TTL_S:
+        cached = _cached.get(key)
+        if cached is not None and now - cached[0] < _CACHE_TTL_S and not fresh:
             return cached[1]
-        gen = _generation
+        gen = _generation.get(key, 0)
     try:
         from storage.studio_db import get_app_settings
         settings = get_app_settings(
@@ -191,11 +222,14 @@ def _get_stored_state() -> _StoredState:
             ]
         )
     except Exception:
+        if fresh:
+            raise  # a fresh read confirms the model, which a fallback cannot
         # Transient store failure: keep the last known value instead of silently reverting the embed/search hot path to the default model, which would mix vector spaces mid-ingestion.
         with _lock:
-            if _cached is not None:
-                _cached = (time.monotonic(), _cached[1])
-                return _cached[1]
+            cached = _cached.get(key)
+            if cached is not None:
+                _cached[key] = (time.monotonic(), cached[1])
+                return cached[1]
         return (None, None, None, None, False, None)
     override = _coerce_embedding_model(settings.get(EMBEDDING_MODEL_SETTING_KEY))
     resolution = settings.get(EMBEDDING_RESOLUTION_SETTING_KEY)
@@ -214,15 +248,17 @@ def _get_stored_state() -> _StoredState:
     raw = resolution if isinstance(resolution, dict) else None
     value: _StoredState = (override, resolved_model, repo, backend, download_pending, raw)
     with _lock:
-        # Only cache when no save landed while reading: a pre-save value would mask the new one for the whole TTL.
-        if _generation == gen:
-            _cached = (time.monotonic(), value)
+        # Only cache when no save landed while reading: a pre-save value would mask the new one for the
+        # whole TTL.
+        if _generation.get(key, 0) == gen:
+            _store_cached(key, value)
     return value
 
 
-def get_rag_embedding_model() -> str:
-    """Effective embedding model: persisted override, else env/default."""
-    stored = _get_stored_state()
+def get_rag_embedding_model(fresh: bool = False) -> str:
+    """Effective embedding model: persisted override, else env/default. ``fresh`` skips the cache
+    and raises when the store cannot be read, for a check that must see another process's save."""
+    stored = _get_stored_state(fresh)
     model = stored[0] or default_embedding_model()
     # Reading this is how a job pins its model, so record the resolution here: the memo protects a pinned job only if it was populated before another model's save takes the stored record.
     if stored[1] == model:
@@ -296,3 +332,61 @@ def reset_rag_embedding_model() -> str:
     )
     _invalidate_cache()
     return restored
+
+
+EMBEDDING_DEVICE_SETTING_KEY = "rag_embedding_device"
+EMBEDDING_DEVICE_CHOICES = ("auto", "cpu", "gpu")
+# One embedder per process, so the device is installation-wide: read from the owner's store whoever is asking.
+_device_cached: list = []  # [(monotonic time, value)]
+# Same guard as _generation: a read that overlapped a write must not cache the pre-write value.
+_device_generation = 0
+
+
+def get_stored_embedding_device() -> str:
+    """The device chosen in Settings: ``auto`` when unset, unreadable or unrecognized."""
+    now = time.monotonic()
+    with _lock:
+        if _device_cached and now - _device_cached[0][0] < _CACHE_TTL_S:
+            return _device_cached[0][1]
+        gen = _device_generation
+    from utils.account_context import OWNER, bind_account, reset_account
+
+    token = bind_account(OWNER)
+    try:
+        from storage.studio_db import get_app_setting
+        value = get_app_setting(EMBEDDING_DEVICE_SETTING_KEY, None)
+    except Exception:  # noqa: BLE001 - store unavailable: the hardware default
+        value = None
+    finally:
+        reset_account(token)
+    device = value if value in EMBEDDING_DEVICE_CHOICES else "auto"
+    with _lock:
+        if _device_generation == gen:
+            _device_cached[:] = [(now, device)]
+    return device
+
+
+def forget_cached_embedding_device() -> None:
+    global _device_generation
+    with _lock:
+        _device_cached.clear()
+        _device_generation += 1
+
+
+def set_embedding_device(device: str) -> bool:
+    """Persist the device; returns whether it changed, so an unchanged save keeps the embedder resident."""
+    if device not in EMBEDDING_DEVICE_CHOICES:
+        raise ValueError("Device must be auto, cpu or gpu.")
+    forget_cached_embedding_device()
+    if get_stored_embedding_device() == device:
+        return False
+    from storage.studio_db import upsert_app_settings
+    from utils.account_context import OWNER, bind_account, reset_account
+
+    token = bind_account(OWNER)
+    try:
+        upsert_app_settings({EMBEDDING_DEVICE_SETTING_KEY: device}, read_back = False)
+    finally:
+        reset_account(token)
+        forget_cached_embedding_device()
+    return True

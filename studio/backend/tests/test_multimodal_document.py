@@ -467,10 +467,8 @@ def test_chat_message_accepts_input_document_part():
     assert msg.content[1].media_type == "application/pdf"
 
 
-def test_build_external_messages_passes_input_document_for_anthropic_and_openai():
-    # Both providers' stream helpers translate input_document (Anthropic ->
-    # {type:"document"}, OpenAI Responses -> {type:"input_file"}), so the
-    # part round-trips through the builder unchanged on those routes.
+def test_build_external_messages_passes_input_document_for_native_and_custom_responses():
+    # Each route translates input_document, so the builder keeps it.
 
     from models.inference import ChatMessage
     from routes.inference import _build_external_messages
@@ -490,8 +488,10 @@ def test_build_external_messages_passes_input_document_for_anthropic_and_openai(
             }
         )
     ]
-    for provider in ("anthropic", "openai"):
-        out = _build_external_messages(msgs, supports_vision = True, provider_type = provider)
+    for provider, api_type in (("anthropic", None), ("openai", None), ("custom", "responses")):
+        out = _build_external_messages(
+            msgs, supports_vision = True, provider_type = provider, api_type = api_type
+        )
         assert len(out) == 1, (provider, out)
         parts = out[0]["content"]
         assert parts[0] == {"type": "text", "text": "summarise"}, provider
@@ -527,8 +527,11 @@ def test_build_external_messages_strips_input_document_for_unmapped_providers():
             }
         )
     ]
-    for provider in ("gemini", "mistral", "kimi", "openrouter", "deepseek", "qwen"):
-        out = _build_external_messages(msgs, supports_vision = True, provider_type = provider)
+    for provider in ("gemini", "mistral", "kimi", "openrouter", "deepseek", "qwen", "custom"):
+        api_type = "chat_completions" if provider == "custom" else None
+        out = _build_external_messages(
+            msgs, supports_vision = True, provider_type = provider, api_type = api_type
+        )
         assert len(out) == 1, (provider, out)
         parts = out[0]["content"]
         types = [p.get("type") for p in parts if isinstance(p, dict)]

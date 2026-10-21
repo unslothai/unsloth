@@ -25,6 +25,16 @@ import {
 import { Component, type ReactNode, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
+import { AUTH_TOKEN_KEY } from "@/features/auth/session";
+
+// The Accounts tab is owner-only and the owner is read from the token's claims, so the harness carries an unsigned owner token.
+if (!localStorage.getItem(AUTH_TOKEN_KEY)) {
+  const claims = btoa(JSON.stringify({ sub: "unsloth", role: "owner" }))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  localStorage.setItem(AUTH_TOKEN_KEY, `smoke.${claims}.smoke`);
+}
 
 declare global {
   interface Window {

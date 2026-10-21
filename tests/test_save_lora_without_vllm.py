@@ -12,23 +12,15 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""`save_lora` must be attached with or without a vLLM engine.
-
-`patch_peft_fast_inference` set it only inside `if vllm_engine is not None`,
-but unsloth_zoo's `save_lora` is `save_pretrained` over the lora_A/lora_B keys
-and never touches the engine. So `LFM2.5_(1.2B)-GRPO`, which loads with
-`fast_inference = False` and saves at the end, got `AttributeError:
-'Lfm2ForCausalLM' object has no attribute 'save_lora'`, naming neither vLLM nor
-the flag that caused it. `load_lora` stays gated: it copies into vLLM's own
-adapter buffers.
-
-Source-level, because importing the module pulls the whole model stack.
-"""
+"""save_lora is set outside the vLLM engine guard, since it needs no engine; load_lora stays gated."""
 
 import ast
 import pathlib
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
@@ -63,11 +55,8 @@ def _engine_guard(function):
 
 
 def _outside_the_guard(function):
-    """The function body with the `if vllm_engine is not None:` block removed.
-
-    Not `all - guard`: set subtraction drops a name assigned in BOTH places,
-    which is exactly `save_lora` now.
-    """
+    """The function body minus the engine guard; set subtraction would drop names assigned in both
+    places."""
     return ast.Module(
         body = [
             node
@@ -79,11 +68,7 @@ def _outside_the_guard(function):
 
 
 def test_save_lora_is_set_outside_the_engine_guard():
-    """The bug: with no engine the attribute was never set at all.
-
-    Asserted as "set outside the guard" rather than "not set inside it", because
-    a model that HAS an engine keeps the Zoo helper it has always had.
-    """
+    """With no engine save_lora was never set; assert it is set outside the guard, not absent inside."""
     function = _patch_function()
     outside = _assigned_attributes(_outside_the_guard(function))
     assert "save_lora" in outside, (
@@ -139,11 +124,7 @@ def test_a_missing_zoo_helper_does_not_break_loading():
 
 
 def test_a_missing_zoo_helper_cannot_break_the_engineless_path():
-    """The engineless attach must not depend on the Zoo at all.
-
-    That import lives inside the engine guard now, so an older unsloth_zoo can
-    only ever cost a vLLM run its `save_lora`, never a plain one.
-    """
+    """The engineless save_lora path must not import unsloth_zoo, so an old zoo can only break vLLM runs."""
     assert "unsloth_zoo" not in ast.unparse(_outside_the_guard(_patch_function()))
 
 
@@ -179,12 +160,7 @@ def _saved_keys(model, save, tmp_path, name):
     ids = ["plain", "modules_to_save", "dora", "dora_and_modules_to_save"],
 )
 def test_the_adapter_save_keeps_everything_peft_would_keep(tmp_path, lora_kwargs):
-    """The Zoo helper filters to `.lora_A.`/`.lora_B.` before PEFT selects, so
-    PEFT raises `KeyError: modules_to_save.default.weight` and a DoRA run loses
-    its `lora_magnitude_vector`. Unsloth adds `embed_tokens`/`lm_head` to
-    `modules_to_save` by itself once new tokens are trained, so both are
-    reachable with no vLLM in sight.
-    """
+    """Zoo's lora_A/lora_B filter drops keys PEFT keeps, like lora_magnitude_vector and modules_to_save."""
     from unsloth.models._utils import save_lora_adapter
 
     reference = _saved_keys(
@@ -209,7 +185,12 @@ def test_the_saved_adapter_still_loads_back(tmp_path):
     base = transformers.AutoModelForCausalLM.from_pretrained(
         "hf-internal-testing/tiny-random-LlamaForCausalLM", dtype = torch.float16
     )
-    reloaded = peft.PeftModel.from_pretrained(base, str(directory))
+    # Pass the device: peft's infer_device() says cuda because the CUDA spoof fakes it.
+    reloaded = peft.PeftModel.from_pretrained(
+        base,
+        str(directory),
+        torch_device = "cuda" if has_real_accelerator() and torch.cuda.is_available() else "cpu",
+    )
     assert reloaded is not None
 
 

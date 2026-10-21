@@ -7,7 +7,7 @@ Opt-in (``RAG_EMBED_BACKEND=llama-server``). Runs a dedicated ``llama-server --e
 subprocess on its own port and calls its OpenAI-style ``/v1/embeddings`` + ``/tokenize``, fully
 isolated from the chat backend.
 
-Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU start fails);
+Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU server fails);
 ``RAG_EMBED_DEVICE`` forces it. We call only llama_cpp's *static* helpers (no torch), copying the
 instance-coupled bits locally, since constructing a ``LlamaCppBackend`` runs an ``__init__`` reaper
 that kills any Unsloth llama-server, so each request re-spawns ours if it died.
@@ -15,6 +15,9 @@ that kills any Unsloth llama-server, so each request re-spawns ours if it died.
 
 from __future__ import annotations
 
+from core.training.account_jobs import account_path, managed_account
+from utils.account_context import account_thread
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import atexit
 import logging
 import os
@@ -74,29 +77,58 @@ def _skip_gguf_value(f, vtype: int) -> None:
         f.seek(_GGUF_SCALAR_WIDTHS[vtype], 1)
 
 
-def _gguf_context_length(path: str) -> int | None:
+def _gguf_arch_uint(path: str, field: str) -> tuple[str | None, int | None]:
     try:
         with open(path, "rb") as f:
             if f.read(4) != b"GGUF":
-                return None
+                return None, None
             f.read(4)
             _, kv_count = struct.unpack("<QQ", f.read(16))
             arch = None
-            lengths: dict[str, int] = {}
+            values: dict[str, int] = {}
             for _ in range(kv_count):
                 key = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
                 vtype = struct.unpack("<I", f.read(4))[0]
                 if key == "general.architecture" and vtype == 8:
                     arch = f.read(struct.unpack("<Q", f.read(8))[0]).decode("utf-8")
-                elif key.endswith(".context_length") and vtype in (4, 10):
-                    lengths[key] = int.from_bytes(f.read(_GGUF_SCALAR_WIDTHS[vtype]), "little")
+                elif key.endswith(f".{field}") and vtype in (4, 10):
+                    values[key] = int.from_bytes(f.read(_GGUF_SCALAR_WIDTHS[vtype]), "little")
                 else:
                     _skip_gguf_value(f, vtype)
-                if arch is not None and f"{arch}.context_length" in lengths:
-                    return lengths[f"{arch}.context_length"] or None
+                if arch is not None and f"{arch}.{field}" in values:
+                    return arch, values[f"{arch}.{field}"]
     except (OSError, struct.error, UnicodeDecodeError, KeyError, ValueError):
-        return None
-    return None
+        return None, None
+    return arch, None
+
+
+def _gguf_context_length(path: str) -> int | None:
+    return _gguf_arch_uint(path, "context_length")[1] or None
+
+
+_GGUF_POOLING = {1: "mean", 2: "cls", 3: "last"}
+_GGUF_POOLING_DEFAULT = {"nomic-bert": "mean", "nomic-bert-moe": "mean"}
+
+
+@lru_cache(maxsize = 32)
+def _gguf_pooling_at(path: str, mtime_ns: int, size: int) -> str:
+    arch, value = _gguf_arch_uint(path, "pooling_type")
+    if value in _GGUF_POOLING:
+        return _GGUF_POOLING[value]
+    if value is None:
+        # Older dedicated Nomic embedders commonly omit the SentenceTransformers pooling
+        # metadata. Their model family is mean-pooled; unknown architectures keep the legacy CLS
+        # fallback rather than guessing across encoder, decoder and reranker families.
+        return _GGUF_POOLING_DEFAULT.get((arch or "").lower(), "cls")
+    return "cls"
+
+
+def _gguf_pooling(path: str) -> str:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "cls"
+    return _gguf_pooling_at(path, st.st_mtime_ns, st.st_size)
 
 
 def _resolve_entrypoint(binary: str) -> str:
@@ -152,6 +184,9 @@ class LlamaServerBackend:
         self._operation_condition = threading.Condition()
         self._active_operations = 0
         self._operation_local = threading.local()
+        # Immutable repo/pooling pair from this thread's last completed encode. The backend object
+        # itself is shared and can switch models before its caller constructs the vector identity.
+        self._served_identity_local = threading.local()
         self._closed = False
         self._process: subprocess.Popen | None = None
         self._port: int | None = None
@@ -165,14 +200,18 @@ class LlamaServerBackend:
         # them lands A's POST on B's server.
         self._serve_lock = threading.RLock()
         self._model_path: str | None = None
+        # Read when the path is adopted: the running server keeps this pooling even if the file later vanishes.
+        self._model_pooling: str | None = None
         # A Settings change makes the cached path/dim stale, forcing a re-resolve and respawn (see _ensure_ready).
         self._model_repo: str | None = None
         self._binary: str | None = None
         self._binary_path_revision: int | None = None
-        # Sticky after an auto GPU start fails: later spawns stay on CPU.
+        # Sticky after an auto GPU start fails or a GPU server crashes twice on one request.
         self._force_cpu = False
+        self._on_gpu = False
         # trust_env=False skips HTTP(S)_PROXY; full URLs per request survive a respawn.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
+        self._api_key: str | None = None
         atexit.register(self._shutdown)
 
     @contextmanager
@@ -198,6 +237,9 @@ class LlamaServerBackend:
     @property
     def _base_url(self) -> str:
         return f"http://{config.EMBED_HOST}:{self._port}"
+
+    def _auth_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
     def _resolve_binary(self) -> str:
         """Find llama-server, verify embeddings support, cache it. Raises if
@@ -451,6 +493,28 @@ class LlamaServerBackend:
             files = [p for p in files if p != pick]
         return None
 
+    @staticmethod
+    def cached_pooling(model: str) -> str | None:
+        """Pooling of ``model``'s GGUF already on disk, found without the network; None when
+        the loader cannot yet know which file it will serve. Match its local, planned and configured-
+        variant order so identity prediction never reads metadata from a different cached family."""
+        try:
+            desired = config.effective_gguf_repo_for_embedding_model(model)
+            path = LlamaServerBackend._resolve_local_gguf(model)
+            path = path or LlamaServerBackend._planned_family_path(model, desired)
+            path = path or LlamaServerBackend._resolve_cached_gguf(desired)
+            if path is None:
+                try:
+                    from utils.embedding_model_settings import get_stored_download_pending
+                    download_pending = get_stored_download_pending(model)
+                except Exception:  # noqa: BLE001 - old/unavailable settings store
+                    download_pending = False
+                if download_pending:
+                    path = LlamaServerBackend._resolve_cached_gguf(desired, require_variant = False)
+        except Exception:  # noqa: BLE001 - identity prediction must not block ingestion
+            return None
+        return None if path is None else _gguf_pooling(path)
+
     def _resolve_model_path(self, model_name: str | None = None) -> str:
         """Download (or cache-hit) the variant-matching, non-mmproj GGUF embedder,
         returning its local path. Re-resolves when the effective repo changed (a
@@ -458,12 +522,21 @@ class LlamaServerBackend:
 
         ``model_name`` is the model the caller pinned; the live setting would
         resolve B's weights for a job still tagging its vectors as A."""
+        account_path(model_name, reference = True)
         model = model_name or config.effective_embedding_model()
         # Captured once: the path must stay tagged with the repo it was resolved FOR, so a mid-download
         # setting change reads as stale and respawns.
         desired = config.effective_gguf_repo_for_embedding_model(model)
         if self._model_path is not None and self._model_repo == desired:
-            return self._model_path
+            if Path(self._model_path).is_file():
+                return self._model_path
+            # The process is stopped when this resolver runs. A remembered cache path can have
+            # been evicted since its last server lifetime, so let the normal cache/Hub order find
+            # what the next process can actually open.
+            self._model_path = None
+            self._model_pooling = None
+            self._dim = None
+            self._max_tokens = None
         local = self._resolve_local_gguf(model)
         if local is not None:
             return self._adopt_model_path(local, desired)
@@ -589,6 +662,7 @@ class LlamaServerBackend:
         """Serve `path` for `desired`; the width is re-probed against whatever is adopted."""
         self._model_path = path
         self._model_repo = desired
+        self._model_pooling = _gguf_pooling(path) if path else None
         self._dim = None
         self._max_tokens = None
         return self._model_path
@@ -608,7 +682,7 @@ class LlamaServerBackend:
         from core.inference.llama_cpp import _hf_offline_if_unreachable
         from utils.utils import call_with_deadline
 
-        token = os.environ.get("HF_TOKEN") or None
+        token = False if managed_account() else os.environ.get("HF_TOKEN") or None
         repo = desired
         filename: str | None = None
         family: list[str] = []
@@ -708,7 +782,15 @@ class LlamaServerBackend:
         from core.inference.llama_cpp import LlamaCppBackend
         return LlamaCppBackend._arch_gate_survivors(binary)
 
-    def _build_cmd(self, binary: str, model_path: str, port: int, *, use_gpu: bool) -> list[str]:
+    def _build_cmd(
+        self,
+        binary: str,
+        model_path: str,
+        port: int,
+        *,
+        use_gpu: bool,
+        pooling: str | None = None,
+    ) -> list[str]:
         # No --embd-normalize (absent in some builds; we normalize in Python to match the ST path), and
         # --fit off so ctx/offload are not auto-resized.
         cmd = [
@@ -721,7 +803,7 @@ class LlamaServerBackend:
             str(port),
             "--embedding",
             "--pooling",
-            "cls",
+            pooling or _gguf_pooling(model_path),
             "--fit",
             "off",
         ]
@@ -748,9 +830,16 @@ class LlamaServerBackend:
             # real server and the dylibs sit next to the target (#8566).
             env = _with_dyld_path(env, _binary_lib_dir(binary))
         elif use_gpu:
-            # Left as Path(binary).parent: resolving the entrypoint here would move the first LD_LIBRARY_PATH
-            # entry for every existing Linux GPU install whose llama-server is a symlink.
-            self._add_linux_cuda_libs(env, str(Path(binary).parent))
+            if sys.platform == "win32":
+                # Chat's DLL search path: without it a venv-hosted cudart is never found and the CUDA build runs on the CPU.
+                from core.inference.llama_cpp import _llama_lib_dir
+                path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                    str(_llama_lib_dir(binary)), sys.prefix, os.environ.get("CUDA_PATH", "")
+                )
+                env["PATH"] = ";".join(path_dirs) + ";" + env.get("PATH", "")
+            else:
+                # Path(binary).parent, unresolved: resolving would move the first LD_LIBRARY_PATH entry of every symlinked install.
+                self._add_linux_cuda_libs(env, str(Path(binary).parent))
             _pinned = self._arch_gated_gpu_ids(binary)
             if _pinned:
                 from core.inference.llama_cpp import LlamaCppBackend
@@ -787,18 +876,31 @@ class LlamaServerBackend:
             return
         arch = platform.machine()
         lib_dirs = [binary_dir]
+        # glob.escape: a prefix with [brackets] is otherwise read as a pattern.
+        site = os.path.join(glob.escape(sys.prefix), "lib", "python*", "site-packages")
+        pip_dirs = []
         for pattern in (
-            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cu*", "lib"),
-            os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", "cudnn", "lib"),
+            os.path.join(site, "nvidia", "cu*", "lib"),
+            os.path.join(site, "nvidia", "cudnn", "lib"),
+            os.path.join(site, "torch", "lib"),
         ):
-            lib_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
-        for cuda_lib in (
-            "/usr/local/cuda/lib64",
-            f"/usr/local/cuda/targets/{arch}-linux/lib",
-            "/usr/local/cuda-12/lib64",
-        ):
-            if os.path.isdir(cuda_lib):
-                lib_dirs.append(cuda_lib)
+            pip_dirs.extend(d for d in glob.glob(pattern) if os.path.isdir(d))
+        system_dirs = [
+            d
+            for d in (
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{arch}-linux/lib",
+                "/usr/local/cuda-12/lib64",
+            )
+            if os.path.isdir(d)
+        ]
+        from utils.tegra import TEGRA_LIB_DIR, is_tegra
+
+        if is_tegra():
+            tegra = [TEGRA_LIB_DIR] if os.path.isdir(TEGRA_LIB_DIR) else []
+            lib_dirs.extend(tegra + system_dirs + pip_dirs)
+        else:
+            lib_dirs.extend(pip_dirs + system_dirs)
         existing = env.get("LD_LIBRARY_PATH", "")
         joined = ":".join(lib_dirs)
         env["LD_LIBRARY_PATH"] = f"{joined}:{existing}" if existing else joined
@@ -817,6 +919,7 @@ class LlamaServerBackend:
         except Exception:  # noqa: BLE001 - drain thread must never raise
             pass
 
+    @_invalidates_gpu_memory("embedding server start")
     def _spawn(self, model_name: str | None = None) -> None:
         """Start the embed server (caller holds the lock). A failed GPU start falls
         back to CPU once, unless ``RAG_EMBED_DEVICE`` is the literal ``gpu``."""
@@ -842,20 +945,41 @@ class LlamaServerBackend:
     ) -> None:
         binary = self._resolve_binary()
         model_path = self._resolve_model_path(model_name)
+        # The cached path can be replaced in place between server lifetimes. Capture pooling once
+        # per spawn so the explicit llama-server flag and the vectors' recorded identity agree.
+        pooling = _gguf_pooling(model_path)
+        self._model_pooling = pooling
         port = config.EMBED_PORT or self._find_free_port()
         env = self._build_env(binary, use_gpu = use_gpu)
-        cmd = self._build_cmd(binary, model_path, port, use_gpu = use_gpu)
+        cmd = self._build_cmd(binary, model_path, port, use_gpu = use_gpu, pooling = pooling)
         logger.info(
             "starting llama-server embedder (%s): %s",
             "gpu" if use_gpu else "cpu",
             " ".join(cmd),
         )
+        from core.inference.llama_cpp import (
+            LlamaCppBackend,
+            _llama_server_api_key_enabled,
+            _llama_server_key_launch,
+        )
+
+        self._api_key = key_file = None
+        if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
+            binary
+        ).get("supports_api_key_file", True):
+            # Per-spawn key against permissive CORS; read once at startup, so deleted once healthy.
+            import secrets
+
+            self._api_key = secrets.token_urlsafe(32)
+            key_argv, key_env, key_file = _llama_server_key_launch(self._api_key)
+            cmd[1:1] = key_argv
+            env.update(key_env)
         self._stdout_lines = []
         # One flag at every spawn. No _graceful_shutdown step stops this backend, so an
         # encode still resolving or downloading its model as the app quits would
         # otherwise Popen a server after terminate_all had taken its snapshot.
         if is_process_shutting_down():
-            raise RuntimeError("Studio is shutting down; not starting the embed server")
+            raise RuntimeError("Unsloth is shutting down; not starting the embed server")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -868,6 +992,7 @@ class LlamaServerBackend:
             **child_popen_kwargs(),
         )
         self._process = proc
+        self._on_gpu = use_gpu
         # child_popen_kwargs() is empty on macOS, so the crash record is the only thing that can reap it
         # after a force quit.
         adopt_pid(proc.pid)
@@ -878,16 +1003,24 @@ class LlamaServerBackend:
         if is_process_shutting_down():
             logger.info("shutdown began during the spawn; killing the new embed server")
             self._kill_process()
-            raise RuntimeError("Studio is shutting down; not starting the embed server")
+            raise RuntimeError("Unsloth is shutting down; not starting the embed server")
         self._port = port
-        self._stdout_thread = threading.Thread(
+        self._stdout_thread = account_thread(
             target = self._drain_stdout,
             args = (proc,),
             daemon = True,
             name = "llama-embed-stdout",
         )
         self._stdout_thread.start()
-        if not self._wait_for_health(config.EMBED_STARTUP_TIMEOUT_S):
+        try:
+            healthy = self._wait_for_health(config.EMBED_STARTUP_TIMEOUT_S)
+        finally:
+            if key_file is not None:
+                try:
+                    key_file.unlink()
+                except OSError:
+                    pass
+        if not healthy:
             tail = "\n".join(self._stdout_lines[-30:])
             self._kill_process()
             raise RuntimeError(
@@ -939,6 +1072,11 @@ class LlamaServerBackend:
             and self._binary_path_revision == custom_llama_cpp_path_revision()
         )
 
+    def pooling_identity_snapshot(self) -> tuple[str | None, str | None, str | None, bool]:
+        """One coherent path/repo/pooling/process snapshot for pre-encode identity prediction."""
+        with self._serve_lock:
+            return self._model_path, self._model_repo, self._model_pooling, self._process_alive()
+
     def _ensure_ready(self, model_name: str | None = None) -> None:
         """Guarantee a live server on ``model_name``, (re)spawning if needed. Double-checked so the
         current path takes no lock; self-heals after the chat reaper kills us and re-resolves
@@ -966,6 +1104,7 @@ class LlamaServerBackend:
             self._kill_process()
             self._spawn(model_name)
 
+    @_invalidates_gpu_memory("embedding server stop")
     def _kill_process(self) -> None:
         proc = self._process
         if proc is None:
@@ -1035,20 +1174,53 @@ class LlamaServerBackend:
                 # Held across readiness AND the request, so a swap can only land between whole requests.
                 self._ensure_ready(model_name)
                 try:
-                    resp = self._client.post(f"{self._base_url}{path}", json = payload)
+                    resp = self._client.post(
+                        f"{self._base_url}{path}", json = payload, headers = self._auth_headers()
+                    )
                     resp.raise_for_status()
                     return resp.json()
                 except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
                     last_exc = e
+                    crashed = not isinstance(e, httpx.TimeoutException) and self._server_exited()
                     if attempt == 0:
                         self._restart(model_name)
                         continue
+                    # A second crash is the GPU build failing on this input, not the reaper (#13663).
+                    if crashed and self._fall_back_to_cpu():
+                        self._restart(model_name)
+                        return self._post_active(path, payload, model_name)
                 except httpx.HTTPStatusError as e:
                     body = e.response.text[:500] if e.response is not None else ""
                     raise RuntimeError(
                         f"llama-server embedder POST {path} -> {e.response.status_code}: {body}"
                     ) from e
         raise RuntimeError(f"llama-server embedder POST {path} failed after retry") from last_exc
+
+    def _server_exited(self) -> bool:
+        """Whether the server died under the request; logs its exit code and output tail."""
+        proc = self._process
+        if proc is None:
+            return False
+        try:
+            code = proc.wait(timeout = 2)
+        except subprocess.TimeoutExpired:
+            return False
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout = 2)
+        tail = "\n".join(self._stdout_lines[-30:])
+        logger.warning(
+            "llama-server embedder exited during a request (code %s). Last output:\n%s",
+            code,
+            tail[:2000],
+        )
+        return True
+
+    def _fall_back_to_cpu(self) -> bool:
+        if not self._on_gpu or self._force_cpu or config.embed_device_requires_gpu():
+            return False
+        logger.warning("llama-server embedder crashed twice on the GPU; continuing on CPU")
+        self._force_cpu = True
+        return True
 
     def encode(
         self,
@@ -1060,8 +1232,15 @@ class LlamaServerBackend:
         """Embed texts -> (N, dim) float32. ``model_name`` pins which GGUF serves
         the request, so a Settings change cannot answer it from another model.
         Normalizes in Python to match the ST backend."""
-        with self._operation():
-            return self._encode_active(texts, normalize = normalize, model_name = model_name)
+        self._served_identity_local.value = None
+        with self._operation(), self._serve_lock:
+            vectors = self._encode_active(texts, normalize = normalize, model_name = model_name)
+            self._served_identity_local.value = (self._model_repo, self._model_pooling)
+            return vectors
+
+    def served_embedding_identity(self) -> tuple[str | None, str | None] | None:
+        """Repo and pooling captured by this thread's last completed encode."""
+        return getattr(self._served_identity_local, "value", None)
 
     def _encode_active(
         self,
@@ -1124,7 +1303,12 @@ class LlamaServerBackend:
         malformed base URL, which is what an un-started server has.
         """
         try:
-            data = httpx.get(f"{self._base_url}/props", timeout = 2.0, trust_env = False).json()
+            data = httpx.get(
+                f"{self._base_url}/props",
+                headers = self._auth_headers(),
+                timeout = 2.0,
+                trust_env = False,
+            ).json()
         except Exception:  # noqa: BLE001 - see docstring
             return None
         return data if isinstance(data, dict) else None

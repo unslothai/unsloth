@@ -1,0 +1,142 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Installer --no-deps unsloth-zoo floors must match pyproject.toml; uv never reads unsloth metadata."""
+
+from __future__ import annotations
+
+import re
+import tomllib
+from pathlib import Path
+
+import pytest
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import Version
+
+
+REPO = Path(__file__).resolve().parents[1]
+PYPROJECT = REPO / "pyproject.toml"
+INSTALL_SH = REPO / "install.sh"
+INSTALL_PS1 = REPO / "install.ps1"
+
+# One `--no-deps` zoo-floor site per installer branch (install.sh/ps1 x migrated/fresh);
+# pinned so a fifth site fails here instead of shipping unchecked.
+EXPECTED_NO_DEPS_SITES = 4
+
+_ZOO_SPEC = re.compile(r"""unsloth[-_]zoo\s*(?:>=|==)\s*[0-9][^"'\s]*""")
+_ZOO_VAR_ASSIGN = re.compile(
+    r"""^\s*\$?(?:_unsloth_zoo_install_spec|_unslothZooInstallSpec)\s*=\s*"(unsloth-zoo>=[0-9][^"]*)"$""",
+    re.MULTILINE,
+)
+_ZOO_VAR_USE = re.compile(r"\$(?:_unsloth_zoo_install_spec|_unslothZooInstallSpec)\b")
+
+
+def _logical_lines(path: Path) -> list[tuple[int, str]]:
+    """Join shell backslash continuations so one command is one string."""
+    out: list[tuple[int, str]] = []
+    buffer = ""
+    start = 0
+    for number, raw in enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1):
+        if not buffer:
+            start = number
+        stripped = raw.rstrip()
+        if stripped.endswith("\\"):
+            buffer += stripped[:-1] + " "
+            continue
+        buffer += stripped
+        out.append((start, buffer))
+        buffer = ""
+    if buffer:
+        out.append((start, buffer))
+    return out
+
+
+def _pyproject_floor() -> Version:
+    data = tomllib.loads(PYPROJECT.read_text(encoding = "utf-8"))
+    project = data.get("project") or {}
+    raws: list[str] = list(project.get("dependencies") or [])
+    for extra in (project.get("optional-dependencies") or {}).values():
+        raws.extend(extra)
+    floors: dict[str, Version] = {}
+    for raw in raws:
+        try:
+            req = Requirement(raw)
+        except InvalidRequirement:
+            continue
+        if req.name.lower().replace("_", "-") != "unsloth-zoo":
+            continue
+        lower = [
+            Version(str(spec.version))
+            for spec in req.specifier
+            if spec.operator in (">=", "==", "~=")
+        ]
+        if lower:
+            floors[raw] = max(lower)
+    assert floors, "pyproject.toml declares no versioned unsloth_zoo requirement at all"
+    assert len(set(floors.values())) == 1, (
+        f"pyproject.toml declares more than one unsloth_zoo floor: "
+        f"{ {raw: str(v) for raw, v in floors.items()} }. One of them is the one users "
+        f"actually resolve, and which one depends on the extra they picked."
+    )
+    return next(iter(floors.values()))
+
+
+def _installer_sites() -> list[tuple[str, int, str, bool]]:
+    """(file, line, spec, is_no_deps) for every zoo version spec on an install command line."""
+    sites: list[tuple[str, int, str, bool]] = []
+    for path in (INSTALL_SH, INSTALL_PS1):
+        lines = (
+            _logical_lines(path)
+            if path.suffix == ".sh"
+            else list(enumerate(path.read_text(encoding = "utf-8").splitlines(), start = 1))
+        )
+        # The install lines name the floor through one variable, which the lagging-index
+        # fallback may lower at run time (#14031); its assignment carries the shipped floor.
+        assigned = _ZOO_VAR_ASSIGN.findall(path.read_text(encoding = "utf-8"))
+        assert (
+            len(assigned) == 1
+        ), f"{path.name}: expected one zoo floor variable assignment, found {assigned}"
+        for number, text in lines:
+            if "pip install" not in text:
+                continue
+            text = _ZOO_VAR_USE.sub(assigned[0], text)
+            no_deps = "--no-deps" in text
+            for spec in _ZOO_SPEC.findall(text):
+                sites.append((path.name, number, spec, no_deps))
+    return sites
+
+
+def test_the_no_deps_installer_sites_carry_the_pyproject_floor() -> None:
+    floor = _pyproject_floor()
+    sites = [site for site in _installer_sites() if site[3]]
+    assert sites, (
+        "found no --no-deps unsloth-zoo spec in either installer. Either the no-torch paths "
+        "were reworked, in which case retune this test, or the floor they carried was "
+        "dropped, in which case those installs resolve any zoo at all."
+    )
+    assert len(sites) == EXPECTED_NO_DEPS_SITES, (
+        f"expected {EXPECTED_NO_DEPS_SITES} --no-deps zoo floors, found {len(sites)}: "
+        f"{[(f, n, s) for f, n, s, _ in sites]}. A new one needs the floor too, since "
+        f"--no-deps means the command line is all the resolver sees."
+    )
+    stale = [
+        (name, number, spec)
+        for name, number, spec, _ in sites
+        if Version(spec.split(">=")[-1].split("==")[-1]) < floor
+    ]
+    assert not stale, (
+        f"these --no-deps installer sites still accept an unsloth_zoo older than the "
+        f"pyproject.toml floor {floor}: {stale}. --no-deps ignores package metadata, so such "
+        f"an install resolves a zoo pyproject.toml already rejects."
+    )
+
+
+def test_every_installer_zoo_spec_is_a_real_version() -> None:
+    """A typo'd spec would silently become a name-only requirement and pin nothing."""
+    sites = _installer_sites()
+    assert sites, "no unsloth-zoo version spec found in the installers at all"
+    for name, number, spec, _ in sites:
+        try:
+            Requirement(spec)
+        except InvalidRequirement as error:  # pragma: no cover - only on a malformed spec
+            pytest.fail(f"{name}:{number} has an unparseable zoo spec {spec!r}: {error}")

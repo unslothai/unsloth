@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""CPU-only unit tests for the Kaggle Unsloth GPU harness.
-
-The payload itself needs a GPU, a browser and an Unsloth install, and none of
-that runs here. What does run is everything that decides whether a green tick
-means anything: the GPU-offload verdict, the polling predicates that separate
-"finished" from "has not started", the adapter check, the generated kernel
-notebook, the evidence transport, and the budget numbers in the workflow
-header matching the flags underneath them.
-
-Modules under .github/scripts/kaggle_studio_ci are imported by explicit path
-rather than by putting that directory on sys.path: it contains a report.py
-and a build_kernel.py, so does .github/scripts/kaggle_t4_ci, and
-test_t4_smoke_harness.py puts the latter on sys.path for the whole session.
-Whichever ran first would win.
-"""
+"""Imports by path: kaggle_t4_ci and kaggle_studio_ci both ship report.py and build_kernel.py."""
 
 from __future__ import annotations
 
@@ -29,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -50,11 +37,15 @@ def _load(name: str, path: Path):
     return module
 
 
+run_studio_gpu = _load("studio_gpu_payload_main", PAYLOAD_DIR / "run_studio_gpu.py")
 build_kernel = _load("studio_ci_build_kernel", CI_DIR / "build_kernel.py")
 collect_evidence = _load("studio_ci_collect_evidence", CI_DIR / "collect_evidence.py")
 
 
-# --------------------------------------------------------------- nvidia-smi
+@pytest.fixture(autouse = True)
+def _no_caller_cuda_visible_devices(monkeypatch):
+    # Samplers scope nvidia-smi by it; an empty value reads as no card visible.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
 
 
 def test_compute_apps_parses_the_bare_csv_the_payload_asks_for():
@@ -77,7 +68,38 @@ def test_no_compute_apps_at_all_is_an_empty_dict_not_a_crash():
     assert gpu_assert.parse_compute_apps("") == {}
 
 
-# ------------------------------------------------------------ llama.cpp log
+def test_listed_pids_are_counted_even_when_no_memory_is_attributed():
+    """Windows (WDDM) and unified-memory parts list every CUDA process with [N/A].
+    The GB10 lists a -ngl 0 server too, so this is neither "nothing on the card" nor
+    proof of offload: it is the signal to fall back to the device delta."""
+    text = "pid, used_gpu_memory\n1234, [N/A]\n5678, [N/A]\n"
+    assert gpu_assert.parse_compute_apps(text) == {}
+    assert gpu_assert.count_listed_pids(text) == 2
+
+
+def test_listed_pids_ignore_the_header_and_junk_rows():
+    assert gpu_assert.count_listed_pids("pid, used_gpu_memory\n[N/A], [N/A]\n\n") == 0
+    assert gpu_assert.count_listed_pids("") == 0
+    assert gpu_assert.count_listed_pids("1234, 2048\n5678, [N/A]\n") == 2
+
+
+def test_an_all_unattributed_listing_reads_as_cannot_enumerate(monkeypatch):
+    import run_studio_gpu  # the payload, on sys.path beside gpu_assert
+
+    """So cli_run_gpu_failure takes its device-delta branch rather than concluding that
+    no process appeared. Readable rows still come back as the usual dict."""
+
+    class _P:
+        def __init__(self, out):
+            self.returncode = 0
+            self.stdout = out
+
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P("4242, [N/A]\n4243, [N/A]\n"))
+    assert run_studio_gpu.nvidia_compute_apps() is None
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P("4242, 512\n4243, [N/A]\n"))
+    assert run_studio_gpu.nvidia_compute_apps() == {4242: 512}
+    monkeypatch.setattr(run_studio_gpu, "run", lambda *a, **k: _P(""))
+    assert run_studio_gpu.nvidia_compute_apps() == {}
 
 
 def test_the_offload_line_is_read_from_the_most_recent_load():
@@ -105,19 +127,8 @@ def test_a_cpu_only_log_reports_no_device_buffer():
     assert gpu_assert.cuda_buffer_mib(log) is None
 
 
-# ------------------------------------------------------------ install kinds
-
-
 def test_a_cuda_bundle_is_recognised_from_its_marker(tmp_path):
-    """Written against a marker the installer actually produces.
-
-    This test used to write ``{"install_kind": "linux-cuda"}`` and assert it
-    came back, which is how the bug survived: the marker on disk has no
-    install_kind key, so the assertion agreed with the payload about a field
-    neither of them was reading from reality. Six hardware runs reported
-    install_kind=None with a working CUDA llama.cpp installed, and this test
-    was green for all six.
-    """
+    """The installer's marker has no install_kind key, so the fixture must use the real marker shape."""
     marker = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
     marker.write_text(
         json.dumps(
@@ -147,9 +158,6 @@ def test_a_missing_or_unreadable_marker_is_not_a_cuda_install(tmp_path):
     assert gpu_assert.install_kind(broken) is None
 
 
-# -------------------------------------------------------------- GGUF magic
-
-
 def test_a_real_gguf_header_passes_and_a_truncated_one_does_not(tmp_path):
     good = tmp_path / "a.gguf"
     good.write_bytes(b"GGUF\x03\x00\x00\x00")
@@ -158,9 +166,6 @@ def test_a_real_gguf_header_passes_and_a_truncated_one_does_not(tmp_path):
     assert gpu_assert.gguf_magic_ok(good)
     assert not gpu_assert.gguf_magic_ok(bad)
     assert not gpu_assert.gguf_magic_ok(tmp_path / "absent.gguf")
-
-
-# ----------------------------------------------------------- offload verdict
 
 
 def _verdict(**kw):
@@ -247,9 +252,6 @@ def test_auto_mode_gpu_layers_of_minus_one_is_not_treated_as_zero():
     assert verdict["passed"]
 
 
-# ------------------------------------------------------------------ health
-
-
 def test_health_is_not_ready_until_hardware_detection_settles():
     """Unsloth answers healthy while still detecting, and refuses to start a
     training run or an export in that window."""
@@ -257,9 +259,6 @@ def test_health_is_not_ready_until_hardware_detection_settles():
     assert studio_client.health_is_ready({"status": "healthy"})
     assert not studio_client.health_is_ready({"status": "starting"})
     assert not studio_client.health_is_ready("connection refused")
-
-
-# -------------------------------------------------------------------- wait
 
 
 def test_wait_returns_as_soon_as_the_predicate_holds():
@@ -324,9 +323,6 @@ def test_a_probe_that_raises_is_retried_rather_than_fatal():
     assert ok and last == "ready" and attempts["n"] == 3
 
 
-# ---------------------------------------------------------------- training
-
-
 def test_a_running_job_is_not_terminal():
     for phase in (
         "idle",
@@ -357,9 +353,6 @@ def test_steps_with_a_logged_loss_are_counted_and_nulls_are_not():
     assert studio_client.trained_steps(status) == 3
     assert studio_client.trained_steps({}) == 0
     assert studio_client.trained_steps({"metric_history": {"loss": "nope"}}) == 0
-
-
-# ------------------------------------------------------------------ export
 
 
 def test_an_export_that_has_not_started_is_not_read_as_finished():
@@ -404,9 +397,6 @@ def test_the_newest_gguf_is_found_recursively(tmp_path):
     os.utime(old, (time.time() - 600, time.time() - 600))
     assert studio_client.newest_gguf(tmp_path) == new
     assert studio_client.newest_gguf(tmp_path / "absent") is None
-
-
-# ----------------------------------------------------------------- adapter
 
 
 def _adapter(
@@ -456,9 +446,6 @@ def test_no_output_dir_at_all_fails_rather_than_passing_vacuously():
 def test_an_output_dir_that_does_not_exist_fails(tmp_path):
     ok, failures, _ = studio_client.adapter_verdict(tmp_path / "never-created")
     assert not ok and failures
-
-
-# ----------------------------------------------------------- kernel builder
 
 
 def _build(tmp_path, **kw):
@@ -553,7 +540,6 @@ def test_the_payload_never_puts_its_work_under_kaggle_working(tmp_path):
     setup = "".join(cells[0]["source"])
     assert 'pathlib.Path.home() / "unsloth_studio_ci"' in setup
     assert "/tmp/unsloth_studio_ci" in setup
-    # The only thing allowed under /kaggle/working is the evidence directory.
     for index, cell in enumerate(cells):
         source = "".join(cell["source"])
         for line in source.splitlines():
@@ -607,9 +593,6 @@ def test_the_result_prefix_matches_the_shared_launcher():
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in launcher
     payload = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
     assert f'RESULT_PREFIX = "{build_kernel.RESULT_PREFIX}"' in payload
-
-
-# ---------------------------------------------------------------- evidence
 
 
 def _bundle(names: dict[str, bytes]) -> bytes:
@@ -716,12 +699,7 @@ def test_chunks_are_reassembled_in_order_regardless_of_the_order_seen():
 
 
 def test_a_truncated_duplicate_does_not_overwrite_the_complete_chunk(tmp_path):
-    """The executed notebook and the kernel log are two copies of one stdout.
-    When Kaggle cuts the log inside a chunk line, the survivor still parses as
-    `i/n <payload>`, so overwriting on every sighting replaced the notebook's
-    complete chunk with the log's partial one. Every index was then present,
-    the missing-chunk guard passed, and the bundle died in base64 with the
-    complete source sitting on disk."""
+    """A log copy of a chunk can be cut short; it must not overwrite the complete notebook copy."""
     blob = _bundle({"studio_gpu_report.json": b'{"passed": true}', "shot.png": b"\x89PNG"})
     lines = _chunk_lines(blob)
     assert len(lines) > 2, "need a chunk that is neither first nor last"
@@ -762,9 +740,6 @@ def test_a_complete_later_copy_repairs_a_truncated_earlier_one():
     assert "".join(chunks[i] for i in (1, 2)) == "PPPPQQ"
 
 
-# ---------------------------------------------------------------- workflow
-
-
 def _workflow() -> dict:
     yaml = pytest.importorskip("yaml")
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -791,26 +766,10 @@ def test_the_workflow_never_cancels_a_run_that_may_hold_a_kernel():
 
 
 def test_the_two_kaggle_legs_fit_the_account_side_by_side():
-    """One kernel each, against a 2-kernel per-ACCOUNT cap, so they can overlap.
-
-    They used to SHARE a concurrency group, because the notebook leg pushed two
-    kernels and took both of Kaggle's slots: this leg would have raced the cap
-    and lost its push, so it had to queue behind instead. The cost was that it
-    queued behind the whole notebook JOB even though the account was free again
-    the moment that job's kernels finished -- measured, run 32607617804 waited
-    about 40 minutes on run 32607621452.
-
-    The notebook leg now packs its four legs into one kernel. So the invariant
-    worth holding is no longer "same group" but the arithmetic that made the
-    same group necessary: what each leg PUSHES has to sum to within the cap.
-    Separate groups plus one kernel each is exactly 2 of 2, with no headroom,
-    which is why this asserts the sum rather than the group names.
-    """
+    """Pushes from both legs must sum within the 2-kernel per-account cap, not depend on a shared group"""
     yaml = pytest.importorskip("yaml")
-    # Read the cap out of gate.py's SOURCE rather than importing it. Both .github/scripts/kaggle_studio_ci and
-    # .github/scripts/kaggle_t4_ci ship a module called `report`, so putting either on sys.path here decides which one
-    # `import report` resolves to for every test that runs afterwards in the same process. An earlier draft of this test
-    # did exactly that and took nine unrelated summary tests down with it.
+    # Read gate.py as text: both kaggle CI dirs ship a `report` module, and importing either would
+    # decide `import report` for every later test in the process.
     gate_src = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py").read_text(
         encoding = "utf-8"
     )
@@ -829,8 +788,7 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
         "the two legs share a concurrency group again, so Unsloth waits out the "
         "whole notebook job for a Kaggle session that is free"
     )
-    # Neither may be keyed on the ref: one account, so two branches of the SAME workflow still must not overlap even
-    # though the two workflows may.
+    # Not keyed on the ref: one account, so branches of the same workflow must not overlap.
     for group in (studio_group, notebook_group):
         assert "github.ref" not in group, group
 
@@ -885,16 +843,7 @@ def test_the_sampling_rate_matches_the_arithmetic_in_the_header():
 
 
 def test_studio_is_sampled_harder_than_the_notebook_leg():
-    """Harder on every axis the budget is denominated in -- launches, hours
-    and share of the allowance -- and LOWER on the one axis that looks like
-    the answer, the percentage.
-
-    The inversion is structural, so it is asserted rather than tolerated. A
-    point of rate costs ~570 x 0.01 GPU-h here against ~58 x 0.01 there, and
-    a future edit that "fixes" the percentages to agree would either starve
-    the notebook leg or blow the account. If that edit is ever the right one,
-    this test is where the reasoning has to be argued with.
-    """
+    """Studio is sampled harder on launches, hours and budget share, but lower on percentage, by design."""
     studio = WORKFLOW.read_text(encoding = "utf-8")
     notebook = (REPO_ROOT / ".github" / "workflows" / "kaggle-t4-notebook-ci.yml").read_text(
         encoding = "utf-8"
@@ -907,18 +856,12 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
         "0.75 GPU-h" in studio and "TOTAL, expected                             ~0.25 h" in notebook
     )
 
-    # Share of the shared 50h CI allowance, and the stand-down floor that enforces the priority: the cheap leg stops
-    # first so the expensive one gets the tail of the week.
     assert "The split is Unsloth 35, this leg 15" in notebook
     assert "--reserve-hours 20" in notebook and "--reserve-hours 10" in studio
 
-    # The Unsloth block states the notebook leg's reserve in PROSE, so the number lives in two files and one of them is
-    # not executable. Raising the notebook reserve without touching that sentence leaves the Unsloth budget arguing from
-    # a figure that is no longer true, which is exactly how the "cheap leg yields first" priority gets documented
-    # backwards. Assert the sentence agrees.
+    # The Unsloth block restates the notebook reserve in prose; assert the sentence still agrees.
     assert "reserve-hours is 10 rather than the notebook leg's 20" in studio
 
-    # Both budget blocks must name the other leg.
     assert "kaggle-t4-studio-gpu-ci.yml" in notebook
     assert "kaggle-t4-notebook-ci.yml" in studio
 
@@ -942,8 +885,7 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
     notebook_spend = 231 * rate(notebook) * 0.25  # busy week, the pessimistic end
     assert studio_spend > notebook_spend
     assert studio_spend + notebook_spend <= 50.0
-    # And with margin, because the ceiling is enforced by a quota read that only sees the account AFTER the hours are
-    # gone.
+    # With margin: the quota read only sees spend after the hours are gone.
     assert studio_spend + notebook_spend <= 40.0
 
 
@@ -990,11 +932,7 @@ def test_the_gate_and_launcher_are_the_shared_ones():
 
 _PASSING = [{"label": "studio-gpu", "passed": True, "assertions": []}]
 _FAILING = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertions": []}]
-# A training leg from the merged kernel. Not this reporter's payload.
 _LEG = [{"label": "control", "passed": False, "steps": []}]
-
-
-# ------------------------------------------------------------------ report
 
 
 @pytest.mark.parametrize(
@@ -1004,11 +942,7 @@ _LEG = [{"label": "control", "passed": False, "steps": []}]
         ("partial", [], 0),
         ("infra", [], 0),
         ("fail", _FAILING, 1),
-        # The kernel verdict is the WHOLE kernel's, and since --with-studio
-        # that kernel also carries four training legs. A leg failing must not
-        # print "Studio GPU smoke: FAIL" over a passing Studio payload and send
-        # someone to read the wrong half: the T4 reporter is what turns that
-        # red, in the same job, from the same evidence directory.
+        # The kernel verdict covers the training legs too; a failing leg must not mark Studio FAIL.
         ("fail", _PASSING + _LEG, 0),
     ],
 )
@@ -1088,9 +1022,6 @@ def test_the_reporter_survives_the_shared_module_being_unavailable(monkeypatch, 
     assert report._load_shared() is None
 
 
-# ------------------------------------------------- the forced password change
-
-
 class _RecordingStudio(studio_client.Studio):
     """An Unsloth whose HTTP layer is a script, so login can be driven off-box."""
 
@@ -1115,10 +1046,7 @@ def _login_ok(must_change):
 
 
 def test_login_retires_a_bootstrap_password_studio_says_must_change():
-    """The failure this exists for: the first hardware run authenticated fine and
-    then got 403 "Password change required" from /api/inference/load and
-    /api/train/start, so inference, tool calling, training and export were all
-    unmeasured behind a login step that reported success."""
+    """A bootstrap password left unretired makes load and train return 403, so login must retire it."""
     studio = _RecordingStudio(
         [
             _login_ok(True),
@@ -1128,7 +1056,6 @@ def test_login_retires_a_bootstrap_password_studio_says_must_change():
     studio.login("bootstrap-secret")
 
     assert [c[1] for c in studio.calls] == ["/api/auth/login", "/api/auth/change-password"]
-    # The session carries the token the change minted, not the one that cannot act.
     assert studio.token == "post-change-token"
 
     change_body = studio.calls[1][2]
@@ -1139,7 +1066,7 @@ def test_login_retires_a_bootstrap_password_studio_says_must_change():
     assert not any(
         ch.isspace() for ch in change_body["new_password"]
     ), "the route rejects whitespace"
-    # Authenticated, or change-password 401s rather than 403s.
+    # Authenticated, or change-password returns 401 rather than 403.
     assert studio.calls[1][3] is True
 
 
@@ -1170,11 +1097,7 @@ def test_a_password_change_without_a_token_is_refused():
 
 
 def test_the_session_remembers_which_password_is_current():
-    """The Playwright driver rotates the password itself and asserts the old one
-    stops working, so it needs whatever the session is CURRENTLY authenticated
-    by. Reading the seeded file instead is how kernel unsloth-t4-ci-9ddd8ae4
-    failed the driver with "the bootstrap password is gone" in the same run
-    where retiring it fixed inference, tool calling and training."""
+    """The UI driver needs the password the session is currently authenticated by, not the seeded file."""
     changed = _RecordingStudio([_login_ok(True), (200, {"access_token": "t2"})])
     changed.login("bootstrap-secret")
     assert changed.password not in (None, "", "bootstrap-secret")
@@ -1186,27 +1109,13 @@ def test_the_session_remembers_which_password_is_current():
 
 
 def test_the_ui_driver_gets_a_freshly_seeded_account():
-    """The API path and the UI driver want OPPOSITE auth states, so the payload
-    has to re-seed between them.
-
-    authenticate() retires the bootstrap password to get past Unsloth's forced
-    change; the driver's first UI step waits for #new-password on that very
-    form. Three hardware runs walked the whole cycle -- 412345d2 failed the API
-    assertions on the gate, 9ddd8ae4 fixed those and failed the driver on a
-    stale password, the next failed the driver on the form being gone. The fix
-    is a restart, because start_server() removes $STUDIO_HOME/auth and that is
-    what re-seeds the bootstrap password.
-
-    Asserted on the source rather than by running it: the restart is the whole
-    fix, and a refactor that drops it would put the payload straight back to a
-    driver that cannot find the form."""
+    """The API and UI driver need opposite auth states; start_server() removes auth to reseed it."""
     source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
     body = source[source.index("def assert_chat_ui") :]
     body = body[: body.index("\n    def ")] if "\n    def " in body else body
     assert (
         "self.stop_server()" in body and "self.start_server()" in body
     ), "the driver needs a re-seeded account, which only a restart provides"
-    # And it must hand over the RE-SEEDED value, not the retired session's.
     assert "self.remember_bootstrap()" in body
     assert (
         "self.studio.password" not in body
@@ -1216,25 +1125,27 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     ), "the password must be read after the restart, or it is the old one"
 
 
-# The llama.cpp install step.
-# Four hardware runs reported install_kind=None and failed the export assertion for it, because nothing had ever
-# installed a llama.cpp under STUDIO_HOME.
-# install_llama_prebuilt.py resolves a real "linux-cuda" kind on an x64 CUDA host, so the bundle was available the whole
-# time and simply never fetched.
+def test_the_driver_subprocess_timeout_does_not_track_the_ui_wall_budget():
+    """The driver's subprocess backstop must be keyed to the total budget, not ui_wall_timeout + 300."""
+    source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+    body = source[source.index("def assert_chat_ui") :]
+    body = body[: body.index("\n    def ")] if "\n    def " in body else body
+    call = body[body.index("subprocess.run(") :]
+    call = call[: call.index("\n            )")]
+    assert "UI_DRIVER_PROC_TIMEOUT_S" in call, call
+    assert "ui_wall_timeout" not in call, call
+
+    module = _load_payload()
+    assert "STUDIO_UI_TOTAL_TIMEOUT_S" in body, body
+    assert module.UI_DRIVER_PROC_TIMEOUT_S > module.UI_DRIVER_TOTAL_TIMEOUT_S
+    assert module.UI_DRIVER_TOTAL_TIMEOUT_S >= 6 * 600
+    assert module.UI_DRIVER_PROC_TIMEOUT_S < 120 * 60
 
 
-# The llama.cpp install step. Four hardware runs reported install_kind=None and
-# failed the export assertion for it, because nothing had ever installed a
-# llama.cpp under STUDIO_HOME. install_llama_prebuilt.py resolves a real
-# "linux-cuda" kind on an x64 CUDA host, so the bundle was available the whole
-# time and simply never fetched.
+# install_llama_prebuilt.py resolves a linux-cuda bundle on x64 CUDA hosts; it must actually
+# be installed under STUDIO_HOME or the export assertion fails.
 def _load_payload():
-    """Import run_studio_gpu under a private name.
-
-    The module runs a CLI at import time only under __main__, so importing it
-    is safe, but it must not collide with the copy test_t4_smoke_harness puts
-    on sys.path.
-    """
+    """Loads the payload under a private module name so it cannot collide with the copy on sys.path."""
     spec = importlib.util.spec_from_file_location(
         "_studio_gpu_payload_under_test", PAYLOAD_DIR / "run_studio_gpu.py"
     )
@@ -1244,10 +1155,7 @@ def _load_payload():
 
 
 def _session(module, tmp_path, **overrides):
-    # Built from the REAL parser rather than a hand-listed Namespace. A
-    # hand-listed one carries exactly the attributes someone remembered, so
-    # every new flag breaks these tests with an AttributeError that says
-    # nothing about the flag -- which is what --studio-password did.
+    # Built from the real parser so new flags do not break these tests with AttributeError.
     args = module.parse_args(
         [
             "--outdir",
@@ -1271,13 +1179,7 @@ def _session(module, tmp_path, **overrides):
 
 
 def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypatch):
-    """Exercises the call, not just its source text.
-
-    `run()` in this payload already applies capture_output and text, so passing
-    either again is a TypeError -- and one that only appears on hardware, since
-    every other test here reads the file rather than calling it. That is exactly
-    how it got written wrong the first time.
-    """
+    """run() already sets capture_output and text, so passing either again is a TypeError on hardware."""
     module = _load_payload()
     session = _session(module, tmp_path)
     installer = session.repo_root / "studio" / "install_llama_prebuilt.py"
@@ -1302,7 +1204,6 @@ def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypa
     assert str(installer) in seen["cmd"]
     assert "--install-dir" in seen["cmd"]
     assert str(install_dir) in seen["cmd"]
-    # The TypeError guard: `run` supplies these itself.
     assert "capture_output" not in seen["kw"]
     assert "text" not in seen["kw"]
     assert seen["kw"]["timeout"] == module.LLAMA_CPP_INSTALL_TIMEOUT_S
@@ -1310,17 +1211,11 @@ def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypa
     recorded = [entry for entry in session.assertions if entry["name"] == "llama_cpp_install"]
     assert len(recorded) == 1
     assert recorded[0]["llama_cpp_install_kind"] == "cuda13"
-    # install.sh --local claims to put a llama.cpp on disk.
     assert "install_kind_before" in recorded[0]
 
 
 def test_a_successful_installer_that_picks_a_cpu_bundle_is_still_a_failure(tmp_path, monkeypatch):
-    """The selection regression this leg exists to catch.
-
-    Worded separately from "the installer failed", because a CPU bundle chosen
-    ON PURPOSE by a working installer on a CUDA box is a different bug from an
-    installer that could not run.
-    """
+    """A CPU bundle picked on a CUDA box is a selection bug, separate from an installer that failed."""
     module = _load_payload()
     session = _session(module, tmp_path)
     installer = session.repo_root / "studio" / "install_llama_prebuilt.py"
@@ -1341,11 +1236,8 @@ def test_a_successful_installer_that_picks_a_cpu_bundle_is_still_a_failure(tmp_p
 
 
 def test_a_failed_llama_cpp_install_does_not_stop_the_run():
-    """Every other assertion still has to execute and report.
-
-    A box where the bundle will not install should produce the same honest
-    export red it did before, not a run that stops at the install.
-    """
+    """A failed llama.cpp install must not stop the run, so the other assertions still execute and
+    report."""
     source = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
     body = source[source.index("def execute(self)") :]
     body = body[: body.index("\n    def ")]
@@ -1354,20 +1246,13 @@ def test_a_failed_llama_cpp_install_does_not_stop_the_run():
         "a llama.cpp install failure now aborts the run, so a box that cannot "
         "install the bundle reports nothing about inference, training or the UI"
     )
-    # And it must happen before the server, so the export route never sees a llama.cpp appear underneath it.
+    # Before the server, so the export route never sees llama.cpp appear underneath it.
     assert body.index("self.install_llama_cpp()") < body.index("self.start_server()")
 
 
 def test_the_llama_cpp_marker_falls_back_to_the_canonical_location(tmp_path, monkeypatch):
-    """Five runs reported install_kind=None with a llama.cpp sitting on disk.
-
-    install.sh --local puts one at ~/.unsloth/llama.cpp, which is what
-    install_llama_prebuilt.py's own default resolves to, and this payload read
-    STUDIO_HOME/llama.cpp -- a path nothing ever wrote to. The installer said
-    as much when asked to install again: "existing llama.cpp install already
-    matches selected release b10360-mix-87da1a2; skipping download and
-    install", while the directory it was pointed at stayed empty.
-    """
+    """The llama.cpp marker falls back to ~/.unsloth/llama.cpp, where install.sh --local actually
+    puts it."""
     module = _load_payload()
     fake_home = tmp_path / "home"
     canonical = fake_home / ".unsloth" / "llama.cpp"
@@ -1417,17 +1302,9 @@ def test_no_llama_cpp_anywhere_is_still_reported_as_absent(tmp_path, monkeypatch
 
 
 def test_the_marker_never_carried_an_install_kind(tmp_path):
-    """The bug behind six runs of install_kind=None, pinned.
-
-    install_llama_prebuilt.py writes `install_kind` only into the JSON its
-    resolver prints to stdout. The marker it writes to disk records asset, tag,
-    runtime_line, coverage_class and bundle_profile. Reading `install_kind`
-    from the marker therefore answered None for every bundle on every box,
-    including a working CUDA one, and the export assertion failed on that.
-    """
+    """install_kind is printed to stdout, never written to the marker, so reading it there yields None."""
     module = _load_payload()
     marker = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
-    # Exactly the shape the installer writes: no install_kind anywhere.
     marker.write_text(
         json.dumps(
             {
@@ -1463,7 +1340,6 @@ def test_a_future_cuda_major_is_recognised():
     module = _load_payload()
     assert module.is_cuda_install("cuda14")
     assert module.is_cuda_install("app-bX-linux-x64-cuda99-portable.tar.gz")
-    # And not on a word that merely contains "cuda".
     assert not module.is_cuda_install("cudart")
 
 
@@ -1508,12 +1384,7 @@ def _baseline_session(
 
 
 def test_the_baseline_waits_for_the_old_model_to_actually_leave(tmp_path, monkeypatch):
-    """The run-7 shape, in miniature.
-
-    A 3004 MiB chat model is resident; the probe about to run loads a 531 MB
-    GGUF. Sampling before the unload gave -1866.0 and scored the load as
-    never reaching the GPU. The baseline must be taken after the fall.
-    """
+    """Sample the baseline only after the old model unloads, or the load reads as a negative delta."""
     module = _load_payload()
     session = _baseline_session(
         module, tmp_path, {"model_identifier": "chat.gguf"}, [4000.0, 2600.0, 1000.0, 996.0, 996.0]
@@ -1584,10 +1455,7 @@ def test_no_nvidia_smi_at_all_is_not_a_crash(tmp_path, monkeypatch):
 
 
 def test_the_status_fields_read_are_fields_the_response_really_has(tmp_path):
-    """Run 8's fix ran and did nothing, because it read model_path / model /
-    active_model_name off a response that carries none of them. Bind the names
-    to InferenceStatusResponse itself, so a rename or another guess fails here
-    instead of on hardware forty minutes later."""
+    """Status fields read must exist on InferenceStatusResponse, so a guessed name fails here."""
     import re
 
     model_src = (REPO_ROOT / "studio" / "backend" / "models" / "inference.py").read_text(
@@ -1632,10 +1500,7 @@ def test_a_loaded_list_alone_is_enough_to_unload(tmp_path, monkeypatch):
     assert session.studio.posts[0][1]["model_path"] == "only-here.gguf"
 
 
-# ------------------------------------------------- the evidence the launcher left
-#
-# The launcher collects each kernel into its own subdirectory and the workflow hands collect_evidence.py the parent, so
-# a non-recursive walk of that parent finds nothing at all.
+# The launcher collects each kernel into its own subdirectory, so the walk must recurse.
 def test_the_bundle_is_found_in_the_per_kernel_directory_the_launcher_writes(tmp_path):
     """launch.py::fetch_evidence writes kaggle_evidence/<slug>/..., and the
     workflow passes kaggle_evidence. A top-level glob reported every real run
@@ -1713,9 +1578,6 @@ def test_the_evidence_unpack_is_best_effort_on_the_gpu_job():
         assert step.get("continue-on-error") is True, step.get("name")
 
 
-# ------------------------------------------------------- a diverged training run
-
-
 def test_a_nan_loss_is_not_a_trained_step():
     """A T4 has no bf16, so this trains in fp16, and an fp16 run that diverges
     logs NaN for every step while still reaching `completed` and still saving
@@ -1735,9 +1597,6 @@ def test_real_losses_still_count():
     status = {"metric_history": {"loss": [2.0, 1.5, 1.1]}}
     assert studio_client.trained_steps(status) == 3
     assert studio_client.nonfinite_losses(status) == []
-
-
-# ------------------------------------------------------ which Unsloth gets started
 
 
 def test_studio_is_launched_from_the_interpreter_running_the_payload(tmp_path, monkeypatch):
@@ -1779,9 +1638,6 @@ def test_without_a_console_script_the_same_interpreter_runs_the_module(tmp_path,
     command = session.studio_command()
     assert command[0] == str(venv_bin / "python")
     assert command[1] == "-c"
-
-
-# ------------------------------------------------------- the llama-server pid
 
 
 def test_the_payload_never_reads_a_pid_the_status_response_does_not_declare():
@@ -1838,14 +1694,10 @@ def test_the_payload_can_find_a_llama_server_in_the_process_table(tmp_path):
         executable = sys.executable,
     )
     try:
-        # Only the discovery mechanism is exercised here; the name match is what the real llama-server supplies.
         assert isinstance(module.llama_server_pids(), list)
     finally:
         proc.kill()
         proc.wait()
-
-
-# ------------------------------------------- evidence belongs to the load it follows
 
 
 def test_an_earlier_loads_offload_line_is_not_evidence_for_the_next(tmp_path):
@@ -1859,7 +1711,6 @@ def test_an_earlier_loads_offload_line_is_not_evidence_for_the_next(tmp_path):
     server_log.write_text("load_tensors: offloaded 29/29 layers to GPU\n", encoding = "utf-8")
 
     marks = module.log_marks(server_log, home)
-    # The second load says nothing at all.
     with open(server_log, "a", encoding = "utf-8") as fh:
         fh.write("llama_server: listening\n")
 
@@ -1878,9 +1729,6 @@ def test_a_log_that_was_rotated_under_us_is_read_whole(tmp_path):
     marks = module.log_marks(server_log, home)
     server_log.write_text("offloaded 7/7 layers to GPU\n", encoding = "utf-8")
     assert "offloaded" in module.studio_log_text(server_log, home, since = marks)
-
-
-# ---------------------------------------------- the log across the UI restart
 
 
 def test_the_restart_that_reseeds_the_account_keeps_the_earlier_log(tmp_path, monkeypatch):
@@ -1915,9 +1763,6 @@ class _DeadProc:
 
     def wait(self, timeout = None):
         return 0
-
-
-# ------------------------------------------------- an export that outlives its request
 
 
 def _export_session(module, tmp_path, studio):
@@ -2000,9 +1845,6 @@ def test_an_export_that_outlives_its_http_request_is_still_polled(tmp_path, monk
     assert ok, detail.get("failures")
 
 
-# ---------------------------------------------------- the oversized bundle
-
-
 def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
     """The fallback used to rebuild with the report ALONE while its message
     said it was shipping logs, discarding studio.log and the driver log in
@@ -2016,7 +1858,6 @@ def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
     (session.outdir / "studio_gpu_report.json").write_text('{"passed": false}', encoding = "utf-8")
     session.server_log.write_text("backend traceback\n", encoding = "utf-8")
     (session.outdir / "playwright_chat_ui.log").write_text("driver log\n", encoding = "utf-8")
-    # A screenshot that will not compress, so the first pack blows the cap.
     (session.art_dir / "01.png").write_bytes(os.urandom(3_000_000))
 
     printed: list[str] = []
@@ -2032,9 +1873,6 @@ def test_the_capped_bundle_still_carries_the_logs(tmp_path, monkeypatch):
         assert "studio.log" in names
         assert "playwright_chat_ui.log" in names
         assert "studio_gpu_report.json" in names
-
-
-# ------------------------------------------------- one report, and it is the last
 
 
 def test_a_crash_while_packaging_the_evidence_does_not_publish_a_pass(tmp_path, monkeypatch):
@@ -2073,9 +1911,6 @@ def test_a_crash_while_packaging_the_evidence_does_not_publish_a_pass(tmp_path, 
     assert code == 1
 
 
-# ------------------------------------- an installer failure is a failure, not infra
-
-
 def _cell_source(driver: dict, needle: str) -> str:
     for cell in _payload_notebook(driver)["cells"]:
         source = "".join(cell["source"])
@@ -2085,10 +1920,8 @@ def _cell_source(driver: dict, needle: str) -> str:
 
 
 def test_a_failing_install_under_test_reports_a_failure_rather_than_infra(tmp_path):
-    """`install.sh --local` raising SystemExit left papermill with no
-    T4_SMOKE_REPORT, the launcher called that `infra` and the reporter exited
-    0 -- so this workflow passed exactly the installer regressions its path
-    filter selects for."""
+    """A failing install must report failure, not infra, or the workflow passes the regressions it
+    guards."""
     driver = _build(tmp_path)
     payload_source = _payload_source(driver)
     fail_report_src = (
@@ -2142,10 +1975,8 @@ def test_an_install_that_leaves_no_interpreter_is_also_a_failure(tmp_path):
 
 
 def _run_verify_cell(driver: dict, tmp_path, *, probe: dict, host_gpus: list[str]):
-    """Execute the generated dependency-probe cell against a fake venv + nvidia-smi.
-
-    Returns every ``T4_SMOKE_REPORT`` the cell published.
-    """
+    """Runs the generated probe cell against a fake venv and nvidia-smi; returns the reports it
+    published."""
     payload_source = _payload_source(driver)
     fail_report_src = (
         "def fail_report" + payload_source.split("def fail_report", 1)[1].split("\n\ndef ", 1)[0]
@@ -2273,21 +2104,13 @@ def test_a_timeout_before_the_payload_started_is_still_infra(tmp_path):
     assert not [line for line in emitted if line.startswith(build_kernel.RESULT_PREFIX)]
 
 
-# ---------------------------------------------------------------- the gate flags
-
-
 def test_the_gate_is_told_how_many_kernels_this_leg_actually_pushes():
     """This leg pushes ONE kernel and leaves the second T4 idle. The gate
     defaults to two, and refuses unless that many slots are free."""
     import re
 
     text = WORKFLOW.read_text(encoding = "utf-8")
-    # EVERY invocation, found by the command rather than by splitting on the
-    # first literal "gate.py" in the file: prose above the jobs mentions the
-    # script by path, and there are now two calls -- the gate and the recheck
-    # that re-asks with the account slot in hand. Both push one kernel, so both
-    # have to say so, and a recheck left at the default of two would stand the
-    # job down for a slot it does not need.
+    # Find every gate.py invocation (gate and recheck), not the first textual mention.
     invocations = re.findall(r"kaggle_t4_ci/gate\.py \\\n.*?(?=\n\s*\n|\Z)", text, re.DOTALL)
     assert invocations, "the workflow never runs the gate"
     for invocation in invocations:
@@ -2311,7 +2134,6 @@ def test_an_unrelated_label_cannot_start_a_seventy_minute_kaggle_run():
     condition = " ".join(_workflow()["jobs"]["gate"]["if"].split())
     assert "github.event.action != 'labeled'" in condition
     assert "github.event.label.name == 'kaggle-studio-gpu-ci'" in condition
-    # The fork guard still has to survive the added clause.
     assert "fork != true" in condition
 
 
@@ -2373,27 +2195,7 @@ def test_a_box_without_nvidia_smi_reports_no_gpu_rather_than_crashing(tmp_path, 
 
 
 def test_the_kaggle_client_is_new_enough_to_read_the_only_credential_we_have():
-    """A client that cannot read KAGGLE_API_TOKEN makes this workflow report green forever.
-
-    The gate is handed exactly one credential, KAGGLE_API_TOKEN, and nothing in
-    the workflow or under .github/scripts/kaggle_t4_ci writes a kaggle.json. On
-    2.x, authenticate() tries _authenticate_with_access_token() first, which
-    reaches kagglesdk.get_access_token_from_env() and reads that variable. On
-    1.7.4.5 it does not: KAGGLE_API_TOKEN appears only in
-    kagglesdk/kaggle_http_client.py, whose own header says that client "is not
-    currently usable by the CLI", so authenticate() falls through to
-    read_config_file() and raises IOError, which IS OSError on Python 3.
-
-    That error is not loud. gate.py turns any error into a skip unless
-    --no-soft-fail is passed, and a skip exits 0, so the run is green with the
-    GPU job skipped: identical on the surface to the ~95% of invocations the
-    5% sampler declines. Observed on run 32605377065, dispatched with
-    force=true to bypass the sampler, which still reported
-    "could not authenticate to Kaggle: OSError" and a green workflow.
-
-    The notebook leg has carried this guard since it was written; this leg had
-    no equivalent and sat on 1.7.4.5, so it had never authenticated once.
-    """
+    """Kaggle 1.7.4.5 cannot read KAGGLE_API_TOKEN, and the resulting OSError becomes a green skip."""
     packaging_version = pytest.importorskip("packaging.version")
     pins = re.findall(
         r"pip install [^\n]*'kaggle==([0-9][^']*)'", WORKFLOW.read_text(encoding = "utf-8")
@@ -2404,19 +2206,7 @@ def test_the_kaggle_client_is_new_enough_to_read_the_only_credential_we_have():
 
 
 def test_no_studio_assertion_is_wired_to_a_constant_branch():
-    """A repo-wide version of the guard that caught five vacuous guards at once.
-
-    Every rule in the Studio payload was, at some point, protected by a test
-    that asserted "the failure message appears in the source". That is
-    satisfied by `if False:` sitting above an untouched message, so disabling a
-    rule outright left its test green. Five mutations survived that way in one
-    sitting.
-
-    A constant test in an `assert_*` method means a branch that can never be
-    taken, or one always taken. Neither is something a check has any business
-    doing, and this catches it for every assertion at once rather than one test
-    at a time.
-    """
+    """A constant test in an assert method is a branch that can never be taken or always taken."""
     import ast
 
     src = (
@@ -2437,16 +2227,8 @@ def test_no_studio_assertion_is_wired_to_a_constant_branch():
 
 
 def test_every_assertion_carries_its_own_wall_clock():
-    """Studio is the longest payload in the kernel and had no breakdown.
-
-    On unsloth-probe-full-concurrent-417238 `studio_test` ran 1487.5s -- the
-    single largest item on the critical path -- and the report carried 19
-    assertions with no timing on any of them, so "where does Studio's time go"
-    could only be answered by buying another session.
-
-    Driven rather than grepped: a rule that only checked for a `time.time()`
-    call passes on a payload that computes the number and drops it.
-    """
+    """Each Studio assertion needs its own wall clock, or the longest payload's time cannot be
+    attributed."""
     import importlib.util
     import types
 
@@ -2468,13 +2250,433 @@ def test_every_assertion_carries_its_own_wall_clock():
 
     names = [a["name"] for a in runner.assertions]
     assert names == ["first", "second"]
-    # The first entry measures from process start, which is the setup before
-    # any assertion -- 5s here -- and is exactly the slice that would otherwise
-    # be invisible.
+    # The first entry measures from process start, capturing setup time.
     assert runner.assertions[0]["seconds_since_previous"] >= 5.0
-    # The second measures from the first, not from the start, or every entry
-    # would read as the whole run so far and the breakdown would be useless.
     assert runner.assertions[1]["seconds_since_previous"] < 1.0
-    # And an absolute position, so a reader can line the report up against the
-    # driver's own interval for the payload.
     assert runner.assertions[1]["at_seconds"] >= runner.assertions[0]["at_seconds"]
+
+
+class TestAMixedListingIsNotProofOfCpu:
+    """A readable row on one GPU must not hide an [N/A] server, which may still be on the card."""
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_an_appeared_but_unattributed_pid_defers_to_the_device_delta(self):
+        """On a card this run OWNS: nothing was there before, so the total is ours."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {},
+            baseline = 1000.0,
+            settled = 1600.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is None, (
+            "the device grew by 600 MiB and pid 222 is listed but unattributed, which is "
+            f"the offloaded server, not an absence: {detail}"
+        )
+        assert detail["compute_apps_unattributed"] == [222]
+
+    def test_an_unattributed_pid_with_no_device_growth_still_fails(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {},
+            baseline = 1000.0,
+            settled = 1010.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is not None and "served from the CPU" in failure
+        assert "222" in failure, "the message names the process it could not attribute"
+
+    def test_an_unattributed_pid_with_no_device_reading_is_unmeasured(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {111: 500},
+            baseline = None,
+            settled = None,
+            listed_before = set(),
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "unmeasured" in failure
+
+    def test_an_attributed_new_process_is_unaffected(self):
+        """The ordinary path must not start deferring to the shared device counter."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500, 222: 2600},
+            baseline = 1000.0,
+            settled = 900.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None, "a co-tenant freeing memory must not sink an attributed pid"
+        assert detail["process_vram_mib"] == 2600
+
+    def test_a_pid_already_present_but_unattributed_is_not_new(self):
+        """Only a pid that APPEARED counts; a co-tenant showing [N/A] throughout is theirs."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 1010.0,
+            listed_before = {111, 999},
+            listed_after = {111, 999},
+        )
+        assert "compute_apps_unattributed" not in detail
+        assert failure is not None and "no process appeared" in failure
+
+    def test_the_old_callers_still_work(self):
+        """The listed sets are optional, so a caller that has none keeps the old verdict."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = None,
+            settled = None,
+        )
+        assert failure is None
+
+
+class TestTheListingNamesItsPids:
+    def test_listed_pids_includes_unattributed_rows(self):
+        csv_text = "111, 500\n222, [N/A]\n"
+        assert gpu_assert.parse_compute_apps(csv_text) == {111: 500}
+        assert gpu_assert.listed_pids(csv_text) == {111, 222}
+
+    def test_listed_pids_ignores_headers_and_junk(self):
+        assert gpu_assert.listed_pids("pid, used_gpu_memory\n\nnotapid, 5\n333, 10\n") == {333}
+
+    def test_the_sample_is_taken_once(self):
+        """Two nvidia-smi calls would describe two different moments, so the attributed
+        mapping and the listed pids could disagree about which processes exist.
+        """
+        body = (PAYLOAD_DIR / "run_studio_gpu.py").read_text(encoding = "utf-8")
+        assert body.count("nvidia_compute_apps_listing()") >= 3
+        assert "apps_before = attributed_apps(_listing_before)" in body
+        assert "apps_after = attributed_apps(_listing_after)" in body
+
+
+class TestASharedCardIsNotMeasuredByItsTotal:
+    """A shared card's device total cannot prove this run used the GPU, so the fallback is refused."""
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_a_co_tenant_blocks_the_no_enumeration_fallback(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {111},
+            listed_after = None,
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_a_co_tenant_blocks_the_mixed_listing_fallback(self):
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500},
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_a_listed_but_unattributed_co_tenant_counts(self):
+        """A co-tenant reporting [N/A] is still a co-tenant."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 9000.0,
+            listed_before = {999},
+            listed_after = None,
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+
+    def test_an_empty_card_keeps_the_fallback(self):
+        """The fallback exists for parts that report [N/A] for everything; it stays."""
+        failure, _ = self._verdict(
+            apps_before = {},
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 1600.0,
+            listed_before = set(),
+            listed_after = None,
+        )
+        assert failure is None
+
+    def test_attribution_still_wins_over_the_rule(self):
+        """A co-tenant does not sink a run whose own process WAS attributed."""
+        failure, detail = self._verdict(
+            apps_before = {111: 500},
+            apps_after = {111: 500, 222: 2600},
+            baseline = 1000.0,
+            settled = 900.0,
+            listed_before = {111},
+            listed_after = {111, 222},
+        )
+        assert failure is None
+        assert detail["process_vram_mib"] == 2600
+
+    def test_unknown_co_tenancy_is_not_invented(self):
+        """No listing at all is no evidence either way, so behaviour is unchanged."""
+        failure, _ = self._verdict(
+            apps_before = None,
+            apps_after = None,
+            baseline = 1000.0,
+            settled = 1600.0,
+        )
+        assert failure is None
+
+
+class TestTheSamplesAreScopedToTheVisibleCard:
+    """nvidia-smi ignores CUDA_VISIBLE_DEVICES, so samples must be filtered to the visible card."""
+
+    @staticmethod
+    def _selector(value):
+        env = dict(os.environ)
+        if value is None:
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = value
+        with mock.patch.dict(os.environ, env, clear = True):
+            return run_studio_gpu.visible_device_selector()
+
+    def test_unset_selects_every_card(self):
+        assert self._selector(None) is None
+
+    def test_a_pinned_card_selects_only_it(self):
+        assert self._selector("1") == "1"
+
+    def test_a_list_is_carried_through(self):
+        assert self._selector("0, 1") == "0,1"
+
+    def test_a_uuid_needs_no_mapping(self):
+        """`nvidia-smi -i` takes the GPU-UUID form directly."""
+        assert self._selector("GPU-84ccface-663f") == "GPU-84ccface-663f"
+
+    def test_an_empty_value_is_no_cards_not_all_of_them(self):
+        assert self._selector("") == ""
+
+    @staticmethod
+    def _scoped(value):
+        env = dict(os.environ)
+        if value is None:
+            env.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            env["CUDA_VISIBLE_DEVICES"] = value
+        with mock.patch.dict(os.environ, env, clear = True):
+            return run_studio_gpu._scoped(["nvidia-smi", "--query-gpu=memory.used"])
+
+    def test_the_pin_reaches_the_command(self):
+        assert self._scoped("1") == ["nvidia-smi", "-i", "1", "--query-gpu=memory.used"]
+
+    def test_no_pin_leaves_the_command_alone(self):
+        assert self._scoped(None) == ["nvidia-smi", "--query-gpu=memory.used"]
+
+    def test_no_visible_card_takes_no_sample(self):
+        assert self._scoped("") is None
+
+    def test_both_samplers_are_scoped(self):
+        """The pair is the point: scoping one ruler and not the other still compares
+        a card-local reading against a box-wide one."""
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "7, 100\n", "")
+
+        with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "7"}):
+            with mock.patch.object(run_studio_gpu, "run", fake_run):
+                run_studio_gpu.nvidia_used_mib()
+                run_studio_gpu.nvidia_compute_apps_listing()
+        assert len(seen) == 2
+        for cmd in seen:
+            assert cmd[1:3] == ["-i", "7"], f"unscoped sample: {cmd}"
+
+    def test_neither_sampler_runs_without_a_visible_card(self):
+        def explode(cmd, **kwargs):
+            raise AssertionError(f"sampled with no visible card: {cmd}")
+
+        with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": ""}):
+            with mock.patch.object(run_studio_gpu, "run", explode):
+                assert run_studio_gpu.nvidia_used_mib() is None
+                assert run_studio_gpu.nvidia_compute_apps_listing() is None
+
+
+class TestTheServerIsStoppedBeforeTheCliBaselineRegardlessOfSkipUi:
+    """Stop the server before the CLI baseline even with --skip-ui, or its pid reads as a co-tenant."""
+
+    def test_stop_server_precedes_the_cli_assertion_unconditionally(self):
+        text = Path(run_studio_gpu.__file__).read_text(encoding = "utf-8")
+        ui = text.index("if not self.args.skip_ui:\n            self.assert_chat_ui()")
+        cli = text.index("        self.assert_cli_run()", ui)
+        between = text[ui:cli]
+        stop = between.rindex("self.stop_server()")
+        line_start = between.rfind("\n", 0, stop) + 1
+        assert (
+            between[line_start:stop] == "        "
+        ), "stop_server must not sit inside the skip_ui guard"
+
+    def test_the_card_is_settled_between_the_stop_and_the_assertion(self):
+        """Stopping is not the same as having stopped. Source order, because the two calls
+        are orchestration in run() and there is no seam between them to observe."""
+        text = Path(run_studio_gpu.__file__).read_text(encoding = "utf-8")
+        cli = text.index("        self.assert_cli_run()")
+        between = text[
+            text.index("if not self.args.skip_ui:\n            self.assert_chat_ui()") : cli
+        ]
+        assert between.rindex("self.stop_server()") < between.rindex("wait_for_card_to_settle()")
+
+
+class TestTheCardIsGivenTimeToSettleAfterAStop:
+    """A stopped llama-server stays listed briefly, so the card must be polled until it settles."""
+
+    @staticmethod
+    def _settle(samples):
+        """Drive wait_for_card_to_settle over `samples` of (used_mib, listed pids), the
+        last one repeating. (None, None) is an nvidia-smi that did not answer. Returns the
+        number of polls taken: two nvidia-smi calls each, the entry sample included."""
+        taken = []
+
+        def fake_run(cmd, **kwargs):
+            used, pids = samples[min(len(taken) // 2, len(samples) - 1)]
+            taken.append(cmd)
+            if pids is None:
+                return subprocess.CompletedProcess(cmd, 9, "", "no devices were found")
+            if "--query-compute-apps=pid,used_gpu_memory" in cmd:
+                # The [N/A] shape: every pid listed, none attributed.
+                return subprocess.CompletedProcess(
+                    cmd, 0, "".join(f"{p}, [N/A]\n" for p in pids), ""
+                )
+            return subprocess.CompletedProcess(cmd, 0, f"{used}\n", "")
+
+        with mock.patch.object(run_studio_gpu, "run", fake_run):
+            with mock.patch.object(run_studio_gpu.time, "sleep", lambda _s: None):
+                run_studio_gpu.wait_for_card_to_settle()
+        return len(taken) // 2
+
+    def test_it_waits_for_the_stopped_server_to_leave_the_listing(self):
+        """Two equal samples are not proof of a settled card when the driver has not begun
+        giving the memory back, which is why the pid is what is waited on."""
+        assert self._settle([(3400.0, [4242]), (3400.0, [4242]), (200.0, []), (200.0, [])]) == 5
+
+    def test_it_waits_for_the_memory_to_come_back(self):
+        """The pid can go while the driver is still returning the allocation."""
+        assert self._settle([(3400.0, []), (1800.0, []), (200.0, []), (200.0, [])]) == 5
+
+    def test_a_stalled_reclaim_with_no_pid_to_wait_on_is_not_settled(self):
+        """The pid can also be gone BEFORE the first sample, leaving nothing to wait on. One
+        flat interval is then a stall as easily as a finished reclaim, and taking it as
+        settled hands assert_cli_run a baseline with the old model still in it."""
+        assert self._settle([(3400.0, []), (3400.0, []), (200.0, []), (200.0, [])]) == 5
+
+    def test_a_settled_card_costs_only_the_quiet_window(self):
+        assert self._settle([(200.0, [])]) == run_studio_gpu.VRAM_SETTLE_QUIET_POLLS + 1
+
+    def test_a_co_tenant_arriving_afterwards_does_not_hold_the_run(self):
+        """Only the pids the card carried at entry are the stop's to wait for."""
+        assert self._settle([(200.0, []), (2600.0, [777]), (2600.0, [777])]) == 3
+
+    def test_an_unanswering_smi_is_not_waited_on(self):
+        assert self._settle([(None, None)]) == 3
+
+    def test_the_wait_is_bounded(self):
+        """A co-tenant never leaves, and a card somebody else is draining never settles."""
+        assert (
+            self._settle([(3400.0 - 100.0 * i, [4242]) for i in range(60)])
+            == run_studio_gpu.VRAM_SETTLE_SAMPLES + 1
+        )
+
+    def test_the_settled_listing_no_longer_reads_as_a_co_tenant(self):
+        """The point of the wait, stated as the verdict it changes."""
+        stale = run_studio_gpu.cli_run_gpu_failure(
+            {},
+            None,
+            3400.0,
+            3900.0,
+            {4242},
+            {4242, 5555},
+        )[0]
+        assert stale is not None and "already on the card" in stale
+        settled = run_studio_gpu.cli_run_gpu_failure(
+            {},
+            None,
+            200.0,
+            700.0,
+            set(),
+            {5555},
+        )[0]
+        assert settled is None
+
+
+class TestTheTwoRulersAreReadInTheRightOrder:
+    """Per-process readings outrank the device total, which must never overrule an attributed pid."""
+
+    @staticmethod
+    def _verdict(**kwargs):
+        return run_studio_gpu.cli_run_gpu_failure(**kwargs)
+
+    def test_a_flat_device_total_does_not_disprove_an_attributed_process(self):
+        """A flat device total cannot disprove an attributed pid, since the total is a shared counter."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = 1000.0,
+            settled = 1050.0,
+            listed_before = set(),
+            listed_after = {222, 333},
+        )
+        assert failure is not None
+        assert "served from the CPU" not in failure, failure
+        assert "unmeasured rather than disproven" in failure
+        assert detail["process_vram_mib"] == 2600
+        assert detail["compute_apps_unattributed"] == [333]
+
+    def test_a_co_tenant_that_becomes_readable_is_still_not_new(self):
+        """pid 77 was on the card at launch and merely unattributable then. Keying the
+        exclusion on the attributed map alone counted its 500 MiB as this launch's and
+        passed a server that never left the CPU."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {77: 500},
+            baseline = 1000.0,
+            settled = 1000.0,
+            listed_before = {77},
+            listed_after = {77},
+        )
+        assert failure is not None and "no process appeared" in failure
+        assert detail["compute_apps_appeared"] == {}
+
+    def test_the_same_co_tenant_does_not_carry_the_mixed_listing_either(self):
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {77: 500},
+            baseline = 1000.0,
+            settled = 1000.0,
+            listed_before = {77},
+            listed_after = {77, 888},
+        )
+        assert failure is not None and "unmeasured rather than proven" in failure
+        assert detail["card_shared_before_launch"] is True
+
+    def test_an_attributed_launch_on_an_empty_card_still_passes(self):
+        """The ordinary verdict is untouched: the exclusion only ever grows."""
+        failure, detail = self._verdict(
+            apps_before = {},
+            apps_after = {222: 2600},
+            baseline = 1000.0,
+            settled = 3600.0,
+            listed_before = set(),
+            listed_after = {222},
+        )
+        assert failure is None
+        assert detail["process_vram_mib"] == 2600

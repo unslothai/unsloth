@@ -12,6 +12,7 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 type Adapter = {
+  StudioSpeechSynthesisAdapter: new () => { speak: (text: string) => unknown };
   generateCustomTtsAudio: (
     text: string,
     signal?: AbortSignal,
@@ -44,12 +45,14 @@ function load(
     voice = "af_sky",
     encrypt = async (key: string) => `enc(${key})`,
     beforeAuthenticatedRetry,
+    toSpeech = (text: string) => text,
   }: {
     providers?: StubProvider[];
     legacyKey?: string;
     voice?: string;
     encrypt?: (key: string) => Promise<string>;
     beforeAuthenticatedRetry?: () => void;
+    toSpeech?: (text: string) => string;
   } = {},
 ): {
   adapter: Adapter;
@@ -70,10 +73,14 @@ function load(
     {
       "@/features/auth": {
         authFetch: async (
-          _input: string,
+          input: string,
           init: { body: string },
           options?: { beforeRetry?: () => void },
         ) => {
+          // The Unsloth Studio engine first lists the loaded models; it is not a speech request.
+          if (input === "/v1/models") {
+            return { ok: true, json: async () => ({ data: [] }) };
+          }
           if (beforeAuthenticatedRetry) {
             beforeAuthenticatedRetry();
             options?.beforeRetry?.();
@@ -86,8 +93,17 @@ function load(
           };
         },
       },
+      // The Unsloth Studio engine's model lookup.
+      "@/lib/format-fastapi-error": { formatApiErrorBody: () => null },
+      "../../settings/api/openai-model-catalog": {
+        audioModelsFromCatalog: () => [],
+        loadedSpeechModelId: () => null,
+      },
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
+      },
+      "../utils/speech-text": {
+        markdownToSpeechText: toSpeech,
       },
       "../stores/external-providers-store": {
         useExternalProvidersStore: {
@@ -114,6 +130,7 @@ function load(
         },
       },
       "@/lib/toast": { toast: { error: () => {} } },
+      "@/features/audio/audio-workspace-constants": { TTS_MAX_TOKENS: 8192 },
     },
   );
   return {
@@ -158,6 +175,18 @@ test("custom TTS defaults a blank voice for strict OpenAI-compatible endpoints",
   const { adapter, posted } = load(true, { voice: "  " });
   await adapter.generateCustomTtsAudio("hello");
   assert.equal(JSON.parse(posted[0]).voice, "alloy");
+});
+
+test("read-aloud sends the speech text, not the markdown source (#12547)", async () => {
+  const { adapter, posted } = load(true, {
+    toSpeech: (text) => `spoken(${text})`,
+  });
+  new adapter.StudioSpeechSynthesisAdapter().speak("**Done.**");
+  // The model lookup adds a request before the speech one.
+  for (let i = 0; i < 20 && posted.length === 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.equal(JSON.parse(posted[0]).messages[0].content, "spoken(**Done.**)");
 });
 
 test("custom TTS rejects a deleted provider even when Voice settings is unmounted", async () => {
@@ -268,6 +297,7 @@ test("authFetch invokes its policy guard after refresh and before retry", async 
       new URL("../src/features/auth/api.ts", import.meta.url),
       {
         "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: false },
+        "@/lib/account-transition": { accountTransitionPending: () => false },
         "./session": {
           clearAuthTokens: () => {
             accessToken = null;

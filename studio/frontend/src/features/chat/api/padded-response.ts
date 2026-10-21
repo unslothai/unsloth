@@ -15,7 +15,11 @@ export function assertCompletedPaddedBody(body: unknown, label: string): void {
   if (complete) {
     return;
   }
-  throw new Error(
-    `${label} did not report completion: the connection closed before the server's reply arrived. Check the model's status before retrying.`,
+  // Tagged like a failed fetch: the connection closed, so the backend's outcome is unknown.
+  throw Object.assign(
+    new Error(
+      `${label} did not report completion: the connection closed before the server's reply arrived. Check the model's status before retrying.`,
+    ),
+    { unslothTransportFailure: true },
   );
 }

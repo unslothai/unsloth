@@ -9,6 +9,7 @@ over route -> orchestrator cmd -> worker gen_kwargs.
 """
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -206,6 +207,10 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
+    o._stop_ledger = None
+    o._pending_teardowns = None
     cmd = o._build_generate_cmd(
         "req1",
         None,
@@ -215,6 +220,10 @@ def test_orchestrator_cmd_carries_all_sampling_params():
     )
     for key, val in _SAMPLING.items():
         assert cmd[key] == val, f"{key} dropped/altered in orchestrator cmd"
+    rf = {"response_format": {"type": "json_object"}, "reasoning_is_extracted": True}
+    with_rf = o._build_generate_cmd("req1", None, messages = [], max_new_tokens = 8, **rf)
+    assert {key: with_rf[key] for key in rf} == rf
+    assert "reasoning_is_extracted" not in cmd
 
 
 def test_worker_forwards_all_sampling_params_to_backend():
@@ -226,8 +235,14 @@ def test_worker_forwards_all_sampling_params_to_backend():
         def __init__(self):
             self.received = None
 
-        def generate_chat_response(self, **kwargs):
-            self.received = kwargs
+        def generate_chat_response(
+            self,
+            *,
+            response_format = None,
+            reasoning_is_extracted = None,
+            **kwargs,
+        ):
+            self.received = dict(kwargs, rf = response_format, rie = reasoning_is_extracted)
             return iter(())  # empty stream -> loop exits, gen_done is sent
 
     class _FakeQueue:
@@ -242,6 +257,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
         "request_id": "r",
         "messages": [{"role": "user", "content": "hi"}],
         "max_new_tokens": 128,
+        "response_format": {"type": "json_object"},
+        "reasoning_is_extracted": True,
         **_SAMPLING,
     }
     backend = _RecordingBackend()
@@ -250,6 +267,8 @@ def test_worker_forwards_all_sampling_params_to_backend():
     assert backend.received is not None
     for key, val in _SAMPLING.items():
         assert backend.received[key] == val, f"{key} dropped/altered in worker gen_kwargs"
+    assert backend.received["rf"] == {"type": "json_object"}
+    assert backend.received["rie"] is True
 
 
 def test_orchestrator_cmd_carries_the_tool_protocol_flag():
@@ -259,6 +278,8 @@ def test_orchestrator_cmd_carries_the_tool_protocol_flag():
     from core.inference.orchestrator import InferenceOrchestrator
 
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
     base = dict(messages = [{"role": "user", "content": "hi"}], tools = [])
     assert (
         o._build_generate_cmd("r", None, tool_protocol_active = True, **base)["tool_protocol_active"]
@@ -289,7 +310,7 @@ def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():
 
     from core.inference import worker
 
-    src = inspect.getsource(worker._handle_generate)
+    src = inspect.getsource(worker._generation_kwargs)
     gated = src[src.index("for gated in (") : src.index("for gated in (") + 200]
     assert '"tool_protocol_active"' in gated, "the flag must be gated on _backend_declares"
 
@@ -323,9 +344,10 @@ def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
     from core.inference.mlx_inference import MLXInferenceBackend
 
     src = inspect.getsource(MLXInferenceBackend._generate_text)
-    after = src[src.index("preserves_think_close") :]
+    after = src[src.index("think_close_survives = (") :]
     predicate = after[: after.index("decoder_preserves_token")]
     assert "tool_protocol_active" in predicate, "the prefill predicate ignores unrestricted mode"
+    assert "preserves_think_close = think_close_survives" in src
 
 
 def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():
@@ -354,3 +376,195 @@ def test_the_mlx_vlm_prefill_predicate_matches_its_decoder_gate():
     predicate = after[: after.index("decoder_preserves_token")]
     for condition in ("tools", "tool_protocol_active", "vlm_reasoning_markers is not None"):
         assert condition in predicate, f"the VLM prefill predicate omits {condition}"
+
+
+def test_a_video_clip_crosses_the_worker_boundary_only_to_a_backend_that_takes_it():
+    """The clip rides the command like an image; a backend without ``video`` fails the request."""
+    from pathlib import Path
+
+    from core.inference.orchestrator import InferenceOrchestrator, _mirrored_model_entry
+    from core.inference.worker import _handle_generate
+
+    o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
+    assert "video_base64" not in o._build_generate_cmd("r", None, messages = [])
+    cmd = o._build_generate_cmd(
+        "r", None, messages = [{"role": "user", "content": "hi"}], video_b64 = "AAAA"
+    )
+    assert cmd["video_base64"] == "AAAA"
+
+    class _FakeQueue:
+        def __init__(self):
+            self.items = []
+
+        def put(self, item):
+            self.items.append(item)
+
+    class _VideoBackend:
+        last_generation_stats = None
+        received = None
+
+        def generate_chat_response(
+            self,
+            video = None,
+            **kwargs,
+        ):
+            self.received = video
+            return iter(())
+
+    class _TextBackend:
+        last_generation_stats = None
+        called = False
+
+        def generate_chat_response(self, **kwargs):
+            self.called = True
+            return iter(())
+
+    takes = _VideoBackend()
+    _handle_generate(takes, cmd, _FakeQueue(), threading.Event())
+    assert takes.received == "AAAA"
+    refuses, queue = _TextBackend(), _FakeQueue()
+    _handle_generate(refuses, cmd, queue, threading.Event())
+    assert refuses.called is False
+    assert [item["type"] for item in queue.items] == ["gen_error"]
+
+    # The classified capability has to reach the parent, or the route refuses every clip.
+    assert _mirrored_model_entry({"has_video_input": True}, "m")["has_video_input"] is True
+    assert _mirrored_model_entry({}, "m")["has_video_input"] is False
+    worker_source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "worker.py"
+    ).read_text(encoding = "utf-8")
+    import re
+
+    mirrored = re.search(r'for k in \(\s*("is_audio",[^)]*)\)', worker_source)
+    assert mirrored, "the worker's mirrored classification keys moved"
+    for key in ("is_audio", "audio_type", "has_audio_input", "has_video_input"):
+        assert f'"{key}"' in mirrored.group(1)
+
+
+def test_both_orchestrator_entry_points_forward_the_clip_into_the_command():
+    """The locked and the dispatched paths build the command separately."""
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    class _Built(Exception):
+        pass
+
+    built = []
+    o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o.models, o.active_model_name = {}, None
+    o._stop_ledger = o._pending_teardowns = None
+    o._gen_lock = threading.Lock()
+    o._unload_pending = False
+    o._worker_reserved_for = None
+    o.active_model_name = "m"
+    o._ensure_subprocess_alive = lambda: True
+    o._wait_worker_idle = lambda *a, **k: True
+    o._start_dispatcher = lambda: False
+
+    def _build(*_args, **kwargs):
+        built.append(kwargs)
+        raise _Built()
+
+    o._build_generate_cmd = _build
+    turn = [{"role": "user", "content": "hi"}]
+    with pytest.raises(_Built):
+        list(o.generate_chat_response(messages = turn, video = "AAAA"))
+    with pytest.raises(_Built):
+        list(o.generate_with_adapter_control(use_adapter = True, messages = turn, video = "AAAA"))
+    assert [kw["video_b64"] for kw in built] == ["AAAA", "AAAA"]
+
+
+def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serves_it():
+    from core.inference.orchestrator import InferenceOrchestrator
+    from core.inference.worker import _handle_generate, _handle_resolve_prompt, _ResidentBatch
+
+    class _Queue(list):
+        put = list.append
+
+    class _Built(Exception):
+        pass
+
+    o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._gen_lock, o._unload_pending, o.active_model_name = threading.Lock(), False, "m"
+    o._ensure_subprocess_alive = lambda: True
+    o._stop_ledger, o.models = SimpleNamespace(read_by_worker = lambda: True), {}
+    built = []
+    real_build = o._build_generate_cmd
+    o._build_generate_cmd = lambda *a, **kw: built.append(real_build(*a, **kw)) or (
+        _ for _ in ()
+    ).throw(_Built())
+    with pytest.raises(_Built):
+        list(
+            o.generate_completion(
+                [5, 6], max_new_tokens = 3, penalty_window = 0, grammar = "G", n_probs = 2
+            )
+        )
+    cmd = built[0]
+    assert (cmd["messages"], cmd["prompt_ids"], cmd["penalty_window"]) == ([], [5, 6], 0)
+    assert cmd["grammar"] == "G" and cmd["n_probs"] == 2
+    with pytest.raises(_Built):
+        list(o.generate_completion_batch([{"prompt_ids": [5]}], penalty_window = 1))
+    assert (built[1]["messages"], built[1]["rows"], built[1]["penalty_window"]) == (
+        [],
+        [{"prompt_ids": [5]}],
+        1,
+    )
+    assert "n_probs" not in built[1]
+
+    class _MLX:
+        last_generation_stats = None
+
+        def generate_completion(self, prompt_ids, **kwargs):
+            self.received = (prompt_ids, kwargs)
+            return iter(["x"])
+
+        def resolve_completion_prompt(self, prompt):
+            raise ValueError("Prompt contains invalid tokens.")
+
+    chat = SimpleNamespace(last_generation_stats = None)  # no raw-prompt capability
+    mlx, queue = _MLX(), _Queue()
+    _handle_generate(mlx, cmd, queue, threading.Event())
+    assert mlx.received[0] == [5, 6] and mlx.received[1]["penalty_window"] == 0
+    assert mlx.received[1]["grammar"] == "G" and mlx.received[1]["n_probs"] == 2
+    assert [item["type"] for item in queue] == ["token", "gen_done"]
+    queue.clear()
+    _handle_generate(chat, cmd, queue, threading.Event())
+    assert [item["type"] for item in queue] == ["gen_error"]
+    assert "raw-prompt completions" in queue[0]["error"]
+    for backend, invalid in ((mlx, True), (chat, None)):
+        queue.clear()
+        _handle_resolve_prompt(backend, {"request_id": "r", "prompt": [10**9]}, queue)
+        assert queue[0]["error"] and queue[0].get("invalid") is invalid
+
+
+def test_a_raw_prompt_queued_behind_a_generation_stops_waiting_on_cancel():
+    import time
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch._gen_lock = threading.Lock()
+    orch._gen_lock.acquire()  # a running generation holds it
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    started = time.monotonic()
+    with pytest.raises(InterruptedError):
+        orch.resolve_completion_prompt("p", cancel_event = cancel)
+    assert time.monotonic() - started < 2
+
+
+def test_a_raw_prompt_reply_wait_stops_on_cancel():
+    import time
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch._ensure_subprocess_alive = lambda: True
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    started = time.monotonic()
+    reply = orch._await_reply(
+        lambda timeout: time.sleep(timeout) or None, "r", "t", "c", 30.0, cancel.is_set
+    )
+    assert reply is None and time.monotonic() - started < 3

@@ -22,6 +22,9 @@ from playwright.sync_api import sync_playwright
 from _playwright_robust import start_vite, stop_process, wait_for_smoke_page
 
 
+# The first navigation compiles the whole vite module graph and exceeded 30s on cold Windows runners.
+NAV_TIMEOUT_MS = 90_000
+
 MEASURE = """() => [...document.querySelectorAll('button[data-case]')].map(button => {
     const svg = button.querySelector('svg');
     const buttonBox = button.getBoundingClientRect();
@@ -75,7 +78,12 @@ def main() -> None:
                         context = browser.new_context(device_scale_factor = dpr)
                         try:
                             page = context.new_page()
-                            page.goto(f"http://127.0.0.1:{port}/smoke-composer-icons.html")
+                            page.set_default_timeout(NAV_TIMEOUT_MS)
+                            page.goto(
+                                f"http://127.0.0.1:{port}/smoke-composer-icons.html",
+                                wait_until = "domcontentloaded",
+                                timeout = NAV_TIMEOUT_MS,
+                            )
                             page.locator("button[data-case]").last.wait_for()
                             for font, zoom, dark, direction in itertools.product(
                                 (0.75, 1, 1.25), (0.8, 1, 1.25), (False, True), ("ltr", "rtl")
@@ -107,7 +115,6 @@ def main() -> None:
                                         measure[key]
                                         for key in ("svgDx", "svgDy", "glyphDx", "glyphDy")
                                     ]
-                                    # Allow layout rounding, but reject the old pixel offsets.
                                     if (
                                         max(map(abs, offsets)) > 0.02
                                         or min(measure["width"], measure["height"]) <= 0

@@ -186,13 +186,25 @@ test("the panel adopts a shared server config without overwriting a live edit", 
   // Whitespace-tolerant: the call carries an eviction list now, so it spans lines.
   assert.match(
     PANEL,
-    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\),/,
   );
   assert.match(PANEL, /configRef\.current === configAtStart/);
   assert.match(PANEL, /rememberRef\.current === rememberAtStart/);
-  assert.match(PANEL, /setConfig\(serverConfig\);/);
-  assert.match(PANEL, /setRemember\(true\);/);
-  assert.match(PANEL, /setSavedRemember\(true\);/);
+  // To the shared draft, so the adopted row reaches both hosts, not just the one that read it.
+  assert.match(
+    PANEL,
+    /replaceModelConfigDraft\(draftKey, serverConfig, \{\s*\n?\s*remember: true,\s*\n?\s*savedRemember: true,\s*\n?\s*\}\);/,
+  );
+});
+
+test("the panel strips llama-server arguments from a non-GGUF row", () => {
+  // An API auto-switch applies the row to MLX and safetensors loads too, so the panel shows it.
+  assert.match(PANEL, /target\.isGguf \? loadManagedLlamaFlags\(\) : null,/);
+  assert.match(PANEL, /\(row\) => panelOverrideRow\(row, target\.isGguf\)/);
+  assert.match(
+    PANEL,
+    /const local = target\.isGguf\s*\?\s*configRef\.current\.llamaExtraArgs\s*:\s*undefined;/,
+  );
 });
 
 test("hydration detects a newer save or forget", () => {
@@ -267,7 +279,7 @@ test("the hydration write-back rejects a stale server response", () => {
   const writeBack = PANEL.slice(adoptionStart, writeBackEnd);
   assert.match(
     writeBack,
-    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\);\s*if \(perModelConfigStorageChanged\(storedAtStart, storedConfig\)\) \{\s*return;\s*\}[\s\S]*const rememberedConfig = fromApiOverride\(\s*resolvedRow,\s*storedConfig\.config,\s*\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*rememberedConfig,/,
+    /const storedConfig = resolveInitialConfig\(\s*configId,\s*target\.ggufVariant,\s*\);\s*if \(perModelConfigStorageChanged\(storedAtStart, storedConfig\)\) \{\s*return;\s*\}[\s\S]*const rememberedConfig = fromApiOverride\(\s*resolvedRow,\s*storedConfig\.config,\s*\);[\s\S]*savePerModelConfig\(\s*configId,\s*target\.ggufVariant,\s*storedSpeculativeAuto\(rememberedConfig, !target\.isGguf\),/,
   );
 });
 

@@ -125,3 +125,17 @@ test("custom and models_dir rows keep the labels the picker groups on", () => {
     ["Custom Folders", "Local models"],
   );
 });
+
+test("an oMLX row is offered and labelled oMLX", () => {
+  const options = chatLocalModelOptions([
+    row({
+      id: "/Users/u/.omlx/models/mlx-community/Qwen3.8-27B-4bit",
+      path: "/Users/u/.omlx/models/mlx-community/Qwen3.8-27B-4bit",
+      display_name: "Qwen3.8-27B-4bit",
+      source: "omlx",
+      model_format: "safetensors",
+    }),
+  ]);
+  assert.equal(options.length, 1);
+  assert.equal(options[0].baseModel, "oMLX");
+});

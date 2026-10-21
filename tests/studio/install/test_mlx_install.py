@@ -30,6 +30,7 @@ def _run_to_extras(
     shared_base = False,
     mlx_error = None,
     mlx_installable = True,
+    engine_error = None,
 ):
     monkeypatch.setenv("SKIP_STUDIO_BASE", "1" if skip_base else "0")
     for name in ("STUDIO_LOCAL_REPO", "STUDIO_PACKAGE_NAME", "UNSLOTH_CI_SOURCE_OVERLAY"):
@@ -66,6 +67,8 @@ def _run_to_extras(
     def record_install(label, *args, **kwargs):
         if label.startswith("Installing MLX") and mlx_error is not None:
             raise mlx_error
+        if label.startswith("Installing the MLX image engine") and engine_error is not None:
+            raise engine_error
 
     install = Mock(side_effect = record_install)
     monkeypatch.setattr(stack, "pip_install", install)
@@ -82,8 +85,12 @@ def _run_to_extras(
     monkeypatch.setattr(stack, "_progress", stop_before_extras)
     with pytest.raises(_BeforeExtras):
         stack.install_python_stack()
-    # Labels reached before the stop, for callers asserting on the step not the install.
     _run_to_extras.steps = steps
+    _run_to_extras.engine_calls = [
+        call
+        for call in install.call_args_list
+        if call.args[0].startswith("Installing the MLX image engine")
+    ]
     return [call for call in install.call_args_list if call.args[0].startswith("Installing MLX")]
 
 
@@ -101,6 +108,72 @@ def _repair_specs():
     )
 
 
+# The MLX grammar engine slot (11d) runs after the harness stops; it shares the Apple Silicon gate.
+_GRAMMAR_ENGINE_SLOT = 1
+
+
+def _progress_calls(nodes) -> int:
+    return sum(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_progress"
+        for node in nodes
+        for n in ast.walk(node)
+    )
+
+
+def _one_unconditional_progress(branch) -> bool:
+    """The branch reaches exactly one _progress call, as a statement of its own, on every path."""
+    direct = [
+        stmt
+        for stmt in branch
+        if isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Name)
+        and stmt.value.func.id == "_progress"
+    ]
+    before = branch[: branch.index(direct[0])] if len(direct) == 1 else []
+    exits = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+    return (
+        len(direct) == 1
+        and _progress_calls(branch) == 1
+        and not any(isinstance(n, exits) for stmt in before for n in ast.walk(stmt))
+    )
+
+
+def test_the_grammar_engine_slot_and_step_share_the_apple_silicon_gate():
+    source = Path(stack.__file__).read_text(encoding = "utf-8")
+    lines = source.splitlines()
+    install = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "install_python_stack"
+    )
+    # `if <gate>: base_total += 1  # MLX grammar engine ...`
+    budget_gates = [
+        node
+        for node in ast.walk(install)
+        if isinstance(node, ast.If)
+        and len(node.body) == 1
+        and isinstance(node.body[0], ast.AugAssign)
+        and isinstance(node.body[0].target, ast.Name)
+        and node.body[0].target.id == "base_total"
+        and "# MLX grammar engine" in lines[node.body[0].lineno - 1]
+    ]
+    step_gates = [
+        node
+        for node in install.body
+        if isinstance(node, ast.If)
+        and '"MLX grammar engine' in (ast.get_source_segment(source, node) or "")
+    ]
+    assert len(budget_gates) == 1 and len(step_gates) == 1, "the budget line or step 11d moved"
+    for gate in (budget_gates[0], step_gates[0]):
+        assert isinstance(gate.test, ast.Name) and gate.test.id == "IS_MAC_ARM", ast.dump(gate.test)
+    assert not step_gates[0].orelse, "a slot spent off Apple Silicon has no budget"
+    (branch,) = step_gates[0].body
+    assert isinstance(branch, ast.If) and branch.orelse, ast.dump(branch)
+    assert _one_unconditional_progress(branch.body), ast.get_source_segment(source, branch)
+    assert _one_unconditional_progress(branch.orelse), ast.get_source_segment(source, branch)
+
+
 @pytest.mark.parametrize("platform", ["macos_arm", "macos_intel", "linux", "windows"])
 @pytest.mark.parametrize("skip_base", [True, False], ids = ["fresh", "update"])
 @pytest.mark.parametrize("no_torch", [False, True], ids = ["training", "gguf_only"])
@@ -108,6 +181,9 @@ def _repair_specs():
 def test_mlx_install_respects_platform_mode_and_pins(
     monkeypatch, platform, skip_base, no_torch, shared_base
 ):
+    # The repo's declared spec, not the installed zoo's narrowing (tested below).
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
     calls = _run_to_extras(
         monkeypatch,
         platform = platform,
@@ -118,9 +194,24 @@ def test_mlx_install_respects_platform_mode_and_pins(
     enabled = platform == "macos_arm" and not no_torch
     assert len(calls) == int(enabled)
     if platform.startswith("macos"):
-        assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + int(enabled)
+        # Slots: no-torch runtime deps, two mac-arm (MLX step + re-resolve), diffusers 11c everywhere,
+        # grammar engine 11d on Apple Silicon.
+        assert stack._TOTAL == (
+            (12 if skip_base and not shared_base else 13)
+            + 1
+            + 2 * int(enabled)
+            + int(no_torch and not skip_base)
+            + _GRAMMAR_ENGINE_SLOT * int(platform == "macos_arm")
+        )
     if enabled:
-        requirements = [Requirement(arg) for arg in calls[0].args[1:] if not arg.startswith("-")]
+        # --upgrade-package takes a bare NAME, not a pin: skip its argument.
+        args = list(calls[0].args[1:])
+        pins = [
+            arg
+            for index, arg in enumerate(args)
+            if not arg.startswith("-") and (index == 0 or args[index - 1] != "--upgrade-package")
+        ]
+        requirements = [Requirement(arg) for arg in pins]
         actual = {req.name: str(req.specifier) for req in requirements}
         expected = _repair_specs()
         expected["mlx-metal"] = expected["mlx"]
@@ -171,19 +262,40 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
     assert commands[0][:5] == ["uv", "pip", "install", "--python", sys.executable]
     if len(commands) > 1:
         assert commands[1][:4] == [sys.executable, "-m", "pip", "install"]
+    args = list(call.args[1:])
+    upgraded = {
+        arg for index, arg in enumerate(args) if index and args[index - 1] == "--upgrade-package"
+    }
+    pins = {
+        arg for index, arg in enumerate(args) if not arg.startswith("-") and arg not in upgraded
+    }
+    assert upgraded == {"mlx", "mlx-metal", "mlx-lm", "mlx-vlm"}
     for command in commands:
-        assert {arg for arg in call.args[1:] if not arg.startswith("-")} <= set(command)
-        assert "--upgrade" in command
+        assert pins <= set(command)
         assert "-c" in command
+    # A dropped pip translation was a silent no-op; a bare uv --upgrade refetches ~60 MB per update.
+    assert "--upgrade" not in commands[0]
+    for name in upgraded:
+        assert commands[0][commands[0].index("--upgrade-package") :].count(name) == 1
+    if len(commands) > 1:
+        assert "--upgrade" in commands[1]
+        assert "--upgrade-package" not in commands[1]
+        # ...and no project twice: pip refuses "mlx==0.32.3 mlx" with "Double requirement given".
+        projects = [
+            arg.split(";")[0].split("[")[0].split("=")[0].split("<")[0].split(">")[0].strip()
+            for arg in commands[1]
+            if arg and not arg.startswith("-") and arg != sys.executable
+        ]
+        assert len(projects) == len(set(projects)), projects
 
 
 @pytest.mark.parametrize(
     "python_version, macos_major, installable",
     [
         ((3, 9, 6), 15, False),  # macOS ships 3.9; no release in the pinned set has a cp39 wheel
-        ((3, 10, 0), 15, True),
+        ((3, 10, 0), 15, True),  # mlx-lm 0.32 requires Python 3.11; 3.10 resolves 0.31.3
         ((3, 12, 0), 13, False),  # Apple Silicon on Ventura: the pins are macosx_14_0 only
-        ((3, 12, 0), 14, True),  # the first macOS the pinned wheels are built for
+        ((3, 12, 0), 14, True),
         ((3, 12, 0), 26, True),
         # Unreadable version: skipping costs a launch, attempting costs the install.
         ((3, 12, 0), None, False),
@@ -193,7 +305,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
 def test_mlx_pin_floor_matches_the_published_wheels(
     monkeypatch, python_version, macos_major, installable
 ):
-    """0.32.1 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
+    """mlx 0.32.4 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
     monkeypatch.setattr(stack.sys, "version_info", python_version)
     monkeypatch.setattr(stack, "_macos_release_major", Mock(return_value = macos_major))
     assert stack._mlx_pins_are_installable() is installable
@@ -202,9 +314,9 @@ def test_mlx_pin_floor_matches_the_published_wheels(
 def test_pin_floor_is_revisited_whenever_the_pins_move():
     """A pin bumped without its floor silently starts failing installs, so tie them here."""
     assert _repair_specs() == {
-        "mlx": "==0.32.1",
-        "mlx-lm": "==0.31.3",
-        "mlx-vlm": ">=0.4.4,<0.7.0",
+        "mlx": "==0.32.4",
+        "mlx-lm": ">=0.31.3,<=0.32.2",
+        "mlx-vlm": ">=0.4.4,<=0.7.9",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
@@ -214,10 +326,7 @@ def test_pin_floor_is_revisited_whenever_the_pins_move():
 def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
     monkeypatch, skip_base, shared_base
 ):
-    """macOS 13 / Python 3.9 Apple Silicon still installs; it just stays chat-only.
-
-    Fresh never ran this step and update was unpinned, so neither could exit here before.
-    """
+    """Unsupported Apple Silicon skips MLX without failing the install; it stays chat-only."""
     calls = _run_to_extras(
         monkeypatch,
         platform = "macos_arm",
@@ -230,12 +339,14 @@ def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
     steps = _run_to_extras.steps
     assert "MLX stack (Apple Silicon)" not in steps
     assert "MLX stack (skipped, no wheel for this macOS or Python)" in steps
-    # A skipped step still spends its slot.
-    assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1
+    # Skipped steps still spend their slots, including the re-resolve, 11c and 11d slots.
+    assert (
+        stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1 + 2 + _GRAMMAR_ENGINE_SLOT
+    )
 
 
 def test_supported_and_unsupported_hosts_share_one_progress_budget(monkeypatch):
-    """Same total either way, so the bar cannot end at 13/14 on an old Mac."""
+    """Same total either way, so the bar cannot end short of its own total on an old Mac."""
     _run_to_extras(
         monkeypatch,
         platform = "macos_arm",
@@ -252,3 +363,202 @@ def test_supported_and_unsupported_hosts_share_one_progress_budget(monkeypatch):
         mlx_installable = False,
     )
     assert stack._TOTAL == supported
+
+
+def test_mlx_vlm_spec_is_intersected_with_the_installed_zoo(monkeypatch):
+    """The MLX step runs before the core phase, and SKIP_STUDIO_BASE=1 skips that phase
+    altogether, so a zoo predating the gated_delta_update fix would be left beside mlx-vlm
+    0.7.1 and Qwen3.5 VLM training would raise TypeError at its first step."""
+    import importlib.metadata
+
+    monkeypatch.setattr(
+        importlib.metadata,
+        "requires",
+        lambda _name: [
+            'mlx==0.32.1; sys_platform == "darwin" and platform_machine == "arm64"',
+            'mlx-vlm<0.7.0,>=0.4.4; sys_platform == "darwin" and platform_machine == "arm64"',
+            'mlx-lm==0.31.3; sys_platform == "darwin" and platform_machine == "arm64"',
+        ],
+    )
+    spec = stack._mlx_vlm_spec_for_installed_zoo()
+    assert spec.startswith(stack._MLX_VLM_SPEC)
+    assert "<0.7.0" in spec and "0.31.3" not in spec
+    assert stack._mlx_lm_spec_for_installed_zoo() == f"{stack._MLX_LM_SPEC},==0.31.3"
+
+
+def test_mlx_vlm_spec_is_unchanged_without_an_installed_zoo(monkeypatch):
+    import importlib.metadata
+
+    def _raise(_name):
+        raise importlib.metadata.PackageNotFoundError("unsloth_zoo")
+
+    monkeypatch.setattr(importlib.metadata, "requires", _raise)
+    assert stack._mlx_vlm_spec_for_installed_zoo() == stack._MLX_VLM_SPEC
+
+
+def test_an_mlx_lm_outside_the_installed_zoos_range_is_not_current(monkeypatch):
+    monkeypatch.setattr(stack, "_exact_distribution_spec_is_installed", lambda _spec: True)
+    monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: [])
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
+    monkeypatch.setattr(
+        stack,
+        "_installed_distribution_version",
+        lambda name: "0.32.2" if name == "mlx-lm" else "0.7.8",
+    )
+    assert stack._mlx_stack_is_current() is True
+    monkeypatch.setattr(
+        stack, "_mlx_lm_spec_for_installed_zoo", lambda: f"{stack._MLX_LM_SPEC},==0.31.3"
+    )
+    assert stack._mlx_stack_is_current() is False
+
+
+def test_the_skip_predicate_uses_the_narrowed_range(monkeypatch):
+    """0.7.1 already installed beside a zoo declaring <0.7.0 must NOT read as current, or the
+    step skips the install that would put mlx-vlm back where the zoo can drive it."""
+    monkeypatch.setattr(stack, "_exact_distribution_spec_is_installed", lambda _spec: True)
+    monkeypatch.setattr(
+        stack,
+        "_installed_distribution_version",
+        lambda name: "0.32.2" if name == "mlx-lm" else "0.7.1",
+    )
+    monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: [])
+
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
+    assert stack._mlx_stack_is_current() is True
+
+    monkeypatch.setattr(
+        stack, "_mlx_vlm_spec_for_installed_zoo", lambda: f"{stack._MLX_VLM_SPEC},<0.7.0"
+    )
+    assert stack._mlx_stack_is_current() is False
+
+
+def _zoo_spec_sequence(monkeypatch, specs):
+    """_mlx_vlm_spec_for_installed_zoo answering differently before and after the core phase."""
+    remaining = list(specs)
+
+    def spec():
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", spec)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
+
+
+def test_the_core_phase_upgrading_the_zoo_re_resolves_mlx(monkeypatch):
+    """The MLX step runs before the core phase, so it honours the OLD zoo's range. Without the
+    re-resolve an update that moves the zoo leaves the machine on the narrower mlx-vlm for good:
+    the startup self-heal will not correct it, since 0.6.x satisfies _MLX_MIN_VERSIONS."""
+    narrow = f"{stack._MLX_VLM_SPEC},<0.7.0"
+    # Twice for the install step, then the widened answer after the core phase.
+    _zoo_spec_sequence(monkeypatch, [narrow, narrow, stack._MLX_VLM_SPEC])
+    calls = _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False)
+    assert len(calls) == 2
+    assert "MLX stack (re-resolved for the new zoo)" in _run_to_extras.steps
+    assert narrow in list(calls[0].args[1:])
+    assert {stack._mlx_lm_spec_for_installed_zoo(), stack._MLX_VLM_SPEC} <= set(calls[1].args[1:])
+
+
+def test_a_zoo_moving_only_its_mlx_lm_range_re_resolves_mlx(monkeypatch):
+    _zoo_spec_sequence(monkeypatch, [stack._MLX_VLM_SPEC])
+    narrow = f"{stack._MLX_LM_SPEC},==0.31.3"
+    answers = [narrow, narrow, stack._MLX_LM_SPEC]
+    monkeypatch.setattr(
+        stack,
+        "_mlx_lm_spec_for_installed_zoo",
+        lambda: answers.pop(0) if len(answers) > 1 else answers[0],
+    )
+    calls = _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False)
+    assert len(calls) == 2
+    assert narrow in list(calls[0].args[1:])
+    assert stack._MLX_LM_SPEC in list(calls[1].args[1:])
+
+
+def test_an_unchanged_zoo_does_not_re_resolve_mlx(monkeypatch):
+    _zoo_spec_sequence(monkeypatch, [stack._MLX_VLM_SPEC])
+    calls = _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False)
+    assert len(calls) == 1
+    assert "MLX stack (zoo unchanged, skipped)" in _run_to_extras.steps
+
+
+# ── Opt-in MLX image engine (mflux) ──────────────────────────────────────────
+
+
+def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
+    assert stack._MLX_PINS == ("mlx==0.32.4", "mlx-metal==0.32.4")
+    names = {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_PINS}
+    names |= {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_DEPS}
+    assert names == {"mflux", "piexif", "platformdirs", "toml"}
+    # The heavy declared deps of mflux stay out: --no-deps plus this list is the whole install.
+    assert not names & {
+        "opencv-python",
+        "opencv-python-headless",
+        "matplotlib",
+        "torch",
+        "transformers",
+        "mlx",
+        "mlx-metal",
+        "mlx-lm",
+    }
+    (pin,) = stack._MLX_DIFFUSION_PINS
+    assert pin.startswith("mflux==0.22.")
+
+
+@pytest.mark.parametrize("platform", ["macos_arm", "macos_intel", "linux", "windows"])
+@pytest.mark.parametrize("no_torch", [False, True], ids = ["training", "gguf_only"])
+def test_mlx_image_engine_installs_no_deps_only_where_the_mlx_stack_does(
+    monkeypatch, platform, no_torch
+):
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_lm_spec_for_installed_zoo", lambda: stack._MLX_LM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: False)
+    _run_to_extras(monkeypatch, platform = platform, skip_base = True, no_torch = no_torch)
+    calls = _run_to_extras.engine_calls
+    assert len(calls) == int(platform == "macos_arm" and not no_torch)
+    if calls:
+        args = list(calls[0].args[1:])
+        assert "--no-deps" in args
+        specs = [arg for arg in args if not arg.startswith("-")]
+        assert specs == [*stack._MLX_DIFFUSION_PINS, *stack._MLX_DIFFUSION_DEPS]
+        assert not any("opencv" in arg or "matplotlib" in arg for arg in args)
+
+
+def test_mlx_image_engine_skipped_off_the_wheel_floor(monkeypatch):
+    monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: False)
+    _run_to_extras(
+        monkeypatch, platform = "macos_arm", skip_base = True, no_torch = False, mlx_installable = False
+    )
+    assert _run_to_extras.engine_calls == []
+
+
+def test_satisfied_mlx_image_engine_is_not_reinstalled(monkeypatch):
+    monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: True)
+    monkeypatch.setattr(stack, "_full_deps_requested", lambda: False)
+    _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = True, no_torch = False)
+    assert _run_to_extras.engine_calls == []
+
+
+@pytest.mark.parametrize("skip_base", [True, False], ids = ["fresh", "update"])
+def test_failed_mlx_image_engine_install_is_not_fatal(monkeypatch, skip_base):
+    # The MLX stack still installs, and the pass carries on to the extras step.
+    monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: False)
+    noted = Mock()
+    monkeypatch.setattr(stack, "_note", noted)
+    calls = _run_to_extras(
+        monkeypatch,
+        platform = "macos_arm",
+        skip_base = skip_base,
+        no_torch = False,
+        engine_error = SystemExit(1),
+    )
+    assert calls and len(_run_to_extras.engine_calls) == 1
+    assert any("mflux" in str(call.args[0]) for call in noted.call_args_list)
+
+
+def test_mlx_image_engine_is_not_part_of_the_mlx_gate():
+    # The self-heal and the chat-only gate judge mlx / mlx-lm / mlx-vlm only.
+    assert "mflux" not in _repair_specs()
+    source = (Path(stack.SCRIPT_DIR) / "backend" / "utils" / "mlx_repair.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "mflux" not in source

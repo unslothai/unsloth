@@ -28,6 +28,7 @@ async function emittedHeaders(init?: RequestInit): Promise<Headers> {
       new URL("../src/features/auth/api.ts", import.meta.url),
       {
         "@/lib/api-base": { apiUrl: (path: string) => path, isTauri: false },
+        "@/lib/account-transition": { accountTransitionPending: () => false },
         "./session": {
           clearAuthTokens: () => {},
           getAuthToken: () => "access-token",
@@ -114,7 +115,7 @@ test("a local load is not gated behind Hub token preparation", () => {
   // An Ollama row is local too, but its id is an opaque reference rather than a path,
   // so isLocalModelPath alone lets it through. chat-load-hub-token-reach.test.ts pins
   // what the predicate itself classifies.
-  assert.match(guarded, /!isOllamaLinkPath\(modelId\)/);
+  assert.match(guarded, /!isOllamaModelId\(modelId\)/);
   assert.match(guarded, /nativePathToken\s*==\s*null/);
   assert.match(guarded, /if\s*\(mayReachHub\)\s*\{[\s\S]*prepareHfTokenForUse\(hfToken\)/);
 });

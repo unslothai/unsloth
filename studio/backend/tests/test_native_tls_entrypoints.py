@@ -95,19 +95,42 @@ def test_prebuilt_core_gate_matches_the_generated_source():
     )
 
 
+# Builds the server context with truststore's peer-chain hook removed; test_studio_tls.py proves the handshake.
+_TLS_SERVER_MODULE = Path("utils") / "studio_tls.py"
+_UVICORN_SERVERS = {"Config", "run"}
+
+
+def _builds_tls_server(tree) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in (
+            "PROTOCOL_TLS_SERVER",
+            "load_cert_chain",
+        ):
+            return True
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = getattr(func, "id", None) or getattr(func, "attr", None)
+            if name in _UVICORN_SERVERS and any(
+                kw.arg in ("ssl_certfile", "ssl_keyfile") for kw in node.keywords
+            ):
+                return True
+    return False
+
+
 def test_backend_serves_no_tls_in_process():
     """truststore's injection is client-side: a context built after it cannot serve TLS.
 
-    Unsloth serves plain HTTP on loopback, but an in-process HTTPS listener added
-    later would fail at handshake wherever activation is default-on.
+    Any in-process HTTPS listener must go through utils/studio_tls.py, or it
+    fails at handshake wherever activation is default-on.
     """
-    server_side = ("PROTOCOL_TLS_SERVER", "ssl_certfile", "ssl_keyfile")
     offenders = []
     for path in _BACKEND.rglob("*.py"):
-        if "tests" in path.parts:
+        if "tests" in path.parts or "vendor" in path.parts:
+            continue
+        if path.relative_to(_BACKEND) == _TLS_SERVER_MODULE:
             continue
         text = path.read_text(encoding = "utf-8", errors = "ignore")
-        if any(marker in text for marker in server_side):
+        if _builds_tls_server(ast.parse(text)):
             offenders.append(str(path.relative_to(_BACKEND)))
     assert not offenders, (
         "in-process TLS server found, which the native TLS injection breaks: "

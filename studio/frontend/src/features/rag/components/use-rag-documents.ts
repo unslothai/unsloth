@@ -6,6 +6,10 @@ import {
   type NativeIntent,
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
+import {
+  isBackendDownForDesktopUpdate,
+  isSilencedDesktopUpdateFailure,
+} from "@/lib/desktop-update-activity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PROJECT_SOURCES_CHANGED_EVENT,
@@ -107,6 +111,8 @@ export function useRagDocuments(
   }, [documents]);
   // documentId -> signature; forgotten on delete, cleared on scope change.
   const sigByDocId = useRef<Map<string, string>>(new Map());
+  // Row id -> source File for retry. Files only: a native drop's path token is spent on first use.
+  const retryItems = useRef<Map<string, RagUploadItem>>(new Map());
   // Skip a re-selected file only if a matching doc is healthy or still indexing. A doc
   // that completed with 0 chunks is re-ingestable (e.g. a scan attached before a vision
   // model loaded); the backend re-ingests on the same hash, so let it through.
@@ -121,6 +127,9 @@ export function useRagDocuments(
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
+  // The scope an upload begun with none resolved to. Leaving the null scope keeps its jobs only
+  // when this is where it lands; landing anywhere else is a navigation.
+  const materializedKeyRef = useRef<string | null>(null);
   const uploadGenerationRef = useRef(0);
   const activeUploadsRef = useRef(new Set<object>());
   useEffect(
@@ -182,13 +191,17 @@ export function useRagDocuments(
         numChunks?: number | null,
       ) => {
         if (stale()) return forget();
+        if (status !== "failed") retryItems.current.delete(documentId);
         if (status === "cancelled") {
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
         } else if (status === "failed") {
-          // Drop the chip rather than show "Failed"; warn via toast.
           sigByDocId.current.delete(documentId);
-          setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+          patchDoc(documentId, {
+            status: "failed",
+            error: error ?? "Indexing failed",
+            progress: null,
+          });
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",
           });
@@ -280,13 +293,16 @@ export function useRagDocuments(
   const refresh = useCallback(
     async (opts?: { quiet?: boolean; silentErrors?: boolean }) => {
       if (!scopeKey) return true;
+      const downWhenIssued = isBackendDownForDesktopUpdate();
       const requestId = ++refreshSeq.current;
       refreshInFlight.current = true;
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
-        // live "running %" chip. Failed docs hidden (toast warned at upload).
-        const rows = (await lister()).filter((row) => row.status !== "failed");
+        // live "running %" chip. Failed docs hidden, except ones this session can retry.
+        const rows = (await lister()).filter(
+          (row) => row.status !== "failed" || retryItems.current.has(row.id),
+        );
         if (refreshSeq.current !== requestId) return true;
         setDocuments((prev) => {
           const merged = rows.map((row) => {
@@ -298,10 +314,13 @@ export function useRagDocuments(
               : row;
           });
           // Keep optimistic chips (not yet listed) so a refresh racing an upload
-          // can't make them vanish.
+          // can't make them vanish, and failed rows this session can still retry.
           const serverIds = new Set(rows.map((row) => row.id));
           const pendingLocal = prev.filter(
-            (row) => row.id.startsWith("pending_") && !serverIds.has(row.id),
+            (row) =>
+              !serverIds.has(row.id) &&
+              (row.id.startsWith("pending_") ||
+                (row.status === "failed" && retryItems.current.has(row.id))),
           );
           return [...merged, ...pendingLocal];
         });
@@ -310,6 +329,8 @@ export function useRagDocuments(
         // A superseded failure describes a scope no longer shown, and a host
         // without RAG 503s every one of these: no toast per composer opened.
         if (refreshSeq.current !== requestId) return true;
+        // The indexing poll keeps running under the update screen.
+        if (isSilencedDesktopUpdateFailure(err, downWhenIssued)) return false;
         if (
           !opts?.silentErrors &&
           !useRagAvailabilityStore.getState().isUnavailable()
@@ -366,7 +387,17 @@ export function useRagDocuments(
     const jobs = trackedJobs.current;
     const prev = prevScopeKeyRef.current;
     prevScopeKeyRef.current = scopeKey;
-    if (prev !== null && prev !== scopeKey) {
+    const materialized = materializedKeyRef.current;
+    if (scopeKey !== null) materializedKeyRef.current = null;
+    // Leaving the null scope for a chat other than the one its upload materialized: the cleanup
+    // below kept that upload's jobs, so drop them here as any other switch would.
+    const leftForAnotherChat =
+      prev === null &&
+      scopeKey !== null &&
+      !uploadInFlightRef.current &&
+      (jobs.size > 0 || materialized !== null) &&
+      materialized !== scopeKey;
+    if ((prev !== null && prev !== scopeKey) || leftForAnotherChat) {
       for (const controller of jobs.values()) controller.abort();
       jobs.clear();
       sigByDocId.current.clear();
@@ -377,6 +408,7 @@ export function useRagDocuments(
       uploadGenerationRef.current += 1;
       activeUploadsRef.current.clear();
       uploadInFlightRef.current = false;
+      retryItems.current.clear();
       setUploading(false);
       // Scope changes intentionally clear the old scope before fetching the new
       // one. Keep this synchronous so React StrictMode's setup/cleanup replay
@@ -402,8 +434,11 @@ export function useRagDocuments(
     }
     return () => {
       // Preserve in-flight tracking when cleanup is the materialization flip,
-      // not a real switch/unmount.
-      if (uploadInFlightRef.current) return;
+      // not a real switch/unmount. Leaving no scope may be that flip even once
+      // the upload has finished, since React can commit the new id after the POST
+      // returned, so the next setup decides: it keeps the jobs only for the scope
+      // the upload materialized. An unmount aborts in the unmount effect.
+      if (uploadInFlightRef.current || scopeKey === null) return;
       for (const controller of jobs.values()) controller.abort();
       jobs.clear();
     };
@@ -528,6 +563,7 @@ export function useRagDocuments(
                 );
         if (generation !== uploadGenerationRef.current) return;
         sigByDocId.current.set(result.documentId, itemSignature(item));
+        if (item.kind === "file") retryItems.current.set(result.documentId, item);
         setDocuments((rows) =>
           rows.some((row) => row.id === result.documentId)
             ? rows.filter((row) => row.id !== tempId)
@@ -546,12 +582,16 @@ export function useRagDocuments(
       } catch (err) {
         if (generation !== uploadGenerationRef.current) return;
         const message = err instanceof Error ? err.message : String(err);
-        // Drop the chip rather than show "Failed"; warn via toast.
-        setDocuments((rows) => rows.filter((row) => row.id !== tempId));
+        if (item.kind === "file") {
+          retryItems.current.set(tempId, item);
+          patchDoc(tempId, { status: "failed", error: message, progress: null });
+        } else {
+          setDocuments((rows) => rows.filter((row) => row.id !== tempId));
+        }
         toast.error(`Couldn't upload ${name}`, { description: message });
       }
     },
-    [trackJob],
+    [trackJob, patchDoc],
   );
 
   // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of one), since the
@@ -653,6 +693,11 @@ export function useRagDocuments(
           setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
           return;
         }
+        // Whenever the hook itself has no scope yet, passed in or materialized alike: the job this
+        // starts may be running before React commits the scope it belongs to.
+        if (liveKey === null) {
+          materializedKeyRef.current = resolvedKey;
+        }
 
         for (const { tempId, item } of fresh) {
           if (generation !== uploadGenerationRef.current) return;
@@ -673,9 +718,12 @@ export function useRagDocuments(
   );
 
   const remove = useCallback(
-    async (documentId: string) => {
+    async (documentId: string): Promise<boolean> => {
       const prev = documents;
       setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+      const prevRetry = retryItems.current.get(documentId);
+      retryItems.current.delete(documentId);
+      if (documentId.startsWith("pending_")) return true;
       // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
@@ -692,12 +740,15 @@ export function useRagDocuments(
           documentId,
           scope?.type === "project" ? scope.projectId : undefined,
         );
+        return true;
       } catch (err) {
         setDocuments(prev);
         if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
+        if (prevRetry !== undefined) retryItems.current.set(documentId, prevRetry);
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),
         });
+        return false;
       } finally {
         if (removingProjectId) {
           noteProjectWork(removingProjectId, -1);
@@ -705,6 +756,21 @@ export function useRagDocuments(
       }
     },
     [documents, scope],
+  );
+
+  const canRetry = useCallback(
+    (documentId: string) => retryItems.current.has(documentId),
+    [],
+  );
+
+  const retry = useCallback(
+    async (documentId: string) => {
+      const item = retryItems.current.get(documentId);
+      if (!item) return;
+      if (!(await remove(documentId))) return;
+      await upload([item]);
+    },
+    [remove, upload],
   );
 
   return {
@@ -715,5 +781,7 @@ export function useRagDocuments(
     refresh,
     upload,
     remove,
+    retry,
+    canRetry,
   };
 }

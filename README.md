@@ -42,8 +42,16 @@ Download the native Unsloth Desktop app for your operating system:
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
+    <td><b>Linux / Ubuntu (ARM64) (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
     <td><b>Linux (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Windows (ARM64)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
 
@@ -55,10 +63,25 @@ Or if you prefer to install manually:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
+
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
+#### Docker:
+
+The [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) `unsloth/unsloth` is available on Docker. [Read guide.](https://unsloth.ai/docs/get-started/install/docker)
+
+#### Homebrew:
+```bash
+brew install --cask unsloth
+```
+
+#### Winget (Windows):
+```powershell
+winget install --id UnslothAI.Unsloth -e
+```
+
 #### Community:
 
 - [Discord](https://discord.gg/unsloth)
@@ -69,7 +92,7 @@ irm https://unsloth.ai/install.ps1 | iex
 Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU setups, NVIDIA, AMD, Intel GPUs, CPUs** and the **Vulkan** backend.
 
 ### Run & Build with AI
-* Run and train LLMs, MLX, GGUF, diffusion, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
+* Run and train LLMs, MLX, GGUF, diffusion, decision, embedding, audio models: [Qwen3.8](https://unsloth.ai/docs/models/qwen3.8), [GLM-5.3-Flash](https://unsloth.ai/docs/models/glm-5.3-flash), [Kimi K3](https://unsloth.ai/docs/models/kimi-k3), [Qwen-Image-2.1](https://unsloth.ai/docs/models/qwen-image-2.1), MiniMax-H3, [DeepSeek-V4](https://unsloth.ai/docs/models/deepseek-v4), [Gemma 4](https://unsloth.ai/docs/models/gemma-4).
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
 * **Search & RAG:** Use private and unlimited web search, deep research, auto-compaction (rolling context window) and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
@@ -78,9 +101,9 @@ Unsloth works on **Windows, Linux, WSL** and **macOS**. We support **Multi GPU s
 
 
 ### Train & Deploy
-* **Fine-tuning:** Train LLMs, diffusion, TTS, and embedding models 2× faster with 70% less VRAM with [no accuracy loss](https://unsloth.ai/blog#training)
+* **Fine-tuning:** Train LLMs, diffusion, decision, TTS, and embedding models 2× faster with 70% less VRAM with [no accuracy loss](https://unsloth.ai/blog#training)
 * **Complete support:** Supports [reinforcement learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide), LoRA, QLoRA, full fine tuning, pretraining, RL, GRPO, DPO, and FP8.
-* **Export & Deploy:** [Export](https://unsloth.ai/docs/new/studio/export) or Deploy models with including [GGUF](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), NVFP4, FP8 and more formats.
+* **Export & Deploy:** [Export](https://unsloth.ai/docs/new/studio/export) or Deploy models including [GGUF](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), NVFP4, FP8 and more formats.
 * **Datasets:** Build datasets from PDFs, CSVs, DOCX files, and more with [Data Recipes](https://unsloth.ai/docs/new/studio/data-recipe).
   
 ## 🚀 Unsloth Start
@@ -95,10 +118,12 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 | --- | --- |
 | Claude Code | `unsloth start claude` |
 | OpenAI Codex | `unsloth start codex` |
-| Hermes Agent | `unsloth start hermes` |
-| OpenClaw | `unsloth start openclaw` |
-| OpenCode | `unsloth start opencode` |
+| Visual Studio Code | `unsloth start vscode` |
 | DeepSeek Harness | `unsloth start dsh` |
+| OpenCode | `unsloth start opencode` |
+| Hermes Agent | `unsloth start hermes` |
+| Pi | `unsloth start pi` |
+| OpenClaw | `unsloth start openclaw` |
 
 ## 📥 Install
 Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
@@ -123,8 +148,16 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
+    <td><b>Linux / Ubuntu (ARM64) (deb)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
+  </tr>
+  <tr>
     <td><b>Linux (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Windows (ARM64)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
 
@@ -140,6 +173,33 @@ curl -fsSL https://unsloth.ai/install.sh | sh
 irm https://unsloth.ai/install.ps1 | iex
 ```
 
+#### Homebrew:
+```bash
+brew install --cask unsloth
+```
+
+#### Docker
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux and Mac, set up GPU access once with
+```bash
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
+```
+For Windows instructions and more information, read our [Unsloth Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
+
+**Linux / WSL (Bash):**
+```bash
+# for a public Cloudflare HTTPS link: use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000, and  -p 127.0.0.1:8888:8888  instead of -p 8888:8888
+docker run -d --name unsloth --gpus all --ipc=host \
+  -p 8000:8000 -p 8888:8888 \
+  -v "$PWD":/workspace/host \
+  -v unsloth-workspace:/workspace \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  -v unsloth-studio:/opt/unsloth-studio \
+  unsloth/unsloth && docker logs -f unsloth
+```
+See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more information. For notebooks only, use the `unsloth/unsloth:core` tag; all tags and options are on [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).<br>For **AMD** there is a separate image: [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm).
+
+---
+
 #### Launch
 ```bash
 unsloth studio
@@ -149,17 +209,6 @@ unsloth studio
 ```bash
 unsloth studio --secure
 ```
-
-#### Docker
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux, set up GPU access once with `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh` (Windows: Docker Desktop with WSL 2). Run:
-```bash
-docker run -d --gpus all --ipc=host \
-  -p 8000:8000 -p 8888:8888 \
-  -e UNSLOTH_STUDIO_PASSWORD="mypassword" -e JUPYTER_PASSWORD="mypassword" \
-  -v "$PWD":/workspace/host \
-  unsloth/unsloth
-```
-Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
@@ -176,6 +225,8 @@ unsloth studio -H 0.0.0.0 -p 8888
 **LAN Access (home network)**: `Settings > API keys > LAN access`
 
 #### Password management & headless starts
+Exposing Unsloth (`--secure`, `--cloudflare`, or a non-loopback `-H`) asks once at the terminal for a new admin password. Ctrl+C there aborts the launch rather than exposing the auto-generated one; set a password non-interactively instead, or use `-H 127.0.0.1` to stay off the network.
+
 Headless starts:
 ```bash
 UNSLOTH_STUDIO_PASSWORD='your-strong-password' unsloth studio --secure   # via env var
@@ -202,8 +253,10 @@ winget install -e --id Python.Python.3.13
 winget install --id=astral-sh.uv  -e
 uv venv unsloth_env --python 3.13
 .\unsloth_env\Scripts\activate
+uv pip install torchao
 uv pip install unsloth --torch-backend=auto
 ```
+Install torchao first on Windows: `--torch-backend` looks for it only on the PyTorch index, which has no recent Windows torchao, so a one-step install silently resolves an old Unsloth.
 
 #### AMD, Intel, DGX Spark, Blackwell:
 See our [Blackwell guide](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark guide](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
@@ -217,6 +270,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 | Model | Free Notebooks | Performance | Memory use |
 |-----------|---------|--------|----------|
 | **Unsloth Studio**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/unsloth/blob/main/studio/Unsloth_Studio_Colab.ipynb)               |  |  |
+| **Decision model (Qwen3.5-4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_5_(4B)-Decision.ipynb)               | 1.5x faster | 60% less |
 | **Gemma 4 (E2B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Gemma4_(E2B)-Vision.ipynb)               | 1.5x faster | 50% less |
 | **Qwen3.5 (4B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_5_(4B)_Vision.ipynb)               | 1.5x faster | 60% less |
 | **gpt-oss (20B)**      | [▶️ Start for free](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/gpt-oss-(20B)-Fine-tuning.ipynb)               | 2x faster | 70% less |
@@ -231,31 +285,6 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 - See all our notebooks for: [Kaggle](https://github.com/unslothai/notebooks?tab=readme-ov-file#-kaggle-notebooks), [GRPO](https://unsloth.ai/docs/get-started/unsloth-notebooks#grpo-reasoning-rl-notebooks), [TTS](https://unsloth.ai/docs/get-started/unsloth-notebooks#text-to-speech-tts-notebooks), [embedding](https://unsloth.ai/docs/new/embedding-finetuning) & [Vision](https://unsloth.ai/docs/get-started/unsloth-notebooks#vision-multimodal-notebooks)
 - See [all our models](https://unsloth.ai/docs/get-started/unsloth-model-catalog) and [all our notebooks](https://unsloth.ai/docs/get-started/unsloth-notebooks)
 - See detailed documentation for Unsloth [here](https://unsloth.ai/docs)
-
-## 🦥 Unsloth News
-- **AMD training**: Train, run RL, chat and deploy on AMD GPUs across Windows, WSL and Linux. [Guide](https://unsloth.ai/docs/basics/amd)
-- **Local models for any agent**: Use `unsloth start` with Claude Code, Codex, Hermes, OpenCode, OpenClaw, DeepSeek Harness and more through Unsloth's OpenAI- and Anthropic-compatible APIs. [Guide](https://unsloth.ai/docs/basics/api)
-- **GLM-5.2**: Run Z.ai's 744B-parameter, 1M-context open model locally with Unsloth Dynamic GGUFs. [Guide](https://unsloth.ai/docs/models/glm-5.2)
-- **DeepSeek-V4**: Run DeepSeek-V4-Flash locally with corrected multi-turn and tool-calling behavior. [Guide](https://unsloth.ai/docs/models/deepseek-v4)
-- **Gemma 4**: Run and train Gemma 4 text, image and audio models with QAT, MTP, GGUF and MLX support. [Guide](https://unsloth.ai/docs/models/gemma-4)
-- **MCP servers**: Connect local models to files, apps, databases and external tools through Model Context Protocol. [Guide](https://unsloth.ai/docs/basics/mcp)
-- **New models**: [Qwen-AgentWorld](https://huggingface.co/unsloth/Qwen-AgentWorld-35B-A3B-GGUF), [Ornith](https://huggingface.co/unsloth/models?search=ornith), [Kimi K2.7 Code](https://unsloth.ai/docs/models/kimi-k2.7-code) and [MiniMax M3](https://unsloth.ai/docs/models/minimax-m3)
-
-<details>
-  <summary>More News</summary>
-
-  - **Connections**: Mix local models with API providers (OpenAI, Anthropic) or servers (vLLM, Ollama) in the same interface. [Guide](https://unsloth.ai/docs/integrations/connections)
-  - **Introducing Unsloth Studio**: our new web UI for running and training LLMs. [Blog](https://unsloth.ai/docs/new/studio)
-  - **DiffusionGemma**: Run and fine-tune Google's diffusion language model with 1.8x faster inference in Unsloth Studio. [Guide](https://unsloth.ai/docs/models/diffusiongemma)
-  - **Qwen3.6**: Run and train Qwen3.6 with MTP for 1.4-2.2x faster inference and NVFP4 quants for supported GPUs. [Guide](https://unsloth.ai/docs/models/qwen3.6)
-  - Train **MoE LLMs 12x faster** with 35% less VRAM - DeepSeek, GLM, Qwen and gpt-oss. [Blog](https://unsloth.ai/docs/new/faster-moe)
-  - **Embedding models**: Unsloth now supports ~1.8-3.3x faster embedding fine-tuning. [Blog](https://unsloth.ai/docs/new/embedding-finetuning) • [Notebooks](https://unsloth.ai/docs/get-started/unsloth-notebooks#embedding-models)
-  - New **7x longer context RL** vs. all other setups, via our new batching algorithms. [Blog](https://unsloth.ai/docs/new/grpo-long-context)
-  - New RoPE & MLP **Triton Kernels** & **Padding Free + Packing**: 3x faster training & 30% less VRAM. [Blog](https://unsloth.ai/docs/new/3x-faster-training-packing)
-  - **500K Context**: Training a 20B model with >500K context is now possible on an 80GB GPU. [Blog](https://unsloth.ai/docs/blog/500k-context-length-fine-tuning)
-  - **FP8 & Vision RL**: You can now do FP8 & VLM GRPO on consumer GPUs. [FP8 Blog](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/fp8-reinforcement-learning) • [Vision RL](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide/vision-reinforcement-learning-vlm-rl)
-
-</details>
 
 ## 📥 Advanced Installation
 The below advanced instructions are for Unsloth Studio. For Unsloth Core advanced installation, [view our docs](https://unsloth.ai/docs/get-started/install/pip-install#advanced-pip-installation).
@@ -285,7 +314,7 @@ The developer install builds from the `main` branch, which is the latest (nightl
 ```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
 .\install.ps1 --local
 unsloth studio -p 8888
 ```
@@ -319,7 +348,7 @@ curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_SKIP_AUTOSTART=1 sh
 $env:UNSLOTH_SKIP_AUTOSTART=1; irm https://unsloth.ai/install.ps1 | iex
 ```
 
-Keep the install-time package cache under the Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
+Keep the install-time package cache under the Unsloth Studio directory instead of reusing an existing uv cache. Downloads are slower the first time, and an explicit `UV_CACHE_DIR` still wins over this:
 ```bash
 curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_ISOLATE_UV_CACHE=1 sh
 ```
@@ -332,6 +361,21 @@ For a local run the flag is `--isolated-uv-cache`:
 ```
 ```powershell
 .\install.ps1 --local --isolated-uv-cache
+```
+
+Discard the previous environment immediately when reinstalling, instead of keeping a copy until the new one works. A reinstall normally holds both at once, so it needs room for two; this needs room for one, at the cost of not being able to undo a failed install:
+```bash
+curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_INSTALL_NO_ROLLBACK=1 sh
+```
+```powershell
+$env:UNSLOTH_INSTALL_NO_ROLLBACK=1; irm https://unsloth.ai/install.ps1 | iex
+```
+For a local run the flag is `--no-rollback`:
+```bash
+./install.sh --local --no-rollback
+```
+```powershell
+.\install.ps1 --local --no-rollback
 ```
 
 Pinning the Python version:
@@ -372,6 +416,13 @@ $env:UNSLOTH_LLAMA_CPP_BACKEND="vulkan"   # or cpu, cuda, rocm, auto
 irm https://unsloth.ai/install.ps1 | iex
 ```
 
+#### audio.cpp audio engine:
+
+Setup also installs [audio.cpp](https://github.com/0xShug0/audio.cpp) (prebuilt by [unslothai/audio.cpp](https://github.com/unslothai/audio.cpp)), which runs the audio.cpp speech, music and speech-to-text models on the Audio page, in Voice settings and behind `/v1/audio/*`. It is optional and never blocks setup:
+- `UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1` skips it.
+- `UNSLOTH_AUDIO_CPP_ACCELERATOR=cpu` (or `cuda`, `vulkan`, `metal`) picks the bundle instead of auto-detecting.
+- `AUDIOCPP_SERVER_PATH=/path/to/audiocpp_server` uses your own build.
+
 #### Uninstall
 
 **MacOS, WSL, Linux:** `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/scripts/uninstall.sh | sh`
@@ -409,7 +460,7 @@ You can cite the Unsloth repo as follows:
   year = {2023}
 }
 ```
-If you trained a model with 🦥Unsloth, you can use this cool sticker!   <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made with unsloth.png" width="200" align="center" />
+If you trained a model with 🦥Unsloth, you can use this cool sticker!   <img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/made%20with%20unsloth.png" width="200" align="center" />
 
 ### License
 Unsloth uses a dual-licensing model of Apache 2.0 and AGPL-3.0. The core Unsloth package remains licensed under **[Apache 2.0](https://github.com/unslothai/unsloth?tab=Apache-2.0-1-ov-file)**, while certain optional components, such as the Unsloth Studio UI are licensed under the open-source license **[AGPL-3.0](https://github.com/unslothai/unsloth?tab=AGPL-3.0-2-ov-file)**.

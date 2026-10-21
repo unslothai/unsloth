@@ -114,7 +114,7 @@ test("a TTS load announces its own runtime so chat re-reads the slot", () => {
 
   // Chat ignores its own loads when reconciling, so a TTS load announced as "chat" left
   // chat naming a model the Audio page had evicted.
-  const audio = readText("../src/features/audio/audio-page.tsx");
+  const audio = readText("../src/features/audio/hooks/use-audio-model-slot.ts");
   assert.match(audio, /runtime: "tts",/);
   const hook = readText(
     "../src/features/chat/hooks/use-chat-model-runtime.ts",

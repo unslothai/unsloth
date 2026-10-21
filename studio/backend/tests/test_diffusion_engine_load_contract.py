@@ -102,7 +102,14 @@ def test_the_two_begin_load_signatures_declare_local_files_only_alike():
 # ── The route, driven onto the native engine ───────────────────────────────
 
 
-def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
+def _drive_the_images_load(
+    monkeypatch,
+    *,
+    user_initiated: bool,
+    engine_choice = None,
+    begin_load_error = None,
+    notes = None,
+):
     """Run ``POST /images/load``'s body with the NATIVE engine selected; return the mock engine.
 
     Autospec'd off the real class, so the call the route makes is bound against the real
@@ -116,6 +123,22 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
 
     engine = create_autospec(SdCppDiffusionBackend, instance = True)
     engine.begin_load.return_value = {"loaded": False, "repo_id": None}
+    if begin_load_error is not None:
+        engine.begin_load.side_effect = begin_load_error
+    if notes is not None:
+        # The before-load snapshot is taken before begin_load starts the worker.
+        monkeypatch.setattr(
+            router_module,
+            "loaded_state_of",
+            lambda e: notes.append(("snapshot", engine.begin_load.call_count, e is engine)),
+        )
+        monkeypatch.setattr(
+            router_module,
+            "note_engine_pick",
+            lambda pick, loaded_by = None, before = None: notes.append(
+                (pick, engine.begin_load.call_count, loaded_by is engine)
+            ),
+        )
     engine.preflight_base_access.return_value = None
 
     monkeypatch.setattr(router_module, "predict_engine", lambda *a, **k: ENGINE_SD_CPP)
@@ -142,6 +165,7 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
             DiffusionLoadRequest(
                 model_path = "unsloth/FLUX.1-dev-GGUF",
                 gguf_filename = "flux1-dev-Q4_K_M.gguf",
+                engine = engine_choice,
             ),
             "test-user",
             user_initiated = user_initiated,
@@ -159,6 +183,23 @@ def test_the_images_page_can_load_on_the_native_engine(monkeypatch, user_initiat
 
     engine.begin_load.assert_called_once()
     assert engine.begin_load.call_args.kwargs["local_files_only"] is (not user_initiated)
+
+
+def test_the_engine_pick_is_recorded_only_once_the_engine_accepted_the_load(monkeypatch):
+    # Recorded after begin_load, not at selection: a refusal past selection keeps the resident model's provenance.
+    notes = []
+    _drive_the_images_load(monkeypatch, user_initiated = True, engine_choice = "sd_cpp", notes = notes)
+    assert notes == [("snapshot", 0, True), ("sd_cpp", 1, True)]
+    notes.clear()
+    with pytest.raises(Exception):
+        _drive_the_images_load(
+            monkeypatch,
+            user_initiated = True,
+            engine_choice = "sd_cpp",
+            begin_load_error = RuntimeError("busy"),
+            notes = notes,
+        )
+    assert notes == [("snapshot", 0, True)]
 
 
 # ── The native loader honours it ───────────────────────────────────────────
@@ -200,6 +241,7 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
         token,
         cancel_event = None,
         local_files_only = False,
+        vision_optional = True,
     ):
         fetched.append(local_files_only)
         raise RuntimeError("stop here; the Hub calls under test all precede the fetch")
@@ -271,6 +313,38 @@ def test_an_uncached_asset_fails_with_a_local_error_naming_it(monkeypatch):
     # The FETCH repo, which is where the bytes were looked for: the gated vendor base is swapped
     # to its ungated mirror before the lookup, so naming the upstream id would misdirect.
     assert "unsloth/FLUX.1-dev" in message
+
+
+def test_an_uncached_vision_projector_does_not_fail_an_offline_load(monkeypatch, tmp_path):
+    """Text-to-image never reads --llm_vision, so a Qwen-Image-2.1 GGUF cached before the projector
+    was listed must still restore offline. Only the projector is optional: the encoder it sits
+    beside still fails loudly."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    import utils.hf_xet_fallback as xet
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend as Native
+
+    cached = tmp_path / "Qwen3-VL-8B-Instruct-UD-Q4_K_XL.gguf"
+    cached.write_bytes(b"")
+
+    def _download(repo_id, filename, token, **kwargs):
+        if filename == "mmproj-F16.gguf":
+            raise LocalEntryNotFoundError("Cannot find the requested files in the disk cache")
+        return str(cached)
+
+    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", _download)
+    repo = "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+    paths = Native(engine = None)._fetch_assets(
+        [(repo, cached.name, "llm"), (repo, "mmproj-F16.gguf", "llm_vision")],
+        None,
+        local_files_only = True,
+    )
+    assert paths == {"llm": str(cached)}
+
+    with pytest.raises(RuntimeError, match = "mmproj-F16.gguf"):
+        Native(engine = None)._fetch_assets(
+            [(repo, "mmproj-F16.gguf", "llm")], None, local_files_only = True
+        )
 
 
 def test_the_default_still_takes_the_xet_fallback_ladder(monkeypatch, tmp_path):

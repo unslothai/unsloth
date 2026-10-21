@@ -63,6 +63,7 @@ def test_specs_cover_the_dit_families():
         "flux.2-dev",
         # The first VIDEO family; its own assertions live in test_diffusion_dit_trainer_ltx2.
         "ltx-2",
+        "wan2.2-ti2v-5b",
     }
     # FLUX / Qwen share the added-kv attention target set; Z-Image and Krea 2 are single-stream.
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
@@ -194,8 +195,7 @@ def test_zimage_offers_the_undistilled_base_the_upstream_recipe_trains_on():
     _assert_trusted_base_model("Tongyi-MAI/Z-Image")
     with pytest.raises(ValueError, match = "untrusted"):
         _assert_trusted_base_model("someone/random-z-image-finetune")
-    # The upstream script's target list; the family spec must already match it.
-    assert _SPECS["z-image"].lora_targets == ("to_q", "to_k", "to_v", "to_out.0")
+    assert _SPECS["z-image"].lora_targets == ("to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3")
     # No deploy pairing: an adapter previews on whichever checkpoint it trained on. A family-wide
     # one would also rewrite the nf4 Turbo base, sending a QLoRA run's preview to a dense fp32 load.
     assert fam.deploy_base_repo is None
@@ -356,13 +356,18 @@ def _linear(
 
 
 def test_mx_module_filter_accepts_dense_block_linear():
-    # A bias-free 3072x3072 attention/FFN linear at a normal block fqn is a valid mxfp8 target.
-    assert _mx_module_filter(_linear(3072, 3072), "blocks.0.ff.up") is True
+    # A bf16 3072x3072 attention/FFN linear at a normal block fqn is a valid mxfp8 target.
+    assert _mx_module_filter(_linear(3072, 3072).bfloat16(), "blocks.0.ff.up") is True
 
 
-def test_mx_module_filter_skips_biased_linear():
-    # The torchao 0.17 MX training path drops the bias, so an mxfp8'd biased FROZEN linear would corrupt the base output the LoRA regresses against.
-    assert _mx_module_filter(_linear(3072, 3072, bias = True), "blocks.0.ff.up") is False
+def test_mx_module_filter_keeps_biased_linear():
+    # MXFP8Linear adds the bias; only torchao 0.17's quantize_ wrapper drops it (biased skipped there alone).
+    assert _mx_module_filter(_linear(3072, 3072, bias = True).bfloat16(), "blocks.0.ff.up") is True
+
+
+def test_mx_module_filter_rejects_non_bf16_weight():
+    # The MX casts assert a bf16 weight.
+    assert _mx_module_filter(_linear(3072, 3072), "blocks.0.ff.up") is False
 
 
 def test_resolve_base_precision_explicit_mxfp8_requires_blackwell(monkeypatch):
@@ -436,6 +441,7 @@ def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
 
     class _Recipe:
         MXFP8_RCEIL = "mxfp8_rceil"
+        MXFP8_RCEIL_WGRAD_WITH_HP = "mxfp8_rceil_wgrad_with_hp"
 
     class _OpConfig:
         @staticmethod
@@ -450,7 +456,25 @@ def test_mxfp8_training_config_falls_back_to_the_torchao_0_17_api(monkeypatch):
     )
     monkeypatch.setitem(sys.modules, "torchao.prototype.moe_training.config", fake_config)
     assert _mxfp8_training_config() == "cfg-0.17"
-    assert calls["recipe"] == _Recipe.MXFP8_RCEIL
+    # High-precision wgrad: the MX dim1 cast of the frozen weight's discarded gradient asserts tokens % 32 == 0.
+    assert calls["recipe"] == _Recipe.MXFP8_RCEIL_WGRAD_WITH_HP
+
+
+def test_mxfp8_training_config_legacy_api_uses_rceil(monkeypatch):
+    # torchao 0.14-0.16: "mxfp8_cublas" is FLOOR scaling; RCEIL matches the 0.17+ recipe's numerics.
+    from types import SimpleNamespace
+
+    from core.training.diffusion_dit_trainer import _mxfp8_training_config
+
+    class _Cfg:
+        @staticmethod
+        def from_recipe_name(name):
+            return name
+
+    monkeypatch.setitem(
+        sys.modules, "torchao.prototype.mx_formats", SimpleNamespace(MXLinearConfig = _Cfg)
+    )
+    assert _mxfp8_training_config() == "mxfp8_cublas_rceil"
 
 
 def _patch_capability(monkeypatch, capability):
@@ -504,3 +528,102 @@ def test_train_precision_modes_pre_ampere_is_nf4_only(monkeypatch):
     modes, recommended = train_precision_modes()
     assert modes == ["nf4"]
     assert recommended == "nf4"
+
+
+@pytest.mark.parametrize(
+    "capability, lowp",
+    [
+        ((7, 5), set()),
+        ((8, 0), set()),
+        ((8, 6), set()),
+        ((8, 9), {"fp8"}),
+        ((9, 0), {"fp8"}),
+        ((10, 0), {"fp8", "mxfp8"}),
+        ((12, 0), {"fp8", "mxfp8"}),
+    ],
+)
+def test_lowp_routing_per_nvidia_arch(monkeypatch, capability, lowp):
+    # fp8 only on sm89+, mxfp8 only on sm100+, refused by the child and the pre-eviction preflight alike.
+    import core.training.diffusion_train_common as dtc
+    from core.training.diffusion_train_common import training_precision_preflight_error
+
+    _patch_capability(monkeypatch, capability)
+    monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda _f: None)
+    monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda _f: None)
+    modes, _ = train_precision_modes()
+    assert {m for m in modes if m in ("fp8", "mxfp8")} == (lowp if capability >= (8, 0) else set())
+    for mode, floor in (("fp8", "sm89"), ("mxfp8", "Blackwell")):
+        cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
+        reason = training_precision_preflight_error("flux.1", mode)
+        if mode in lowp:
+            assert _resolve_base_precision(cfg, None, "cuda") == mode
+            assert reason is None
+        else:
+            with pytest.raises(ValueError, match = floor):
+                _resolve_base_precision(cfg, None, "cuda")
+            assert reason and floor in reason
+
+
+@pytest.mark.parametrize("device", ["cpu", "mps", "xpu"])
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+def test_lowp_refused_off_cuda(device, mode):
+    # The float8 / MX conversions are reachable only from a CUDA run: every other device is refused up front.
+    cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
+    with pytest.raises(ValueError, match = "CUDA"):
+        _resolve_base_precision(cfg, None, device)
+
+
+@pytest.mark.parametrize("mode", ["fp8", "mxfp8"])
+def test_lowp_refused_on_rocm(monkeypatch, mode):
+    import core.training.diffusion_dit_trainer as dit
+    import core.training.diffusion_train_common as dtc
+
+    _patch_capability(monkeypatch, (10, 0))
+    monkeypatch.setattr(dit, "torch_is_rocm", lambda: True)
+    monkeypatch.setattr(dtc, "torch_is_rocm", lambda: True)
+    assert not {"fp8", "mxfp8"} & set(train_precision_modes()[0])
+    cfg = types.SimpleNamespace(base_precision = mode, mixed_precision = "bf16", base_model = "x")
+    with pytest.raises(ValueError, match = "ROCm"):
+        _resolve_base_precision(cfg, None, "cuda")
+
+
+def test_compile_engagement_warning():
+    from core.training.diffusion_dit_trainer import _compile_engagement_warning
+
+    assert _compile_engagement_warning(None, (0, 0, 3)) is None
+    assert _compile_engagement_warning((0, 0, 0), (0, 0, 3)) is None
+    assert "no graphs" in _compile_engagement_warning((0, 0, 0), (0, 0, 0))
+    assert "1 graph break" in _compile_engagement_warning((0, 0, 0), (1, 0, 3))
+    assert "2 frame(s)" in _compile_engagement_warning((4, 1, 5), (4, 3, 9))
+
+
+def test_compile_engagement_reads_real_dynamo_counters():
+    # suppress_errors hides failed compiles and nf4 splits on graph breaks; both must surface.
+    import torch
+
+    from core.training.diffusion_dit_trainer import (
+        _compile_engagement_warning,
+        _dynamo_compile_counters,
+    )
+
+    def body(x):
+        x = x + 1
+        torch._dynamo.graph_break()
+        return x * 2
+
+    def broken_backend(gm, example_inputs):
+        raise RuntimeError("backend failed")
+
+    torch._dynamo.reset()
+    before = _dynamo_compile_counters()
+    torch.compile(lambda x: x * 3, backend = "eager", fullgraph = True)(torch.ones(2))
+    assert _compile_engagement_warning(before, _dynamo_compile_counters()) is None
+    before = _dynamo_compile_counters()
+    assert torch.compile(body, backend = "eager")(torch.ones(2)).tolist() == [4.0, 4.0]
+    assert "graph break" in _compile_engagement_warning(before, _dynamo_compile_counters())
+    before = _dynamo_compile_counters()
+    with torch._dynamo.config.patch(suppress_errors = True):
+        out = torch.compile(lambda x: x * 5, backend = broken_backend)(torch.ones(2))
+    assert out.tolist() == [5.0, 5.0]
+    assert "fell back to eager" in _compile_engagement_warning(before, _dynamo_compile_counters())
+    torch._dynamo.reset()

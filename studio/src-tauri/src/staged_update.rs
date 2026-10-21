@@ -25,7 +25,7 @@ const RUNTIME_ENTRIES: [&str; 4] = [
     ".venv_t5_550",
     ".venv_t5_510",
 ];
-const HELPER_RUNTIME_ENTRIES: [&str; 3] = ["node", "llama.cpp", "whisper.cpp"];
+const HELPER_RUNTIME_ENTRIES: [&str; 4] = ["node", "llama.cpp", "whisper.cpp", "audio.cpp"];
 
 fn all_runtime_entries() -> impl Iterator<Item = &'static str> {
     RUNTIME_ENTRIES.into_iter().chain(HELPER_RUNTIME_ENTRIES)
@@ -83,7 +83,7 @@ fn reconcile_before_update_with(home: &Path, in_use: bool) -> Result<(), String>
     // backend this update would replace is usually the one holding the tree.
     const RESTART: &str =
         "An unfinished background update from an earlier release is still waiting on a \
-         running backend. Quit Unsloth Studio, reopen it, and update again.";
+         running backend. Quit Unsloth, reopen it, and update again.";
     if in_use {
         return Err(RESTART.to_string());
     }
@@ -761,7 +761,7 @@ mod tests {
         let error = reconcile_before_update_with(&home, true).unwrap_err();
 
         // Restarting is what settles it, so the message says that and not a path.
-        assert!(error.contains("Quit Unsloth Studio"), "{error}");
+        assert!(error.contains("Quit Unsloth"), "{error}");
         // Nothing moved, so the launch after this one still has its decision to make.
         assert_eq!(tag(&home, "unsloth_studio"), "new");
         assert!(home.join(PREV_DIR).join(PENDING_MARKER).is_file());
@@ -878,6 +878,21 @@ mod tests {
             return None;
         }
         Some(me)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stable_records_guard_updates_after_an_epoch_clock_shift() {
+        let home = temp_home("stable-markers");
+        let me = std::process::id();
+        let identity = crate::process_identity::linux_process_identity(me).unwrap();
+        let marker = home.join(format!("studio-starting-{me}.marker"));
+        fs::write(&marker, format!("{me}\n1.0\n\n{identity}\n")).unwrap();
+        assert!(recorded_pids(&home).contains(&me));
+        fs::write(&marker, format!("{me}\n1.0\n\nlinux:another-boot:0\n")).unwrap();
+        fs::write(home.join("studio.pid"), format!("{me}\n")).unwrap();
+        assert!(!recorded_pids(&home).contains(&me));
+        cleanup(home);
     }
 
     #[test]

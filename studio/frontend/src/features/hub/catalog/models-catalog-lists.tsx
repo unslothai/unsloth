@@ -29,6 +29,7 @@ import type {
 import {
   compareInventoryItemsByRecent,
   type InventoryItem,
+  inventoryItemFormatRank,
   inventoryItemSize,
   inventoryItemTitle,
 } from "./inventory-sort";
@@ -40,18 +41,25 @@ import {
   NetworkErrorState,
   SkeletonList,
 } from "./catalog-states";
-import { InventoryRow, VirtualRows } from "./models-catalog-rows";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import {
+  CATALOG_COLUMN_GAP_PX,
+  InventoryRow,
+  VirtualRows,
+} from "./models-catalog-rows";
 import {
   type AllModelsView,
   type InventorySort,
   RESULT_CARD_HEIGHT_PX,
+  RESULT_CARD_MOBILE_HEIGHT_PX,
   RESULT_GRID_HEIGHT_PX,
   RESULT_GRID_ROW_HEIGHT_PX,
   RESULT_ROW_HEIGHT_PX,
+  RESULT_ROW_MOBILE_HEIGHT_PX,
   RESULT_SPLIT_HEIGHT_PX,
   RESULT_SPLIT_ROW_HEIGHT_PX,
   ResultCard,
-  ResultGridRow,
   ResultSplitRow,
 } from "./models-table";
 
@@ -104,7 +112,9 @@ export function DiscoverList({
   onRetry,
   onSwitchDevice,
   view,
+  columns,
   selectedId,
+  showFormatDots = true,
 }: {
   discoverRows: DiscoverRow[];
   onSelect: (id: string) => void;
@@ -129,21 +139,21 @@ export function DiscoverList({
   onRetry: () => void;
   onSwitchDevice?: () => void;
   view: AllModelsView;
+  columns: number;
+  showFormatDots?: boolean;
 }) {
-  // "two" = two cards per row; "grid" = compact table rows; "split" = one card per row.
   const isSplit = view === "split";
-  const isCardLike = view === "two" || view === "split";
+  const isMobile = useIsMobile();
   const rowHeight = isSplit
     ? RESULT_SPLIT_ROW_HEIGHT_PX
-    : isCardLike
-      ? RESULT_ROW_HEIGHT_PX
-      : RESULT_GRID_ROW_HEIGHT_PX;
+    : isMobile
+      ? RESULT_ROW_MOBILE_HEIGHT_PX
+      : RESULT_ROW_HEIGHT_PX;
   const cellHeight = isSplit
     ? RESULT_SPLIT_HEIGHT_PX
-    : isCardLike
-      ? RESULT_CARD_HEIGHT_PX
-      : RESULT_GRID_HEIGHT_PX;
-  const columns = view === "two" ? 2 : 1;
+    : isMobile
+      ? RESULT_CARD_MOBILE_HEIGHT_PX
+      : RESULT_CARD_HEIGHT_PX;
 
   return (
     <>
@@ -160,26 +170,21 @@ export function DiscoverList({
               cellHeight={cellHeight}
               getKey={(row) => row.id}
               renderRow={(row) =>
-                view === "split" ? (
+                isSplit ? (
                   <ResultSplitRow
                     row={row}
                     deviceType={deviceType}
                     isDataset={isDataset}
                     selected={row.id === selectedId}
+                    showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
-                ) : isCardLike ? (
+                ) : (
                   <ResultCard
                     row={row}
                     deviceType={deviceType}
                     isDataset={isDataset}
-                    onSelect={onSelect}
-                  />
-                ) : (
-                  <ResultGridRow
-                    row={row}
-                    deviceType={deviceType}
-                    isDataset={isDataset}
+                    showFormatDot={showFormatDots}
                     onSelect={onSelect}
                   />
                 )
@@ -273,6 +278,7 @@ export function DownloadedList({
   compact = false,
   sort,
   onInventoryChange,
+  showFormatDots = true,
 }: {
   cachedRows: CachedInventoryRow[];
   localRows: LocalInventoryRow[];
@@ -292,6 +298,7 @@ export function DownloadedList({
   compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
+  showFormatDots?: boolean;
 }) {
   // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
@@ -310,7 +317,7 @@ export function DownloadedList({
       ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
-    // Pinned rows order by pin recency, not the active sort, so "Pin to top" lands where expected.
+    // Pinned rows order by pin recency, not the active sort, so a new pin lands on top.
     const rank = makePinRank(pinnedIds);
     const pinRank = (item: InventoryItem) =>
       item.row.repoId ? rank(pinKey(item.row.repoId)) : Number.MAX_SAFE_INTEGER;
@@ -345,12 +352,16 @@ export function DownloadedList({
       .sort(
         (a, b) =>
           pinRank(a.item) - pinRank(b.item) ||
-          (sort === "name"
-            ? inventoryItemTitle(a.item).localeCompare(
-                inventoryItemTitle(b.item),
-              ) || a.index - b.index
-            : inventoryItemSize(b.item) - inventoryItemSize(a.item) ||
-              a.index - b.index),
+          (sort === "size"
+            ? inventoryItemSize(b.item) - inventoryItemSize(a.item)
+            : sort === "format"
+              ? inventoryItemFormatRank(a.item) -
+                inventoryItemFormatRank(b.item)
+              : 0) ||
+          inventoryItemTitle(a.item).localeCompare(
+            inventoryItemTitle(b.item),
+          ) ||
+          a.index - b.index,
       )
       .map((entry) => entry.item);
   }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);
@@ -390,6 +401,12 @@ export function DownloadedList({
     ? RESULT_SPLIT_ROW_HEIGHT_PX
     : RESULT_GRID_ROW_HEIGHT_PX;
   const cellHeightPx = compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX;
+  // VirtualRows scales its own slots with the UI font size. The pinned grid
+  // below lays the same rows out by hand, so it scales here to match.
+  const pinnedScale = useUiSpaceScale();
+  const pinnedRowHeightPx = Math.round(rowHeightPx * pinnedScale);
+  const pinnedCellHeightPx = Math.round(cellHeightPx * pinnedScale);
+  const pinnedColumnGapPx = Math.round(CATALOG_COLUMN_GAP_PX * pinnedScale);
   const renderInventoryRow = (item: InventoryItem) => (
     <InventoryRow
       row={item.row}
@@ -398,6 +415,7 @@ export function DownloadedList({
       dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
       deviceType={deviceType}
       compact={compact}
+      showFormatDot={showFormatDots}
       onSelect={onSelect}
       onChange={onInventoryChange}
     />
@@ -405,7 +423,7 @@ export function DownloadedList({
 
   if (!downloadedReady && !hasInventoryRows) {
     return (
-      <div className="flex min-h-[240px] items-center justify-center gap-3 text-ui-13 text-muted-foreground">
+      <div className="flex min-h-[calc(240px*var(--ui-space-scale,1))] items-center justify-center gap-3 text-ui-13 text-muted-foreground">
         <Spinner className="size-4" />
         Loading local inventory...
       </div>
@@ -433,7 +451,7 @@ export function DownloadedList({
               <button
                 type="button"
                 onClick={onClearFilters}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-full bg-transparent px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]"
               >
                 Show all types
               </button>
@@ -475,9 +493,9 @@ export function DownloadedList({
             style={{
               display: "grid",
               gridTemplateColumns: `repeat(${Math.max(1, columns)}, minmax(0, 1fr))`,
-              columnGap: 12,
-              rowGap: rowHeightPx - cellHeightPx,
-              paddingBottom: rowHeightPx - cellHeightPx,
+              columnGap: pinnedColumnGapPx,
+              rowGap: pinnedRowHeightPx - pinnedCellHeightPx,
+              paddingBottom: pinnedRowHeightPx - pinnedCellHeightPx,
             }}
           >
             {pinnedItems.map((item) => {
@@ -502,7 +520,7 @@ export function DownloadedList({
                   key={rowKey}
                   className="min-w-0"
                   style={{
-                    height: cellHeightPx,
+                    height: pinnedCellHeightPx,
                     opacity: dragRowKey === rowKey ? 0.4 : undefined,
                   }}
                   draggable={itemPinKey != null}

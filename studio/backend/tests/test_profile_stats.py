@@ -44,7 +44,7 @@ def _shared_setup_1(conn):
 def stats_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     invalidate_profile_stats_cache()
     yield
     invalidate_profile_stats_cache()
@@ -249,7 +249,7 @@ def test_api_only_usage_is_durable_idempotent_and_invalidates_cache(stats_db):
     assert after_insert["streak"]["current"] == 1
 
     # A fresh process/schema initialization still reads the same receipt.
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     invalidate_profile_stats_cache()
     after_restart = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")
     assert after_restart["totals"]["apiTokens"] == 50
@@ -278,7 +278,11 @@ def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(
         started = time.perf_counter()
         monitor.finish(entry_id)
         elapsed = time.perf_counter() - started
-        assert elapsed < 0.2
+        # The row count below is the sharp claim; this only rules out queueing on the lock.
+        # A second is already three orders of magnitude past a put_nowait, and this file is
+        # in the serial leg of studio-backend-ci.yml rather than under `-n 4`, so there is no
+        # contention to buy slack for: a looser bound just lets a stalling callback through.
+        assert elapsed < 1.0, f"finish() blocked on the locked database: {elapsed:.3f}s"
         assert (
             lock_conn.execute(
                 "SELECT COUNT(*) FROM api_usage_events WHERE id = ?", (entry_id,)
@@ -393,11 +397,24 @@ def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, c
     assert writer.submit(receipt)
     assert entered.wait(timeout = 1)
 
+    # What stop() hands its join, not how long the box took to get back: a wall-clock
+    # budget loose enough to survive `-n 4` is also loose enough to pass a stop() that
+    # waited whole seconds, which is the regression named here.
+    joins: list[float | None] = []
+    joining = writer._thread.join
+
+    def record_join(timeout = None):
+        joins.append(timeout)
+        return joining(timeout = timeout)
+
+    monkeypatch.setattr(writer._thread, "join", record_join)
+
     try:
         started = time.perf_counter()
         assert writer.stop(timeout = 0.03) is False
         elapsed = time.perf_counter() - started
-        assert elapsed < 0.2
+        assert joins == [0.03], f"stop() did not wait for exactly its own timeout: {joins}"
+        assert elapsed < 1.0, f"stop() ignored its 0.03s timeout: {elapsed:.3f}s"
         assert not writer.submit(_api_receipt("rejected-after-stop", datetime.now(timezone.utc)))
         assert writer._thread.is_alive()
         assert "may be lost if the process exits" in caplog.text
@@ -633,7 +650,7 @@ def test_existing_database_gets_additive_api_usage_schema(stats_db):
     finally:
         legacy.close()
 
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         assert conn.execute("SELECT value FROM legacy_marker").fetchone()[0] == "kept"
@@ -1778,3 +1795,61 @@ def test_inline_media_counts_as_attachments_without_double_counting(stats_db):
 
     # The image appears in both storage representations and twice inline.
     assert totals["attachments"] == 2
+
+
+def test_usage_csv_export_matches_profile_totals_and_scopes_api_rows(stats_db):
+    import csv
+    import io
+
+    from storage.profile_stats_db import USAGE_CSV_COLUMNS, export_usage_csv
+
+    day = datetime(2026, 3, 4, 12, 0, tzinfo = timezone.utc)
+    conn = studio_db.get_connection()
+    try:
+        _seed_thread(
+            conn,
+            "export",
+            "unused-thread-model",
+            [(day, _metadata(100, 25)), (day + timedelta(hours = 2), _metadata(300, 50))],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert record_api_usage(_api_receipt("mine", day + timedelta(hours = 1), model = "=HYPERLINK(1)"))
+    assert record_api_usage(_api_receipt("theirs", day, subject = "someone-else", total = 999))
+
+    text = export_usage_csv(tz_name = "UTC", subject = "external-client")
+    rows = list(csv.reader(io.StringIO(text)))
+
+    assert tuple(rows[0]) == USAGE_CSV_COLUMNS
+    assert rows[1:] == [
+        [
+            "2026-03-04 12:00:10",
+            "2026-03-04",
+            "chat",
+            "unsloth/gpt-oss-20b",
+            "100",
+            "25",
+            "125",
+            "5",
+        ],
+        ["2026-03-04 13:00:00", "2026-03-04", "api", "'=HYPERLINK(1)", "40", "10", "50", "0"],
+        [
+            "2026-03-04 14:00:10",
+            "2026-03-04",
+            "chat",
+            "unsloth/gpt-oss-20b",
+            "300",
+            "50",
+            "350",
+            "5",
+        ],
+    ]
+    totals = compute_profile_stats(days = 7, tz_name = "UTC", subject = "external-client")["totals"]
+    assert sum(int(row[6]) for row in rows[1:]) == totals["totalTokens"]
+    assert export_usage_csv(tz_name = "UTC", subject = "external-client") == text
+
+
+def test_usage_csv_export_is_header_only_without_history(stats_db):
+    from storage.profile_stats_db import USAGE_CSV_COLUMNS, export_usage_csv
+    assert export_usage_csv(subject = "external-client") == ",".join(USAGE_CSV_COLUMNS) + "\n"

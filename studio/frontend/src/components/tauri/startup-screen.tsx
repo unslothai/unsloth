@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
+import InstallLocation from "@/components/tauri/install-location";
 import { LogDetails } from "@/components/tauri/log-details";
 import {
   installProgressMessage,
@@ -10,22 +11,30 @@ import {
   type StartupMessage,
 } from "@/components/tauri/startup-messages";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
+import { useDocumentFlag } from "@/lib/document-flag";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
+import {
+  enableWindowsLongPaths,
+  windowsLongPathsNeedPrompt,
+} from "@/lib/windows-long-paths";
 
 import { AnimatePresence, motion } from "motion/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 interface StartupScreenProps {
   status: BackendStatus;
   logs: string[];
   error: string | null;
+  diskFull: boolean;
   currentStepIndex: number;
   progressDetail: string | null;
   startupMessage: StartupMessage;
   elevationPackages: string[];
-  onInstall: () => void;
+  onInstall: (options?: InstallOptions) => void;
   onRetry: () => void;
   onRetryInstall: () => void;
   onApproveElevation: () => void;
@@ -46,7 +55,7 @@ function Logo() {
         src="/sticker.png"
         alt=""
         aria-hidden="true"
-        className="h-[60px] w-[60px] object-contain"
+        className="h-[calc(60px*var(--ui-space-scale,1))] w-[calc(60px*var(--ui-space-scale,1))] object-contain"
       />
       <span
         className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
@@ -76,7 +85,64 @@ function CheckingContent() {
   );
 }
 
-function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
+type InstallOptions = { skipLongPaths?: boolean; chatOnly?: boolean };
+
+function NotInstalledContent({
+  onInstall,
+}: {
+  onInstall: (options?: InstallOptions) => void;
+}) {
+  const [phase, setPhase] = useState<
+    "idle" | "checking" | "explain" | "elevating"
+  >("idle");
+  const [chatOnly, setChatOnly] = useState(false);
+
+  // Synchronous: a double click lands before the re-render that disables the buttons.
+  const busy = useRef(false);
+
+  async function getStarted() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setPhase("checking");
+    if (await windowsLongPathsNeedPrompt()) {
+      busy.current = false;
+      setPhase("explain");
+    } else {
+      onInstall({ chatOnly });
+    }
+  }
+
+  async function allowLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    setPhase("elevating");
+    const outcome = await enableWindowsLongPaths();
+    // "failed" leaves setup.ps1's own UAC as the fallback.
+    onInstall({ skipLongPaths: outcome === "declined", chatOnly });
+  }
+
+  function skipLongPaths() {
+    if (busy.current) {
+      return;
+    }
+    busy.current = true;
+    onInstall({ skipLongPaths: true, chatOnly });
+  }
+
+  if (phase === "explain" || phase === "elevating") {
+    return (
+      <LongPathsExplainer
+        waiting={phase === "elevating"}
+        onContinue={allowLongPaths}
+        onSkip={skipLongPaths}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
@@ -89,11 +155,75 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         >
           To install Unsloth, click Get Started.
         </p>
-        <Button size="hero" onClick={onInstall}>
+        <Button
+          size="hero"
+          onClick={getStarted}
+          disabled={phase === "checking"}
+        >
           Get Started
         </Button>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id="install-chat-only"
+            checked={chatOnly}
+            disabled={phase !== "idle"}
+            onCheckedChange={(checked) => setChatOnly(checked === true)}
+          />
+          <Label
+            htmlFor="install-chat-only"
+            className="text-ui-12 font-normal text-muted-foreground"
+          >
+            Chat only (GGUF): smaller install, no training
+          </Label>
+        </div>
+        <InstallLocation disabled={phase !== "idle"} />
       </div>
     </div>
+  );
+}
+
+function LongPathsExplainer({
+  waiting,
+  onContinue,
+  onSkip,
+}: {
+  waiting: boolean;
+  onContinue: () => void;
+  onSkip: () => void;
+}) {
+  return (
+    <>
+      <Logo />
+      <div className="mt-8 flex max-w-md flex-col items-center gap-2">
+        <p className="text-sm font-medium text-foreground">
+          Windows will ask for permission
+        </p>
+        <p className="text-xs text-muted-foreground">
+          Approve{" "}
+          <span className="font-medium text-foreground">
+            Registry Console Tool
+          </span>{" "}
+          once to turn on long file paths for compiled kernels.
+        </p>
+        {waiting ? (
+          <div className="mt-4 flex items-center gap-2">
+            <Spinner className="size-4 text-primary" />
+            <p className="text-xs text-muted-foreground" aria-live="polite">
+              Waiting for Windows permission...
+            </p>
+          </div>
+        ) : (
+          <div className="mt-4 flex gap-3">
+            <Button variant="muted" size="hero" onClick={onSkip}>
+              Skip
+            </Button>
+            <Button size="hero" onClick={onContinue}>
+              Continue
+            </Button>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -188,10 +318,12 @@ function ClosingContent() {
 
 function InstallErrorContent({
   error,
+  diskFull,
   onRetryInstall,
   onCopyDiagnostics,
 }: {
   error: string | null;
+  diskFull: boolean;
   onRetryInstall: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
@@ -199,7 +331,9 @@ function InstallErrorContent({
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Setup ran into a problem</p>
+        <p className="text-sm font-medium text-destructive">
+          {diskFull ? "Not enough disk space" : "Setup ran into a problem"}
+        </p>
         {error && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
@@ -331,6 +465,7 @@ export function StartupScreen({
   status,
   logs,
   error,
+  diskFull,
   currentStepIndex,
   progressDetail,
   startupMessage,
@@ -360,6 +495,7 @@ export function StartupScreen({
         return (
           <InstallErrorContent
             error={error}
+            diskFull={diskFull}
             onRetryInstall={onRetryInstall}
             onCopyDiagnostics={onCopyDiagnostics}
           />
@@ -439,13 +575,17 @@ function StartupSurface({ children }: { children: ReactNode }) {
  * it is Z_LAYER.STARTUP_SCREEN, which lib/z-layers puts over both.
  */
 export function ClosingScreen() {
+  useDocumentFlag("data-blocking-screen-open", true);
   return (
     // pointer-events-auto, not the inherited default: Radix parks pointer-events:none on
     // <body> while any modal layer is open, and a quit raised from the window controls,
     // the tray or Alt+F4 never closes that layer. Inheriting it would make the overlay
     // click-through onto the dialog it is hiding, so clicks meant for a screen that says
     // the app is closing would land on buttons the user can no longer see.
-    <div className="pointer-events-auto fixed inset-0 z-[9999]">
+    <div
+      data-blocking-screen=""
+      className="pointer-events-auto fixed inset-0 z-[9999]"
+    >
       <StartupSurface>
         <div className="flex h-full w-full flex-col items-center justify-center text-center">
           <ClosingContent />

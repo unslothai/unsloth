@@ -13,7 +13,7 @@ def test_shared_submenu_uses_its_layout_width_on_mobile():
     assert 'import { useIsMobile } from "@/hooks/use-mobile";' in source
     assert "element.offsetWidth" in source
     assert "element.getBoundingClientRect().width" not in source
-    assert "new ResizeObserver(updateContentWidth)" in source
+    assert "new ResizeObserver(updateContentSize)" in source
     assert "isMobile && contentWidth > 0 ? -contentWidth : sideOffset" in source
     assert "sideOffset={compactSideOffset}" in source
     assert 'isMobile && contentWidth === 0 ? "hidden"' in source

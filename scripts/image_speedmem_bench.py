@@ -56,7 +56,7 @@ _CONFIGS: dict[str, dict[str, Any]] = {
     "compile": dict(te = "none", speed = "default", attn = "auto", cache = "off"),
     # max tier (max-autotune regional compile + TF32 + fused QKV), uncached
     "speedmax": dict(te = "none", speed = "max", attn = "auto", cache = "off"),
-    # default tier + FBCache (the auto path for 20+ step schedules)
+    # default tier + explicit FBCache (auto engages it only on the max tier)
     "fbcache": dict(te = "none", speed = "default", attn = "auto", cache = "fbcache"),
     # FBCache without compile: isolates the cache's drift from the compile floor
     "fbcache_eager": dict(te = "none", speed = "eager", attn = "auto", cache = "fbcache"),

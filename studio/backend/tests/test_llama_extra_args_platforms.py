@@ -74,13 +74,15 @@ def _apply_platform(monkeypatch, platform) -> None:
 
 
 def _stable(cmd: list[str]) -> list[str]:
-    """The command with the two per-launch values masked (port, model path)."""
+    """The command with the per-launch values masked (port, model path, API key file)."""
     masked = list(cmd)
     for index, token in enumerate(masked):
         if index and masked[index - 1] == "--port":
             masked[index] = "<port>"
         elif index and masked[index - 1] in {"-m", "--model"}:
             masked[index] = "<model>"
+        elif index and masked[index - 1] == "--api-key-file":
+            masked[index] = "<api-key-file>"
     return masked
 
 

@@ -1,29 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rendered cancel/retry regression for staged diffusion downloads.
-
-The browser runs the real Unsloth UI against a deterministic API simulation of
-the reported sequence:
-
-1. Start with the 2.6 GB Klein GGUF already cached.
-2. Stage its missing 8.2 GB companion assets through the Downloads panel.
-3. Cancel, pick the same quant again, and resume only those companion assets.
-4. Load exactly once and observe a short 100% GPU-finalization state that reaches ready.
-
-No model bytes are downloaded and no GPU is required.
-"""
+"""Staged diffusion download cancel and retry in the real UI against simulated APIs; needs no GPU."""
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import Route, sync_playwright
+from playwright.sync_api import Route, expect, sync_playwright
+from playwright.sync_api import TimeoutError as PWTimeoutError
 
 from playwright_image_model_footprint import (
     BASE_URL,
+    KLEIN_ROW,
     CHECKPOINT_BYTES,
     COMPANION_BYTES,
     FILENAME,
@@ -40,6 +32,7 @@ ART_DIR.mkdir(parents = True, exist_ok = True)
 EXPECT = os.environ.get("PW_EXPECT", "after").strip().lower()
 if EXPECT not in {"before", "after"}:
     raise ValueError("PW_EXPECT must be 'before' or 'after'")
+DOWNLOAD_ONLY = os.environ.get("PW_DOWNLOAD_ONLY", "0") == "1"
 CHECKPOINT_CACHED = os.environ.get("PW_CHECKPOINT_CACHED", "1").strip() != "0"
 if EXPECT == "before" and not CHECKPOINT_CACHED:
     raise ValueError("The before-state requires PW_CHECKPOINT_CACHED=1")
@@ -84,17 +77,93 @@ def _entry(repo_id: str) -> dict[str, object]:
     }
 
 
+# Unguarded select() in Chrome refocuses a blurred input, so two fields can steal focus from each
+# other in a loop. Both focuses in one task reproduce the race deterministically.
+_FOCUS_STEAL_PROBE = """() => new Promise(resolve => {
+    const box = name => document.querySelector(`input[aria-label="${name}"]`);
+    const first = box('Steps'), second = box('Guidance');
+    if (!first || !second) return resolve({error: 'Steps/Guidance inputs are not on the page'});
+    let events = 0;
+    const count = () => { events++; };
+    document.addEventListener('focusin', count, true);
+    first.focus();
+    second.focus();
+    const settled = events;
+    setTimeout(() => {
+        document.removeEventListener('focusin', count, true);
+        resolve({
+            active: document.activeElement?.getAttribute('aria-label') ?? null,
+            churn: events - settled,
+        });
+    }, 500);
+})"""
+
+
+def _assert_a_queued_select_does_not_steal_focus(page) -> None:
+    result = page.evaluate(_FOCUS_STEAL_PROBE)
+    assert not result.get("error"), result["error"]
+    # The end-of-frame answer looks right even during the loop, so assert the churn too.
+    assert (
+        result["active"] == "Guidance"
+    ), f"focus left the field it was moved to: {result['active']}"
+    assert result["churn"] <= 2, (
+        f"the settings fields are stealing focus from each other: {result['churn']} focus "
+        "events in 500ms after focus settled. A queued select() must not re-focus an input "
+        "the user has already left."
+    )
+
+
 def _open_quant(page, *, navigate: bool) -> None:
     if navigate:
         page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
-    trigger = page.get_by_role("button", name = "Select image model")
+    trigger = page.locator(".unsloth-model-selector-trigger:visible")
     trigger.wait_for(state = "visible", timeout = 30_000)
-    trigger.click()
+    trigger.scroll_into_view_if_needed()
+    page.evaluate("""async () => {
+        const scrollers = [...document.querySelectorAll('*')]
+            .filter(el => el.scrollHeight > el.clientHeight);
+        let last = '', stable = 0;
+        await new Promise(resolve => {
+            function frame() {
+                const positions = scrollers.map(el => el.scrollTop).join(',');
+                stable = positions === last ? stable + 1 : 0;
+                last = positions;
+                if (stable >= 8) resolve(); else requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+        });
+    }""")
+    menu = page.locator(".unsloth-model-selector-menu")
+
+    # A late re-render can close the dismiss-on-scroll picker right after it opens; reopen in that case.
+    def _open() -> bool:
+        return bool(menu.count()) and menu.first.is_visible()
+
+    last = ""
+    for attempt in range(5):
+        # The trigger toggles, so do not click an already-open picker.
+        if not _open():
+            trigger.click()
+        try:
+            menu.wait_for(state = "visible", timeout = 5_000)
+            klein_row(page).wait_for(state = "visible", timeout = 15_000)
+            break
+        except PWTimeoutError as error:
+            last = str(error).splitlines()[0]
+            if _open():
+                raise AssertionError(
+                    f"the picker is open and {KLEIN_ROW.pattern} is not in it after {attempt + 1} "
+                    f"attempts: {last}"
+                ) from None
+    else:
+        raise AssertionError(
+            f"the picker did not stay open for {KLEIN_ROW.pattern} across 5 attempts: {last}"
+        )
     klein_row(page).click()
     gguf = page.get_by_text("GGUF", exact = True)
     if gguf.count() == 1:
         gguf.click()
-    quant = page.locator("button").filter(has_text = "Q4_K_M")
+    quant = page.locator("button[data-model-picker-option]").filter(has_text = "Q4_K_M")
     quant.wait_for(state = "visible")
     assert quant.count() == 1
     quant.click()
@@ -110,10 +179,13 @@ def main() -> None:
         "load_calls": 0,
         "load_payloads": [],
         "load_progress_polls": 0,
-        "loaded": False,
+        "loaded": DOWNLOAD_ONLY,
         "plan_snapshots": [],
     }
     page_errors: list[str] = []
+    unload_calls = []
+    held_plans = []
+    hold_plan = DOWNLOAD_ONLY
 
     def download_plan() -> dict[str, object]:
         entries = [_entry(COMPANION_REPO)]
@@ -188,7 +260,11 @@ def main() -> None:
         }
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless = True)
+        engine = getattr(playwright, os.environ.get("PW_BROWSER", "chromium"))
+        executable = os.environ.get("PW_EXECUTABLE")
+        browser = engine.launch(
+            headless = True, **({"executable_path": executable} if executable else {})
+        )
         context = browser.new_context(
             viewport = {"width": 1440, "height": 900},
             reduced_motion = "reduce",
@@ -214,12 +290,14 @@ def main() -> None:
             payload = json.loads(request.post_data or "{}")
             if path in {"/api/hub/gguf-variants", "/api/models/gguf-variants"}:
                 variants = _api_payload(path, query, full_footprint = True)
-                # This is the critical reported precondition: the picker knows the 2.6 GB
-                # checkpoint is cached, but its separate 8.2 GB requirements are absent.
+                # The reported precondition: checkpoint cached, separate requirements absent.
                 variants["variants"][0]["downloaded"] = CHECKPOINT_CACHED
                 _json(route, variants)
                 return
             if path == "/api/inference/images/download-plan":
+                if hold_plan:
+                    held_plans.append(route)
+                    return
                 _json(route, download_plan())
                 return
             if path == "/api/studio/download-transport-capabilities":
@@ -260,6 +338,11 @@ def main() -> None:
                 return
             if path in {"/api/hub/gguf-download-progress", "/api/hub/download-progress"}:
                 _json(route, job_progress(query["repo_id"][0]))
+                return
+            if path == "/api/inference/images/unload" and request.method == "POST":
+                unload_calls.append(payload)
+                state["loaded"] = False
+                _json(route, _status(loaded = False))
                 return
             if path == "/api/inference/images/load" and request.method == "POST":
                 state["load_calls"] = int(state["load_calls"]) + 1
@@ -313,7 +396,31 @@ def main() -> None:
         page = context.new_page()
         page.on("pageerror", lambda exc: page_errors.append(str(exc)))
 
-        _open_quant(page, navigate = True)
+        if DOWNLOAD_ONLY:
+            page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
+            page.get_by_role("button", name = "Advanced", exact = True).click()
+            page.get_by_role("combobox", name = "On model selection").click()
+            page.get_by_role("option", name = "Download only", exact = True).click()
+            page.get_by_role("textbox", name = "Steps", exact = True).fill("17")
+            page.get_by_role("textbox", name = "Guidance", exact = True).fill("2.5")
+            _assert_a_queued_select_does_not_steal_focus(page)
+        _open_quant(page, navigate = not DOWNLOAD_ONLY)
+        if DOWNLOAD_ONLY:
+            with page.expect_request(
+                lambda request: urlparse(request.url).path == "/api/inference/images/unload"
+            ):
+                page.locator("[data-eject-hit]:visible").click()
+            expect(page.get_by_role("button", name = "Select image model")).to_be_visible()
+            page.get_by_test_id("nav-row-hub").click()
+            # Path only: the Hub appends its own ?tab= on mount.
+            expect(page).to_have_url(re.compile(r"/hub(\?|$)"))
+            assert held_plans, "No pending plan to exercise"
+            hold_plan = False
+            for route in held_plans:
+                _json(route, download_plan())
+            held_plans.clear()
+            page.get_by_test_id("nav-row-images").click()
+            expect(page).to_have_url(re.compile(r"/images(\?|$)"))
         if EXPECT == "before":
             deadline = time.monotonic() + 20
             while int(state["load_calls"]) < 1 and time.monotonic() < deadline:
@@ -358,12 +465,16 @@ def main() -> None:
         companion_row = page.locator(".hub-download-panel").filter(has_text = COMPANION_REPO)
         companion_row.wait_for(state = "visible", timeout = 10_000)
         panel_text = companion_row.inner_text()
-        assert "Required assets" in panel_text
+        assert "Encoder & decoder" in panel_text
         assert "@diffusion" not in panel_text
         if not CHECKPOINT_CACHED:
             assert "Model file" in panel_text
         assert page.get_by_text("Downloading model requirements", exact = False).count() == 0
-        assert page.get_by_text("Downloading model…", exact = True).count() == 0
+        pick_toast = page.locator("[data-sonner-toast]").filter(has_text = "Downloading model…")
+        if DOWNLOAD_ONLY:
+            assert pick_toast.count() == 0
+        else:
+            expect(pick_toast).to_contain_text("of 8.2 GB" if CHECKPOINT_CACHED else "of 11 GB")
         assert page.get_by_text("Loading to GPU…", exact = True).count() == 0
         assert state["load_calls"] == 0, "missing companion bypassed staging"
         page.screenshot(path = str(ART_DIR / "image-companion-download.png"), full_page = True)
@@ -379,6 +490,21 @@ def main() -> None:
         assert state["load_calls"] == 0, "cancelled staging unexpectedly loaded the model"
 
         _open_quant(page, navigate = False)
+        if DOWNLOAD_ONLY:
+            page.locator(".hub-download-panel li").filter(has_text = COMPANION_REPO).get_by_text(
+                "Downloaded", exact = True
+            ).wait_for(timeout = 20_000)
+            assert state["starts"] == [*expected_initial_starts, COMPANION_REPO], state["starts"]
+            assert state["load_calls"] == 0, "download-only completion loaded the model"
+            assert state["loaded"] is False and len(unload_calls) == 1
+            expect(page.get_by_role("textbox", name = "Steps", exact = True)).to_have_value("17")
+            expect(page.get_by_role("textbox", name = "Guidance", exact = True)).to_have_value("2.5")
+            assert not page_errors, page_errors
+            browser.close()
+            print(
+                "PASS download-only cancel, retry and completion preserve the generation settings"
+            )
+            return
         page.locator("[data-sonner-toast]").filter(has_text = "Loading to GPU").wait_for(
             state = "visible", timeout = 20_000
         )

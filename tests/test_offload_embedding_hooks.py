@@ -30,7 +30,6 @@ def _emb():
 
 
 def _lm_head(device):
-    # Stand-in decoder reference (untied lm_head) whose weight device is the target.
     return nn.Linear(8, 32, bias = False).to(device)
 
 
@@ -47,7 +46,6 @@ def test_install_and_idempotent():
 
 
 def test_cpu_noop_forward():
-    # cpu weight + cpu decoder + cpu input -> output stays cpu.
     emb = _emb()
     install(emb, _lm_head(CPU), CPU)
     out = emb(torch.randint(0, 32, (2, 5)))
@@ -59,7 +57,6 @@ def test_cuda_input_roundtrip():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
         return
-    # CPU weight, CUDA decoder + input -> lookup on cpu, output back on cuda.
     emb = _emb().to("cpu")
     install(emb, _lm_head("cuda"), torch.device("cuda"))
     out = emb(torch.randint(0, 32, (2, 5), device = "cuda"))
@@ -70,7 +67,6 @@ def test_cpu_input_still_returns_to_decoder():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
         return
-    # P1: offload makes the input arrive on cpu; the output must still reach the cuda decoder.
     emb = _emb().to("cpu")
     install(emb, _lm_head("cuda"), torch.device("cuda"))
     out = emb(torch.randint(0, 32, (2, 5), device = "cpu"))
@@ -81,7 +77,6 @@ def test_live_decoder_over_stale_fallback():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
         return
-    # P2: fallback captured as cpu (model loaded on cpu), but the decoder later lives on cuda.
     emb = _emb().to("cpu")
     install(emb, _lm_head("cuda"), CPU)
     out = emb(torch.randint(0, 32, (2, 5), device = "cuda"))
@@ -89,8 +84,7 @@ def test_live_decoder_over_stale_fallback():
 
 
 def test_meta_lm_head_falls_back():
-    # A disk-offloaded (meta) lm_head must not be used as the return device: moving hidden states to meta is
-    # unrecoverable, so fall back to the captured device. No GPU needed.
+    # Moving hidden states to meta is unrecoverable, so a meta lm_head is not the return device.
     emb = _emb().to("cpu")
     lm = _lm_head(CPU)
     lm.weight = nn.Parameter(lm.weight.to("meta"))
@@ -103,7 +97,6 @@ def test_cuda_weight_pulled_back_to_gpu():
     if not torch.cuda.is_available():
         print("[SKIP] CUDA not available")
         return
-    # bf16 weight later pulled back to gpu + cuda input -> no-op, stays on cuda.
     emb = _emb().to("cuda")
     install(emb, _lm_head("cuda"), torch.device("cuda"))
     out = emb(torch.randint(0, 32, (2, 5), device = "cuda"))

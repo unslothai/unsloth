@@ -67,17 +67,23 @@ test("the unmeasured collapsible reads no geometry at all", () => {
   }
 });
 
-test("the animating child carries min-height:0 and overflow:hidden", () => {
-  // Both on one element, and that element is the wrapper the component renders itself, so a
-  // caller cannot omit them.
-  assert.match(UNMEASURED, /className="min-h-0 overflow-hidden"/);
+test("the animating child carries min-height:0 and clips vertically only", () => {
+  // All on one element, and that element is the wrapper the component renders itself, so a
+  // caller cannot omit them. Hidden is the fallback where `overflow: clip` is missing; the x axis
+  // stays visible so list markers hanging past the column are not cut, and min-w-0 stands in
+  // for the shrink that hidden used to give.
+  assert.match(
+    UNMEASURED,
+    /className="min-h-0 min-w-0 overflow-hidden supports-\[overflow:clip\]:overflow-x-visible supports-\[overflow:clip\]:overflow-y-clip"/,
+  );
 });
 
 test("the collapse is a grid-template-rows transition between 0fr and 1fr", () => {
   const code = codeOf(UNMEASURED);
   assert.ok(code.includes("transition-[grid-template-rows]"));
-  assert.ok(code.includes('"grid-rows-[1fr]"'));
-  assert.ok(code.includes('"grid-rows-[0fr]"'));
+  // minmax(0, ...) on both ends: a bare `1fr` row goes stale in WebKit when the pane narrows.
+  assert.ok(code.includes('"grid-rows-[minmax(0,1fr)]"'));
+  assert.ok(code.includes('"grid-rows-[minmax(0,0fr)]"'));
   // The closed state must switch the display utility, not lean on the `hidden` attribute: the UA
   // sheet's `[hidden] { display: none }` loses to the author-level `display: grid`.
   assert.ok(code.includes('present ? "grid" : "hidden"'));
@@ -141,25 +147,12 @@ test("the flag is on", () => {
 
 test("the reasoning pane picks its primitive from the flag on all three slots", () => {
   const code = codeOf(REASONING);
-  // Three primitive slots, plus the streaming-height release and the scroll lock, which both
-  // have to outlast the transition rather than the nominal duration.
-  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 6);
+  // Three primitive slots, the import, and the scroll lock that outlasts the transition.
+  assert.equal(code.match(/GRID_COLLAPSE_REASONING_ENABLED/g)?.length, 5);
   assert.ok(code.includes("<UnmeasuredCollapsible {...rootProps}>"));
   assert.ok(code.includes("<Collapsible {...rootProps}>"));
   assert.ok(code.includes("UnmeasuredCollapsibleTrigger"));
   assert.ok(code.includes("<UnmeasuredCollapsibleContent"));
-});
-
-test("the streaming height cap outlives the grid collapse, but only on the grid path", () => {
-  const code = codeOf(REASONING);
-  // `1fr` resolves against live content every frame, so releasing `max-h-64` before the row has
-  // finished shrinking grows it mid-collapse -- the jump the retention timer exists to prevent.
-  // The height keyframes animate a height captured at toggle time, so the default path is immune
-  // and must keep its exact ANIMATION_DURATION.
-  assert.ok(
-    code.includes("ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS"),
-  );
-  assert.ok(code.includes("const closeDelay = GRID_COLLAPSE_REASONING_ENABLED"));
 });
 
 test("the scroll lock outlasts the grid collapse, and the shared hook's other callers do not move", () => {

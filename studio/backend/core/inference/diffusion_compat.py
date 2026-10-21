@@ -249,15 +249,9 @@ def _read_gguf_header(
 ) -> bytes:
     """A bounded prefix of a Hub-hosted GGUF, or b"" when it cannot be read.
 
-    One wall-clock bound over the WHOLE operation, request included. requests' timeout is an
-    inactivity timeout: a peer (or an intermediary) that trickles response HEADERS resets it on
-    every byte, so a deadline armed only once ``get()`` has returned leaves the caller blocked
-    before the bounded body reader is ever reached -- and this runs on the /images/load route
-    thread and on the download-plan path, both of which promised to fail open in seconds.
-
-    So the request AND the drain run on a worker this call can walk away from. On timeout the
-    response, if one exists by then, is half-closed to wake the worker; either way the caller
-    returns with whatever arrived."""
+    One wall-clock bound over the WHOLE operation: requests' own timeout is per-byte, so a
+    trickled response would block this fail-open path past any deadline armed after ``get()``.
+    Request and drain therefore run on a worker this call can abandon."""
     try:
         from huggingface_hub import hf_hub_url
         from huggingface_hub.utils import build_hf_headers, get_session
@@ -594,7 +588,7 @@ def speech_pick_refusal(
     hf_token: Optional[str] = None,
     allow_network: bool = True,
 ) -> Optional[str]:
-    """Why this diffusion pick cannot load, when it names a speech GGUF, else None.
+    """Why this diffusion pick cannot load, when it names a speech or text-encoder GGUF, else None.
 
     A media pick names its file, and ``detect_family_for_pick`` resolves the family from the FOLDER
     rather than that name, so a csm quant sitting beside a FLUX denoiser answers flux.1: the pick
@@ -617,6 +611,16 @@ def speech_pick_refusal(
         return (
             f"'{os.path.basename(gguf_filename)}' is a {named}speech checkpoint, which no image "
             "or video backend can decode. Pick one of this folder's media GGUFs instead."
+        )
+    # A text-encoder GGUF (a FLUX.2-klein Qwen3 encoder repo tagged text-to-image, #9875) matches a family by name, then
+    # loads as the denoiser with every tensor unmapped and dies in .to() with "Cannot copy out of meta tensor".
+    from core.inference.diffusion_content import _TE_GGUF_ARCHS
+
+    if arch in _TE_GGUF_ARCHS:
+        return (
+            f"'{os.path.basename(gguf_filename)}' is a text encoder ({arch} GGUF), not a diffusion "
+            "model (DiT/UNet), so it cannot be loaded as the image or video model. Pick the "
+            "model's diffusion GGUF instead."
         )
     return None
 
@@ -648,6 +652,119 @@ def assert_flux2_pick_compatible(
     ``ValueError``, like every other unloadable-pick refusal: /images/load maps it to 400 and
     ``/images/download-plan`` catches it, whereas a RuntimeError escapes the plan as a bare 500."""
     reason = flux2_pick_mismatch(fam, repo_id, gguf_filename, base_repo, hf_token)
+    if reason is not None:
+        raise ValueError(reason)
+
+
+def _flux3_pipeline_index(
+    repo_id: str, token: Optional[str], allow_network: bool
+) -> Optional[dict]:
+    """A FLUX.3 pipeline's ``modular_model_index.json``: the local folder's, the cached copy, or (when allowed) a
+    fetch of that one small file. None on anything unreadable."""
+    import json
+
+    from .diffusion_flux3 import FLUX3_INDEX
+
+    try:
+        root = Path(repo_id).expanduser()
+        if root.is_dir():
+            return json.loads((root / FLUX3_INDEX).read_text(encoding = "utf-8-sig"))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        # The gated vendor repo's manifest is read from its byte-identical unsloth mirror (pure table lookup), so a
+        # load that fetches everything from the mirror does not also probe, and 401 on, the vendor repo.
+        from core.inference.diffusion_families import prefer_ungated_mirror
+
+        source = prefer_ungated_mirror(repo_id, token, files = (FLUX3_INDEX,))
+        local = _local_gguf_path(repo_id, FLUX3_INDEX)
+        if local is None and source != repo_id:
+            local = _local_gguf_path(source, FLUX3_INDEX)
+        if local is None and allow_network:
+            from huggingface_hub import hf_hub_download
+            from utils.hf_cache_settings import active_hf_hub_cache
+            local = hf_hub_download(
+                source, FLUX3_INDEX, token = token, cache_dir = active_hf_hub_cache()
+            )
+        if local is None:
+            return None
+        payload = json.loads(Path(local).read_text(encoding = "utf-8-sig"))
+        return payload if isinstance(payload, dict) else None
+    except Exception:  # noqa: BLE001 -- offline, gated or odd: the loader's own check still runs
+        return None
+
+
+def _flux3_pick_tensor_names(
+    repo_id: str, filename: str, token: Optional[str], allow_network: bool
+) -> tuple[Optional[list[str]], bool]:
+    """Tensor names of a FLUX.3 single file / GGUF pick without reading a weight, and whether it declares ComfyUI
+    quantization: the file on disk, else a GGUF header range read or the safetensors header from the Hub. None
+    names on anything unreadable."""
+    from .diffusion_families import (
+        _checkpoint_comfy_declared,
+        _checkpoint_tensor_names,
+        flux3_comfy_declared,
+        gguf_tensor_names_from_header,
+    )
+
+    local = _local_gguf_path(repo_id, filename)
+    if local is not None:
+        return _checkpoint_tensor_names(local), _checkpoint_comfy_declared(local)
+    if not allow_network:
+        return None, False
+    try:
+        if filename.lower().endswith(".gguf"):
+            return gguf_tensor_names_from_header(
+                _shared_gguf_header(repo_id, filename, token, None)
+            ), False
+        from huggingface_hub import HfApi
+
+        meta = HfApi().parse_safetensors_file_metadata(repo_id, filename, token = token)
+        names = list(meta.tensors)
+        return names, flux3_comfy_declared(names, getattr(meta, "metadata", None))
+    except Exception:  # noqa: BLE001 -- offline, gated or odd: the loader's own check still runs
+        return None, False
+
+
+def flux3_pick_mismatch(
+    fam: Any,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> Optional[str]:
+    """Why a FLUX.3 pick cannot load under ``fam``, or None when nothing is known to be wrong: a single file /
+    GGUF of the other variant (or a BFL quantized package) from its tensor names, a full pipeline of the other
+    variant from its manifest. Headers and the manifest only; None on anything unreadable."""
+    name = str(getattr(fam, "name", ""))
+    if not name.startswith("flux.3"):
+        return None
+    if not gguf_filename:
+        from .diffusion_flux3 import flux3_family_blocks_mismatch, flux3_index_family
+        declared = flux3_index_family(
+            _flux3_pipeline_index(repo_id, normalize_token(hf_token), allow_network)
+        )
+        return flux3_family_blocks_mismatch(name, declared, repo_id)
+    from .diffusion_families import flux3_variant_mismatch_reason
+
+    names, comfy_declared = _flux3_pick_tensor_names(
+        repo_id, gguf_filename, normalize_token(hf_token), allow_network
+    )
+    return flux3_variant_mismatch_reason(
+        name, Path(str(gguf_filename)).name, names, comfy_declared = comfy_declared
+    )
+
+
+def assert_flux3_pick_compatible(
+    fam: Any,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> None:
+    """Refuse a FLUX.3 pick of the other variant before anything is downloaded or unloaded
+    (``flux3_pick_mismatch``). The loader's own checks run after the resident pipeline is gone."""
+    reason = flux3_pick_mismatch(fam, repo_id, gguf_filename, hf_token, allow_network)
     if reason is not None:
         raise ValueError(reason)
 

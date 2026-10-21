@@ -35,12 +35,12 @@ def test_aac_and_mp2_are_transcoded_instead_of_forwarded_as_mp3(monkeypatch):
     monkeypatch.setattr(
         inference_route,
         "_decode_audio_mono",
-        lambda raw: (decoded.append(raw) or object(), 16_000),
+        lambda raw: (decoded.append(raw) or np.zeros(0, np.float32), 16_000),
     )
     monkeypatch.setattr(
         inference_route,
         "_fit_transcoded_audio_to_wav_cap",
-        lambda array, sample_rate: (array, sample_rate),
+        lambda array, sample_rate, **_: (array, sample_rate),
     )
     monkeypatch.setattr(
         inference_route,
@@ -81,26 +81,30 @@ def _encode_wma() -> bytes:
     return buffer.getvalue()
 
 
+# 0.4 s of a 440 Hz tone as AMR-NB at 12.2 kbit/s, 678 bytes. Stored rather than encoded here:
+# PyAV 19.0.0 wheels still decode AMR but no longer ship an AMR encoder, so building the fixture
+# at test time failed every test below with UnknownCodecError while the decoder the product
+# depends on was fine. Encoded with PyAV 18.1.0 from the same tone the old fixture generated.
+_AMR_NB_440HZ = base64.b64decode(
+    "IyFBTVIKPCQCB0gQS8fMygN69kBlccAAYacLDD94AAAacSQCayA8LXrmkAA3h2BeA1oHVr3p6Gb5"
+    "Lu9EzyrIpP3Gaz70MDwkBuLoADWf4ZQDevbv9s/CmWXyFVr35EkEhUFlPm0gPC2A5YgAZ5/Q0AZq"
+    "2LMr0PKTDEs69hdMV8GClhn9f6A8JAepSAA127CkAerVt0Ma+9xD//PQH+VOQ4f1rFMSsDwtgOKI"
+    "AGf5kIYGWsKfc8PR+FdYj5XvaUwAUI/qupQwPCQG5UAAH5/BlAN6m1+Cre4KwEx2nrBnsj/KUsYg"
+    "fSA8LA/D8ABhn2GOBhqqrkIj49cwP+muHBmtO7CcpNEXYDwkBuWQAB+f8IYB2swWDDr2GECheNQZ"
+    "niOealsfXBlwPC2BqUgAddu5AgY604cpLMjWKUm7HSRoIOT+bbAenPA8JAbikAA1n2GUA1p3O9Q5"
+    "xi7nPsbMZgk5OneAJFmZoDwtgOVIAGWf0JoGOtR9TA3yU1yG5bqrGEk0EO0y2mJAPCQHw/AANZ/w"
+    "sAGa4b7SUcjWXF5Bn1ukotzoHLClaDA8LYDlkABzn5GMBlrxuRko45kdoUOX9fYutAMI68eFoDwk"
+    "B6lIADXbIZ4BulEogbnQ9Om8lo1vgc+o/Aj/DZ/wPC2A4pAAcduwsgZa0r4Q9PEYTWPWv0geT797"
+    "jSDebzA8JAblSAAfn+GOAbqKTR5t6+fpZ36WL2aL+IZnQtx6sDwsD8PwAGWfYbQEmmwOO5fFgwOR"
+    "iREd2d6Bf80grdBwPCQG5ZAAH5/hjAHa6WHkK/LpjOQUvsF2UDIQMO+Sx7A8LYGpSAEj27GoBjrf"
+    "i5eu5k4w8A7o6+wKxFpNnc+D0DweGClCCL+RGJl2ysLn6qow2oDGAWgiqhGHBRFfYB4Q"
+)
+
+
 def _encode_amr() -> bytes:
-    av = pytest.importorskip("av")
-    buffer = io.BytesIO()
-    with av.open(buffer, mode = "w", format = "amr") as output:
-        stream = output.add_stream("amr_nb", rate = 8_000)
-        stream.layout = "mono"
-        stream.bit_rate = 12_200
-        indexes = np.arange(3_200)
-        samples = (np.sin(indexes * 2 * np.pi * 440 / 8_000) * 16_000).astype(np.int16)
-        frame = av.AudioFrame.from_ndarray(
-            samples.reshape(1, -1),
-            format = "s16",
-            layout = "mono",
-        )
-        frame.sample_rate = 8_000
-        for packet in stream.encode(frame):
-            output.mux(packet)
-        for packet in stream.encode():
-            output.mux(packet)
-    return buffer.getvalue()
+    # The decode under test still needs PyAV; only the encode step is gone.
+    pytest.importorskip("av")
+    return _AMR_NB_440HZ
 
 
 def test_wma_and_amr_decode_with_no_librosa(monkeypatch):
@@ -691,6 +695,15 @@ def test_a_forwarded_wav_is_bounded_by_its_own_header(monkeypatch):
     assert base64.b64decode(encoded) == short_wav
 
 
+def test_an_inflated_block_align_cannot_shorten_a_forwarded_wav():
+    wav = bytearray(_wav_header(16_000, 1, 16, 32_000) + bytes(32_000))
+    wav[32:34] = (2_000).to_bytes(2, "little")  # nBlockAlign, which the decoder ignores
+    assert inference_route._wav_seconds(bytes(wav)) == 1.0
+    # Unless the samples are not byte-aligned: 12-bit samples pad to nBlockAlign's two bytes.
+    wav[32:36] = (2).to_bytes(2, "little") + (12).to_bytes(2, "little")
+    assert inference_route._wav_seconds(bytes(wav)) == 1.0
+
+
 def test_a_forwarded_mp3_is_bounded_by_its_frame_headers(monkeypatch):
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_SECONDS", 60)
     try:
@@ -926,13 +939,15 @@ def test_a_switch_preflight_answers_an_overlong_upload_like_the_serving_path(mon
     def _too_long(_b64):
         raise inference_route._DecodedAudioTooLongError("decoded audio exceeds the limit")
 
-    monkeypatch.setattr(inference_route, "_prepare_audio_for_llama", _too_long)
+    monkeypatch.setattr(inference_route, "_prepare_audio_clips_for_llama", _too_long)
     monkeypatch.setattr(inference_route, "_decode_audio_base64", _too_long)
     monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
 
     for target_is_gguf in (True, False):
         try:
-            asyncio.run(inference_route._preflight_audio_for_switch({"b64": "x"}, target_is_gguf))
+            asyncio.run(
+                inference_route._preflight_audio_for_switch({"clips": ["x"]}, target_is_gguf)
+            )
         except HTTPException as error:
             assert error.status_code == 413, target_is_gguf
             assert error.detail == inference_route._audio_too_long_detail()
@@ -949,13 +964,15 @@ def test_a_switch_preflight_still_reports_undecodable_audio_as_a_bad_value(monke
     def _broken(_b64):
         raise ValueError("not audio at all")
 
-    monkeypatch.setattr(inference_route, "_prepare_audio_for_llama", _broken)
+    monkeypatch.setattr(inference_route, "_prepare_audio_clips_for_llama", _broken)
     monkeypatch.setattr(inference_route, "_decode_audio_base64", _broken)
     monkeypatch.setattr(inference_route, "_audio_decoder_is_available", lambda: True)
 
     for target_is_gguf in (True, False):
         try:
-            asyncio.run(inference_route._preflight_audio_for_switch({"b64": "x"}, target_is_gguf))
+            asyncio.run(
+                inference_route._preflight_audio_for_switch({"clips": ["x"]}, target_is_gguf)
+            )
         except HTTPException as error:
             assert error.status_code == 400, target_is_gguf
         else:
@@ -1375,3 +1392,35 @@ def test_no_allocation_outgrows_the_limit_the_decode_enforces(monkeypatch):
     assert len(samples) > 0
     assert sizes, "the decoder allocated nothing"
     assert max(sizes) <= inference_route._decoded_sample_ceiling(rate)
+
+
+class _FakeAv:
+    def __init__(self, error = None):
+        self.error = error
+        self.calls = []
+
+    def open(self, source, **kwargs):
+        self.calls.append(kwargs)
+        if "metadata_errors" in kwargs and self.error is not None:
+            raise self.error
+        return source
+
+
+def test_av_open_drops_metadata_errors_where_pyav_removed_it():
+    # PyAV 19 rejects the keyword; without the retry every PyAV-only upload (wma, amr, m4a) failed.
+    av = _FakeAv(TypeError("open() got an unexpected keyword argument 'metadata_errors'"))
+    assert inference_route._av_open(av, "source") == "source"
+    assert av.calls == [{"mode": "r", "metadata_errors": "ignore"}, {"mode": "r", "format": None}]
+
+
+def test_av_open_keeps_metadata_errors_where_pyav_accepts_it():
+    av = _FakeAv()
+    assert inference_route._av_open(av, "source") == "source"
+    assert av.calls == [{"mode": "r", "metadata_errors": "ignore"}]
+
+
+def test_av_open_does_not_swallow_an_unrelated_type_error():
+    av = _FakeAv(TypeError("expected str, bytes or os.PathLike object"))
+    with pytest.raises(TypeError, match = "PathLike"):
+        inference_route._av_open(av, "source")
+    assert len(av.calls) == 1

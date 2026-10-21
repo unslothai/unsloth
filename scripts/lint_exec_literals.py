@@ -61,6 +61,10 @@ EXCLUDED_PARTS = frozenset(
         "__pycache__",
         ".ipynb_checkpoints",
         ".eggs",
+        # Unsloth writes its generated modules here in whatever directory it runs from, and the
+        # repo ignores it. A backend test run leaves one under studio/backend, and the gate then
+        # failed locally on code no commit contains.
+        "unsloth_compiled_cache",
     }
 )
 

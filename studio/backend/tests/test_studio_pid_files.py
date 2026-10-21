@@ -73,12 +73,15 @@ def test_write_pid_file_records_port_and_pid(tmp_path):
 
 def test_write_pid_file_records_the_start_time(tmp_path):
     # Pins the record to this process, so a reused PID isn't mistaken for it.
+    pytest.importorskip("psutil")
     run._write_pid_file(8901)
 
     record = run._read_pid_record(tmp_path / f"studio-8901-{os.getpid()}.pid")
 
     assert record[0] == os.getpid()
-    assert record[1] == pytest.approx(run._process_create_time(os.getpid()))
+    lines = (tmp_path / f"studio-8901-{os.getpid()}.pid").read_text().splitlines()
+    assert float(lines[1]) == pytest.approx(run._process_create_time(os.getpid()))
+    assert _REAL_IS_STUDIO_BACKEND(os.getpid(), [record[1]])
 
 
 def test_write_pid_file_keeps_the_legacy_file_a_bare_pid(tmp_path):
@@ -158,7 +161,9 @@ def test_windows_liveness_does_not_call_every_pid_alive(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", None)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: SimpleNamespace(stdout = '"python.exe","8550",...')
+        subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout = '"python.exe","8550",...', returncode = 0),
     )
 
     assert run._pid_alive(8550) is True
@@ -456,6 +461,106 @@ def test_windows_reuseaddr_listener_is_not_reported_as_a_free_port():
         assert run._is_port_free("127.0.0.1", port) is False
 
 
+def test_a_loopback_bind_is_not_free_while_another_process_holds_the_wildcard():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        assert run._is_port_free("127.0.0.1", port) is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows drops the SYN to a full backlog")
+def test_a_wildcard_listener_with_a_full_backlog_is_not_a_free_port():
+    # studio.txt alone does not install psutil, the only thing that tells this apart from a free port.
+    pytest.importorskip("psutil")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("0.0.0.0", 0))
+        listener.listen(0)
+        port = listener.getsockname()[1]
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as filler:
+            filler.settimeout(2)
+            filler.connect(("127.0.0.1", port))
+
+            assert run._is_port_free("127.0.0.1", port) is False
+
+
+@pytest.mark.parametrize(
+    ("listener", "family", "address", "collides"),
+    [
+        ("0.0.0.0", socket.AF_INET, "127.0.0.1", True),
+        ("127.0.0.1", socket.AF_INET, "127.0.0.1", True),
+        ("192.168.1.5", socket.AF_INET, "127.0.0.1", False),
+        ("::", socket.AF_INET6, "127.0.0.1", False),  # a v6-only wildcard shares the port with IPv4
+        ("::", socket.AF_INET6, "::1", True),
+    ],
+)
+def test_only_a_listener_of_the_same_family_takes_the_port(
+    monkeypatch, listener, family, address, collides
+):
+    psutil = pytest.importorskip("psutil")
+    row = SimpleNamespace(status = psutil.CONN_LISTEN, family = family, laddr = (listener, 8888))
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: [row])
+
+    assert run._listener_collides(address, 8888) is collides
+
+
+def test_a_timed_out_connect_is_settled_by_the_listener_table(monkeypatch):
+    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = "win32"))
+    asked = []
+    monkeypatch.setattr(
+        run, "_listener_collides", lambda address, port: asked.append((address, port)) or True
+    )
+
+    class _ProbeSocket:
+        def __init__(self, *_args):
+            pass
+
+        def setsockopt(self, *_args):
+            pass
+
+        def bind(self, _sockaddr):
+            pass
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect_ex(self, _sockaddr):
+            return errno.EWOULDBLOCK
+
+        def close(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            pass
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8888))
+        ],
+    )
+    monkeypatch.setattr(socket, "socket", _ProbeSocket)
+
+    assert run._is_port_free("127.0.0.1", 8888) is False
+    assert asked == [("127.0.0.1", 8888)]
+
+
+def test_a_free_loopback_port_is_reported_without_a_long_wait():
+    # Windows waits out the whole connect timeout on a free port.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    start = time.monotonic()
+    assert run._is_port_free("127.0.0.1", port) is True
+    assert time.monotonic() - start < 0.75
+
+
 def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
     # `localhost` binds 127.0.0.1 AND ::1. Recording only the first lets a later
     # launch on the other literal miss us and start a duplicate.
@@ -471,6 +576,7 @@ def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
 def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, occupied):
     monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
     bind_attempts = []
+    connect_attempts = []
     sockets = []
 
     class _ProbeSocket:
@@ -488,8 +594,21 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
             if occupied and self.family == socket.AF_INET6:
                 raise OSError("address already in use")
 
+        def settimeout(self, _timeout):
+            pass
+
+        def connect_ex(self, sockaddr):
+            connect_attempts.append((self.family, sockaddr))
+            return errno.ECONNREFUSED
+
         def close(self):
             self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self.close()
 
     monkeypatch.setattr(
         socket,
@@ -502,7 +621,7 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
     monkeypatch.setattr(
         socket,
         "socket",
-        lambda family, _socktype, _proto: _ProbeSocket(family),
+        lambda family, *_args: _ProbeSocket(family),
     )
 
     assert run._is_port_free("dual-stack.test", 8888) is (not occupied)
@@ -510,8 +629,9 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, oc
         (socket.AF_INET, ("127.0.0.1", 8888)),
         (socket.AF_INET6, ("::1", 8888, 0, 0)),
     ]
+    assert connect_attempts == ([] if occupied else bind_attempts)
     assert all(probe.closed for probe in sockets)
-    for probe in sockets:
+    for probe in sockets[: len(bind_attempts)]:
         assert ((socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) in probe.options) is (
             platform != "win32"
         )
@@ -938,6 +1058,7 @@ def test_a_zombie_backend_is_not_a_live_sibling(tmp_path, monkeypatch):
     assert run.live_sibling_backend() is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "Windows has no unreaped POSIX zombies")
 def test_a_real_unreaped_child_is_not_a_live_sibling(tmp_path):
     # The same thing without a patch: a killed but unwaited child.
     import subprocess
@@ -1106,6 +1227,18 @@ def test_a_startup_that_raises_takes_its_marker_back(tmp_path, monkeypatch):
     assert run._OWN_STARTUP_MARKERS == []
 
 
+def test_the_real_run_server_takes_its_marker_back(tmp_path):
+    # Exercise the real decorator via run_server's empty-host rejection.
+    run.write_startup_marker()
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) != []
+
+    with pytest.raises(SystemExit):
+        run.run_server(host = "")
+
+    assert list(tmp_path.glob(run.STARTUP_MARKER_GLOB)) == []
+    assert run._OWN_STARTUP_MARKERS == []
+
+
 def test_a_startup_that_exits_takes_its_marker_back(tmp_path, monkeypatch):
     # SystemExit is a BaseException, and it is the one colab.py catches.
     run.write_startup_marker()
@@ -1250,3 +1383,148 @@ def test_a_marker_that_will_not_delete_stays_retryable(tmp_path, monkeypatch):
 
     assert run._OWN_STARTUP_MARKERS == []
     assert not marker.exists()
+
+
+def test_startup_prunes_dead_records_but_preserves_live_and_uncertain_ones(tmp_path, monkeypatch):
+    dead = [tmp_path / "studio-starting-4242.marker", tmp_path / "studio-8888-4242.pid"]
+    for path in dead:
+        path.write_text("4242\n111.5\n", encoding = "utf-8")
+    kept = {
+        "studio-starting-4243.marker": "4243\n111.5\n",
+        "studio-8889-4243.pid": "4243\n111.5\n127.0.0.1",
+        "studio-starting-4244.marker": "partial write",
+        "studio-8890-4244.pid": "partial write",
+        "studio-starting-4245.marker": "4242\n111.5\n",
+        "studio.pid": "4242",
+    }
+    for name, body in kept.items():
+        (tmp_path / name).write_text(body, encoding = "utf-8")
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: pid != 4242)
+    monkeypatch.setattr(run, "_pid_is_studio_backend", lambda *args: False)
+    run.write_startup_marker()
+    assert all(not p.exists() for p in dead)
+    assert {name: (tmp_path / name).read_text() for name in kept} == kept
+
+
+@pytest.mark.parametrize(
+    "state", [cache_cleanup.LOCK_HELD, cache_cleanup.LOCK_BUSY, cache_cleanup.LOCK_UNAVAILABLE]
+)
+def test_startup_prunes_only_inside_the_cache_lock(tmp_path, monkeypatch, state):
+    stale = tmp_path / "studio-starting-4242.marker"
+    stale.write_text("4242\n111.5\n", encoding = "utf-8")
+    held = False
+
+    @contextlib.contextmanager
+    def lock(**kwargs):
+        nonlocal held
+        held = state == cache_cleanup.LOCK_HELD
+        yield state
+        held = False
+
+    def alive(pid):
+        assert held
+        return False
+
+    monkeypatch.setattr(cache_cleanup, "compiled_cache_lock", lock)
+    monkeypatch.setattr(run, "_pid_alive", alive)
+    run.write_startup_marker()
+    assert stale.exists() is (state != cache_cleanup.LOCK_HELD)
+    assert (tmp_path / f"studio-starting-{os.getpid()}.marker").exists()
+
+
+@pytest.mark.parametrize("replace_same_body", [False, True])
+def test_pruning_keeps_a_pid_record_replaced_during_the_probe(
+    tmp_path, monkeypatch, replace_same_body
+):
+    path = tmp_path / "studio-8888-4242.pid"
+    body = "4242\n111.5\n127.0.0.1"
+    path.write_text(body, encoding = "utf-8")
+    original = path.stat()
+
+    def alive(pid):
+        replacement = tmp_path / "replacement"
+        replacement.write_text(body if replace_same_body else "4242\n999.0\n127.0.0.1")
+        os.utime(replacement, ns = (original.st_atime_ns, original.st_mtime_ns))
+        os.replace(replacement, path)
+        return False
+
+    monkeypatch.setattr(run, "_pid_alive", alive)
+    run.write_startup_marker()
+    assert path.exists()
+
+
+def test_pruning_rechecks_a_pid_that_became_live(tmp_path, monkeypatch):
+    path = tmp_path / "studio-starting-4242.marker"
+    path.write_text("4242\n111.5\n", encoding = "utf-8")
+    answers = iter([False, True])
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: next(answers))
+    run.write_startup_marker()
+    assert path.exists()
+
+
+def test_pruning_failure_does_not_prevent_startup(tmp_path, monkeypatch):
+    path = tmp_path / "studio-starting-4242.marker"
+    path.write_text("4242\n111.5\n", encoding = "utf-8")
+    unlink = Path.unlink
+
+    def fail(stale, *args, **kwargs):
+        if stale == path:
+            raise PermissionError("held by another process")
+        return unlink(stale, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail)
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    run.write_startup_marker()
+    assert path.exists()
+    assert (tmp_path / f"studio-starting-{os.getpid()}.marker").exists()
+
+
+def test_stable_identity_protects_siblings_ports_and_legacy_handoff(tmp_path, monkeypatch):
+    from utils import pid_records
+
+    monkeypatch.setattr(run, "_pid_is_studio_backend", _REAL_IS_STUDIO_BACKEND)
+    monkeypatch.setattr(run, "_process_create_time", lambda pid: 4600.0)
+    monkeypatch.setattr(pid_records, "linux_process_identity", lambda pid: "linux:boot:123")
+    path = tmp_path / "studio-8888-4242.pid"
+    path.write_text("4242\n1000.0\n127.0.0.1\nlinux:boot:123\n", encoding = "utf-8")
+    assert run.live_sibling_backend() == 4242
+    assert run._own_studio_on_port(8888, "127.0.0.1") == 4242
+    assert run._legacy_heir() == 4242
+    monkeypatch.setattr(pid_records, "linux_process_identity", lambda pid: "linux:boot:124")
+    assert run.live_sibling_backend() is None
+    assert run._own_studio_on_port(8888, "127.0.0.1") is None
+    assert run._legacy_heir() is None
+
+
+def test_pruning_ignores_access_time_changes_from_reading_the_record(tmp_path, monkeypatch):
+    path = tmp_path / "studio-8888-4242.pid"
+    path.write_text("4242\n111.5\n127.0.0.1", encoding = "utf-8")
+    stat = Path.stat
+    reads = 0
+
+    def accessed(item, *args, **kwargs):
+        nonlocal reads
+        result = stat(item, *args, **kwargs)
+        if item == path:
+            reads += 1
+            fields = {name: getattr(result, name) for name in dir(result) if name.startswith("st_")}
+            fields["st_atime"] += reads
+            fields["st_atime_ns"] += reads * 1_000_000_000
+            return SimpleNamespace(**fields)
+        return result
+
+    monkeypatch.setattr(Path, "stat", accessed)
+    monkeypatch.setattr(run, "_pid_alive", lambda pid: False)
+    run.write_startup_marker()
+    assert not path.exists()
+
+
+def test_windows_liveness_keeps_records_when_tasklist_returns_an_error(monkeypatch):
+    import subprocess
+
+    monkeypatch.setitem(sys.modules, "psutil", None)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout = "", returncode = 1)
+    )
+    assert _REAL_PID_ALIVE(8550) is True

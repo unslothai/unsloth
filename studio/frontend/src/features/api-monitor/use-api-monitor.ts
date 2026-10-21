@@ -12,48 +12,55 @@ import type {
 } from "@/features/chat/types/api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearMonitor } from "./clear-monitor";
+import {
+  type MonitorStatusFilter,
+  countByStatus,
+  filterEntries,
+  mergeMonitorResponse,
+} from "./monitor-snapshot";
 import { type MonitorStats, computeStats } from "./stats";
 
 /** Poll cadence while live. Matches the settings console it replaces. */
 const POLL_INTERVAL_MS = 1500;
+const MAX_CACHED_PROMPT_CHARS = 64 * 1024 * 1024;
 
-export { computeStats };
-export type { MonitorStats };
+export { computeStats, countByStatus, filterEntries };
+export type { MonitorStats, MonitorStatusFilter };
 
-export type MonitorStatusFilter =
-  | "all"
-  | "running"
-  | "completed"
-  | "error"
-  | "cancelled";
-
-export function filterEntries(
-  entries: ApiMonitorEntry[],
-  status: MonitorStatusFilter,
-  query: string,
-): ApiMonitorEntry[] {
-  const needle = query.trim().toLowerCase();
-  return entries.filter((entry) => {
-    if (status !== "all" && entry.status !== status) {
-      return false;
+function retainDetail(
+  previous: Record<string, ApiMonitorEntry>,
+  id: string,
+  entry: ApiMonitorEntry,
+  cachedPrompt: string | undefined,
+): Record<string, ApiMonitorEntry> {
+  const refreshed =
+    cachedPrompt == null ? entry : { ...entry, prompt: cachedPrompt };
+  const retained: Record<string, ApiMonitorEntry> = { [id]: refreshed };
+  let promptChars = refreshed.prompt?.length ?? 0;
+  for (const [cachedId, cached] of Object.entries(previous)) {
+    if (cachedId === id) {
+      continue;
     }
-    if (!needle) {
-      return true;
+    const cachedChars = cached.prompt?.length ?? 0;
+    if (promptChars + cachedChars > MAX_CACHED_PROMPT_CHARS) {
+      continue;
     }
-    // The fields a debugging session keys off. Coerced, not trusted: these arrive over
-    // the network, and one malformed entry throwing here would blank the whole log.
-    return [
-      entry.model,
-      entry.endpoint,
-      entry.prompt_preview,
-      entry.reply_preview,
-      entry.error,
-    ].some((field) =>
-      String(field ?? "")
-        .toLowerCase()
-        .includes(needle),
-    );
-  });
+    retained[cachedId] = cached;
+    promptChars += cachedChars;
+  }
+  return retained;
+}
+
+function dropDetail(
+  previous: Record<string, ApiMonitorEntry>,
+  id: string,
+): Record<string, ApiMonitorEntry> {
+  if (!(id in previous)) {
+    return previous;
+  }
+  const next = { ...previous };
+  delete next[id];
+  return next;
 }
 
 interface UseApiMonitorResult {
@@ -94,20 +101,49 @@ export function useApiMonitor({
   );
   // Mirrors `loadingDetails` outside React state so the guard sees same-tick writes.
   const inFlightDetails = useRef<Set<string>>(new Set());
+  const retainedEntryIds = useRef<Set<string>>(new Set());
+  const listRequestGeneration = useRef(0);
+  const manualLoadGeneration = useRef(0);
+  const detailRequestGeneration = useRef(0);
+
+  const updateData = useCallback((next: ApiMonitorResponse): void => {
+    const ids = new Set(next.entries.map((entry) => entry.id));
+    retainedEntryIds.current = ids;
+    setData((previous) => mergeMonitorResponse(previous, next));
+    setDetails((previous) => {
+      const expired = Object.keys(previous).filter((id) => !ids.has(id));
+      if (expired.length === 0) return previous;
+      const retained = { ...previous };
+      for (const id of expired) delete retained[id];
+      return retained;
+    });
+  }, []);
 
   const load = useCallback(async (): Promise<void> => {
+    const requestGeneration = ++listRequestGeneration.current;
+    const manualGeneration = ++manualLoadGeneration.current;
     setRefreshing(true);
     try {
       const next = await getApiMonitor();
-      setData(next);
+      if (listRequestGeneration.current !== requestGeneration) {
+        return;
+      }
+      updateData(next);
       setError(null);
     } catch (err: unknown) {
+      if (listRequestGeneration.current !== requestGeneration) {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Monitor unavailable");
     } finally {
-      setRefreshing(false);
-      setLoading(false);
+      if (manualLoadGeneration.current === manualGeneration) {
+        setRefreshing(false);
+      }
+      if (listRequestGeneration.current === requestGeneration) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [updateData]);
 
   useEffect(() => {
     if (paused) {
@@ -115,65 +151,115 @@ export function useApiMonitor({
     }
     let cancelled = false;
     let timer: number | undefined;
+    let inFlight = false;
+
+    function schedule(): void {
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        if (!document.hidden) poll();
+      }, intervalMs);
+    }
 
     function poll(): void {
+      inFlight = true;
+      const requestGeneration = ++listRequestGeneration.current;
       getApiMonitor()
         .then((next) => {
-          if (cancelled) return;
-          setData(next);
+          if (
+            cancelled ||
+            listRequestGeneration.current !== requestGeneration
+          ) {
+            return;
+          }
+          updateData(next);
           setError(null);
         })
         .catch((err: unknown) => {
-          if (cancelled) return;
+          if (
+            cancelled ||
+            listRequestGeneration.current !== requestGeneration
+          ) {
+            return;
+          }
           setError(err instanceof Error ? err.message : "Monitor unavailable");
         })
         .finally(() => {
-          if (cancelled) return;
-          setLoading(false);
-          timer = window.setTimeout(poll, intervalMs);
+          inFlight = false;
+          if (cancelled) {
+            return;
+          }
+          if (listRequestGeneration.current === requestGeneration) {
+            setLoading(false);
+          }
+          schedule();
         });
     }
 
+    function onVisibilityChange(): void {
+      if (document.hidden || inFlight) {
+        return;
+      }
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        timer = undefined;
+      }
+      poll();
+    }
+
     poll();
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (timer !== undefined) {
         window.clearTimeout(timer);
       }
     };
-  }, [paused, intervalMs]);
+  }, [paused, intervalMs, updateData]);
 
   // Returns whether a fetch started: recording "fetched revision N" when the guard
   // refused would skip that revision once updated_at settles.
-  const requestDetail = useCallback((id: string): boolean => {
-    if (inFlightDetails.current.has(id)) {
-      return false;
-    }
-    inFlightDetails.current.add(id);
-    setLoadingDetails((prev) => new Set(prev).add(id));
-    getApiMonitorEntry(id)
-      .then((entry) => {
-        setDetails((prev) => ({ ...prev, [id]: entry }));
-      })
-      .catch(() => {
-        // Aged out of the ring buffer: drop the stale copy so the row previews show.
-        setDetails((prev) => {
-          if (!(id in prev)) return prev;
-          const next = { ...prev };
-          delete next[id];
-          return next;
+  const requestDetail = useCallback(
+    (id: string): boolean => {
+      if (inFlightDetails.current.has(id)) {
+        return false;
+      }
+      inFlightDetails.current.add(id);
+      const requestGeneration = detailRequestGeneration.current;
+      setLoadingDetails((prev) => new Set(prev).add(id));
+      const cachedPrompt = details[id]?.prompt;
+      getApiMonitorEntry(id, cachedPrompt == null)
+        .then((entry) => {
+          if (
+            detailRequestGeneration.current !== requestGeneration ||
+            !retainedEntryIds.current.has(id)
+          ) {
+            return;
+          }
+          setDetails((prev) => retainDetail(prev, id, entry, cachedPrompt));
+        })
+        .catch(() => {
+          if (detailRequestGeneration.current !== requestGeneration) {
+            return;
+          }
+          // Aged out of the ring buffer: drop the stale copy so the row previews show.
+          setDetails((prev) => dropDetail(prev, id));
+        })
+        .finally(() => {
+          if (detailRequestGeneration.current !== requestGeneration) {
+            return;
+          }
+          inFlightDetails.current.delete(id);
+          setLoadingDetails((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
         });
-      })
-      .finally(() => {
-        inFlightDetails.current.delete(id);
-        setLoadingDetails((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
-      });
-    return true;
-  }, []);
+      return true;
+    },
+    [details],
+  );
 
   // The Clear log button discards this promise, so a failed DELETE has to land in the
   // error banner here: rethrowing leaves an unhandled rejection and a log that silently
@@ -182,7 +268,14 @@ export function useApiMonitor({
     (): Promise<void> =>
       clearMonitor({
         clearRemote: clearApiMonitor,
-        resetDetails: () => setDetails({}),
+        resetDetails: () => {
+          listRequestGeneration.current += 1;
+          detailRequestGeneration.current += 1;
+          retainedEntryIds.current = new Set();
+          inFlightDetails.current.clear();
+          setLoadingDetails(new Set());
+          setDetails({});
+        },
         reload: load,
         onError: setError,
       }),

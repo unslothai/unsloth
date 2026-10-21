@@ -12,14 +12,15 @@ it read, with nothing below them serializing the pair:
     and `credential_secrets` has no foreign key to `providers`.
   * login clears its admission check before verify_password reaches _record_login_failure, so
     the bucket lock guards each call but not the sequence.
-  * refresh consumes a token and inserts its replacement, and logout deletes every token in
-    between without rotating the credential generation.
 
 They are await-free, so the loop is what makes those sequences atomic. In the threadpool, two
 imports duplicate a server row, an update racing a delete writes a credential for a provider that
-is gone, a burst of guesses passes admission together, and a logout leaves the refresh token that
-landed after it. The read-only handlers beside them do belong in the threadpool, so both
-directions are pinned here.
+is gone, and a burst of guesses passes admission together. The read-only handlers beside them do
+belong in the threadpool, so both directions are pinned here.
+
+Refresh used to be pinned to the loop too, because it consumed a token and inserted its replacement
+in two commits that a logout could land between. It now rotates in one SQLite transaction, so it
+runs in the threadpool, where a busy auth.db wait does not freeze every other request.
 
 Asserts which thread each handler ran on rather than racing two requests.
 """
@@ -73,7 +74,7 @@ _MUTATIONS = {
         {"display_name": "renamed"},
         provider_routes,
         "providers_db",
-        "get_provider",
+        "get_own_provider",
         None,
         404,
     ),
@@ -83,7 +84,7 @@ _MUTATIONS = {
         {"encrypted_api_key": "k"},
         provider_routes,
         "providers_db",
-        "get_provider",
+        "get_own_provider",
         None,
         404,
     ),
@@ -94,16 +95,6 @@ _MUTATIONS = {
         auth_routes,
         "storage",
         "get_user_and_secret",
-        None,
-        401,
-    ),
-    "auth-refresh": _Case(
-        "post",
-        "/api/auth/refresh",
-        {"refresh_token": "t"},
-        auth_routes,
-        "storage",
-        "consume_refresh_token",
         None,
         401,
     ),
@@ -128,6 +119,20 @@ _READS = {
     ),
     "auth-api-keys": _Case(
         "get", "/api/auth/api-keys", None, auth_routes, "storage", "list_api_keys", [], 200
+    ),
+}
+
+
+_ATOMIC_MUTATIONS = {
+    "auth-refresh": _Case(
+        "post",
+        "/api/auth/refresh",
+        {"refresh_token": "t"},
+        auth_routes,
+        "storage",
+        "rotate_refresh_token",
+        None,
+        401,
     ),
 }
 
@@ -188,3 +193,9 @@ def test_a_state_changing_handler_runs_on_the_event_loop_thread(monkeypatch, cas
 def test_a_read_only_handler_stays_off_the_event_loop_thread(monkeypatch, case):
     threads, loop_thread = _drive(monkeypatch, case)
     assert threads[0] != loop_thread, f"{case.path} read its store on the event loop thread"
+
+
+@pytest.mark.parametrize("case", _ATOMIC_MUTATIONS.values(), ids = list(_ATOMIC_MUTATIONS))
+def test_an_atomic_mutation_stays_off_the_event_loop_thread(monkeypatch, case):
+    threads, loop_thread = _drive(monkeypatch, case)
+    assert threads[0] != loop_thread, f"{case.path} blocked the event loop on SQLite"

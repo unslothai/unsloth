@@ -186,30 +186,34 @@ def reset_stats() -> str:
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        Observe(mcp.http_app()), host=sys.argv[2], port=int(sys.argv[1]), log_level="warning"
-    )
+    import socket
+    # Bind port 0 here and keep the socket: a port picked by the parent and bound later can be
+    # taken by another xdist worker in between.
+    host = sys.argv[1]
+    sock = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET)
+    sock.bind((host, 0))
+    print(f"PORT {sock.getsockname()[1]}", flush=True)
+    config = uvicorn.Config(Observe(mcp.http_app()), log_level="warning")
+    uvicorn.Server(config).run(sockets=[sock])
 '''
-
-
-def _free_port(host: str) -> int:
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
-    with socket.socket(family) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
 
 
 def _start(tmp_path: Path, host: str):
     script = tmp_path / "mcp_notes_server.py"
     script.write_text(textwrap.dedent(_SERVER))
-    port = _free_port(host)
     proc = subprocess.Popen(
-        [sys.executable, str(script), str(port), host],
+        [sys.executable, str(script), host],
         env = dict(os.environ, PYTHONUNBUFFERED = "1"),
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
     )
+    # The server binds its own port and reports it before serving; an early exit ends the pipe.
+    first = proc.stdout.readline()
+    if not first.startswith("PORT "):
+        proc.wait(15)
+        raise RuntimeError(f"server died:\n{first}{proc.stdout.read()}")
+    port = int(first.split()[1])
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
@@ -271,6 +275,37 @@ def _call(
 
 def _conn(text: str) -> str:
     return text.split("connection=")[1].split(" ")[0]
+
+
+def test_the_server_comes_up_when_a_port_the_harness_could_pick_is_taken(tmp_path, monkeypatch):
+    # Under xdist another worker can bind a port between this process choosing it and the server
+    # binding it. Make every port this process is handed by the OS one that is already listening:
+    # the server must still start, because it binds and reports its own port.
+    held = socket.socket(socket.AF_INET)
+    held.bind(("127.0.0.1", 0))
+    held.listen()
+    taken = held.getsockname()[1]
+
+    class Racing(socket.socket):
+        def getsockname(self):
+            name = super().getsockname()
+            return (name[0], taken) if self.family == socket.AF_INET else name
+
+    monkeypatch.setattr(socket, "socket", Racing)
+    try:
+        proc, url = _start(tmp_path, "127.0.0.1")
+    finally:
+        monkeypatch.undo()
+        held.close()
+    try:
+        assert f":{taken}/" not in url
+        assert proc.poll() is None
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
 
 def test_a_note_survives_to_the_next_tool_call_in_one_chat(server):

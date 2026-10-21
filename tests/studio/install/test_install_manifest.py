@@ -1,18 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Coverage for studio/install_manifest.py.
-
-The manifest separates "the install finished" from "the installer was killed
-part-way and the venv only looks fine". The CLI, setup.sh's fast path and the
-Tauri preflight all read it, so a wrong answer either crashes the backend on
-launch or forces needless reinstalls for everyone.
-"""
+"""The manifest separates a finished install from one killed part-way; the CLI and Tauri read it."""
 
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sysconfig
 
@@ -134,7 +129,6 @@ def test_a_pip_tilde_backup_is_named_as_a_backup(tmp_path, monkeypatch):
 
     assert im.installed_versions("demo") == ["1.0", "2.0"]
     assert im.pip_backup_metadata_paths("demo") == [backup]
-    # A healthy record must never be mistaken for one.
     assert im.pip_backup_metadata_paths("demo") != [site / "demo-2.0.dist-info"]
 
 
@@ -211,6 +205,88 @@ def test_malformed_matching_metadata_invalidates_the_manifest(
     assert state["reason"] == "studio_install_metadata_conflict"
 
 
+def test_a_metadata_record_added_since_the_last_scan_is_seen(tmp_path, monkeypatch):
+    """A metadata record added after a scan is seen even when the directory st_mtime is unchanged."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0"]
+    unchanged = site.stat().st_mtime_ns
+
+    malformed = site / "demo-2.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+    os.utime(site, ns = (unchanged, unchanged))
+
+    versions = im.installed_versions("demo")
+    assert versions == ["", "1.0"]
+    assert im.metadata_conflict(versions) is True
+
+
+def test_the_metadata_scan_survives_a_pre_classmethod_invalidate_caches(tmp_path, monkeypatch):
+    """invalidate_caches only became a classmethod in 3.11.9 / 3.12.3 (gh-116811), so before those
+    a class-level call raised TypeError and took verify_install with it. No CI leg runs them.
+    """
+    import importlib.metadata
+
+    fast_path = getattr(importlib.metadata, "FastPath", None)
+    if fast_path is None or not hasattr(fast_path.__new__, "cache_clear"):
+        pytest.skip("this interpreter has no importlib.metadata directory listing cache")
+
+    def invalidate_caches(cls):
+        fast_path.__new__.cache_clear()
+
+    monkeypatch.setattr(
+        importlib.metadata.MetadataPathFinder, "invalidate_caches", invalidate_caches
+    )
+
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0"]
+    unchanged = site.stat().st_mtime_ns
+    _write_dist_metadata(site, "demo", "2.0")
+    os.utime(site, ns = (unchanged, unchanged))
+
+    assert im.installed_versions("demo") == ["1.0", "2.0"]
+
+
+def test_the_metadata_scan_survives_a_finder_without_invalidate_caches(tmp_path, monkeypatch):
+    """3.9 has no invalidate_caches and no listing cache, so there is nothing to drop."""
+    import importlib.metadata
+
+    monkeypatch.delattr(importlib.metadata.MetadataPathFinder, "invalidate_caches", raising = False)
+
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0"]
+
+
+def test_a_healthy_install_still_verifies_after_repeated_checks(
+    tmp_path, monkeypatch, install_root, req_root
+):
+    """A fresh read every scan must not turn one healthy record into a conflict: the desktop
+    preflight treats studio_install_metadata_conflict as auto-repairable and reinstalls on launch.
+    """
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "demo")
+
+    for _ in range(3):
+        state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
+        assert state["manifest_ok"] is True
+        assert im.installed_versions("demo") == ["1.0"]
+
+
 def test_duplicate_package_metadata_invalidates_the_manifest(
     tmp_path, monkeypatch, install_root, req_root
 ):
@@ -269,8 +345,7 @@ def test_platform_gated_lines_are_skipped_when_the_marker_does_not_apply(tmp_pat
 
 
 def test_missing_requirements_matches_on_distribution_not_import_name(tmp_path):
-    # studio.txt lists PyJWT / python-docx / pymupdf, whose import names are jwt / docx / fitz, so matching on imports
-    # would look missing.
+    # studio.txt names PyJWT/python-docx/pymupdf (imported as jwt/docx/fitz), so match on dist names.
     req = tmp_path / "studio.txt"
     req.write_text("pytest\n", encoding = "utf-8")
     assert im.missing_requirements(req) == []
@@ -280,7 +355,7 @@ def test_complete_install_verifies_ok(install_root, req_root):
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
-    assert state["deps_ok"] is False  # the fake dist is intentionally absent
+    assert state["deps_ok"] is False
     assert state["reason"] == "studio_deps_missing"
     assert "unsloth-definitely-not-a-real-package" in state["missing"]
 
@@ -293,7 +368,7 @@ def test_missing_manifest_reports_incomplete(install_root, req_root):
 
 
 def test_interrupted_install_leaves_no_manifest(install_root, req_root):
-    # remove_manifest() runs before the dependency pass, so a later kill cannot leave a stale-but-valid manifest behind.
+    # remove_manifest() runs first, so a later kill cannot leave a stale-but-valid manifest.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     assert im.manifest_path(install_root).is_file()
     assert im.remove_manifest(install_root) is True
@@ -307,20 +382,18 @@ def test_remove_manifest_reports_whether_the_marker_is_really_gone(
 ):
     assert im.remove_manifest(install_root) is True
 
-    # A surviving marker must be reported, not swallowed: the dependency pass
-    # would then run behind a manifest that still verifies, so a part-way kill
-    # looks complete.
+    # A surviving marker must be reported, or a part-way kill would look complete.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     path = im.manifest_path(install_root)
 
     def _refuse(*_args, **_kwargs):
         raise PermissionError(13, "Access is denied")
 
+    monkeypatch.setattr(im.os, "replace", _refuse)
     monkeypatch.setattr(pathlib.Path, "unlink", _refuse)
     assert im.remove_manifest(install_root) is False
     monkeypatch.undo()
 
-    # The stale marker still verifies, which is why the installer has to stop.
     assert path.is_file()
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
     assert state["manifest_ok"] is True
@@ -358,7 +431,6 @@ def test_verify_follows_the_package_the_manifest_names(install_root, req_root):
 
 @pytest.mark.parametrize("conflict", ["pytest", "unsloth-zoo"])
 def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_root, conflict):
-    # `studio update --package X` records X.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     state = im.verify_install(
         root = install_root,
@@ -373,8 +445,7 @@ def test_foreign_metadata_conflicts_invalidate_the_manifest(install_root, req_ro
 
 
 def test_edited_requirements_invalidate_the_manifest(install_root, req_root):
-    # The --local dev path: an edited studio.txt must re-run the dependency pass, not sit behind setup.sh's "up to date"
-    # fast path.
+    # --local: an edited studio.txt must re-run the dep pass, not hit setup.sh's fast path.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     (req_root / "studio.txt").write_text("pytest\nrich\n", encoding = "utf-8")
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
@@ -389,8 +460,7 @@ def test_unwritable_root_degrades_to_incomplete(tmp_path, req_root):
 
 
 def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
-    # `unsloth studio update` injects no UNSLOTH_NO_TORCH, so the venv has to remember how it was built or the update
-    # reinstalls torch into a GGUF-only environment (and on Windows deletes the venv it is running out of).
+    # `studio update` injects no UNSLOTH_NO_TORCH, so the venv must record how it was built.
     for recorded in (True, False):
         im.write_manifest(
             root = install_root,
@@ -406,8 +476,7 @@ def test_no_torch_mode_round_trips_through_the_manifest(install_root, req_root):
 
 
 def test_manifest_without_the_no_torch_key_reads_as_unknown(install_root, req_root):
-    # Manifests written before the key existed must keep verifying, and must report None rather than False so callers
-    # fall back to their own detection instead of silently switching an install out of no-torch mode.
+    # Pre-key manifests report None, not False, so callers fall back to their own detection.
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     payload = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
     assert "no_torch" not in payload
@@ -433,8 +502,7 @@ def test_recorded_no_torch_reports_unknown_without_a_manifest(install_root):
 
 
 def test_marker_preserves_no_torch_across_the_manifest_drop(install_root, req_root):
-    # remove_manifest() runs before every dependency pass, so a run killed during it leaves no manifest. The marker is
-    # what stops the next update reading the absent torch as a stale venv and deleting the environment it runs out of.
+    # A kill during the dep pass leaves no manifest; the marker stops the next update deleting the venv.
     im.set_no_torch_marker(True, root = install_root)
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest", no_torch = True)
     assert im.recorded_no_torch(root = install_root) is True
@@ -444,7 +512,6 @@ def test_marker_preserves_no_torch_across_the_manifest_drop(install_root, req_ro
 
 
 def test_manifest_key_overrides_a_stale_marker(install_root, req_root):
-    # Migrating out of no-torch must not be blocked by a marker left behind.
     im.set_no_torch_marker(True, root = install_root)
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest", no_torch = False)
     assert im.recorded_no_torch(root = install_root) is False
@@ -463,14 +530,7 @@ def test_set_no_torch_marker_clears_itself_and_never_raises(install_root):
 
 
 def test_scan_paths_dedupes_a_lib64_symlink(tmp_path, monkeypatch):
-    """purelib hardcodes `lib`, platlib follows sys.platlibdir.
-
-    On a lib64 build (Fedora, SuSE) venv creates lib64 as a symlink to lib, so
-    the two schemes name ONE directory by two paths. Scanning both reported
-    every installed package twice, which made metadata_conflict() true for a
-    perfectly healthy environment and sent the installer into a repair it could
-    never finish.
-    """
+    """purelib and platlib name one dir via a lib64 symlink; scanning both double-counts packages."""
     real = tmp_path / "lib" / "python3.13" / "site-packages"
     real.mkdir(parents = True)
     (tmp_path / "lib64").symlink_to("lib")
@@ -498,12 +558,7 @@ def test_scan_paths_keeps_genuinely_separate_roots(tmp_path, monkeypatch):
 
 
 def test_a_record_outside_this_interpreters_scheme_is_not_installed(tmp_path, monkeypatch):
-    """The scan is purelib/platlib only, so a user site or an inherited
-    PYTHONPATH entry is invisible. _installed_version used to answer from all of
-    sys.path, so this narrows it deliberately: every caller runs against the
-    managed venv, where those trees are either disabled or someone else's. A
-    duplicate the venv does not own must not make the venv look damaged.
-    """
+    """Only the venv's purelib/platlib is scanned; a user-site or PYTHONPATH copy must not look damaged."""
     scheme = tmp_path / "site-packages"
     scheme.mkdir()
     elsewhere = tmp_path / "user-site"
@@ -534,19 +589,7 @@ def _fake_venv(root, files):
 
 
 def test_the_manifest_records_the_venvs_own_requirements_not_the_installers(install_root, req_root):
-    """
-    The regression that broke every fresh desktop install on 2026-08-19.
-
-    A desktop bundle carries its own `studio/install_python_stack.py`, so the
-    digests used to come from whatever that bundle shipped. Verification reads
-    the *installed* package's copy. v0.1.800-beta (2026-08-14) installed unsloth
-    2026.8.18, #9148 had pinned openai in extras.txt in between, and the two
-    trees disagreed: every install came up `studio_install_requirements_changed`
-    and repaired itself before it would run.
-
-    So the two roots are made deliberately different here, and the manifest must
-    describe the one the verifier will read.
-    """
+    """Hash the installed package's requirement files, not the bundle's: the verifier reads those."""
     installed = _fake_venv(
         install_root, {"studio.txt": "pytest\n", "extras.txt": "openai==3.2.0\n"}
     )
@@ -562,17 +605,12 @@ def test_the_manifest_records_the_venvs_own_requirements_not_the_installers(inst
         "every install it performs as stale"
     )
 
-    # And the whole point: the install it just described reads as finished.
     state = im.verify_install(root = install_root, req_root = installed, package_name = "pytest")
     assert state["manifest_ok"] is True, state["reason"]
 
 
 def test_a_source_install_still_uses_the_root_it_was_given(install_root, req_root):
-    """
-    An editable / `--local` install has no copy under site-packages, and there the
-    caller's root is already the tree both sides read. Falling back to it is what
-    keeps test_edited_requirements_invalidate_the_manifest meaningful.
-    """
+    """Editable installs have no site-packages copy, so the caller's root is the tree both sides read."""
     assert im.installed_requirements_root(install_root) is None
     im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
     recorded = json.loads((install_root / im.MANIFEST_NAME).read_text(encoding = "utf-8"))
@@ -586,3 +624,49 @@ def test_the_venv_resolver_finds_both_layouts(tmp_path):
         reqs = root / layout / "studio" / "backend" / "requirements"
         reqs.mkdir(parents = True)
         assert im.installed_requirements_root(root) == reqs
+
+
+def test_remove_manifest_parks_the_file_as_evidence_only(install_root, req_root):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    live = json.loads(im.manifest_path(install_root).read_text(encoding = "utf-8"))
+    assert im.remove_manifest(install_root) is True
+    assert not im.manifest_path(install_root).is_file()
+    assert im.read_previous_manifest(install_root) == live
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_incomplete"
+    assert im.read_manifest(install_root) is None
+    parked = im.read_previous_manifest(install_root)
+    state = im.verify_install(
+        root = install_root, req_root = req_root, package_name = "pytest", manifest = parked
+    )
+    assert state["manifest_ok"] is True
+
+
+def test_remove_manifest_falls_back_to_deleting_when_the_rename_is_refused(
+    install_root, req_root, monkeypatch
+):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+
+    def _refuse(*_args, **_kwargs):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(im.os, "replace", _refuse)
+    assert im.remove_manifest(install_root) is True
+    assert not im.manifest_path(install_root).is_file()
+    assert im.read_previous_manifest(install_root) is None
+
+
+def test_write_manifest_drops_the_parked_copy(install_root, req_root):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    im.remove_manifest(install_root)
+    assert im.previous_manifest_path(install_root).is_file()
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    assert im.manifest_path(install_root).is_file()
+    assert not im.previous_manifest_path(install_root).is_file()
+
+
+def test_a_parked_manifest_is_never_read_as_the_live_one(install_root, req_root):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    im.remove_manifest(install_root)
+    assert im.recorded_no_torch(root = install_root) is None
+    assert im.read_manifest(install_root) is None

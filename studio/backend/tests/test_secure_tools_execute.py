@@ -172,6 +172,7 @@ def test_web_search_tool_runs_with_mocked_fetch(monkeypatch):
             self,
             query,
             max_results = 5,
+            **kwargs,
         ):
             return [
                 {

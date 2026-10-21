@@ -630,3 +630,31 @@ test("metrics are scoped to the current run", () => {
   assert.equal(current.currentStep, 8);
   assert.deepEqual(current.lossHistory, [{ step: 8, value: 2 }]);
 });
+
+test("resolved download repo follows status and clears between loads and jobs", () => {
+  const runtime = useTrainingRuntimeStore.getState();
+  runtime.resetRuntime();
+  runtime.setStartResources("org/requested", null);
+  const status = {
+    job_id: "resolved-job",
+    phase: "loading_model" as const,
+    is_training_running: true,
+    eval_enabled: false,
+    message: "Loading model...",
+    error: null,
+    details: { model_download_repo_id: "org/resolved-unsloth-bnb-4bit" },
+  };
+  runtime.applyStatus(status);
+  assert.equal(
+    useTrainingRuntimeStore.getState().modelDownloadRepoId,
+    "org/resolved-unsloth-bnb-4bit",
+  );
+  runtime.applyStatus({ ...status, details: { model_download_repo_id: null } });
+  assert.equal(useTrainingRuntimeStore.getState().modelDownloadRepoId, null);
+  runtime.applyStatus(status);
+  runtime.applyStatus({ ...status, job_id: "next-job", details: null });
+  assert.equal(useTrainingRuntimeStore.getState().modelDownloadRepoId, null);
+  runtime.applyStatus(status);
+  runtime.resetRuntime();
+  assert.equal(useTrainingRuntimeStore.getState().modelDownloadRepoId, null);
+});

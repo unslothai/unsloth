@@ -12,8 +12,10 @@ Images page auto-loads as soon as the job completes.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -88,3 +90,20 @@ def test_a_dangling_symlink_does_not_count_as_present(offline, capsys):
         _run()
     assert exit_info.value.code == 1
     assert "incomplete" in capsys.readouterr().err
+
+
+def test_disk_space_refusal_reports_decimal_gigabytes(monkeypatch, tmp_path, capsys):
+    import hub.utils.download_registry as registry_mod
+    import hub.utils.hf_cache_state as cache_state_mod
+
+    monkeypatch.setattr(registry_mod, "existing_blob_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(cache_state_mod, "hf_cache_root", lambda **k: tmp_path)
+    monkeypatch.setattr(shutil, "disk_usage", lambda _p: SimpleNamespace(free = 1_500_000_000))
+    q8 = SimpleNamespace(size = 1_834_426_944, sha256 = "a" * 64)
+
+    with pytest.raises(SystemExit) as exit_info:
+        hf_download._preflight_disk_space("model", "unsloth/Qwen3-1.7B-GGUF", [q8])
+    assert exit_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "need about 1.8 GB free" in err
+    assert "only 1.5 GB is available" in err

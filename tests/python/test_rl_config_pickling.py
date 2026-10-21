@@ -1,20 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Regression: `torch.save(trainer.args, ...)` must keep working once Unsloth has
-patched a TRL trainer, and the file it writes must stay readable without Unsloth.
-
-`Trainer._save_checkpoint` ends in `torch.save(self.args, os.path.join(output_dir,
-TRAINING_ARGS_NAME))`. Pickle stores a class as `__module__` + `__qualname__` and
-then refuses unless the object living at that path *is* the class. Patching a
-trainer rebinds `<X>Config` at the module the pristine class calls home, which
-breaks that identity for every instance of the pristine class, and the generated
-class used to answer to `Unsloth<X>Trainer.Unsloth<X>Config`, a module that only
-exists beside a compiled cache.
-"""
+"""Patched TRL configs must stay picklable by `torch.save`, and the file must load without Unsloth."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pickle
@@ -35,17 +26,21 @@ def patched():
 
 
 def _make(config_class, output_dir):
-    return config_class(
-        output_dir = str(output_dir),
-        bf16 = False,
-        fp16 = False,
-        use_cpu = True,
+    """Pins CPU, since TRL turns bf16=None into True and transformers refuses without an accelerator."""
+    kwargs = {"output_dir": str(output_dir)}
+    declared = (
+        {field.name for field in dataclasses.fields(config_class)}
+        if dataclasses.is_dataclass(config_class)
+        else None
     )
+    for name, value in (("bf16", False), ("fp16", False), ("use_cpu", True)):
+        if declared is None or name in declared:
+            kwargs[name] = value
+    return config_class(**kwargs)
 
 
 def test_patched_config_answers_to_the_trl_name(patched):
-    # Without this the class pickles under a module that only ships inside a
-    # compiled cache, so the checkpoint cannot be read anywhere else.
+    # Otherwise the class pickles under a compiled-cache module unreadable elsewhere.
     assert patched.__module__ == "trl.trainer.sft_config"
     assert patched.__qualname__ == "SFTConfig"
 
@@ -55,8 +50,6 @@ def test_patched_config_answers_to_the_trl_name(patched):
 
 
 def test_pristine_config_instance_still_pickles(patched, tmp_path):
-    # An instance built before Unsloth patched TRL, or handed back by TRL's own TrainingArguments -> SFTConfig
-    # conversion, belongs to the pristine class.
     pristine = patched.__mro__[1]
     assert not pristine.__name__.startswith("Unsloth")
 
@@ -94,9 +87,7 @@ def test_checkpoint_loads_without_unsloth(patched, tmp_path):
     torch.save(_make(patched, tmp_path), path)
 
     script = (
-        # Baseline FIRST, so this measures what the load drags in rather than what the interpreter already had.
-        # An editable install of unsloth puts its own import finder (__editable___unsloth_..._finder) into sys.modules
-        # at startup, which answers to a name test but says nothing about the checkpoint.
+        # Baseline first; an editable install's import finder is already in sys.modules.
         "import sys\n"
         "preloaded = set(sys.modules)\n"
         "import json, torch\n"
@@ -112,7 +103,6 @@ def test_checkpoint_loads_without_unsloth(patched, tmp_path):
         "}))\n"
     )
     env = dict(os.environ)
-    # A stock environment: no worktree on the path, no compiled cache beside it.
     env.pop("PYTHONPATH", None)
     env.pop("UNSLOTH_COMPILE_LOCATION", None)
     process = subprocess.run(
@@ -146,8 +136,7 @@ def test_training_arguments_conversion_keeps_unsloth_fields(patched, tmp_path):
     source = inspect.getsource(generated._UnslothSFTTrainer.__init__)
     if "dict_args" not in source:
         pytest.skip("this TRL release does not convert TrainingArguments inline")
-    # The conversion must not name the bare TRL class: that global was imported before the patching and so still points
-    # at the pristine class.
+    # The bare TRL global was imported before patching and points at the pristine class.
     assert "args = UnslothSFTConfig(**dict_args)" in source, source[:2000]
 
     training_arguments = TrainingArguments(
@@ -177,7 +166,7 @@ def test_every_patched_config_pickles_portably(tmp_path):
         if not isinstance(config_class, type):
             continue
         try:
-            args = config_class(output_dir = str(tmp_path))
+            args = _make(config_class, tmp_path)
         except TypeError:
             continue
         pickle.dumps(args, protocol = 2)
@@ -189,9 +178,21 @@ def test_every_patched_config_pickles_portably(tmp_path):
     assert checked > 0, "no TRL configs were exercised"
 
 
+def _assert_the_patch_applied(patched):
+    """Names the patcher on failure: a failed patch leaves trl.SFTConfig pristine and the tests
+    misreport."""
+    assert getattr(patched, "_unsloth_patched_rl_config", False), (
+        f"trl.SFTConfig is {patched.__name__!r} from {patched.__module__!r} but carries "
+        "no _unsloth_patched_rl_config, so Unsloth's RL patch fell back and these tests "
+        "are describing TRL's own class. `import unsloth` reports the cause as a warning "
+        "(_patch_trl_rl_trainers in unsloth/models/rl.py), not an error."
+    )
+
+
 def test_patched_config_still_subclasses_the_pristine_one(patched):
     """The generated class is renamed onto TRL's name, which must not tempt a
     later patching pass into making it its own base."""
+    _assert_the_patch_applied(patched)
     base = patched.__mro__[1]
     assert base is not patched
     assert base.__name__ == "SFTConfig"
@@ -212,19 +213,11 @@ def test_reducer_registration_is_idempotent(patched, tmp_path):
 
     assert len(copyreg.dispatch_table) == before, "reducers stacked on re-patch"
     assert config_module.SFTConfig is patched, "re-patching swapped the class"
-    # A self-referential reducer would recurse here rather than return.
     assert pickle.loads(pickle.dumps(_make(patched, tmp_path))).output_dir == str(tmp_path)
 
 
 def test_a_displaced_sibling_wrapper_is_covered(patched, tmp_path):
-    """TRL's deprecation shims are siblings of the patched class, not its bases.
-
-    `trl.trainer.<x>_config.<X>Config` subclasses the real class in
-    `trl.experimental.<x>`, and the wrapper resolution generates the patched
-    class from that same parent -- so a subclass-only guard skips the shim even
-    though its module attribute has already been taken over, and any instance
-    captured before patching stays unpicklable.
-    """
+    """TRL's shim configs are siblings of the patched class, so a subclass-only guard misses them."""
     import copyreg
 
     from unsloth.models.rl import (
@@ -246,7 +239,6 @@ def test_a_displaced_sibling_wrapper_is_covered(patched, tmp_path):
         assert getattr(_Shim, _UNSLOTH_CONFIG_PICKLE_TARGET, None) is patched
         restored = pickle.loads(pickle.dumps(_make(_Shim, tmp_path)))
         assert restored.output_dir == str(tmp_path)
-        # Reduced through the patched class, so the file loads without Unsloth.
         assert type(restored) is patched
     finally:
         copyreg.dispatch_table.pop(_Shim, None)
@@ -255,11 +247,8 @@ def test_a_displaced_sibling_wrapper_is_covered(patched, tmp_path):
 
 
 def test_an_unrelated_class_is_not_reduced_through_the_patched_one(patched):
-    """The widening stops at classes whose state the patched class can hold.
-
-    Rebuilding an unrelated class as this one would drop fields silently, which
-    is worse than the PicklingError it avoids.
-    """
+    """Unrelated classes must not be rebuilt as the patched class, which would silently drop their
+    fields."""
     import copyreg
 
     from unsloth.models.rl import _register_config_pickle_fallback
@@ -271,12 +260,7 @@ def test_an_unrelated_class_is_not_reduced_through_the_patched_one(patched):
     assert _Unrelated not in copyreg.dispatch_table
 
 
-# ---------------------------------------------------------------------------
-# The reported ordering: a fresh interpreter that imports trl, builds a config,
-# and only then imports unsloth. The fixture above cannot reproduce it, because
-# by the time this module runs the session has already imported unsloth, so the
-# probe needs a subprocess of its own.
-# ---------------------------------------------------------------------------
+# trl -> config -> unsloth ordering needs a fresh subprocess; unsloth is already imported here.
 
 _PRISTINE_PROBE = r"""
 import json, os, pickle, sys, tempfile
@@ -317,7 +301,6 @@ print("UNSLOTH_PROBE " + json.dumps(result))
 @pytest.fixture(scope = "module")
 def pristine_probe(tmp_path_factory):
     environment = dict(os.environ)
-    # Keep the generated module out of the shared cache directory.
     environment["UNSLOTH_COMPILE_LOCATION"] = str(tmp_path_factory.mktemp("compiled_cache"))
     finished = subprocess.run(
         [sys.executable, "-c", _PRISTINE_PROBE],

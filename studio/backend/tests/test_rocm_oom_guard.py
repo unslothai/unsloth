@@ -9,6 +9,9 @@ Classification paths: (1) canonical gcnArchName, (2) alternate-spelling attr,
 Fraction selection: the unified-Linux reserve crossover, the discrete cap, the
 Windows budget-exact 1.0, and the UNSLOTH_ROCM_MEM_FRACTION override.
 
+The guard reaches the policy through _gpu_memory_fraction; its ROCm arm is what this
+file pins, and the backend-neutral half lives in test_gpu_mem_fraction_env.py.
+
 Regression: Strix Halo (gfx1151) was misclassified as discrete on Radeon wheels
 that set props.name="Radeon 8060S Graphics" but no gcnArchName, applying the
 wrong headroom factor on a 128 GiB unified-memory pool.
@@ -16,6 +19,7 @@ wrong headroom factor on a 128 GiB unified-memory pool.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -201,6 +205,19 @@ class TestDeviceNameFallback:
             "AMD Radeon 860M Graphics",
             "Radeon 840M",
             "AMD Radeon 840M Graphics",
+            # gfx1153 Krackan Point 2 (Ryzen AI 5 330)
+            "AMD Radeon(TM) 820M Graphics",
+            # gfx1151 Strix Halo (Ryzen AI Max 380)
+            "AMD Radeon 8040S Graphics",
+            # gfx1103 Phoenix / Hawk Point
+            "AMD Radeon(TM) 780M",
+            "AMD Radeon 760M Graphics",
+            "AMD Radeon 740M",
+            # gfx1035 Rembrandt
+            "AMD Radeon 680M",
+            "AMD Radeon(TM) 660M",
+            # gfx1036 Raphael / Dragon Range, gfx1037 Mendocino
+            "AMD Radeon(TM) 610M",
             # case variants
             "RADEON 8060S GRAPHICS",
             "radeon 8050s",
@@ -226,6 +243,12 @@ class TestDeviceNameFallback:
             # Superficially similar substrings but discrete
             "Radeon RX 580",
             "Radeon VII",
+            # discrete mobile parts whose digits contain an APU name
+            "AMD Radeon RX 7600M XT",
+            "AMD Radeon RX 6800M",
+            "AMD Radeon RX 6650M",
+            "AMD Radeon Pro W6600M",
+            "AMD Radeon RX 7800M",
         ],
     )
     def test_discrete_not_misclassified(self, device_name: str) -> None:
@@ -286,7 +309,8 @@ class TestMemFractionSelection:
         the guard calls the helper, sizes against the allocator's own total, and tags the
         log off the parsed override rather than the raw string."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
-        assert "_mem_fraction = _rocm_memory_fraction(" in source
+        # The one policy entry point; its "rocm" arm delegates to _rocm_memory_fraction.
+        assert "_mem_fraction = _gpu_memory_fraction(" in source
         # totalGlobalMem is what the allocator multiplies the fraction by from torch
         # 2.10 on, so the reserve is only the intended size when the guard divides by
         # the same number. Before 2.10 the allocator divides by the driver's total.
@@ -301,9 +325,11 @@ class TestMemFractionSelection:
         Scoped to the byte arm: discrete and win32 take a flat fraction, which no
         denominator gap can distort."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
-        assert "_driver_total = int(_torch_mem.cuda.mem_get_info(0)[1])" in source
+        assert "mem_get_info(_mem_index)[1]" in source
         assert "if not _allocator_divides_by_props_total(" in source
-        assert "sys.platform, _env_raw, _driver_total or None" in source
+        # Whitespace-insensitive because the formatter wraps this call; what is pinned is
+        # that the cap is still solved against the driver's total, not the layout.
+        assert re.search(r'sys\.platform,\s*"rocm",\s*_env_raw,\s*_driver_total or None', source)
         assert "but this torch caps" in source
 
 

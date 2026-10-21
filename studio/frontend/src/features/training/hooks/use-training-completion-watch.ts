@@ -4,6 +4,8 @@
 import { useEffect } from "react";
 
 import { getTrainingStatus } from "../api/train-api";
+// eslint-disable-next-line no-restricted-imports
+import { checkDiskSpace } from "@/features/settings/low-disk-check";
 import { createSingleFlightRequest } from "@/lib/single-flight-request";
 import {
   isTrainingStatusRequestCurrent,
@@ -50,6 +52,17 @@ export function useTrainingCompletionWatch(): void {
     return () => {
       cancelled = true;
       window.clearInterval(id);
+      // The post-download half of the training disk check. startTraining takes the
+      // reading BEFORE the run; the worker then downloads the base model and any
+      // remote dataset on its own time, so the only honest moment to look again is
+      // when the run stops being active. This cleanup is that moment, and it does
+      // not care whether the run finished or failed: a run that died because the
+      // disk filled is precisely the one worth reporting.
+      //
+      // forced, for the reason the download manager's finalize is forced: the
+      // reading has to be taken AFTER the write, and unforced it would be swallowed
+      // by the interval or handed a figure from before the run.
+      void checkDiskSpace({ force: true });
     };
   }, [active]);
 }

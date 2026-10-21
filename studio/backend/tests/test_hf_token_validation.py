@@ -29,7 +29,7 @@ def _reset_validation_state():
 def test_cached_token_does_not_spend_another_attempt(monkeypatch):
     calls = []
 
-    def _check(token):
+    def _check(token, **_k):
         calls.append(token)
         return validation.TokenValidationResult(status = "valid")
 
@@ -41,11 +41,21 @@ def test_cached_token_does_not_spend_another_attempt(monkeypatch):
     assert calls == ["hf_valid"]
 
 
+def test_modelscope_checks_a_token_against_hugging_face(monkeypatch):
+    seen = []
+    result = validation.TokenValidationResult(status = "valid")
+    monkeypatch.setattr(validation, "_check_remote", lambda _t, **k: seen.append(k) or result)
+    monkeypatch.setattr(validation, "active_source", lambda: validation.MODELSCOPE)
+    monkeypatch.setattr(validation, "hugging_face_endpoint", lambda: "https://hf-mirror.com")
+    assert validation.validate_hf_token("hf_ok", rate_key = "user:ip") is result
+    assert seen == [{"endpoint": "https://hf-mirror.com"}]
+
+
 def test_three_uncached_attempts_per_hour(monkeypatch):
     monkeypatch.setattr(
         validation,
         "_check_remote",
-        lambda _token: validation.TokenValidationResult(status = "invalid"),
+        lambda _token, **_k: validation.TokenValidationResult(status = "invalid"),
     )
 
     for index in range(3):
@@ -69,7 +79,7 @@ def test_window_rolls_forward(monkeypatch):
     monkeypatch.setattr(
         validation,
         "_check_remote",
-        lambda _token: validation.TokenValidationResult(status = "invalid"),
+        lambda _token, **_k: validation.TokenValidationResult(status = "invalid"),
     )
 
     assert validation.validate_hf_token("hf_a", rate_key = "user:ip").status == "invalid"
@@ -97,7 +107,7 @@ def test_remote_status_classification(monkeypatch, status_code, expected):
             return response
 
     monkeypatch.setattr(validation, "get_session", lambda: _Session())
-    result = validation._check_remote("hf_test")
+    result = validation._check_remote("hf_test", endpoint = "https://huggingface.co")
     assert result.status == expected
     if status_code == 429:
         assert result.retry_after_seconds == 42
@@ -116,7 +126,9 @@ def test_wrapped_http_401_is_invalid(monkeypatch):
             raise error
 
     monkeypatch.setattr(validation, "get_session", lambda: _Session())
-    assert validation._check_remote("hf_test").status == "invalid"
+    assert (
+        validation._check_remote("hf_test", endpoint = "https://huggingface.co").status == "invalid"
+    )
 
 
 def test_remote_timeout_is_bounded_and_unavailable(monkeypatch):
@@ -127,14 +139,17 @@ def test_remote_timeout_is_bounded_and_unavailable(monkeypatch):
             raise TimeoutError("timed out")
 
     monkeypatch.setattr(validation, "get_session", lambda: _Session())
-    assert validation._check_remote("hf_test").status == "unavailable"
+    assert (
+        validation._check_remote("hf_test", endpoint = "https://huggingface.co").status
+        == "unavailable"
+    )
 
 
 def test_raw_token_is_not_retained(monkeypatch):
     monkeypatch.setattr(
         validation,
         "_check_remote",
-        lambda _token: validation.TokenValidationResult(status = "valid"),
+        lambda _token, **_k: validation.TokenValidationResult(status = "valid"),
     )
     token = "hf_do_not_store_this_value"
     validation.validate_hf_token(token, rate_key = "user:ip")
@@ -147,7 +162,7 @@ def test_unexpected_remote_exception_releases_singleflight(monkeypatch):
     calls = 0
     monkeypatch.setattr(validation, "_INFLIGHT_WAIT_SECONDS", 0.0)
 
-    def _check(_token):
+    def _check(_token, **_k):
         nonlocal calls
         calls += 1
         if calls == 1:

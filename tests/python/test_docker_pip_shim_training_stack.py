@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""Regression guard for what the Docker pip shim protects.
-
-The shim protected torch/vLLM/unsloth and stopped there, so every notebook run
-silently mutated the training stack the image was validated with -- while printing
-that it was keeping the baked versions.
-
-The criterion for _KEEP is "replacing this invalidates the tested stack or breaks
-unsloth", not "any package a notebook mentions".
-"""
+"""_KEEP is for packages whose replacement breaks the tested stack or unsloth, not any notebook dep."""
 
 from __future__ import annotations
 
@@ -33,18 +25,13 @@ class _Exec(Exception):
 
 
 class _BakedImage:
-    """Stands in for _installed_names() on an image where every bake succeeded.
-
-    Only `in` is asked of the return value, so answering the prefix rule here keeps
-    nvidia-* wheels present too, which a plain set of _KEEP cannot express.
-    """
+    """Only membership is asked, so the prefix rule keeps nvidia-* wheels present; a _KEEP set cannot."""
 
     def __init__(self, mod):
         self._mod = mod
 
     def __contains__(self, name):
-        # transformers is baked too; it is out of _KEEP only because the sidecar
-        # replaces its VERSION rather than the distribution
+        # transformers is out of _KEEP only because the sidecar replaces its version.
         if name == "transformers":
             return True
         return name in self._mod._KEEP or name.startswith(self._mod._KEEP_PREFIX)
@@ -63,9 +50,7 @@ def shim(tmp_path, monkeypatch):
         raise _Exec(path, argv)
 
     monkeypatch.setattr(mod.os, "execv", _fake_execv)
-    # the shim now skips a protected package only when it is really installed, so pin
-    # the fully baked image here: otherwise these assertions read the CI venv, which
-    # has no torchcodec, and pass or fail on the runner rather than on the shim
+    # Pin the baked image so results do not depend on the CI venv's packages.
     monkeypatch.setattr(mod, "_installed_names", lambda: _BakedImage(mod))
     return mod
 
@@ -74,16 +59,17 @@ def _run(
     shim,
     args,
     tool = "pip",
+    sub = "install",
 ):
-    """Args after `install`, or None when the shim no-op'd; constraints pair dropped."""
-    argv = ["uv", "pip", "install", *args] if tool == "uv" else ["pip", "install", *args]
+    """Args after the subcommand, or None when the shim no-op'd; constraints pair dropped."""
+    argv = ["uv", "pip", sub, *args] if tool == "uv" else ["pip", sub, *args]
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(shim.sys, "argv", argv)
         try:
             shim.main()
             return None
         except _Exec as exc:
-            i = exc.argv.index("install")
+            i = exc.argv.index(sub)
             execd = exc.argv[i + 1 :]
             if (
                 len(execd) >= 2
@@ -165,12 +151,11 @@ def test_a_mixed_cell_keeps_only_the_unbaked_package(shim):
 
 
 def test_cuda_matched_wheels_are_not_replaced_by_pypi_builds(shim):
-    # these come from the cu128 index; a PyPI pin swaps in a generic (or cu13) build
+    # These come from the cu128 index; a PyPI pin swaps in a generic build.
     assert _run(shim, ["torchao==0.15.0", "torchcodec==0.5"]) is None
 
 
 def test_transformers_companions_cannot_desynchronise_the_sidecars(shim):
-    # each sidecar ships its own matched copies, so a base-venv swap breaks them all
     assert (
         _run(shim, ["huggingface_hub==0.30.0", "tokenizers==0.20.0", "safetensors==0.4.0"]) is None
     )
@@ -201,9 +186,7 @@ def test_protection_survives_an_editable_vcs_install(shim):
     assert _run(shim, ["-e", "git+https://github.com/huggingface/trl.git", UNBAKED]) == [UNBAKED]
 
 
-# A protected package that the image never managed to bake is nothing to protect, and
-# dropping it turned the recovery install into a silent success. MISSING is a _KEEP
-# member the Dockerfile is allowed to leave out (see the fail-soft premise test below).
+# An unbaked protected package must install, not be silently dropped.
 MISSING = "vllm"
 
 
@@ -234,8 +217,7 @@ def test_the_baked_premise_holds_before_the_absence_tests_mean_anything(shim):
 
 
 def test_a_protected_package_the_image_never_baked_still_installs(shim_without_vllm):
-    # the arm64 vLLM bake is fail-soft, so `!pip install vllm` was the documented
-    # recovery; skipping it printed "kept baked versions" over an image with no vLLM
+    # The arm64 vLLM bake is fail-soft, so `!pip install vllm` is the recovery.
     assert _run(shim_without_vllm, [MISSING]) == [MISSING]
     assert _run(shim_without_vllm, [f"{MISSING}==0.20.0"]) == [f"{MISSING}==0.20.0"]
     assert _run(shim_without_vllm, [MISSING], tool = "uv") == [MISSING]
@@ -252,7 +234,6 @@ def test_the_absence_check_reaches_the_requirements_file_path(shim_without_vllm,
 
 
 def test_the_absence_check_reaches_the_flag_target_path(shim_without_vllm):
-    # -e and -P classify their value through a separate helper; it drifted before
     assert _run(shim_without_vllm, ["-P", MISSING, UNBAKED]) == ["-P", MISSING, UNBAKED]
     assert _run(shim_without_vllm, ["-P", "trl", UNBAKED]) == [UNBAKED]
 
@@ -284,8 +265,6 @@ def test_every_drop_decision_goes_through_the_one_predicate(shim):
         for line in source.splitlines()
         if "_KEEP_PREFIX)" in line and "_KEEP_PREFIX = " not in line
     ]
-    # only the predicate itself and the constraints builder may spell the rule out;
-    # the constraints builder is already scoped to installed distributions
     assert len(raw) == 2, raw
 
 
@@ -299,8 +278,7 @@ def test_the_dockerfile_still_lets_a_protected_bake_fail(shim):
 
 
 def test_forwarded_installs_pin_the_protected_set_for_the_resolver(shim):
-    # argument filtering does not stop a DEPENDENCY of the kept target from dragging
-    # peft/datasets down, which happened with no notebook ever naming peft
+    # Argument filtering alone does not stop a dependency from downgrading peft/datasets.
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(shim.sys, "argv", ["pip", "install", UNBAKED])
         with pytest.raises(_Exec) as exc:
@@ -313,3 +291,84 @@ def test_forwarded_installs_pin_the_protected_set_for_the_resolver(shim):
     assert all(
         n in shim._KEEP or n == "transformers" or n.startswith("nvidia-") for n in names
     ), sorted(names)
+
+
+def test_the_shipped_falcon_cell_cannot_remove_unsloth(shim, capsys):
+    assert _run(shim, ["unsloth", "-y"], sub = "uninstall") is None
+    assert "skipped: unsloth" in capsys.readouterr().out
+
+
+def test_the_shipped_qwen_moe_cell_keeps_torchcodec(shim):
+    assert _run(shim, ["-y", "sentence-transformers", "torchcodec"], sub = "uninstall") == [
+        "-y",
+        "sentence-transformers",
+    ]
+
+
+@pytest.mark.parametrize("pkg", ["torch", "vllm", "trl", "transformers", "nvidia-cublas-cu12"])
+def test_uninstall_of_the_baked_stack_is_dropped(shim, pkg):
+    assert _run(shim, ["-y", pkg], sub = "uninstall") is None
+    assert _run(shim, [pkg], tool = "uv", sub = "uninstall") is None
+
+
+def test_uninstall_of_an_unbaked_package_still_runs(shim):
+    assert _run(shim, ["-y", UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
+    assert _run(shim, ["-qy", UNBAKED], sub = "uninstall") == ["-q", "-y", UNBAKED]
+
+
+def test_uninstall_of_a_protected_package_the_image_never_baked_still_runs(shim_without_vllm):
+    assert _run(shim_without_vllm, ["-y", MISSING], sub = "uninstall") == ["-y", MISSING]
+
+
+def test_uninstall_protection_survives_a_requirements_file(shim, tmp_path):
+    req = tmp_path / "remove.txt"
+    req.write_text(f"torchcodec\n{UNBAKED}\n")
+    for args in (["-y", "-r", str(req)], ["-y", f"-r{req}"], ["-y", f"--requirement={req}"]):
+        execd = _run(shim, args, sub = "uninstall")
+        assert execd is not None, args
+        path = execd[-1].partition("=")[2] if execd[-1].startswith("--requirement=") else execd[-1]
+        assert Path(path).read_text().split() == [UNBAKED], args
+
+
+def test_uninstall_protection_survives_the_pip_requirement_env(shim, tmp_path, monkeypatch):
+    req = tmp_path / "remove.txt"
+    req.write_text(f"torchcodec\n{UNBAKED}\n")
+    monkeypatch.setenv("PIP_REQUIREMENT", str(req))
+
+    def _fake_execve(path, argv, env):
+        assert "PIP_REQUIREMENT" not in env
+        raise _Exec(path, argv)
+
+    monkeypatch.setattr(shim.os, "execve", _fake_execve)
+    execd = _run(shim, ["-y"], sub = "uninstall")
+    assert execd is not None and execd[0] == "-r" and execd[2] == "-y", execd
+    assert Path(execd[1]).read_text().split() == [UNBAKED]
+
+
+def test_uninstall_requirements_file_extras_do_not_reach_the_baked_package(shim, tmp_path):
+    req = tmp_path / "remove.txt"
+    req.write_text(f"torch[opt]\ntransformers[torch]\n{UNBAKED}\n")
+    execd = _run(shim, ["-y", "-r", str(req)], sub = "uninstall")
+    assert Path(execd[-1]).read_text().split() == [UNBAKED]
+
+
+def test_uninstall_requirements_file_of_only_baked_packages_is_a_no_op(shim, tmp_path, capsys):
+    req = tmp_path / "remove.txt"
+    req.write_text("# baked\ntorchcodec\nunsloth[colab-new]\n")
+    for args in (["-y", "-r", str(req)], ["-y", f"-r{req}"], ["-y", f"--requirement={req}"]):
+        assert _run(shim, args, sub = "uninstall") is None, args
+        assert "nothing to uninstall" in capsys.readouterr().out
+    assert _run(shim, ["-y", "-r", str(req), UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
+
+
+@pytest.mark.parametrize("var", ["PIP_TARGET", "PIP_PREFIX", "PIP_ROOT"])
+def test_pip_uninstall_ignores_install_destination_variables(shim, monkeypatch, tmp_path, var):
+    monkeypatch.setenv(var, str(tmp_path / "outside"))
+    assert _run(shim, ["-y", "torch"], sub = "uninstall") is None
+    assert _run(shim, ["-y", UNBAKED], sub = "uninstall") == ["-y", UNBAKED]
+
+
+@pytest.mark.parametrize("tool", ["pip", "uv"])
+def test_targetless_uninstall_reaches_the_real_cli(shim, tool):
+    assert _run(shim, ["--help"], tool = tool, sub = "uninstall") == ["--help"]
+    assert _run(shim, ["-y"], tool = tool, sub = "uninstall") == ["-y"]

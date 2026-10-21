@@ -22,12 +22,12 @@ export function StatsCard({
     <section
       {...(title ? { "data-settings-label": title } : {})}
       className={cn(
-        "flex w-full flex-col gap-4 rounded-2xl border border-border bg-background dark:border-transparent dark:bg-white/[0.06] px-5 py-5",
+        "flex w-full flex-col gap-4 rounded-2xl border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] px-5 py-5",
         className,
       )}
     >
       {title ? (
-        <header className="flex items-start justify-between gap-3">
+        <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-0.5">
             <h3 className="text-sm font-semibold font-heading text-foreground">
               {title}
@@ -36,7 +36,7 @@ export function StatsCard({
               <p className="text-xs text-muted-foreground">{description}</p>
             ) : null}
           </div>
-          {action ? <div className="shrink-0">{action}</div> : null}
+          {action ? <div className="max-w-full shrink-0">{action}</div> : null}
         </header>
       ) : null}
       {children}

@@ -4,132 +4,142 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  reasoningAutoOpensWhileStreaming,
-  resolveReasoningOpen,
-  resolveReasoningToggle,
-  startsNewReasoningRound,
-} from "../src/features/chat/utils/reasoning-visibility.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
-// Mirrors the component: toggle results feed straight back into the open state.
-function applyToggle(
-  state: {
-    isStreaming: boolean;
-    collapseByDefault: boolean;
-    dismissedWhileStreaming: boolean;
-    manualOpen: boolean;
-  },
-  open: boolean,
-) {
-  const next = resolveReasoningToggle(open, state);
-  return {
-    ...state,
-    manualOpen: next.manualOpen,
-    dismissedWhileStreaming:
-      next.dismissedWhileStreaming ?? state.dismissedWhileStreaming,
-  };
+// reasoning-visibility.ts imports a sibling extensionless, like the rest of src.
+registerBundlerResolver();
+
+import type { DisplayVisibility } from "../src/features/chat/utils/display-visibility.ts";
+const { DISPLAY_VISIBILITIES } = await import(
+  "../src/features/chat/utils/display-visibility.ts"
+);
+const {
+  reasoningFollowsPreference,
+  resolveReasoningOpen,
+  startsNewReasoningRound,
+} = await import("../src/features/chat/utils/reasoning-visibility.ts");
+
+interface BlockState {
+  isStreaming: boolean;
+  visibility: DisplayVisibility;
+  override: boolean | null;
 }
 
-test("thinking streams open and auto-collapses when the preference is off", () => {
-  const base = { collapseByDefault: false, manualOpen: false };
-  assert.equal(
-    resolveReasoningOpen({
-      ...base,
-      isStreaming: true,
-      dismissedWhileStreaming: false,
-    }),
-    true,
-  );
-  // Closing mid-stream keeps it closed for the rest of the round.
-  assert.equal(
-    resolveReasoningOpen({
-      ...base,
-      isStreaming: true,
-      dismissedWhileStreaming: true,
-    }),
-    false,
-  );
-  assert.equal(
-    resolveReasoningOpen({
-      ...base,
-      isStreaming: false,
-      dismissedWhileStreaming: false,
-    }),
-    false,
-  );
+// Mirrors the component: toggle results feed straight back into the open state.
+function applyToggle(state: BlockState, open: boolean): BlockState {
+  return { ...state, override: open };
+}
+
+// Mirrors the component's render-time reset when the setting moves.
+function applyPreferenceChange(
+  state: BlockState,
+  visibility: DisplayVisibility,
+): BlockState {
+  return { ...state, visibility, override: null };
+}
+
+test("auto streams the block open and collapses it when the stream ends", () => {
+  const base = { visibility: "auto" as const, override: null };
+  assert.equal(resolveReasoningOpen({ ...base, isStreaming: true }), true);
+  assert.equal(resolveReasoningOpen({ ...base, isStreaming: false }), false);
 });
 
-test("thinking stays collapsed in both phases when the preference is on", () => {
-  const base = { collapseByDefault: true, dismissedWhileStreaming: false };
-  assert.equal(
-    resolveReasoningOpen({ ...base, isStreaming: true, manualOpen: false }),
-    false,
-  );
-  assert.equal(
-    resolveReasoningOpen({ ...base, isStreaming: false, manualOpen: false }),
-    false,
-  );
+test("collapsed keeps the block shut in both phases", () => {
+  const base = { visibility: "collapsed" as const, override: null };
+  assert.equal(resolveReasoningOpen({ ...base, isStreaming: true }), false);
+  assert.equal(resolveReasoningOpen({ ...base, isStreaming: false }), false);
   // A hand-opened block still wins, including while it is streaming.
   assert.equal(
-    resolveReasoningOpen({ ...base, isStreaming: true, manualOpen: true }),
+    resolveReasoningOpen({ ...base, isStreaming: true, override: true }),
     true,
   );
   assert.equal(
-    resolveReasoningOpen({ ...base, isStreaming: false, manualOpen: true }),
+    resolveReasoningOpen({ ...base, isStreaming: false, override: true }),
     true,
   );
 });
 
-test("auto-open applies only while streaming with the preference off", () => {
-  assert.equal(reasoningAutoOpensWhileStreaming(true, false), true);
-  assert.equal(reasoningAutoOpensWhileStreaming(true, true), false);
-  assert.equal(reasoningAutoOpensWhileStreaming(false, false), false);
-  assert.equal(reasoningAutoOpensWhileStreaming(false, true), false);
+test("always expanded keeps the block open in both phases, streaming included", () => {
+  const base = { visibility: "expanded" as const, override: null };
+  assert.equal(resolveReasoningOpen({ ...base, isStreaming: true }), true);
+  // The case the old pair of switches could not express.
+  assert.equal(resolveReasoningOpen({ ...base, isStreaming: false }), true);
+  // And it is still closable by hand.
+  assert.equal(
+    resolveReasoningOpen({ ...base, isStreaming: false, override: false }),
+    false,
+  );
 });
 
-test("a hand-opened block closes again in every phase", () => {
+test("closing mid-stream keeps it closed for the rest of the round", () => {
+  let state: BlockState = {
+    isStreaming: true,
+    visibility: "auto",
+    override: null,
+  };
+  assert.equal(resolveReasoningOpen(state), true);
+  state = applyToggle(state, false);
+  assert.equal(resolveReasoningOpen(state), false);
+  // Still closed as the stream continues.
+  assert.equal(resolveReasoningOpen({ ...state, isStreaming: true }), false);
+});
+
+test("a block sits where the setting puts it until someone touches it", () => {
+  assert.equal(reasoningFollowsPreference(true, true, "auto"), true);
+  assert.equal(reasoningFollowsPreference(false, true, "auto"), false);
+  assert.equal(reasoningFollowsPreference(true, false, "expanded"), true);
+  assert.equal(reasoningFollowsPreference(false, false, "collapsed"), true);
+  assert.equal(reasoningFollowsPreference(true, false, "collapsed"), false);
+});
+
+test("a hand-opened block closes again in every phase and every setting", () => {
   for (const isStreaming of [true, false]) {
-    for (const collapseByDefault of [true, false]) {
-      let state = {
-        isStreaming,
-        collapseByDefault,
-        dismissedWhileStreaming: false,
-        manualOpen: false,
-      };
+    for (const visibility of DISPLAY_VISIBILITIES) {
+      let state: BlockState = { isStreaming, visibility, override: null };
       state = applyToggle(state, true);
       assert.equal(
         resolveReasoningOpen(state),
         true,
-        `open failed for streaming=${isStreaming} collapse=${collapseByDefault}`,
+        `open failed for streaming=${isStreaming} visibility=${visibility}`,
       );
       state = applyToggle(state, false);
       assert.equal(
         resolveReasoningOpen(state),
         false,
-        `close failed for streaming=${isStreaming} collapse=${collapseByDefault}`,
+        `close failed for streaming=${isStreaming} visibility=${visibility}`,
       );
     }
   }
 });
 
-test("closing still works after the preference flips mid stream", () => {
-  // Collapsed by default, opened by hand while the model is thinking.
-  let state = {
+test("changing the setting mid stream re-applies it to a block already on screen", () => {
+  // Collapsed, opened by hand while the model is thinking.
+  let state: BlockState = {
     isStreaming: true,
-    collapseByDefault: true,
-    dismissedWhileStreaming: false,
-    manualOpen: false,
+    visibility: "collapsed",
+    override: null,
   };
   state = applyToggle(state, true);
   assert.equal(resolveReasoningOpen(state), true);
 
-  // Preference turned off from settings without leaving the stream.
-  state = { ...state, collapseByDefault: false };
+  // Switched to always expanded mid stream: the block follows the new setting.
+  state = applyPreferenceChange(state, "expanded");
+  assert.equal(state.override, null);
   assert.equal(resolveReasoningOpen(state), true);
 
-  // The sticky open has to clear here, or the block cannot be collapsed again.
+  // Still closable afterwards, which a pinned override would have blocked.
   state = applyToggle(state, false);
-  assert.equal(state.manualOpen, false);
+  assert.equal(resolveReasoningOpen(state), false);
+});
+
+test("switching to collapsed shuts a block the user had opened", () => {
+  let state: BlockState = {
+    isStreaming: false,
+    visibility: "expanded",
+    override: null,
+  };
+  state = applyToggle(state, true);
+  state = applyPreferenceChange(state, "collapsed");
   assert.equal(resolveReasoningOpen(state), false);
 });
 
@@ -141,13 +151,12 @@ test("a round starts only when streaming resumes", () => {
   assert.equal(startsNewReasoningRound(false, false), false);
 });
 
-test("regenerating drops the previous round's manual open", () => {
+test("regenerating drops the previous round's override", () => {
   // Block opened by hand after the last round finished.
-  let state = {
+  let state: BlockState = {
     isStreaming: false,
-    collapseByDefault: true,
-    dismissedWhileStreaming: false,
-    manualOpen: true,
+    visibility: "collapsed",
+    override: true,
   };
   assert.equal(resolveReasoningOpen(state), true);
 
@@ -155,29 +164,6 @@ test("regenerating drops the previous round's manual open", () => {
   const wasStreaming = state.isStreaming;
   state = { ...state, isStreaming: true };
   assert.equal(startsNewReasoningRound(state.isStreaming, wasStreaming), true);
-  state = { ...state, manualOpen: false, dismissedWhileStreaming: false };
+  state = { ...state, override: null };
   assert.equal(resolveReasoningOpen(state), false);
-});
-
-test("streaming height cap is released only for a hand-opened block", () => {
-  assert.equal(
-    resolveReasoningToggle(true, { isStreaming: true, collapseByDefault: true })
-      .releaseStreamingHeight,
-    true,
-  );
-  // Re-opening an auto-opened block keeps the cap, so live text stays scrolled.
-  assert.equal(
-    resolveReasoningToggle(true, {
-      isStreaming: true,
-      collapseByDefault: false,
-    }).releaseStreamingHeight,
-    false,
-  );
-  assert.equal(
-    resolveReasoningToggle(false, {
-      isStreaming: false,
-      collapseByDefault: false,
-    }).releaseStreamingHeight,
-    false,
-  );
 });

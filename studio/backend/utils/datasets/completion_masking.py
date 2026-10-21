@@ -10,6 +10,7 @@ quantized checkpoints ship a different chat template, so only detection from
 the actual template is reliable.
 """
 
+from .iterable import is_streaming_dataset
 from .model_mappings import (
     MODEL_TO_TEMPLATE_MAPPER,
     TEMPLATE_TO_RESPONSES_MAPPER,
@@ -26,6 +27,36 @@ def lookup_manual_markers(model_name):
     if markers:
         return template, markers["instruction"], markers["response"]
     return template, None, None
+
+
+def _mask_tool_responses(trainer, start_id, end_id, turn_id):
+    def mask(batch):
+        all_labels = []
+        for input_ids, labels in zip(batch["input_ids"], batch["labels"]):
+            if start_id in input_ids:
+                input_ids, labels = list(input_ids), list(labels)
+                starts = [i for i, token in enumerate(input_ids) if token == start_id]
+                for start, limit in zip(starts, starts[1:] + [len(input_ids)]):
+                    span = input_ids[start + 1 : limit]
+                    # An unanswered tool call has no closing marker; its span ends at the next turn.
+                    if end_id in span:
+                        stop = span.index(end_id) + 1
+                    else:
+                        stop = span.index(turn_id) if turn_id in span else len(span)
+                    labels[start + 1 : start + 1 + stop] = [-100] * stop
+            all_labels.append(labels)
+        return {"labels": all_labels}
+
+    for name in ("train_dataset", "eval_dataset"):
+        dataset = getattr(trainer, name, None)
+        columns = (
+            next(iter(dataset), {})
+            if is_streaming_dataset(dataset)
+            else getattr(dataset, "column_names", None)
+        )
+        if "labels" in (columns or ()):
+            setattr(trainer, name, dataset.map(mask, batched = True))
+    return trainer
 
 
 def apply_completion_masking(
@@ -76,6 +107,17 @@ def apply_completion_masking(
         if wrapped is not None:
             processor = wrapped
     inner = getattr(processor, "tokenizer", processor)
+
+    # Gemma 4 puts tool results inside the model turn; MLX labels its batches inside train_fn, out of reach here.
+    vocab = inner.get_added_vocab() if hasattr(inner, "get_added_vocab") else {}
+    tool_response = (vocab.get("<|tool_response>"), vocab.get("<tool_response|>"))
+    if None not in tool_response and type(trainer).__name__ != "MLXTrainer":
+        mask_responses = train_fn
+
+        def train_fn(trainer, **kwargs):
+            return _mask_tool_responses(
+                mask_responses(trainer, **kwargs), *tool_response, vocab.get("<|turn>")
+            )
 
     if dataset_template is not None:
         markers = TEMPLATE_TO_RESPONSES_MAPPER.get(dataset_template)

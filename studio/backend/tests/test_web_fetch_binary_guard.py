@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for binary bodies poisoning web_search model context (#7084)."""
+"""Regression tests for web fetch decoding: binary bodies poisoning model context (#7084) and page charsets."""
 
 from __future__ import annotations
 
 import codecs
+import random
 import sys
+import time
+import tracemalloc
 from email.message import Message
 from pathlib import Path
 
@@ -154,6 +157,20 @@ def test_mislabeled_pdf_is_read_past_text_download_cap(monkeypatch):
     monkeypatch.setattr(tools, "_MAX_PDF_FETCH_BYTES", len(body) + 100)
     out = _fetch_with(monkeypatch, body, "text/plain")
     assert "Cross-reference data was fetched" in out
+
+
+def test_html_labeled_pdf_with_body_bytes_is_read_to_eof(monkeypatch):
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    payload = b"<body>" + random.Random(0).randbytes(1024 * 1024)
+    doc.embfile_add("blob.bin", payload, ufilename = "blob.bin")
+    page = doc.new_page()
+    page.insert_text((40, 40), "PDF body-window marker")
+    body = doc.tobytes(deflate = False, use_objstms = 0, compression_effort = 0)
+    doc.close()
+
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert "PDF body-window marker" in out
 
 
 def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
@@ -403,6 +420,160 @@ def test_html_page_unaffected(monkeypatch):
     assert "non-text content" not in out and "binary content" not in out
 
 
+def test_article_after_a_large_inline_head_is_read(monkeypatch):
+    style = b".c{color:red}\n" * (2 * 1024 * 1024 // 14)
+    html = (
+        b"<html><head><style>"
+        + style
+        + b"</style></head><body><article><h1>Brightline files for bankruptcy</h1>"
+        + b"<p>The rail operator filed for Chapter 11 protection on Friday.</p></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "Brightline files for bankruptcy" in out
+    assert "Chapter 11 protection" in out
+
+
+def test_article_after_a_utf8_bom_and_large_inline_head_is_read(monkeypatch):
+    html = (
+        codecs.BOM_UTF8
+        + b"<html><head><style>"
+        + b"x" * (768 * 1024)
+        + b"</style></head><body><article><h1>BOM article body</h1></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "BOM article body" in out
+
+
+def test_body_text_inside_head_script_does_not_end_the_read(monkeypatch):
+    html = (
+        b'<html><head><script>const example = "<body>";</script><style>'
+        + b"x" * (768 * 1024)
+        + b"</style></head><body><article><h1>Actual article body</h1></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "Actual article body" in out
+
+
+@pytest.mark.parametrize("reference", ["&#10;", "&#x20;", "&Tab;", "&NewLine;"])
+def test_whitespace_reference_in_large_head_keeps_article(monkeypatch, reference):
+    html = (
+        "<html><head>"
+        + reference
+        + "<style>"
+        + "x" * (768 * 1024)
+        + "</style></head><body><h1>Whitespace article marker</h1></body></html>"
+    ).encode()
+    assert "Whitespace article marker" in _fetch_with(monkeypatch, html, "text/html")
+
+
+@pytest.mark.parametrize(
+    "codec", ["utf-16", "utf-32", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]
+)
+def test_wide_encoded_large_head_keeps_article(monkeypatch, codec):
+    html = (
+        "<html><head><style>/*"
+        + "🌍" * (200 * 1024)
+        + "*/</style></head><body><h1>Wide article marker</h1></body></html>"
+    ).encode(codec)
+    content_type = "text/html" if codec in ("utf-16", "utf-32") else f"text/html; charset={codec}"
+    assert "Wide article marker" in _fetch_with(monkeypatch, html, content_type)
+
+
+def test_html_body_locator_does_not_store_every_newline():
+    tracemalloc.start()
+    try:
+        locator = tools._HTMLBodyLocator()
+        locator.feed_bytes(b"\n" * (256 * 1024))
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert locator.body_at is None
+    assert peak < 4 * 1024 * 1024
+
+
+def test_unterminated_html_token_has_linear_reparse_work(monkeypatch):
+    payload = b"<" + b"x" * (4 * 1024 * 1024)
+    resp = _FakeResp(payload, "text/html")
+    scanned = 0
+    feed = tools.HTMLParser.feed
+
+    def counted_feed(parser, data):
+        nonlocal scanned
+        scanned += len(parser.rawdata) + len(data)
+        return feed(parser, data)
+
+    monkeypatch.setattr(tools.HTMLParser, "feed", counted_feed)
+    error, body = tools._read_capped_body(
+        resp,
+        tools._MAX_HTML_FETCH_BYTES,
+        timeout = 5,
+        deadline = None,
+        cancel_event = None,
+        body_window = tools._MAX_FETCH_BYTES,
+    )
+    assert error is None
+    assert body == payload
+    assert scanned < 3 * len(payload)
+
+
+@pytest.mark.parametrize(
+    "opening,closing", [(b"<!--", b"-->"), (b'<link href="data:image/png;base64,', b'">')]
+)
+def test_large_head_token_keeps_article(monkeypatch, opening, closing):
+    html = (
+        b"<html><head>"
+        + opening
+        + b"x" * (768 * 1024)
+        + closing
+        + b"</head><body><h1>Long token article marker</h1></body></html>"
+    )
+    assert "Long token article marker" in _fetch_with(monkeypatch, html, "text/html")
+
+
+@pytest.mark.parametrize(
+    "content_type,body",
+    [
+        (
+            "text/html",
+            b"<html><head><title>t</title></head><body><article>"
+            + b"<h1>Harbor ferry adds night service</h1><p>Boats run every thirty minutes.</p></article>"
+            + b"<script>"
+            + b"x" * (4 * 1024 * 1024)
+            + b"</script></body></html>",
+        ),
+        (
+            "text/html",
+            b"<html><head><title>t</title></head><main>"
+            + b"<h1>Harbor ferry adds night service</h1><p>Boats run every thirty minutes.</p></main>"
+            + b"<script>"
+            + b"x" * (4 * 1024 * 1024)
+            + b"</script></html>",
+        ),
+        ("text/plain", b"Harbor ferry adds night service\n" + b"log line\n" * (512 * 1024)),
+    ],
+    ids = ["html", "html-without-body-tag", "text"],
+)
+def test_large_page_on_a_slow_link_still_returns_its_start(monkeypatch, content_type, body):
+    clock = {"time": 1000.0}
+    monkeypatch.setattr(tools.time, "monotonic", lambda: clock["time"])
+    resp = _FakeResp(body, content_type)
+    read = resp.read
+
+    def slow_read(n = None):
+        chunk = read(n)
+        clock["time"] += len(chunk) / (64 * 1024)
+        return chunk
+
+    resp.read = slow_read
+    monkeypatch.setattr(
+        tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
+    )
+    monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a, **k: _FakeOpener(resp))
+    out = tools._fetch_page_text("https://example.com/thing", timeout = 30)
+    assert "Harbor ferry adds night service" in out
+
+
 def test_content_type_sanitized_in_message(monkeypatch):
     # Do not echo obs-folded header content into the model response.
     out = _fetch_with(monkeypatch, b"PK\x03\x04" * 500, "application/zip\r\n data: injected")
@@ -430,3 +601,220 @@ def test_text_with_a_few_stray_replacement_chars_kept(monkeypatch):
     out = _fetch_with(monkeypatch, body, "text/html")
     assert "Real article text." in out
     assert "binary content" not in out
+
+
+_JAPANESE = "価格.com は日本最大級の購買支援サイトです。製品の価格比較とクチコミ。"
+
+
+def _html_page(head: str, text: str) -> str:
+    return (
+        f"<!doctype html><html><head>{head}<title>t</title></head><body><p>{text}</p></body></html>"
+    )
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        '<meta charset="Shift_JIS">',
+        "<meta charset=shift_jis>",
+        '<meta charset="x-sjis">',
+        '<meta charset="windows-31j">',
+        '<meta http-equiv="Content-Type" content="text/html; charset=Shift_JIS">',
+        '<meta content="text/html; charset=shift_jis" http-equiv="content-type">',
+        '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=Shift_JIS">',
+        "<meta http-equiv=content-type content=\"text/html; charset='shift_jis'\">",
+    ],
+)
+def test_meta_charset_read_when_header_names_none(monkeypatch, head):
+    body = _html_page(head, _JAPANESE * 40).encode("cp932")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert _JAPANESE in out
+    assert "�" not in out
+    assert "binary content" not in out
+
+
+@pytest.mark.parametrize("content_type", ["text/html", "application/xhtml+xml", "text/xml"])
+def test_xml_prolog_encoding_read_when_header_names_none(monkeypatch, content_type):
+    body = ('<?xml version="1.0" encoding="EUC-JP"?>\n' + _html_page("", _JAPANESE * 40)).encode(
+        "euc_jp"
+    )
+    out = _fetch_with(monkeypatch, body, content_type)
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+@pytest.mark.parametrize(
+    "label,encoding,text",
+    [
+        ("gb2312", "gbk", "镕 GBK-only MARKERWORD"),
+        ("latin1", "cp1252", "“quoted” MARKERWORD"),
+        ("iso-8859-1", "cp1252", "“quoted” MARKERWORD"),
+        ("windows-1251", "cp1251", "Привет MARKERWORD"),
+        ("euc-jp", "euc_jp", _JAPANESE),
+        ("euc-kr", "cp949", "작성자: 김똠, 댓글: 햏햏 뷁 MARKERWORD"),
+        ("ks_c_5601-1987", "cp949", "작성자: 김똠, 댓글: 햏햏 뷁 MARKERWORD"),
+        ("big5", "big5hkscs", "台灣裏面恒春 碁盤 MARKERWORD"),
+        ("tis-620", "cp874", "ภาษาไทย “คำพูด” … MARKERWORD"),
+        ("iso-8859-9", "cp1254", "Türkiye’nin “Ankara”dır… MARKERWORD"),
+    ],
+)
+def test_meta_charset_labels_decode_with_whatwg_codecs(monkeypatch, label, encoding, text):
+    body = _html_page(f'<meta charset="{label}">', text * 40).encode(encoding)
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text in out
+    assert "�" not in out
+
+
+def test_header_charset_wins_over_contradicting_meta(monkeypatch):
+    body = _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, "text/html; charset=utf-8")
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+def test_bom_wins_over_contradicting_meta(monkeypatch):
+    body = codecs.BOM_UTF8 + _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode()
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "x-mac-fantasy",
+        "utf8mb4",
+        "base64",
+        "rot13",
+        "idna",
+        "undefined",
+        "utf-7",
+        "utf-32",
+        "punycode",
+    ],
+)
+def test_unknown_meta_charset_falls_back_to_utf8_without_raising(monkeypatch, label):
+    body = _html_page(f'<meta charset="{label}">', "MARKERWORD über " * 40).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert "MARKERWORD über" in out
+    assert "Failed to fetch URL" not in out
+
+
+@pytest.mark.parametrize("meta", ['<meta charset="utf-8">', '<meta charset="utf-16">'])
+def test_meta_charset_keeps_cp1252_rescue_for_mislabeled_page(monkeypatch, meta):
+    text = "¿Qué pasó? Canción, corazón, niño, España, José, señor. "
+    body = _html_page(meta, text * 30).encode("cp1252")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text.strip() in out
+    assert "binary content" not in out
+
+
+def test_commented_out_meta_charset_is_ignored(monkeypatch):
+    text = "Ünïcödé “smart” 日本語 MARKERWORD "
+    head = '<!--[if IE]><meta charset="iso-8859-1"><![endif]--><meta charset="utf-8">'
+    body = _html_page(head, text * 20).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text.strip() in out
+    assert "Ã" not in out
+
+
+@pytest.mark.parametrize("header_label", ["x-bogus-label", "base64"])
+def test_meta_charset_used_when_header_charset_unusable(monkeypatch, header_label):
+    body = _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode("cp932")
+    out = _fetch_with(monkeypatch, body, f"text/html; charset={header_label}")
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+def test_unusable_meta_charset_does_not_stop_the_scan(monkeypatch):
+    head = '<meta charset="bogus"><meta charset="Shift_JIS">'
+    body = _html_page(head, _JAPANESE * 40).encode("cp932")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        '<meta name="description" content="docs about charset=shift_jis">',
+        '<meta http-equiv="refresh" content="0; url=/next?charset=shift_jis">',
+        '<meta name="Content-Type" content="text/html; charset=shift_jis">',
+        '<meta name="x" content="<meta charset=shift_jis>">',
+        "<script data-x='<meta charset=\"shift_jis\">'></script>",
+        '<meta charset="shift<!-- x -->_jis">',
+        '<meta-info charset="shift_jis"><metadata charset="shift_jis">',
+    ],
+)
+def test_charset_text_outside_a_declaration_is_ignored(monkeypatch, head):
+    text = "Ünïcödé “smart” 日本語 MARKERWORD "
+    body = _html_page(head, text * 20).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text.strip() in out
+    assert "�" not in out
+
+
+def test_meta_charset_wins_over_xml_prolog(monkeypatch):
+    text = "Café crème brûlée — MARKERWORD "
+    head = '<meta http-equiv="Content-Type" content="text/html; charset=utf-8">'
+    body = ('<?xml version="1.0" encoding="iso-8859-1"?>\n' + _html_page(head, text * 20)).encode()
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert text.strip() in out
+    assert "Ã" not in out
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        b"<a" * 1024,
+        b'<html><head><script data-x="' + b"<a" * 1024,
+        b"<html><head><script>" + b"x<y;" * 512,
+        b'<html><head><script data-x=\'<meta charset="shift_jis">' + b"x" * 2048,
+    ],
+)
+def test_meta_prescan_stops_at_an_unterminated_tag(head):
+    start = time.perf_counter()
+    assert tools._sniff_meta_charset(head[: tools._META_CHARSET_SCAN_BYTES], "text/html") is None
+    assert time.perf_counter() - start < 1
+
+
+def test_whatwg_charset_table_only_names_text_codecs():
+    for label, codec in tools._WHATWG_CHARSET_CODECS.items():
+        assert label == label.lower()
+        assert codecs.lookup(codec)._is_text_encoding, label
+        assert b"a\xff".decode(codec, "replace")
+
+
+@pytest.mark.parametrize(
+    "content_type", ["text/plain", "application/json", "application/xml", "text/css"]
+)
+def test_meta_charset_in_non_html_body_is_ignored(monkeypatch, content_type):
+    text = "日本語のテキスト。価格比較とクチコミ。MARKERWORD "
+    body = ('<p>Example:</p> <meta charset="shift_jis"/> ' + text * 40).encode("utf-8")
+    out = _fetch_with(monkeypatch, body, content_type)
+    assert text.strip() in out
+    assert "�" not in out
+
+
+def test_meta_charset_read_when_content_type_missing(monkeypatch):
+    body = _html_page('<meta charset="Shift_JIS">', _JAPANESE * 40).encode("cp932")
+    out = _fetch_with(monkeypatch, body, None)
+    assert _JAPANESE in out
+    assert "�" not in out
+
+
+def test_meta_charset_in_headerless_non_html_body_is_ignored(monkeypatch):
+    text = "日本語のテキスト。価格比較とクチコミ。MARKERWORD "
+    body = ('# Encoding\n\nUse `<meta charset="shift_jis">` on old pages.\n\n' + text * 40).encode()
+    out = _fetch_with(monkeypatch, body, None)
+    assert text.strip() in out
+    assert "�" not in out
+
+
+def test_xml_prolog_encoding_read_when_content_type_missing(monkeypatch):
+    body = (
+        '<?xml version="1.0" encoding="Shift_JIS"?>\n<doc><p>' + _JAPANESE * 40 + "</p></doc>"
+    ).encode("cp932")
+    out = _fetch_with(monkeypatch, body, None)
+    assert _JAPANESE in out
+    assert "�" not in out

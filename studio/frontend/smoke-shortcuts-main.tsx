@@ -33,6 +33,7 @@ declare global {
       registry: typeof registry;
       store: typeof shortcutStore;
       nav: typeof useChatNavigationStore;
+      recordedAs: Partial<Record<registry.ShortcutId, string>>;
       fired: () => Fired[];
       reset: () => void;
       setActiveChat: (value: string | null) => void;
@@ -65,6 +66,44 @@ const withActiveChat = (run: (item: string) => void) => {
   }
   run(activeChat.current);
 };
+
+/** Actions the blocks in Harness register by hand. The rest come from the registry
+ *  below, so every shipped chord has a listener here to reach. This stands in for the
+ *  app's own call sites, which the node suite pins by source text. */
+const NAMED_IDS = new Set<registry.ShortcutId>([
+  "archiveChat",
+  "togglePinChat",
+  "deleteSelectedChats",
+  "clearAllUnreads",
+  "approveToolRequest",
+  "declineToolRequest",
+  "nextChat",
+  "searchChats",
+  "newChat",
+  "openSettings",
+  "toggleSidebar",
+  "copySessionId",
+]);
+
+const GENERIC_IDS = registry.SHORTCUT_DEFS.map((def) => def.id).filter(
+  (id) => !NAMED_IDS.has(id),
+);
+
+/** What a named block records, where that is not the id. Anything absent, generic
+ *  rows included, records its own id. */
+const RECORDED_AS: Partial<Record<registry.ShortcutId, string>> = {
+  archiveChat: "archiveActive",
+  togglePinChat: "pinActive",
+  clearAllUnreads: "toast.info",
+  approveToolRequest: "approve",
+  declineToolRequest: "decline",
+};
+
+/** One hook per action: a loop inside Harness would break the rules of hooks. */
+function GenericRow({ id }: { id: registry.ShortcutId }) {
+  useShortcut(id, () => record(id));
+  return null;
+}
 
 function Harness() {
   const [selectionCount, setSelectionCount] = useState(0);
@@ -137,6 +176,9 @@ function Harness() {
 
   return (
     <div>
+      {GENERIC_IDS.map((id) => (
+        <GenericRow key={id} id={id} />
+      ))}
       <button type="button" id="smoke-button" onClick={() => record("buttonClick")}>
         Deny
       </button>
@@ -170,6 +212,7 @@ window.__shortcutsSmoke = {
   registry,
   store: shortcutStore,
   nav: useChatNavigationStore,
+  recordedAs: RECORDED_AS,
   fired: () => fired.slice(),
   reset: () => {
     fired.length = 0;

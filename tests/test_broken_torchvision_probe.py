@@ -12,18 +12,11 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Name a torchvision whose compiled ops do not match torch.
-
-`torchvision_compatibility_check` compared version metadata, which cannot see
-an ABI break. Found by running `Gemma4_(E2B)_GRPO`: its T4 branch installs
-vllm==0.9.2 beside Colab's torch, and `import unsloth` then died with
-`RuntimeError: operator torchvision::nms does not exist`, raised from
-`transformers/image_utils.py` and naming nothing. The vLLM half of the same
-breakage was already handled.
-"""
+"""The torchvision check must catch compiled-op ABI breaks, which version metadata alone cannot see."""
 
 import ast
 import builtins
+import importlib
 import pathlib
 import sys
 from unittest import mock
@@ -57,7 +50,7 @@ def test_the_other_shapes_of_the_same_break_are_recognised(message):
 @pytest.mark.parametrize(
     "message",
     [
-        # A CPU-only or driverless box: torchvision cannot load, and that is not what this probe is for.
+        # A CPU-only or driverless box: torchvision cannot load, which this probe ignores.
         "libcuda.so.1: cannot open shared object file: No such file or directory",
         "libnvrtc.so: cannot open shared object file: No such file or directory",
         "/lib/libjpeg.so: undefined symbol: jpeg_resync_to_restart",
@@ -108,7 +101,6 @@ def test_a_broken_binary_raises_something_actionable():
     with pytest.raises(ImportError) as excinfo:
         _probe_with_import_raising(_NMS)
     text = str(excinfo.value)
-    # The cause, the fix, and the escape hatch, in the one message.
     assert "torchvision==0.26.0" in text and "torch==2.11.0" in text
     assert "force-reinstall --no-deps --no-cache-dir" in text
     assert "UNSLOTH_SKIP_TORCHVISION_CHECK=1" in text
@@ -128,7 +120,6 @@ def test_the_repair_command_names_the_companion_release():
     """The gate passes on a lower bound (torch 2.4 accepts torchvision >= 0.19),
     so an installed 0.20 reaches the probe; 0.19 is what repairs that box."""
     assert "torchvision==0.19.*" in import_fixes._torchvision_repair_command((0, 19))
-    # No table entry: still pinned to nothing rather than to the wrong thing.
     assert "torchvision" in import_fixes._torchvision_repair_command(None)
 
 
@@ -224,14 +215,7 @@ def test_the_pairing_this_relies_on_is_what_pypi_publishes():
 
 
 def test_the_repair_command_keeps_the_backend_torch_was_built_for():
-    """PyPI carries one torchvision build per release and it is the CUDA one:
-    `torchvision-0.22.0-cp310-manylinux_2_28_x86_64.whl` links libcudart.so.12,
-    libc10_cuda.so and libtorch_cuda.so, while `0.22.0+rocm6.3` links
-    libamdhip64.so.6, libc10_hip.so and libtorch_hip.so. `--no-deps` keeps the
-    installed torch, so on a ROCm, XPU or CPU host an unqualified pin swaps the
-    working wheel for the CUDA one and reproduces the exact `operator
-    torchvision::nms does not exist` this command is handed out to clear
-    (reproduced end to end on torch 2.7.1+cpu with torchvision 0.22.1+cpu)."""
+    """PyPI ships only the CUDA torchvision, so an unqualified --no-deps pin breaks ROCm, XPU and CPU."""
 
     def advice(torch_raw):
         """The message a user on `torch_raw` is actually shown."""
@@ -244,25 +228,18 @@ def test_the_repair_command_keeps_the_backend_torch_was_built_for():
             )
         return str(excinfo.value)
 
-    # CUDA families included: PyPI ships exactly one of them, so the `cu118only*` extras in pyproject.toml are as
-    # mismatched against PyPI's build as ROCm is.
+    # PyPI ships exactly one CUDA family, so other cu* builds are as mismatched as ROCm.
     for tag in ("rocm6.3", "rocm6.2.4", "xpu", "cpu", "cu118", "cu126", "cu128"):
         command = advice(f"2.7.0+{tag}")
         assert f"--index-url https://download.pytorch.org/whl/{tag}" in command, command
         assert "torchvision==0.22.0" in command, command
 
-    # No local tag, so PyPI's own build is the one that pairs with it.
     assert "--index-url" not in advice("2.7.0")
     assert "force-reinstall" in advice("2.7.0")
 
 
 def test_a_build_no_public_index_carries_is_not_sent_to_pip():
-    """A vendor or source build has no index that pairs with it, and a nightly's
-    companion version is synthesised from the release numbers alone, so any
-    pinned reinstall installs a wheel that cannot load against the installed
-    torch. This repo ships such builds itself: the `rocm72-torch291` extra
-    installs `torch 2.9.1+rocm7.2.0.lw.git7e1940d4` beside a repo.radeon.com
-    torchvision 0.24.0, and the table would otherwise advertise PyPI's 0.24.1."""
+    """Vendor and source torch builds have no pairing index, so a pinned reinstall cannot load."""
 
     def advice(torch_raw, required):
         with pytest.raises(ImportError) as excinfo:
@@ -277,8 +254,8 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
     for raw, required in (
         ("2.9.1+rocm7.2.0.lw.git7e1940d4", (0, 24, 1)),  # Radeon Linux extra
         ("2.9.1+rocmsdk20260116", (0, 24, 1)),  # Radeon Windows extra
-        ("2.7.0+git1a2b3c", (0, 22, 0)),  # built from source
-        ("2.12.0.dev20260801+cpu", (0, 27, 0)),  # nightly
+        ("2.7.0+git1a2b3c", (0, 22, 0)),
+        ("2.12.0.dev20260801+cpu", (0, 27, 0)),
         # Prereleases past the first: no `a0`/`b0` substring to match on.
         ("2.11.0a1+cu128", (0, 26, 0)),
         ("2.11.0b2+cu128", (0, 26, 0)),
@@ -290,14 +267,10 @@ def test_a_build_no_public_index_carries_is_not_sent_to_pip():
 
 
 def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
-    """conda records the backend in the build string and leaves the version
-    plain, so a conda CPU or ROCm torch reaches the tag check looking exactly
-    like a PyPI one. `--no-deps` then keeps that torch beside PyPI's CUDA-only
-    torchvision, which is the mismatch the command is handed out to clear."""
+    """conda keeps the backend only in the build string, so a conda torch looks like PyPI's."""
     conda_meta = tmp_path / "conda-meta"
     conda_meta.mkdir()
     (conda_meta / "pytorch-2.5.1-py3.12_cuda12.4_cudnn9_0.json").write_text("{}")
-    # Same version, unrelated package: it must not answer for torch.
     (conda_meta / "pytorch-lightning-2.5.1-pyhd8ed1ab_0.json").write_text("{}")
 
     def advice(torch_raw):
@@ -314,9 +287,196 @@ def test_a_conda_torch_is_not_sent_to_pypis_torchvision(tmp_path):
         conda = advice("2.5.1")
         assert "pip install" not in conda, conda
         assert "torch==2.5.1" in conda, conda
-        # A different version in the same prefix is pip's, and still gets pip's command: only the exact match is
-        # conda's.
+        # Only the exact version match in conda-meta is conda's; anything else is pip's.
         assert "pip install" in advice("2.6.0")
 
-    # Without the ledger nothing changes: an absent tag still means PyPI.
     assert "pip install" in advice("2.5.1")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)",
+        "partially initialized module 'torchvision.transforms' has no attribute "
+        "'InterpolationMode'",
+        "partially initialized module 'torchvision.io.image' has no attribute 'decode_jpeg'",
+        # 3.13+ names the file in the same message; 3.12 and older do not.
+        "partially initialized module 'torchvision' from "
+        "'/usr/lib/python3/site-packages/torchvision/__init__.py' has no attribute 'extension' "
+        "(most likely due to a circular import)",
+        "partially initialized module 'torchvision.ops' from "
+        "'/opt/venv/lib/torchvision/ops/__init__.py' has no attribute 'nms'",
+    ],
+)
+def test_partially_initialized_torchvision_is_recognised(message):
+    """A torchvision whose extension failed to load can surface as an AttributeError on a
+    half-imported module rather than a loader failure (unsloth#1793)."""
+    assert import_fixes._is_broken_torchvision_error(AttributeError(message))
+
+
+def test_the_lazy_module_wrapper_around_it_is_recognised():
+    """transformers' _LazyModule re-raises as RuntimeError with the original as cause."""
+    inner = AttributeError(
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)"
+    )
+    outer = RuntimeError(
+        "Failed to import transformers.image_utils because of the following error "
+        "(look up to see its traceback):\n" + str(inner)
+    )
+    outer.__cause__ = inner
+    assert import_fixes._is_broken_torchvision_error(outer)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "module 'torchvision' has no attribute 'extension'",
+        "module 'torchvision' has no attribute 'nms'",
+        "module 'torchvision.ops' has no attribute 'nsm'",
+        "partially initialized module 'numpy' has no attribute 'array'",
+        "partially initialized module 'mypackage.torchvision' has no attribute 'x'",
+        "partially initialized module 'torchvisionfoo' has no attribute 'x'",
+        "partially initialized module 'not_torchvision' has no attribute 'x'",
+        "partially initialized module 'mytorchvision' has no attribute 'extension'",
+        "partially initialized module 'numpy' from '/x/torchvision/numpy.py' has no attribute 'a'",
+        "module 'os' has no attribute 'extension'",
+    ],
+)
+def test_a_healthy_torchvision_or_another_module_is_not_claimed(message):
+    assert not import_fixes._is_broken_torchvision_error(AttributeError(message))
+
+
+def test_the_probe_names_the_partially_initialized_break():
+    """End to end through the probe, not just the predicate."""
+    error = AttributeError(
+        "partially initialized module 'torchvision' has no attribute 'extension' "
+        "(most likely due to a circular import)"
+    )
+    with pytest.raises(ImportError) as excinfo:
+        _probe_with_import_raising(error)
+    assert "UNSLOTH_SKIP_TORCHVISION_CHECK=1" in str(excinfo.value)
+    assert excinfo.value.__cause__ is error
+
+
+def test_the_probe_stays_silent_on_a_typo_against_a_healthy_torchvision():
+    """`import unsloth` must not be turned into "reinstall torchvision" by an
+    AttributeError that carries no evidence of a half-imported module."""
+    _probe_with_import_raising(AttributeError("module 'torchvision' has no attribute 'extension'"))
+
+
+@pytest.mark.parametrize("kind", ["module", "package"])
+def test_a_file_shadowing_torchvision_is_named_rather_than_blamed_on_the_binary(
+    tmp_path, monkeypatch, kind
+):
+    """A local torchvision raises the same words while the metadata still reports the
+    installed one. Driven through a real import: the fix turns on which file resolves."""
+    # A shadow exists only relative to an installed torchvision.
+    pytest.importorskip("torchvision")
+    body = "import torchvision\ntorchvision.extension\n"
+    if kind == "module":
+        shadow = tmp_path / "torchvision.py"
+        shadow.write_text(body)
+    else:
+        (tmp_path / "torchvision").mkdir()
+        shadow = tmp_path / "torchvision" / "__init__.py"
+        shadow.write_text(body)
+    with mock.patch.dict(sys.modules):
+        for name in [n for n in sys.modules if n.startswith("torchvision")]:
+            sys.modules.pop(name, None)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        assert import_fixes._shadowing_torchvision_path() == str(shadow)
+        with pytest.raises(ImportError) as excinfo:
+            import_fixes._probe_torchvision_binary("2.11.0", "0.26.0", (0, 26))
+        text = str(excinfo.value)
+
+    assert str(shadow) in text, text
+    assert "reinstalling torchvision will not change which one wins" in text, text
+    assert "force-reinstall" not in text, text
+    assert isinstance(excinfo.value.__cause__, AttributeError)
+
+
+def test_the_real_torchvision_is_not_mistaken_for_a_shadow():
+    pytest.importorskip("torchvision")
+    assert import_fixes._shadowing_torchvision_path() is None
+    assert import_fixes._is_broken_torchvision_error(
+        AttributeError("partially initialized module 'torchvision' has no attribute 'extension'")
+    )
+
+
+def test_the_marker_matches_what_this_interpreter_actually_says(tmp_path, monkeypatch):
+    """3.13.12 adds a `from '<file>'` clause 3.12.3 does not, and a marker matching nothing
+    looks exactly like a healthy box. So provoke it here rather than quoting a bug report."""
+    package = tmp_path / "tvshape"
+    package.mkdir()
+    (package / "__init__.py").write_text("import tvshape\ntvshape.extension\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with mock.patch.dict(sys.modules):
+        sys.modules.pop("tvshape", None)
+        with pytest.raises(AttributeError) as excinfo:
+            importlib.import_module("tvshape")
+
+    produced = str(excinfo.value)
+    assert "partially initialized" in produced, produced
+    assert import_fixes._TORCHVISION_ATTRIBUTE_RE.search(
+        produced.replace("tvshape", "torchvision")
+    ), produced
+    assert not import_fixes._TORCHVISION_ATTRIBUTE_RE.search(produced), produced
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "cannot import name 'extension' from partially initialized module 'torchvision' "
+        "(most likely due to a circular import) (/usr/lib/torchvision/__init__.py)",
+        "cannot import name 'nms' from partially initialized module 'torchvision.ops' "
+        "(most likely due to a circular import)",
+        "cannot access submodule 'ops' of module 'torchvision' "
+        "(most likely due to a circular import)",
+    ],
+)
+def test_the_other_two_cpython_wordings_of_the_same_break_are_recognised(message):
+    """Four wordings, one fault. The two above carry no "has no attribute" clause at all,
+    so a marker anchored on that clause reports a healthy box for a torchvision that
+    cannot import."""
+    assert import_fixes._is_broken_torchvision_error(ImportError(message))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "cannot import name 'x' from partially initialized module 'mytorchvision' "
+        "(most likely due to a circular import)",
+        "cannot access submodule 'torchvision' of module 'mypackage' "
+        "(most likely due to a circular import)",
+        "cannot access submodule 'ops' of module 'torchvisionfoo'",
+        "cannot import name 'nsm' from 'torchvision.ops' (/usr/lib/torchvision/ops.py)",
+    ],
+)
+def test_the_other_two_wordings_do_not_claim_another_module(message):
+    assert not import_fixes._is_broken_torchvision_error(ImportError(message))
+
+
+def test_the_from_import_wording_is_what_this_interpreter_actually_says():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        package = pathlib.Path(tmp) / "tvfrom"
+        package.mkdir()
+        (package / "__init__.py").write_text("from tvfrom import extension\n")
+        sys.path.insert(0, tmp)
+        try:
+            with mock.patch.dict(sys.modules):
+                sys.modules.pop("tvfrom", None)
+                with pytest.raises(ImportError) as excinfo:
+                    importlib.import_module("tvfrom")
+        finally:
+            sys.path.remove(tmp)
+
+    produced = str(excinfo.value)
+    assert "partially initialized" in produced, produced
+    assert import_fixes._TORCHVISION_ATTRIBUTE_RE.search(
+        produced.replace("tvfrom", "torchvision")
+    ), produced
+    assert not import_fixes._TORCHVISION_ATTRIBUTE_RE.search(produced), produced

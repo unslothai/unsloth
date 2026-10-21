@@ -151,3 +151,22 @@ def test_is_oom_error_matches_class_name_and_message():
     assert is_oom_error(RuntimeError("CUDA out of memory. Tried to allocate 2 GiB"))
     assert not is_oom_error(RuntimeError("shape mismatch"))
     assert not is_oom_error(ValueError("bad prompt"))
+
+
+def test_is_oom_error_sees_an_oom_wrapped_by_a_compiler_error():
+    # torch.compile re-raises an autotune OOM as a compiler error with a generic message; the backoff must still split.
+    class OutOfMemoryError_(RuntimeError):
+        pass
+
+    class BackendCompilerFailed(RuntimeError):
+        pass
+
+    for inner in (OutOfMemoryError_("alloc"), RuntimeError("HIP out of memory")):
+        try:
+            try:
+                raise inner
+            except RuntimeError as oom:
+                raise BackendCompilerFailed("autotune failed") from oom
+        except BackendCompilerFailed as outer:
+            assert is_oom_error(outer)
+    assert not is_oom_error(BackendCompilerFailed("autotune failed"))

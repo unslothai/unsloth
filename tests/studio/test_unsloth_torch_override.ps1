@@ -1,10 +1,8 @@
 #!/usr/bin/env pwsh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Windows twin of tests/sh/test_unsloth_torch_override.sh: install.ps1's torch-trio --overrides
-# guard (New-UnslothTorchOverridesFile) on the Step-2 unsloth installs. The generated file folds in
-# the caller's UV_OVERRIDE lines, which can carry authenticated URLs, so it must never outlive the
-# run: install.sh removes its twin from the traps, install.ps1 from the outer finally.
+# Windows twin of tests/sh/test_unsloth_torch_override.sh. The overrides file can hold
+# credentials, and Remove-Item -ErrorAction cannot suppress the provider's terminating error.
 # Run: pwsh -NoProfile -File tests/studio/test_unsloth_torch_override.ps1
 
 $ErrorActionPreference = "Stop"
@@ -12,7 +10,6 @@ $installPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "install.ps1
 $installPath = (Resolve-Path $installPath).Path
 $installText = Get-Content -Raw $installPath
 
-# Parse install.ps1 (also serves as a syntax gate).
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installPath, [ref]$tokens, [ref]$errors)
 if ($errors) { $errors | ForEach-Object { $_.ToString() }; throw "install.ps1 has parse errors" }
@@ -23,7 +20,6 @@ function Check($name, $cond) {
     else { Write-Host "  FAIL  $name" -ForegroundColor Red; $script:failures++ }
 }
 
-# Text of every Invoke-InstallCommandRetry statement carrying $label; a with-deps path has two.
 function Get-InstallBlocks([string]$label) {
     $calls = $ast.FindAll({ param($n)
         $n -is [System.Management.Automation.Language.CommandAst] -and
@@ -43,6 +39,13 @@ Check "helper defined exactly once" ($fnAst.Count -eq 1)
 $fnText = $fnAst[0].Extent.Text
 Check "helper returns null under --no-torch" ($fnText -match 'if \(\$SkipTorch\) \{ return \$null \}')
 Check "helper folds in caller UV_OVERRIDE files" ($fnText -match '\$env:UV_OVERRIDE')
+# An unresolvable 8.3 alias fails the install and then throws during cleanup.
+Check "the 8.3 alias is accepted only once it resolves" (
+    $fnText -match 'Test-Path -LiteralPath \$short -PathType Leaf')
+# Every give-up path must clear the tracked path, or the outer sweep gets a missing file.
+Check "every removal of the created file clears the tracked path" (
+    ([regex]::Matches($fnText, 'Remove-UnslothTempFileQuietly -Path \$f')).Count -eq 2 -and
+    ([regex]::Matches($fnText, '\$script:TorchOverridesFile = \$null')).Count -eq 2)
 
 Write-Host "with-deps unsloth installs pass --overrides"
 foreach ($label in @("install unsloth (local)", "install unsloth")) {
@@ -59,30 +62,66 @@ foreach ($label in @("install unsloth (no-torch)", "install unsloth (migrated no
 }
 
 Write-Host "the generated temp file never outlives the run"
-$removals = [regex]::Matches($installText, 'Remove-Item -LiteralPath \$script:TorchOverridesFile -Force')
-# One in-flow removal per with-deps install, plus the outer-finally sweep.
-Check "in-flow removal after each with-deps install, plus a final sweep" ($removals.Count -eq 3)
+$removals = [regex]::Matches($installText, 'Remove-UnslothTempFileQuietly -Path \$script:TorchOverridesFile')
+# One in-flow removal per with-deps install (local, release, migrated), plus the outer-finally sweep.
+Check "in-flow removal after each with-deps install, plus a final sweep" ($removals.Count -eq 4)
+Check "no unguarded Remove-Item on the tracked overrides path survives" (
+    $installText -notmatch 'Remove-Item -LiteralPath \$script:TorchOverridesFile')
 $outer = @($ast.FindAll({ param($n)
     $n -is [System.Management.Automation.Language.TryStatementAst] -and
     $n.Body.Extent.Text -match 'Install-UnslothStudio @args'
 }, $true))
 Check "outer try/finally around Install-UnslothStudio found" ($outer.Count -eq 1)
 $finallyText = $outer[0].Finally.Extent.Text
-Check "outer finally removes the overrides temp file" ($finallyText -match 'Remove-Item -LiteralPath \$script:TorchOverridesFile -Force')
+Check "outer finally removes the overrides temp file" (
+    $finallyText -match 'Remove-UnslothTempFileQuietly -Path \$script:TorchOverridesFile')
+Check "outer finally removes the WOA session overrides the same way" (
+    $finallyText -match 'Remove-UnslothTempFileQuietly -Path \$script:WoaSessionOverrides')
 Check "outer finally still clears UNSLOTH_KEPT_TORCH" ($finallyText -match 'Remove-Item Env:UNSLOTH_KEPT_TORCH')
-# install.sh empties _UNSLOTH_TORCH_OVERRIDES before arming its traps so an inherited value is
-# never rm'd; under `irm | iex` the same reset must precede the outer try.
+# Under `irm | iex` an inherited value must be reset before the outer try.
 Check "overrides path reset to null before the outer try" (
     $installText -match '(?m)^\$script:TorchOverridesFile = \$null\r?\ntry \{\r?\n\s*Install-UnslothStudio @args')
 
+$guardAst = $ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $n.Name -eq "Remove-UnslothTempFileQuietly"
+}, $true)
+Check "Remove-UnslothTempFileQuietly defined exactly once" ($guardAst.Count -eq 1)
+# A function nested in Install-UnslothStudio is gone when it returns, so the outer finally
+# would hit CommandNotFoundException; the guard must be defined at top level.
+$guardEnclosing = $null
+$_guardParent = $guardAst[0].Parent
+while ($_guardParent) {
+    if ($_guardParent -is [System.Management.Automation.Language.FunctionDefinitionAst]) {
+        $guardEnclosing = $_guardParent.Name
+        break
+    }
+    $_guardParent = $_guardParent.Parent
+}
+Check "the guard is defined at top level, not nested inside a function" ($null -eq $guardEnclosing)
+if ($guardEnclosing) { Write-Host "        enclosed by $guardEnclosing, so the outer finally cannot see it" -ForegroundColor Red }
+Invoke-Expression $guardAst[0].Extent.Text
+
+Write-Host "Remove-UnslothTempFileQuietly is a no-op for anything that is not there"
+$liveFile = [System.IO.Path]::GetTempFileName()
+Remove-UnslothTempFileQuietly -Path $liveFile
+Check "a live temp file is removed" (-not (Test-Path -LiteralPath $liveFile))
+$helperThrew = $false
+$absent = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-absent-" + [guid]::NewGuid().ToString("N") + ".txt")
+foreach ($candidate in @($absent, $null, "")) {
+    try { Remove-UnslothTempFileQuietly -Path $candidate } catch { $helperThrew = $true }
+}
+Check "a missing, null or empty path never throws" (-not $helperThrew)
+
 Write-Host "outer finally actually deletes the file after a terminating error"
-# Behavioural: run the real finally body with a live temp file holding a credential line.
 $leakFile = [System.IO.Path]::GetTempFileName()
 Set-Content -LiteralPath $leakFile -Encoding ascii -Value @(
     "torch==2.11.0+cu128",
     "private-pkg @ https://svc:TOKEN123@pkgs.corp.example/private-1.0-py3-none-any.whl")
 $script:TorchOverridesFile = $leakFile
 $env:UNSLOTH_KEPT_TORCH = "2.11.0"
+# No mirror fallback ran: nothing was saved, which must not stop the cleanup below.
+$script:MirrorEnvSaved = $null
 # Strip the `finally { ... }` wrapper and run the statements: Invoke-Expression uses this scope.
 $finallyBody = ($finallyText.Trim() -replace '(?s)^\{', '') -replace '(?s)\}$', ''
 try {
@@ -94,10 +133,124 @@ Check "kept-torch handoff still cleared" ($null -eq $env:UNSLOTH_KEPT_TORCH)
 Check "tracked path reset so a rerun cannot re-remove it" ($null -eq $script:TorchOverridesFile)
 Remove-Item -LiteralPath $leakFile -Force -ErrorAction SilentlyContinue
 
+Write-Host "outer finally hands the caller's mirror variables back, then still cleans up"
+$mirrorLeak = [System.IO.Path]::GetTempFileName()
+$script:TorchOverridesFile = $mirrorLeak
+$env:UNSLOTH_TEST_MIRROR_ADDED = "https://mirror.example/simple"
+$env:UNSLOTH_TEST_MIRROR_CALLER = "https://mirror.example/simple"
+$script:MirrorEnvSaved = @{ UNSLOTH_TEST_MIRROR_ADDED = $null; UNSLOTH_TEST_MIRROR_CALLER = "caller-value" }
+try {
+    try { throw "simulated terminating error mid-install" }
+    finally { Invoke-Expression $finallyBody }
+} catch { }
+Check "a variable the fallback added is removed" ($null -eq $env:UNSLOTH_TEST_MIRROR_ADDED)
+Check "a variable the caller had is restored" ($env:UNSLOTH_TEST_MIRROR_CALLER -eq "caller-value")
+Check "the overrides file is still removed after the mirror restore" (-not (Test-Path -LiteralPath $mirrorLeak))
+Remove-Item Env:UNSLOTH_TEST_MIRROR_CALLER -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $mirrorLeak -Force -ErrorAction SilentlyContinue
+$script:MirrorEnvSaved = $null
+
+Write-Host "and it deletes it in a scope built only from install.ps1's own top-level definitions"
+# A fresh runspace seeded with only top-level definitions matches what the outer finally sees.
+$topLevelDefs = @($ast.FindAll({ param($n)
+    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    -not ($n.Parent.Parent -is [System.Management.Automation.Language.FunctionDefinitionAst])
+}, $false) | Where-Object { $_.Name -ne "Install-UnslothStudio" } | ForEach-Object { $_.Extent.Text })
+$isolatedLeak = [System.IO.Path]::GetTempFileName()
+Set-Content -LiteralPath $isolatedLeak -Encoding ascii -Value "torch==2.11.0+cu128"
+$ps = [powershell]::Create()
+try {
+    $null = $ps.AddScript(@"
+`$ErrorActionPreference = 'Continue'
+$($topLevelDefs -join "`n")
+`$script:WoaResolverEnvSaved = `$null
+`$script:WoaSessionOverrides = `$null
+`$script:TorchOverridesFile = '$isolatedLeak'
+$finallyBody
+"@)
+    $null = $ps.Invoke()
+} finally { $ps.Dispose() }
+Check "the file is gone when the finally runs with install.ps1's own scope" (-not (Test-Path -LiteralPath $isolatedLeak))
+Remove-Item -LiteralPath $isolatedLeak -Force -ErrorAction SilentlyContinue
+
+Write-Host "an unresolvable tracked path cannot abort the cleanup (#11290)"
+# The provider's terminating error cannot be suppressed by -ErrorAction, so the mock throws.
+$script:RemoveItemCalls = @()
+function Remove-Item {
+    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    $script:RemoveItemCalls += ($Rest -join ' ')
+    if ($Rest -contains "Env:UNSLOTH_KEPT_TORCH") {
+        Microsoft.PowerShell.Management\Remove-Item -Path "Env:UNSLOTH_KEPT_TORCH" -ErrorAction SilentlyContinue
+        return
+    }
+    throw "simulated terminating PSArgumentException from FileSystemProvider"
+}
+$script:TorchOverridesFile = $absent
+$script:WoaSessionOverrides = $null
+$env:UNSLOTH_KEPT_TORCH = "2.11.0"
+$threw = $false
+try {
+    try { throw "simulated terminating error mid-install" }
+    catch { }
+    finally { Invoke-Expression $finallyBody }
+} catch { $threw = $true }
+Check "the outer finally does not throw on an unresolvable path" (-not $threw)
+Check "Remove-Item is never reached for a path that is not there" (
+    -not @($script:RemoveItemCalls | Where-Object { $_ -like "*unsloth-absent-*" }))
+Check "the tracked path is still cleared" ($null -eq $script:TorchOverridesFile)
+
+$presentFile = [System.IO.Path]::GetTempFileName()
+$escaped = $false
+try { Remove-UnslothTempFileQuietly -Path $presentFile } catch { $escaped = $true }
+Check "a terminating Remove-Item error cannot escape the helper" (-not $escaped)
+Check "and the existing path really was attempted" (
+    @($script:RemoveItemCalls | Where-Object { $_ -like "*$([System.IO.Path]::GetFileName($presentFile))*" }).Count -ge 1)
+[System.IO.File]::Delete($presentFile)
+
+Write-Host "an unreadable alias path cannot abort the install (#11290)"
+# Under "Stop", Test-Path inside an ACL-denied dir throws, so every 8.3 guard needs
+# -ErrorAction SilentlyContinue.
+$guardedPaths = [regex]::Matches($installText, 'Test-Path -LiteralPath \$(short|dirShort)\b[^\)]*\)')
+Check "the 8.3 guards were found" ($guardedPaths.Count -ge 3)
+$bareGuards = @($guardedPaths | Where-Object { $_.Value -notmatch '-ErrorAction SilentlyContinue' })
+Check "no 8.3 guard asks the filesystem without -ErrorAction SilentlyContinue" ($bareGuards.Count -eq 0)
+foreach ($b in $bareGuards) { Write-Host "        bare: $($b.Value)" -ForegroundColor Red }
+
+# chmod 000 reproduces the Windows deny-ACE throw class; POSIX-only, skipped under root.
+if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    Write-Host "  SKIP  Windows: chmod cannot build a denied directory here (the guards are pinned by text above)"
+} elseif ((& id -u) -eq "0") {
+    Write-Host "  SKIP  running as root: a denied directory is still readable, so this cannot fail"
+} else {
+    $deniedRoot = Join-Path ([System.IO.Path]::GetTempPath()) "denied_$([guid]::NewGuid().ToString('N'))"
+    [System.IO.Directory]::CreateDirectory($deniedRoot) | Out-Null
+    $deniedLeaf = Join-Path $deniedRoot "ov.tmp"
+    Set-Content -LiteralPath $deniedLeaf -Value "torch==2.10.0"
+    & chmod 000 $deniedRoot
+    try {
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Stop"
+        $bareThrew = $false
+        try { $null = Test-Path -LiteralPath $deniedLeaf -PathType Leaf } catch { $bareThrew = $true }
+        $guardedThrew = $false
+        try { $null = Test-Path -LiteralPath $deniedLeaf -PathType Leaf -ErrorAction SilentlyContinue } catch { $guardedThrew = $true }
+        $ErrorActionPreference = $prevEap
+        # Negative control: if a bare Test-Path stops throwing here, the check above tests nothing.
+        Check "a bare Test-Path really does throw here (negative control)" $bareThrew
+        Check "the guarded form does not throw" (-not $guardedThrew)
+    } finally {
+        & chmod 755 $deniedRoot
+        # Fully qualified: the advanced-function mock would swallow the throw and leave the dir behind.
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $deniedRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Check "the denied directory is cleaned up rather than left behind" (
+        -not (Test-Path -LiteralPath $deniedRoot))
+}
+
 Write-Host "the inherited-override filter drops the torch trio in any casing"
-# PowerShell's -notmatch is case-insensitive, so a caller override `Torch<2.11` is dropped.
+# PowerShell's -match is case-insensitive, so a caller override `Torch<2.11` is dropped.
 $filterPattern = $null
-if ($fnText -match '\$_ -notmatch ''([^'']+)''') { $filterPattern = $Matches[1] }
+if ($fnText -match '\$ovEntry\.Line -match ''([^'']+)''') { $filterPattern = $Matches[1] }
 Check "filter pattern extracted from the helper" ($null -ne $filterPattern)
 $inherited = @(
     "# comment survives",

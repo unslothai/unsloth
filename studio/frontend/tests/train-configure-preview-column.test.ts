@@ -37,7 +37,9 @@ const TWO_COLUMN_RULE =
 // arbitrary variants such as @min-[40rem] are captured too, so an unresolvable tier throws rather than dropping out of the budget
 const CONFIGURE_GAP = /@([^/\s"]+)\/train-configure:gap-([\d.]+)/g;
 const TRAIN_SECTION_TIER = /@([^/\s"]+)\/train-section:/g;
-const PAGE_MAX_WIDTH = /max-w-\[(\d+)px\]/;
+// The cap scales with the UI font size like the padding beside it; the tiers
+// below are read at the default, where the multiplier is 1.
+const PAGE_MAX_WIDTH = /max-w-\[(?:calc\()?(\d+)px(?:\*var\(--ui-space-scale,1\)\))?\]/;
 const PAGE_PADDING = /(?:^|\s)sm:px-(\d+)(?:\s|$)/;
 const CARD_BORDER = /\.elevated-card\s*\{[^}]*?border:\s*(\d+)px/;
 

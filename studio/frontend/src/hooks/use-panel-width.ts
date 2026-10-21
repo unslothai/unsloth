@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useSyncExternalStore } from "react";
+import { layoutScale, subscribeLayoutScale } from "../lib/layout-scale.ts";
 
 /** Never let one panel eat more than this share of a narrow window. */
 const MAX_VIEWPORT_FRACTION = 0.4;
@@ -12,6 +13,8 @@ export type PanelWidthStore = {
   useWidth: () => {
     width: number;
     max: number;
+    /** Browser interface scale; render at width * scale. */
+    scale: number;
     /** The uncapped stored preference. */
     stored: number;
     setWidth: (value: number) => void;
@@ -20,7 +23,8 @@ export type PanelWidthStore = {
 };
 
 /**
- * A persisted, viewport-aware width for a draggable panel. The preference is
+ * A persisted, viewport-aware width for a draggable panel. Widths are layout px:
+ * the panel renders them times `scale`, as desktop webview zoom would. The preference is
  * stored whole and an effective width is derived from it, so narrowing the
  * window shrinks the panel without losing what the user picked.
  */
@@ -29,16 +33,23 @@ export function createPanelWidthStore({
   min,
   max,
   fallback,
+  maxViewportFraction = MAX_VIEWPORT_FRACTION,
 }: {
   key: string;
   min: number;
   max: number;
   fallback: number;
+  /** Largest share of the window the panel may take. */
+  maxViewportFraction?: number;
 }): PanelWidthStore {
   function maxWidth(): number {
     if (typeof window === "undefined") return max;
-    // The floor wins on a narrow window; collapsing is the escape.
-    return Math.max(min, Math.min(max, window.innerWidth * MAX_VIEWPORT_FRACTION));
+    // The floor wins on a narrow window; collapsing is the escape. The window
+    // in layout px, so a scaled panel takes the same share of it.
+    return Math.max(
+      min,
+      Math.min(max, (window.innerWidth / layoutScale()) * maxViewportFraction),
+    );
   }
 
   /** Clamps to the absolute range, ignoring the viewport. */
@@ -66,6 +77,7 @@ export function createPanelWidthStore({
   let effectiveWidth = clamp(storedWidth);
   let effectiveMax = maxWidth();
   const listeners = new Set<() => void>();
+  let unsubscribeScale: (() => void) | undefined;
 
   let lastStored = storedWidth;
 
@@ -85,6 +97,12 @@ export function createPanelWidthStore({
     listeners.forEach((cb) => cb());
   }
 
+  function onStorage(event: StorageEvent) {
+    if (event.key !== key && event.key !== null) return;
+    storedWidth = load();
+    recompute();
+  }
+
   function subscribe(cb: () => void) {
     // With no subscribers there is no resize listener, so the cache can be
     // stale after a resize on a route that hides every panel. Refresh first;
@@ -94,21 +112,19 @@ export function createPanelWidthStore({
     if (typeof window === "undefined") {
       return () => listeners.delete(cb);
     }
-    // Keep tabs in sync, same as the pin flag.
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === key || e.key === null) {
-        storedWidth = load();
-        effectiveWidth = clamp(storedWidth);
-        effectiveMax = maxWidth();
-        cb();
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("resize", recompute);
+    if (listeners.size === 1) {
+      window.addEventListener("storage", onStorage);
+      window.addEventListener("resize", recompute);
+      unsubscribeScale = subscribeLayoutScale(recompute);
+    }
     return () => {
       listeners.delete(cb);
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("resize", recompute);
+      if (listeners.size === 0) {
+        unsubscribeScale?.();
+        unsubscribeScale = undefined;
+        window.removeEventListener("storage", onStorage);
+        window.removeEventListener("resize", recompute);
+      }
     };
   }
 
@@ -129,9 +145,10 @@ export function createPanelWidthStore({
     const panelMax = useSyncExternalStore(subscribe, () => effectiveMax, () => max);
     // The uncapped preference, so a capped drag can avoid lowering it.
     const preference = useSyncExternalStore(subscribe, () => storedWidth, () => fallback);
+    const scale = useSyncExternalStore(subscribeLayoutScale, layoutScale, () => 1);
     const setWidth = useCallback((value: number) => setWidthGlobal(value), []);
     const resetWidth = useCallback(() => setWidthGlobal(fallback), []);
-    return { width, max: panelMax, stored: preference, setWidth, resetWidth };
+    return { width, max: panelMax, scale, stored: preference, setWidth, resetWidth };
   }
 
   return { clamp, useWidth };

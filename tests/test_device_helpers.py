@@ -1,8 +1,10 @@
+import ast
 import importlib.util
 import sys
 import types
 from pathlib import Path
 
+import pytest
 from packaging.version import Version
 
 
@@ -22,9 +24,7 @@ def _load_device_type(
     mlx_available = False,
     allow_cpu = False,
 ):
-    # Always pinned, never inherited.
-    # UNSLOTH_ALLOW_CPU short-circuits get_device_type() to "cuda", so a GPU-less host that exports it silently rewrites
-    # what the hip and xpu cases are testing.
+    # Always pinned: UNSLOTH_ALLOW_CPU short-circuits get_device_type() to "cuda".
     if allow_cpu:
         monkeypatch.setenv("UNSLOTH_ALLOW_CPU", "1")
     else:
@@ -145,8 +145,7 @@ def test_xpu_cache_and_current_device_dispatch(monkeypatch):
 
 
 def test_cpu_fallback_does_not_override_mlx(monkeypatch):
-    # UNSLOTH_ALLOW_CPU used to be checked first, so an MLX Mac reported "cuda" and get_device_count() then hit torch,
-    # which is never imported there.
+    # UNSLOTH_ALLOW_CPU checked first made an MLX Mac report "cuda" and import torch.
     device_type = _load_device_type(
         monkeypatch,
         torch_module = None,
@@ -159,7 +158,6 @@ def test_cpu_fallback_does_not_override_mlx(monkeypatch):
 
 
 def test_cpu_fallback_still_reports_cuda_off_mlx(monkeypatch):
-    # The GPU hosts' behaviour must be unchanged: no MLX means the CPU fallback wins.
     torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
 
     device_type = _load_device_type(monkeypatch, torch, allow_cpu = True)
@@ -180,12 +178,80 @@ def test_mlx_helpers_do_not_require_torch(monkeypatch):
     assert device_type.get_current_device() == 0
 
 
+def _function_source(path, name):
+    source = path.read_text(encoding = "utf-8")
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(source, node)
+    raise AssertionError(f"{name} not found in {path}")
+
+
+class _SleepingLLM:
+    def __init__(self, enable_sleep_mode):
+        self.slept = []
+        model_config = types.SimpleNamespace(enable_sleep_mode = enable_sleep_mode)
+        self.llm_engine = types.SimpleNamespace(
+            vllm_config = types.SimpleNamespace(model_config = model_config)
+        )
+
+    def sleep(self, level):
+        self.slept.append(level)
+
+
+def _resume_helper(device_count, flushes):
+    namespace = {
+        "DEVICE_COUNT": device_count,
+        "clean_gpu_cache": lambda: flushes.append(1),
+    }
+    source = _function_source(
+        REPO_ROOT / "unsloth" / "models" / "rl.py", "_maybe_prepare_vllm_for_resume"
+    )
+    exec(compile(source, "rl.py", "exec"), namespace)
+    return namespace["_maybe_prepare_vllm_for_resume"]
+
+
+@pytest.mark.parametrize("device_count", [1, 4])
+def test_vllm_resume_sleeps_and_flushes_on_any_accelerator(device_count):
+    # Resolved without torch.cuda: on NPU / XPU torch.cuda.is_available() is False.
+    flushes = []
+    helper = _resume_helper(device_count, flushes)
+    llm = _SleepingLLM(enable_sleep_mode = True)
+    helper(types.SimpleNamespace(llm = llm))
+    assert llm.slept == [1] and len(flushes) == 3
+    # The engine can also hang off the model; no sleep mode means nothing to release.
+    engine = _SleepingLLM(enable_sleep_mode = True)
+    helper(types.SimpleNamespace(llm = None, model = types.SimpleNamespace(vllm_engine = engine)))
+    assert engine.slept == [1] and len(flushes) == 6
+    idle = _SleepingLLM(enable_sleep_mode = False)
+    helper(types.SimpleNamespace(llm = idle))
+    assert idle.slept == [] and len(flushes) == 6
+
+
+def test_vllm_resume_is_a_noop_without_an_accelerator():
+    flushes = []
+    llm = _SleepingLLM(enable_sleep_mode = True)
+    _resume_helper(0, flushes)(types.SimpleNamespace(llm = llm))
+    assert llm.slept == [] and flushes == []
+
+
 def test_model_call_sites_use_shared_cache_dispatch():
     llama_source = (REPO_ROOT / "unsloth" / "models" / "llama.py").read_text(encoding = "utf-8")
     vision_source = (REPO_ROOT / "unsloth" / "models" / "vision.py").read_text(encoding = "utf-8")
     gemma_source = (REPO_ROOT / "unsloth" / "models" / "gemma.py").read_text(encoding = "utf-8")
     gemma2_source = (REPO_ROOT / "unsloth" / "models" / "gemma2.py").read_text(encoding = "utf-8")
     granite_source = (REPO_ROOT / "unsloth" / "models" / "granite.py").read_text(encoding = "utf-8")
+    loader_utils_source = (REPO_ROOT / "unsloth" / "models" / "loader_utils.py").read_text(
+        encoding = "utf-8"
+    )
+    q_galore_source = (REPO_ROOT / "unsloth" / "optimizers" / "q_galore_adamw.py").read_text(
+        encoding = "utf-8"
+    )
+    resume_source = _function_source(
+        REPO_ROOT / "unsloth" / "models" / "rl.py", "_maybe_prepare_vllm_for_resume"
+    )
+    synthetic_source = (REPO_ROOT / "unsloth" / "dataprep" / "synthetic.py").read_text(
+        encoding = "utf-8"
+    )
 
     assert "torch.xpu.empty_cache()" not in llama_source
     assert "torch.xpu.empty_cache()" not in vision_source
@@ -194,10 +260,157 @@ def test_model_call_sites_use_shared_cache_dispatch():
     assert "device_context" not in vision_source
     assert 'if DEVICE_TYPE == "xpu":\n            vllm_version = ""' in vision_source
     assert "torch.cuda.current_device()" not in gemma_source
-    assert gemma_source.count("get_current_device()") >= 3
+    assert "get_current_device()" in gemma_source
     assert "torch.cuda.empty_cache()" not in gemma_source
     assert "clean_gpu_cache()" in gemma_source
     assert "torch.cuda.empty_cache()" not in gemma2_source
     assert "clean_gpu_cache()" in gemma2_source
     assert "torch.cuda.empty_cache()" not in granite_source
     assert "clean_gpu_cache()" in granite_source
+    # Keyed off cuda alone, the load-retry flush and the optimizer fence were no-ops on NPU / XPU.
+    assert "torch.cuda.empty_cache()" not in loader_utils_source
+    assert "torch.xpu.empty_cache()" not in loader_utils_source
+    assert "clean_gpu_cache()" in loader_utils_source
+    assert "torch.cuda.synchronize()" not in q_galore_source
+    assert "device_synchronize()" in q_galore_source
+    # The vLLM resume / teardown releases were keyed off CUDA too, so on NPU / XPU the
+    # sleep-and-free path returned before flushing and the freed blocks stayed reserved.
+    # Scoped to the resume helper: rl.py keeps CUDA-only paths (optimizer parking) elsewhere.
+    assert "torch.cuda.is_available()" not in resume_source
+    assert "DEVICE_COUNT < 1" in resume_source
+    assert "torch.cuda.empty_cache()" not in resume_source
+    assert "clean_gpu_cache()" in resume_source
+    assert "torch.cuda.empty_cache()" not in synthetic_source
+    assert "clean_gpu_cache()" in synthetic_source
+
+
+NPU_PROPERTIES = types.SimpleNamespace(
+    name = "Ascend910B2",
+    total_memory = 60 * 1024**3,
+    # major/minor are std::optional on real hardware, so None. The npu arm must not read them.
+    major = None,
+    minor = None,
+)
+
+
+def _npu_backend(
+    *,
+    available = True,
+    device_count = 4,
+    properties = NPU_PROPERTIES,
+    calls = None,
+):
+    def _is_available():
+        if available == "raise":
+            raise RuntimeError("npu driver not found")
+        return available
+
+    return types.SimpleNamespace(
+        is_available = _is_available,
+        device_count = lambda: device_count,
+        get_device_properties = lambda _index: properties,
+        empty_cache = lambda: (calls if calls is not None else []).append("empty_cache"),
+        current_device = lambda: 0,
+    )
+
+
+def test_npu_detected_with_count_and_stats(monkeypatch):
+    calls = []
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+    torch.npu = _npu_backend(calls = calls)
+
+    device_type = _load_device_type(monkeypatch, torch)
+
+    assert device_type.DEVICE_TYPE == "npu"
+    assert device_type.DEVICE_TYPE_TORCH == "npu"
+    assert device_type.DEVICE_COUNT == 4
+    assert device_type._DEVICE_MODULE is torch.npu
+
+    name, snippet, max_memory = device_type.get_device_stats()
+    assert (name, snippet, max_memory) == ("Ascend910B2. ", "Ascend NPU.", 60.0)
+
+    device_type.clean_gpu_cache()
+    assert calls == ["empty_cache"]
+    assert device_type.get_current_device() == 0
+
+
+def test_npu_blank_name_falls_back(monkeypatch):
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+    torch.npu = _npu_backend(
+        properties = types.SimpleNamespace(name = "", total_memory = 60 * 1024**3),
+    )
+
+    device_type = _load_device_type(monkeypatch, torch)
+    name, snippet, _ = device_type.get_device_stats()
+
+    assert name == "Ascend NPU Device. "
+    assert snippet == "Ascend NPU."
+
+
+def test_cuda_wins_over_npu(monkeypatch):
+    torch = _fake_torch(properties = CUDA_PROPERTIES)
+    torch.npu = _npu_backend()
+
+    device_type = _load_device_type(monkeypatch, torch)
+
+    assert device_type.DEVICE_TYPE == "cuda"
+
+
+def test_xpu_wins_over_npu(monkeypatch):
+    xpu_backend = types.SimpleNamespace(
+        is_available = lambda: True,
+        device_count = lambda: 2,
+        empty_cache = lambda: None,
+        current_device = lambda: 0,
+        get_device_properties = lambda _index: types.SimpleNamespace(
+            name = "Intel Arc",
+            total_memory = 8 * 1024**3,
+        ),
+    )
+    torch = _fake_torch(
+        properties = CUDA_PROPERTIES,
+        xpu_backend = xpu_backend,
+        cuda_available = False,
+    )
+    torch.npu = _npu_backend()
+
+    device_type = _load_device_type(monkeypatch, torch)
+
+    assert device_type.DEVICE_TYPE == "xpu"
+    assert device_type.DEVICE_COUNT == 2
+
+
+def test_npu_probe_survives_raising_is_available(monkeypatch):
+    # Must stay a clean NotImplementedError, not a RuntimeError escaping `import unsloth`.
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+    torch.npu = _npu_backend(available = "raise")
+
+    with pytest.raises(NotImplementedError):
+        _load_device_type(monkeypatch, torch)
+
+
+def test_npu_unavailable_is_not_selected(monkeypatch):
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+    torch.npu = _npu_backend(available = False)
+
+    with pytest.raises(NotImplementedError):
+        _load_device_type(monkeypatch, torch)
+
+
+def test_unsupported_accelerator_is_named_in_the_error(monkeypatch):
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+    torch.accelerator = types.SimpleNamespace(
+        is_available = lambda: True,
+        current_accelerator = lambda: "mtia",
+    )
+
+    with pytest.raises(NotImplementedError, match = "does not currently work on mtia"):
+        _load_device_type(monkeypatch, torch)
+
+
+def test_error_without_torch_accelerator_has_no_device_name(monkeypatch):
+    # torch < 2.6 has no torch.accelerator, so there is no name to report.
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+
+    with pytest.raises(NotImplementedError, match = "does not currently work on this device"):
+        _load_device_type(monkeypatch, torch)

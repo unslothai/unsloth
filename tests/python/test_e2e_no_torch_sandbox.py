@@ -28,6 +28,7 @@ FORMAT_DETECTION = DATASETS_DIR / "format_detection.py"
 MODEL_MAPPINGS = DATASETS_DIR / "model_mappings.py"
 VLM_PROCESSING = DATASETS_DIR / "vlm_processing.py"
 ITERABLE = DATASETS_DIR / "iterable.py"
+CELLS = DATASETS_DIR / "cells.py"
 HARDWARE_PY = HARDWARE_DIR / "hardware.py"
 
 STUDIO_VENV = Path.home() / ".unsloth" / "studio" / "unsloth_studio"
@@ -277,6 +278,10 @@ class TestBeforeAfterImportChain:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            # cells.py is stdlib-only, so the exec sites import the real module
+            # rather than another stub: the suite checks what actually ships.
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source)
             print("OK")
         """)
@@ -317,6 +322,7 @@ class TestBeforeAfterImportChain:
             DATA_COLLATORS,
             CHAT_TEMPLATES,
             ITERABLE,
+            CELLS,
         ]:
             if src.exists():
                 shutil.copy2(src, pkg_dir / src.name)
@@ -430,6 +436,8 @@ class TestDataclassInstantiation:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
             assert 'Instruction' in ns['DEFAULT_ALPACA_TEMPLATE']
             print("OK")
@@ -545,6 +553,8 @@ class TestEdgeCasesBrokenTorch:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
 
             # Import succeeds -- this is the fix
@@ -874,7 +884,6 @@ class TestInstallPythonStackFiltering:
         ):
             assert ips._infer_no_torch() is False
 
-        # Unset on Intel Mac -> True (platform fallback).
         env = os.environ.copy()
         env.pop("UNSLOTH_NO_TORCH", None)
         with (
@@ -915,6 +924,38 @@ def _server_port() -> int:
 
 server = pytest.mark.server
 
+# Patch from_name too: only 3.11+ routes it through discover; Distribution.name absent on 3.9.
+_HIDE_TORCH_SITECUSTOMIZE = textwrap.dedent(
+    """
+    import importlib.metadata as _metadata
+    import sys
+
+    _HIDDEN = ("torch", "torchvision", "torchaudio")
+    for _name in _HIDDEN:
+        sys.modules[_name] = None
+
+    _discover = _metadata.Distribution.discover.__func__
+    _from_name = _metadata.Distribution.from_name.__func__
+
+    def _hidden(dist):
+        try:
+            return (dist.metadata["Name"] or "").lower() in _HIDDEN
+        except Exception:
+            return False
+
+    def _discover_without_torch(cls, **kwargs):
+        return (d for d in _discover(cls, **kwargs) if not _hidden(d))
+
+    def _from_name_without_torch(cls, name):
+        if name.lower() in _HIDDEN:
+            raise _metadata.PackageNotFoundError(name)
+        return _from_name(cls, name)
+
+    _metadata.Distribution.discover = classmethod(_discover_without_torch)
+    _metadata.Distribution.from_name = classmethod(_from_name_without_torch)
+    """
+)
+
 
 @server
 class TestLiveServerStartup:
@@ -927,7 +968,7 @@ class TestLiveServerStartup:
             pytest.skip("Unsloth venv not found at ~/.unsloth/studio/unsloth_studio")
 
     @pytest.fixture(scope = "class")
-    def server_process(self):
+    def server_process(self, tmp_path_factory):
         """Start the studio backend server without torch, yield (proc, port), then stop."""
         py = _studio_venv_python()
         if py is None:
@@ -936,31 +977,29 @@ class TestLiveServerStartup:
         port = _server_port()
         backend_dir = BACKEND_DIR
 
-        check = subprocess.run(
-            [str(py), "-c", "import torch; print(torch.__version__)"],
-            capture_output = True,
-        )
-        torch_was_installed = check.returncode == 0
-        torch_version = check.stdout.decode().strip() if torch_was_installed else None
-
-        if torch_was_installed:
-            subprocess.run(
-                [
-                    str(py),
-                    "-m",
-                    "pip",
-                    "uninstall",
-                    "-y",
-                    "torch",
-                    "torchvision",
-                    "torchaudio",
-                ],
-                capture_output = True,
-                timeout = 120,
-            )
+        hide_dir = tmp_path_factory.mktemp("hide_torch")
+        (hide_dir / "sitecustomize.py").write_text(_HIDE_TORCH_SITECUSTOMIZE, encoding = "utf-8")
 
         env = os.environ.copy()
-        env["PYTHONPATH"] = str(backend_dir)
+        env["PYTHONPATH"] = os.pathsep.join([str(hide_dir), str(backend_dir)])
+
+        hidden = subprocess.run(
+            [
+                str(py),
+                "-c",
+                "import importlib.metadata as m, importlib.util as u, sys\n"
+                "try: m.version('torch'); sys.exit('metadata visible')\n"
+                "except m.PackageNotFoundError: pass\n"
+                "assert u.find_spec('torch') is None, 'spec visible'",
+            ],
+            env = env,
+            capture_output = True,
+            timeout = 60,
+        )
+        if hidden.returncode != 0:
+            pytest.fail(
+                f"torch is still visible to the server process: {hidden.stderr.decode(errors = 'replace')}"
+            )
         proc = subprocess.Popen(
             [str(py), str(backend_dir / "run.py"), "--port", str(port)],
             env = env,
@@ -985,20 +1024,6 @@ class TestLiveServerStartup:
 
         if not ready:
             stdout, stderr = proc.communicate(timeout = 5)
-            if torch_was_installed and torch_version:
-                subprocess.run(
-                    [
-                        str(py),
-                        "-m",
-                        "pip",
-                        "install",
-                        f"torch=={torch_version}",
-                        "torchvision",
-                        "torchaudio",
-                    ],
-                    capture_output = True,
-                    timeout = 300,
-                )
             server_output = stdout.decode(errors = "replace") + stderr.decode(errors = "replace")
             pytest.skip(f"Server failed to start within 30 seconds. Output:\n{server_output}")
 
@@ -1010,21 +1035,6 @@ class TestLiveServerStartup:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout = 5)
-
-        if torch_was_installed and torch_version:
-            subprocess.run(
-                [
-                    str(py),
-                    "-m",
-                    "pip",
-                    "install",
-                    f"torch=={torch_version}",
-                    "torchvision",
-                    "torchaudio",
-                ],
-                capture_output = True,
-                timeout = 300,
-            )
 
     def test_server_starts_without_torch(self, server_process):
         """Server responds to /api/health with chat_only: true."""
@@ -1081,7 +1091,7 @@ class TestLiveServerStartup:
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}{ep}", timeout = 5)
             except urllib.error.HTTPError:
-                pass  # 4xx/5xx fine -- server didn't crash
+                pass
             except urllib.error.URLError:
                 pytest.fail(f"Server stopped responding at {ep}")
 

@@ -18,6 +18,8 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Hybrid Mamba-2 archs storing head_count_kv (and on Bolt expert_used_count) per layer.
+_NEMOTRON_H_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
 _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
 # Sparse MoE experts: only expert_used_count of expert_count read per token, so host traffic is a small fraction of
@@ -56,6 +58,8 @@ class ModelLayout:
     # llama-model.cpp pins dev_input to the CPU unconditionally, so this is never charged to VRAM. Tracked because it IS
     # charged to host RAM.
     token_embd_bytes: int = 0
+    # Every tensor's bytes, excluded blocks included; the file size less its metadata.
+    tensor_bytes: int = 0
     # output_norm and friends: GPU-resident, too small to be worth spilling.
     other_resident_bytes: int = 0
     # Attention cache for ONE token at f16, across the attention layers only.
@@ -213,7 +217,22 @@ def _layout_from_readers(readers) -> ModelLayout:
     if not n_kv_head or not key_len or not val_len:
         return ModelLayout()
 
-    kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
+    nemotron_h = arch in _NEMOTRON_H_ARCHS
+    if nemotron_h and isinstance(n_kv_head, (list, tuple)):
+        # Per-layer head_count_kv: 0 marks a layer without an attention cache. The recurrent (Mamba) layers are the ones
+        # with neither attention nor an FFN; the rest are dense or MoE FFN blocks.
+        heads = [int(h) for h in list(n_kv_head)[:n_layers]]
+        ffn = _field(reader, f"{arch}.feed_forward_length")
+        ffn = (
+            [int(f) for f in list(ffn)[:n_layers]]
+            if isinstance(ffn, (list, tuple))
+            else [0] * len(heads)
+        )
+        n_attention = sum(1 for h in heads if h > 0)
+        n_recurrent = sum(1 for h, f in zip(heads, ffn) if h == 0 and f == 0)
+        kv_per_token = sum(heads) * (int(key_len) + int(val_len)) * 2
+    else:
+        kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
 
     # Charging every layer the full context above is the safe direction for the TOTAL; what it cannot say is which
     # layers hold the big caches.
@@ -232,7 +251,12 @@ def _layout_from_readers(readers) -> ModelLayout:
         recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
 
     n_expert = int(_field(reader, f"{arch}.expert_count") or 0)
-    n_expert_used = int(_field(reader, f"{arch}.expert_used_count") or 0)
+    n_expert_used = _field(reader, f"{arch}.expert_used_count") or 0
+    if nemotron_h and isinstance(n_expert_used, (list, tuple)):
+        n_expert_used = max(
+            (int(n) for n in n_expert_used), default = 0
+        )  # per layer on Nemotron 3.5 Bolt
+    n_expert_used = int(n_expert_used)
     is_moe = bool(n_expert)
 
     spill: dict[int, int] = {}
@@ -256,7 +280,8 @@ def _layout_from_readers(readers) -> ModelLayout:
             else:
                 resident[index] = resident.get(index, 0) + nbytes
             continue
-        if "token_embd" in name:
+        # token_embd_norm is a repeating-layer tensor, not a host-pinned input embedding.
+        if "token_embd" in name and not name.startswith("token_embd_norm"):
             token_embd += nbytes
         elif name == "output.weight":
             lm_head += nbytes
@@ -306,6 +331,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         blocks = blocks,
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd,
+        tensor_bytes = sum(int(t.n_bytes) for r in readers for t in r.tensors),
         other_resident_bytes = other_resident,
         kv_bytes_per_token_f16 = kv_per_token,
         recurrent_bytes = recurrent,

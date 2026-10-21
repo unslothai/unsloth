@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CI prefixes installer output with elapsed seconds, without touching the installers.
-
-`Install Unsloth (--local, --no-torch)` is the largest step in most jobs that run it:
-260-291s of a Windows job, ~90s median on Linux across 40 jobs. Which phase spends it was,
-until this filter existed, unknowable from a CI log -- neither `install.sh` nor
-`studio/setup.ps1` emits a timestamp anywhere. Guessing has been actively misleading:
-`unsloth studio update --local` over an already-complete install costs 297s, MORE than the
-281s full install it follows, which is the opposite of what a download-bound install does.
-
-The timing is a **display filter on a stream CI already pipes**, not a feature of the
-installers. That distinction is the whole design and it is what these tests guard:
-
-  * `install.sh`, `install.ps1`, `studio/setup.sh` and `studio/setup.ps1` are user-facing
-    and are not modified. No environment variable, no switch, no truthiness rule, and no
-    way for a real user's install to behave differently from a CI one.
-  * The filter sits **downstream of the log write**. `logs/install.log` keeps byte-for-byte
-    what the installer produced, so the ~30 places that read or grep that artifact are
-    unaffected -- including `interrupted-install-ci.yml:185`, which matches
-    `^\\[TAURI:STEP\\]` anchored at line start and would silently stop matching if a prefix
-    reached the file.
-
-Both properties fail SILENTLY when broken -- a reordered pipeline still goes green, and an
-installer edit still installs -- so they are asserted rather than reviewed.
-"""
+"""The elapsed-time prefix is a display filter after the log write, so install.log is byte-identical."""
 
 import os
 import re
@@ -36,13 +13,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from unsloth_pwsh_runner import run_pwsh
+from unsloth_pwsh_runner import pwsh_env, run_pwsh
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO / ".github" / "workflows"
 ACTION = REPO / ".github" / "actions" / "install-unsloth-local" / "action.yml"
 
-# The four scripts this feature deliberately does not touch.
 INSTALLERS = (
     REPO / "install.sh",
     REPO / "install.ps1",
@@ -50,27 +26,14 @@ INSTALLERS = (
     REPO / "studio" / "setup.ps1",
 )
 
-# Markers of the two filter dialects, each paired with the log-writing stage that must come before it in the same
-# pipeline.
+# Each filter paired with the log-writing stage that must precede it in the same pipeline.
 POSIX_FILTER = "printf '[%4ds] %s\\n' \"$SECONDS\""
 PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 
 
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("script", INSTALLERS, ids = lambda p: p.name)
 def test_the_installers_carry_no_timing_machinery(script):
-    """The first cut of this feature put the clock inside the installers. It should not.
-
-    That version needed a `UNSLOTH_INSTALL_TIMING` switch, an off-by-default rule that
-    differs between PowerShell (every non-empty string is truthy, so "0" enabled it) and
-    bash, and a `UNSLOTH_INSTALL_TIMING_T0` epoch handed from the outer installer to the
-    inner one -- which then had to be bounds-checked, because a parseable but out-of-range
-    long crashes `[System.DateTime]::new(ticks)` and a non-numeric value aborts POSIX
-    `$(( ))` under `set -u`. None of that exists now, and this test is what keeps it from
-    coming back one convenience at a time.
-    """
+    """Installers must not read UNSLOTH_INSTALL_TIMING or any timing switch; the clock lives in CI only."""
     src = script.read_text(encoding = "utf-8")
     assert "UNSLOTH_INSTALL_TIMING" not in src, (
         f"{script.name} interprets UNSLOTH_INSTALL_TIMING. The install timing is a CI-side "
@@ -78,11 +41,6 @@ def test_the_installers_carry_no_timing_machinery(script):
         f"installer re-adds a user-facing switch, a shell-specific truthiness rule and a "
         f"cross-process epoch handoff, for output CI can prefix for free."
     )
-
-
-# --------------------------------------------------------------------------------------
-# Where the filter is, and what has to come before it
-# --------------------------------------------------------------------------------------
 
 
 def _run_bodies():
@@ -148,18 +106,7 @@ def test_the_posix_install_action_is_timed():
 
 
 def _code_only(run: str) -> str:
-    """``run`` with whole-line ``#`` comments dropped.
-
-    Load-bearing for the ordering checks below, not tidiness. These steps carry a comment
-    block that explains the design by NAMING the stages -- "Tee-Object writes
-    logs/install.log upstream of this filter" -- so an ordering check over the raw body
-    finds `Tee-Object` in the prose long before the pipeline and reports correct order no
-    matter how the pipeline is actually written. Verified: without this the pwsh
-    reorder-mutation goes green.
-
-    Whole-line comments only, which is what these bodies use; `#` inside the format
-    strings would otherwise be at risk, and neither dialect needs one here.
-    """
+    """Run body minus whole-line comments, so ordering checks cannot match the prose naming the stages."""
     return "\n".join(l for l in run.splitlines() if not l.lstrip().startswith("#"))
 
 
@@ -169,14 +116,7 @@ def _code_only(run: str) -> str:
     ids = ["posix", "pwsh"],
 )
 def test_the_prefix_is_applied_after_the_log_is_written(marker, writer):
-    """Reordering to `| prefix | tee` is a one-character-class edit and stays green.
-
-    It would put the prefix into `logs/install.log`, which roughly 30 steps read. Most
-    grep it for substrings and would survive, but `interrupted-install-ci.yml:185` matches
-    `^\\[TAURI:STEP\\]` anchored at line start: every line would gain a `[  12s] ` prefix,
-    the grep would match nothing, and the step asserts on what it found. That is a silent
-    false pass in a workflow this PR does not otherwise touch.
-    """
+    """The prefix must follow the log write, or the anchored TAURI grep in install.log breaks."""
     for path, jid, name, body in _prefixing_bodies():
         run = _code_only(body)
         if marker not in run:
@@ -194,14 +134,7 @@ def test_the_prefix_is_applied_after_the_log_is_written(marker, writer):
 
 
 def test_the_powershell_clock_is_started_before_it_is_read():
-    """`$sw` is an ordinary variable, and PowerShell does not require it to exist.
-
-    Without `Set-StrictMode` an undefined `$sw` is `$null`, so `$sw.Elapsed.TotalSeconds`
-    yields nothing and `-f` renders an empty field. The step log then shows `[    s] ` on
-    every line: no error, no failure, and a breakdown that reads as a formatting quirk
-    rather than as a broken measurement. Deleting the declaration is exactly the kind of
-    edit a later cleanup makes.
-    """
+    """Start the stopwatch before reading it; an unset $sw renders blank timings with no error."""
     for path, jid, name, body in _prefixing_bodies():
         run = _code_only(body)
         if PWSH_FILTER not in run:
@@ -225,8 +158,7 @@ def test_a_failing_install_still_fails_its_step():
                 f"-- and a failed install passes"
             )
         if PWSH_FILTER in run:
-            # The comparison, not the bare variable name: `$child` already ends with `exit $LASTEXITCODE`, so a
-            # substring test for the name alone stays green after the outer check is deleted.
+            # The comparison, not the name: `$child` already ends with `exit $LASTEXITCODE`.
             assert re.search(r"\$LASTEXITCODE\s+-ne\s+0", run), (
                 f"{path.name}:{jid}:{name} no longer throws on a non-zero $LASTEXITCODE "
                 f"after the pipeline. PowerShell does not fail a step for a native "
@@ -235,11 +167,7 @@ def test_a_failing_install_still_fails_its_step():
 
 
 def test_the_posix_filter_does_not_swallow_the_last_line():
-    """`while read` drops a final line with no trailing newline, and that is often the error.
-
-    Cheap to get wrong, invisible when wrong: the install still fails on its exit status,
-    but the message explaining why is the line that disappeared.
-    """
+    """A while read loop drops a final line with no newline; the guard is || [ -n "$line" ]."""
     for path, jid, name, run in _prefixing_bodies():
         if POSIX_FILTER not in run:
             continue
@@ -249,29 +177,14 @@ def test_the_posix_filter_does_not_swallow_the_last_line():
         )
 
 
-# --------------------------------------------------------------------------------------
-# Run the real filters, rather than only reading them
-# --------------------------------------------------------------------------------------
-
-
 def _posix_filter_body() -> str:
-    """The POSIX pipeline as the composite action actually declares it.
-
-    Extracted rather than restated so this exercises the shipped text: a copy in the test
-    would keep passing after the action was broken.
-    """
+    """Returns the real POSIX pipeline from the composite action, so the test exercises shipped text."""
     run = next(r for p, _, _, r in _run_bodies() if p == ACTION and "install.sh" in r)
     return run
 
 
 def _bash_runs_posix_scripts() -> bool:
-    """Whether `bash` here is a real POSIX shell rather than Windows' WSL launcher.
-
-    On a windows-latest runner `bash` resolves to the WSL stub, which ignores the script
-    and exits 1 with a UTF-16 "no distributions installed" message. That is not a finding
-    about the filter, so the executing tests skip there. Probed rather than keyed off
-    sys.platform, so a Windows box with a working git-bash still runs them.
-    """
+    """True only for a real POSIX bash; the WSL launcher stub on windows-latest is not a finding."""
     try:
         probe = subprocess.run(
             ["bash", "-c", "printf ok"], capture_output = True, text = True, timeout = 30
@@ -295,11 +208,7 @@ def test_the_bash_probe_still_finds_bash_where_bash_exists():
 
 
 def _run_posix_filter(tmp_path, fake_installer: str):
-    """Run the action's real pipeline with install.sh swapped for a fake, and report both.
-
-    Returns (returncode, stdout, log_bytes). The fake writes a phase line, sleeps, writes
-    a second, then a final line with no trailing newline.
-    """
+    """Runs the action's pipeline with a fake installer; returns returncode, stdout and the log bytes."""
     body = _posix_filter_body()
     log = tmp_path / "install.log"
     script = body.replace("bash install.sh --local --no-torch", fake_installer)
@@ -357,8 +266,11 @@ def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp
 PWSH = None
 for _candidate in ("pwsh", "powershell"):
     try:
+        # pwsh_env, not run_pwsh: an import-time probe must answer "no", not raise.
         if (
-            subprocess.run([_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60).returncode
+            subprocess.run(
+                [_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60, env = pwsh_env()
+            ).returncode
             == 0
         ):
             PWSH = _candidate
@@ -368,21 +280,7 @@ for _candidate in ("pwsh", "powershell"):
 
 
 def _run_pwsh(script: str, attempts: int = 2):
-    """Run `script` under pwsh, retrying only an interpreter crash.
-
-    Delegates to the shared `run_pwsh`, which was generalised out of this function: it keeps
-    the crash banner (an interpreter that dies mid-run and still exits normally, seen here on
-    a hosted ubuntu runner with completely empty stdout) and adds the SIGABRT case this file
-    never covered, where .NET failfasts at pwsh startup and the process is killed by a signal
-    instead of printing anything at all.
-
-    A crash yields no verdict either way, so retrying it is not papering over a failure:
-    there is nothing to paper over yet. A run that reaches `RC=` is returned as-is on the
-    first attempt, whatever the value, so a real regression is never retried into green.
-    That is what `verdict` says here. `PwshInterpreterCrash` is an `AssertionError`, so an
-    exhausted retry loop still surfaces as a failure naming the interpreter rather than
-    accusing install.ps1 of losing $LASTEXITCODE through the pipeline.
-    """
+    """Retries only interpreter crashes; any run that reaches RC= is returned on the first attempt."""
     return run_pwsh(
         [PWSH, "-NoProfile", "-Command", script],
         attempts = attempts,

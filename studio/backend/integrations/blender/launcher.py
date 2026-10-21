@@ -17,7 +17,7 @@ def main() -> int:
         return 2
     runtime = Path(sys.argv[1])
     if not (runtime / ".ready").is_file():
-        print("Open Blender MCP in Studio and enable it to download the runtime.", file = sys.stderr)
+        print("Open Blender MCP in Unsloth and enable it to download the runtime.", file = sys.stderr)
         return 1
     sys.path.insert(0, str(runtime))
     from blmcp import main as upstream_main

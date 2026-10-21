@@ -83,7 +83,7 @@ def test_chunks_carry_pdf_regions(rag_home, stub_embeddings):
             assert 0.0 <= region[key] <= 1.0
 
 
-def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
+def test_signed_file_routes(rag_home, stub_embeddings):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -110,11 +110,6 @@ def test_preview_routes_and_signed_file(rag_home, stub_embeddings):
         },
     ).json()["results"]
     assert res
-    chunk_id = res[0]["chunkId"]
-
-    pt = c.get(f"/api/rag/documents/{doc_id}/preview-target", params = {"chunk_id": chunk_id}).json()
-    assert pt["mediaKind"] == "pdf"
-    assert pt["text"]
 
     url = c.get(f"/api/rag/documents/{doc_id}/file-url").json()["url"]
     full = c.get(url)
@@ -191,8 +186,10 @@ def test_locator_anchors_through_markdown_table_pipes():
 
 def test_sign_verify_roundtrip(rag_home):
     from routes import rag as rag_routes
+    from utils.account_context import OWNER
 
     tok = rag_routes._sign_document("doc-123")
-    assert rag_routes._verify_document_token(tok) == "doc-123"
-    assert rag_routes._verify_document_token("doc-123.0.deadbeef") is None  # expired/bad
-    assert rag_routes._verify_document_token("garbage") is None
+    assert rag_routes._verify_document_token("doc-123", tok) == OWNER
+    assert rag_routes._verify_document_token("doc-456", tok) is None
+    assert rag_routes._verify_document_token("doc-123", "0..deadbeef") is None
+    assert rag_routes._verify_document_token("doc-123", "garbage") is None

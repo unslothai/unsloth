@@ -49,7 +49,7 @@ export function Tabs({
 }
 
 export const tabsListVariants = cva(
-  "rounded-4xl p-[3px]  group-data-horizontal/tabs:h-9 group-data-vertical/tabs:rounded-2xl data-[variant=line]:rounded-none group/tabs-list text-muted-foreground inline-flex w-fit items-center justify-center group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col",
+  "rounded-4xl p-[calc(3px*var(--ui-space-scale,1))]  group-data-horizontal/tabs:h-9 group-data-vertical/tabs:rounded-2xl data-[variant=line]:rounded-none group/tabs-list text-muted-foreground inline-flex w-fit items-center justify-center group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col",
   {
     variants: {
       variant: {
@@ -89,11 +89,14 @@ export function TabsList({
 
 type TabsTriggerProps = React.ComponentProps<typeof TabsPrimitive.Trigger> & {
   indicatorClassName?: string;
+  /** Drawn in place of the built-in sliding background while this tab is active. */
+  indicator?: React.ReactNode;
 };
 
 export function TabsTrigger({
   className,
   indicatorClassName,
+  indicator,
   value,
   children,
   ...props
@@ -118,13 +121,14 @@ export function TabsTrigger({
       )}
       {...props}
     >
-      {isActive && (
+      {isActive && indicator}
+      {isActive && !indicator && (
         <motion.span
           layoutId={`tab-bg-${ctx.id}`}
           className={cn(
             "absolute inset-0",
             indicatorClassName ??
-              "rounded-xl bg-background dark:bg-input/30 group-data-[variant=line]/tabs-list:bg-[#ececec] dark:group-data-[variant=line]/tabs-list:bg-[#2d2f33] dark:group-data-[variant=line]/tabs-list:border-0",
+              "rounded-xl bg-background dark:bg-input/30 group-data-[variant=line]/tabs-list:bg-tabs-line-indicator dark:group-data-[variant=line]/tabs-list:border-0",
           )}
           transition={{
             type: "spring",

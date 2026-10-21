@@ -25,6 +25,7 @@ remote-code security gates have run.
 from __future__ import annotations
 
 import gc
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import io
 import json
 import logging
@@ -55,7 +56,10 @@ NATIVE_AUDIO_MODEL_TYPES = {
     "minimax_music3": "minimax_music3",
 }
 
-NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values())
+# audio.cpp speech and music models ride the same worker path; their weights run in audiocpp_server.
+from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES  # noqa: E402
+
+NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values()) | AUDIO_CPP_AUDIO_TYPES
 REMOTE_CODE_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano", "higgs_tts3"))
 PYTHON310_AUDIO_TYPES = frozenset(("higgs_tts2", "higgs_tts3", "minimax_music3"))
 MOSS_LOCAL_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
@@ -349,6 +353,39 @@ def _higgs_tts3_codec_target(model_name: str, hf_token: Optional[str] = None) ->
     return HIGGS_TTS3_CODEC_REPO
 
 
+def _moss_local_audio_tokenizer_target(
+    model_name: str, hf_token: Optional[str] = None
+) -> Optional[str]:
+    """The codec ``audio_tokenizer_config.json`` names; the processor loads it by itself."""
+    audio_tokenizer_config = _read_audio_metadata(
+        model_name, "audio_tokenizer_config.json", hf_token, reject_oversized = True
+    )
+    candidate = audio_tokenizer_config.get("audio_tokenizer_name_or_path")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return None
+
+
+_CURATED_AUDIO_COMPANIONS = frozenset(
+    repo for repos in NATIVE_AUDIO_COMPANION_REPOS.values() for repo in repos
+)
+
+
+def _companion_adapter_base(companion: str, hf_token: Optional[str] = None) -> Optional[str]:
+    """The base ``from_pretrained`` loads in place of a companion that is a PEFT adapter."""
+    if companion in _CURATED_AUDIO_COMPANIONS:
+        return None
+    local = Path(companion).expanduser()
+    if local.is_dir() and (local / "config.json").is_file():
+        # Transformers only swaps a local folder for its base when it has no config.json.
+        return None
+    adapter_config = _read_audio_metadata(
+        companion, "adapter_config.json", hf_token, reject_oversized = True
+    )
+    base = adapter_config.get("base_model_name_or_path")
+    return base.strip() if isinstance(base, str) and base.strip() else None
+
+
 def native_audio_type_from_local_path(model_name: str) -> Optional[str]:
     """Recognize a local native-audio checkpoint from bounded metadata files."""
     normalized = str(model_name or "").strip()
@@ -379,7 +416,31 @@ def _native_audio_type(model_name: str) -> Optional[str]:
     curated = NATIVE_AUDIO_MODEL_IDS.get(normalized.lower())
     if curated:
         return curated
+    audio_cpp_type = audio_cpp_audio_type(normalized)
+    if audio_cpp_type:
+        return audio_cpp_type
     return native_audio_type_from_local_path(normalized)
+
+
+def audio_cpp_audio_type(model_name: str) -> Optional[str]:
+    """The audio_type of an audio.cpp speech or music id, from the HF cache alone.
+
+    Only ids that name the umbrella repo, a legacy key, or a repo this process already
+    resolved are looked at, so an ordinary model name costs nothing here.
+    """
+    from core.inference.audio_cpp_models import looks_like_audio_cpp, resolve
+
+    if not looks_like_audio_cpp(model_name):
+        return None
+    try:
+        model = resolve(model_name, network = False)
+    except Exception:  # noqa: BLE001 - a probe never fails its caller
+        return None
+    return model.audio_type if model is not None else None
+
+
+def is_audio_cpp_audio_model(model_name: str) -> bool:
+    return audio_cpp_audio_type(model_name) is not None
 
 
 def is_native_audio_model(model_name: str) -> bool:
@@ -397,16 +458,29 @@ def native_audio_security_targets(
     hf_token: Optional[str] = None,
 ) -> list[str]:
     """Repositories whose code or weights are loaded for this audio model."""
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES, looks_like_audio_cpp, repo_of
+
+    if audio_type in AUDIO_CPP_AUDIO_TYPES or looks_like_audio_cpp(model_name):
+        # An umbrella id names a subfolder; the weights, and so the scan, belong to the repo that holds it.
+        return [repo_of(model_name) or model_name]
     targets = [model_name]
     resolved_type = audio_type or _native_audio_type(model_name)
     if resolved_type == "moss_tts_local":
         targets.append(_moss_local_codec_target(model_name, hf_token))
+        audio_tokenizer = _moss_local_audio_tokenizer_target(model_name, hf_token)
+        if audio_tokenizer and audio_tokenizer not in targets:
+            targets.append(audio_tokenizer)
     elif resolved_type == "higgs_tts2":
         targets.append(_higgs_tts2_codec_target(model_name, hf_token))
     elif resolved_type == "higgs_tts3":
         targets.append(_higgs_tts3_codec_target(model_name, hf_token))
     else:
         targets.extend(NATIVE_AUDIO_COMPANION_REPOS.get(resolved_type, ()))
+    # A companion that is only an adapter loads its base instead, so the gates must see that base.
+    for companion in targets[1:]:
+        base = _companion_adapter_base(companion, hf_token)
+        if base and base not in targets:
+            targets.append(base)
     return targets
 
 
@@ -670,11 +744,17 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
     normalized = str(model_name or "").strip()
     if not normalized:
         raise ValueError("A model repository is required.")
+    from core.inference.audio_cpp_models import looks_like_audio_cpp
+
+    if looks_like_audio_cpp(normalized):
+        raise ValueError(
+            "This is a GGUF model: download it as a GGUF variant from the model picker or the Model Hub."
+        )
     local_checkpoint = Path(normalized).expanduser().exists()
     audio_type = _native_audio_type(normalized)
     if audio_type in PYTHON310_AUDIO_TYPES and sys.version_info < (3, 10):
         family = "Higgs TTS" if audio_type.startswith("higgs_") else "MiniMax Music 3"
-        raise ValueError(f"{family} requires Python 3.10 or newer in Studio.")
+        raise ValueError(f"{family} requires Python 3.10 or newer in Unsloth.")
     if local_checkpoint and audio_type is None:
         return {
             "entries": [],
@@ -825,8 +905,12 @@ class NativeAudioBackend:
         import torch
 
         if self.device == "cuda":
-            if getattr(torch.version, "hip", None):
-                supports_bf16 = torch.cuda.is_bf16_supported()
+            from .rocm_bf16 import is_rocm_torch, rocm_bf16_supported
+            if is_rocm_torch(torch):
+                try:
+                    supports_bf16 = rocm_bf16_supported(torch)
+                except Exception:
+                    supports_bf16 = False
             else:
                 try:
                     major, _minor = torch.cuda.get_device_capability()
@@ -901,6 +985,7 @@ class NativeAudioBackend:
         torch.backends.cuda.enable_math_sdp(True)
         torch.backends.cuda.enable_cudnn_sdp(False)
 
+    @_invalidates_gpu_memory("audio load")
     def load_model(
         self,
         config,
@@ -947,7 +1032,7 @@ class NativeAudioBackend:
                     "its official local runtime does not support AMD ROCm."
                 )
         if audio_type == "minimax_music3" and sys.version_info < (3, 10):
-            raise RuntimeError("MiniMax Music 3 requires Python 3.10 or newer in Studio.")
+            raise RuntimeError("MiniMax Music 3 requires Python 3.10 or newer in Unsloth.")
 
         if model_name in self.models:
             self.active_model_name = model_name
@@ -1443,6 +1528,7 @@ class NativeAudioBackend:
                 cancel_hook.remove()
         return audio, entry["sample_rate"]
 
+    @_invalidates_gpu_memory("audio unload")
     def unload_model(self, model_name: str) -> bool:
         entry = self.models.pop(model_name, None)
         if entry is not None:

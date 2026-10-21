@@ -270,14 +270,8 @@ NPM_REGISTRY_PREFIXES_ALLOWED: tuple[str, ...] = (NPM_REGISTRY_PREFIX,)
 CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 
-# Cargo non-registry source allowlist of `(crate_name, exact_source_string)`, both matched verbatim so bumping the pinned SHA forces a re-review. Unsloth's Tauri shell pulls `fix-path-env` from git because it is not published to crates.io; commit c4c45d5 was reviewed when it landed.
-CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
-    (
-        "fix-path-env",
-        "git+https://github.com/tauri-apps/fix-path-env-rs#"
-        "c4c45d503ea115a839aae718d02f79e7c7f0f673",
-    ),
-)
+# Cargo non-registry source allowlist of `(crate_name, exact_source_string)`, both matched verbatim so bumping a pinned SHA forces a re-review. Empty since the Tauri shell dropped its only git dependency, `fix-path-env` (unsloth#12678).
+CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = ()
 
 
 class Finding:

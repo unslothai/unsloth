@@ -111,7 +111,7 @@ async def probe(
     except Exception:
         return McpServerProbeResult(
             ok = False,
-            error = "Could not connect to Blender MCP. Check the Studio backend installation and retry.",
+            error = "Could not connect to Blender MCP. Check the Unsloth backend installation and retry.",
         )
     result = McpServerProbeResult(ok = True, tool_count = len(tools))
     if check_bridge:

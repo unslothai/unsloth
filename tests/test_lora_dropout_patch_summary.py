@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+"""Fused LoRA kernels are skipped when lora_dropout or bias is set, and the summary must say why.
+
+The fused kernels now run lora_dropout > 0 themselves, so the dropout clause only appears under
+the UNSLOTH_FUSED_LORA_DROPOUT=0 kill switch, which these tests set.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+import itertools
+import textwrap
+
+import pytest
+import unsloth  # noqa: F401
+
+from real_accelerator import has_real_accelerator
+from unsloth.kernels import fast_lora
+from unsloth.models import llama as llama_module
+from unsloth.models.llama import _fused_lora_skip_reason
+
+
+@pytest.fixture(autouse = True)
+def _fused_dropout_off(monkeypatch):
+    # lora_dropout > 0 only closes the fused gate under the UNSLOTH_FUSED_LORA_DROPOUT=0 kill switch.
+    monkeypatch.setattr(fast_lora, "FUSED_LORA_DROPOUT", False)
+
+
+def test_no_reason_when_the_fused_kernels_were_installed():
+    assert _fused_lora_skip_reason(0, "none") == ""
+    assert _fused_lora_skip_reason(0.0, "none") == ""
+
+
+def test_lora_dropout_is_named_with_its_value():
+    reason = _fused_lora_skip_reason(0.1, "none")
+    assert "lora_dropout = 0.1" in reason
+    assert "bias =" not in reason
+    assert "Training is unaffected." in reason
+
+
+def test_bias_is_named_with_its_value():
+    reason = _fused_lora_skip_reason(0, "all")
+    assert "bias = 'all'" in reason
+    assert "lora_dropout" not in reason
+
+
+def test_both_reasons_are_joined():
+    reason = _fused_lora_skip_reason(0.05, "lora_only")
+    assert "lora_dropout = 0.05" in reason
+    assert "bias = 'lora_only'" in reason
+    assert " and " in reason
+
+
+def test_reason_appends_cleanly_to_the_summary_sentence():
+    """The summary line ends in a full stop and the reason is appended straight onto it,
+    so the reason must start with a space and must not start a new sentence mid word."""
+    reason = _fused_lora_skip_reason(0.1, "none")
+    assert reason.startswith(" ")
+    assert reason.endswith(".")
+    assert "  " not in ("...0 MLP layers." + reason)
+
+
+@pytest.mark.parametrize(
+    "lora_dropout,bias,float32_base,fsdp",
+    list(
+        itertools.product(
+            [0, 0.0, 0.1, 0.5], ["none", "all", "lora_only"], [False, True], [False, True]
+        )
+    ),
+)
+def test_reason_is_non_empty_exactly_when_the_fused_gate_is_closed(
+    lora_dropout, bias, float32_base, fsdp
+):
+    """Parity with the fused-kernel gate in patch_peft_model."""
+    fused_installed = lora_dropout == 0 and bias == "none" and not float32_base and not fsdp
+    reason = _fused_lora_skip_reason(lora_dropout, bias, float32_base, fsdp = fsdp)
+    assert bool(reason) is not fused_installed
+
+
+@pytest.mark.parametrize("lora_dropout", [0, 0.1, 0.5])
+def test_lora_dropout_keeps_the_fused_gate_open_by_default(monkeypatch, lora_dropout):
+    monkeypatch.setattr(fast_lora, "FUSED_LORA_DROPOUT", True)
+    assert _fused_lora_skip_reason(lora_dropout, "none") == ""
+
+
+def _gate_tests(source: str) -> list[str]:
+    """Every `if` test in patch_peft_model that reads both lora_dropout and bias."""
+    tree = ast.parse(textwrap.dedent(source))
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+        if {"lora_dropout", "bias"} <= names:
+            out.append(ast.unparse(node.test))
+    return out
+
+
+def test_patch_peft_model_still_gates_the_fused_kernels_on_the_same_values():
+    """Every gate condition needs a matching _fused_lora_skip_reason clause."""
+    source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
+    assert _gate_tests(source) == [
+        "(lora_dropout == 0 or _fast_lora.FUSED_LORA_DROPOUT) and bias == 'none' and (not float32_base) and (not fused_lora_declined_for_fsdp)"
+    ]
+
+
+def test_the_summary_call_carries_the_reason():
+    source = inspect.getsource(llama_module.FastLlamaModel.patch_peft_model)
+    flat = "".join(source.split())
+    assert (
+        "unfused_reason=_fused_lora_skip_reason(lora_dropout,bias,float32_base,fsdp=fused_lora_declined_for_fsdp)"
+        in flat
+    )
+    assert "MLP layers.{unfused_reason}" in source
+
+
+# has_real_accelerator(), not torch.cuda.is_available(): the zoo CUDA spoof patches the
+# latter True process-wide before skipif runs.
+@pytest.mark.gpu
+@pytest.mark.skipif(
+    not has_real_accelerator(),
+    reason = "loads a real checkpoint through FastLanguageModel; needs an accelerator",
+)
+def test_summary_reason_is_logged_for_a_real_model():
+    """unsloth#2076 end to end: the reason has to reach the user's console."""
+    import logging
+
+    from unsloth import FastLanguageModel
+
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    model, _tokenizer = FastLanguageModel.from_pretrained(
+        "unsloth/Llama-3.2-1B-Instruct",
+        max_seq_length = 512,
+        load_in_4bit = True,
+    )
+    # warning_once (patched onto logging.Logger by transformers) dedupes process wide.
+    getattr(llama_module.logger.warning_once, "cache_clear", lambda: None)()
+
+    # The logger llama.py writes to, so transformers disabling propagation does not matter.
+    handler = _Capture()
+    target = llama_module.logger
+    target.addHandler(handler)
+    previous_level = target.level
+    target.setLevel(logging.WARNING)
+    try:
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r = 8,
+            lora_alpha = 16,
+            lora_dropout = 0.1,
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"],
+            random_state = 0,
+        )
+    finally:
+        target.removeHandler(handler)
+        target.setLevel(previous_level)
+
+    summary = [m for m in records if "MLP layers." in m]
+    assert summary, records
+    assert "lora_dropout = 0.1" in summary[-1], summary[-1]

@@ -399,7 +399,11 @@ def test_webm_export_keeps_the_audio_track():
     av = pytest.importorskip("av")
     import io
 
-    record = gallery.save(_real_mp4_with_audio(), _meta())
+    source = _real_mp4_with_audio()
+    with av.open(io.BytesIO(source)) as container:
+        stream = container.streams.audio[0]
+        source_seconds = sum(frame.samples for frame in container.decode(stream)) / stream.rate
+    record = gallery.save(source, _meta())
     webm = gallery.transcode(record["id"], "webm")
     assert webm is not None and webm[:4] == b"\x1a\x45\xdf\xa3"
     with av.open(io.BytesIO(webm)) as container:
@@ -410,8 +414,11 @@ def test_webm_export_keeps_the_audio_track():
     with av.open(io.BytesIO(webm)) as container:
         for frame in container.decode(audio = 0):
             samples += frame.samples
-    # A full second of 48 kHz audio survived (Opus pads its last 20 ms frame).
-    assert samples >= 48000, samples
+    # The whole source track survived, give or take one 20 ms Opus frame (960 samples at 48 kHz)
+    # lost to resampling and framing at the edges. Measured against the decoded source, not a
+    # flat 48000: PyAV 18 decoded the 1 s AAC fixture with its encoder padding (45056 samples at
+    # 44.1 kHz), PyAV 19 trims it to the true 44100, and a flat floor only passed on the padding.
+    assert samples >= source_seconds * 48000 - 960, (samples, source_seconds)
 
 
 def test_webm_export_still_works_without_an_audio_encoder(monkeypatch):
@@ -503,6 +510,26 @@ def test_thumbnail_scales_large_frames_to_gallery_width():
         assert image.size == (192, 341)
 
 
+def test_thumbnail_refuses_frames_past_max_pixels_even_when_the_header_understates_them():
+    import io
+
+    av = pytest.importorskip("av")
+    clip = _real_mp4_bytes(frames = 2, size = 256)
+    lying = io.BytesIO()
+    with av.open(io.BytesIO(clip)) as src, av.open(lying, "w", format = "mp4") as out:
+        stream = out.add_stream("mpeg4", rate = 8)
+        stream.width = stream.height = 16
+        stream.pix_fmt = "yuv420p"
+        for packet in src.demux(src.streams.video[0]):
+            if packet.dts is not None:
+                packet.stream = stream
+                out.mux(packet)
+    assert gallery.first_frame_webp(io.BytesIO(clip), container = "mp4", max_pixels = 2 * 256 * 256)
+    for data in (clip, lying.getvalue()):
+        with pytest.raises(RuntimeError):
+            gallery.first_frame_webp(io.BytesIO(data), container = "mp4", max_pixels = 128 * 128)
+
+
 def test_thumbnail_rejects_unowned_and_invalid_videos():
     assert gallery.thumbnail("does-not-exist") is None
     record = gallery.save(_mp4(), _meta())
@@ -532,7 +559,7 @@ def test_transcode_to_file_writes_a_temp_file_the_caller_owns():
     assert gallery.transcode_to_file("does-not-exist", "webm") is None
 
 
-def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch):
+def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch, tmp_path):
     # A half-written export must not accumulate in the temp dir on a host with no VP9 encoder.
     import tempfile
 
@@ -540,15 +567,34 @@ def test_transcode_to_file_leaves_no_temp_file_when_the_encode_fails(monkeypatch
 
     record = gallery.save(_real_mp4_bytes(), _meta())
 
+    written: list[Path] = []
+
     def _boom(src, dest):
         dest.write_bytes(b"partial")
+        written.append(Path(dest))
         raise RuntimeError("WebM export failed (libvpx-vp9 unavailable?)")
 
     monkeypatch.setattr(vg, "_transcode_webm", _boom)
-    before = set(Path(tempfile.gettempdir()).glob("unsloth-export-*"))
+    # Export into a directory this test owns. Counting `unsloth-export-*` in the shared
+    # system temp dir reads state this test never pinned: a successful export running
+    # concurrently in another worker lands there too, and shows up here as a leak that
+    # nothing in this test produced. A failed export is always unlinked, so the stray
+    # file could only ever have come from somebody else.
+    exports = tmp_path / "exports"
+    exports.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(exports))
+
     with pytest.raises(RuntimeError):
         vg.transcode_to_file(record["id"], "webm")
-    assert set(Path(tempfile.gettempdir()).glob("unsloth-export-*")) == before
+
+    # The temp file has to have existed before its absence means anything: an export
+    # that raised before `mkstemp` would satisfy an empty directory just as well, and
+    # would prove nothing about the cleanup this test is named for.
+    assert written, "the export never created its temp file, so the check below is vacuous"
+    assert not written[0].exists(), f"{written[0].name} survived the failed encode"
+    assert (
+        list(exports.iterdir()) == []
+    ), f"the failed export left {[p.name for p in exports.iterdir()]} behind"
 
 
 def test_gif_export_bounds_frames_and_edge(monkeypatch):

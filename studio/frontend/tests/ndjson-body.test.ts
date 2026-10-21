@@ -78,11 +78,12 @@ test("message JSONL cannot merge conversations without losing boundaries", () =>
   assert.equal(canMergeConversationExport("jsonl-raw"), true);
 });
 
-test("both JSONL layouts export only the displayed branch", () => {
+test("training formats export only the displayed branch", () => {
   assert.equal(exportFormatIncludesSiblings("jsonl-raw"), false);
   assert.equal(exportFormatIncludesSiblings("jsonl-messages"), false);
+  assert.equal(exportFormatIncludesSiblings("sharegpt"), false);
   assert.equal(exportFormatIncludesSiblings("csv"), true);
-  assert.equal(exportFormatIncludesSiblings("sharegpt"), true);
+  assert.equal(exportFormatIncludesSiblings("markdown"), false);
 });
 
 test("training order excludes abandoned response branches", () => {

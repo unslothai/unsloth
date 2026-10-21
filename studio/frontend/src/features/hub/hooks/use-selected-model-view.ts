@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useMemo } from "react";
+import { useHubName } from "@/lib/hf-endpoint";
 import { detectCapabilities, detectLicense } from "../lib/model-capabilities";
 import {
   buildSummary,
@@ -47,6 +48,7 @@ export function useSelectedModelView({
   selectedHfResult: HfResult;
   isDatasetMode: boolean;
 }): SelectedModelView | null {
+  const hubName = useHubName();
   return useMemo<SelectedModelView | null>(() => {
     if (selectedDiscoverRow) {
       if (
@@ -84,7 +86,10 @@ export function useSelectedModelView({
           baseModelHubId: selectedDiscoverRow.result.baseModel ?? null,
           isDownloaded: !selectedLocalRow.partial,
           runtimeCanChat: selectedLocalRow.capabilities.canChat,
-          isPartial: selectedLocalRow.partial ?? false,
+          isPartial:
+            Boolean(selectedLocalRow.partial) &&
+            !selectedLocalRow.companionPrefetch,
+          companionPrefetch: selectedLocalRow.companionPrefetch === true,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
           capabilities: selectedDiscoverRow.capabilities,
@@ -109,9 +114,11 @@ export function useSelectedModelView({
       const onDevicePath =
         selectedCachedRow?.cachePath ?? selectedLocalRow?.path ?? null;
       const isResolvedPartial = selectedCachedRow
-        ? Boolean(selectedCachedRow.partial)
+        ? Boolean(selectedCachedRow.partial) &&
+          !selectedCachedRow.companionPrefetch
         : selectedLocalRow?.source === "hf_cache"
-          ? Boolean(selectedLocalRow.partial)
+          ? Boolean(selectedLocalRow.partial) &&
+            !selectedLocalRow.companionPrefetch
           : selectedDiscoverRow.isPartialOnDevice;
       const isResolvedOnDevice = selectedCachedRow
         ? !selectedCachedRow.partial
@@ -137,7 +144,7 @@ export function useSelectedModelView({
           ? "On device"
           : isResolvedPartial
             ? "Partial on device"
-            : "Hugging Face",
+            : hubName,
         path: onDevicePath,
         isLocal: false,
         isGguf:
@@ -160,6 +167,10 @@ export function useSelectedModelView({
           selectedLocalRow?.capabilities.canChat ??
           false,
         isPartial: isResolvedPartial,
+        companionPrefetch: selectedCachedRow
+          ? selectedCachedRow.companionPrefetch === true
+          : selectedLocalRow?.source === "hf_cache" &&
+            selectedLocalRow.companionPrefetch === true,
         partialTransport:
           selectedCachedRow?.partialTransport ??
           selectedLocalRow?.partialTransport ??
@@ -173,6 +184,7 @@ export function useSelectedModelView({
         // only record of the modality when the Hub metadata has no pipeline tag or only the
         // generic text-generation one.
         task: selectedCachedRow?.task ?? selectedLocalRow?.task ?? null,
+        audioType: selectedCachedRow?.audioType ?? selectedLocalRow?.audioType ?? null,
         libraryName: selectedDiscoverRow.result.libraryName,
         gated: selectedDiscoverRow.result.gated,
         private: selectedDiscoverRow.result.private,
@@ -231,7 +243,10 @@ export function useSelectedModelView({
         baseModelHubId: mergedBaseModel,
         isDownloaded: !selectedCachedRow.partial,
         runtimeCanChat: selectedCachedRow.capabilities.canChat,
-        isPartial: selectedCachedRow.partial ?? false,
+        isPartial:
+          Boolean(selectedCachedRow.partial) &&
+          !selectedCachedRow.companionPrefetch,
+        companionPrefetch: selectedCachedRow.companionPrefetch === true,
         partialTransport: selectedCachedRow.partialTransport ?? null,
         partialResumable: selectedCachedRow.partialResumable === true,
         capabilities: detectViewCapabilities(
@@ -244,6 +259,7 @@ export function useSelectedModelView({
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
         task: selectedCachedRow.task ?? null,
+        audioType: selectedCachedRow.audioType ?? null,
         libraryName: mergedLibraryName,
         gated: selectedHfResult?.gated,
         private: selectedHfResult?.private,
@@ -268,6 +284,7 @@ export function useSelectedModelView({
         selectedLocalRow.source === "hf_cache" &&
         !!selectedLocalRow.partial &&
         !!selectedLocalRow.repoId;
+      const isCompanionPrefetch = selectedLocalRow.companionPrefetch === true;
       const mergedTags = selectedHfResult?.tags ?? selectedLocalRow.tags;
       const mergedPipelineTag =
         selectedHfResult?.pipelineTag ??
@@ -298,7 +315,9 @@ export function useSelectedModelView({
           title: selectedLocalRow.title,
           summary: selectedHfResult
             ? buildSummary(selectedHfResult)
-            : "Partial download. Finish it from the card below, or delete it to free space.",
+            : isCompanionPrefetch
+              ? "Holds only the files a GGUF borrowed. Download the full model from the card below."
+              : "Partial download. Finish it from the card below, or delete it to free space.",
           sourceLabel: "Hub cache",
           path: selectedLocalRow.path,
           isLocal: false,
@@ -307,7 +326,8 @@ export function useSelectedModelView({
           modelFormat: selectedLocalRow.modelFormat,
           isDownloaded: false,
           runtimeCanChat: selectedLocalRow.capabilities.canChat,
-          isPartial: true,
+          isPartial: !isCompanionPrefetch,
+          companionPrefetch: isCompanionPrefetch,
           partialTransport: selectedLocalRow.partialTransport ?? null,
           partialResumable: selectedLocalRow.partialResumable === true,
           capabilities: detectViewCapabilities(
@@ -321,6 +341,7 @@ export function useSelectedModelView({
           license: detectLicense(mergedTags),
           pipelineTag: mergedPipelineTag,
           task: selectedLocalRow.task ?? null,
+          audioType: selectedLocalRow.audioType ?? null,
           libraryName: mergedLibraryName,
           gated: selectedHfResult?.gated,
           private: selectedHfResult?.private,
@@ -374,6 +395,7 @@ export function useSelectedModelView({
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
         task: selectedLocalRow.task ?? null,
+        audioType: selectedLocalRow.audioType ?? null,
         libraryName: mergedLibraryName,
         gated: localHubMetadata?.gated,
         private: localHubMetadata?.private,
@@ -392,6 +414,7 @@ export function useSelectedModelView({
 
     return null;
   }, [
+    hubName,
     isDatasetMode,
     selectedCachedRow,
     selectedDiscoverRow,

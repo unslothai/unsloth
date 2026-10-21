@@ -5,7 +5,7 @@ export const UPDATE_NOTES_ROOT_CLASS =
   "mt-3 flex min-h-0 flex-1 flex-col overflow-hidden";
 
 export const UPDATE_NOTES_SURFACE_CLASS =
-  "flex min-h-0 flex-col rounded-[14px] bg-muted/40 px-3 py-1 dark:bg-white/[0.06]";
+  "flex min-h-0 flex-col rounded-[14px] bg-muted/40 px-3 py-1 dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
 
 export const UPDATE_NOTES_EXPANDED_SCROLL_CLASS =
   "hover-scrollbar max-h-64 min-h-0 flex-1 overflow-y-auto overscroll-contain py-3 pr-1";

@@ -34,6 +34,7 @@ class FakeExternalClient:
 
     def __init__(self, **kwargs):
         FakeExternalClient.last = {"ctor": kwargs, "passthrough": None}
+        self.provider_type = kwargs.get("provider_type")
 
     def stream_chat_completion(self, **kwargs):
         FakeExternalClient.last["passthrough"] = kwargs
@@ -211,6 +212,49 @@ def test_a_plain_streaming_ask_request_still_reaches_the_loop(monkeypatch):
     assert entered["policy"].confirm_calls is True
 
 
+_PNG = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4"
+    "z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+)
+
+
+def test_an_mcp_image_is_refused_when_the_tool_loop_will_not_run(monkeypatch):
+    """The direct proxy forwards no MCP image, so accepting one would drop it silently."""
+    inf = _install(monkeypatch, "openai")
+    # A provider/model that runs no local tools proxies straight through.
+    monkeypatch.setattr(inf, "provider_model_runs_local_tools", lambda *a: False)
+    payload = _payload(enable_tools = True, mcp_enabled = True, mcp_image = _PNG)
+    with pytest.raises(HTTPException) as excinfo:
+        _run(inf, payload)
+    assert excinfo.value.status_code == 400 and "MCP" in excinfo.value.detail
+
+
+def test_an_mcp_image_is_refused_when_the_catalog_has_no_mapped_tool(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    inf = _install(monkeypatch, "openai")
+    entered = _capture_loop(monkeypatch, inf)
+    monkeypatch.setattr(tools_mod, "mcp_catalog_takes_image", lambda names: False)
+    payload = _payload(enable_tools = True, permission_mode = "ask", mcp_enabled = True, mcp_image = _PNG)
+    with pytest.raises(HTTPException) as excinfo:
+        _run(inf, payload)
+    assert excinfo.value.status_code == 400 and not entered
+
+
+def test_an_mcp_image_reaches_the_tool_loop(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    inf = _install(monkeypatch, "openai")
+    # Stands in for an enabled server whose tool has a mapped image field.
+    monkeypatch.setattr(tools_mod, "mcp_catalog_takes_image", lambda names: True)
+    entered = _capture_loop(monkeypatch, inf)
+    _run(
+        inf,
+        _payload(enable_tools = True, permission_mode = "ask", mcp_enabled = True, mcp_image = _PNG),
+    )
+    assert entered["mcp_image"].mime == "image/png"
+
+
 def test_a_non_streaming_request_without_any_confirm_intent_still_proxies(monkeypatch):
     """off/full never prompt, so they keep the legacy non-streaming passthrough."""
     inf = _install(monkeypatch, "openai")
@@ -354,6 +398,39 @@ def test_a_third_party_key_never_unlocks_a_saved_connection(monkeypatch):
     assert seen == [False]
 
 
+@pytest.mark.parametrize(
+    "record, allowed",
+    [
+        ({"role": "owner", "key_name": "Coding agents (unsloth start)"}, True),
+        ({"role": "owner", "key_name": "my script"}, False),
+        ({"role": "member", "key_name": "Coding agents (unsloth start)"}, False),
+    ],
+)
+def test_only_the_owners_unsloth_start_key_unlocks_a_saved_connection(monkeypatch, record, allowed):
+    from auth.authentication import API_KEY_PREFIX
+    from routes import inference as inf
+
+    seen: list[bool] = []
+    inf = _install(monkeypatch, "openai", record_keys = seen)
+    monkeypatch.setattr(inf.auth_storage, "is_internal_api_key", lambda raw: False)
+    monkeypatch.setattr(
+        inf.auth_storage, "validate_api_key_account", lambda raw, touch = True: (record, "s")
+    )
+    _run(inf, _payload(), request = _request(f"Bearer {API_KEY_PREFIX}deadbeefdeadbeef"))
+    assert seen == [allowed]
+
+
+def test_a_keyless_caller_never_unlocks_a_saved_connection(monkeypatch):
+    from auth import authentication
+    from routes import inference as inf
+
+    seen: list[bool] = []
+    inf = _install(monkeypatch, "openai", record_keys = seen)
+    monkeypatch.setattr(authentication, "admitted_without_session", lambda request: True)
+    _run(inf, _payload(), request = _request())
+    assert seen == [False]
+
+
 def test_an_interactive_session_still_uses_its_saved_connection(monkeypatch):
     """Unsloth's own chat sends a session JWT and no API key at all."""
     from routes import inference as inf
@@ -404,6 +481,8 @@ def test_transport_cancellation_is_wired_through_the_loop():
     from core.inference.external_tool_transport import OAICompatTransport
 
     class _Stalling:
+        provider_type = "custom"
+
         def __init__(self):
             self.torn_down = False
             self.released = asyncio.Event()

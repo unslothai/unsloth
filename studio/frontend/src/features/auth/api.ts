@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { apiUrl, isTauri } from "@/lib/api-base";
+import { accountTransitionPending } from "@/lib/account-transition";
+import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
   getAuthToken,
@@ -24,14 +25,34 @@ type AuthFetchOptions = {
 };
 
 let isRedirecting = false;
-let refreshInflight: Promise<boolean> | null = null;
+let refreshInflight: Promise<RefreshOutcome> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
-const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
+// #10520: sums to 10.5s, just past the launcher's 10s HEALTH_PROBE_TIMEOUT. Guarded by
+// `the_frontend_retry_ladder_outlives_one_probe_budget` in src-tauri/src/commands.rs.
+const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500, 3000, 5000] as const;
+// A network error is not an answer: retrying a committed POST creates a second API key,
+// project or job, so non-idempotent methods keep the shorter ladder.
+const TAURI_FETCH_RETRY_DELAYS_UNSAFE_MS = [250, 750, 1500] as const;
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]);
+
+function retryDelaysFor(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): readonly number[] {
+  const method = (
+    init?.method ??
+    (typeof Request !== "undefined" && input instanceof Request
+      ? input.method
+      : "GET")
+  ).toUpperCase();
+  return IDEMPOTENT_METHODS.has(method)
+    ? TAURI_FETCH_RETRY_DELAYS_MS
+    : TAURI_FETCH_RETRY_DELAYS_UNSAFE_MS;
+}
 const BROWSER_TIMEZONE_HEADER = "X-Unsloth-Timezone";
-const BROWSER_TIMEZONE_OFFSET_HEADER =
-  "X-Unsloth-Timezone-Offset-Minutes";
+const BROWSER_TIMEZONE_OFFSET_HEADER = "X-Unsloth-Timezone-Offset-Minutes";
 
 function addBrowserTimezoneHeaders(headers: Headers): void {
   try {
@@ -60,6 +81,7 @@ async function fetchWithTauriNetworkRetry(
   retryNetworkErrors = true,
   beforeRetry?: () => void,
 ): Promise<Response> {
+  const delays = retryDelaysFor(input, init);
   for (let attempt = 0; ; attempt++) {
     try {
       return await fetch(input, init);
@@ -68,11 +90,15 @@ async function fetchWithTauriNetworkRetry(
         !isTauri ||
         !retryNetworkErrors ||
         !(error instanceof TypeError) ||
-        attempt >= TAURI_FETCH_RETRY_DELAYS_MS.length
+        attempt >= delays.length
       ) {
         throw error;
       }
-      await wait(TAURI_FETCH_RETRY_DELAYS_MS[attempt]);
+      // Tauri only, below the guard above. `fetch` cannot tell a refused port from a silent
+      // one and the native side can, so ask it once on the FIRST failure rather than sleeping
+      // out #10520's 10.5s ladder to be told what the refusal already proved.
+      if (attempt === 0 && (await nativeBackendIsGone())) throw error;
+      await wait(delays[attempt]);
       beforeRetry?.();
     }
   }
@@ -91,7 +117,7 @@ async function isPasswordChangeRequiredResponse(
   }
 }
 
-async function redirectToAuth(): Promise<void> {
+async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
 
@@ -99,12 +125,19 @@ async function redirectToAuth(): Promise<void> {
   try {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
-      const data = (await res.json()) as { requires_password_change: boolean };
-      // Server truth wins; keep localStorage in sync both ways.
-      if (data.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(data.requires_password_change);
+      const data = (await res.json()) as {
+        requires_password_change: boolean;
+        login_mode?: "single" | "multi";
+      };
+      // Public status describes the owner. A managed session carries its own requirement.
+      const requiresChange =
+        data.login_mode === "multi"
+          ? passwordChangeRequired || mustChangePassword()
+          : data.requires_password_change;
+      if (requiresChange !== mustChangePassword()) {
+        setMustChangePassword(requiresChange);
       }
-      if (data.requires_password_change) target = "/change-password";
+      if (requiresChange) target = "/change-password";
     }
   } catch {
     // Fall through to /login on error
@@ -117,9 +150,99 @@ async function redirectToAuth(): Promise<void> {
   window.location.href = target;
 }
 
-function asTransportFailure(err: unknown): unknown {
+/** Copy shown when the backend really is unreachable and the launcher agrees. */
+export const BACKEND_NOT_RUNNING_MESSAGE =
+  "Unsloth isn't running -- please relaunch it.";
+/** Copy shown when the webview could not reach the backend but the launcher says it is up. */
+export const BACKEND_NOT_ANSWERING_MESSAGE =
+  "Unsloth is running but did not answer in time. It may still be starting up. Please try again in a moment.";
+
+/** `check_backend_present` and NOT `check_health`: the latter reports a probe that ran out of budget exactly as a refused connection. */
+// The port is carried WITH the promise: `setApiBase` can move it inside the 10s budget.
+let nativeHealthInflight: { port: number; probe: Promise<boolean> } | null = null;
+
+async function nativeBackendIsAlive(): Promise<boolean> {
+  if (!isTauri) {
+    return false;
+  }
+  const port = getApiPort();
+  if (port === null) {
+    return false;
+  }
+  // Single flight: one 10s probe rather than one per panel. Not cached beyond the call.
+  if (nativeHealthInflight !== null && nativeHealthInflight.port === port) {
+    return nativeHealthInflight.probe;
+  }
+  const probe = (async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return (
+        (await invoke<boolean>("check_backend_present", { port })) === true
+      );
+    } catch {
+      return false;
+    }
+  })();
+  const inflight = { port, probe };
+  nativeHealthInflight = inflight;
+  try {
+    return await probe;
+  } finally {
+    // Identity, not the port: a probe for a newer port owns the slot now.
+    if (nativeHealthInflight === inflight) {
+      nativeHealthInflight = null;
+    }
+  }
+}
+
+/** `check_backend_is_gone` and NOT `check_backend_present`: presence reports a backend of ours that has not bound its port yet as absent. */
+let nativeGoneInflight: { port: number; probe: Promise<boolean> } | null = null;
+
+/**
+ * Whether the retry ladder has anything left to wait for.
+ *
+ * Only ever answers true on positive proof, so every failure mode below returns false and
+ * leaves the ladder exactly as long as it is today: the browser build, which has no native
+ * side to ask; a port the webview has not been given yet; and a shell too old to carry the
+ * command, whose rejected `invoke` is caught here.
+ */
+async function nativeBackendIsGone(): Promise<boolean> {
+  if (!isTauri) {
+    return false;
+  }
+  const port = getApiPort();
+  if (port === null) {
+    return false;
+  }
+  // Single flight, like the presence probe: a hub losing the backend fails every panel at once.
+  if (nativeGoneInflight !== null && nativeGoneInflight.port === port) {
+    return nativeGoneInflight.probe;
+  }
+  const probe = (async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      return (
+        (await invoke<boolean>("check_backend_is_gone", { port })) === true
+      );
+    } catch {
+      return false;
+    }
+  })();
+  const inflight = { port, probe };
+  nativeGoneInflight = inflight;
+  try {
+    return await probe;
+  } finally {
+    // Identity, not the port: a probe for a newer port owns the slot now.
+    if (nativeGoneInflight === inflight) {
+      nativeGoneInflight = null;
+    }
+  }
+}
+
+async function asTransportFailure(err: unknown): Promise<unknown> {
   // fetch TypeError = offline | backend down | CORS/DNS. Tagged so callers tell "never reached"
-  // from "rejected"; Tauri is always backend-down, the web build distinguishes offline.
+  // from "rejected"; under Tauri the launcher is asked before claiming the backend is gone.
   if (!(err instanceof TypeError)) return err;
   if (
     !isTauri &&
@@ -133,10 +256,17 @@ function asTransportFailure(err: unknown): unknown {
       { unslothTransportFailure: true },
     );
   }
-  return Object.assign(
-    new Error("Unsloth isn't running -- please relaunch it."),
-    { unslothTransportFailure: true },
-  );
+  // A failed fetch in the webview is not proof the backend died, and "please relaunch it"
+  // throws away a running backend and whatever it has in flight.
+  if (await nativeBackendIsAlive()) {
+    return Object.assign(new Error(BACKEND_NOT_ANSWERING_MESSAGE), {
+      unslothTransportFailure: true,
+      unslothBackendStillRunning: true,
+    });
+  }
+  return Object.assign(new Error(BACKEND_NOT_RUNNING_MESSAGE), {
+    unslothTransportFailure: true,
+  });
 }
 
 async function retryWithCurrentToken(
@@ -159,7 +289,7 @@ async function retryWithCurrentToken(
       beforeRetry,
     );
   } catch (err) {
-    throw asTransportFailure(err);
+    throw await asTransportFailure(err);
   }
 }
 
@@ -177,38 +307,89 @@ async function retryWithTauriAutoAuth(
   return null;
 }
 
-export async function refreshSession(): Promise<boolean> {
+/** "rejected": the server refused the token or the user signed out. "unavailable": no answer yet. */
+export type RefreshOutcome = "ok" | "rejected" | "unavailable";
+
+// Never abort an in-flight POST: if the server already rotated the pair, dropping its answer loses the new token.
+const REFRESH_MAX_ATTEMPTS = 3;
+const REFRESH_BUDGET_MS = 8000;
+const REFRESH_RETRY_DEFAULT_MS = 1000;
+const REFRESH_RETRY_MIN_MS = 250;
+const REFRESH_RETRY_MAX_MS = 5000;
+
+function refreshRetryDelay(response: Response): number {
+  const header = response.headers.get("Retry-After")?.trim();
+  const seconds = header ? Number(header) : Number.NaN;
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return REFRESH_RETRY_DEFAULT_MS;
+  }
+  return Math.min(
+    Math.max(seconds * 1000, REFRESH_RETRY_MIN_MS),
+    REFRESH_RETRY_MAX_MS,
+  );
+}
+
+async function runRefresh(refreshToken: string): Promise<RefreshOutcome> {
+  const startGeneration = logoutGeneration;
+  const startedAt = Date.now();
+  const superseded = (): RefreshOutcome | null => {
+    if (startGeneration !== logoutGeneration) return "rejected";
+    if (getRefreshToken() !== refreshToken) return "unavailable";
+    return null;
+  };
+  for (let attempt = 1; ; attempt++) {
+    let response: Response;
+    try {
+      response = await fetchWithTauriNetworkRetry(apiUrl("/api/auth/refresh"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+    } catch {
+      return "unavailable";
+    }
+    // Only a 401 rejects the token; a 5xx, 429 or proxy error says nothing about the session.
+    if (response.status === 401) {
+      clearAuthTokensIfCurrent(refreshToken);
+      return "rejected";
+    }
+    if (response.ok) {
+      let payload: RefreshResponse;
+      try {
+        payload = (await response.json()) as RefreshResponse;
+      } catch {
+        return "unavailable";
+      }
+      const stale = superseded();
+      if (stale) return stale;
+      storeAuthTokens(payload.access_token, payload.refresh_token);
+      setMustChangePassword(payload.must_change_password ?? false);
+      return "ok";
+    }
+    if (response.status !== 503 && response.status !== 429) {
+      return "unavailable";
+    }
+    const delay = refreshRetryDelay(response);
+    if (
+      attempt >= REFRESH_MAX_ATTEMPTS ||
+      Date.now() - startedAt + delay > REFRESH_BUDGET_MS
+    ) {
+      return "unavailable";
+    }
+    await wait(delay);
+    const stale = superseded();
+    if (stale) return stale;
+  }
+}
+
+export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
   const refreshToken = getRefreshToken();
-  if (!refreshToken) return false;
+  if (!refreshToken) return "rejected";
   if (refreshInflight && refreshInflightToken === refreshToken) {
     return refreshInflight;
   }
 
-  const startGeneration = logoutGeneration;
-  const promise = (async () => {
-    try {
-      const response = await fetchWithTauriNetworkRetry(
-        apiUrl("/api/auth/refresh"),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ refresh_token: refreshToken }),
-        },
-      );
-      if (!response.ok) {
-        clearAuthTokensIfCurrent(refreshToken);
-        return false;
-      }
-      const payload = (await response.json()) as RefreshResponse;
-      if (startGeneration !== logoutGeneration) return false;
-      if (getRefreshToken() !== refreshToken) return false;
-      storeAuthTokens(payload.access_token, payload.refresh_token);
-      setMustChangePassword(payload.must_change_password ?? false);
-      return true;
-    } catch {
-      return false;
-    }
-  })();
+  const promise = runRefresh(refreshToken);
   refreshInflight = promise;
   refreshInflightToken = refreshToken;
   try {
@@ -221,11 +402,19 @@ export async function refreshSession(): Promise<boolean> {
   }
 }
 
+export async function refreshSession(): Promise<boolean> {
+  return (await refreshSessionOutcome()) === "ok";
+}
+
 export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
   options?: AuthFetchOptions,
 ): Promise<Response> {
+  // Another tab is mid-switch: its new tokens are published before this tab reloads, so a
+  // request now would carry this tab's account content under the next account's credentials.
+  if (accountTransitionPending())
+    throw new Error("Another tab is switching accounts; this tab will reload.");
   const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   addBrowserTimezoneHeaders(headers);
@@ -246,7 +435,7 @@ export async function authFetch(
       options?.beforeRetry,
     );
   } catch (err) {
-    throw asTransportFailure(err);
+    throw await asTransportFailure(err);
   }
 
   if (await isPasswordChangeRequiredResponse(response)) {
@@ -260,14 +449,15 @@ export async function authFetch(
         )) ?? response
       );
     }
-    void redirectToAuth();
+    void redirectToAuth(true);
     return response;
   }
   if (response.status !== 401) return response;
 
   const refreshToken = getRefreshToken();
-  const refreshed = await refreshSession();
-  if (!refreshed) {
+  const outcome = await refreshSessionOutcome();
+  if (outcome === "unavailable") return response;
+  if (outcome === "rejected") {
     if (isTauri) {
       return (
         (await retryWithTauriAutoAuth(

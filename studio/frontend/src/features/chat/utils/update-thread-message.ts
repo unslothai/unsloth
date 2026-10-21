@@ -1,8 +1,9 @@
-import type { ExportedMessageRepository, ThreadMessage } from "@assistant-ui/react";
+import type { ExportedMessageRepository } from "@assistant-ui/react";
 import { saveChatMessage } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import { exportedItemToRecord } from "./delete-thread-message";
 import { RESEARCH_METADATA_KEYS } from "./research-message-sync";
+import { withMessageRevision } from "./saved-context-usage";
 
 // Mirrors studio_db._SERVER_MANAGED_LINK_KEYS. The backend detaches a finished run only when
 // the edit drops its ownership claim; display fields such as timing and incomplete stay.
@@ -24,6 +25,23 @@ function withoutServerOwnership(record: MessageRecord): MessageRecord {
   );
   const { metadata: _owned, ...rest } = record;
   return Object.keys(kept).length > 0 ? { ...rest, metadata: kept } : rest;
+}
+
+function withoutGeminiContinuationReplay<T>(metadata: T): T {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return metadata;
+  }
+  const record = metadata as Record<string, unknown>;
+  const custom = record.custom;
+  if (!custom || typeof custom !== "object" || Array.isArray(custom)) {
+    return metadata;
+  }
+  const customRecord = custom as Record<string, unknown>;
+  if (!("geminiContinuationReplay" in customRecord)) {
+    return metadata;
+  }
+  const { geminiContinuationReplay: _stale, ...keptCustom } = customRecord;
+  return { ...record, custom: keptCustom } as T;
 }
 
 type ThreadImportExport = {
@@ -212,11 +230,22 @@ export async function updateThreadMessage(args: {
       }
     }
 
+    const previousContent = m.message.content;
+    const previousTools = Array.isArray(previousContent)
+      ? previousContent.filter((part) => !isEditablePart(part))
+      : [];
+    const unchanged = extractTaggedText(finalContent) === extractTaggedText(previousContent)
+      && JSON.stringify(finalContent.filter((part) => !isEditablePart(part))) === JSON.stringify(previousTools);
+
     return {
       ...m,
       message: {
         ...m.message,
         content: finalContent,
+        metadata:
+          unchanged
+            ? withoutGeminiContinuationReplay(m.message.metadata)
+            : withMessageRevision(withoutGeminiContinuationReplay(m.message.metadata)),
       },
     };
   }) as typeof currentExport.messages;

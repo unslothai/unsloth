@@ -38,7 +38,7 @@ import {
   useSidebarWidth,
 } from "@/hooks/use-sidebar-width"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
+import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
@@ -60,11 +60,6 @@ type SidebarContextProps = {
   /** The unpinned sidebar is held out over the content, from the window edge. */
   peeking: boolean
   setPeeking: (value: boolean) => void
-  width: number
-  storedWidth: number
-  maxWidth: number
-  setWidth: (value: number) => void
-  resetWidth: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -103,10 +98,7 @@ function SidebarProvider({
   const [openMobile, setOpenMobile] = React.useState(false)
   const {
     width,
-    max: maxWidth,
-    stored: storedWidth,
-    setWidth,
-    resetWidth,
+    scale: widthScale,
   } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
@@ -200,13 +192,8 @@ function SidebarProvider({
       togglePinned,
       peeking,
       setPeeking,
-      width,
-      storedWidth,
-      maxWidth,
-      setWidth,
-      resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking, width, storedWidth, maxWidth, setWidth, resetWidth]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking]
   )
 
   return (
@@ -222,7 +209,7 @@ function SidebarProvider({
             // even once the drag-time write had moved.
             ...(PANEL_RESIZE_SCOPED_VARS_ENABLED
               ? null
-              : { "--sidebar-width": `${width}px` }),
+              : { "--sidebar-width": `${width * widthScale}px` }),
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
@@ -293,8 +280,9 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none"
   collapseToZero?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking, width } =
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking } =
     useSidebar()
+  const { width, scale: widthScale } = useSidebarWidth()
   // Only a sidebar that collapses to nothing has an edge to be held out from.
   const holdsOut = hasPinMode && !pinned && collapseToZero
   const heldOut = holdsOut && peeking
@@ -303,7 +291,7 @@ function Sidebar({
   // sidebar-gap, sidebar-container) is inside it and the chat thread is not.
   // Empty with the flag off, where the wrapper keeps the declaration.
   const scopedWidthStyle = (
-    PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width}px` } : {}
+    PANEL_RESIZE_SCOPED_VARS_ENABLED ? { "--sidebar-width": `${width * widthScale}px` } : {}
   ) as React.CSSProperties
 
   if (collapsible === "none") {
@@ -330,7 +318,7 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="bg-sidebar text-sidebar-foreground w-2/3 max-w-[18rem] p-0 [&>button]:hidden"
+          className="bg-sidebar text-sidebar-foreground w-2/3 max-w-[calc(18rem*var(--ui-space-scale,1))] max-sm:w-[85vw] p-0 [&>button]:hidden"
           side={side}
         >
           <SheetHeader className="sr-only">
@@ -346,7 +334,7 @@ function Sidebar({
   return (
     <div
       className={cn(
-        "group peer text-sidebar-foreground relative shrink-0",
+        "group sidebar-peer text-sidebar-foreground relative shrink-0",
         hasPinMode && pinned && "w-(--sidebar-width)",
         hasPinMode && !pinned && (collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"),
       )}
@@ -447,13 +435,13 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
           className={cn(
-            "bg-sidebar flex size-full flex-col overflow-hidden border-r border-sidebar-border dark:border-r-0",
+            "bg-sidebar flex size-full flex-col overflow-hidden",
             "group-data-[variant=floating]:ring-sidebar-border group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-sm group-data-[variant=floating]:ring-1",
           )}
         >
           {children}
         </div>
-        {(!collapseToZero || pinned) && (
+        {state === "expanded" && (!collapseToZero || pinned) && (
           <SidebarResizeHandle
             side={side}
             // The shared handle hides itself below `sm`, a viewport rule that
@@ -477,8 +465,15 @@ function SidebarResizeHandle({
   className?: string
   side?: "left" | "right"
 }) {
-  const { open, toggleSidebar, width, storedWidth, maxWidth, setWidth, resetWidth } =
-    useSidebar()
+  const { open, toggleSidebar } = useSidebar()
+  const {
+    width,
+    scale: widthScale,
+    stored: storedWidth,
+    max: maxWidth,
+    setWidth,
+    resetWidth,
+  } = useSidebarWidth()
   const ref = React.useRef<HTMLDivElement>(null)
   const t = useT()
 
@@ -491,6 +486,7 @@ function SidebarResizeHandle({
         stored={storedWidth}
         min={SIDEBAR_WIDTH_MIN}
         max={maxWidth}
+        scale={widthScale}
         clamp={clampSidebarWidth}
         setWidth={setWidth}
         resetWidth={resetWidth}
@@ -514,9 +510,9 @@ function SidebarResizeHandle({
           )
         }
         measure={() =>
-          ref.current
+          (ref.current
             ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
-            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
+            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN * widthScale) / widthScale
         }
         label={t("shell.aria.resizeSidebar")}
         toggleLabel={t("shell.aria.openSidebar")}
@@ -536,7 +532,7 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar()
 
   return (
     <Button
@@ -551,7 +547,11 @@ function SidebarTrigger({
       }}
       {...props}
     >
-      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon
+        icon={(isMobile ? openMobile : open) ? PanelLeftIcon : LayoutAlignLeftIcon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   )
@@ -587,7 +587,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        "bg-background md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2 relative flex min-h-0 w-full flex-1 flex-col",
+        "bg-background md:[:where(.sidebar-peer)[data-variant=inset]~&]:m-2 md:[:where(.sidebar-peer)[data-variant=inset]~&]:ml-0 md:[:where(.sidebar-peer)[data-variant=inset]~&]:rounded-xl md:[:where(.sidebar-peer)[data-variant=inset]~&]:shadow-sm md:[:where(.sidebar-peer)[data-variant=inset]~&]:[:where(.sidebar-peer)[data-state=collapsed]~&]:ml-2 relative flex min-h-0 w-full flex-1 flex-col",
         className
       )}
       {...props}
@@ -686,7 +686,7 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        "text-[#94a3b8] dark:text-[#666] ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-ui-10 font-semibold uppercase tracking-[0em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-1 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
+        "text-[#94a3b8] dark:text-muted-foreground ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-ui-10 font-semibold uppercase tracking-[0em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-1 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
         className
       )}
       {...props}
@@ -841,6 +841,8 @@ function SidebarMenuButton({
   )
 }
 
+const sidebarMenuPeerActiveClass = String.raw`[:where(.peer\/menu-button):where([data-state=active],[data-active]:not([data-active=false]))~&]:text-sidebar-accent-foreground`
+
 function SidebarMenuAction({
   className,
   asChild = false,
@@ -858,8 +860,10 @@ function SidebarMenuAction({
       data-sidebar="menu-action"
       className={cn(
         "text-sidebar-foreground ring-sidebar-ring hover:bg-sidebar-accent hover:text-sidebar-accent-foreground peer-hover/menu-button:text-sidebar-accent-foreground absolute top-1.5 right-1 aspect-square w-5 rounded-md p-0 peer-data-[size=default]/menu-button:top-2 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 focus-visible:ring-1 [&>svg]:size-4 flex items-center justify-center outline-hidden transition-transform group-data-[collapsible=icon]:hidden after:absolute after:-inset-2 md:after:hidden [&>svg]:shrink-0",
-        showOnHover &&
-          "peer-data-active/menu-button:text-sidebar-accent-foreground group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-open:opacity-100 md:opacity-0",
+        showOnHover && [
+          sidebarMenuPeerActiveClass,
+          "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 data-open:opacity-100 md:opacity-0",
+        ],
         className
       )}
       {...props}
@@ -876,7 +880,8 @@ function SidebarMenuBadge({
       data-slot="sidebar-menu-badge"
       data-sidebar="menu-badge"
       className={cn(
-        "text-sidebar-foreground peer-hover/menu-button:text-sidebar-accent-foreground peer-data-active/menu-button:text-sidebar-accent-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 rounded-md px-1 text-xs font-medium peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 flex items-center justify-center tabular-nums select-none group-data-[collapsible=icon]:hidden",
+        "text-sidebar-foreground peer-hover/menu-button:text-sidebar-accent-foreground pointer-events-none absolute right-1 flex h-5 min-w-5 rounded-md px-1 text-xs font-medium peer-data-[size=default]/menu-button:top-1.5 peer-data-[size=lg]/menu-button:top-2.5 peer-data-[size=sm]/menu-button:top-1 flex items-center justify-center tabular-nums select-none group-data-[collapsible=icon]:hidden",
+        sidebarMenuPeerActiveClass,
         className
       )}
       {...props}

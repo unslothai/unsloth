@@ -24,10 +24,22 @@ _DEEPSEEK_HARNESS_FILE_MARKERS = (
 )
 
 # Keep in sync with the `unsloth start <agent>` subcommands defined in
-# unsloth_cli/commands/start.py. Each entry is the exact executable name that
-# subcommand launches, so a hit here means `unsloth start <agent>` can find the
-# binary on PATH without the user installing anything first.
-CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh")
+# unsloth_cli/commands/start.py, in the order the Settings pickers list them. Each
+# entry is the executable that subcommand needs on PATH (see _EXECUTABLES).
+CODING_AGENTS: tuple[str, ...] = (
+    "claude",
+    "codex",
+    "vscode",
+    "dsh",
+    "opencode",
+    "hermes",
+    "openclaw",
+    "pi",
+    "vibe",
+)
+
+# `unsloth start vscode` edits VS Code's settings; `code` is the launcher an install puts on PATH.
+_EXECUTABLES = {"vscode": "code"}
 
 
 def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = True) -> bool:
@@ -84,7 +96,7 @@ def _is_on_path(agent: str) -> bool:
     # shutil.which returns None on a miss but PATH lookups can still raise, and this is advisory, so a lookup failure
     # reads as "not installed" rather than breaking the endpoint.
     try:
-        executable = shutil.which(agent)
+        executable = shutil.which(_EXECUTABLES.get(agent, agent))
         if executable is None:
             return False
         if agent == "dsh":

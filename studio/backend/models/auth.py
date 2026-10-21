@@ -5,9 +5,13 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from auth.storage import MIN_PASSWORD_LENGTH
+from auth.storage import (
+    MIN_PASSWORD_LENGTH,
+    normalize_model_allowlist,
+    validate_account_username,
+)
 
 
 class AuthLoginRequest(BaseModel):
@@ -36,6 +40,20 @@ class AuthStatusResponse(BaseModel):
     default_username: str = Field(
         "unsloth",
         description = "Default admin username for first-boot UI prefill.",
+    )
+    login_mode: str = Field(
+        "single",
+        description = (
+            "'single' when one account exists, so the form posts default_username without asking; "
+            "'multi' when a username has to be entered. Never lists accounts."
+        ),
+    )
+    full_access: bool = Field(
+        True,
+        description = (
+            "Legacy pre-login hint: false whenever another account exists, active or not. "
+            "Signed-in clients offer Full access only to the installation owner."
+        ),
     )
     requires_password_change: bool = Field(
         ...,
@@ -107,3 +125,48 @@ class ApiKeyListResponse(BaseModel):
     """List of API keys for the authenticated user."""
 
     api_keys: list[ApiKeyResponse]
+
+
+class CreateAccountRequest(BaseModel):
+    username: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        return validate_account_username(value)
+
+
+class AccountActiveRequest(BaseModel):
+    is_active: bool
+
+
+class AccountModelAccessRequest(BaseModel):
+    model_allowlist: Optional[list[str]] = Field(
+        None,
+        description = "Hugging Face repo ids or org/* patterns; null or empty allows every model",
+    )
+
+    @field_validator("model_allowlist")
+    @classmethod
+    def validate_model_allowlist(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return normalize_model_allowlist(value)
+
+
+class AccountResponse(BaseModel):
+    account_id: str
+    username: str
+    role: str
+    is_active: bool
+    created_at: str
+    setup_code_pending: bool
+    model_allowlist: Optional[list[str]] = None
+
+
+class AccountListResponse(BaseModel):
+    accounts: list[AccountResponse]
+
+
+class AccountSetupResponse(BaseModel):
+    account: AccountResponse
+    setup_code: str
+    setup_code_expires_at: str

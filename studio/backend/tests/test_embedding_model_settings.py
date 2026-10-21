@@ -155,7 +155,10 @@ def test_a_concurrent_save_is_not_reverted_by_a_late_pending_clear(settings_stor
     stale = ems._get_stored_state()  # A's loader has read it
     assert stale[1] == "org/a" and stale[4] is True
     ems.set_rag_embedding_model("org/b", gguf_repo = "org/b-GGUF", backend = "sentence-transformers")
-    ems._cached = (0.0, stale)  # its 2s snapshot still says A
+    ems._cached[("owner", ems.EMBEDDING_RESOLUTION_SETTING_KEY)] = (
+        0.0,
+        stale,
+    )  # its 2s snapshot still says A
 
     assert ems.clear_stored_download_pending("org/a") is False
     ems._invalidate_cache()
@@ -399,3 +402,29 @@ def test_pinning_a_model_memoizes_what_was_resolved_for_it(settings_store, monke
         "mirror/off-convention-GGUF"
     )
     assert ems.get_stored_backend("org/embedder-a") == "llama-server"
+
+
+def test_a_fresh_read_sees_a_save_from_another_process(settings_store, monkeypatch):
+    ems.set_rag_embedding_model("org/first")
+    assert ems.get_rag_embedding_model() == "org/first"
+    settings_store[ems.EMBEDDING_MODEL_SETTING_KEY] = "org/second"  # no invalidation here
+    assert ems.get_rag_embedding_model() == "org/first"
+    assert rag_config.effective_embedding_model(fresh = True) == "org/second"
+    monkeypatch.setattr("storage.studio_db.get_app_settings", lambda keys: 1 / 0)
+    with pytest.raises(ZeroDivisionError):  # an unconfirmed model never passes a fresh check
+        rag_config.effective_embedding_model(fresh = True)
+
+
+def test_the_per_identity_cache_is_bounded(settings_store, monkeypatch):
+    ems._cached.clear()
+    ems._generation.clear()
+    for index in range(ems._CACHE_MAX * 2):
+        monkeypatch.setattr(ems, "current_account_id", lambda index = index: f"account-{index}")
+        ems._get_stored_state()
+    assert len(ems._cached) <= ems._CACHE_MAX
+    assert (
+        f"account-{ems._CACHE_MAX * 2 - 1}",
+        ems.EMBEDDING_RESOLUTION_SETTING_KEY,
+    ) in ems._cached
+    ems._cached.clear()
+    ems._generation.clear()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import sys
 import random
 import threading
 from pathlib import Path
@@ -88,7 +89,6 @@ def test_cancel_inference_uses_atomic_helper_for_cancel_id_path():
     fn = _find_function("cancel_inference")
     src = ast.unparse(fn)
     assert "_cancel_by_cancel_id_or_stash" in src
-    # The pre-fix two-step idiom must be gone.
     assert "_remember_pending_cancel(cancel_id)" not in src, (
         "two-step _cancel_by_keys + _remember_pending_cancel produced "
         "the TOCTOU race and must not return"
@@ -103,46 +103,61 @@ _WANTED = {
     "_prune_pending",
     "_remember_pending_cancel",
     "_TrackedCancel",
+    "_slot_lock",
     "_cancel_by_keys",
     "_cancel_by_cancel_id_or_stash",
 }
 
 
 def _load_active_generations():
-    """The real registry `_TrackedCancel` records runs in.
-
-    Loaded straight off disk rather than imported, so the extracted class runs
-    against the genuine module without pulling in the whole route package (and
-    without putting studio/backend on sys.path for the rest of the session).
-    """
+    """Loads the real _TrackedCancel registry from disk, avoiding the route package and sys.path."""
     path = SOURCE_PATH.parents[1] / "state" / "active_generations.py"
     spec = importlib.util.spec_from_file_location("studio_active_generations", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Its one import resolves from studio/backend; expose that only for this load.
+    backend = str(SOURCE_PATH.parents[1])
+    sys.path.insert(0, backend)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(backend)
     return module
 
 
-def _load_registry_module():
+_REGISTRY_SOURCE = None
+
+
+def _registry_source():
+    """Joins the _WANTED top-level definitions verbatim, cached per process because slicing is slow."""
+    global _REGISTRY_SOURCE
+    if _REGISTRY_SOURCE is not None:
+        return _REGISTRY_SOURCE
     chunks = []
     for n in _TREE.body:
+        if isinstance(n, (ast.FunctionDef, ast.ClassDef)):
+            wanted = n.name in _WANTED
+        elif isinstance(n, ast.Assign):
+            wanted = any(t.id in _WANTED for t in n.targets if isinstance(t, ast.Name))
+        elif isinstance(n, ast.AnnAssign):
+            wanted = isinstance(n.target, ast.Name) and n.target.id in _WANTED
+        else:
+            wanted = False
+        if not wanted:
+            continue
         seg = ast.get_source_segment(_SRC, n)
         if seg is None:
             continue
-        if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in _WANTED:
-            chunks.append(seg)
-        elif isinstance(n, ast.Assign):
-            names = [t.id for t in n.targets if isinstance(t, ast.Name)]
-            if any(name in _WANTED for name in names):
-                chunks.append(seg)
-        elif (
-            isinstance(n, ast.AnnAssign)
-            and isinstance(n.target, ast.Name)
-            and n.target.id in _WANTED
-        ):
-            chunks.append(seg)
+        chunks.append(seg)
+    _REGISTRY_SOURCE = "\n\n".join(chunks)
+    return _REGISTRY_SOURCE
+
+
+def _load_registry_module():
     mod = {"active_generations": _load_active_generations()}
     exec(
-        "import threading, time\nfrom typing import Optional\n" + "\n\n".join(chunks),
+        'import contextvars\nrouted_slot = contextvars.ContextVar("routed_slot", default = None)\n'
+        "import threading, time\nfrom typing import Optional\n_account_cancel_key = lambda key: key\n"
+        + _registry_source(),
         mod,
     )
     return mod
@@ -223,13 +238,11 @@ def test_cancel_by_keys_tolerates_empty_and_falsy_keys():
     m["_PENDING_CANCELS"].clear()
     assert m["_cancel_by_keys"]([]) == 0
     assert m["_cancel_by_keys"](["", None, "unknown"]) == 0
-    # Non-stashing fallback must never leak into _PENDING_CANCELS.
     assert m["_PENDING_CANCELS"] == {}
 
 
 def test_cancel_by_keys_fans_out_to_all_streams_on_same_session():
-    # Compare mode and other flows launch concurrent streams under a shared session_id;
-    # a single session cancel POST must hit all of them.
+    # Compare mode shares one session_id across concurrent streams; one cancel must hit all.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()
@@ -250,7 +263,6 @@ def test_cancel_by_keys_fans_out_to_all_streams_on_same_session():
 
 
 def test_cancel_by_cancel_id_is_exclusive_to_single_run():
-    # cancel_id is per-run unique; cancelling run A must not touch run B even when both share a session_id.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()
@@ -271,8 +283,7 @@ def test_cancel_by_cancel_id_is_exclusive_to_single_run():
 
 
 def test_tracked_cancel_exit_is_idempotent():
-    # Outer except BaseException + the generator's finally may both call __exit__ under certain race combos; must not
-    # raise.
+    # The outer except and the generator's finally may both call __exit__; must not raise.
     m = _load_registry_module()
     m["_CANCEL_REGISTRY"].clear()
     m["_PENDING_CANCELS"].clear()

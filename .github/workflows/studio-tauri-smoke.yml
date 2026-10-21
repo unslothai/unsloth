@@ -31,8 +31,14 @@ on:
       # manifests decide what it builds with.
       - 'studio/package.json'
       - 'studio/package-lock.json'
+      - 'studio/.npmrc'
       # Run as a step of the Linux job.
       - 'scripts/lockfile_supply_chain_audit.py'
+      # The Rust unit test every_shared_case_agrees_with_the_desktop_filter
+      # (src-tauri/src/process.rs) reads this backend fixture, and cargo test runs it in
+      # all three jobs. Nothing else runs that test, so an edit to the fixture has to
+      # run this workflow.
+      - 'studio/backend/tests/fixtures/access_log_records.json'
   push:
     branches: [main]
     # Same list as the PR filter. Without it this workflow ran on EVERY commit to
@@ -54,15 +60,20 @@ on:
       # manifests decide what it builds with.
       - 'studio/package.json'
       - 'studio/package-lock.json'
+      - 'studio/.npmrc'
       # Run as a step of the Linux job.
       - 'scripts/lockfile_supply_chain_audit.py'
+      # The Rust unit test every_shared_case_agrees_with_the_desktop_filter
+      # (src-tauri/src/process.rs) reads this backend fixture, and cargo test runs it in
+      # all three jobs. Nothing else runs that test, so an edit to the fixture has to
+      # run this workflow.
+      - 'studio/backend/tests/fixtures/access_log_records.json'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -96,7 +107,7 @@ jobs:
           bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
             'apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb || { apt-get update && apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xvfb; }'
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '24'
 
@@ -125,7 +136,7 @@ jobs:
         # defence against the npm postinstall-dropper class -- it fires
         # BEFORE any tarball runs, on the injection pattern itself
         # rather than an advisory-DB lookup.
-        run: npm install --save-dev --prefix studio @tauri-apps/cli@2.10.1 --no-fund --no-audit
+        run: npm ci --prefix studio --no-fund --no-audit
 
       - name: Verify pinned Tauri CLI version
         run: |
@@ -284,7 +295,7 @@ jobs:
 
       - name: Upload launch logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: tauri-launch-logs
           path: launch-logs
@@ -302,7 +313,7 @@ jobs:
         # GitHub scheduling jobs across the whole account -- no error, nothing
         # runs. A green run does not need its binary kept; a red one does.
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: tauri-debug-build
           path: |
@@ -327,7 +338,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '24'
 
@@ -407,7 +418,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '24'
 

@@ -138,9 +138,25 @@ def test_loaded_repo_ids_includes_native_companions():
     assert fam.base_repo in ids
     assert fam.sd_cpp_vae[0] in ids  # black-forest-labs/FLUX.1-schnell (VAE)
     for terepo, _f, _k in fam.sd_cpp_text_encoders:
-        assert terepo in ids  # unsloth/flux-text-encoders
+        assert terepo in ids  # black-forest-labs/FLUX.1-schnell (CLIP-L + sharded T5-XXL)
     b._state = None
     assert b.loaded_repo_ids() == ()
+
+
+def test_native_status_preserves_the_logical_picker_identity():
+    import dataclasses
+
+    b = _loaded_backend()
+    b._state = dataclasses.replace(
+        b._state,
+        repo_id = "/cache/models--unsloth--Z-Image-Turbo-GGUF/snapshots/abc",
+        display_repo_id = "unsloth/Z-Image-Turbo-GGUF",
+    )
+    status = b.status()
+    assert status["repo_id"].endswith("/snapshots/abc")
+    assert status["display_repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+    result = b.generate(prompt = "logical identity", steps = 1, seed = 1)
+    assert result["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
 
 
 def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
@@ -160,9 +176,12 @@ def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
         gguf_filename = "FLUX.2-klein-9B-Q4_K_M.gguf",
     )
     ids = set(b.loaded_repo_ids())
-    assert "unsloth/FLUX.2-klein-9B-ComfyUI" in ids  # the 8B encoder this load pulled
+    nine_b = _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS[0][0]
+    four_b = fam.sd_cpp_text_encoders[0][0]
+    assert nine_b != four_b
+    assert nine_b in ids  # the 8B encoder this load pulled (unsloth/Qwen3-8B-GGUF)
     # The 4B default must not be protected instead.
-    assert "unsloth/Z-Image-Turbo-ComfyUI" not in ids
+    assert four_b not in ids
 
 
 class _FakeServer:
@@ -191,7 +210,9 @@ class _FakeServer:
         native_speed = None,
         threads = None,
         extra_args = None,
+        env = None,
     ):
+        self.env = env
         self.started = dict(
             files = files,
             vae_format = vae_format,
@@ -238,7 +259,8 @@ class _FakeServer:
 @pytest.mark.parametrize(
     "fam_name,expect_kinds",
     [
-        ("flux.1", {"diffusion_model", "vae", "clip_l", "t5xxl"}),
+        # The T5-XXL is sharded: the index is the t5xxl input, its shards ride along as t5xxl_shard.
+        ("flux.1", {"diffusion_model", "vae", "clip_l", "t5xxl", "t5xxl_shard"}),
         ("z-image", {"diffusion_model", "vae", "llm"}),
         ("qwen-image", {"diffusion_model", "vae", "qwen2vl"}),
         ("flux.2-klein", {"diffusion_model", "vae", "llm"}),
@@ -268,25 +290,35 @@ def _plan_sees_an_empty_cache(monkeypatch):
     )
 
 
+_Z_IMAGE_KIND_BYTES = {"diffusion_model": 4_000, "vae": 300, "llm": 8_000}
+
+
+def _z_image_native_assets(monkeypatch, b):
+    """kind -> (fetch repo, file) and (fetch repo, file) -> size for a z-image GGUF pick, read off the family table
+    and the same fetch map the plan uses, so the test follows the table instead of naming its repos."""
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached",
+        lambda repo_id, files = None, **kwargs: False,
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    specs = b._asset_specs(
+        "unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", detect_family("z-image")
+    )
+    fetch = bk._fetch_repo_map(specs, None)
+    by_kind = {k: (fetch[r], f) for r, f, k in specs}
+    assert set(by_kind) == set(_Z_IMAGE_KIND_BYTES)
+    return by_kind, {by_kind[k]: n for k, n in _Z_IMAGE_KIND_BYTES.items()}
+
+
 def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
     # _fetch_assets resolves either cache root, so staging a file it can already open re-downloads
     # it for nothing and fails offline. required_bytes stays the full footprint regardless.
     from core.inference.diffusion import DiffusionBackend
 
     b = SdCppDiffusionBackend(engine = _FakeEngine())
+    by_kind, sizes = _z_image_native_assets(monkeypatch, b)
     monkeypatch.setattr(
-        SdCppDiffusionBackend,
-        "_plan_file_sizes",
-        staticmethod(
-            lambda by_repo, token: {
-                ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
-                ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"): 300,
-                (
-                    "unsloth/Z-Image-Turbo-ComfyUI",
-                    "split_files/text_encoders/qwen_3_4b.safetensors",
-                ): 8_000,
-            }
-        ),
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: sizes)
     )
     cached = {"z-image-turbo-Q4_K_M.gguf"}
 
@@ -305,15 +337,19 @@ def test_download_plan_skips_assets_already_in_the_cache(monkeypatch):
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         model_kind = "gguf",
     )
-    cached.add("split_files/vae/ae.safetensors")
+    cached.add(by_kind["vae"][1])
     warming = b.download_plan(
         "unsloth/Z-Image-Turbo-GGUF",
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         model_kind = "gguf",
     )
 
-    assert [e["repo_id"] for e in plan["entries"]] == ["unsloth/Z-Image-Turbo-ComfyUI"]
-    assert plan["entries"][0]["files"] == warming["entries"][0]["files"]
+    vae_repo, llm_repo = by_kind["vae"][0], by_kind["llm"][0]
+    assert vae_repo != llm_repo  # the VAE and the encoder now come from separate repos
+    assert [e["repo_id"] for e in plan["entries"]] == [vae_repo, llm_repo]
+    # Once the VAE is cached its repo has nothing left to stage; the encoder entry is unchanged.
+    assert [e["repo_id"] for e in warming["entries"]] == [llm_repo]
+    assert plan["entries"][1]["files"] == warming["entries"][0]["files"]
     assert plan["total_bytes"] == 8_300
     assert warming["total_bytes"] == 8_000
     assert plan["required_bytes"] == 12_300
@@ -392,19 +428,9 @@ def test_download_plan_restages_a_native_asset_that_changed_size(monkeypatch):
 
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     seen = {}
+    by_kind, sizes = _z_image_native_assets(monkeypatch, b)
     monkeypatch.setattr(
-        SdCppDiffusionBackend,
-        "_plan_file_sizes",
-        staticmethod(
-            lambda by_repo, token: {
-                ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
-                ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"): 300,
-                (
-                    "unsloth/Z-Image-Turbo-ComfyUI",
-                    "split_files/text_encoders/qwen_3_4b.safetensors",
-                ): 8_000,
-            }
-        ),
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: sizes)
     )
 
     def probe(
@@ -426,7 +452,8 @@ def test_download_plan_restages_a_native_asset_that_changed_size(monkeypatch):
     )
 
     assert seen["z-image-turbo-Q4_K_M.gguf"] == 4_000
-    assert seen["split_files/vae/ae.safetensors"] == 300
+    assert seen[by_kind["vae"][1]] == 300
+    assert seen[by_kind["llm"][1]] == 8_000
     assert all(size for size in seen.values()), "an unsized probe trusts the local ref alone"
 
 
@@ -452,11 +479,7 @@ def test_download_plan_is_empty_when_every_native_asset_is_cached(monkeypatch):
 def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
     # The plan feeds the Hub download manager. Native reads single-file assets, so a native-routed pick must be staged from the asset specs.
     b = SdCppDiffusionBackend(engine = _FakeEngine())
-    sizes = {
-        ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
-        ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"): 300,
-        ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors"): 8_000,
-    }
+    by_kind, sizes = _z_image_native_assets(monkeypatch, b)
     monkeypatch.setattr(
         SdCppDiffusionBackend,
         "_plan_file_sizes",
@@ -472,36 +495,31 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
         memory_mode = "low_vram",
     )
 
-    fam = detect_family("z-image")
-    expected = {
-        (r, f)
-        for r, f, _k in b._asset_specs(
-            "unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf", fam
-        )
-    }
+    expected = set(by_kind.values())  # every asset spec, under the repo the fetch pulls it from
     listed = {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]}
     assert listed == expected
     assert plan["total_bytes"] == 12_300
     assert plan["required_bytes"] == 12_300
     assert plan["checkpoint_bytes"] == 4_000
-    # The transformer entry is the only one carrying the GGUF filename; the VAE + encoder share one repo entry.
+    # The transformer entry is the only one carrying the GGUF filename; the VAE and the encoder get one entry each.
     tr = [e for e in plan["entries"] if e["gguf_filename"]]
     assert len(tr) == 1 and tr[0]["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
-    assert len([e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-ComfyUI"]) == 1
+    for kind in ("vae", "llm"):
+        assert len([e for e in plan["entries"] if e["repo_id"] == by_kind[kind][0]]) == 1, kind
 
 
 def test_download_plan_merges_asset_repos_that_share_one_fetch_repo(monkeypatch):
-    # Two upstream repos can resolve to ONE fetch repo: on an install that already holds the
-    # Comfy-Org/flux2-dev repack, both unsloth/FLUX.2-VAE and unsloth/FLUX.2-dev-ComfyUI are
-    # served from it. Keying the swapped map by fetch repo therefore drops whichever landed
-    # first, taking its files out of the staged entry AND out of the footprint.
+    # Two upstream repos can resolve to ONE fetch repo (e.g. two mirrors of the same cached
+    # community repack). Synthetic repos: the mechanism is generic, and no image asset is a repack
+    # any more. Keying the swapped map by fetch repo therefore drops whichever landed first,
+    # taking its files out of the staged entry AND out of the footprint.
     import core.inference.sd_cpp_backend as S
 
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     specs = [
         ("unsloth/FLUX.2-dev-GGUF", "flux2-dev-Q4_K_M.gguf", "transformer"),
-        ("unsloth/FLUX.2-VAE", "vae/ae.safetensors", "vae"),
-        ("unsloth/FLUX.2-dev-ComfyUI", "text_encoders/mistral.safetensors", "text_encoder"),
+        ("unsloth/example-vae-mirror", "vae/ae.safetensors", "vae"),
+        ("unsloth/example-encoder-mirror", "text_encoders/mistral.safetensors", "text_encoder"),
     ]
     monkeypatch.setattr(SdCppDiffusionBackend, "_asset_specs", lambda *a, **k: specs)
     monkeypatch.setattr(
@@ -509,15 +527,15 @@ def test_download_plan_merges_asset_repos_that_share_one_fetch_repo(monkeypatch)
         "_fetch_repo_map",
         lambda assets, token: {
             "unsloth/FLUX.2-dev-GGUF": "unsloth/FLUX.2-dev-GGUF",
-            "unsloth/FLUX.2-VAE": "Comfy-Org/flux2-dev",
-            "unsloth/FLUX.2-dev-ComfyUI": "Comfy-Org/flux2-dev",
+            "unsloth/example-vae-mirror": "some-org/example-repack",
+            "unsloth/example-encoder-mirror": "some-org/example-repack",
         },
     )
     monkeypatch.setattr(SdCppDiffusionBackend, "_preflight_companion_repos", lambda *a, **k: None)
     sizes = {
         ("unsloth/FLUX.2-dev-GGUF", "flux2-dev-Q4_K_M.gguf"): 4_000,
-        ("Comfy-Org/flux2-dev", "vae/ae.safetensors"): 300,
-        ("Comfy-Org/flux2-dev", "text_encoders/mistral.safetensors"): 8_000,
+        ("some-org/example-repack", "vae/ae.safetensors"): 300,
+        ("some-org/example-repack", "text_encoders/mistral.safetensors"): 8_000,
     }
     monkeypatch.setattr(
         SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: sizes)
@@ -534,7 +552,7 @@ def test_download_plan_merges_asset_repos_that_share_one_fetch_repo(monkeypatch)
         "unsloth/FLUX.2-dev-GGUF", gguf_filename = "flux2-dev-Q4_K_M.gguf", model_kind = "gguf"
     )
 
-    shared = next(e for e in plan["entries"] if e["repo_id"] == "Comfy-Org/flux2-dev")
+    shared = next(e for e in plan["entries"] if e["repo_id"] == "some-org/example-repack")
     assert sorted(shared["files"]) == [
         "text_encoders/mistral.safetensors",
         "vae/ae.safetensors",
@@ -554,8 +572,9 @@ def test_download_plan_skips_a_local_transformer_but_still_stages_the_assets(mon
         str(tmp_path), gguf_filename = "z-image-turbo-Q4_K_M.gguf", model_kind = "gguf"
     )
 
+    by_kind, _sizes = _z_image_native_assets(monkeypatch, b)
     assert str(tmp_path) not in {e["repo_id"] for e in plan["entries"]}
-    assert {e["repo_id"] for e in plan["entries"]} == {"unsloth/Z-Image-Turbo-ComfyUI"}
+    assert {e["repo_id"] for e in plan["entries"]} == {by_kind["vae"][0], by_kind["llm"][0]}
     # An unreadable size understates the total; it must never fail the plan.
     assert plan["total_bytes"] == 0
 
@@ -587,16 +606,28 @@ def test_download_plan_stages_the_mirrored_asset_repo(monkeypatch):
     assert len(tr) == 1 and tr[0]["repo_id"] == "unsloth/FLUX.1-dev-GGUF"
 
 
-def test_download_plan_and_fetch_assets_pick_the_same_repo(monkeypatch):
+def test_download_plan_and_fetch_assets_pick_the_same_repo(monkeypatch, tmp_path):
     """Staging one repo and then downloading from the other is the failure this feature removes,
     so both sides take the decision from the same per-repo file list."""
+    import json
+
     _no_cache(monkeypatch)
     b = _shared_setup_4(monkeypatch)
     pulled: list = []
-    monkeypatch.setattr(
-        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
-        lambda repo, fn, tok, **k: (pulled.append((repo, fn)), f"/cache/{fn}")[1],
-    )
+
+    def fake_download(repo, fn, tok, **k):
+        # Real files in one snapshot dir per repo: the load checks the T5-XXL index's shards sit beside it.
+        pulled.append((repo, fn))
+        path = tmp_path / repo.replace("/", "--") / fn
+        path.parent.mkdir(parents = True, exist_ok = True)
+        if fn.endswith(".safetensors.index.json"):
+            shards = [f.rsplit("/", 1)[-1] for _r, f, kind in specs if kind == "t5xxl_shard"]
+            path.write_text(json.dumps({"weight_map": {str(i): n for i, n in enumerate(shards)}}))
+        else:
+            path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", fake_download)
 
     fam = detect_family("flux.1")
     specs = b._asset_specs("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", fam)
@@ -644,18 +675,14 @@ def test_asset_specs_flux2_klein_selects_encoder_by_variant():
 
     specs_4b = b._asset_specs("unsloth/FLUX.2-klein-4B-GGUF", "FLUX.2-klein-4B-Q4_K_M.gguf", fam)
     te_4b = [(r, f) for r, f, k in specs_4b if k == "llm"]
-    assert te_4b == [
-        ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors")
-    ]
+    assert te_4b == [(r, f) for r, f, _k in fam.sd_cpp_text_encoders]
+    assert te_4b[0][0] == "unsloth/Qwen3-4B-GGUF"
 
     specs_9b = b._asset_specs("unsloth/FLUX.2-klein-9B-GGUF", "FLUX.2-klein-9B-Q4_K_M.gguf", fam)
     te_9b = [(r, f) for r, f, k in specs_9b if k == "llm"]
-    assert te_9b == [
-        (
-            "unsloth/FLUX.2-klein-9B-ComfyUI",
-            "split_files/text_encoders/qwen_3_8b.safetensors",
-        )
-    ]
+    assert te_9b == [(r, f) for r, f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS]
+    assert te_9b[0][0] == "unsloth/Qwen3-8B-GGUF"
+    assert te_4b != te_9b
 
 
 # A rename or takedown in a community repack breaks every no-GPU load needing the file, so each
@@ -682,58 +709,150 @@ def test_no_sd_cpp_asset_comes_from_a_community_repack():
 
 
 def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
-    # The mirrors kept the upstream paths, so the swap is an id change only; a reorganised mirror
-    # would 404 sd-cli at load time.
-    want = {
-        "flux.1": [
-            ("unsloth/flux-text-encoders", "clip_l.safetensors"),
-            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors"),
-        ],
-        "flux.2-klein": [
-            ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors"),
-        ],
-        "flux.2-dev": [
-            (
-                "unsloth/FLUX.2-dev-ComfyUI",
-                "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
-            ),
-        ],
-        "z-image": [
-            ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors"),
-        ],
-    }
-    for name, encoders in want.items():
-        fam = detect_family(name)
-        assert [(r, f) for r, f, _k in fam.sd_cpp_text_encoders] == encoders, name
-    assert detect_family("qwen-image").sd_cpp_vae == (
-        "unsloth/Qwen-Image-ComfyUI",
-        "split_files/vae/qwen_image_vae.safetensors",
-    )
+    # Every image sd-cli asset is an official upstream file at its upstream path (fetched through the
+    # ungated mirror, which keeps the same path, so the swap is an id change only) or an unsloth GGUF
+    # of the encoder model. A reorganised mirror would 404 sd-cli at load time.
+    from core.inference.diffusion_families import _FLUX1_SD_CPP_TEXT_ENCODERS, mirror_repo
+
+    flux1 = [(r, f) for r, f, _k in _FLUX1_SD_CPP_TEXT_ENCODERS]
+    assert flux1 == [
+        ("black-forest-labs/FLUX.1-schnell", "text_encoder/model.safetensors"),
+        ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model.safetensors.index.json"),
+        ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model-00001-of-00002.safetensors"),
+        ("black-forest-labs/FLUX.1-schnell", "text_encoder_2/model-00002-of-00002.safetensors"),
+    ]
+    assert [k for _r, _f, k in _FLUX1_SD_CPP_TEXT_ENCODERS] == [
+        "clip_l",
+        "t5xxl",
+        "t5xxl_shard",
+        "t5xxl_shard",
+    ]
+    for name in ("flux.1", "flux.1-kontext"):
+        assert detect_family(name).sd_cpp_text_encoders == _FLUX1_SD_CPP_TEXT_ENCODERS, name
+        assert detect_family(name).sd_cpp_vae == (
+            "black-forest-labs/FLUX.1-schnell",
+            "ae.safetensors",
+        )
+    # Klein 4B and Z-Image share one Qwen3-4B GGUF; FLUX.2-dev reads the Mistral-Small-3.2 GGUF.
+    for name in ("flux.2-klein", "z-image"):
+        [(repo, fn, kind)] = detect_family(name).sd_cpp_text_encoders
+        assert (repo, kind) == ("unsloth/Qwen3-4B-GGUF", "llm"), name
+        assert fn.startswith("Qwen3-4B-") and fn.endswith(".gguf"), name
+    [(repo, fn, kind)] = detect_family("flux.2-dev").sd_cpp_text_encoders
+    assert (repo, kind) == ("unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF", "llm")
+    assert fn.startswith("Mistral-Small-3.2-24B-Instruct-2506-") and fn.endswith(".gguf")
+
+    for name in ("qwen-image", "qwen-image-edit"):
+        assert detect_family(name).sd_cpp_vae == (
+            "Qwen/Qwen-Image",
+            "vae/diffusion_pytorch_model.safetensors",
+        ), name
+    # Z-Image decodes with the FLUX.1 autoencoder.
     assert detect_family("z-image").sd_cpp_vae == (
-        "unsloth/Z-Image-Turbo-ComfyUI",
-        "split_files/vae/ae.safetensors",
+        "black-forest-labs/FLUX.1-schnell",
+        "ae.safetensors",
     )
-    # The FLUX.2 autoencoder is Apache-2.0 while the conditioner beside it in the source repack is
-    # not, so it is mirrored on its own.
     for name in ("flux.2-klein", "flux.2-dev"):
         assert detect_family(name).sd_cpp_vae == (
-            "unsloth/FLUX.2-VAE",
-            "split_files/vae/flux2-vae.safetensors",
+            "black-forest-labs/FLUX.2-dev",
+            "vae/diffusion_pytorch_model.safetensors",
         ), name
+    # Each vendor VAE / encoder repo is reached through an unsloth mirror holding the same path.
+    for upstream in (
+        "black-forest-labs/FLUX.1-schnell",
+        "black-forest-labs/FLUX.2-dev",
+        "Qwen/Qwen-Image",
+    ):
+        assert (mirror_repo(upstream) or "").startswith("unsloth/"), upstream
 
 
 # ── guidance mapping ──────────────────────────────────────────────────────────
 
 
 def test_map_guidance_flux_uses_distilled_guidance():
-    cfg, g = _map_guidance(detect_family("flux.1"), 3.5)
-    assert cfg is None and g == 3.5
+    # cfg must be explicit: unset, sd.cpp applies its default 7.0 and FLUX.1 renders dark or burnt.
+    assert _map_guidance(detect_family("flux.1"), 3.5) == (1.0, 3.5)
+    assert _map_guidance(detect_family("flux.1"), 0.0) == (1.0, 0.0)
+    assert _map_guidance(detect_family("flux.1-kontext"), 2.5) == (1.0, 2.5)
+    assert _map_guidance(detect_family("flux.2-dev"), 4.0) == (1.0, 4.0)
+    assert _map_guidance(detect_family("flux.1"), None) == (1.0, None)
+
+
+def test_map_guidance_flux2_klein_distilled_off_base_real_cfg():
+    assert _map_guidance(detect_family("flux.2-klein"), 1.0) == (1.0, None)
+    assert _map_guidance(detect_family("flux.2-klein"), 5.0) == (5.0, None)
+    assert _map_guidance(detect_family("flux.2-klein"), None) == (1.0, None)
+
+
+# (repo, family, cfg, embedded guidance) at Studio's per-model default guidance.
+_FLUX_DEFAULT_GUIDANCE_CASES = [
+    ("unsloth/FLUX.1-dev-GGUF", "flux.1", 1.0, 3.5),
+    ("unsloth/FLUX.1-schnell-GGUF", "flux.1", 1.0, 0.0),
+    ("unsloth/FLUX.1-Kontext-dev-GGUF", "flux.1-kontext", 1.0, 2.5),
+    ("unsloth/FLUX.2-dev-GGUF", "flux.2-dev", 1.0, 4.0),
+    ("unsloth/FLUX.2-klein-4B-GGUF", "flux.2-klein", 1.0, None),
+    ("unsloth/FLUX.2-klein-9B-GGUF", "flux.2-klein", 1.0, None),
+    ("unsloth/FLUX.2-klein-base-4B-GGUF", "flux.2-klein", 5.0, None),
+    ("unsloth/FLUX.2-klein-base-9B-GGUF", "flux.2-klein", 5.0, None),
+]
+
+
+def _edit_source(fam_name):
+    """Kontext is edit-only on both engines: it renders from a source image, never from text alone."""
+    if detect_family(fam_name).edit:
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 512), (10, 20, 30)).save(buf, format = "PNG")
+        return {"init_image": base64.b64encode(buf.getvalue()).decode()}
+    return {}
+
+
+@pytest.mark.parametrize("repo_id,fam_name,cfg,distilled", _FLUX_DEFAULT_GUIDANCE_CASES)
+def test_flux_oneshot_argv_sends_explicit_cfg(repo_id, fam_name, cfg, distilled):
+    from core.inference.diffusion_families import default_generation_params
+    from core.inference.sd_cpp_args import build_sd_cpp_command
+
+    steps, guidance = default_generation_params(repo_id)
+    eng = _FakeEngine()
+    b = _loaded_backend(fam_name, engine = eng)
+    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1, **_edit_source(fam_name))
+    files, params, out, _kw = eng.calls[-1]
+    argv = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = str(out))
+    assert float(argv[argv.index("--cfg-scale") + 1]) == cfg
+    if distilled is None:
+        assert "--guidance" not in argv
+    else:
+        assert float(argv[argv.index("--guidance") + 1]) == distilled
+
+
+@pytest.mark.parametrize("repo_id,fam_name,cfg,distilled", _FLUX_DEFAULT_GUIDANCE_CASES)
+def test_flux_server_request_sends_txt_cfg(repo_id, fam_name, cfg, distilled):
+    import dataclasses
+
+    from core.inference.diffusion_families import default_generation_params
+
+    steps, guidance = default_generation_params(repo_id)
+    b = _loaded_backend(fam_name)
+    server = _FakeServer("/bin/sd-server")
+    b._state = dataclasses.replace(b._state, mode = "server", server = server)
+    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1, **_edit_source(fam_name))
+    g = server.payloads[-1]["sample_params"]["guidance"]
+    assert g["txt_cfg"] == cfg
+    assert g.get("distilled_guidance") == distilled
 
 
 def test_map_guidance_cfg_family_off_when_distilled():
     # qwen-image uses real CFG; a distilled 0 -> CFG off (1.0), a >1 value passes through.
     assert _map_guidance(detect_family("qwen-image"), 0.0) == (1.0, None)
     assert _map_guidance(detect_family("qwen-image"), 4.0) == (4.0, None)
+
+
+def test_map_guidance_z_image_converts_diffusers_g_to_standard_cfg():
+    # The shared default is diffusers' g = 3 (ComfyUI cfg 4); sd.cpp's standard CFG must get 4, Turbo's 0 stays off.
+    assert _map_guidance(detect_family("Tongyi-MAI/Z-Image"), 3.0) == (4.0, None)
+    assert _map_guidance(detect_family("Tongyi-MAI/Z-Image-Turbo"), 0.0) == (1.0, None)
 
 
 # ── status ────────────────────────────────────────────────────────────────────
@@ -764,7 +883,7 @@ def test_status_loaded_shape():
 def test_generate_returns_images_and_seed():
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 123, batch_size = 2)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, seed = 123, batch_size = 2)
     assert out["seed"] == 123
     assert out["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
     assert len(out["images"]) == 2
@@ -938,7 +1057,7 @@ def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
 
     monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
 
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, loras = [("some/lora", 1.0)])
     assert out["images"]
     assert seen["progress"]["active"] is True
     assert seen["progress"]["total_steps"] == 8
@@ -1230,25 +1349,47 @@ def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
     assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
-def test_supports_graph_cut_needs_both_flags_and_fails_closed(monkeypatch):
-    # The opposite default to the H3 gate: sd-cli exits non-zero on an unknown option, so "cannot tell" must not emit these.
+def test_graph_cut_options_support_legacy_and_current_builds_and_fail_closed(monkeypatch):
+    # unknown flags fail closed because sd-cli rejects them.
     monkeypatch.setattr(
         bk,
         "_sd_cpp_probe_output",
         lambda *_a: "  --max-vram         budget\n  --stream-layers    residency\n",
     )
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is True
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram", "--stream-layers"}
 
-    # --stream-layers is a no-op without --max-vram, so half a build is not a build to emit on.
+    # current builds stream automatically and reject the removed --stream-layers flag.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --max-vram budget\n")
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram"}
+
+    # --stream-layers requires --max-vram, so a partial advertisement emits neither.
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --stream-layers    residency\n")
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: _PRE_H3_HELP)
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
-    assert bk.sd_cpp_supports_graph_cut(None) is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
+    assert bk.sd_cpp_graph_cut_options(None) == frozenset()
+
+
+def test_vulkan_uma_reads_ggml_vulkans_own_device_line(monkeypatch):
+    listing = (
+        "ggml_vulkan: Found 2 Vulkan devices:\n"
+        "ggml_vulkan: 0 = AMD Radeon RX 7900 XTX (RADV NAVI31) (radv) | uma: 0 | fp16: 1 | bf16: 0 |\n"
+        "ggml_vulkan: 1 = AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO) (radv) | uma: 1 | fp16: 1 | bf16: 0 |\n"
+        "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\nVulkan1\tAMD Radeon Graphics\nCPU\tAMD Ryzen 9 9900X\n"
+    )
+    monkeypatch.setattr(bk, "_LAST_DEVICE_LISTING", {})
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: listing)
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", None) is False
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", "Vulkan1") is True
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", "Vulkan2") is None
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", "ROCm0") is None
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "Vulkan0\tAMD Radeon\n")
+    assert bk.sd_cpp_vulkan_device_is_uma("/existing/sd-cli", None) is None
+    assert bk.sd_cpp_vulkan_device_is_uma(None, None) is None
 
 
 def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
@@ -1287,6 +1428,8 @@ def test_offload_device_pin_is_probed_against_the_binary_it_is_given(monkeypatch
         return "CUDA0\tA\nCUDA1\tB\n" if binary == "/new/sd-cli" else "CPU\tRyzen\n"
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", _probe)
+    # Pinned so this case is about the binary, not whatever card the test host has.
+    monkeypatch.setattr(bk, "physical_card_name", lambda ordinal: (None, None))
     base = ["--offload-to-cpu"]
     # The pre-upgrade CPU-only build enumerates no CUDA device, so nothing is pinned.
     assert bk._offload_with_device_pin_impl(base, "/old/sd-cli", 1) == base
@@ -1419,6 +1562,7 @@ def _run_server_load(
     fam_name = "z-image",
     device = "cpu",
     gguf_filename = "z.gguf",
+    family_override = None,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1447,9 +1591,94 @@ def _run_server_load(
         gguf_filename = gguf_filename,
         base = fam.base_repo,
         fam = fam,
+        family_override = family_override,
         hf_token = None,
         _load_token = 1,
     )
+
+
+def test_paravirtual_mac_load_records_the_cpu_device(monkeypatch):
+    # The command builders force --backend cpu on a paravirtual Metal GPU, so state/status must say cpu, not mps.
+    import core.inference.sd_cpp_args as sd_cpp_args
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: True)
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "mps")
+    assert b._state.device == "cpu" and b.status()["device"] == "cpu"
+    # A CPU-backend abort is then not retried as a GPU-placement problem.
+    assert (
+        b._restart_server_on_cpu_backend(
+            b._state, "unsupported op 'MUL_MAT' ggml_abort", threading.Event()
+        )
+        is None
+    )
+
+    monkeypatch.setattr(sd_cpp_args, "metal_is_paravirtual", lambda: False)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "mps")
+    assert b._state.device == "mps"
+
+
+@pytest.mark.parametrize("accelerator", ["vulkan", "auto"])
+def test_cpu_torch_on_the_vulkan_build_offloads_by_default(monkeypatch, accelerator):
+    # #13666: the card's VRAM was never measured, so auto streams weights instead of assuming they fit.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: accelerator)
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    if accelerator == "vulkan":
+        assert b._state.device == "vulkan"
+        assert "--offload-to-cpu" in b._state.offload_flags
+    else:
+        assert b._state.device == "cpu"
+        assert b._state.offload_flags == ()
+
+
+@pytest.mark.parametrize("lands", [True, False])
+def test_cpu_torch_placement_follows_a_deferred_vulkan_install(monkeypatch, lands):
+    # The deferred upgrade may land the Vulkan build or keep the resident CPU one; place for what runs.
+    installed = {"accelerator": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed["accelerator"])
+
+    def _upgrade(self, server_binary, **_kw):
+        if lands:
+            installed["accelerator"] = "vulkan"
+        return server_binary
+
+    monkeypatch.setattr(SdCppDiffusionBackend, "_upgraded_or_refused", _upgrade)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "vulkan")
+    )
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)  # a resident server defers it
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    assert b._state.device == ("vulkan" if lands else "cpu")
+    assert ("--offload-to-cpu" in b._state.offload_flags) is lands
+
+
+@pytest.mark.parametrize("listed,expected", [("vulkan", "vulkan"), (None, "cpu")])
+def test_an_unowned_build_on_cpu_torch_places_by_its_device_listing(monkeypatch, listed, expected):
+    # SD_SERVER_PATH builds carry no install record; their --list-devices says what they render on.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: None)
+    monkeypatch.setattr(bk, "sd_cpp_listed_device", lambda binary, *a, **k: (listed, None))
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "vulkan")
+    )
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    assert b._state.device == expected
+
+
+@pytest.mark.parametrize("device,expected", [("cuda", "cpu"), ("xpu", "cpu"), ("mps", "mps")])
+def test_the_cpu_build_on_a_gpu_torch_places_on_cpu(monkeypatch, device, expected):
+    # The ladder can leave a CUDA / XPU torch on the CPU build; the macOS bundle is recorded cpu
+    # but renders on Metal.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cpu")
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = device)
+    assert b._state.device == expected
+    if expected == "cpu":
+        assert b._state.offload_flags == ()
 
 
 def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
@@ -1460,6 +1689,18 @@ def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     assert servers[0].started is not None  # the model is loaded once, at spawn
     assert b._state is not None and b._state.mode == "server" and b._state.server is servers[0]
     assert b.status()["native_mode"] == "server"
+
+
+def test_server_status_preserves_explicit_family_provenance(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, family_override = "z-image")
+
+    family = b.status()["resolved"]["family_override"]
+    assert (family["value"], family["requested"], family["source"]) == ("z-image",) * 2 + (
+        "explicit",
+    )
+    assert (family["status"], family["reason"]) == ("applied", "requested")
 
 
 def test_server_status_reports_selected_gguf_quant(monkeypatch):
@@ -1473,7 +1714,7 @@ def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 7, batch_size = 3)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, seed = 7, batch_size = 3)
     assert len(out["images"]) == 3
     assert all(isinstance(im, Image.Image) for im in out["images"])
     # ONE job for the whole batch (no per-image model reload), unlike the one-shot path.
@@ -1500,7 +1741,7 @@ def test_server_generation_restarts_on_the_cpu_backend_after_a_ggml_abort(monkey
     _run_server_load(monkeypatch, b, servers, device = "mps")
     servers[0].img_gen_error = RuntimeError(_GGML_ABORT)
 
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 3)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 3)
 
     assert len(out["images"]) == 1  # the retry produced the image
     assert len(servers) == 2 and servers[0].stopped is True
@@ -1556,7 +1797,7 @@ def test_server_generate_splits_batches_above_server_limit(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 100, batch_size = 10)
+    out = b.generate(prompt = "x", width = 256, height = 256, steps = 4, seed = 100, batch_size = 10)
     assert len(out["images"]) == 10
     counts = [p["batch_count"] for p in servers[0].payloads]
     assert counts == [bk._MAX_SERVER_BATCH, 10 - bk._MAX_SERVER_BATCH]  # [8, 2]
@@ -1576,7 +1817,7 @@ def test_server_generate_masks_large_seed(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 2**64 - 1, batch_size = 1)
+    out = b.generate(prompt = "x", width = 256, height = 256, steps = 4, seed = 2**64 - 1, batch_size = 1)
     assert servers[0].payloads[0]["seed"] <= (1 << 63) - 1
     assert all(s <= (1 << 63) - 1 for s in out["seeds"])
 
@@ -2001,7 +2242,7 @@ def test_generate_treats_zero_strength_controlnet_as_disabled(cn_strength):
 
 
 def test_generate_rejects_image_conditioned_on_native_engine():
-    # img2img / inpaint / reference / upscale are diffusers-only; a native call with an init image gets a clean ValueError, not a silent txt2img.
+    # image-conditioned generation is diffusers-only; native calls must fail, not use txt2img.
     b = _loaded_backend(engine = _FakeEngine())
     with pytest.raises(ValueError, match = "not yet supported on the native"):
         b.generate(prompt = "x", steps = 4, seed = 1, init_image = "data:image/png;base64,AAAA")
@@ -2012,18 +2253,43 @@ def test_status_native_reports_supports_controlnet_false():
     assert b.status()["supports_controlnet"] is False
 
 
+def test_native_negative_prompt_reaches_sd_cli_only_when_cfg_runs():
+    klein = _loaded_backend("flux.2-klein")
+    assert klein.status()["supports_negative_prompt"] is True
+    kw = dict(prompt = "a fox", negative_prompt = "text", width = 256, height = 256, steps = 4, seed = 1)
+    out = klein.generate(guidance = 4.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt == "text"
+    assert out["negative_prompt"] == "text"
+    out = klein.generate(guidance = 1.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+    flux = _loaded_backend("flux.1")
+    assert flux.status()["supports_negative_prompt"] is False
+    out = flux.generate(guidance = 3.5, **kw)
+    assert flux._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+
+def _synthetic_legacy_row(monkeypatch):
+    """(repack, mirror) after adding a made-up mirror -> community repack row to the legacy table."""
+    from core.inference import diffusion_families
+
+    repack, mirror = "some-org/example-repack", "unsloth/example-repack-mirror"
+    monkeypatch.setitem(diffusion_families._SD_CPP_LEGACY_SOURCES, mirror.lower(), repack)
+    return repack, mirror
+
+
 def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirror(
     monkeypatch, tmp_path
 ):
-    """Repointing the tables at unsloth mirrors would re-pull tens of GB on upgrade.
+    """reuse repo-id-keyed legacy caches to avoid redownloads and keep offline loads working.
 
-    The HF cache is keyed by repo id, so an install that already holds the byte-identical repack
-    has it filed under the OLD id: the mirror's namespace is empty, the fetch re-downloads, and an
-    offline load fails outright over bytes already on disk."""
+    Synthetic mirror -> repack row: the mechanism is generic, and only video assets still have one."""
     from core.inference.diffusion_families import prefer_cached_legacy_source
     from core.inference.sd_cpp_backend import _fetch_repo_map
 
-    repack = "Comfy-Org/z_image_turbo"
+    repack, mirror = _synthetic_legacy_row(monkeypatch)
     root = tmp_path / f"models--{repack.replace('/', '--')}"
     snapshot = root / "snapshots" / ("d" * 40)
     (snapshot / "split_files" / "vae").mkdir(parents = True)
@@ -2034,8 +2300,8 @@ def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirro
         "utils.hf_cache_settings.active_hf_hub_cache", lambda: str(tmp_path), raising = False
     )
 
-    assets = [("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors", "vae")]
-    assert _fetch_repo_map(assets, None)["unsloth/Z-Image-Turbo-ComfyUI"] == repack
+    assets = [(mirror, "split_files/vae/ae.safetensors", "vae")]
+    assert _fetch_repo_map(assets, None)[mirror] == repack
 
     # A fresh install has no repack, so the mirror stays the source.
     monkeypatch.setattr(
@@ -2043,9 +2309,7 @@ def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirro
         lambda: str(tmp_path / "empty"),
         raising = False,
     )
-    assert _fetch_repo_map(assets, None)["unsloth/Z-Image-Turbo-ComfyUI"] == (
-        "unsloth/Z-Image-Turbo-ComfyUI"
-    )
+    assert _fetch_repo_map(assets, None)[mirror] == mirror
     # And a repo that mirrors nothing is returned unchanged.
     assert prefer_cached_legacy_source("unsloth/Qwen-Image", ["x"]) == "unsloth/Qwen-Image"
 
@@ -2058,10 +2322,10 @@ def test_a_repack_left_in_the_pre_change_cache_root_still_wins_over_the_mirror(
     The fetch passes reuse_other_cache_root, so a file cached only under huggingface_hub's
     import-time root resolves through that root -- but only under the repo id it was filed as.
     Picking the mirror because the LIVE root looks empty makes those bytes unreachable: several GB
-    re-download online, and offline the load fails."""
+    re-download online, and offline the load fails. Synthetic mirror -> repack row, as above."""
     from core.inference.sd_cpp_backend import _fetch_repo_map
 
-    repack = "Comfy-Org/z_image_turbo"
+    repack, mirror = _synthetic_legacy_row(monkeypatch)
     other = tmp_path / "before_the_move"
     root = other / f"models--{repack.replace('/', '--')}"
     snapshot = root / "snapshots" / ("d" * 40)
@@ -2077,8 +2341,8 @@ def test_a_repack_left_in_the_pre_change_cache_root_still_wins_over_the_mirror(
     )
     monkeypatch.setattr("huggingface_hub.constants.HF_HUB_CACHE", str(other))
 
-    assets = [("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors", "vae")]
-    assert _fetch_repo_map(assets, None)["unsloth/Z-Image-Turbo-ComfyUI"] == repack
+    assets = [(mirror, "split_files/vae/ae.safetensors", "vae")]
+    assert _fetch_repo_map(assets, None)[mirror] == repack
 
 
 def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):
@@ -2086,9 +2350,12 @@ def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):
     a guard naming only one of them can delete a repo the next load needs."""
     from core.inference.sd_cpp_backend import _with_mirrors
 
-    protected = _with_mirrors(["unsloth/Z-Image-Turbo-ComfyUI"])
-    assert "unsloth/Z-Image-Turbo-ComfyUI" in protected
-    assert "Comfy-Org/z_image_turbo" in protected
+    repack, mirror = _synthetic_legacy_row(monkeypatch)
+    protected = _with_mirrors([mirror])
+    assert mirror in protected
+    assert repack in protected
+    # No real row is left: the Wan GGUF no longer drags its old QuantStack repack along.
+    assert "QuantStack/Wan2.2-TI2V-5B-GGUF" not in _with_mirrors(["unsloth/Wan2.2-TI2V-5B-GGUF"])
 
 
 def test_begin_load_answers_without_waiting_on_the_header_probe(monkeypatch):
@@ -2208,7 +2475,7 @@ def test_generate_reports_the_build_the_recipe_persists():
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
     )
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["model_kind"] == "gguf"
     assert out["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
     assert out["offload_policy"] == "active"
@@ -2216,6 +2483,8 @@ def test_generate_reports_the_build_the_recipe_persists():
     assert out["offload_policy"] == b.status()["offload_policy"]
     assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
     assert out["memory_mode"] is None
+    assert out["cpu_offload"] is True and out["cpu_offload"] == b.status()["cpu_offload"]
+    assert out["speed_mode"] == b.status()["speed_mode"]
 
 
 def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(monkeypatch):
@@ -2235,11 +2504,11 @@ def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(m
 
     monkeypatch.setattr(b, "_generate_oneshot", _oneshot)
     with pytest.raises(RuntimeError, match = "cancelled"):
-        b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+        b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
 
     # And once a run completes, the event is gone before the result is handed back.
     b2 = _loaded_backend()
-    out = b2.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b2.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["images"]
     seen.append(b2.cancel_generate())
     assert seen == [False]
@@ -2284,7 +2553,7 @@ def test_a_card_pick_is_not_reported_as_an_offload():
     status = b.status()
     assert status["cpu_offload"] is False
     assert status["offload_policy"] == "none"
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["offload_policy"] == "none"
 
 
@@ -2409,7 +2678,7 @@ def test_generation_in_flight_tracks_a_generation(monkeypatch):
     monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
 
     assert bk.generation_in_flight() is False
-    b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, loras = [("some/lora", 1.0)])
     assert (
         seen["in_flight"] is True
     ), "liveness cannot tell this backend from a dead one while the native engine renders"
@@ -2424,3 +2693,349 @@ def test_generation_in_flight_never_builds_a_backend(monkeypatch):
         lambda *a, **k: pytest.fail("liveness constructed a native diffusion backend"),
     )
     assert bk.generation_in_flight() is False
+
+
+# ── the architecture marker scan ─────────────────────────────────────────────
+
+
+def test_the_marker_is_found_even_when_it_straddles_a_read_boundary(tmp_path):
+    # The scan reads in 8 MiB blocks, and a literal landing across the seam is exactly the case a
+    # naive loop misses: it would report a current build as incapable and quietly send every load
+    # of the family to diffusers. Placed so the first block ends mid-literal.
+    marker = "qwen_image_2_1"
+    chunk = 8 << 20
+    path = tmp_path / "sd-cli"
+    body = bytearray(b"\0" * (chunk + len(marker) * 2))
+    body[chunk - len(marker) // 2 : chunk - len(marker) // 2 + len(marker)] = marker.encode()
+    path.write_bytes(bytes(body))
+    assert bk.binary_carries_marker(str(path), marker) is True
+    assert bk.binary_carries_marker(str(path), "wan_2_2_no_such_arch") is False
+
+
+def test_an_unreadable_binary_and_an_unmarked_family_both_leave_the_route_alone(tmp_path):
+    # Two "no claim" cases that must not become a refusal. A family with no marker asks nothing of
+    # the build, and a path that cannot be stat-ed or opened is not evidence about its contents:
+    # refusing there would take the native engine away on a host where it works.
+    present = tmp_path / "sd-cli"
+    present.write_bytes(b"nothing interesting")
+    assert bk.binary_carries_marker(str(present), None) is True
+    assert bk.binary_carries_marker(str(tmp_path / "missing"), "qwen_image_2_1") is True
+    assert bk.binary_carries_marker(None, "qwen_image_2_1") is False
+    assert bk.sd_cpp_binary_runs_family(str(present), detect_family("z-image")) is True
+    assert bk.sd_cpp_binary_runs_family(str(present), detect_family("qwen-image-2.1")) is False
+
+
+def test_the_scan_is_redone_when_the_binary_on_that_path_changes(tmp_path):
+    # An upgrade writes a new build to the SAME path, so a result memoised on the path alone would
+    # keep reporting the old answer for the life of the process and the upgrade would never take
+    # effect. Keyed on size and mtime as well.
+    path = tmp_path / "sd-cli"
+    path.write_bytes(b"an old build")
+    assert bk.binary_carries_marker(str(path), "qwen_image_2_1") is False
+    path.write_bytes(b"a new build with qwen_image_2_1 in it")
+    assert bk.binary_carries_marker(str(path), "qwen_image_2_1") is True
+
+
+def test_a_cached_engine_is_re_checked_against_the_family_now_loading(tmp_path):
+    # _engine is resolved lazily and never cleared, so it outlives the load that created it. An
+    # sd-cli cached by an older family's one-shot load would otherwise be handed straight back for
+    # a family it cannot run, and the load would report ready and die on the first generation,
+    # which is the failure the gate exists to prevent.
+    old = tmp_path / "sd-cli-old"
+    old.write_bytes(b"a build from before the family landed")
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    backend._engine = types.SimpleNamespace(binary = str(old), is_available = lambda: True)
+    backend._engine_injected = False
+
+    # A family the cached build does carry is still served from the cache, unchanged.
+    backend._loading_family = detect_family("z-image")
+    assert backend._resolve_engine() is backend._engine
+
+    backend._loading_family = detect_family("qwen-image-2.1")
+    with pytest.raises(RuntimeError, match = "predates qwen-image-2.1 support"):
+        backend._resolve_engine()
+
+
+def test_a_rejected_concurrent_load_cannot_move_the_family_the_worker_validates_against():
+    # begin_load assigns the family BEFORE taking _lock to refuse a second load, so on shared state
+    # a request refused a line later would still have replaced the family the running worker checks
+    # its binaries against, and could refuse a good build or accept an incapable one.
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    worker_family = detect_family("qwen-image-2.1")
+    backend._loading_family = worker_family
+    seen = {}
+    started = threading.Event()
+
+    def _other_request():
+        backend._loading_family = detect_family("z-image")
+        started.set()
+
+    other = threading.Thread(target = _other_request)
+    other.start()
+    started.wait(timeout = 5)
+    other.join(timeout = 5)
+    seen["worker"] = backend._loading_family
+    assert seen["worker"] is worker_family, "another thread's family reached this worker"
+
+
+def test_server_failure_drops_a_cached_sd_cli_of_the_failed_build(monkeypatch):
+    # An earlier one-shot load cached the Vulkan sd-cli; the Vulkan server now fails and the
+    # recorded failure moves the preferred build to CPU, so the fallback must not reuse the cache.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+
+    class _BadServer:
+        def __init__(self, binary):
+            pass
+
+        def start(self, *a, **k):
+            raise RuntimeError("ggml_vulkan: No devices found")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(bk, "SdCppServer", _BadServer)
+    fake = _FakeEngine()
+    fake.binary = "/vk/sd-cli"
+    _shared_setup_1(b, fake, monkeypatch)
+    monkeypatch.setattr(b, "_resolve_engine", SdCppDiffusionBackend._resolve_engine.__get__(b))
+    b._engine = fake
+    accelerators = {"/vk/sd-cli": "vulkan", "/cpu/sd-cli": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: accelerators.get(binary))
+    monkeypatch.setattr(b, "_resolved_accelerator", lambda card = None: "cpu")
+    asked = []
+
+    def _ensure(**kwargs):
+        asked.append(kwargs.get("accelerator"))
+        return "/cpu/sd-cli"
+
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", _ensure)
+    monkeypatch.setattr(b, "_refuse_incapable_build", lambda *_a, **_k: None)
+
+    class _CpuEngine(_FakeEngine):
+        def __init__(self, binary):
+            super().__init__()
+            self.binary = binary
+
+    monkeypatch.setattr(bk, "SdCppEngine", _CpuEngine)
+    fam = detect_family("z-image")
+    b._load_token = 1
+    _shared_setup_2(b, fam)
+    assert asked == ["cpu"]
+    assert b._state is not None and b._state.mode == "oneshot"
+    assert b._state.sd_accelerator == "cpu"
+
+
+def test_a_deferred_cuda_upgrade_keeps_the_selected_card(monkeypatch):
+    # A CUDA load starts on the resident CPU bundle (placed on the CPU) and the deferred upgrade then
+    # lands the CUDA build: the server must still be pinned to the card the route selected.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "ensure_sd_server_binary", lambda **_k: "/x/sd-server")
+    started = []
+
+    class _Server:
+        def __init__(self, binary):
+            pass
+
+        def start(self, *a, **k):
+            started.append(k.get("offload"))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(bk, "SdCppServer", _Server)
+    fake = _FakeEngine()
+    _shared_setup_1(b, fake, monkeypatch)
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    installed = {"/x/sd-server": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed.get(binary))
+
+    def _upgrade(server_binary, **_k):
+        installed["/x/sd-server"] = "cuda"
+        return server_binary
+
+    monkeypatch.setattr(b, "_upgraded_or_refused", _upgrade)
+    monkeypatch.setattr(b, "_resolved_accelerator", lambda card = None: "cuda")
+    pins = []
+    monkeypatch.setattr(
+        bk,
+        "_offload_with_device_pin_impl",
+        lambda offload, binary, ordinal: pins.append(ordinal) or list(offload),
+    )
+    # The resident CPU bundle is in use, so _resolve_backend defers the upgrade to the teardown.
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
+    fam = detect_family("z-image")
+    b._load_token = 1
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+        gpu_ordinal = 1,
+    )
+    assert started, "the server must start"
+    assert pins and all(p == 1 for p in pins), pins
+    assert b._state is not None and b._state.device == "cuda"
+
+
+def test_the_arbiter_preflight_reads_the_cli_behind_an_unowned_server(monkeypatch):
+    # SD_SERVER_PATH names a build the installer does not own; the router can drop it and run
+    # the managed sd-cli, so that CLI's record is the answer.
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/custom/sd-server")
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/managed/sd-cli")
+    records = {"/managed/sd-cli": "vulkan"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: records.get(binary))
+    assert bk.managed_sd_cpp_accelerator() == "vulkan"
+    records["/custom/sd-server"] = "cpu"
+    assert bk.managed_sd_cpp_accelerator() == "cpu"
+    records.clear()
+    assert bk.managed_sd_cpp_accelerator() is None
+
+
+def test_only_managed_cpu_binaries_count_as_cpu_only(monkeypatch):
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/custom/sd-server")
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/managed/sd-cli")
+    records = {"/managed/sd-cli": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: records.get(binary))
+    # The unowned SD_SERVER_PATH build may render on a GPU.
+    assert bk.sd_cpp_binaries_all_cpu() is False
+    records["/custom/sd-server"] = "cpu"
+    assert bk.sd_cpp_binaries_all_cpu() is True
+    records["/managed/sd-cli"] = "vulkan"
+    assert bk.sd_cpp_binaries_all_cpu() is False
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
+    assert bk.sd_cpp_binaries_all_cpu() is False
+
+
+def test_a_t5_index_from_the_old_cache_root_gets_its_shards_beside_it(monkeypatch, tmp_path):
+    """After a cache-folder change the T5 index resolves from the old root while its shards land in the active one.
+    sd-cli reads the shards beside the index, so the load links them there instead of refusing a cache that holds
+    every file (an offline user could not repair it by re-downloading)."""
+    import json
+    from pathlib import Path
+
+    _no_cache(monkeypatch)
+    b = _shared_setup_4(monkeypatch)
+    old_root, live_root = tmp_path / "old", tmp_path / "live"
+
+    def fake_download(repo, fn, tok, **k):
+        root = old_root if fn.endswith(".safetensors.index.json") else live_root
+        path = root / repo.replace("/", "--") / fn
+        path.parent.mkdir(parents = True, exist_ok = True)
+        if fn.endswith(".safetensors.index.json"):
+            shards = [f.rsplit("/", 1)[-1] for _r, f, kind in specs if kind == "t5xxl_shard"]
+            path.write_text(json.dumps({"weight_map": {str(i): n for i, n in enumerate(shards)}}))
+        else:
+            path.write_bytes(b"shard:" + fn.encode())
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", fake_download)
+    fam = detect_family("flux.1")
+    specs = b._asset_specs("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", fam)
+    shard_files = [f for _r, f, kind in specs if kind == "t5xxl_shard"]
+    assert len(shard_files) == 2
+
+    paths = b._fetch_assets(specs, None, local_files_only = True)
+
+    index = Path(paths["t5xxl"])
+    assert index.is_relative_to(old_root)
+    for fn in shard_files:
+        beside = index.parent / fn.rsplit("/", 1)[-1]
+        assert beside.read_bytes() == b"shard:" + fn.encode()
+        # Never a symlink into the other root: deleting or unmounting either root must not break the other.
+        assert not beside.is_symlink()
+
+
+def test_a_cross_device_shard_copy_never_leaves_a_truncated_shard(monkeypatch, tmp_path):
+    """Across filesystems the hard link fails and the shard is copied. A copy cut off (full disk) must not leave a
+    file at the final name, since the existence check would accept it, and a short file left by an earlier copy is
+    replaced on the next load."""
+    import json
+    import os
+    import shutil
+
+    from core.inference import sd_cpp_backend as mod
+
+    src = tmp_path / "live" / "model-00001-of-00001.safetensors"
+    src.parent.mkdir(parents = True)
+    src.write_bytes(b"x" * 4096)
+    index = tmp_path / "old" / "model.safetensors.index.json"
+    index.parent.mkdir(parents = True)
+    index.write_text(json.dumps({"weight_map": {"a": src.name}}))
+    target = index.parent / src.name
+
+    def no_link(*_a, **_k):
+        raise OSError("cross-device link")
+
+    def full_disk(a, b):
+        with open(b, "wb") as fh:
+            fh.write(b"x" * 100)
+        raise OSError("No space left on device")
+
+    real_copyfile = shutil.copyfile
+    monkeypatch.setattr(mod.os, "link", no_link)
+    monkeypatch.setattr(mod.shutil, "copyfile", full_disk)
+    mod._colocate_shards(str(index), {src.name: str(src)})
+    assert not target.exists()
+    assert os.listdir(index.parent) == [index.name]
+
+    # A short shard from an earlier, cut-off copy is replaced by a complete one.
+    target.write_bytes(b"x" * 100)
+    monkeypatch.setattr(mod.shutil, "copyfile", real_copyfile)
+    mod._colocate_shards(str(index), {src.name: str(src)})
+    assert target.read_bytes() == src.read_bytes()
+    assert sorted(os.listdir(index.parent)) == sorted([index.name, src.name])
+
+
+def test_the_native_fetch_keeps_an_upstream_cached_only_in_the_pre_change_root(monkeypatch):
+    """_fetch_assets resolves each file through either cache root, so FLUX.1's CLIP / T5 left in the previous root
+    serve the load. Deciding the mirror swap off the live root alone rewrote them to unsloth/FLUX.1-schnell, which a
+    cache-only load then could not find and an online one re-pulled (~10 GB)."""
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached",
+        lambda repo_id, files = None, *, other_root = False: other_root,
+    )
+    assets = [
+        ("black-forest-labs/FLUX.1-schnell", "text_encoder/model.safetensors", "clip_l"),
+        ("black-forest-labs/FLUX.1-schnell", "ae.safetensors", "vae"),
+    ]
+    assert bk._fetch_repo_map(assets, None) == {
+        "black-forest-labs/FLUX.1-schnell": "black-forest-labs/FLUX.1-schnell"
+    }
+
+
+def test_the_native_progress_total_is_sized_where_the_assets_are_fetched(monkeypatch):
+    """An anonymous user gets nothing back from a gated vendor id, so sizing FLUX.1's CLIP / T5 there left them at 0
+    bytes and the bar finalizing while they downloaded. The total asks the repo _fetch_assets pulls from."""
+    from types import SimpleNamespace
+
+    from huggingface_hub import HfApi
+
+    _no_cache(monkeypatch)
+    asked = []
+
+    def get_paths_info(self, repo_id, paths, **kwargs):
+        asked.append(repo_id)
+        if not repo_id.startswith("unsloth/"):
+            raise PermissionError("gated")
+        return [SimpleNamespace(path = p, size = 1_000) for p in paths]
+
+    monkeypatch.setattr(HfApi, "get_paths_info", get_paths_info)
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    b._loading = SimpleNamespace(expected_bytes = 0)
+    assets = [
+        ("black-forest-labs/FLUX.1-schnell", "text_encoder/model.safetensors", "clip_l"),
+        ("black-forest-labs/FLUX.1-schnell", "ae.safetensors", "vae"),
+    ]
+    b._set_expected_bytes(assets, None)
+    assert asked == ["unsloth/FLUX.1-schnell", "unsloth/FLUX.1-schnell"]
+    assert b._loading.expected_bytes == 2_000

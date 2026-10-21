@@ -48,13 +48,19 @@ def _mlx_entry_for(mc):
     }
 
 
-def _drive_handle_load(monkeypatch, mc):
+def _drive_handle_load(
+    monkeypatch,
+    mc,
+    entry = None,
+    device = "mlx",
+    load_model = lambda **kw: True,
+):
     """Run _handle_load against a stub MLX backend, return the emitted model_info."""
     backend = SimpleNamespace(
-        device = "mlx",
+        device = device,
         active_model_name = mc.identifier,
-        models = {mc.identifier: _mlx_entry_for(mc)},
-        load_model = lambda **kw: True,
+        models = {mc.identifier: entry or _mlx_entry_for(mc)},
+        load_model = load_model,
     )
 
     monkeypatch.setattr(worker, "_build_model_config", lambda cfg: mc)
@@ -71,6 +77,8 @@ def _drive_handle_load(monkeypatch, mc):
 
     loaded = [m for m in q.sent if m.get("type") == "loaded"]
     assert loaded, f"no loaded response: {q.sent}"
+    if loaded[0].get("failure"):
+        return loaded[0]
     assert loaded[0].get("success"), loaded[0]
     return loaded[0]["model_info"]
 
@@ -109,3 +117,47 @@ def test_whisper_classification_survives_the_mlx_post_load_mirror(monkeypatch):
 
     assert info["audio_type"] == "whisper"
     assert info["has_audio_input"] is True
+
+
+def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
+    """Dropped at either hop, status falls back to "speak" from audio_type and offers
+    Speak for a clone-only model."""
+    from core.inference.orchestrator import _mirrored_model_entry
+
+    mc = _mc("audiocpp_tts", is_audio = True, has_audio_input = False)
+    fields = {
+        "audio_workflows": ["clone"],
+        "audio_reference_text": "required",
+        "audio_required_inputs": ["instruct"],
+        "audio_clone": {"reference_text": "required", "emotion_audio": False},
+        "audio_options_by_workflow": {"convert": [{"name": "length_adjust", "type": "float"}]},
+        "audio_workflow_tasks": {"clone": "clon", "convert": "vc", "convert:singing": "svc"},
+        "audio_server_task": "clon",
+        "audio_convert": {"modes": ["speech"], "target": "audio", "source_max_seconds": 300},
+        "audio_convert_route": "v2_vc",
+        "audio_convert_rules": {"source_rate": 16000, "target_rate": 24000},
+        "audio_edit": {"style": "instructions", "delivery": True, "max_changes": 5},
+        "audio_music": {"modes": [{"id": "song", "variations": None}]},
+        # The /audio/run route sizes CPU waits from it.
+        "audio_cpp_backend": "cpu",
+        "audio_device_fallback": "cpu",
+        "audio_request_inputs": ["language"],
+    }
+    entry = {"is_audio": True, "audio_type": "audiocpp_tts", "has_audio_input": False, **fields}
+    info = _drive_handle_load(monkeypatch, mc, entry, device = "cuda")
+    entry = _mirrored_model_entry(info, mc.identifier)
+    assert {k: info[k] for k in fields} == {k: entry[k] for k in fields} == fields
+
+
+def test_a_classified_load_failure_crosses_the_worker_and_the_parent(monkeypatch):
+    from core.inference.audio_cpp_failures import AudioCppFailure, AudioCppFailureError, failure_of
+
+    failure = AudioCppFailure("runtime_missing", "Install the runtime.", 503)
+
+    def refuse(**_kw):
+        raise AudioCppFailureError("The audio runtime is not installed.", failure)
+
+    mc = _mc("audiocpp_tts", is_audio = True, has_audio_input = False)
+    loaded = _drive_handle_load(monkeypatch, mc, device = "cuda", load_model = refuse)
+    assert loaded["success"] is False and AudioCppFailure.from_payload(loaded["failure"]) == failure
+    assert failure_of(AudioCppFailureError(loaded["error"], failure)) is failure

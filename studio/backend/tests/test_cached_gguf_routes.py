@@ -1948,8 +1948,14 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         [_file("config.json", 1_000), _file("model.safetensors", 9_000)],
         tmp_path / "models--unsloth--Llama-3.2-1B-Instruct",
     )
+    snapshot = diffusion.repo_path / "snapshots" / "revision"
+    _saved_pipeline(snapshot, "ZImagePipeline")
+    (diffusion.repo_path / "refs").mkdir()
+    (diffusion.repo_path / "refs" / "main").write_text("revision")
+    diffusion.revisions[0].snapshot_path = snapshot
 
     _scanned_repos(monkeypatch, diffusion, checkpoint)
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
 
     result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
     by_repo = {c["repo_id"]: c["task"] for c in result["cached"]}
@@ -1957,6 +1963,11 @@ def test_list_cached_models_tags_diffusers_pipeline_as_text_to_image(monkeypatch
         "Tongyi-MAI/Z-Image-Turbo": "text-to-image",
         "unsloth/Llama-3.2-1B-Instruct": None,
     }
+    rows = {c["repo_id"]: c for c in result["cached"]}
+    assert rows["Tongyi-MAI/Z-Image-Turbo"]["artifact_kind"] == "diffusers_pipeline"
+    # A snapshot on refs/main loads by its Hub id, not a pinned path.
+    assert "load_id" not in rows["Tongyi-MAI/Z-Image-Turbo"]
+    assert rows["unsloth/Llama-3.2-1B-Instruct"].get("artifact_kind", "unknown") == "unknown"
 
 
 def test_list_cached_models_marks_companion_only_pipeline_partial(monkeypatch, tmp_path):
@@ -2165,6 +2176,7 @@ def test_gguf_variants_route_scopes_local_probe_to_selected_cache(monkeypatch, t
                 "prefer_local_cache": True,
                 "offline": False,
                 "local_path": str(snapshot),
+                "include_cache_locations": False,
                 "hf_token": None,
             },
         )
@@ -2234,7 +2246,13 @@ def test_gguf_variants_route_forwards_offline(monkeypatch):
     _variants(offline = True)
 
     assert calls == [
-        {"prefer_local_cache": False, "offline": True, "local_path": None, "hf_token": None}
+        {
+            "prefer_local_cache": False,
+            "offline": True,
+            "local_path": None,
+            "include_cache_locations": False,
+            "hf_token": None,
+        }
     ]
 
 
@@ -2335,9 +2353,12 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
     """One syscall that never returns cannot be interrupted from inside the walk, so the
     route bounds it. Without that the listing waits on it and the picker has nothing to click."""
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
+    # Hung until the test is over, not for a flat 5 s: an abandoned read outlives the test, and
+    # a later test's _drain_context_threads() then sat waiting for this sleep to run out.
+    release = threading.Event()
 
     def hung_read(_path):
-        time.sleep(5)
+        release.wait(5)
         return 8192
 
     monkeypatch.setattr("utils.models.gguf_metadata.read_gguf_context_length", hung_read)
@@ -2368,7 +2389,10 @@ def test_gguf_variants_route_answers_when_a_header_read_never_returns(monkeypatc
         )
         return answer, time.monotonic() - began
 
-    result, elapsed = asyncio.run(drive())
+    try:
+        result, elapsed = asyncio.run(drive())
+    finally:
+        release.set()
     assert [v.quant for v in result.variants] == ["Q4_K_M"]
     assert result.context_length is None
     assert elapsed < 3
@@ -2602,11 +2626,12 @@ def test_legacy_gguf_progress_delegates_to_shared_service(monkeypatch):
     assert calls == [("org/repo", "Q4_K_M", 20, "token")]
 
 
-def test_legacy_model_progress_delegates_to_shared_service(monkeypatch):
+@pytest.mark.parametrize("mlx_load", [False, True])
+def test_legacy_model_progress_delegates_to_shared_service(monkeypatch, mlx_load):
     calls = []
 
-    async def shared(repo_id, *, hf_token):
-        calls.append((repo_id, hf_token))
+    async def shared(repo_id, *, hf_token, mlx_load):
+        calls.append((repo_id, hf_token, mlx_load))
         return {"downloaded_bytes": 10, "expected_bytes": 20, "progress": 0.5}
 
     monkeypatch.setattr(
@@ -2619,11 +2644,12 @@ def test_legacy_model_progress_delegates_to_shared_service(monkeypatch):
             repo_id = "org/repo",
             hf_token = "token",
             current_subject = "test-user",
+            mlx_load = mlx_load,
         )
     )
 
     assert result["progress"] == 0.5
-    assert calls == [("org/repo", "token")]
+    assert calls == [("org/repo", "token", mlx_load)]
 
 
 def test_legacy_delete_delegates_to_shared_service(monkeypatch):
@@ -2661,6 +2687,11 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("flux") == "text-to-image"
     assert models_route._arch_to_task("z_image") == "text-to-image"
     assert models_route._arch_to_task("qwen_image") == "text-to-image"
+    # Qwen-Image-2.1 GGUFs that carry a header declare their own arch (#13328)
+    assert (
+        models_route._arch_to_task("qwen_image21", ("abenzerps/Qwen-Image-2.1-Uncensored-GGUF",))
+        == "text-to-image"
+    )
     assert models_route._arch_to_task("llama") == "text-generation"
     assert models_route._arch_to_task(None) is None
     # Known-but-unsupported diffusion archs get a task that is neither chat nor a loadable image task, so both pickers skip them.
@@ -2972,6 +3003,57 @@ def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch)
         assert "An Images model load is using this repo" in e.detail
 
 
+def test_delete_cached_refuses_repo_a_cancelled_diffusion_load_is_releasing(monkeypatch):
+    # An eject drops _loading at once so the load cancels promptly, but that thread keeps reading:
+    # through _prefetch_files it holds no lock and only checks the cancel event either side of the
+    # blocking Hub call. loading_repo_ids() is empty by then, so the drain list has to refuse.
+    from fastapi import HTTPException
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = lambda: (),
+            draining_repo_ids = lambda: ("unsloth/Qwen-Image-2512-GGUF",),
+        ),
+    )
+    monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
+
+    try:
+        asyncio.run(deletion.delete_cached_model_response("unsloth/Qwen-Image-2512-GGUF"))
+        assert False, "expected HTTPException refusing the delete while the load unwinds"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "still releasing this repo" in e.detail
+
+
+def test_delete_cached_is_unaffected_by_a_backend_without_a_drain(monkeypatch):
+    # sd.cpp and the video backend expose no draining_repo_ids; the guard must not start refusing.
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(
+        der,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = lambda: (),
+        ),
+    )
+    monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
+
+    assert deletion._diffusion_blocks_delete("unsloth/Qwen-Image-2512-GGUF") is None
+
+
 def test_delete_cached_allows_sibling_of_loaded_diffusion_repo(monkeypatch):
     # A loaded Images repo must not block deleting a different cached repo sharing a name prefix; the guard is `/`-boundary aware.
     from fastapi import HTTPException
@@ -3250,26 +3332,32 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
 
 
 def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_path):
-    """The single-file VAE / text-encoder repos hold no denoiser, so none of them is a pick.
+    """The sd-cli text-encoder repos hold no denoiser, so none of them is an Images pick.
 
-    Their unsloth mirrors clear the trust gate the old third-party ids never did, and the ids
-    resolve to a family, so without the companion check each would list an unloadable Images row.
+    They are unsloth repos, so they clear the trust gate, and an id that resolves to a family
+    would list an unloadable Images row without the companion check. Every image VAE / encoder
+    now comes from a vendor base or an unsloth encoder GGUF, so the set is exactly those GGUFs.
     """
     from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
 
+    companions = sd_cpp_companion_only_repo_ids()
     for repo_id in (
-        "unsloth/Z-Image-Turbo-ComfyUI",
-        "unsloth/Qwen-Image-ComfyUI",
-        "unsloth/FLUX.2-dev-ComfyUI",
-        "unsloth/FLUX.2-VAE",
-        "unsloth/FLUX.2-klein-9B-ComfyUI",
-        "unsloth/flux-text-encoders",
+        "unsloth/Qwen3-4B-GGUF",
+        "unsloth/Qwen3-8B-GGUF",
+        "unsloth/Mistral-Small-3.2-24B-Instruct-2506-GGUF",
+        "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
     ):
-        assert repo_id.lower() in sd_cpp_companion_only_repo_ids(), repo_id
+        assert repo_id.lower() in companions, repo_id
+    for repo_id in companions:
         assert models_route._cached_repo_task(_pipeline_repo(repo_id, tmp_path)) is None, repo_id
 
-    # FLUX.1-schnell also serves a companion VAE, but it is a real base and must stay loadable.
-    assert "black-forest-labs/flux.1-schnell" not in sd_cpp_companion_only_repo_ids()
+    # The vendor bases that now serve the VAEs / encoders are real bases and must stay loadable.
+    for base in (
+        "black-forest-labs/FLUX.1-schnell",
+        "black-forest-labs/FLUX.2-dev",
+        "Qwen/Qwen-Image",
+    ):
+        assert base.lower() not in companions, base
     assert (
         models_route._cached_repo_task(_pipeline_repo("black-forest-labs/FLUX.1-schnell", tmp_path))
         == "text-to-image"
@@ -3280,11 +3368,21 @@ def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeyp
     """A task of None does NOT drop the row: it is exactly what an unclassified CHAT repo carries,
     so the chat picker showed the companion as loadable. Deleting the row instead would hide tens
     of GB the user can then never find or remove, so the row stays and carries a flag the pickers
-    filter on."""
+    filter on.
+
+    No image companion repo ships .safetensors any more (the remaining ones are encoder GGUFs, which
+    this listing skips), so a synthetic single-file VAE repo is added to the companion set."""
+    import core.inference.diffusion_families as families
+
+    real = families.sd_cpp_companion_only_repo_ids
+    companion_id = "unsloth/example-vae-companion"
+    monkeypatch.setattr(
+        families, "sd_cpp_companion_only_repo_ids", lambda: real() | {companion_id.lower()}
+    )
     companion = _repo(
-        "unsloth/Z-Image-Turbo-ComfyUI",
-        [_file("split_files/vae/ae.safetensors", 300_000)],
-        tmp_path / "models--unsloth--Z-Image-Turbo-ComfyUI",
+        companion_id,
+        [_file("vae/ae.safetensors", 300_000)],
+        tmp_path / "models--unsloth--example-vae-companion",
     )
     chat = _repo(
         "unsloth/Qwen3-8B",
@@ -3299,10 +3397,10 @@ def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeyp
     }
 
     # Listed, so it stays visible and deletable...
-    assert "unsloth/Z-Image-Turbo-ComfyUI" in rows
+    assert companion_id in rows
     # ...and flagged, which is the part a task of None could never express.
-    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["companion"] is True
-    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["task"] is None
+    assert rows[companion_id]["companion"] is True
+    assert rows[companion_id]["task"] is None
     # An ordinary chat repo carries the same task of None and must NOT be flagged.
     assert rows["unsloth/Qwen3-8B"].get("companion") is None
     assert rows["unsloth/Qwen3-8B"]["task"] is None
@@ -4122,6 +4220,9 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
         cache_home[0] = tmp_path / "healthyvol"
         second = asyncio.ensure_future(GV.get_gguf_variants_answer("org/repo", offline = True))
         done, _ = await asyncio.wait({second}, timeout = 1.5)
+        # Measured; now unwedge the old scan, or asyncio.run's executor shutdown joins its
+        # thread and the test sits out the rest of the 5 s wait.
+        wedged.set()
         for task in (stuck, second):
             task.cancel()
         return bool(done)
@@ -4148,6 +4249,7 @@ def test_gguf_variants_route_carries_local_resolution(monkeypatch, tmp_path):
         )
     )
     assert result.resolved_locally is True
+    assert result.dependencies_resolved is False
     assert [v.quant for v in result.variants] == ["Q4_K_M"]
 
 
@@ -4911,7 +5013,8 @@ def test_a_pure_text_gguf_folder_is_never_promoted_to_a_media_task(tmp_path, mon
 
 def _saved_pipeline(root: Path, class_name: str) -> Path:
     root.mkdir(parents = True, exist_ok = True)
-    (root / "model_index.json").write_text(json.dumps({"_class_name": class_name}))
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", "Transformer2DModel"]}
+    (root / "model_index.json").write_text(json.dumps(manifest))
     for component in ("transformer", "vae", "text_encoder"):
         (root / component).mkdir(parents = True, exist_ok = True)
         (root / component / "config.json").write_text("{}")
@@ -6375,6 +6478,10 @@ def test_cached_model_rows_flag_a_selected_modular_pipeline_as_diffusers(monkeyp
 
     assert row.get("task") is None
     assert row["diffusers"] is True
+    assert row["artifact_kind"] == "diffusers_modular_pipeline"
+    assert row["load_id"] == str(snapshot)
+    response = models_route.CachedModelsResponse(cached = [row])
+    assert response.cached[0].artifact_kind == "diffusers_modular_pipeline"
 
 
 def test_cached_model_rows_flag_a_diffusion_repo_this_backend_cannot_load(monkeypatch, tmp_path):

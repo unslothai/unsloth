@@ -11,19 +11,22 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown } from "streamdown";
+import {
+  FINISHED_TEXT_REMEND,
+  LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
+} from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
- * before parsing it, and Unsloth runs it on every SETTLED body: `markdown-text.tsx` passes
- * `parseIncompleteMarkdown={!incrementalRender}` and `incrementalRender` is null exactly when the
- * message is not streaming. So this dependency decides what a finished message LOOKS like, not
- * only what a half-written one looks like, and a version bump is a rendering change.
+ * before parsing it, and Unsloth runs it on every settled body (marker completions only on a cut
+ * one), so a version bump is a rendering change.
  *
  * These are RUN, not scraped. Every assertion below is either a call into the resolved package or
  * a render through Streamdown, so the file fails if the dependency is downgraded, if the override
  * that forces one copy of it is dropped, or if the settled branch stops asking for the repair.
  * That last one is checked by EVALUATING the `parseIncompleteMarkdown` expression that
- * `markdown-text.tsx` writes, at `incrementalRender === null`, and handing the result to a real
+ * `markdown-text.tsx` writes and handing the result to a real
  * `<Streamdown>` -- not by asserting on the package in isolation and hoping the wiring agrees.
  *
  * WHAT THIS FILE DOES NOT COVER, so that the paragraph above is not read as wider than it is: the
@@ -106,13 +109,8 @@ const MARKDOWN_TEXT = new URL(
   import.meta.url,
 );
 
-/**
- * The `parseIncompleteMarkdown` a SETTLED body is rendered with, taken from the source and
- * evaluated rather than restated. `incrementalRender` is null exactly when the message is not
- * streaming, so evaluating the real expression in that state is the same question the component
- * answers on the settled path.
- */
-function settledParseIncompleteMarkdown(): boolean {
+/** The settled `parseIncompleteMarkdown`, evaluated from the source rather than restated. */
+function settledParseIncompleteMarkdown(cut: boolean): boolean {
   const source = readFileSync(MARKDOWN_TEXT, "utf8");
   const opened = source.indexOf("<Streamdown");
   assert.notEqual(
@@ -131,38 +129,49 @@ function settledParseIncompleteMarkdown(): boolean {
   );
   const value: unknown = new Function(
     "incrementalRender",
+    "cut",
     `return (${expression});`,
-  )(null);
+  )(null, cut);
   assert.equal(
     typeof value,
     "boolean",
-    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean at incrementalRender === null`,
+    `parseIncompleteMarkdown={${expression}} did not evaluate to a boolean for a settled part`,
   );
   return value as boolean;
 }
 
-function renderSettled(markdown: string): string {
+function renderSettled(markdown: string, cut = true): string {
   return renderToStaticMarkup(
     createElement(
       Streamdown,
       {
         mode: "streaming",
-        parseIncompleteMarkdown: settledParseIncompleteMarkdown(),
+        parseIncompleteMarkdown: settledParseIncompleteMarkdown(cut),
+        remend: !cut
+          ? FINISHED_TEXT_REMEND
+          : hasIncompleteLinkRepair(markdown)
+            ? LITERAL_LINK_REMEND
+            : undefined,
       },
       markdown,
     ),
   );
 }
 
+test("a settled unfinished link remains text without a blocked placeholder", () => {
+  const html = renderSettled("See [example](https://exa");
+  assert.match(html, /See \[example\]\(/);
+  assert.match(html, /https:\/\/exa/);
+  assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
+  assert.match(renderSettled("See [example](javascript:alert)"), /\[blocked\]/);
+  // The repairs remend makes before its link pass still apply.
+  const list = renderSettled("- >= 16 GB\n\nSee [foo");
+  assert.match(list, /<li[^>]*>&gt;= 16 GB<\/li>/);
+  assert.doesNotMatch(list, /blockquote|\[blocked\]/);
+});
+
 test("the settled render path runs the repair, not just the package", () => {
-  // THE TESTS ABOVE CALL `remend` THEMSELVES, so all of them pass while the UI has the repair
-  // switched off: mutating `parseIncompleteMarkdown={!incrementalRender}` to `{false}` in
-  // `markdown-text.tsx` left this file green until this test existed. The only way to see the
-  // difference is to render, and the only documents where the repair is VISIBLE are truncated
-  // ones -- a complete document is by construction unchanged either way.
-  //
-  // A truncated body does reach the settled path: a cancelled or errored response settles
-  // mid-construct and is then rendered with `incrementalRender === null` forever.
+  // The tests above call `remend` directly, so only a render shows the UI still repairs cut bodies.
   for (const [truncated, repaired] of [
     ["this is **bol", 'data-streamdown="strong"'],
     ["call `foo(", 'data-streamdown="inline-code"'],
@@ -207,7 +216,7 @@ test("a complete document survives the settled render path unchanged", () => {
   // the `\(` escapes.
   const underscores = (text: string): number => (text.match(/_/g) ?? []).length;
   for (const complete of COMPLETE_LATEX_DOCUMENTS) {
-    const text = renderedText(renderSettled(complete));
+    const text = renderedText(renderSettled(complete, false));
     assert.equal(
       underscores(text),
       underscores(complete),
@@ -215,6 +224,61 @@ test("a complete document survives the settled render path unchanged", () => {
         `reader: ${JSON.stringify(text)}`,
     );
   }
+});
+
+test("a finished reply keeps its lone markers as written", () => {
+  for (const reply of [
+    "Fields marked with an asterisk (*) are required.",
+    "Add *.pyc to your .gitignore file.",
+    "Pass options with **kwargs to forward them.",
+    "Press the ` key to open the console.",
+    "Delete files matching *.tmp first.\n\nThen restart the server.",
+    "Unpack it with ***args in Python 2 style.",
+    "Use ***args to unpack them.\n",
+    "It costs ~~ 5 dollars.",
+    "Load it as ~~fast mode in the config.",
+  ]) {
+    const html = renderSettled(reply, false);
+    assert.doesNotMatch(
+      html,
+      /data-streamdown="(emphasis|strong|inline-code|strikethrough)"|<em>|<strong>|<code|<del/,
+      `a finished ${JSON.stringify(reply)} was restyled: ${html}`,
+    );
+    assert.equal(
+      renderedText(html).replace(/\s+/g, ""),
+      reply.replace(/\s+/g, ""),
+      `a finished ${JSON.stringify(reply)} did not reach the reader as written`,
+    );
+  }
+});
+
+test("a cut reply still hides a dangling image", () => {
+  for (const cut of [
+    "see ![alt](https://example.com/very/long/partial",
+    "see ![alt](data:image/png;base64,iVBORw0KGgo",
+  ]) {
+    const text = renderedText(renderSettled(cut));
+    assert.doesNotMatch(
+      text,
+      /!\[|example\.com|base64/,
+      `a cut ${JSON.stringify(cut)} showed its partial image: ${text}`,
+    );
+  }
+});
+
+test("a finished reply keeps remend's literal escapes", () => {
+  const list = renderSettled("- >= 16 GB of RAM", false);
+  assert.match(list, /<li[^>]*>&gt;= 16 GB of RAM<\/li>/);
+  assert.doesNotMatch(list, /blockquote/);
+  const ranges = renderSettled(
+    "It takes 5~10 minutes and uses 20~30 GB.",
+    false,
+  );
+  assert.doesNotMatch(ranges, /<del|data-streamdown="strikethrough"/);
+  assert.equal(
+    renderedText(ranges),
+    "It takes 5~10 minutes and uses 20~30 GB.",
+  );
 });
 
 const FRONTEND_ROOT = fileURLToPath(new URL("..", import.meta.url));

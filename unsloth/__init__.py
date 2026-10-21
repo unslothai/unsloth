@@ -13,6 +13,24 @@ import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
+# checks and reads this lazily at the SDPA probe, so no torch import here. `setdefault` preserves
+# an explicit override, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
+
+# Before anything can create a process group: c10d and NCCL read these at init.
+if os.environ.get("UNSLOTH_DEBUG_DISTRIBUTED"):
+    from .distributed_debug import apply_debug_distributed_env as _apply_debug_distributed_env
+    _apply_debug_distributed_env()
+    del _apply_debug_distributed_env
+
+# UNSLOTH_FSDP2=1 under plain torchrun: export accelerate's FSDP2 launch env before transformers or
+# accelerate read it. A conflicting launch (DeepSpeed, FSDP_VERSION=1) raises here, on every rank.
+from .fsdp2_launch import apply_unsloth_fsdp2_launch_env as _apply_fsdp2_env
+
+_apply_fsdp2_env()
+del _apply_fsdp2_env
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See
@@ -148,12 +166,31 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
+    # Same reason again, and first because it is what turns the bare AttributeError into a
+    # diagnosis: this branch imports transformers below, so an Apple Silicon host carrying the
+    # old-torch/new-transformers pair hits #8933 here exactly as a CUDA host does, and
+    # _gpu_init.py, the only other installation site, is never reached on this path. The
+    # triton shim check is deliberately NOT mirrored: it is a CUDA/ROCm/XPU driver shim and
+    # there is no triton on this platform to inspect.
+    try:
+        from .import_fixes import patch_torch_missing_attribute_error as _patch_torch_attr
+        _patch_torch_attr()
+        del _patch_torch_attr
+    except Exception:
+        pass
     # _gpu_init does this on the GPU path and the MLX path never reaches it, so torchao 0.18 + torch <
     # 2.10 dies on `ScalingType`.
     try:
         from .import_fixes import fix_torchao_torch_symbol_skew as _fix_torchao
         _fix_torchao()
         del _fix_torchao
+    except Exception:
+        pass
+    try:
+        # Same for torchao 0.17+ on torch 2.6 (`register_constant`).
+        from .import_fixes import fix_torchao_pytree_register_constant as _fix_pytree
+        _fix_pytree()
+        del _fix_pytree
     except Exception:
         pass
     try:
@@ -164,11 +201,64 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        from .import_fixes import fix_transformers_validate_rope_ignore_keys as _fix_validate_rope
+        _fix_validate_rope()
+        del _fix_validate_rope
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_transformers_is_torch_fx_available as _fix_torch_fx
+        _fix_torch_fx()
+        del _fix_torch_fx
+    except Exception:
+        pass
+    try:
         # Same reason: this branch imports transformers itself further down, so a --no-deps floor miss would
         # surface here with the same wrong remedy.
         from .import_fixes import check_transformers_dependency_versions as _check_tf_deps
         _check_tf_deps()
         del _check_tf_deps
+    except Exception:
+        pass
+    try:
+        # Same reason: remote code reaches transformers' get_class_in_module on this platform
+        # too, and the wrap is what restores the image helpers transformers 5 stopped
+        # re-exporting. Costs nothing until a checkpoint's own modeling file is loaded.
+        from .import_fixes import (
+            fix_transformers5_image_processing_reexports as _fix_image_reexports,
+        )
+        _fix_image_reexports()
+        del _fix_image_reexports
+    except Exception:
+        pass
+    try:
+        # Same reason: 4.x remote configs are built here too, and their validators read plain RoPE
+        # as rope_scaling None. is_torch_fx_available is left to unsloth_zoo.mlx.loader.
+        from .import_fixes import (
+            fix_transformers_remote_rope_scaling_none as _fix_remote_rope_scaling,
+        )
+        _fix_remote_rope_scaling()
+        del _fix_remote_rope_scaling
+    except Exception:
+        pass
+    try:
+        from .import_fixes import fix_transformers5_legacy_config_types as _fix_legacy_types
+        _fix_legacy_types()
+        del _fix_legacy_types
+    except Exception:
+        pass
+    try:
+        # Same reason: MLX loads hub configs and saves tokenizers through transformers too.
+        from .import_fixes import (
+            fix_transformers_untrusted_config_fields as _fix_untrusted_config,
+            fix_transformers_chat_template_path_traversal as _fix_template_names,
+            fix_transformers_tokenizer_config_vocab_file_override as _fix_vocab_paths,
+        )
+
+        _fix_untrusted_config()
+        _fix_template_names()
+        _fix_vocab_paths()
+        del _fix_untrusted_config, _fix_template_names, _fix_vocab_paths
     except Exception:
         pass
     try:
@@ -284,10 +374,20 @@ if _IS_MLX:
     TextPreprocessor = _raw_text.TextPreprocessor
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
+    def _mlx_from_pretrained(*args, **kwargs):
+        # zoo's loader picks the default dtype by device name only; fill it from the GPU family.
+        if not is_bfloat16_supported():
+            if len(args) > 2:
+                if args[2] is None:
+                    args = (*args[:2], "float16", *args[3:])
+            elif kwargs.get("dtype") is None:
+                kwargs["dtype"] = "float16"
+        return FastMLXModel.from_pretrained(*args, **kwargs)
+
     class FastLanguageModel:
         @staticmethod
         def from_pretrained(*args, **kwargs):
-            return FastMLXModel.from_pretrained(*args, **kwargs)
+            return _mlx_from_pretrained(*args, **kwargs)
 
         @staticmethod
         def get_peft_model(*args, **kwargs):
@@ -301,7 +401,7 @@ if _IS_MLX:
         @staticmethod
         def from_pretrained(*args, **kwargs):
             kwargs.setdefault("text_only", False)
-            return FastMLXModel.from_pretrained(*args, **kwargs)
+            return _mlx_from_pretrained(*args, **kwargs)
 
         @staticmethod
         def for_training(*args, **kwargs):
@@ -323,10 +423,29 @@ if _IS_MLX:
                 "Unsloth: FastSentenceTransformer is not yet supported on MLX."
             )
 
+    # Decision models (Laya, Clef): models/decision_mlx.py, by path because unsloth.models needs torch.
+    _decision_spec = importlib.util.spec_from_file_location(
+        "unsloth._decision_mlx",
+        os.path.join(os.path.dirname(__file__), "models", "decision_mlx.py"),
+    )
+    _decision_mlx = importlib.util.module_from_spec(_decision_spec)
+    sys.modules[_decision_spec.name] = _decision_mlx
+    _decision_spec.loader.exec_module(_decision_mlx)
+    FastDecisionModel = _decision_mlx.FastDecisionModel
+    DecisionTrainer = _decision_mlx.DecisionTrainer
+    del _decision_spec
+
     def is_bfloat16_supported():
         try:
+            import re
             import mlx.core as mx
-            name = mx.device_info().get("device_name", "") or ""
+
+            info = mx.device_info() if hasattr(mx, "device_info") else mx.metal.device_info()
+            # Family over name (VMs report "Apple Paravirtual device"); matches zoo's _apple_bf16_supported.
+            match = re.fullmatch(r"applegpu_g(\d+)[a-z]", str(info.get("architecture", "") or ""))
+            if match:
+                return int(match.group(1)) >= 15
+            name = info.get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:
             return True
@@ -549,6 +668,7 @@ if _IS_MLX:
     _MLX_TRAINING_CONFIG_FIELDS = {_field.name for _field in _dataclasses.fields(MLXTrainingConfig)}
     _MLX_TRAINING_ARGUMENT_ALIASES = {
         "max_length": "max_seq_length",
+        "loraplus_lr_ratio": "lora_plus_ratio",
     }
     _MLX_COMPAT_EXTRA_ARGUMENTS = frozenset(
         (
@@ -600,9 +720,9 @@ if _IS_MLX:
         strategy = strategy.rsplit(".", 1)[-1]
         return strategy in ("no", "none", "false")
 
+    # Mirrors zoo's _normalize_mlx_optimizer_name; adamw_8bit is a real MLX optimizer, never collapse it.
     _MLX_ADAMW_OPTIMIZER_ALIASES = frozenset(
         (
-            "adamw_8bit",
             "paged_adamw_8bit",
             "adamw_bnb_8bit",
             "paged_adamw_32bit",
@@ -619,6 +739,8 @@ if _IS_MLX:
     def _normalize_mlx_training_value(key, value):
         if key == "eval_steps" and value is None:
             return 0
+        if key == "lora_plus_ratio" and value is None:
+            return 0.0
         if key == "num_train_epochs" and value is not None and not isinstance(value, bool):
             try:
                 epochs = float(value)
@@ -634,8 +756,7 @@ if _IS_MLX:
         try:
             return _normalize_mlx_optimizer_name(value)
         except ValueError:
-            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names and keep
-            # notebook defaults (optim="adamw_8bit") working.
+            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names.
             opt = str(getattr(value, "value", value) or "adamw").strip().lower()
             opt = opt.rsplit(".", 1)[-1].replace("-", "_")
             if opt in _MLX_ADAMW_OPTIMIZER_ALIASES:
@@ -1551,10 +1672,20 @@ else:
     from ._gpu_init import *
     from ._gpu_init import __version__
 
+    # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these, and
+    # `Accelerator(fsdp_plugin = ...)` leaves no launcher env to gate on. Inert unless FSDP2 wraps.
+    try:
+        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+        _install_fsdp2_hooks()
+        del _install_fsdp2_hooks
+    except Exception:
+        pass
+
     def get_gpu_memory_stats():
-        """Return CUDA/ROCm/XPU device stats, peak memory, and total memory in GiB."""
+        """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""
         try:
             import torch
+
             if hasattr(torch, "xpu") and torch.xpu.is_available():
                 props = torch.xpu.get_device_properties(0)
                 peak = (
@@ -1569,19 +1700,31 @@ else:
                 peak = torch.cuda.max_memory_reserved()
                 total = getattr(props, "total_memory", 0)
                 return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
+            # Last, so no existing device changes branch. npu fell through to a fake 1 GiB.
+            if hasattr(torch, "npu") and torch.npu.is_available():
+                props = torch.npu.get_device_properties(0)
+                peak = (
+                    torch.npu.max_memory_reserved()
+                    if hasattr(torch.npu, "max_memory_reserved")
+                    else torch.npu.max_memory_allocated()
+                )
+                total = getattr(props, "total_memory", 0)
+                return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
         except Exception:
             pass
         stats = _UnslothDeviceStats("Unknown GPU", 0)
         return stats, 0.0, 1.0
 
     def clear_gpu_memory():
-        """Clear cached GPU memory on CUDA, ROCm, or XPU when available."""
+        """Clear cached GPU memory on CUDA, ROCm, XPU, or NPU when available."""
         try:
             import torch
             if hasattr(torch, "xpu") and torch.xpu.is_available():
                 torch.xpu.empty_cache()
             elif hasattr(torch, "cuda") and torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch, "npu") and torch.npu.is_available():
+                torch.npu.empty_cache()
         except Exception:
             pass
 

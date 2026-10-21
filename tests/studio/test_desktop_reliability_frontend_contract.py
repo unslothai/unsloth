@@ -3,9 +3,16 @@
 
 """Static contracts for focused packaged-desktop reliability behavior."""
 
+import functools
 import re
 from pathlib import Path
-from tests.studio._js_source import binding_joining, gates_the_markup
+from tests.studio._js_source import (
+    attribute_expressions,
+    binding_joining,
+    boolean_table,
+    expand_bindings,
+    gates_the_markup,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -26,7 +33,7 @@ TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 SHEET = FRONTEND / "components/ui/sheet.tsx"
 RESEARCH_ACTIVITY_PANEL = FRONTEND / "features/chat/components/research-activity-panel.tsx"
 RESPONSE_DETAILS_SHEET = FRONTEND / "components/assistant-ui/message-response-details-sheet.tsx"
-DOCUMENT_PREVIEW_SHEET = FRONTEND / "features/rag/components/document-preview-sheet.tsx"
+INTERFACE_SCALE_RUNTIME = FRONTEND / "features/settings/lib/interface-scale-runtime.ts"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
@@ -55,24 +62,45 @@ PASSWORD_DIALOG = FRONTEND / "features/settings/components/change-password-dialo
 GENERAL_TAB = FRONTEND / "features/settings/tabs/general-tab.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
-# The DataTransfer reading half moved here when long pastes became attachments
-# (#8472). Both halves are still one contract, so read them as one.
 CLIPBOARD_PAYLOAD = FRONTEND / "features/chat/utils/clipboard-payload.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
+CHAT_HEADER_MENU = FRONTEND / "features/chat/components/chat-header-menu.tsx"
+BROWSER_TOGGLE = FRONTEND / "features/browser/browser-toggle.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
 
 
-def _chrome_style_blocks(source: str) -> dict[str, dict[str, str]]:
-    """Each ``const <NAME>_STYLE = { ... } as CSSProperties`` block as a var -> value map.
-
-    Per block, so a value is only ever compared against the others that ship with it.
-    """
+def _scale_constants() -> dict[str, str]:
+    """Reads the mac chrome constants from their one source, so 34px is not repeated here."""
+    # Raw: native chrome is not UI-scaled, so a respelled 34px must not collapse back here.
+    source = _window_chrome_source(INTERFACE_SCALE_RUNTIME)
+    numbers = dict(re.findall(r"export const (\w+_PX) = (\d+);", source))
     return {
-        name: dict(re.findall(r'"(--[\w-]+)":\s*"([^"]+)"', body))
+        name: re.sub(r"\$\{(\w+)\}", lambda m: numbers.get(m.group(1), m.group(0)), body)
+        for name, body in re.findall(r"export const (\w+_VAR) = `([^`]+)`;", source)
+    }
+
+
+def _chrome_style_blocks(source: str) -> dict[str, dict[str, str]]:
+    """Resolves template and imported constant values, which would otherwise silently read as absent."""
+    constants = _scale_constants()
+
+    def resolve(raw: str) -> str:
+        raw = raw.strip()
+        if raw[:1] in ('"', "`"):
+            raw = raw[1:-1]
+        return re.sub(
+            r"\$\{(\w+)\}", lambda m: constants.get(m.group(1), m.group(0)), constants.get(raw, raw)
+        )
+
+    return {
+        name: {
+            var: resolve(value)
+            for var, value in re.findall(r'"(--[\w-]+)":\s*(`[^`]*`|"[^"]*"|\w+)', body)
+        }
         for name, body in re.findall(
             r"const (\w+_STYLE) = \{(.*?)\} as CSSProperties;", source, re.S
         )
@@ -86,16 +114,24 @@ def _titlebar_nav_button_px(source: str) -> int | None:
 
 
 def _px(value: str | None) -> int | None:
-    """*value* as whole pixels, or None if it is not a px literal (rem, calc, absent)."""
-    match = re.fullmatch(r"(\d+)px", (value or "").strip())
-    return int(match.group(1)) if match else None
+    """Valid only at 100% scale: the mac chrome runtime divides its px fallback by webview zoom."""
+    text = (value or "").strip()
+    for pattern in (
+        r"(\d+)px",
+        r"var\(--[\w-]+,\s*(\d+)px\)",
+    ):
+        match = re.fullmatch(pattern, text)
+        if match:
+            return int(match.group(1))
+    match = re.fullmatch(r"calc\((\d+)px\s*\+\s*var\(--[\w-]+,\s*(\d+)px\)\)", text)
+    return int(match.group(1)) + int(match.group(2)) if match else None
 
 
 def test_desktop_update_offer_remains_actionable_from_settings():
-    provider = APP_PROVIDER.read_text(encoding = "utf-8")
-    context = TAURI_UPDATE_CONTEXT.read_text(encoding = "utf-8")
-    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
-    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
+    provider = _ui_source(APP_PROVIDER)
+    context = _ui_source(TAURI_UPDATE_CONTEXT)
+    hook = _ui_source(TAURI_UPDATE_HOOK)
+    settings = _ui_source(DESKTOP_UPDATE_CONTROL)
 
     assert "<TauriUpdateContext.Provider value={update}>" in provider
     context_start = provider.index("<TauriUpdateContext.Provider value={update}>")
@@ -103,7 +139,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "{appContent}" in provider[context_start:context_end]
     assert "appContent={" in provider
     assert "useContext(TauriUpdateContext)" in context
-    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000) and installUpdate().
+    # Scoped: bare substrings also match setTimeout(checkForUpdate, 5000) and installUpdate().
     assert "checkForUpdate," in hook.split("  return {", 1)[1]
     manual = hook.split("async function checkForUpdate()", 1)[1]
     assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
@@ -116,21 +152,16 @@ def test_desktop_update_offer_remains_actionable_from_settings():
 
 
 def test_desktop_update_search_has_a_stable_general_tab_destination():
-    general = GENERAL_SETTINGS.read_text(encoding = "utf-8")
+    general = _ui_source(GENERAL_SETTINGS)
 
     assert 'data-settings-label={t("settings.about.updates")}' in general
     assert "<DesktopUpdateControl />" in general
 
 
 def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
-    """resolveUpdatePolicy fails safe to manual_linux_package on every platform.
-
-    Acting on that guess routes macOS, Windows and AppImage into the Linux-only
-    command, which returns Ok(None) off Linux, so Settings would claim the app
-    was up to date while an update was waiting.
-    """
-    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
-    policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
+    """A guessed policy must keep the in-app path, or Settings reports up to date while one waits."""
+    hook = _ui_source(TAURI_UPDATE_HOOK)
+    policy = _ui_source(DESKTOP_UPDATE_POLICY)
 
     assert "resolved: boolean" in hook
     assert "resolved: false" in hook
@@ -140,7 +171,6 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
         1,
     )[1]
     give_up = manual_branch.split("checkDesktopUpdate()", 1)[0]
-    # Only a resolved policy may end the check without the in-app updater.
     assert "if (resolved) {" in give_up
     assert 'updateStatus("idle");' in give_up
     assert "await checkDesktopUpdate();" in manual_branch
@@ -150,7 +180,7 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
 
 
 def test_settings_update_button_is_inert_while_an_install_runs():
-    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
+    settings = _ui_source(DESKTOP_UPDATE_CONTROL)
 
     assert 'update.status === "updating-backend"' in settings
     assert 'update.status === "downloading"' in settings
@@ -160,14 +190,13 @@ def test_settings_update_button_is_inert_while_an_install_runs():
 
 
 def test_desktop_update_check_failures_are_retryable():
-    hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
-    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
-    policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
+    hook = _ui_source(TAURI_UPDATE_HOOK)
+    settings = _ui_source(DESKTOP_UPDATE_CONTROL)
+    policy = _ui_source(DESKTOP_UPDATE_POLICY)
 
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
     assert 't("settings.about.update.retryCheck")' in settings
-    # The reason must reach the user without guessing that every failure is a network problem.
     assert "description = update.checkError ?? label;" in settings
     assert 't("settings.about.update.desktopCheckFailedDescription")' not in settings
     assert "server returned HTTP {status}" in policy
@@ -177,12 +206,12 @@ def test_desktop_update_check_failures_are_retryable():
 
 
 def test_file_actions_route_through_native_commands_only_in_tauri():
-    helper = NATIVE_FILES.read_text(encoding = "utf-8")
-    history = CHAT_EXPORT.read_text(encoding = "utf-8")
-    data_tab = DATA_TAB.read_text(encoding = "utf-8")
-    prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
+    helper = _ui_source(NATIVE_FILES)
+    history = _ui_source(CHAT_EXPORT)
+    data_tab = _ui_source(DATA_TAB)
+    prompt_storage = _ui_source(PROMPT_STORAGE)
 
-    projects = (FRONTEND / "features/chat/projects-page.tsx").read_text(encoding = "utf-8")
+    projects = _ui_source(FRONTEND / "features/chat/projects-page.tsx")
 
     assert 'invoke<string | null>("save_native_file", bytes, {' in helper
     assert '"x-unsloth-default-name"' in helper
@@ -202,13 +231,15 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
 
     assert "pickNativeChatImport" in projects
     assert "if (!isTauri)" in projects
-    # Browser builds retain the existing hidden-input route.
     assert 'type="file"' in data_tab
-    # Open WebUI exports are .json arrays, so the picker takes that too.
-    assert 'accept=".json,.jsonl,.ndjson,.csv"' in data_tab
+    # Open WebUI exports are .json arrays.
+    assert 'accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"' in data_tab
 
-    native_dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
-    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv"]' in native_dialogs
+    native_dialogs = _ui_source(NATIVE_DIALOGS)
+    assert (
+        'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md", "markdown"]'
+        in native_dialogs
+    )
     assert "InvokeBody::Raw" in native_dialogs
 
     assert ".tempfile_in(parent)" in native_dialogs
@@ -217,9 +248,9 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
 
 
 def test_media_galleries_save_natively_with_feedback():
-    images_page = IMAGES_PAGE.read_text(encoding = "utf-8")
-    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
-    reencode = images_page.split("async function reencodeImage(", 1)[1].split(
+    images_page = _ui_source(IMAGES_PAGE)
+    video_page = _ui_source(VIDEO_PAGE)
+    reencode = images_page.split("async function encodeExport(", 1)[1].split(
         "\n}\n\nasync function downloadImage", 1
     )[0]
     download = images_page.split("async function downloadImage(", 1)[1].split(
@@ -230,9 +261,10 @@ def test_media_galleries_save_natively_with_feedback():
     )[0]
 
     assert "await downloadUrl(src, filename);" in download
-    assert "await downloadFile(outputBlob, filename, outputBlob.type);" in download
-    assert "const originalBlob = await fetchGalleryBlob(image.url);" in download
-    assert "await downloadFile(originalBlob, filename, originalBlob.type);" in download
+    # WebKit cannot refetch the cached object URL, so only the unstamped browser PNG reuses src.
+    assert 'await downloadFile(output, filename, output.type || "image/png");' in download
+    assert "await fetchGalleryBlob(image.url)" in download
+    assert "if (src && !isTauri)" in download
     assert "blob.type !== `image/${format}`" in reencode
     assert "isDownloadCancelled(error)" in download
     assert "if (isTauri)" in download
@@ -245,27 +277,66 @@ def test_media_galleries_save_natively_with_feedback():
     assert "function saveLink(" not in video_page
 
 
-def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
-    app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
-    prompt_storage = PROMPT_STORAGE.read_text(encoding = "utf-8")
-    thread = THREAD.read_text(encoding = "utf-8")
-    thread_sidebar = THREAD_SIDEBAR.read_text(encoding = "utf-8")
-    shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
+def test_audio_clips_and_stems_save_natively():
+    save_audio = _ui_source(FRONTEND / "features/audio/save-audio.ts")
+    helper = _ui_source(NATIVE_FILES)
+    dialogs = _ui_source(NATIVE_DIALOGS)
+    main_rs = (REPO / "studio/src-tauri/src/main.rs").read_text(encoding = "utf-8")
 
-    data_tab = DATA_TAB.read_text(encoding = "utf-8")
-    projects = (FRONTEND / "features/chat/projects-page.tsx").read_text(encoding = "utf-8")
+    # desktop re-reads blob URLs because the page CSP blocks fetch()
+    assert 'isTauri && url.startsWith("blob:")' in save_audio
+    assert "await downloadBlobStreaming(blob, filename);" in save_audio
+    assert "await downloadUrl(url, filename);" in save_audio
+    assert "if (isDownloadCancelled(error)) return;" in save_audio
+    # tests/audio-stem-mixer-state.test.ts forbids raw anchors in features/audio
+    for page in ("hooks/use-audio-gallery.tsx", "pages/separate-page.tsx"):
+        assert "saveAudio(" in _ui_source(FRONTEND / "features/audio" / page)
+
+    streaming = helper[helper.index("export async function downloadBlobStreaming") :]
+    assert ".slice(offset, offset + NATIVE_FILE_CHUNK_BYTES)" in streaming
+    assert "NATIVE_FILE_CHUNK_BYTES" in streaming
+    assert "await content.arrayBuffer()" not in streaming
+    for command in (
+        "begin_native_file_save",
+        "append_native_file_save_chunk",
+        "finish_native_file_save",
+        "cancel_native_file_save",
+    ):
+        assert f'"{command}"' in streaming
+        assert f"native_file_dialogs::{command}," in main_rs
+    assert "MAX_NATIVE_FILE_SAVE_CHUNK_BYTES" in dialogs
+    assert "staged_temp_file(&destination)" in dialogs
+    assert "spawn_blocking(move || append_native_save" in dialogs
+
+
+def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
+    prompt_storage = _ui_source(PROMPT_STORAGE)
+    thread = _ui_source(THREAD)
+    thread_sidebar = _ui_source(THREAD_SIDEBAR)
+    shared_composer = _ui_source(SHARED_COMPOSER)
+
+    data_tab = _ui_source(DATA_TAB)
+    projects = _ui_source(FRONTEND / "features/chat/projects-page.tsx")
     assert "async function downloadBlob(" in prompt_storage
     download_blob = prompt_storage.split("async function downloadBlob(", 1)[1].split("\n}\n", 1)[0]
     assert "return downloadFile(" in download_blob
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
-    for source in (app_sidebar, thread, thread_sidebar, shared_composer, data_tab, projects):
+    # #12122 moved chat export into the Library and project menu
+    chats_library = _ui_source(FRONTEND / "features/library/chats/chats-library.tsx")
+    project_menu = _ui_source(FRONTEND / "features/chat/components/project-menu-items.tsx")
+    for source in (thread, thread_sidebar, shared_composer, data_tab, projects):
         assert "isDownloadCancelled(error)" in source
+    assert "if (!isDownloadCancelled(err)) toast.error(" in chats_library
+    assert "if (!isDownloadCancelled(error)) toast.error(" in project_menu
     assert "const handleExport = useCallback(async () =>" in prompt_storage
     assert prompt_storage.count("await export") >= 12
-    assert "await Promise.all(" not in app_sidebar
-    assert "for (const id of ids)" in app_sidebar
+    # One native save at a time: concurrent exports would open the dialogs together.
+    assert "for (const id of threadIds) await exportConversationByFormat(" in chats_library
+    assert "await exportThreads(" in chats_library
+    assert not re.search(r"Promise\.\w+\((?:(?!;).)*?\bexport\w*\(", chats_library, re.S)
+    assert "await exportThreads(" in project_menu
     assert prompt_storage.count("await downloadBlob(") >= 5
 
     assert "await downloadBlob(zipped," in prompt_storage
@@ -280,11 +351,11 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
 
 
 def test_generated_download_buttons_use_the_native_save_boundary():
-    helper = NATIVE_FILES.read_text(encoding = "utf-8")
-    training = TRAINING_CONFIG_ACTIONS.read_text(encoding = "utf-8")
-    markdown = MARKDOWN_TEXT.read_text(encoding = "utf-8")
-    image = IMAGE.read_text(encoding = "utf-8")
-    audio = AUDIO_PLAYER.read_text(encoding = "utf-8")
+    helper = _ui_source(NATIVE_FILES)
+    training = _ui_source(TRAINING_CONFIG_ACTIONS)
+    markdown = _ui_source(MARKDOWN_TEXT)
+    image = _ui_source(IMAGE)
+    audio = _ui_source(AUDIO_PLAYER)
 
     assert "downloadFile(bytes, filename" in helper
     assert "browserUrlDownload(url, filename)" in helper
@@ -307,26 +378,21 @@ def test_generated_download_buttons_use_the_native_save_boundary():
 
 
 def test_gallery_video_links_are_absolute_and_saved_natively():
-    video_api = VIDEO_API.read_text(encoding = "utf-8")
-    video_page = VIDEO_PAGE.read_text(encoding = "utf-8")
-    rag_api = RAG_API.read_text(encoding = "utf-8")
+    video_api = _ui_source(VIDEO_API)
+    video_page = _ui_source(VIDEO_PAGE)
+    rag_api = _ui_source(RAG_API)
 
-    # The backend mints this link relative so a proxy can serve it. Its consumers are
-    # <video src> and the download, none of which go through authFetch, so a relative
-    # path under Tauri resolves against the webview and yields the SPA shell.
+    # The link is minted relative; under Tauri a relative src resolves to the SPA shell.
     assert "return apiUrl(body.url);" in video_api
     assert 'from "@/lib/api-base"' in video_api
-    # The same fix the RAG document preview already carries.
     assert "return apiUrl(data.url);" in rag_api
 
-    # An absolute link is cross-origin, where the download attribute stops saving, so the
-    # MP4 goes native. Streaming, not downloadUrl: a clip is capped at 2048x2048 x 1024
-    # frames, too big to buffer for IPC, and the chooser must not wait on the body.
-    helper = NATIVE_FILES.read_text(encoding = "utf-8")
+    # Cross-origin links disable the download attribute. Streaming, not downloadUrl: clips
+    # are too big to buffer for IPC.
+    helper = _ui_source(NATIVE_FILES)
     assert "downloadUrlStreaming(src, exportFilename(video, format))" in video_page
     assert '"save_native_file_from_url"' in helper
     assert "isDownloadCancelled(err)" in video_page
-    # Converted exports cross the same native boundary after the backend returns their blob.
     assert "await downloadFile(blob, exportFilename(video, format), blob.type);" in video_page
     assert "URL.createObjectURL(blob)" not in video_page
 
@@ -336,9 +402,7 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
         "media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*" in tauri_config
     )
 
-    # The save dialog now offers these to video, not just to the audio player, and the
-    # streaming command is registered and pinned to the local backend.
-    dialogs = NATIVE_DIALOGS.read_text(encoding = "utf-8")
+    dialogs = _ui_source(NATIVE_DIALOGS)
     assert '("MPEG-4 video or audio", filter_extensions(["m4a", "mp4"]))' in dialogs
     assert '("WebM video or audio", filter_extensions(["webm"]))' in dialogs
     assert "async fn stream_url_to_path" in dialogs
@@ -346,12 +410,11 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
     assert "reqwest::Url::parse(url)" in dialogs
     assert "parsed.username().is_empty()" in dialogs
     assert "parsed.password().is_some()" in dialogs
-    # The chooser has to come first, or the user waits on the body before being asked where.
+    # The chooser comes first, or the user waits on the body before being asked where.
     streaming = dialogs[dialogs.index("pub async fn save_native_file_from_url") :]
     assert streaming.index(".save_file(") < streaming.index("stream_url_to_path(&url")
-    # No proxy (the signed URL must not reach one) and no redirects (they would leave loopback
-    # after the check). read_timeout, not timeout: it bounds each chunk, so a backend that goes
-    # quiet cannot hang the save while a legitimately large clip still finishes.
+    # No proxy and no redirects (would leave loopback). read_timeout bounds each chunk, so a
+    # quiet backend cannot hang the save but a large clip finishes.
     loopback = (REPO / "studio/src-tauri/src/loopback_http.rs").read_text(encoding = "utf-8")
     assert "fn streaming_client" in loopback
     assert "redirect(reqwest::redirect::Policy::none())" in loopback
@@ -364,12 +427,10 @@ def test_gallery_video_links_are_absolute_and_saved_natively():
 
 
 def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
-    helper = CLIPBOARD_FILES.read_text(encoding = "utf-8") + CLIPBOARD_PAYLOAD.read_text(
-        encoding = "utf-8"
-    )
-    thread = THREAD.read_text(encoding = "utf-8")
-    shared_composer = SHARED_COMPOSER.read_text(encoding = "utf-8")
-    capabilities = TAURI_CAPABILITIES.read_text(encoding = "utf-8")
+    helper = _ui_source(CLIPBOARD_FILES) + _ui_source(CLIPBOARD_PAYLOAD)
+    thread = _ui_source(THREAD)
+    shared_composer = _ui_source(SHARED_COMPOSER)
+    capabilities = _ui_source(TAURI_CAPABILITIES)
 
     for contract in (
         "clipboardData.files",
@@ -398,14 +459,21 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     assert "aui.composer().addAttachment(file)" in thread
     assert "onPaste={handleFilePaste}" in shared_composer
     assert "pasteClipboardFiles" in shared_composer
-    assert "addFiles(files)" in shared_composer
+    # An untracked add must sit inside trackAttaching or a send can race the paste.
+    paste = shared_composer[shared_composer.index("const handleFilePaste") :]
+    paste = paste[: paste.index("\n  );\n")]
+    assert "pasteClipboardFiles(" in paste
+    added = re.findall(r"\b(addFiles|addFilesUntracked)\(files\)", paste)
+    assert added, "the compare composer's paste handler no longer adds the pasted files"
+    if "addFilesUntracked" in added:
+        assert "trackAttaching(" in paste
     assert capabilities.count('"clipboard-manager:allow-read-image"') == 1
     assert '"clipboard-manager:allow-read-text"' not in capabilities
 
 
 def test_native_clipboard_bridge_is_bounded_and_registered():
-    native_clipboard = NATIVE_CLIPBOARD.read_text(encoding = "utf-8")
-    tauri_main = TAURI_MAIN.read_text(encoding = "utf-8")
+    native_clipboard = _ui_source(NATIVE_CLIPBOARD)
+    tauri_main = _ui_source(TAURI_MAIN)
 
     for contract in (
         "MAX_CLIPBOARD_FILES",
@@ -433,7 +501,7 @@ def test_native_clipboard_bridge_is_bounded_and_registered():
 
 
 def test_mac_dock_reopens_hidden_main_window():
-    source = TAURI_MAIN.read_text(encoding = "utf-8")
+    source = _ui_source(TAURI_MAIN)
     show_helper = source.split("fn show_main_window", 1)[1].split("\n}\n", 1)[0]
     run_handler = source.split(".run(|app, event|", 1)[1]
 
@@ -446,9 +514,8 @@ def test_mac_dock_reopens_hidden_main_window():
 
 
 def test_windows_browser_guard_runs_only_in_release_builds():
-    # WebView2 is not reachable from Python, so pin the release-only call that
-    # keeps refresh controls available during development.
-    source = TAURI_MAIN.read_text(encoding = "utf-8")
+    # WebView2 is not reachable from Python, so pin the release-only call.
+    source = _ui_source(TAURI_MAIN)
 
     assert "fn setup_windows_browser_guards" in source
     before_call = source.split("setup_windows_browser_guards(app)?;", 1)[0]
@@ -456,8 +523,8 @@ def test_windows_browser_guard_runs_only_in_release_builds():
 
 
 def test_desktop_manages_the_remote_password_through_the_account_dialog():
-    section = REMOTE_ACCESS_SECTION.read_text(encoding = "utf-8")
-    dialog = PASSWORD_DIALOG.read_text(encoding = "utf-8")
+    section = _ui_source(REMOTE_ACCESS_SECTION)
+    dialog = _ui_source(PASSWORD_DIALOG)
 
     row = section.split("function RemotePasswordRow", 1)[1].split(
         "export function RemoteAccessSection", 1
@@ -465,12 +532,10 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
     assert "if (!(isTauri && status)) {" in row
     assert "initial={status.passwordPending}" in row
     assert "<RemotePasswordRow status={status} onDone={refreshStatus} />" in section
-    assert "{isTauri ? null : (" in GENERAL_TAB.read_text(encoding = "utf-8")
-    # A password change rotates credentials outside the polling requests.
+    assert "{isTauri && isOwner ? null : (" in _ui_source(GENERAL_TAB)
     refresh = section.split("const refreshStatus = useCallback(", 1)[1].split("}, []);", 1)[0]
     assert "mutationEpoch.current += 1;" in refresh
     assert "setPollRevision(" in refresh
-    # Initial mode sends no current password; the web flow it serves keeps it.
     body = dialog.split("function changePasswordBody", 1)[1].split("function dialogCopy", 1)[0]
     assert '? [["new_password", nextPassword]]' in body
     assert '["current_password", currentPassword],' in body
@@ -487,11 +552,9 @@ def test_desktop_manages_the_remote_password_through_the_account_dialog():
 
 
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
-    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = _ui_source(APP_PROVIDER)
 
-    # The gate has been renamed once already (showApp -> canMountApp) and gained a second
-    # clause, so pin the CONDITION that makes the app wait for auth, not the name in front
-    # of it. A rename or a rewrap is a refactor; dropping desktopAuthReady is the regression.
+    # Pin the condition (desktopAuthReady), not the gate's name, which has been renamed.
     gate = binding_joining(source, "&&", {'status === "running"', "desktopAuthReady"})
     assert gate, "no binding requires both a running status and desktopAuthReady"
     assert gates_the_markup(
@@ -506,7 +569,7 @@ def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
 
 
 def test_full_app_layout_uses_its_own_initialized_marker():
-    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = _ui_source(APP_PROVIDER)
 
     assert 'invoke<boolean>("has_initialized_app_window_layout")' in source
     setup_layout = source.split("async function showSetupWindow", 1)[1].split(
@@ -520,7 +583,7 @@ def test_full_app_layout_uses_its_own_initialized_marker():
 
 
 def test_first_app_layout_survives_a_stale_setup_window_size():
-    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = _ui_source(APP_PROVIDER)
     bounds_helper = source.split("async function enforceWindowSizeBounds", 1)[1].split(
         "async function applyAppWindowLayout", 1
     )[0]
@@ -540,47 +603,61 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
     assert "enforceWindowSizeBounds(" in app_layout
     finalize_call = app_layout.split("finalizeAppWindowLayout({", 1)[1].split("});", 1)[0]
     assert "measured," in finalize_call
-    # Limit the check to this call's arguments.
     bounds_call = app_layout.split("enforceWindowSizeBounds(", 1)[1].split(");", 1)[0]
     assert "bounds," in bounds_call
     assert "requestedSize," in bounds_call
 
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
-    source = TITLEBAR.read_text(encoding = "utf-8")
+    source = _ui_source(TITLEBAR)
 
-    assert 'showSidebarSurface && !pinned ? "7rem" : sidebarWidth' in source
+    # Read raw: the slot must stay `max(7rem, calc(7rem * scale))`; a bare 7rem is overrun
+    # by the scaling buttons at larger settings.
+    assert re.search(
+        r"showSidebarSurface && !pinned\s*\?\s*"
+        r'"max\(\s*7rem\s*,\s*calc\(\s*7rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)\s*\)"'
+        r"\s*:\s*sidebarWidth",
+        TITLEBAR.read_text(encoding = "utf-8"),
+    ), "the unpinned sidebar surface no longer sizes the titlebar navigation slot from 7rem"
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
-    assert "const contentBorderLeft = pinned" in source
-    assert ': "0px";' in source
+    assert "const cornerLeft = `calc(${sidebarWidth} - 1px)`;" in source
 
-    # Keep the decoration below z-50 modals and outside the z-[70] header.
     assert 'data-slot="window-titlebar-decoration"' in source
     decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
         'className="pointer-events-none absolute inset-x-0 '
-        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
-    # The border is always visible.
-    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
-    # The backing and corner only appear when pinned.
-    assert decoration.count("{pinned && (") == 2
-    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
     assert (
-        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
+        '"absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-transparent",'
         in decoration
     )
+    # A border lighter than both surfaces reads as a white line on Windows.
+    assert "dark:border-white" not in decoration
+    assert "dark:border-t-white" not in decoration
+    # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
+    assert re.search(r'pinned &&\s*"rounded-tl-\[12px\] border-l"', decoration)
+    assert re.search(
+        r'className="absolute top-\[12px\] '
+        r"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)-12px\)\] "
+        r'w-0 border-l border-sidebar-edge dark:border-transparent"\s*'
+        r"style=\{\{ left: cornerLeft \}\}",
+        decoration,
+    )
+    assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
+    assert "style={{ left: cornerLeft }}" in decoration
+    # The sidebar-coloured mask outside the corner only appears when pinned.
+    assert decoration.count("{pinned && (") == 2
+    assert "transparent_11px,var(--color-sidebar)_12px" in decoration
 
 
 def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
-    titlebar = TITLEBAR.read_text(encoding = "utf-8")
-    sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
+    titlebar = _ui_source(TITLEBAR)
+    sidebar = _ui_source(APP_SIDEBAR)
     header = sidebar.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
 
-    # The names, not the whole import list: #8025 added Minus/Square/X to the
-    # same line for the window controls and this went red on every open PR.
     lucide = re.search(r"import \{([^}]*)\} from \"lucide-react\";", titlebar)
     assert lucide is not None, "titlebar no longer imports from lucide-react"
     icons = {name.strip() for name in lucide.group(1).split(",")}
@@ -593,9 +670,32 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
 
 
+def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
+    label = chat_page.index('aria-label="New chat"')
+    start = chat_page.rindex("<Button", 0, label)
+    # First `>` outside braces and quotes: arrow functions in props hold `>`.
+    depth, quote, end = 0, "", start
+    for end in range(start, len(chat_page)):
+        ch = chat_page[end]
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == ">" and depth == 0:
+            break
+    assert label < end, 'aria-label="New chat" is not on the <Button> opening tag'
+    match = re.search(r'className="([^"]*)"', chat_page[start:end])
+    assert match, "the New chat button has no static className"
+    return match.group(1).split()
+
+
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
-    titlebar = TITLEBAR.read_text(encoding = "utf-8")
-    chat_page = CHAT_PAGE.read_text(encoding = "utf-8")
+    titlebar = _ui_source(TITLEBAR)
+    chat_page = _ui_source(CHAT_PAGE)
     navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
         "export function WindowTitlebar", 1
     )[0]
@@ -613,31 +713,32 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert "window.setTimeout(() =>" in titlebar
     assert "scheduleMaximizedRefresh();" in titlebar
 
-    # The navigation box's left inset is deliberately not asserted here. Whether that
-    # element ends up with one is a computed style: it depends on the tailwind-merge
-    # cascade, the important modifier, whether an arbitrary value is valid CSS, whether
-    # the class is hoisted into a const or interpolated into a template hole, and
-    # whether DesktopTitlebarNavigation applies it from its own className prop. None of
-    # that is decidable from this file, and the exact-value form this replaces failed
-    # #10321 for retuning 12px to 16px, which is what an alignment pass is for. A
-    # computed-style check belongs in a driver that renders the titlebar.
+    # The navigation inset is a computed style not decidable from source; not asserted here.
     assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
 
     assert "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]" in chat_page
-    assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
-        encoding = "utf-8"
-    )
-    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
+    # 188 is the number, not the spelling: it ships as calc(110px + ...78px).
+    insets = {
+        name: _px(values["--studio-collapsed-chat-controls-inset"])
+        for name, values in _chrome_style_blocks(_ui_source(APP_PROVIDER)).items()
+        if "--studio-mac-traffic-light-inset" in values
+    }
+    assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
+    assert set(insets.values()) == {188}, insets
     assert 'aria-label="New chat"' in chat_page
+    new_chat_tokens = _new_chat_button_class_tokens(chat_page)
+    assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
+    assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
+    assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
 
 
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
-    titlebar = TITLEBAR.read_text(encoding = "utf-8")
-    app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
-    primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
-    navbar = NAVBAR.read_text(encoding = "utf-8")
+    titlebar = _ui_source(TITLEBAR)
+    app_sidebar = _ui_source(APP_SIDEBAR)
+    primitive = _ui_source(SIDEBAR_PRIMITIVE)
+    navbar = _ui_source(NAVBAR)
 
     assert "collapseToZero={isTauri}" in app_sidebar
     assert "collapseToZero = false" in primitive
@@ -653,9 +754,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
         encoding = "utf-8"
     )
-    # The nudge has to move the navigation without pushing it out of the titlebar it sits
-    # in, so the button box travels with it. The mac-only margin is deliberately not in the
-    # sum: translate-y is visual, and the margin already seats the box in the native row.
+    # translate-y is visual, so the mac-only margin is deliberately not in the sum.
     navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
         "export function WindowTitlebar", 1
     )[0]
@@ -663,7 +762,7 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "mt-[var(--studio-titlebar-navigation-margin-top,0px)]" in navigation
     button = _titlebar_nav_button_px(titlebar)
     assert button is not None, "navigation button size no longer readable from buttonClass"
-    blocks = _chrome_style_blocks(APP_PROVIDER.read_text(encoding = "utf-8"))
+    blocks = _chrome_style_blocks(_ui_source(APP_PROVIDER))
     nudged = {
         name: values
         for name, values in blocks.items()
@@ -676,42 +775,49 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         assert offset is not None and offset > 0, (name, values)
         assert titlebar is not None, (name, values)
         assert offset + button <= titlebar, (name, offset, button, titlebar)
-    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
-    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    # Read the condition, not its spelling: the panel must leave the a11y tree and go inert
+    # on the same condition.
+    hidden = attribute_expressions(primitive, "aria-hidden")
+    inert = attribute_expressions(primitive, "inert")
+    assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
+    assert hidden == inert, (hidden, inert)
+    # A peeked sidebar is on screen, so check aria-hidden over every input combination.
+    inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
+    table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
+    for combination, removed in table.items():
+        has_pin_mode, is_pinned, collapses_to_zero, is_peeking = combination
+        assert removed == (
+            has_pin_mode and not is_pinned and collapses_to_zero and not is_peeking
+        ), (combination, hidden[0])
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():
-    provider = APP_PROVIDER.read_text(encoding = "utf-8")
-    sheet = SHEET.read_text(encoding = "utf-8")
+    provider = _window_chrome_source(APP_PROVIDER)
+    sheet = _ui_source(SHEET)
 
     # Portalled sheets read the height off <html>, so the mirror has to stay.
     assert 'set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null)' in provider
 
-    # Only viewport-fixed sheets clear the titlebar; the absolute recipe block
-    # sheet sits in its own container and keeps a plain top edge.
     assert 'position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE' in sheet
     for side in ("left", "right", "top"):
         assert f"data-[side={side}]:top-[var(--studio-custom-titlebar-height,0px)]" in sheet
         assert f"data-[side={side}]:top-0" in sheet
 
-    # Anchor both edges so the inset shrinks the sheet; h-full would instead
-    # push its bottom past the viewport.
+    # Anchor both edges so the inset shrinks the sheet; h-full would push it past the viewport.
     for side in ("left", "right"):
         assert f"data-[side={side}]:bottom-0" in sheet
         assert f"data-[side={side}]:h-full" not in sheet
 
     # The shared class is the only sheet offset; a local one would double up.
-    # Dialogs still read --studio-window-chrome-top (DesktopChromeVarsEffect).
     for portalled in (
         RESEARCH_ACTIVITY_PANEL,
         RESPONSE_DETAILS_SHEET,
-        DOCUMENT_PREVIEW_SHEET,
     ):
-        assert "studio-custom-titlebar-height" not in portalled.read_text(encoding = "utf-8")
+        assert "studio-custom-titlebar-height" not in _ui_source(portalled)
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
-    source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    source = _ui_source(APP_SIDEBAR)
     header = source.split("<SidebarHeader", 1)[1].split("</SidebarHeader>", 1)[0]
     drag_region = "data-tauri-drag-region={usesNativeMacTitlebar || undefined}"
 
@@ -720,14 +826,12 @@ def test_visible_mac_sidebar_header_is_a_drag_region():
 
 
 def test_mac_chat_header_controls_share_the_titlebar_row():
-    source = CHAT_PAGE.read_text(encoding = "utf-8")
-    provider = APP_PROVIDER.read_text(encoding = "utf-8")
+    source = _ui_source(CHAT_PAGE)
+    provider = _ui_source(APP_PROVIDER)
 
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
     assert source.count("var(--studio-mac-traffic-light-inset") == 2
-    # Sharing the row is the contract: the padding must leave the control room inside the
-    # header, so a retune to a large value fails here rather than shipping a clipped row.
     blocks = _chrome_style_blocks(provider)
     padded = {
         name: values
@@ -742,42 +846,1100 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
         assert padding is not None and padding > 0, (name, values)
         assert header is not None and control is not None, (name, values)
         assert padding + control <= header, (name, padding, control, header)
-    assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
+    assert "pt-[var(--studio-content-top-inset,0px)] lg:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
 
 
-def test_collapsed_mac_sidebar_hides_divider():
-    source = APP_SIDEBAR.read_text(encoding = "utf-8")
+def test_sidebar_draws_its_edge_unless_the_titlebar_outline_does():
+    source = _ui_source(APP_SIDEBAR)
+    inner = _ui_source(SIDEBAR_PRIMITIVE).split('data-slot="sidebar-inner"', 1)[1].split(">", 1)[0]
 
-    assert "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0" in source
+    assert "border-r" not in inner
+    assert re.search(
+        r'!\(usesCustomTitlebar && pinned\) &&\s*"\[&_\[data-sidebar=sidebar\]\]:border-r '
+        r"\[&_\[data-sidebar=sidebar\]\]:border-sidebar-edge "
+        r'dark:\[&_\[data-sidebar=sidebar\]\]:border-r-0"',
+        source,
+    )
     assert "top-[var(--studio-mac-titlebar-height,34px)]" not in source
 
 
 def test_chat_sidebar_rows_are_compact_without_vertical_padding():
-    sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
+    sidebar_source = _ui_source(APP_SIDEBAR)
     block = sidebar_source.split("function renderChatSidebarItem", 1)[1]
 
     assert (
         '"sidebar-nav-btn h-[30px] cursor-pointer rounded-full py-0 pr-4 '
         'text-ui-14p5 leading-ui-19 tracking-nav font-medium"'
     ) in block
-    assert (
-        '"text-foreground h-[30px] w-full border-0 bg-transparent py-0 pr-4 '
-        'text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none"'
-    ) in block
     assert 'isPinned && variant !== "project" && "gap-[8.5px]"' in block
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
 
 
+def _resolve_classes(source: str, expression: str, variant: str) -> str | None:
+    """Every argument must resolve: ignoring unreadable ones hid a constant's classes from the check."""
+    expression = expression.strip().rstrip(",").strip()
+    if not expression or expression == "undefined":
+        return ""
+    literal = re.fullmatch(r'"([^"]*)"', expression)
+    if literal:
+        return literal.group(1)
+    call = re.fullmatch(r"cn\((.*)\)", expression, re.S)
+    if call:
+        parts = []
+        for argument in _cn_arguments(call.group(1)):
+            piece = _resolve_classes(source, argument, variant)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return " ".join(part for part in parts if part)
+    branched = re.match(r'\s*variant\s*===\s*"(\w+)"\s*\?', expression, re.S)
+    if branched:
+        marks = _operators(expression[branched.end() :])
+        pairing = next((at for at, token in marks if token == ":"), None)
+        if pairing is None:
+            return None
+        rest = expression[branched.end() :]
+        taken = rest[:pairing] if branched.group(1) == variant else rest[pairing + 1 :]
+        return _resolve_classes(source, taken, variant)
+    identifier = re.fullmatch(r"[A-Za-z_$][\w$]*", expression)
+    if identifier:
+        definition = re.search(rf"const {re.escape(expression)} =(.*?);\n", source, re.S)
+        if not definition:
+            return None
+        return _resolve_classes(source, definition.group(1), variant)
+    return None
+
+
+def _spread_may_supply(tag: str, attribute: str = "className") -> bool:
+    """With no explicit className, any spread may supply one; with one, only a later spread can
+    override it."""
+    spreads, depth = [], 0
+    for index, char in enumerate(tag):
+        if char == "{":
+            if depth == 0 and re.match(r"\{\s*\.\.\.", tag[index:]):
+                spreads.append(index)
+            depth += 1
+        elif char == "}":
+            depth -= 1
+    if not spreads:
+        return False
+    explicit = re.search(rf"(?:^|[\s{{]){re.escape(attribute)}=", tag)
+    return explicit is None or max(spreads) > explicit.start()
+
+
+def _button_classes(source: str, tag: str, variant: str) -> str | None:
+    """The classes a `<button>` tag ends up with for `variant`, or None if unreadable."""
+    if _spread_may_supply(tag):
+        return None
+    # A suffixed lookalike like `data-className=` is refused, not read as having no classes.
+    lookalike = re.search(r"[\w-]className=", tag)
+    assert not lookalike, (
+        f"a button in renderChatSidebarItem carries {lookalike.group(0)!r} rather than a "
+        f"className. It renders with none of the classes that string holds, and this guard "
+        f"would otherwise read it as a button that simply has no classes: {tag!r}"
+    )
+    match = re.search(r"(?:^|[\s{])className=(\{.*?\}|\"[^\"]*\")", tag, re.S)
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if value.startswith('"'):
+        return value.strip('"')
+    return _resolve_classes(source, value[1:-1], variant)
+
+
+# Spacing lengths are spelled `calc(<len> * var(--ui-space-scale, 1))`; resolve them back.
+# Only --ui-space-scale: --ui-font-scale defaults to 0.9375, not 1.
+_SCALED_LENGTH = re.compile(
+    r"calc\(\s*(-?[\d.]+(?:px|rem|em))\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)"
+)
+
+# Gains default to 1 here. Surfaces take the wash gain; borders, rings and outlines the
+# edge gain; each resolves only under its own.
+_SCALED_AMOUNT = re.compile(
+    r"calc\(\s*([\d.]+%?)\s*\*\s*var\(\s*--contrast-(edge|wash)-gain\s*,\s*1\s*\)\s*\)"
+)
+_COLOUR_ROLE = re.compile(
+    r"bg-|background(?:-color)?\s*:|border(?:-color)?\s*:"
+    r"|border-|ring-|outline-|--tw-ring-color\s*:"
+)
+
+
+def _gain_owed_to(preceding: str) -> str | None:
+    """The gain the colour written after *preceding* is entitled to, if that role is readable."""
+    roles = _COLOUR_ROLE.findall(preceding[-200:])
+    if not roles:
+        return None
+    return "wash" if roles[-1].startswith(("bg-", "background")) else "edge"
+
+
+def _resolve_amount(source: str, match: "re.Match[str]") -> str:
+    """A gain-scaled colour amount, read back only where the gain matches the colour's role."""
+    if _gain_owed_to(source[: match.start()]) != match.group(2):
+        return match.group(0)
+    return match.group(1)
+
+
+# Gain-scaled color-mix/rgb spellings read back as the opacity shorthand; without the
+# gain they are not equivalent.
+_MIXED_TOKEN = re.compile(
+    r"\[color-mix\(in_oklab,\s*var\(--([\w-]+)\)_"
+    r"calc\(([\d.]+)%\*var\(--contrast-(edge|wash)-gain,\s*1\)\)\s*,\s*transparent\)\]"
+)
+_WHITE_ALPHA = re.compile(
+    r"\[rgb\(255_255_255_/_calc\(([\d.]+)\*var\(--contrast-(edge|wash)-gain,\s*1\)\)\)\]"
+)
+
+
+def _resolve_mix(source: str, match: "re.Match[str]") -> str:
+    """A gain-scaled `color-mix`, read back as its shorthand under its own gain."""
+    if _gain_owed_to(source[: match.start()]) != match.group(3):
+        return match.group(0)
+    amount = match.group(2)
+    return f"{match.group(1)}/{amount[:-2] if amount.endswith('.0') else amount}"
+
+
+def _resolve_white_alpha(source: str, match: "re.Match[str]") -> str:
+    """A gain-scaled white lift, read back as its shorthand under its own gain."""
+    if _gain_owed_to(source[: match.start()]) != match.group(2):
+        return match.group(0)
+    return f"white/[{match.group(1)}]"
+
+
+def _at_default_scale(source: str) -> str:
+    """*source* with every scale-wrapped length and gain-wrapped colour read back as itself."""
+    resolved = _SCALED_LENGTH.sub(r"\1", source)
+    resolved = _MIXED_TOKEN.sub(lambda m: _resolve_mix(resolved, m), resolved)
+    resolved = _WHITE_ALPHA.sub(lambda m: _resolve_white_alpha(resolved, m), resolved)
+    return _SCALED_AMOUNT.sub(lambda m: _resolve_amount(resolved, m), resolved)
+
+
+RAIL_WIDTH = "@[50rem]:w-[min(var(--media-rail-width,408px),calc(100%-13rem))]"
+# `_ui_source` reads a bare 408px identically, so the scale is pinned raw.
+RAIL_WIDTH_SCALED = (
+    "@[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))]"
+)
+HEADER_COLUMNS = "grid-cols-[minmax(0,var(--media-rail-width,408px))_minmax(13rem,1fr)]"
+
+
+def _ui_source(path) -> str:
+    """Reads at the default UI scale, where the calc() length wrappers render as the fixed lengths."""
+    return _at_default_scale(path.read_text(encoding = "utf-8"))
+
+
+def _window_chrome_source(path) -> str:
+    """Window chrome does not scale with UI font size, so it is read raw; a scale wrapper fails here."""
+    return path.read_text(encoding = "utf-8")
+
+
+def _spacing_rem(live_css: str) -> float | None:
+    """Read from the theme's --spacing; None when declarations disagree, since the theme block decides."""
+    stated = {match.group(1) for match in re.finditer(r"--spacing:\s*([\d.]+)rem\s*;", live_css)}
+    return float(stated.pop()) / 1 if len(stated) == 1 else None
+
+
+def _as_spacing_units(cls: str, spacing: float) -> str:
+    """Converts pr-[Npx] and pr-[Nrem] to spacing units, leaving other values for the refusal check."""
+    match = re.fullmatch(r"((?:\S*:)?pr)-\[(\d+(?:\.\d+)?)(px|rem)\]", cls)
+    if not match:
+        return cls
+    prefix, amount, unit = match.group(1), float(match.group(2)), match.group(3)
+    units = amount / 16 / spacing if unit == "px" else amount / spacing
+    return f"{prefix}-{units:g}"
+
+
+def _own_declarations(live_css: str, selector: str) -> str | None:
+    """Brace-matched, since a lazy [^}]* stops at a nested rule's } and mixes its declarations in."""
+    start = re.search(rf"{re.escape(selector)}\s*\{{", live_css)
+    return None if not start else _declarations_at(live_css, start.end() - 1)
+
+
+def _declarations_at(live_css: str, brace: str | int) -> str | None:
+    """The body of the rule whose opening brace is at *brace*, minus any nested rule."""
+    depth = 0
+    for index in range(brace, len(live_css)):
+        if live_css[index] == "{":
+            depth += 1
+        elif live_css[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return re.sub(r"[^{}]*\{[^{}]*\}", " ", live_css[brace + 1 : index])
+    return None
+
+
+def _modifier_rules(live_css: str) -> dict[str, str]:
+    """Every `.sidebar-row-action.is-*` rule the stylesheet defines, as its own declarations."""
+    rules: dict[str, str] = {}
+    for match in re.finditer(r"\.sidebar-row-action\.(is-[\w-]+)\s*\{", live_css):
+        body = _declarations_at(live_css, match.end() - 1)
+        if body is None:
+            continue
+        # Joined, not replaced: CSS keeps earlier declarations a later rule does not restate.
+        rules[match.group(1)] = f"{rules.get(match.group(1), '')}\n{body}"
+    return rules
+
+
+# Shorthands override the longhand they contain (`padding: 0 5rem` beats `pr-1.5`).
+_SHORTHANDS = {
+    "pr": (("padding",), ("p", "px", "pe")),
+    "pl": (("padding",), ("p", "px", "ps")),
+    "right": (("inset",), ("inset", "inset-x")),
+}
+
+
+def _sole_measure(body: str, utility: str, prop: str, spacing: float) -> float | None | str:
+    """Refuses two readable values rather than picking one: specificity and emit order decide the winner."""
+    properties, utilities = _SHORTHANDS[utility]
+    shorthand = [
+        name for name in properties if re.search(rf"(?<![\w-]){re.escape(name)}:", body)
+    ] + [name for name in utilities if re.search(rf"(?<![\w-])@?{re.escape(name)}-\S", body)]
+    if shorthand:
+        # Unreadable rather than absent: the shorthand renders.
+        return None
+    values = _stated_units(body, utility, prop, spacing)
+    if not values:
+        return ""
+    if len(values) > 1 or values[0] is None:
+        return None
+    return values[0]
+
+
+def _stated_units(body: str, utility: str, prop: str, spacing: float) -> list[float | None]:
+    """Every stated value, not the first, since CSS takes the last; None means unreadable, not unstated."""
+    found: list[float | None] = []
+    for match in re.finditer(rf"(?<![\w-]){re.escape(utility)}-(\S+?)(?=[\s;]|$)", body):
+        raw = match.group(1)
+        found.append(float(raw) if re.fullmatch(r"\d+(?:\.\d+)?", raw) else None)
+    for match in re.finditer(rf"(?<![\w-]){re.escape(prop)}:\s*([^;]+);", body):
+        value = match.group(1).strip()
+        rem = re.fullmatch(r"([\d.]+)rem", value)
+        px = re.fullmatch(r"([\d.]+)px", value)
+        if rem:
+            found.append(float(rem.group(1)) / spacing)
+        elif px:
+            found.append(float(px.group(1)) / 16 / spacing)
+        elif value == "0":
+            found.append(0.0)
+        else:
+            found.append(None)
+    return found
+
+
+def _base_row_action_offset(live_css: str, spacing: float) -> float | None:
+    """Reads every right declaration in the rule, since a later `right:` overrides an earlier @apply."""
+    body = _own_declarations(live_css, ".sidebar-row-action")
+    if body is None:
+        return None
+    measure = _sole_measure(body, "right", "right", spacing)
+    return None if measure == "" or not isinstance(measure, float) else measure
+
+
+def _row_action_offsets(live_css: str, base: float, spacing: float) -> dict[str, float | None]:
+    """Read from CSS, not a list, so an unknown modifier is refused; one with no edge inherits the base."""
+    return {
+        name: base
+        if (measure := _sole_measure(body, "right", "right", spacing)) == ""
+        else (measure if isinstance(measure, float) else None)
+        for name, body in _modifier_rules(live_css).items()
+    }
+
+
+def _row_action_left_paddings(
+    live_css: str, base: float, spacing: float
+) -> dict[str, float | None]:
+    """Left padding is inside the button, so it is part of what a tap hits; the pin sets it to zero."""
+    return {
+        name: base
+        if (measure := _sole_measure(body, "pl", "padding-left", spacing)) == ""
+        else (measure if isinstance(measure, float) else None)
+        for name, body in _modifier_rules(live_css).items()
+    }
+
+
+def _row_action_paddings(live_css: str, base: float, spacing: float) -> dict[str, float | None]:
+    """The base pr-1.5 is not universal: `.is-unpin-action` overrides it to 0.125rem for the pin."""
+    return {
+        name: base
+        if (measure := _sole_measure(body, "pr", "padding-right", spacing)) == ""
+        else (measure if isinstance(measure, float) else None)
+        for name, body in _modifier_rules(live_css).items()
+    }
+
+
+def _labelled_actions(
+    source: str,
+    block: str,
+    variant: str,
+    offsets: dict[str, float | None],
+    paddings: dict[str, float | None],
+    left_paddings: dict[str, float | None],
+    base_padding: float,
+    base_left: float,
+    base_offset: float,
+    live_css: str,
+) -> dict[int, tuple[str, float]]:
+    """Per variant, since the pin sits in a variant gate while the options button renders on every row."""
+    gates = []
+    for match in re.finditer(r'\{\s*variant\s*===\s*"(\w+)"\s*&&\s*\(', block):
+        depth = 0
+        for index in range(match.end() - 1, len(block)):
+            if block[index] == "(":
+                depth += 1
+            elif block[index] == ")":
+                depth -= 1
+                if depth == 0:
+                    gates.append((match.group(1), match.start(), index))
+                    break
+    found = {}
+    shared = []
+    cursor = 0
+    for tag in _opening_jsx_tags(block, "<button"):
+        at = block.find(tag, cursor)
+        cursor = at + 1 if at != -1 else cursor
+        classes = _button_classes(source, tag, variant)
+        assert classes is not None, (
+            f"a button in renderChatSidebarItem carries classes this guard cannot read, so it "
+            f"cannot tell whether it is a row action or how far it reaches: {tag!r}"
+        )
+        # Whole tokens: `sidebar-row-action-glyph` contains `sidebar-row-action`.
+        worn = classes.split()
+        if "sidebar-row-action" not in worn:
+            continue
+        owners = [name for name, start, stop in gates if start <= at <= stop]
+        if owners and variant not in owners:
+            continue
+        # Keyed by position, not aria-label: actions may label themselves via aria-labelledby.
+        labels = re.findall(r"aria-label=\{?([^\n]{0,60})", tag)
+        name = labels[0] if labels else f"<unlabelled at {at}>"
+        # Whole token: a renamed `sidebar-touch-reveal-*` would leave the action inert on touch.
+        assert "sidebar-touch-reveal" in worn, (
+            f"the {name} action on the {variant} row no longer carries sidebar-touch-reveal, "
+            f"so it is invisible and inert on a coarse pointer however much room the row "
+            f"reserves for it (#7276). It carries {worn}"
+        )
+        # An inline style outranks the class list and index.css the reach is computed from.
+        escape = _escapes_the_model(tag)
+        assert escape is None, (
+            f"the {name} action {escape}, which outranks the classes and the CSS rules this "
+            f"guard measures it by, so the reach it computes is not the reach that renders: "
+            f"{tag!r}"
+        )
+        # The reach model reads only `right` and `padding-right`; any other horizontal positioning
+        # (any variant, transforms, padding utilities) is refused.
+        utility = [
+            token
+            for token in worn
+            # `!right-*` and `md:!right-*` too.
+            if re.fullmatch(rf"(?:\S*:)?!?right-\S+?!?|{_MOVES_HORIZONTALLY}", token)
+            or re.fullmatch(r"(?:\S*:)?!?(?:p|px|pe|pr)-\S+", token)
+        ]
+        assert not utility, (
+            f"the {name} action is positioned with {utility}, which this guard does not model: "
+            f"it reads the row's action offsets from index.css, so state the offset there"
+        )
+        # Plain classes can carry a `right` rule too, so they are looked up in the stylesheet.
+        named = {
+            token.rpartition(":")[2].strip("!")
+            for token in worn
+            if re.fullmatch(r"(?:\S*:)?!?[a-z][\w-]*!?", token) and not token.startswith("is-")
+        }
+        moved_by = _classes_setting(
+            live_css, named - _MODELLED_ACTION_CLASSES, _DECLARES_RIGHT_EDGE
+        )
+        assert not moved_by, (
+            f"the {name} action carries {moved_by}, whose rules in index.css move its right "
+            f"edge or change its padding. The reach below is computed from the base rule and "
+            f"the is-* modifiers alone, so it would not describe where this action renders"
+        )
+        modifiers = [token for token in worn if token.startswith("is-")]
+        unknown = [token for token in modifiers if token not in offsets]
+        assert not unknown, (
+            f"the {name} action carries {unknown}, which index.css does not define for "
+            f".sidebar-row-action, so this guard cannot tell how far that action reaches"
+        )
+        # An unreadable `right` is not zero; refuse it.
+        unreadable = [token for token in modifiers if offsets[token] is None]
+        assert not unreadable, (
+            f"the {name} action carries {unreadable}, whose right edge index.css states in a "
+            f"spelling this guard cannot read. It reads a bare rem value, so state the offset "
+            f"that way or teach this guard the other one"
+        )
+        if not owners:
+            shared.append(name)
+        # A modifier may override the padding (`is-unpin-action` does).
+        stated = [token for token in modifiers if token in paddings]
+        unreadable_padding = [token for token in stated if paddings[token] is None]
+        assert not unreadable_padding, (
+            f"the {name} action carries {unreadable_padding}, whose right padding index.css "
+            f"states in a spelling this guard cannot read. It reads a bare rem value or an "
+            f"@apply pr-N, so state it that way or teach this guard the other one"
+        )
+        # More than one modifier stating a padding is an order question; refused.
+        assert len(stated) <= 1, (
+            f"the {name} action carries {stated}, more than one of which sets a right "
+            f"padding. Which one applies is a question of source order in index.css, and "
+            f"this guard does not adjudicate it: state the padding on one modifier"
+        )
+        padding = paddings[stated[0]] if stated else base_padding
+        # Left padding counts: the whole button box takes taps on a coarse pointer.
+        stated_left = [token for token in modifiers if token in left_paddings]
+        unreadable_left = [token for token in stated_left if left_paddings[token] is None]
+        assert not unreadable_left, (
+            f"the {name} action carries {unreadable_left}, whose left padding index.css states "
+            f"in a spelling this guard cannot read, so how far the button reaches is unknown"
+        )
+        assert len(stated_left) <= 1, (
+            f"the {name} action carries {stated_left}, more than one of which sets a left "
+            f"padding, and which applies is a source-order question this does not adjudicate"
+        )
+        left = left_paddings[stated_left[0]] if stated_left else base_left
+        # A modifier that states no edge leaves the base rule's in force.
+        shift = max((offsets[token] for token in modifiers), default = base_offset)
+        found[at] = (name, shift + padding + left)
+    # Structural on purpose: matching the English "Chat options" breaks under translation.
+    assert shared, (
+        f"the {variant} row renders no ungated .sidebar-row-action: every action it has sits "
+        f'inside a `variant === "..."` gate. The shared action is what the gutter on both '
+        f"rows is sized for, so if it moved behind a gate say so here, and if it was removed "
+        f"the reserved room should shrink with it (#7276)"
+    )
+    return found
+
+
+def _opening_jsx_tags(source: str, marker: str) -> list[str]:
+    """Depth is tracked, since a `>` inside an attribute expression does not end the tag."""
+    tags, start = [], source.find(marker)
+    while start != -1:
+        depth = 0
+        for index in range(start, len(source)):
+            char = source[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+            elif char == ">" and depth == 0:
+                tags.append(source[start : index + 1])
+                break
+        start = source.find(marker, start + 1)
+    return tags
+
+
+def _operators(text: str) -> list[tuple[int, str]]:
+    """`?.` and `??` are skipped because they are not part of this grammar."""
+    found, depth, quoted, index = [], 0, False, 0
+    while index < len(text):
+        char = text[index]
+        if quoted:
+            if char == '"':
+                quoted = False
+            index += 1
+            continue
+        if char == '"':
+            quoted = True
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif depth == 0 and (text.startswith("&&", index) or text.startswith("||", index)):
+            found.append((index, text[index : index + 2]))
+            index += 2
+            continue
+        elif depth == 0 and char == "?" and text[index + 1 : index + 2] not in (".", "?"):
+            found.append((index, "?"))
+        elif depth == 0 and char == ":":
+            found.append((index, ":"))
+        index += 1
+    return found
+
+
+def _branches(argument: str) -> list[tuple[tuple[tuple[str, bool], ...], str]]:
+    """Conditions are kept so arguments on the same expression are not combined into an impossible row."""
+    text = argument.strip()
+    marks = _operators(text)
+    opened = next((index for index, (_, token) in enumerate(marks) if token == "?"), None)
+    if opened is not None:
+        nested, closed = 0, None
+        for index in range(opened + 1, len(marks)):
+            token = marks[index][1]
+            if token == "?":
+                nested += 1
+            elif token == ":":
+                if nested == 0:
+                    closed = marks[index][0]
+                    break
+                nested -= 1
+        assert closed is not None, f"unbalanced ternary in {argument!r}"
+        condition = " ".join(text[: marks[opened][0]].split())
+        taken = []
+        for part, truth in (
+            (text[marks[opened][0] + 1 : closed], True),
+            (text[closed + 1 :], False),
+        ):
+            taken += [
+                (((condition, truth),) + constraints, value)
+                for constraints, value in _branches(part)
+            ]
+        return taken
+    # `||` binds looser than `&&`, so it splits first; within one operator the last is outermost.
+    short = [mark for mark in marks if mark[1] == "||"] or [
+        mark for mark in marks if mark[1] == "&&"
+    ]
+    if short:
+        cut, token = short[-1]
+        head = " ".join(text[:cut].split())
+        tail = text[cut + 2 :].strip()
+        if token == "&&":
+            return [(((head, True),), tail), (((head, False),), "undefined")]
+        return [(((head, True),), head), (((head, False),), tail)]
+    return [((), text)]
+
+
+def _values_are_readable(argument: str) -> bool:
+    """Only operands that can become the class string count; their guarding conditions may be anything."""
+    return all(
+        value.strip() in ("", "undefined") or re.fullmatch(r'"[^"]*"', value.strip())
+        for _, value in _branches(argument)
+    )
+
+
+def _tokens(value: str) -> list[str]:
+    """The classes a branch value contributes, in order. `undefined` contributes none."""
+    value = value.strip()
+    return value.strip('"').split() if re.fullmatch(r'"[^"]*"', value) else []
+
+
+# Horizontal movers the reach model ignores. translate-y is vertical and used by the spinner.
+_MOVES_HORIZONTALLY = (
+    r"(?:\S*:)?(?:-?translate-x|-?translate-(?!y)|inset-x|inset|left|-?mr|-?me)-\S+"
+    r"|(?:\S*:)?transform"
+)
+
+
+_MODELLED_ACTION_CLASSES = {"sidebar-row-action", "sidebar-row-action-glyph"}
+
+_DECLARES_RIGHT_PADDING = (
+    r"(?<![\w-])padding(?:-right|-inline-end)?:|@apply[^;]*(?<![\w-])!?(?:p|px|pe|pr)-"
+)
+_DECLARES_RIGHT_EDGE = (
+    _DECLARES_RIGHT_PADDING
+    + r"|(?<![\w-])(?:right|inset(?:-inline)?|left|transform|translate|margin(?:-right)?):"
+    + r"|@apply[^;]*(?<![\w-])!?(?:right|inset|inset-x|left|-?mr|-?me|-?translate-x)-"
+)
+
+
+@functools.lru_cache(maxsize = 4)
+def _css_rules(live_css: str) -> tuple[tuple[str, str], ...]:
+    """Cached and shared, since re-scanning the stylesheet per class was too slow to run in tests."""
+    rules = []
+    for match in re.finditer(r"([^{}]*)\{", live_css):
+        body = _declarations_at(live_css, match.end() - 1)
+        if body is not None:
+            rules.append((match.group(1), body))
+    return tuple(rules)
+
+
+def _classes_setting(live_css: str, classes: set[str], declares: str) -> list[str]:
+    """Finds project classes that set the same property, since they override the utility the row reads."""
+    offenders = []
+    for name in sorted(classes):
+        mentions = re.compile(rf"\.{re.escape(name)}(?![\w-])")
+        for selectors, body in _css_rules(live_css):
+            if not mentions.search(selectors):
+                continue
+            # The class must be in a selector's LAST compound: the element the rule targets.
+            if not any(
+                mentions.search(re.split(r"[\s>+~]+", one.strip())[-1])
+                for one in selectors.split(",")
+                if one.strip()
+            ):
+                continue
+            if re.search(declares, body):
+                offenders.append(name)
+                break
+    return offenders
+
+
+def _escapes_the_model(tag: str) -> str | None:
+    """Names why a tag's position cannot be read from its classes: an inline style or a spread."""
+    if re.search(r"(?:^|[\s{])style=", tag):
+        return "sets an inline style"
+    if any(_spread_may_supply(tag, name) for name in ("className", "style")):
+        return "takes a spread that may supply a className or a style"
+    moved = re.search(_MOVES_HORIZONTALLY, tag)
+    return f"is moved by {moved.group(0)!r}" if moved else None
+
+
+def _touch_spinner_reach(block: str, spacing: float) -> tuple[str, float] | None:
+    """The spinner must clear the title too, not just the actions, or the touch gutter is too narrow."""
+    gate = next(
+        (
+            found
+            for found in re.finditer(r"\{\s*([A-Za-z_$][\w$]*)\s*\?\s*\(", block)
+            if re.match(r"\s*<span", block[found.end() :])
+        ),
+        None,
+    )
+    if not gate:
+        return None
+    depth, end = 0, None
+    for index in range(gate.end() - 1, len(block)):
+        if block[index] == "(":
+            depth += 1
+        elif block[index] == ")":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+    if end is None:
+        return None
+    rendered = block[gate.end() : end]
+    # An inline style or transform on the positioning span changes the reach without `right`.
+    positioning = [tag for tag in _opening_jsx_tags(rendered, "<span") if "absolute" in tag]
+    for tag in positioning + _opening_jsx_tags(rendered, "<Spinner"):
+        if _escapes_the_model(tag):
+            return None
+    offsets = [
+        float(match.group(1))
+        for match in re.finditer(
+            r"\[@media\(pointer:coarse\)\]:right-(\d+(?:\.\d+)?)(?![\w.-])", rendered
+        )
+    ]
+    # Another width utility renders wider than `size-3.5`, so it makes the width unreadable.
+    for tag in _opening_jsx_tags(rendered, "<Spinner"):
+        if re.search(r"(?<![\w-])!?(?:w|min-w|max-w|basis)-\S", tag):
+            return None
+        if len(re.findall(r"(?<![\w-])size-\d", tag)) > 1:
+            return None
+    widths = [
+        float(match.group(1))
+        for match in re.finditer(
+            r"<Spinner[^>]*?(?<![\w-])size-(\d+(?:\.\d+)?)(?![\w.-])", rendered, re.S
+        )
+    ]
+    if len(offsets) != 1 or len(widths) != 1:
+        return None
+    # The gate's condition is returned so the caller correlates on it, not on a literal name.
+    return gate.group(1), offsets[0] + widths[0]
+
+
+def _rendered_class_lists(arguments: list[str]) -> list[list[str]]:
+    """Combinations that would need one condition to be true and false at once are dropped, not checked."""
+    return [classes for _, classes in _rendered_with_conditions(arguments)]
+
+
+def _rendered_with_conditions(arguments: list[str]) -> list[tuple[dict[str, bool], list[str]]]:
+    """Conditions tie each rendering to the row, so the spinner checks the gutter it is shown with."""
+    lists: list[tuple[dict[str, bool], list[str]]] = [({}, [])]
+    for argument in arguments:
+        grown = []
+        for constraints, classes in lists:
+            for extra, value in _branches(argument):
+                merged = dict(constraints)
+                if any(merged.setdefault(name, truth) != truth for name, truth in extra):
+                    continue
+                grown.append((merged, classes + _tokens(value)))
+        lists = grown
+    return lists
+
+
+def _cn_arguments(body: str) -> list[str]:
+    """`body` split on top-level commas, ignoring those inside brackets or strings."""
+    parts, depth, quoted, current = [], 0, False, []
+    for char in body:
+        if quoted:
+            current.append(char)
+            if char == '"':
+                quoted = False
+            continue
+        if char == '"':
+            quoted = True
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current))
+    return [part for part in parts if part.strip()]
+
+
 def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     """unslothai/unsloth#7276: Recents chat kebab must be tappable on iPad."""
-    sidebar_source = APP_SIDEBAR.read_text(encoding = "utf-8")
-    css_source = INDEX_CSS.read_text(encoding = "utf-8")
+    sidebar_source = _ui_source(APP_SIDEBAR)
+    css_source = _ui_source(INDEX_CSS)
     assert "renderChatSidebarItem" in sidebar_source
     block = sidebar_source.split("function renderChatSidebarItem", 1)[1].split("\n  function ", 1)[
         0
     ]
-    assert "[@media(pointer:coarse)]:pr-10" in block
+    # A nested function ends the split early; a truncated block must fail as a stale guard.
+    assert len(block) > 2000, (
+        f"renderChatSidebarItem now yields only {len(block)} characters, so this guard is "
+        f"reading a fragment rather than the row. Widen the bound before trusting anything "
+        f"it says about the row's classes"
+    )
+    # Per variant, the coarse-pointer gutter must be at least the hover gutter. Anything this
+    # cannot read plainly is refused. Comments (incl. JSX `{/* */}`) are stripped first.
+    applied = re.sub(r"\{?\s*/\*.*?\*/\s*\}?", " ", block, flags = re.S)
+    applied = "\n".join(re.sub(r"(?<!:)//.*$", "", line) for line in applied.splitlines())
+    builder = re.search(r"const buttonClass = cn\(", applied)
+    assert builder, (
+        "renderChatSidebarItem no longer builds its row classes in a `const buttonClass = "
+        "cn(...)`, so this guard cannot tell which classes reach the row button"
+    )
+    depth, builder_end = 0, None
+    for index in range(builder.end() - 1, len(applied)):
+        if applied[index] == "(":
+            depth += 1
+        elif applied[index] == ")":
+            depth -= 1
+            if depth == 0:
+                builder_end = index
+                break
+    assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
+    # On the row button itself, not merely somewhere in the function. The row also renders a
+    # pin, and handing buttonClass to it or another element while the button
+    # went without would leave every padding check below describing classes that reach nothing
+    # the gutters are measured against.
+    carriers = [
+        tag
+        for tag in _opening_jsx_tags(applied, "<SidebarMenuButton")
+        if re.search(r"(?:^|[\s{])className=\{buttonClass\}", tag)
+    ]
+    # Inline styles and spreads (anywhere) could override every pr-N gutter via `style`.
+    escaped = [(tag, _escapes_the_model(tag)) for tag in carriers]
+    offending = [(tag, why) for tag, why in escaped if why]
+    assert not offending, (
+        f"a row carrier {offending[0][1] if offending else ''}, which outranks the pr-N "
+        f"gutters this guard compares, so the room it computes is not the room that renders: "
+        f"{[tag for tag, _ in offending]!r}"
+    )
+    assert carriers, (
+        "no <SidebarMenuButton> in renderChatSidebarItem receives className={buttonClass}, so "
+        "the classes checked below do not reach the row button and say nothing about the row "
+        "that renders"
+    )
+    # Only a spread AFTER className can override it; JSX applies attributes in order.
+    spreading = [
+        tag
+        for tag in carriers
+        if any(
+            match.start() > re.search(r"(?:^|[\s{])className=\{buttonClass\}", tag).start()
+            for match in re.finditer(r"\{\s*\.\.\.", tag)
+        )
+    ]
+    assert not spreading, (
+        f"the row button spreads props after className={{buttonClass}}, so whether those "
+        f"classes survive depends on what the spread holds, which this guard cannot resolve: "
+        f"{spreading!r}"
+    )
+    # Comments first: they hold commas that would split arguments.
+    row_classes = "\n".join(
+        re.sub(r"(?<!:)//.*$", "", line)
+        for line in applied[builder.end() : builder_end].splitlines()
+    )
+    # Values must be literals or undefined: an identifier holding classes is invisible here.
+    unresolved = [
+        argument for argument in _cn_arguments(row_classes) if not _values_are_readable(argument)
+    ]
+    assert not unresolved, (
+        f"buttonClass is built from values this guard cannot read: {unresolved}. A class "
+        f"string held in an identifier can override the row's gutters without appearing "
+        f"here, so keep the row's classes as literals"
+    )
+
+    # Padding is read per branch: a literal under a condition does not reach every row.
+    live_css = _at_default_scale(re.sub(r"/\*.*?\*/", " ", css_source, flags = re.S))
+    spacing = _spacing_rem(live_css)
+    assert spacing is not None, (
+        "index.css does not state one readable --spacing, so this guard cannot convert the "
+        "pin's fixed rem offset and padding into the pr-N units the row's gutters are in, and "
+        "the two sides of every comparison below would be in different scales"
+    )
+    rendered = [
+        (constraints, [_as_spacing_units(cls, spacing) for cls in rendering])
+        for constraints, rendering in _rendered_with_conditions(_cn_arguments(row_classes))
+    ]
+    renderings = [classes for _, classes in rendered]
+    every_class = [cls for rendering in renderings for cls in rendering]
+    # `!` utilities anywhere in the builder are refused: `!pr-0` beats every gutter.
+    marked = [
+        cls for cls in every_class if re.fullmatch(r"(?:\S*:)?!p\w*-\S+|(?:\S*:)?p\w*-\S+!", cls)
+    ]
+    assert not marked, (
+        f"buttonClass sets padding with an importance marker: {marked}. `!` beats an "
+        f"ordinary utility written after it, so which gutter the row ends up with stops "
+        f"being a question of order, and this guard will not adjudicate it"
+    )
+    shorthand = [cls for cls in every_class if re.fullmatch(r"(?:\S*:)?(?:p|px|pe)-\S+", cls)]
+    assert not shorthand, (
+        f"buttonClass sets padding with a shorthand that also moves the right edge: "
+        f"{shorthand}. It overrides the pr-N gutters this guard compares, so state the "
+        f"row's padding with pr-N alone"
+    )
+    arbitrary = [
+        cls
+        for cls in every_class
+        if re.search(r"\[padding(?:-right)?:[^\]]*\]|(?<![\w-])p[rxe]?-\[[^\]]*\]", cls)
+    ]
+    assert not arbitrary, (
+        f"buttonClass sets its right padding through an arbitrary value: {arbitrary}. This "
+        f"guard compares pr-N gutters and will not work out how that interacts with them: "
+        f"state the touch padding as a pr-N utility"
+    )
+
+    # `pr-px` replaces the checked gutter but is unnumbered, so every pr- must be numeric.
+    unnumbered = [
+        cls
+        for cls in every_class
+        if re.fullmatch(r"(?:\S*:)?pr-\S+", cls)
+        and not re.fullmatch(r"(?:\S*:)?pr-\d+(?:\.\d+)?", cls)
+    ]
+    assert not unnumbered, (
+        f"buttonClass states a right padding this guard cannot compare: {unnumbered}. It "
+        f"still replaces the numeric gutters through tailwind-merge, so the comparison below "
+        f"would go on reporting a value that no longer renders"
+    )
+
+    # Paddings under an unread qualifier would render while being invisible here.
+    readable_padding = re.compile(
+        r"pr-\d+(?:\.\d+)?"
+        r"|\[@media\(pointer:coarse\)\]:pr-\d+(?:\.\d+)?"
+        r"|[\w:\[\]().,=^-]*/(?:project-chat-item|recent-item):pr-\d+(?:\.\d+)?"
+    )
+    unqualified = sorted(
+        {
+            cls
+            for cls in every_class
+            if re.search(r"(?:^|:)pr-\d", cls) and not readable_padding.fullmatch(cls)
+        }
+    )
+    assert not unqualified, (
+        f"buttonClass states a right padding under a qualifier this guard does not read: "
+        f"{unqualified}. It renders in the state that qualifier names, and the comparison "
+        f"below reports the gutters it does read, so the row would be credited with padding "
+        f"that state does not have"
+    )
+
+    coarse_prefix = r"\[@media\(pointer:coarse\)\]:"
+    # A plain class whose rule sets a right padding would bypass the pr-N comparison.
+    named = {
+        token.rpartition(":")[2].strip("!")
+        for token in every_class
+        if re.fullmatch(r"(?:\S*:)?!?[a-z][\w-]*!?", token)
+    }
+    gutter_classes = _classes_setting(live_css, named, _DECLARES_RIGHT_PADDING)
+    assert not gutter_classes, (
+        f"the row carries {gutter_classes}, whose rules in index.css set a right padding of "
+        f"their own. That is the gutter that renders, and the comparison below reads the pr-N "
+        f"utilities instead, so it would credit the row with room it does not have"
+    )
+
+    # The spinner sits further in than the pin on touch, hence 78px rather than 64.
+    spinner = _touch_spinner_reach(applied, spacing)
+    assert spinner is not None, (
+        "renderChatSidebarItem no longer states the working-row spinner's coarse offset and "
+        "size in a form this guard can read, so it cannot tell how much room a working row "
+        "has to reserve beyond its actions"
+    )
+    spinner_gate, spinner_reach = spinner
+    # Correlated or refused: "not a working row" and "could not tell" must not merge.
+    showing = [
+        (constraints, rendering)
+        for constraints, rendering in rendered
+        if constraints.get(spinner_gate)
+    ]
+    assert showing, (
+        f"no rendering of the row's classes is conditioned on {spinner_gate!r}, the same "
+        f"condition that gates the spinner, so this guard cannot tell which rows show one "
+        f"and would check the spinner's gutter on none of them"
+    )
+    for constraints, rendering in showing:
+        touch = [
+            float(match.group(1))
+            for match in (
+                re.fullmatch(coarse_prefix + r"pr-(\d+(?:\.\d+)?)", cls) for cls in rendering
+            )
+            if match
+        ]
+        plain = [
+            float(match.group(1))
+            for match in (re.fullmatch(r"pr-(\d+(?:\.\d+)?)", cls) for cls in rendering)
+            if match
+        ]
+        reserved = touch[-1] if touch else (plain[-1] if plain else None)
+        assert reserved is not None and reserved >= spinner_reach, (
+            f"a working row reserves {reserved} on a coarse pointer, under the "
+            f"{spinner_reach} its spinner reaches. The spinner is always visible there, so "
+            f"it would sit over the title (#7276)"
+        )
+
+    variants = ("project-chat-item", "recent-item")
+    # A rendering that claims no gutter cannot be identified, so it is refused, not skipped.
+    for rendering in renderings:
+        if not any(
+            re.fullmatch(rf"\S*/{re.escape(name)}:pr-\d+(?:\.\d+)?", cls)
+            for name in variants
+            for cls in rendering
+        ):
+            raise AssertionError(
+                f"buttonClass can render a row that states no action gutter for either "
+                f"variant: {rendering}. The row's actions are always visible on touch, so a "
+                f"row that reserves nothing puts them over the title (#7276). If this branch "
+                f"really renders no action, give it a gutter of its own rather than leaving "
+                f"it unidentifiable"
+            )
+
+    # Floor: both sides shrinking together would pass a relative check. Comments are stripped
+    # so an old commented-out rule is not the one found.
+    glyph_rule = _own_declarations(live_css, ".sidebar-row-action-glyph")
+    assert glyph_rule is not None, (
+        "index.css no longer has a .sidebar-row-action-glyph rule, so this guard cannot tell "
+        "how much room one action needs"
+    )
+    # Only `size-*` and `width` are read, so any other width route is refused.
+    other_width = re.search(
+        r"(?<![\w-])(?:min-width|max-width|inline-size|block-size):"
+        r"|@apply[^;]*(?<![\w-])(?:w|min-w|max-w|basis)-",
+        glyph_rule,
+    )
+    assert not other_width, (
+        f"the glyph's rule sets its width through {other_width.group(0)!r} as well as the "
+        f"size this guard reads, so the box that renders is wider than the one it measures"
+    )
+    # Per rendered glyph too: an instance-level `min-w-20` would be wider than credited.
+    for tag in _opening_jsx_tags(applied, "<span"):
+        if not re.search(r"(?<![\w-])sidebar-row-action-glyph(?![\w-])", tag):
+            continue
+        escape = _escapes_the_model(tag)
+        assert escape is None, (
+            f"a row action's glyph {escape}, so the box that renders is not the one the floor "
+            f"below is measured from: {tag!r}"
+        )
+        widened = re.findall(r"(?<![\w-])!?(?:w|min-w|max-w|basis|size)-\S+", tag)
+        assert not widened, (
+            f"a row action's glyph sets its own width with {widened}, overriding the shared "
+            f"rule this guard measures, so that action reaches further than the floor says"
+        )
+
+    sizes = _stated_units(glyph_rule, "size", "width", spacing)
+    assert len(sizes) == 1 and sizes[0] is not None, (
+        f"the glyph's size is not one value this guard can read: {sizes}. A second one later "
+        f"in the rule is what renders, and every floor below would go on being measured from "
+        f"the first, so state it once in a spelling this reads"
+    )
+    glyph_size = sizes[0]
+    # Actions are absolutely positioned, so reserve the furthest reach: offset + pr + size.
+    base_rule = _own_declarations(live_css, ".sidebar-row-action")
+    assert base_rule is not None, (
+        "index.css no longer has a .sidebar-row-action rule, so this guard cannot tell where "
+        "inside its container the glyph sits"
+    )
+    # Through _sole_measure so the shorthand refusal applies here too.
+    base_padding = _sole_measure(base_rule, "pr", "padding-right", spacing)
+    assert isinstance(base_padding, float), (
+        f"the base action's right padding is not one value this guard can read "
+        f"({base_padding!r}). A later declaration, or a shorthand that contains it, is what "
+        f"renders, and the shared action would reach further into the title while the floor "
+        f"stayed put"
+    )
+    inner_padding = base_padding
+    # `pl` is part of the reach: the touch-revealed button takes taps on its padding too.
+    base_left_measure = _sole_measure(base_rule, "pl", "padding-left", spacing)
+    assert isinstance(base_left_measure, float), (
+        f"the base action's left padding is not one value this guard can read "
+        f"({base_left_measure!r}). It sits inside the button, so a tap lands on it, and the "
+        f"reach below cannot be computed without it"
+    )
+    base_left = base_left_measure
+    base_offset = _base_row_action_offset(live_css, spacing)
+    assert base_offset is not None, (
+        "index.css no longer states a right edge for .sidebar-row-action in a spelling this "
+        "guard can read. Every action's position is measured from it, so reading it as flush "
+        "would understate every reach below by however far the base rule moves them"
+    )
+    offsets = _row_action_offsets(live_css, base_offset, spacing)
+    actions = {
+        name: _labelled_actions(
+            sidebar_source,
+            applied,
+            name,
+            offsets,
+            _row_action_paddings(live_css, inner_padding, spacing),
+            _row_action_left_paddings(live_css, base_left, spacing),
+            inner_padding,
+            base_left,
+            base_offset,
+            live_css,
+        )
+        for name in ("project", "recent")
+    }
+    assert all(actions.values()), (
+        f"no labelled row action left for one of the variants, so this guard cannot tell how "
+        f"much room that row has to reserve: "
+        f"{ {name: len(found) for name, found in actions.items()} }"
+    )
+    reach = {
+        name: max(edge + glyph_size for _, edge in found.values())
+        for name, found in actions.items()
+    }
+    floors = {"project-chat-item": reach["project"], "recent-item": reach["recent"]}
+
+    for variant in variants:
+        # Hover, open menu and focus gutters all count: touch is permanently in those states.
+        qualified = re.compile(rf"\S*/{re.escape(variant)}:pr-(\d+(?:\.\d+)?)$")
+        assert any(qualified.fullmatch(cls) for cls in every_class), (
+            f"no {variant} row left that widens its padding to make room for the action, so "
+            f"this guard can no longer tell whether the touch case is covered"
+        )
+        for rendering in renderings:
+            claimed = [
+                float(match.group(1))
+                for match in (qualified.fullmatch(cls) for cls in rendering)
+                if match
+            ]
+            if not claimed:
+                continue
+            touch = [
+                float(match.group(1))
+                for match in (
+                    re.fullmatch(coarse_prefix + r"pr-(\d+(?:\.\d+)?)", cls) for cls in rendering
+                )
+                if match
+            ]
+            plain = [
+                float(match.group(1))
+                for match in (re.fullmatch(r"pr-(\d+(?:\.\d+)?)", cls) for cls in rendering)
+                if match
+            ]
+            # Coarse-pointer utilities outrank unqualified ones regardless of order.
+            reserved = touch[-1] if touch else (plain[-1] if plain else None)
+            needed = max(claimed)
+            # EVERY claimed state must hold at least the floor, not just the largest.
+            assert min(claimed) >= floors[variant], (
+                f"a {variant} row states an action gutter of {min(claimed)} among {claimed}, "
+                f"under the {floors[variant]} its furthest action reaches. The state that "
+                f"claims it reserves nothing, whatever the others claim, and the action is "
+                f"visible in it (#7276)"
+            )
+            assert needed >= floors[variant], (
+                f"a {variant} row states its action gutter as {claimed}, under the "
+                f"{floors[variant]} that its furthest action reaches "
+                f"at .sidebar-row-action-glyph's size. Nothing then reserves room for actions "
+                f"that still have their width, and the comparison below is satisfied by two "
+                f"equally small numbers, which is the overlap this test exists to catch "
+                f"rather than a row that has been fixed (#7276)"
+            )
+            assert reserved is not None and reserved >= needed, (
+                f"a {variant} row reserves less room on a coarse pointer than it says its "
+                f"action needs: {reserved} against {needed}, on the row that renders as "
+                f"{rendering}. The action is always visible on touch, so it needs at least "
+                f"the room the hover, open-menu and focus cases already say it needs, or it "
+                f"sits over the title (#7276)"
+            )
     assert "sidebar-touch-reveal" in block
     # Coarse-pointer visibility must come after .sidebar-row-action { opacity-0 }.
     coarse_idx = css_source.index("@media (pointer: coarse)")
@@ -794,45 +1956,44 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
 
 def test_media_pages_clear_the_custom_titlebar():
     """The chat-style layout gives the media pages no outer inset, so each applies its own."""
-    root = ROOT_ROUTE.read_text(encoding = "utf-8")
+    root = _ui_source(ROOT_ROUTE)
 
     assert re.search(
         r"const isChatLike =\s*isChatRoute \|\| isImagesRoute \|\| isVideoRoute \|\| isAudioRoute;",
         root,
     )
     for page in (IMAGES_PAGE, VIDEO_PAGE):
-        shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
+        shell = _ui_source(page).split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
 
 
 def test_image_page_structural_panes_share_the_container_breakpoint():
-    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    source = _ui_source(IMAGES_PAGE)
     shell = source.split('className="diffusion-surface', 1)[1].split(">", 1)[0]
     section = source.split("Settings column + preview canvas", 1)[1]
 
     assert "@container" in shell
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in section
-    assert "@[50rem]:w-[408px]" in section
+    # Clamped so the canvas keeps the 13rem its header column reserves.
+    assert RAIL_WIDTH in section
+    assert RAIL_WIDTH_SCALED in IMAGES_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
     assert "md:flex-row" not in section
-    # pb-6, not the old pb-20: the action is an in-flow footer now, so the rail no longer
-    # reserves 80px for an overlay to sit in. The crossfade into that footer is the
-    # -action mask, which is why the two are asserted together -- the small padding is
-    # only correct while the fade is there to dissolve the last control into the footer.
+    # pb-6 is only correct while the -action fade dissolves the last control into the footer.
     assert "panel-scroll-fade-action" in section
-    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in section
     assert "p-6 px-10 @[50rem]:pt-[60px]" in section
-    assert "border-t border-foreground/10 px-10 py-3" in section
+    assert "border-t border-foreground/10 px-10 max-sm:px-5 py-3" in section
 
 
 def test_audio_page_matches_the_image_rail_header_and_action_footer():
-    source = AUDIO_PAGE.read_text(encoding = "utf-8")
+    source = _ui_source(AUDIO_PAGE)
     before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
     header_opening = before.rsplit('<div className="', 1)[1] + marker + after.split(">", 1)[0]
     header = header_opening + after.split("Below 50rem", 1)[0]
     layout = source.split("Below 50rem", 1)[1]
 
-    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in header_opening
+    assert HEADER_COLUMNS in header_opening
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
@@ -842,16 +2003,18 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
         '@[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"' in header
     )
     assert 'triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"' in header
-    assert "grid h-full min-w-0 grid-cols-[1fr_auto]" in header
+    assert "grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2" in header
     assert "@[50rem]:grid-cols-[1fr_auto_1fr]" in header
-    assert "col-start-2 justify-self-end pr-3" in header
-    assert "@[50rem]:justify-self-center @[50rem]:pr-0" in header
+    assert "col-start-2 justify-self-end pt-" in header
+    assert "@[50rem]:justify-self-center" in header
+    assert "col-start-3" in header and "<LibraryPageLink" in header
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "@[50rem]:w-[408px]" in layout
+    assert RAIL_WIDTH in layout
+    assert RAIL_WIDTH_SCALED in AUDIO_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
-    assert "gap-4 px-10 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
@@ -861,12 +2024,56 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert layout.count("p-6 px-10 @[50rem]:pt-[60px]") == 2
 
 
+TRAIN_SCROLLER_LAYOUT = (
+    "flex",
+    "min-h-0",
+    "w-full",
+    "min-w-0",
+    "flex-1",
+    "flex-col",
+    "overflow-y-auto",
+    "overflow-x-hidden",
+    "@[50rem]:flex-row",
+    "@[50rem]:overflow-hidden",
+)
+
+
 def test_image_train_rail_matches_create_and_header():
-    source = DIFFUSION_TRAIN_PANEL.read_text(encoding = "utf-8")
+    source = _ui_source(DIFFUSION_TRAIN_PANEL)
     layout = source.split("overflow-x-hidden: an unset overflow-x", 1)[1]
 
     assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
-    assert "pl-10 @[50rem]:w-[408px]" in layout
+    # The Train clamp adds back the scroller's right padding; both must be the same spacing step.
+    # Canonical Tailwind v4 steps only: `8.0` or `08` emit no pr- rule.
+    step = r"(?:0|[1-9]\d*)(?:\.(?:25|5|75))?"
+    rail = re.search(
+        r"(?<=[\s\"])pl-10 max-sm:pl-5 @\[50rem\]:w-\[min\(var\(--media-rail-width,408px\),"
+        rf"calc\(100%-13rem\+--spacing\(({step})\)\)\)\](?=[\s\"])",
+        layout,
+    )
+    assert rail, "the Train rail no longer uses the Create rail's width variable and clamp"
+    classes = re.search(r'className="([^"]*overflow-y-auto overflow-x-hidden[^"]*)"', layout)
+    assert classes, "the Train scroller moved; the rail clamp depends on its padding"
+    # No other attribute may set padding the class list does not show.
+    opening = layout[layout.rfind("<", 0, classes.start()) : classes.start()]
+    assert re.fullmatch(r"<div\s+", opening) and re.match(r"\s*>", layout[classes.end() :]), (
+        "the Train scroller's opening tag carries more than its className, which could override "
+        "the right padding the rail clamp adds back"
+    )
+    # Every other scroller class is pinned: anything re-boxing it changes what 100% measures.
+    tokens = classes.group(1).split()
+    below = [t for t in tokens if re.fullmatch(rf"pr-{step}", t)]
+    at_rail = [t for t in tokens if re.fullmatch(rf"sm:pr-{step}", t)]
+    rest = sorted(t for t in tokens if t not in below and t not in at_rail)
+    assert len(below) == 1 and rest == sorted(TRAIN_SCROLLER_LAYOUT), (
+        f"the Train scroller's classes changed ({classes.group(1)}); the rail clamp adds back only "
+        f"its sm: right padding, so re-check the clamp before updating TRAIN_SCROLLER_LAYOUT"
+    )
+    assert len(at_rail) == 1, f"expected one sm: right padding on the Train scroller, got {at_rail}"
+    assert rail.group(1) == at_rail[0].removeprefix("sm:pr-"), (
+        f"the Train rail adds back --spacing({rail.group(1)}) but its scroller pads "
+        f"{at_rail[0]}, so the divider no longer lines up with Create's"
+    )
     assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
     assert "@container hover-scrollbar" in layout
     assert "@[50rem]:pt-[42px]" in layout
@@ -874,7 +2081,7 @@ def test_image_train_rail_matches_create_and_header():
 
 
 def test_compact_media_link_keeps_accessible_name_and_truncation():
-    source = MEDIA_PAGE_LINK.read_text(encoding = "utf-8")
+    source = _ui_source(MEDIA_PAGE_LINK)
     button = source.split("<button", 1)[1].split("</button>", 1)[0]
 
     assert "aria-label={label}" in button
@@ -882,24 +2089,32 @@ def test_compact_media_link_keeps_accessible_name_and_truncation():
     assert "arrowClassName" in button
 
 
+def test_media_page_link_tooltip_drops_below_titlebar_controls():
+    """unslothai/unsloth#10226: Images/Video park this link in the top-right header beside
+    Windows controls; a top tooltip blocks minimize/maximize/close."""
+    source = _ui_source(MEDIA_PAGE_LINK)
+    tooltip = source.split("<TooltipContent", 1)[1].split("</TooltipContent>", 1)[0]
+
+    assert 'side="bottom"' in tooltip
+    assert "sideOffset={6}" in tooltip
+
+
 def test_media_page_headers_out_stack_the_mac_drag_region():
     """macOS insets the media pages 0px, so their 48px header overlaps the navbar's 34px drag
     strip: the band must out-stack it yet stay click-through (controls click, gaps drag)."""
-    navbar = NAVBAR.read_text(encoding = "utf-8")
+    navbar = _ui_source(NAVBAR)
 
     # The strip to beat: same z-40, but earlier in DOM order.
     assert "pointer-events-none absolute inset-x-0 top-0 z-40 h-[48px]" in navbar
     assert "data-tauri-drag-region" in navbar
 
-    # (page, end of the header band, clickable control groups expected inside it)
     for page, band_end, min_groups in (
         (IMAGES_PAGE, "MediaPageLink", 3),
         (VIDEO_PAGE, "MediaPageLink", 2),
         (AUDIO_PAGE, "PillTabs", 2),
     ):
-        source = page.read_text(encoding = "utf-8")
-        # matched on the band's size alone: Images lays its header out as a grid and Video as a
-        # flex row, so the stacking contract below is what this pins, not one layout's utilities.
+        source = _ui_source(page)
+        # Matched on size alone: Images uses a grid and Video a flex row.
         before, marker, band = source.partition("h-[48px] shrink-0")
         assert marker, page.name
         opening = before.rsplit('<div className="', 1)[1]
@@ -907,15 +2122,12 @@ def test_media_page_headers_out_stack_the_mac_drag_region():
             assert token in opening, (page.name, token)
 
         band = band.split(band_end, 1)[0]
-        # every control group in the band has to opt back in, whatever utilities lay it out:
-        # Audio and Images seat their mode pills in a grid cell, Video in a flex row, so
-        # matching on the opt-in alone is what keeps this honest across all three.
         groups = re.findall(r'"([^"]*pointer-events-auto[^"]*)"', band)
         assert len(groups) >= min_groups, (page.name, groups)
 
 
 def test_images_header_tracks_preview_and_preserves_titlebar_controls():
-    source = IMAGES_PAGE.read_text(encoding = "utf-8")
+    source = _ui_source(IMAGES_PAGE)
     before, marker, after = source.partition("h-[48px] shrink-0")
     assert marker
     opening = before.rsplit("<div", 1)[1] + marker + after.split(">", 1)[0]
@@ -924,7 +2136,7 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
     )
 
     assert "const { isMobile, pinned } = useSidebar();" in source
-    assert "grid-cols-[minmax(0,408px)_minmax(13rem,1fr)]" in opening
+    assert HEADER_COLUMNS in opening
     assert "@[50rem]:border-r" in header
     assert "isMobile" in header and "pl-12" in header
     assert "!pinned && isTauri" in header
@@ -946,11 +2158,172 @@ def test_images_header_tracks_preview_and_preserves_titlebar_controls():
 def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
     """unslothai/unsloth#7793: the support report prints final_status verbatim, so a
     user quitting mid-update must not read as a failed repair."""
-    source = TAURI_COMMANDS.read_text(encoding = "utf-8")
+    source = _ui_source(TAURI_COMMANDS)
     stopped_arm = source.split("if msg == update::UPDATE_STOPPED", 1)[1].split(
         "return Err(msg);", 1
     )[0]
-    # The status argument of the call, so the surrounding comment cannot satisfy this.
+    # The call's argument, so the surrounding comment cannot satisfy this.
     call = stopped_arm.split("finish_repair_group(", 1)[1].split(");", 1)[0]
     assert '"canceled"' in call
     assert '"failed"' not in call
+
+
+# `_ui_source` hides whether a length still scales, so the scaling is asserted here, per
+# variant (`h-[...]` and `hover:h-[...]` differ).
+_LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
+    (NAVBAR, "", "h", "48px", 2),
+    (IMAGES_PAGE, "", "h", "48px", 1),
+    (AUDIO_PAGE, "", "h", "48px", 1),
+    (VIDEO_PAGE, "", "h", "48px", 1),
+    (CHAT_PAGE, "", "h", "48px", 1),
+    (IMAGES_PAGE, "@[50rem]:", "pt", "60px", 1),
+    (AUDIO_PAGE, "@[50rem]:", "pt", "60px", 2),
+    (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
+    (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
+    # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
+    # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
+    # stay put while the labels grew, so the row clips its own text at a larger setting.
+    # Seven rows: #11589 added the drop-cue row, #12016 a second section header for the
+    # custom sidebar sections, and #12927 the pinned-pages label; #13575 dropped the inline
+    # rename input (one 30px height, one 39px indent).
+    (APP_SIDEBAR, "", "h", "30px", 7),
+    (APP_SIDEBAR, "", "gap", "8.5px", 6),
+    (APP_SIDEBAR, "", "pl", "39px", 1),
+    # The 34px pill controls in the media headers, in all three spellings the pages use. The
+    # band around them scales and so does their own text, so a control left fixed is the one
+    # thing in that row that does not move, and it crowds out its label.
+    (IMAGES_PAGE, "!", "h", "34px", 2),
+    (IMAGES_PAGE, "", "h", "34px", 1),
+    (IMAGES_PAGE, "[&>button]:", "h", "34px", 1),
+    (AUDIO_PAGE, "!", "h", "34px", 1),
+    (AUDIO_PAGE, "", "h", "34px", 1),
+    (AUDIO_PAGE, "[&>button]:", "h", "34px", 1),
+    (VIDEO_PAGE, "!", "h", "34px", 2),
+    (CHAT_PAGE, "!", "size", "30px", 1),
+    (CHAT_PAGE, "", "size", "30px", 2),
+    (CHAT_HEADER_MENU, "", "size", "30px", 2),
+    (BROWSER_TOGGLE, "", "size", "30px", 1),
+)
+
+# `:` is not a word character, so `\b` would let `hover:h-[...]` answer for `h-[...]`.
+_CLASS_STARTS = r"(?:(?<=[\s\"'`])|^)"
+# A trailing `:broken` makes a different candidate Tailwind emits nothing for.
+_CLASS_ENDS = r"(?=[\s\"'`]|$)"
+
+
+# `_MIXED_TOKEN` cannot tell a gain-scaled colour from a bare one, so the gain is stated here.
+_COLOURS_THAT_MUST_KEEP_THEIR_GAIN = ((IMAGES_PAGE, "border", "--foreground", "10", "edge", 1),)
+
+
+# The pin's `right` and `padding-right` must keep the scale wrapper; read by property, not
+# pinned to a length.
+_PIN_SELECTOR = ".sidebar-row-action.is-unpin-action"
+_CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = ("right", "padding-right")
+
+
+def _css_rule_body(source: str, selector: str) -> str:
+    """The declarations of the one top-level `selector { ... }` rule, nested braces included."""
+    starts = [m.end() for m in re.finditer(rf"(?<![\w.-]){re.escape(selector)}\s*\{{", source)]
+    assert len(starts) == 1, f"index.css states `{selector} {{` {len(starts)} times, not once"
+    depth, i = 1, starts[0]
+    while depth:
+        depth += {"{": 1, "}": -1}.get(source[i], 0)
+        i += 1
+    return source[starts[0] : i - 1]
+
+
+def _declared_values(body: str, prop: str) -> list[str]:
+    """Values of `prop` declared directly in a rule body, ignoring comments and nested rules."""
+    body = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
+    while True:
+        nested = re.sub(r"\{[^{}]*\}", "", body)
+        if nested == body:
+            break
+        body = nested
+    return re.findall(rf"(?<![\w-]){re.escape(prop)}:\s*([^;]+);", body)
+
+
+# Every per-chrome declaration is checked: `_ui_source` hides a bare 44px header.
+_CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE = (
+    "--studio-chat-header-height",
+    "--studio-chat-header-padding-top",
+    "--studio-chat-control-height",
+)
+
+
+def test_every_platform_chat_header_geometry_still_follows_the_ui_scale():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    blocks = dict(re.findall(r"const (\w+_CHROME_STYLE) = \{(.*?)\n\}", source, re.S))
+    assert len(blocks) >= 2, f"the provider states {sorted(blocks)}, so a chrome has gone missing"
+    # Per block: the chromes are alternatives, so a global search lets one answer for another.
+    for chrome, body in blocks.items():
+        for name in _CHAT_GEOMETRY_THAT_MUST_KEEP_THE_SCALE:
+            stated = re.findall(rf'"{re.escape(name)}":\s*"([^"]+)"', body)
+            assert stated, f"{chrome} no longer states {name}"
+            for value in stated:
+                assert re.fullmatch(
+                    r"calc\(\s*[\d.]+px\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)",
+                    value,
+                ), f"{chrome} states {name} as {value!r}, which stays put while the row grows"
+
+
+def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
+    body = _css_rule_body(INDEX_CSS.read_text(encoding = "utf-8"), _PIN_SELECTOR)
+    for prop in _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE:
+        values = _declared_values(body, prop)
+        assert (
+            len(values) == 1
+        ), f"`{_PIN_SELECTOR}` declares `{prop}` {len(values)} times, not once"
+        assert re.fullmatch(
+            r"calc\(\s*[\d.]+rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)",
+            values[0].strip(),
+        ), f"`{_PIN_SELECTOR}` states `{prop}: {values[0].strip()}`, which stays put while the gutter scales"
+
+
+def test_the_colours_these_contracts_read_still_carry_their_gain():
+    for path, utility, colour, amount, gain, expected in _COLOURS_THAT_MUST_KEEP_THEIR_GAIN:
+        source = path.read_text(encoding = "utf-8")
+        scaled = (
+            f"{utility}-[color-mix(in_oklab,var({colour})_"
+            f"calc({amount}%*var(--contrast-{gain}-gain,1)),transparent)]"
+        )
+        found = len(re.findall(_CLASS_STARTS + re.escape(scaled) + _CLASS_ENDS, source))
+        assert found == expected, (
+            f"{path.name} states {found} gain-scaled {utility} {colour} at {amount}%, "
+            f"not {expected}"
+        )
+        bare = f"{utility}-{colour.removeprefix('--')}/{amount}"
+        assert not re.search(
+            _CLASS_STARTS + re.escape(bare) + _CLASS_ENDS, source
+        ), f"{path.name} has a bare {bare}, which stops following the contrast setting"
+
+
+def test_the_lengths_these_contracts_measure_still_follow_the_ui_scale():
+    for path, variant, utility, length, expected in _LENGTHS_THAT_MUST_KEEP_THE_SCALE:
+        source = path.read_text(encoding = "utf-8")
+        named = f"{variant}{utility}-{length}"
+        scaled = len(
+            re.findall(
+                _CLASS_STARTS
+                + re.escape(f"{variant}{utility}-[calc({length}*var(--ui-space-scale,1))]")
+                + _CLASS_ENDS,
+                source,
+            )
+        )
+        assert scaled == expected, f"{path.name} states {scaled} scaled {named}, not {expected}"
+        assert not re.search(
+            _CLASS_STARTS + re.escape(f"{variant}{utility}-[{length}]") + _CLASS_ENDS, source
+        ), f"{path.name} has a bare {named}, which stays put while its text grows"
+
+
+def test_the_media_rail_fallback_is_the_width_hook_fallback():
+    """The CSS fallback must equal the hook's fallback, or the divider jumps on first paint."""
+    hook = (FRONTEND / "hooks/use-media-rail-width.ts").read_text(encoding = "utf-8")
+    for kind, page in (("images", IMAGES_PAGE), ("audio", AUDIO_PAGE)):
+        block = hook.split(f"  {kind}: createPanelWidthStore(", 1)[1].split("}),", 1)[0]
+        assert re.search(r"fallback: 408,", block), (kind, block)
+        source = page.read_text(encoding = "utf-8")
+        assert f'useMediaRailWidth("{kind}")' in source, page
+        root = source.split('{...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}', 1)
+        assert len(root) == 2, page
+        assert "style={railRootStyle}" in root[1].split(">", 1)[0], page

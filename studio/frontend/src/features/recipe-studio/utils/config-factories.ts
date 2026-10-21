@@ -353,11 +353,17 @@ export function makeValidatorConfig(
 ): ValidatorConfig {
   const isSql = validatorType === "code" && codeLang.startsWith("sql:");
   const isOxc = validatorType === "oxc";
+  const isJson = validatorType === "json";
+  const isMarkdown = validatorType === "markdown";
   let namePrefix = "validator_python";
   if (isSql) {
     namePrefix = "validator_sql";
   } else if (isOxc) {
     namePrefix = "validator_oxc";
+  } else if (isJson) {
+    namePrefix = "validator_json";
+  } else if (isMarkdown) {
+    namePrefix = "validator_markdown";
   }
   return {
     id,
@@ -406,7 +412,10 @@ export function makeSeedConfig(
     hf_split: "",
     hf_path: "",
     hf_token: "",
-    hf_endpoint: "https://huggingface.co",
+    // Empty, not getHfEndpoint(): a seed created before /api/health reports the
+    // mirror would pin the official host into the recipe, and the field is not
+    // user-editable. buildSeedConfig resolves a blank one at build time.
+    hf_endpoint: "",
     local_file_name: "",
     ...(seedSourceType === "unstructured"
       ? { unstructured_upload_uid: makeUnstructuredUploadUid() }

@@ -102,7 +102,7 @@ fn suffix_part_valid(value: &str) -> bool {
         })
 }
 
-fn compare_versions(left: &ParsedVersion, right: &ParsedVersion) -> Ordering {
+pub(super) fn compare_versions(left: &ParsedVersion, right: &ParsedVersion) -> Ordering {
     match left.release.cmp(&right.release) {
         Ordering::Equal => compare_suffixes(&left.suffix, &right.suffix),
         ordering => ordering,

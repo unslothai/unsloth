@@ -458,6 +458,41 @@ def test_numbered_list_is_not_an_answer_artifact():
         assert not _would_reprompt(content), content
 
 
+def test_step_labelled_results_are_not_a_plan():
+    """Step-labelled results are not a plan; "Step N" before an action still is."""
+    from core.inference.tool_call_parser import is_short_intent_without_action
+
+    answers = [
+        "- Step 1 result: 391\n- Step 2 result: 5050\n- Step 3 result: 1048576",
+        "Here are the results:\n\n- **Step 1 line for 400:** `400 160000`\n"
+        "- **Sum of squares of 1..400:** 21,413,400",
+        "**Step 1:** Printed the table; the last line is 400 160000.",
+        "In step 3 of the recipe, fold in the eggs.",
+        "### Step 1\nResult: 391",
+        "Step 1: I found 391.",
+        "Step 2: we got 5050.",
+    ]
+    for content in answers:
+        assert not is_short_intent_without_action(content), content
+
+    plans = [
+        "Step 1: search for the song list.",
+        "**Step 1**: Run the tests, then summarise.",
+        "Step 2 - let's check the logs.",
+        "Step 1, search the web for the song list.",
+        "Step 1: I'll search for the song list.",
+        "Step 1:\r\n1. Analyze the request.\r\n2. Draft the answer.",
+        "**Step 1**\nRun the tests, then summarise.",
+        "### Step 1\r\nSearch the web for the song list.",
+        "**Step 1**\n1. Search the web for the song list.\n2. Summarise it.",
+        "Step 1.\nSearch the web for the song list.",
+        "**Step 1**\n1. **Search** the web for the song list.",
+        "### Step 1\n\nSearch the web for the song list.",
+    ]
+    for content in plans:
+        assert is_short_intent_without_action(content), content
+
+
 # ── End-to-end guard semantics on realistic responses ──────────────
 
 
@@ -646,6 +681,28 @@ def test_no_reprompt_on_crlf_complete_python_game():
 
 # ── ReDoS guards ───────────────────────────────────────────────────
 
+# What these guards are looking for is catastrophic backtracking, which costs seconds or
+# minutes, not a few extra milliseconds. A wall clock cannot tell a regressed quantifier from a
+# shared runner descheduling the process mid-match: the tilde case below measures about 11ms of
+# work and has been seen at 60.9ms on CI for that reason alone. The quantity the budget is about
+# is the regex's own CPU time, so measure that directly with process_time, which does not run
+# while this process is off the CPU. Best of several runs on top, for the contention
+# process_time cannot see: cache and memory pressure from a neighbour are real work here. A
+# genuine blow-up survives both, since every repeat pays it in full. Same pairing as
+# test_tool_loop_controller.py.
+_REDOS_BUDGET_MS = 50
+
+
+def _guard_ms(payload, repeats = 5):
+    best = None
+    for _ in range(repeats):
+        t0 = time.process_time()
+        _has_answer_artifact(payload)
+        elapsed_ms = (time.process_time() - t0) * 1000
+        if best is None or elapsed_ms < best:
+            best = elapsed_ms
+    return best
+
 
 def test_no_backtrack_on_crlf_spam():
     """10K of `\\r\\n` repeats must complete fast.
@@ -655,10 +712,8 @@ def test_no_backtrack_on_crlf_spam():
     10 KB). The current `[ \\t]*` indent restriction plus length-bounded
     `[\\s\\S]{...}?` runs keep every alternative linear."""
     payload = "\r\n" * 5000
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on 10KB CRLF spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on 10KB CRLF spam"
 
 
 def test_no_backtrack_on_open_html_spam():
@@ -666,10 +721,8 @@ def test_no_backtrack_on_open_html_spam():
     quickly. Bounded `[\\s\\S]{0,4000}?` between the open and close caps
     the scan per occurrence."""
     payload = "<html " * 200  # ~1200 chars, under _REPROMPT_MAX_CHARS
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on <html spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on <html spam"
 
 
 def test_no_backtrack_on_doctype_html_alternation_worst_case():
@@ -680,19 +733,15 @@ def test_no_backtrack_on_doctype_html_alternation_worst_case():
     generous budget so future quantifier changes that drop the inner
     ``{0,4000}`` bound fail loudly."""
     payload = ("<!doctype html><html foo " * 60)[:1999]
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on doctype/html alt"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on doctype/html alt"
 
 
 def test_no_backtrack_on_tilde_fence_spam():
     """Open ``~~~`` fences without close must terminate quickly."""
     payload = "~~~a\n" * 400  # ~2000 chars, near _REPROMPT_MAX_CHARS
-    t0 = time.time()
-    _has_answer_artifact(payload)
-    elapsed_ms = (time.time() - t0) * 1000
-    assert elapsed_ms < 50, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
+    elapsed_ms = _guard_ms(payload)
+    assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
 
 
 # ── Closing-fence-must-end-line edge cases ────────────────────────

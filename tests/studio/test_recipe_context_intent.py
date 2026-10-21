@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The context intent the recipe load gates compare, executed rather than restated.
-
-`contextIntent` lives inside a React hook module that cannot be imported on its own, so
-it is sliced out of the real source and run. Restating the predicate here would pass
-just as happily with the source deleted.
-
-The rule it encodes: an unpinned MLX load sends 0, so a positive `requested_context_length`
-from MLX is an explicit pin. llama.cpp is ambiguous, because a same-model reload echoes the
-resolved n_ctx while the control is still Auto (see `resolve-ctx-pin-seed.ts`). Reading a
-GGUF echo as a pin makes an unpinned recipe reload the resident model on every run, and the
-restoration snapshot then replays that value as a pin the user never set.
-"""
+"""Only a positive MLX requested_context_length is a pin; a llama.cpp n_ctx echo is not."""
 
 from __future__ import annotations
 
@@ -38,7 +27,7 @@ def _harness_source() -> str:
     return "// @ts-nocheck\nexport " + slice_between(
         read(RECIPES),
         "function contextIntent(",
-        "\nasync function isLocalModelAlreadyLoaded(",
+        "\nexport async function isLocalModelAlreadyLoaded(",
     )
 
 
@@ -63,7 +52,6 @@ def test_only_mlx_reads_a_positive_context_echo_as_a_pin():
             """
         )
     )
-    # MLX: a pinned resident and an unpinned recipe are different loads.
     assert out["mlxPinned"] == 32768
     assert out["mlxAuto"] is None
     assert out["mlxUnset"] is None

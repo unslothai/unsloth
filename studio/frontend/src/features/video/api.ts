@@ -7,6 +7,8 @@ import { authFetch } from "@/features/auth";
 import type { DiffusionDownloadPlan } from "@/features/images/api";
 import { apiUrl } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { parseLoadJson } from "@/lib/multi-model-refusal";
+import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 
 // One Advanced control's resolved value plus provenance, same shape as the diffusion status.
 // `value` is engaged, `requested` is what the caller asked for (null = left to the backend),
@@ -20,6 +22,8 @@ export interface VideoResolvedControl {
   // "applied" (honored, or nothing was asked) | "fell_back" | "unsupported". Absent on older backends.
   status?: "applied" | "fell_back" | "unsupported";
   reason: string;
+  // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
+  artifact?: string | null;
 }
 
 // Per-family generation defaults + shape constraints, from status.defaults when loaded.
@@ -36,9 +40,15 @@ export interface VideoGenerationDefaults {
   resolution_multiple: number;
   // (width, height) presets the UI offers, default first.
   resolution_presets: Array<[number, number]>;
+  // Bounds a size off the presets must fit; absent on backends that accept only the presets.
+  custom_size_min_pixels?: number | null;
+  custom_size_max_pixels?: number | null;
+  custom_size_max_aspect?: number | null;
   // Backend-owned keyframe canvas rule, or null when unsupported.
   canvas_short_edge?: number | null;
   canvas_max_pixels?: number | null;
+  // Image-to-video families without that rule take the preset nearest the first frame's aspect.
+  canvas_from_presets?: boolean;
   // Released schedule shifts, or null when unsupported.
   flow_shift?: number | null;
   audio_flow_shift?: number | null;
@@ -49,7 +59,12 @@ export interface VideoGenerationDefaults {
 export interface VideoStatus {
   loaded: boolean;
   repo_id: string | null;
+  /** Logical Hub identity when repo_id is an exact local snapshot. */
+  display_repo_id?: string | null;
   family: string | null;
+  supported_families?: string[];
+  /** Pipeline-capable families whose loader accepts a Modular Diffusers manifest on this host. */
+  modular_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
@@ -67,8 +82,16 @@ export interface VideoStatus {
   speed_optims: string[];
   attention_backend?: string | null;
   transformer_cache?: string | null;
+  transformer_cache_stats?: {
+    mode?: string;
+    every?: number;
+    planned_skips?: number;
+    stats?: { calls?: number; computed?: number; skipped?: number };
+  } | null;
   // Dense DiT precision actually engaged ("int8" | "fp8" | ...) or null for bf16.
   transformer_quant?: string | null;
+  transformer_quant_backend?: string | null;
+  transformer_quant_backend_reason?: string | null;
   // Text-encoder quant actually engaged ("fp8" | "fp8_dynamic" | "int8" | "nvfp4") or null for dense bf16.
   text_encoder_quant?: string | null;
   // Whether the loaded family produces a synchronized audio track.
@@ -76,11 +99,17 @@ export interface VideoStatus {
   supports_cfg: boolean;
   // Conditioning supported by the loaded checkpoint.
   supports_keyframes?: boolean;
+  // Per keyframe: every image-to-video family takes a first frame; only MiniMax-H3 a last one.
+  // Absent on older backends, which read supports_keyframes for both.
+  supports_first_frame?: boolean;
+  supports_last_frame?: boolean;
   supports_references?: boolean;
   // Resident MiniMax-H3 denoiser partition, if any.
   h3_task?: string | null;
   // Per-family generation defaults + shape constraints; null when unloaded.
   defaults?: VideoGenerationDefaults | null;
+  // One or two sentences on how the loaded model reads prompts; null when it has no tip.
+  prompt_hint?: string | null;
   // Per-control provenance keyed by control name, read by the "Auto: X" badges. Null when
   // nothing is loaded or the backend does not record it.
   // The names are memory_mode, speed_mode, attention_backend and transformer_cache.
@@ -89,12 +118,16 @@ export interface VideoStatus {
 
 export interface VideoGenerateProgress {
   active: boolean;
-  // "queued" | "denoise" | "decode" | "export" | "completed" | "failed" | null; the terminal
-  // phases carry the background job's outcome.
+  // "queued" | "encode" | "denoise" | "decode" | "export" | "completed" | "failed" | null; the
+  // terminal phases carry the background job's outcome.
   phase?: string | null;
   step: number;
   total: number;
   eta_seconds?: number | null;
+  // Live latent preview of the first frame being denoised (small JPEG data URL), and a counter
+  // that moves with each one.
+  preview?: string | null;
+  preview_seq?: number;
   // Saved gallery record when phase is "completed".
   video?: GalleryVideo | null;
   // Client-safe failure detail when phase is "failed".
@@ -102,21 +135,31 @@ export interface VideoGenerateProgress {
 }
 
 export interface VideoLoadProgress {
-  phase: "downloading" | "finalizing" | "ready" | "error" | null;
+  phase:
+    | "downloading"
+    | "finalizing"
+    | "saving_chat_context"
+    | "ready"
+    | "error"
+    | null;
   downloaded_bytes: number;
   // null when the total isn't known yet.
   expected_bytes?: number | null;
   error?: string | null;
+  /** Absent on an older backend. */
+  error_code?: string | null;
 }
 
 export interface VideoLoadRequest {
   model_path: string;
+  /** Logical Hub identity to publish while model_path remains the physical load target. */
+  display_repo_id?: string;
   // Required for the gguf / single_file kinds, omitted for a full pipeline loaded via
   // from_pretrained.
   gguf_filename?: string;
   // How to load the model (omit to auto-detect from gguf_filename): "gguf", "single_file"
-  // (safetensors transformer) or "pipeline". Non-GGUF kinds are restricted to unsloth/* or
-  // family bases.
+  // (safetensors transformer) or "pipeline". A single_file .safetensors loads from any repo;
+  // pipeline loads are restricted to unsloth/* or family bases.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
@@ -136,7 +179,7 @@ export interface VideoLoadRequest {
     | "sage"
     | "xformers"
     | "aiter";
-  transformer_cache?: "off" | "fbcache";
+  transformer_cache?: "off" | "fbcache" | "static";
   transformer_cache_threshold?: number;
   // Dense DiT precision on full-pipeline loads (omit for the hardware ladder; "none" pins bf16).
   // GGUF / single-file checkpoints carry their own.
@@ -146,8 +189,11 @@ export interface VideoLoadRequest {
   // CUDA / ROCm physical indices this load may use; omit for automatic. Neither engine shards a
   // checkpoint, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
-  // Text-encoder precision (omit to keep the dense bf16 encoder). Refused with a 409 when the host cannot run it.
-  text_encoder_quant?: "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Text-encoder precision. Omit for the family default (the hosted quantized encoder ComfyUI's template matches);
+  // "none" keeps the dense bf16 encoder. An explicit scheme is refused with a 409 when the host cannot run it.
+  text_encoder_quant?: "none" | "fp8" | "fp8_dynamic" | "int8" | "nvfp4";
+  // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
+  allow_oversized_load?: boolean;
 }
 
 /** One reference video, with the soundtrack MiniMax-H3 conditions on alongside it. */
@@ -163,11 +209,13 @@ export interface VideoReferenceVideo {
 
 export interface VideoGenerateRequest {
   prompt: string;
+  // Stream a live preview on generate-progress; omitted = the server default (on).
+  live_preview?: boolean;
   negative_prompt?: string;
   // Width/height/num_frames/fps default per loaded family, so they are optional. When sent they
-  // must match that family's rules -- a resolution preset, and num_frames on the
+  // must match that family's rules -- a size near its presets, and num_frames on the
   // k*frame_step+1 lattice -- or the backend answers 422 with the supported shapes.
-  // Width/height must be one of status.defaults.resolution_presets.
+  // Width/height sit on resolution_multiple inside the custom_size_* bounds, or are a preset.
   width?: number;
   height?: number;
   num_frames?: number;
@@ -222,6 +270,8 @@ export interface GalleryVideo {
   // Library state, not recipe: stored beside the clip, absent on sidecars written before this existed.
   pinned?: boolean;
   archived?: boolean;
+  /** The server's unpinned sort key: the drag key, else the file mtime. */
+  order_at?: number | null;
 }
 
 // Acknowledgement that the job started; the saved record arrives via getVideoGenerateProgress at phase "completed".
@@ -263,11 +313,11 @@ export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatu
     "video",
     body.model_path,
     async () =>
-      parseJson<VideoStatus>(
+      parseLoadJson<VideoStatus>(
         await authFetch("/api/inference/video/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withAllowOversizedLoad(body)),
         }),
       ),
     async (signal) => (await getVideoLoadProgress(signal)).phase,
@@ -282,7 +332,7 @@ export async function getVideoDownloadPlan(
     await authFetch("/api/inference/video/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withAllowOversizedLoad(body)),
     }),
   );
 }
@@ -332,6 +382,31 @@ export async function getVideoGallery(
 }
 
 /** Pin/unpin or archive/restore one clip; omitted flags are left alone. Returns the new record. */
+/** Move one video to just after `afterId` (null = front). The server also decides the pin. */
+export async function moveGalleryVideo(id: string, afterId: string | null): Promise<GalleryVideo> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}/move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ after_id: afterId }),
+    }),
+  );
+}
+
+/** Copy one video into a chat project's folder. */
+export async function addGalleryVideoToProject(
+  id: string,
+  projectId: string,
+): Promise<{ path: string; already: boolean }> {
+  return parseJson(
+    await authFetch(`/api/inference/video/gallery/${id}/project`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId }),
+    }),
+  );
+}
+
 export async function setGalleryVideoFlags(
   id: string,
   flags: { pinned?: boolean; archived?: boolean },

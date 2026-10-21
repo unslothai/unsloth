@@ -30,6 +30,9 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
+      # The first gating step runs this auditor, so an edit to it changes what this
+      # workflow runs.
+      - 'scripts/lockfile_supply_chain_audit.py'
   push:
     branches: [main]
     paths:
@@ -40,13 +43,15 @@ on:
       - 'unsloth/**'
       - 'unsloth_cli/**'
       - '.github/workflows/wheel-smoke.yml'
+      # The first gating step runs this auditor, so an edit to it changes what this
+      # workflow runs.
+      - 'scripts/lockfile_supply_chain_audit.py'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -62,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'
 
@@ -110,6 +115,13 @@ jobs:
                 "no frontend public":    not any("studio/frontend/public/" in s for s in n),
                 "no frontend src":       not any("studio/frontend/src/"    in s for s in n),
                 "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
+                # The installers read these out of site-packages before falling back to GitHub.
+                "shortcut icons shipped": all(
+                    any(s.endswith(f"studio/frontend/dist/{f}") for s in n)
+                    for f in ("rounded-512.png", "unsloth.ico")
+                ),
+                # setup.sh / setup.ps1 run `npm ci` against it in site-packages.
+                "oxc lockfile shipped":  any(s.endswith("oxc-validator/package-lock.json")   for s in n),
                 "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
                 "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
               }
@@ -356,7 +368,7 @@ jobs:
 
       - name: Upload wheel on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: unsloth-wheel
           path: dist/

@@ -10,7 +10,40 @@ import type {
   PersistedInferenceParams,
 } from "../types/runtime";
 
+import { normalizeSavedMinP } from "./min-p-policy.ts";
+
 export type PersistedInferenceParamKey = keyof PersistedInferenceParams;
+
+/** "Max" Max Tokens as the memory records it. The window belongs to one load, so recording "Max"
+ *  as that number replayed a stale cap at a larger context, and admission charges any cap below the
+ *  window in full: one chat then held the whole KV pool and the rest queued (#10671). Above every
+ *  window, so a build without this still clamps it to the load; this one never lets it into params. */
+export const REMEMBERED_MAX_TOKENS_MAX = 2 ** 31 - 1;
+
+/** An entry with a Max Tokens at or above `contextWindow` (what the slider shows as "Max") recorded
+ *  as "Max". The window of the model the entry belongs to; null when unknown or external. `kept` is
+ *  the entry's current cap when Max Tokens was not itself edited: a chosen cap the window clamped
+ *  down to Max stays the chosen cap. */
+export function recordMaxTokensAsMax<T extends PersistedInferenceParams>(
+  entry: T,
+  contextWindow: number | null,
+  kept?: number,
+): T {
+  if (
+    contextWindow === null ||
+    entry.maxTokens === undefined ||
+    entry.maxTokens < contextWindow
+  ) {
+    return entry;
+  }
+  const maxTokens =
+    kept !== undefined &&
+    kept !== REMEMBERED_MAX_TOKENS_MAX &&
+    kept >= contextWindow
+      ? kept
+      : REMEMBERED_MAX_TOKENS_MAX;
+  return { ...entry, maxTokens };
+}
 
 /** Params that persist across a reload. `checkpoint` is the key, not a value. */
 export const PERSISTED_INFERENCE_PARAM_KEYS = [
@@ -18,6 +51,7 @@ export const PERSISTED_INFERENCE_PARAM_KEYS = [
   "topP",
   "topK",
   "minP",
+  "minPMode",
   "repetitionPenalty",
   "presencePenalty",
   "maxSeqLength",
@@ -118,7 +152,8 @@ export function getReplayedParams(
   if (!(enabled && checkpointChanged)) {
     return capped(current);
   }
-  const remembered = paramsByModel[modelId];
+  const saved = paramsByModel[modelId];
+  const remembered = saved ? normalizeSavedMinP(saved) : undefined;
   if (!remembered) {
     return capped(current);
   }
@@ -130,6 +165,10 @@ export function getReplayedParams(
     if (value !== undefined) {
       setInferenceParam(replayed, key, value);
     }
+  }
+  // "Max" is the load's window; with no load to size it, what is on screen stands.
+  if (replayed.maxTokens === REMEMBERED_MAX_TOKENS_MAX) {
+    replayed.maxTokens = maxTokensCap ?? current.maxTokens;
   }
   if (maxTokensCap !== undefined && replayed.maxTokens > maxTokensCap) {
     replayed.maxTokens = maxTokensCap;

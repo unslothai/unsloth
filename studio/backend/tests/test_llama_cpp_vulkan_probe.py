@@ -80,10 +80,13 @@ def test_missing_description_symbol_keeps_igpu_detection():
     )
     lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
 
-    flags, names = _igpu_flags_and_names(base, lib, 1)
+    flags, names, known = _igpu_flags_and_names(base, lib, 1)
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
+    # The type WAS read, which separates a real "not integrated" from a failed query;
+    # only the former may be trusted for a DirectIO decision.
+    assert known == [True]
 
 
 def _make_vulkan_install(tmp_path: Path) -> str:
@@ -228,6 +231,26 @@ def test_large_discrete_gpu_is_untouched(tmp_path):
     assert gpus == [(0, 47 * 1024, 48 * 1024)], gpus
 
 
+@pytest.mark.parametrize(
+    "free_mib, total_mib, is_igpu, expected_free",
+    [
+        # Intel's Windows driver reports a heap budget above the heap size.
+        (18 * 1024, 16 * 1024, 0, 16 * 1024),
+        (40 * 1024, 32 * 1024, 1, 32 * 1024),
+        (6 * 1024, 24 * 1024, 0, 6 * 1024),
+        (24 * 1024, 24 * 1024, 0, 24 * 1024),
+        (8 * 1024, 0, 1, 8 * 1024),
+    ],
+    ids = ["dgpu_over", "igpu_over", "dgpu_under", "dgpu_equal", "total_unknown"],
+)
+def test_vulkan_free_never_exceeds_total(tmp_path, free_mib, total_mib, is_igpu, expected_free):
+    binary = _make_vulkan_install(tmp_path)
+    rows = [_row(0, free_mib * MIB, is_igpu = is_igpu, total_bytes = total_mib * MIB, name = "GPU")]
+    with _mock_probe(rows):
+        (row,) = LlamaCppBackend._run_vulkan_probe(binary)
+    assert (row["free_mib"], row["total_mib"]) == (expected_free, total_mib)
+
+
 def test_inherited_visible_devices_mask_is_passed_through_to_probe(tmp_path, monkeypatch):
     # The mask is NOT stripped or filtered in Python: ggml parses it in raw
     # physical-device space while this probe reports the compact post-filter
@@ -299,6 +322,58 @@ def test_versioned_only_vulkan_soname_is_probed(tmp_path):
     with _mock_probe(rows):
         gpus = LlamaCppBackend._get_gpu_free_memory_vulkan(str(binary))
     assert gpus == [(0, 23 * 1024, 24 * 1024)], gpus
+
+
+def test_windows_probe_sets_the_error_mode_before_loading_ggml(tmp_path, monkeypatch, capsys):
+    """SEM_FAILCRITICALERRORS is OR-ed into the inherited mode before either ggml DLL loads."""
+    from core.inference import _vulkan_probe as probe
+
+    for name in ("ggml-base.dll", "ggml-vulkan.dll"):
+        (tmp_path / name).write_bytes(b"stub")
+    error_mode = {"value": 0x8000}
+
+    class _Kernel32:
+        def GetErrorMode(self):
+            return error_mode["value"]
+
+        def SetErrorMode(self, value):
+            previous, error_mode["value"] = error_mode["value"], value
+            return previous
+
+    loads = []
+
+    def fake_cdll(path, mode = 0):
+        loads.append((Path(path).name, error_mode["value"]))
+        if Path(path).name == "ggml-vulkan.dll":
+            raise OSError(127, "The specified procedure could not be found")
+        return object()
+
+    monkeypatch.setattr(probe.sys, "argv", ["_vulkan_probe.py", str(tmp_path)])
+    monkeypatch.setattr(probe.os, "add_dll_directory", lambda _path: None, raising = False)
+    monkeypatch.setattr(probe.ctypes, "WinDLL", lambda _name: _Kernel32(), raising = False)
+    monkeypatch.setattr(probe.ctypes, "CDLL", fake_cdll)
+    monkeypatch.setattr(probe.sys, "platform", "win32")
+
+    assert probe.main() == 1
+    assert loads == [("ggml-base.dll", 0x8001), ("ggml-vulkan.dll", 0x8001)]
+    assert "ggml-vulkan load failed" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "real kernel32 error mode")
+def test_windows_probe_sets_the_real_process_error_mode(tmp_path):
+    probe_script = Path(__file__).resolve().parents[1] / "core" / "inference" / "_vulkan_probe.py"
+    code = (
+        "import ctypes, runpy, sys\n"
+        "k = ctypes.WinDLL('kernel32'); k.SetErrorMode(0)\n"
+        f"sys.argv = ['_vulkan_probe.py', {str(tmp_path)!r}]\n"
+        f"g = runpy.run_path({str(probe_script)!r})\n"
+        "rc = g['main']()\n"
+        "print(rc, k.GetErrorMode() & 1)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output = True, text = True, timeout = 60
+    )
+    assert result.stdout.split() == ["1", "1"], (result.stdout, result.stderr)
 
 
 if __name__ == "__main__":

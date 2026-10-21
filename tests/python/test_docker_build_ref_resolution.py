@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""docker/build.sh must hand docker a COMMIT, not a branch name.
-
-Docker matches a RUN layer on the command string alone -- "the files updated in the
-container aren't examined to determine if a cache hit exists" -- so a build arg that
-stays "main" makes the pip-install-from-git layer a cache hit on every rebuild and the
-image keeps the commits of the first build while the build reports success. The publish
-workflow already freezes both refs with git ls-remote; the local script has to as well.
-"""
+"""docker/build.sh must pass commits, not branch names, or Docker reuses a stale git-install layer."""
 
 from __future__ import annotations
 
@@ -39,13 +32,15 @@ def _run(
     tmp_path: Path,
     git_body: str,
     env_extra: dict[str, str] | None = None,
+    stubs: dict[str, str] | None = None,
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     args_file = tmp_path / "docker-args.txt"
+    for name, body in (stubs or {}).items():
+        _stub(bin_dir / name, body)
     _stub(bin_dir / "git", git_body)
     _stub(bin_dir / "docker", f'printf "%s\\n" "$@" > {args_file}\n')
-    # no network: the llama.cpp tag lookup must not reach github from a unit test
     _stub(bin_dir / "curl", "exit 1\n")
 
     env = dict(os.environ)
@@ -90,9 +85,34 @@ def test_the_default_main_refs_are_frozen_to_commits(tmp_path):
         "reuses the cached install layer and silently ships a stale image"
     )
     assert _build_arg(argv, "UNSLOTH_ZOO_REF") == ZOO_SHA
-    # the baked notebooks are the same shape of mutable-ref RUN layer, and the
-    # publish workflow already freezes this one
     assert _build_arg(argv, "UNSLOTH_NOTEBOOKS_REF") == NB_SHA
+
+
+def test_the_smoke_test_message_names_the_build_hosts_own_gpu(tmp_path):
+    """It named a B200 on every host, including the ones that have no NVIDIA GPU."""
+    proc, _argv = _run(
+        tmp_path, LS_REMOTE_STUB, stubs = {"nvidia-smi": 'echo "NVIDIA GeForce RTX 3090"\n'}
+    )
+    assert "RTX 3090" in proc.stdout, proc.stdout
+    assert "B200" not in proc.stdout and "sm_100" not in proc.stdout
+
+
+def test_the_smoke_test_message_claims_no_gpu_when_there_is_none(tmp_path):
+    proc, _argv = _run(tmp_path, LS_REMOTE_STUB, stubs = {"nvidia-smi": "exit 9\n"})
+    assert "Smoke test on this host:" in proc.stdout, proc.stdout
+
+
+def test_a_failing_gpu_query_is_not_shown_as_a_gpu_name(tmp_path):
+    """nvidia-smi prints its failure text on stdout; only a successful query names a GPU."""
+    proc, _argv = _run(
+        tmp_path,
+        LS_REMOTE_STUB,
+        stubs = {
+            "nvidia-smi": 'echo "NVIDIA-SMI has failed because it could not communicate"; exit 9\n'
+        },
+    )
+    assert "Smoke test on this host:" in proc.stdout, proc.stdout
+    assert "has failed" not in proc.stdout
 
 
 def test_an_explicit_tag_is_frozen_too(tmp_path):

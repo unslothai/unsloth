@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getAppliedInterfaceZoom } from "../settings/lib/interface-scale-runtime.ts";
+
 // Tauri types every drop position as physical, but wry only produces one on
 // WebView2 (ScreenToClient device pixels). macOS reports NSView points and GTK
-// reports widget coordinates, both of which are already CSS pixels.
+// reports widget coordinates, and neither of those moves with page zoom, so they
+// are CSS pixels only at 100%.
 function isPhysicalDropPosition(): boolean {
   return (
     typeof navigator !== "undefined" && navigator.userAgent.includes("Windows")
@@ -21,12 +24,25 @@ function physicalPerCssPx(windowScaleFactor: number): number {
     : 1;
 }
 
-/** A drop position in the CSS pixels the DOM is measured in. */
+/**
+ * A drop position in the CSS pixels the DOM is measured in.
+ *
+ * The two branches read zoom from different places and that asymmetry is forced, not an
+ * oversight. **Do not collapse them onto `devicePixelRatio`.** Page zoom is not readable
+ * from JS, so macOS and GTK have only the value we last handed the webview; and on macOS
+ * `devicePixelRatio` carries a backing-scale factor that NSView points do not have, so
+ * using it there would divide by the Retina factor twice.
+ */
 export function nativeDropPointToCss(
   position: { x: number; y: number },
   windowScaleFactor: number,
+  webviewZoom = getAppliedInterfaceZoom(),
 ): { x: number; y: number } {
-  if (!isPhysicalDropPosition()) return position;
+  if (!isPhysicalDropPosition()) {
+    const scale =
+      Number.isFinite(webviewZoom) && webviewZoom > 0 ? webviewZoom : 1;
+    return { x: position.x / scale, y: position.y / scale };
+  }
   const scale = physicalPerCssPx(windowScaleFactor);
   return { x: position.x / scale, y: position.y / scale };
 }

@@ -18,11 +18,19 @@ _UNSLOTH_ORG_PREFIX = "unsloth_"
 
 # We emit a bare epoch; hand-made folders often use a date-time. Anything else
 # (``_final``, ``_v2``, ``_8b``) is part of the model name, not a stamp.
-_RUN_DIR_TIMESTAMP = re.compile(r"\A\d{6,}(?:[-_]\d{2,})?\Z")
+# re.ASCII for the same reason as ``_REPO_NAME`` below: ``\d`` otherwise matches every
+# Unicode decimal digit, so ``unsloth_Qwen3-8B_١٧٧١٢٢٧٨٠٠`` read as a folder we wrote.
+_RUN_DIR_TIMESTAMP = re.compile(r"\A\d{6,}(?:[-_]\d{2,})?\Z", re.ASCII)
 
 # ``validate_repo_id`` transcribed to keep this module stdlib-only. A folder name is user
 # input, so trust the parse only when the Hub would accept what falls out of it.
-_REPO_NAME = re.compile(r"\A(?!.*(?:--|\.\.))(?![-.])[\w.-]{1,96}(?<![-.])\Z")
+# re.ASCII because ``\w`` is Unicode aware by default and the Hub's charset is not:
+# huggingface_hub 1.32.0 added the same flag to its own REPO_ID_REGEX for exactly this,
+# and without it ``Café-8B``, ``文件夹`` and ``модель-8B`` parsed here into repo ids the
+# Hub rejects. We never write such a name ourselves (``_INVALID_SEGMENT_CHARS`` above
+# strips anything outside ``A-Za-z0-9._-``), so this only ever concerned hand-made
+# folders, which is precisely the input this parse exists to distrust.
+_REPO_NAME = re.compile(r"\A(?!.*(?:--|\.\.))(?![-.])[\w.-]{1,96}(?<![-.])\Z", re.ASCII)
 
 
 def _is_valid_repo_name(name: str) -> bool:
@@ -101,7 +109,10 @@ def build_default_output_dir_name(
 def model_segment_from_default_output_dir_name(output_dir_name: str) -> Optional[str]:
     """Return the encoded model segment from a default run folder name."""
     parts = str(output_dir_name or "").rsplit("_", 1)
-    if len(parts) != 2 or not parts[1].isdigit():
+    # isascii() first: str.isdigit() is true of Arabic-Indic and every other Unicode
+    # decimal digit, and this is the strict inverse of a writer that only ever emits
+    # `str(int(...))`.
+    if len(parts) != 2 or not (parts[1].isascii() and parts[1].isdigit()):
         return None
     model_segment = parts[0]
     marker_index = _appended_project_marker_index(model_segment)

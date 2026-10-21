@@ -1,13 +1,17 @@
 """Binary selection logic in install_llama_prebuilt.py; all I/O monkeypatched."""
 
+import hashlib
 import importlib.util
+import inspect
 import json
 import os
+import pathlib
 import socket
 import subprocess
 import sys
 import textwrap
 import types
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -31,6 +35,12 @@ ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
 LinuxCudaSelection = INSTALL_LLAMA_PREBUILT.LinuxCudaSelection
 UPSTREAM_REPO = INSTALL_LLAMA_PREBUILT.UPSTREAM_REPO
+
+
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
 
 pick_windows_cuda_runtime = INSTALL_LLAMA_PREBUILT.pick_windows_cuda_runtime
 compatible_windows_runtime_lines = INSTALL_LLAMA_PREBUILT.compatible_windows_runtime_lines
@@ -63,13 +73,13 @@ resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_ins
 
 @pytest.fixture(autouse = True)
 def _reset_uncovered_cuda_warnings(monkeypatch):
-    # Module-level dedupe: without this reset a test's verdict depends on which earlier test logged the reason.
+    # Module-level dedupe: reset it or verdicts depend on earlier tests.
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_UNCOVERED_CUDA_HOST_WARNINGS", set())
 
 
 @pytest.fixture(autouse = True)
 def _disable_download_host_fast_path(monkeypatch):
-    # Mocked releases only, so keep the real-CDN download-host fast path out; test_download_host_resolve.py covers it.
+    # Mocked releases only; test_download_host_resolve.py covers the CDN fast path.
     monkeypatch.setenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", "1")
 
 
@@ -81,8 +91,7 @@ def load_studio_run_module(monkeypatch):
     )
     loggers = types.ModuleType("loggers")
     loggers.get_logger = lambda name: logger
-    # run.py imports this at module scope, so the stub must carry it or importing run fails before any test runs.
-    # A no-op is right: the filter only de-duplicates uvicorn's copy of a traceback, and no server starts here.
+    # run.py imports this at module scope; no server starts, so a no-op is right.
     loggers.install_uvicorn_duplicate_exception_filter = lambda: None
     monkeypatch.setitem(sys.modules, "loggers", loggers)
 
@@ -92,10 +101,17 @@ def load_studio_run_module(monkeypatch):
     startup_banner.stdout_supports_color = lambda: False
     monkeypatch.setitem(sys.modules, "startup_banner", startup_banner)
 
+    # run.py exports these at module scope in-process, so they would outlive the test.
+    for _leaked in ("UNSLOTH_STUDIO_HOME", "UNSLOTH_LLAMA_CPP_PATH"):
+        monkeypatch.setenv(_leaked, os.environ.get(_leaked, ""))
+        monkeypatch.delenv(_leaked)
+
     paths = types.ModuleType("utils.paths")
     paths.__path__ = []
     storage_roots = types.ModuleType("utils.paths.storage_roots")
     storage_roots.studio_root = lambda: PACKAGE_ROOT / ".studio-test-root"
+    # None keeps these tests on the legacy-default path.
+    storage_roots.unsloth_home = lambda: None
     paths.storage_roots = storage_roots
     monkeypatch.setitem(sys.modules, "utils.paths", paths)
     monkeypatch.setitem(sys.modules, "utils.paths.storage_roots", storage_roots)
@@ -307,12 +323,8 @@ def mock_windows_runtime(monkeypatch, lines):
     )
 
 
-# ===========================================================================
-
-
 class TestStudioLocalhostIpv6Warning:
     def _prepare_loopback(self, run_module, monkeypatch):
-        # Unsloth confirmed answering on the IPv4 loopback.
         monkeypatch.setattr(
             run_module,
             "_working_local_url",
@@ -361,8 +373,7 @@ class TestStudioLocalhostIpv6Warning:
         assert "http://localhost:8888" in captured.out
 
     def test_ipv6_listener_does_not_suppress_warning(self, monkeypatch):
-        # A process on ::1 is NOT Unsloth (binds 127.0.0.1 only), so the warning must
-        # still fire -- that is exactly when http://localhost opens the wrong service.
+        # A process on ::1 is NOT Unsloth (binds 127.0.0.1 only), so http://localhost opens the wrong service.
         run_module = load_studio_run_module(monkeypatch)
         self._prepare_loopback(run_module, monkeypatch)
         self._set_getaddrinfo(monkeypatch, [self._ipv6()])
@@ -390,7 +401,6 @@ class TestStudioLocalhostIpv6Warning:
         assert run_module._localhost_ipv6_mismatch_url("127.0.0.1", port) is None
 
     def test_ipv4_not_answering_suppresses_warning(self, monkeypatch):
-        # Unsloth not confirmed on 127.0.0.1 -> no warning.
         run_module = load_studio_run_module(monkeypatch)
         monkeypatch.setattr(run_module, "_working_local_url", lambda port: None)
         self._set_getaddrinfo(monkeypatch, [self._ipv6()])
@@ -435,7 +445,7 @@ class TestStudioLocalhostIpv6Warning:
         monkeypatch.setattr(
             run_module,
             "_verify_global_reachability",
-            lambda display_host, port: calls["reachability"].append((display_host, port)),
+            lambda display_host, port, **_: calls["reachability"].append((display_host, port)),
         )
         return calls
 
@@ -482,10 +492,7 @@ class TestStudioLocalhostIpv6Warning:
         assert calls["stop_hint"] == 1
 
 
-# ===========================================================================
-# A-F, H. Component-independent GPU/token helpers. Their behaviour tables live in test_prebuilt_core.py (pure
-# prebuilt_core functions); this pin proves the installer still re-exports them, so those tables stay in force.
-# ===========================================================================
+# Behaviour tables live in test_prebuilt_core.py; this pins the installer's re-exports.
 
 
 def test_core_helper_aliases_bound_to_prebuilt_core():
@@ -500,11 +507,6 @@ def test_core_helper_aliases_bound_to_prebuilt_core():
         "runtime_line_from_cuda_version",
     ):
         assert getattr(INSTALL_LLAMA_PREBUILT, name) is getattr(_core, name), name
-
-
-# ===========================================================================
-# G. pick_windows_cuda_runtime + compatible_windows_runtime_lines
-# ===========================================================================
 
 
 class TestPickWindowsCudaRuntime:
@@ -539,11 +541,11 @@ class TestCompatibleWindowsRuntimeLines:
         assert compatible_windows_runtime_lines(host) == ["cuda12"]
 
     @pytest.mark.parametrize("minor", [0, 1, 2, 3])
-    def test_cuda12_runs_on_any_12_x_driver(self, minor):
-        # Regression: Windows previously gated cuda12 below a 12.4 driver, but minor-version compat runs toolkit-12.8
-        # bundles on any 12.x driver, same as Linux.
+    def test_cuda12_needs_a_12_4_driver(self, minor):
+        # Minor-version compat alone would run the toolkit-12.8 bundles on any 12.x driver, but
+        # their -compress-mode=size device code does not load before 12.4 (#12842).
         host = make_host(driver_cuda_version = (12, minor))
-        assert compatible_windows_runtime_lines(host) == ["cuda12"]
+        assert compatible_windows_runtime_lines(host) == []
 
     def test_driver_13_1(self):
         host = make_host(driver_cuda_version = (13, 1))
@@ -556,9 +558,6 @@ class TestCompatibleWindowsRuntimeLines:
     def test_future_major_derives_lines(self):
         host = make_host(driver_cuda_version = (14, 0))
         assert compatible_windows_runtime_lines(host) == ["cuda14", "cuda13", "cuda12"]
-
-
-# ===========================================================================
 
 
 class TestApplyApprovedHashes:
@@ -670,9 +669,6 @@ class TestApplyApprovedHashes:
         checksums = make_checksums(["a.tar.gz"])
         with pytest.raises(PrebuiltFallback, match = "approved checksum"):
             apply_approved_hashes([], checksums)
-
-
-# ===========================================================================
 
 
 class TestPublishedReleaseResolution:
@@ -1100,7 +1096,7 @@ class TestValidatedChecksumsForBundle:
         bundle = make_release([], release_tag = "r1", upstream_tag = "b8508")
         checksums = make_checksums_with_source(
             [], release_tag = "r1", upstream_tag = "b8508", source_commit = "a" * 40
-        )  # exact source archive, but no source_repo
+        )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
@@ -1121,7 +1117,7 @@ class TestValidatedChecksumsForBundle:
         )
         checksums = make_checksums_with_source(
             [], release_tag = "r1", upstream_tag = "b8508", source_commit = "a" * 40
-        )  # exact source archive, repo only on the bundle
+        )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "load_approved_release_checksums",
@@ -1167,11 +1163,6 @@ class TestValidatedChecksumsForBundle:
 
         with pytest.raises(PrebuiltFallback, match = "did not expose"):
             validated_checksums_for_bundle("unslothai/llama.cpp", bundle)
-
-
-# ===========================================================================
-# K. linux_cuda_choice_from_release -- core selection
-# ===========================================================================
 
 
 class TestLinuxCudaChoiceFromRelease:
@@ -1307,7 +1298,6 @@ class TestLinuxCudaChoiceFromRelease:
         assert not any("blackwell_runtime_override" in entry for entry in result.selection_log)
 
     def test_blackwell_ignores_malformed_runtime_line(self, monkeypatch):
-        # A malformed runtime_line must be skipped, not crash the major sort.
         mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
         bad = make_artifact(
@@ -1330,8 +1320,7 @@ class TestLinuxCudaChoiceFromRelease:
         assert result.primary.runtime_line == "cuda13"
 
     def test_volta_host_needs_the_cuda12_line(self, monkeypatch, capsys):
-        # Issue #7765: CUDA 13 dropped sm_70, so a V100 whose only runtime line is cuda13 (torch from cu130) gets no
-        # bundle and GGUF inference silently moves to CPU. The selection log only prints when an attempt survives.
+        # CUDA 13 dropped sm_70, so a V100 on a cuda13-only runtime gets no bundle (#7765).
         mock_linux_runtime(monkeypatch, ["cuda13"])
         host = make_host(driver_cuda_version = (13, 0), compute_caps = ["70"])
         art12 = make_artifact(
@@ -1347,10 +1336,9 @@ class TestLinuxCudaChoiceFromRelease:
         assert linux_cuda_choice_from_release(host, release) is None
         warning = capsys.readouterr().err
         assert "sm_70" in warning
-        # A pin, not a promise about a re-run: these caps are the masked view; the installer weighs every physical GPU.
+        # These caps are the masked view; the installer weighs every physical GPU.
         assert "UNSLOTH_TORCH_INDEX_FAMILY=cu126" in warning
 
-        # The same host with a CUDA 12 runtime in the venv reaches its bundle.
         mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
         result = linux_cuda_choice_from_release(host, release)
         assert result is not None
@@ -1424,7 +1412,6 @@ class TestLinuxCudaChoiceFromRelease:
         assert "cu126" not in warning
 
     def test_uncovered_host_warning_is_not_repeated(self, monkeypatch, capsys):
-        # The release walk-back re-runs the selection per release.
         mock_linux_runtime(monkeypatch, ["cuda13"])
         host = make_host(driver_cuda_version = (13, 0), compute_caps = ["70"])
         release = make_release([make_artifact("bundle-cuda13.tar.gz", runtime_line = "cuda13")])
@@ -1445,7 +1432,6 @@ class TestLinuxCudaChoiceFromRelease:
         assert "cu126" not in warning
 
     def test_blackwell_prefers_cuda14_over_lower_majors(self, monkeypatch):
-        # The highest sm_120-capable CUDA major wins.
         mock_linux_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
         host = make_host(driver_cuda_version = (14, 0), compute_caps = ["120"])
         arts = [
@@ -1685,9 +1671,6 @@ class TestLinuxCudaChoiceFromRelease:
         assert result is None
 
 
-# ===========================================================================
-
-
 class TestResolveInstallAttempts:
     def test_windows_cuda_prefers_published_asset_from_selected_release(self, monkeypatch):
         host = make_host(system = "Windows", machine = "AMD64")
@@ -1740,7 +1723,10 @@ class TestResolveInstallAttempts:
         assert attempts[0].expected_sha256 == "a" * 64
         assert approved.release_tag == "llama-prebuilt-latest"
 
-    def test_windows_cuda_uses_selected_release_upstream_tag(self, monkeypatch):
+    def test_windows_cuda_fork_never_falls_back_to_upstream_assets(self, monkeypatch):
+        # The fork's checksums once approved an upstream ggml-org Windows CUDA zip by name;
+        # prebuilts now come only from the fork, so a release without a covering published
+        # bundle raises (older release / source build) and never lists ggml-org's assets.
         host = make_host(system = "Windows", machine = "AMD64")
         host.driver_cuda_version = (12, 4)
         mock_windows_runtime(monkeypatch, ["cuda12"])
@@ -1752,45 +1738,22 @@ class TestResolveInstallAttempts:
         )
 
         mock_published_releases(monkeypatch, release, checksums)
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "github_release_assets",
-            lambda repo, tag: {
+        listed = []
+
+        def _assets(repo, tag):
+            listed.append(repo)
+            return {
                 f"llama-{tag}-bin-win-cuda-12.4-x64.zip": f"https://example.com/llama-{tag}-bin-win-cuda-12.4-x64.zip"
-            },
-        )
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT,
-            "resolve_windows_cuda_choices",
-            lambda host, tag, assets: [
-                AssetChoice(
-                    repo = UPSTREAM_REPO,
-                    tag = tag,
-                    name = f"llama-{tag}-bin-win-cuda-12.4-x64.zip",
-                    url = assets[f"llama-{tag}-bin-win-cuda-12.4-x64.zip"],
-                    source_label = "upstream",
-                    install_kind = "windows-cuda",
-                    runtime_line = "cuda12",
-                )
-            ],
-        )
+            }
 
-        requested_tag, resolved_tag, attempts, approved = resolve_install_attempts(
-            "latest",
-            host,
-            "unslothai/llama.cpp",
-            "",
-        )
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", _assets)
 
-        assert requested_tag == "latest"
-        assert resolved_tag == "b9000"
-        assert attempts[0].name == "llama-b9000-bin-win-cuda-12.4-x64.zip"
-        assert attempts[0].expected_sha256 == "a" * 64
-        assert approved.release_tag == "llama-prebuilt-latest"
+        with pytest.raises(PrebuiltFallback, match = "no published Windows CUDA bundle"):
+            resolve_install_attempts("latest", host, "unslothai/llama.cpp", "")
+        assert UPSTREAM_REPO not in listed
 
     def test_linux_cpu_fork_without_bundle_raises_no_upstream_fallback(self, monkeypatch):
-        # CPU-only Linux routes to the fork. If a release manifest ships no CPU bundle the resolver raises rather
-        # than quietly reaching for the ggml-org upstream asset.
+        # If the manifest ships no CPU bundle, raise rather than reach for ggml-org upstream.
         host = make_host(
             has_usable_nvidia = False,
             has_physical_nvidia = False,
@@ -1874,9 +1837,7 @@ class TestResolveInstallAttempts:
     @pytest.mark.parametrize(
         "system, machine, asset_name, install_kind, bundle_profile",
         [
-            # CPU-only Linux x64 -> fork linux-cpu (was ggml-org ubuntu-x64).
             ("Linux", "x86_64", "app-b9625-linux-x64-cpu.tar.gz", "linux-cpu", "linux-cpu-x64"),
-            # CPU-only Linux arm64 -> fork linux-arm64 (was ggml-org ubuntu-arm64).
             (
                 "Linux",
                 "aarch64",
@@ -1884,7 +1845,6 @@ class TestResolveInstallAttempts:
                 "linux-arm64",
                 "linux-cpu-arm64",
             ),
-            # CPU-only Windows arm64 -> fork windows-arm64 (was ggml-org win-cpu-arm64).
             (
                 "Windows",
                 "arm64",
@@ -1897,8 +1857,6 @@ class TestResolveInstallAttempts:
     def test_cpu_host_prefers_published_fork_asset(
         self, monkeypatch, system, machine, asset_name, install_kind, bundle_profile
     ):
-        # CPU-only hosts now select the fork's CPU bundle from the manifest and must never query ggml-org upstream
-        # assets. Windows x64 CPU is covered separately by test_windows_cpu_prefers_published_asset.
         host = make_host(
             system = system,
             machine = machine,
@@ -1947,8 +1905,7 @@ class TestResolveInstallAttempts:
         assert attempts[0].source_label == "published"
 
     def test_cpu_only_unsupported_arch_source_builds(self, monkeypatch):
-        # A CPU-only Linux host that is neither x86_64 nor arm64 (ppc64le, riscv64, s390x) has no compatible bundle
-        # and must source-build: the Linux preflight checks libs, not ELF arch, so an x86_64 binary would slip through.
+        # ppc64le/riscv64/s390x must source-build: the preflight checks libs, not ELF arch.
         host = make_host(
             machine = "ppc64le",
             has_usable_nvidia = False,
@@ -2062,7 +2019,7 @@ class TestResolveInstallAttempts:
 
         with pytest.raises(
             PrebuiltFallback,
-            match = "approved checksum asset did not contain the selected prebuilt archive",
+            match = "no compatible published prebuilt in unslothai/llama.cpp",
         ):
             resolve_install_attempts(
                 "latest",
@@ -2074,7 +2031,6 @@ class TestResolveInstallAttempts:
 
 class TestResolveInstallReleasePlans:
     def _cuda_bundle(self, asset_name, release_tag, upstream_tag):
-        # Fork CUDA bundle covering the default NVIDIA host (sm 86, cuda12), so each release yields a plan.
         art = make_artifact(
             asset_name,
             install_kind = "linux-cuda",
@@ -2120,7 +2076,6 @@ class TestResolveInstallReleasePlans:
         mock_linux_runtime(monkeypatch, ["cuda12"])
         host = make_host(system = "Linux", machine = "x86_64", compute_caps = ["86"])
         releases = [
-            # r2 ships no fork bundle: yields no plan, is skipped.
             INSTALL_LLAMA_PREBUILT.ResolvedPublishedRelease(
                 bundle = make_release([], release_tag = "r2", upstream_tag = "b9002"),
                 checksums = make_checksums_with_source(
@@ -2166,9 +2121,6 @@ class TestResolveInstallReleasePlans:
             sys.modules.pop(spec.name, None)
 
 
-# ===========================================================================
-
-
 class TestWindowsCudaAttempts:
     TAG = "b8508"
 
@@ -2204,7 +2156,7 @@ class TestWindowsCudaAttempts:
         assert result[1].runtime_line == "cuda12"
 
     def test_driver_below_published_minor_is_gated_to_cuda12(self, monkeypatch):
-        # A 13.0 driver cannot run a 13.1 build (forward minor): gated to cuda12 even if only cuda13 libs are seen.
+        # A 13.0 driver cannot run a 13.1 build (forward minor).
         mock_windows_runtime(monkeypatch, ["cuda13"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 0))
         assets = self._upstream("13.1", "12.4")
@@ -2213,7 +2165,6 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
 
     def test_driver_at_published_minor_selects_cuda13(self, monkeypatch):
-        # A 13.1 driver matches the published 13.1 build.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.1", "12.4")
@@ -2275,7 +2226,7 @@ class TestWindowsCudaAttempts:
         assert result[1].name == "cudart-llama-bin-win-cuda-12.4-x64.zip"
 
     def test_cudart_runtime_archive_is_paired(self, monkeypatch):
-        # #5106: cudart bundle must surface on runtime_url so install_from_archives downloads it.
+        # #5106: the cudart bundle must surface on runtime_url.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = {
@@ -2286,18 +2237,15 @@ class TestWindowsCudaAttempts:
         }
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert len(result) == 2
-        # cuda13 first (host driver supports 13.1)
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-x64.zip"
         assert result[0].runtime_name == "cudart-llama-bin-win-cuda-13.1-x64.zip"
         assert result[0].runtime_url == (
             "https://example.com/cudart-llama-bin-win-cuda-13.1-x64.zip"
         )
-        # cuda12 second
         assert result[1].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
         assert result[1].runtime_name == "cudart-llama-bin-win-cuda-12.4-x64.zip"
 
     def test_no_runtime_archive_when_cudart_absent(self, monkeypatch):
-        # Older releases without the cudart split must still install.
         mock_windows_runtime(monkeypatch, ["cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (12, 4))
         assets = {
@@ -2320,7 +2268,7 @@ class TestWindowsCudaAttempts:
             assert attempt.runtime_name is None
 
     def test_tracks_upstream_cuda13_minor_bump(self, monkeypatch):
-        # #5861: selector must follow the published cuda13 bump 13.1 -> 13.3, not hardcode 13.1.
+        # Follow the published cuda13 minor bump, not a hardcoded 13.1.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
         assets = self._upstream("13.3", "12.4")
@@ -2329,7 +2277,6 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
 
     def test_cuda13_minor_bump_pairs_matching_cudart(self, monkeypatch):
-        # The paired cudart bundle must track the same bumped minor.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 3))
         assets = {
@@ -2343,8 +2290,6 @@ class TestWindowsCudaAttempts:
         assert result[0].runtime_name == "cudart-llama-bin-win-cuda-13.3-x64.zip"
 
     def test_driver_below_published_minor_does_not_get_newer_build(self, monkeypatch):
-        # Only cuda-13.3 published; a 13.1 driver can't run it (forward minor), so it is gated to cuda-12.4.
-        # A 13.3 driver still gets 13.3 (other tests).
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1))
         assets = self._upstream("13.3", "12.4")
@@ -2353,7 +2298,6 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip"
 
     def test_tracks_future_cuda13_minor(self, monkeypatch):
-        # A later within-major bump (13.4) is tracked the same as 13.3.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (13, 4))
         assets = self._upstream("13.4", "12.4")
@@ -2361,7 +2305,6 @@ class TestWindowsCudaAttempts:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.4-x64.zip"
 
     def test_new_cuda_major_selected_when_published(self, monkeypatch):
-        # A new CUDA major (14.x) driver picks the published cuda14 build.
         mock_windows_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
         host = make_host(system = "Windows", machine = "AMD64", driver_cuda_version = (14, 0))
         assets = self._upstream("14.0", "13.3", "12.4")
@@ -2376,11 +2319,6 @@ class TestWindowsCudaAttempts:
         assets = self._upstream("13.3", "12.4")
         result = windows_cuda_attempts(host, self.TAG, assets, None)
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
-
-
-# ===========================================================================
-# N.1b. _windows_cuda_attempt_covers_blackwell -- Blackwell coverage classifier
-# ===========================================================================
 
 
 class TestWindowsCudaAttemptCoversBlackwell:
@@ -2425,7 +2363,6 @@ class TestWindowsCudaAttemptCoversBlackwell:
         assert _windows_cuda_attempt_covers_blackwell(cpu) is False
 
     def _app_attempt(self, profile, runtime_line, max_sm):
-        # Fork app-named windows-cuda bundle: no toolkit minor in the name, SM coverage declared directly.
         return AssetChoice(
             repo = UPSTREAM_REPO,
             tag = self.TAG,
@@ -2443,9 +2380,9 @@ class TestWindowsCudaAttemptCoversBlackwell:
     @pytest.mark.parametrize(
         "profile, runtime_line, max_sm, covers",
         [
-            ("newer", "cuda13", 120, True),  # native Blackwell build
-            ("newer", "cuda12", 120, True),  # 12.8 toolkit app bundle reaches sm120
-            ("older", "cuda12", 89, False),  # 12.4 toolkit app bundle stops at Ada
+            ("newer", "cuda13", 120, True),
+            ("newer", "cuda12", 120, True),
+            ("older", "cuda12", 89, False),
         ],
     )
     def test_attempt_covers_blackwell_app_bundle(self, profile, runtime_line, max_sm, covers):
@@ -2454,9 +2391,74 @@ class TestWindowsCudaAttemptCoversBlackwell:
         assert _windows_cuda_attempt_covers_blackwell(attempt) is covers
 
 
-# ===========================================================================
-# N.1c. direct_upstream_release_plan -- Blackwell windows-cuda fallback ordering
-# ===========================================================================
+class TestDirectUpstreamWindowsAmdTakesVulkan:
+    """The direct/upstream planner is reached when the caller pins --published-repo, so the
+    Windows Vulkan gate there has to match the published one. Left Intel-only, a Windows AMD
+    host with no usable ROCm took the CPU attempt even with win-vulkan in the release."""
+
+    TAG = "b9365"
+
+    def _release(self):
+        names = [
+            f"llama-{self.TAG}-bin-win-vulkan-x64.zip",
+            f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+        ]
+        return {
+            "tag_name": self.TAG,
+            "assets": [
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
+            ],
+        }
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def test_an_amd_host_without_rocm_gets_vulkan_first(self):
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(has_amd_gpu_without_rocm = True), UPSTREAM_REPO, "latest"
+        )
+        kinds = [a.install_kind for a in plan.attempts]
+        assert kinds[0] == "windows-vulkan"
+        assert "windows-cpu" in kinds
+
+    def test_an_intel_host_is_unchanged(self):
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(has_intel_gpu = True), UPSTREAM_REPO, "latest"
+        )
+        assert [a.install_kind for a in plan.attempts][0] == "windows-vulkan"
+
+    def test_a_windows_host_with_no_gpu_still_takes_cpu(self):
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        assert [a.install_kind for a in plan.attempts] == ["windows-cpu"]
+
+    def test_a_masked_nvidia_host_is_not_routed_to_vulkan(self):
+        # Vulkan ignores CUDA_VISIBLE_DEVICES, so it could enumerate the reserved card.
+        plan = direct_upstream_release_plan(
+            self._release(),
+            self._host(
+                has_amd_gpu_without_rocm = True,
+                has_physical_nvidia = True,
+                visible_cuda_devices = "",
+            ),
+            UPSTREAM_REPO,
+            "latest",
+        )
+        assert all(a.install_kind != "windows-vulkan" for a in plan.attempts)
 
 
 class TestDirectUpstreamBlackwellPin:
@@ -2475,7 +2477,12 @@ class TestDirectUpstreamBlackwellPin:
         return {
             "tag_name": self.TAG,
             "assets": [
-                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
             ],
         }
 
@@ -2483,7 +2490,7 @@ class TestDirectUpstreamBlackwellPin:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
 
     def test_blackwell_13_1_falls_to_cpu(self, monkeypatch):
@@ -2497,10 +2504,9 @@ class TestDirectUpstreamBlackwellPin:
         )
         plan = direct_upstream_release_plan(self._release(), host, UPSTREAM_REPO, "latest")
         order = [(a.tag, a.runtime_line or a.install_kind) for a in plan.attempts]
-        # cuda-12.4 (no sm_120) is dropped on Blackwell and the b9360 pin is gone, so this falls to windows-cpu.
+        # cuda-12.4 has no sm_120 and the b9360 pin is gone, so this falls to windows-cpu.
         assert order == [(self.TAG, "windows-cpu")]
         assert "b9360" not in [a.tag for a in plan.attempts]
-        # Direct/upstream path stays unverified-by-manifest (no approved hashes).
         assert plan.approved_checksums.artifacts == {}
 
     def test_blackwell_13_3_no_pin(self, monkeypatch):
@@ -2519,7 +2525,6 @@ class TestDirectUpstreamBlackwellPin:
         assert plan.attempts[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
 
 
-# N.1c2. Blackwell never falls to a non-sm_120 windows-cuda attempt
 class TestBlackwellCuda124Exclusion:
     """A Blackwell host must never have a windows-cuda attempt that can't offload sm_120 anywhere in its chain."""
 
@@ -2554,7 +2559,7 @@ class TestBlackwellCuda124Exclusion:
         assert [a.name for a in kept] == ["llama-b9365-bin-win-cuda-13.3-x64.zip"]
 
     def test_keeps_manifest_cuda12_bundle_with_sm120(self):
-        # Published cuda12 app bundles are toolkit-12.8 with sm_120, so manifest SM metadata keeps them on Blackwell.
+        # Published cuda12 app bundles are toolkit-12.8 with sm_120.
         bundle = AssetChoice(
             repo = "unslothai/llama.cpp",
             tag = "b9585",
@@ -2636,7 +2641,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -2657,6 +2662,149 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         )
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
         assert [a.install_kind for a in attempts] == ["linux-cpu"]
+
+    def test_a_masked_nvidia_host_takes_cuda_not_the_cpu_bundle(self, monkeypatch):
+        """A masked host selects CUDA off the physical caps, not the emptied visible ones."""
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detected_linux_runtime_lines",
+            lambda: (["cuda12"], {"cuda12": ["/usr/local/cuda/lib64"]}),
+        )
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+            driver_cuda_version = (12, 8),
+            # select_visible_gpu_rows drops every row of a masked host; only physical caps survive.
+            compute_caps = [],
+            physical_compute_caps = ["89"],
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._cuda_and_cpu_bundle()
+        )
+        assert attempts, "a masked NVIDIA host must still get a CUDA attempt"
+        assert {a.install_kind for a in attempts} == {"linux-cuda"}
+        assert all("cpu" not in a.name for a in attempts)
+
+    def test_a_masked_nvidia_host_with_no_cuda_match_source_builds(self, monkeypatch):
+        # Empty, not the CPU bundle: the caller source-builds with CUDA, as for a visible one.
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detected_linux_runtime_lines",
+            lambda: (["cuda12"], {"cuda12": ["/usr/local/cuda/lib64"]}),
+        )
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+            driver_cuda_version = (12, 8),
+            compute_caps = [],
+            physical_compute_caps = ["89"],
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert attempts == []
+
+    def test_a_masked_nvidia_host_is_not_rescued_onto_vulkan_either(self):
+        # An iGPU must not become a second non-CUDA route out of a masked NVIDIA host.
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+            has_intel_gpu = True,
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._vulkan_and_cpu_bundle()
+        )
+        assert all(a.install_kind not in ("linux-vulkan", "linux-cpu") for a in attempts)
+
+    def test_a_masked_host_below_the_bundle_floor_is_not_handed_it(self, monkeypatch):
+        # Empty caps take a portable artifact without the min_sm check, so sm_61 would slip through.
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detected_linux_runtime_lines",
+            lambda: (["cuda12"], {"cuda12": ["/usr/local/cuda/lib64"]}),
+        )
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+            driver_cuda_version = (12, 8),
+            compute_caps = [],
+            physical_compute_caps = ["61"],
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._cuda_and_cpu_bundle()
+        )
+        assert all(
+            "portable" not in a.name for a in attempts
+        ), "an sm_61 host must not be handed a bundle whose floor is sm_70"
+        assert all(a.install_kind != "linux-cpu" for a in attempts)
+
+    def test_the_masked_host_keeps_torchs_runtime_preference(self, monkeypatch):
+        """Masks hide GPUs from both gates, but torch.version.cuda is build-time and no mask touches it."""
+        fake_torch = SimpleNamespace(
+            version = SimpleNamespace(cuda = "12.8"),
+            cuda = SimpleNamespace(is_available = lambda: False),
+        )
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+        )
+
+        skipped = INSTALL_LLAMA_PREBUILT.detect_torch_cuda_runtime_preference(host)
+        assert skipped.runtime_line is None
+
+        preferred = INSTALL_LLAMA_PREBUILT.detect_torch_cuda_runtime_preference(
+            host, gpu_hidden_by_mask = True
+        )
+        assert preferred.runtime_line == "cuda12"
+        assert any("hidden by CUDA_VISIBLE_DEVICES" in line for line in preferred.selection_log)
+
+    def test_the_masked_branch_asks_for_the_masked_preference(self):
+        # The opt-in has to actually be passed, or the branch silently loses the shortcut.
+        source = inspect.getsource(INSTALL_LLAMA_PREBUILT._linux_published_attempts)
+        assert "gpu_hidden_by_mask = True" in source
+
+    def _cuda_and_cpu_bundle(self):
+        """A release carrying both a covering CUDA bundle and the CPU tail."""
+        return make_release(
+            [
+                make_artifact(
+                    "app-b8508-linux-x64-cuda12-portable.tar.gz",
+                    install_kind = "linux-cuda",
+                    runtime_line = "cuda12",
+                    coverage_class = "portable",
+                    supported_sms = ["70", "75", "80", "86", "89", "90"],
+                    min_sm = 70,
+                    max_sm = 90,
+                    bundle_profile = "cuda12-portable",
+                    rank = 30,
+                ),
+                make_cpu_artifact(
+                    "app-b8508-linux-x64-cpu.tar.gz",
+                    install_kind = "linux-cpu",
+                    bundle_profile = None,
+                    rank = 1000,
+                ),
+            ]
+        )
 
     def _vulkan_and_cpu_bundle(self):
         """What unslothai/llama.cpp publishes: app-<tag>-linux-x64-vulkan.tar.gz and -cpu.tar.gz."""
@@ -2690,12 +2838,8 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         return make_host(**base)
 
     def test_amd_without_rocm_gets_the_published_vulkan_bundle(self):
-        """Regression: an AMD host with no usable ROCm silently took the CPU bundle.
-
-        The Vulkan preference was stated in direct_upstream_release_plan and resolve_upstream_asset_choice but NOT
-        here, the branch that runs whenever a published bundle exists, so a Steam Deck installed the CPU llama.cpp
-        and only setting UNSLOTH_LLAMA_CPP_BACKEND by hand could fix it.
-        """
+        """Published attempts must prefer Vulkan in _linux_published_attempts for AMD without ROCm,
+        not CPU."""
         host = self._gpu_host(has_amd_gpu_without_rocm = True)
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
             host, self._vulkan_and_cpu_bundle()
@@ -2733,11 +2877,6 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         assert [a.install_kind for a in attempts] == ["linux-cpu"]
 
 
-# ===========================================================================
-# N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
-# ===========================================================================
-
-
 class TestPublishedWindowsCudaAttemptsDynamicMajor:
     """The ordering seed is derived from the release's published minors, so a future CUDA major is selectable, not hidden by a hardcoded cuda12/cuda13 seed."""
 
@@ -2757,7 +2896,6 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         return make_release(artifacts, upstream_tag = self.TAG)
 
     def test_future_cuda14_published_is_selected(self, monkeypatch):
-        # The dynamic seed lets a 14.x driver reach a published cuda14 build; the old cuda12/cuda13 seed could not.
         mock_windows_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
         release = self._release([("14.0", "cuda14"), ("13.3", "cuda13"), ("12.4", "cuda12")])
         host = make_host(
@@ -2771,7 +2909,6 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-14.0-x64.zip"
 
     def test_cuda13_minor_selected_for_13_3_driver(self, monkeypatch):
-        # A 13.3 driver gets the real 13.3 build.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         host = make_host(
@@ -2785,7 +2922,6 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip"
 
     def test_below_minor_driver_gated_to_cuda12(self, monkeypatch):
-        # A 13.1 driver is gated off published 13.3 and falls to cuda12.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         host = make_host(
@@ -2798,9 +2934,131 @@ class TestPublishedWindowsCudaAttemptsDynamicMajor:
         assert result[0].runtime_line == "cuda12"
 
 
-# ===========================================================================
-# N.1e. resolve_release_asset_choice -- pin on the published install path
-# ===========================================================================
+class TestPublishedLegacyNamedArm64BundlesAreOrdered:
+    """The legacy-minor ordering synthesised -x64.zip names and called windows_cuda_attempts
+    without the arch, so an approved llama-<tag>-bin-win-cuda-13.1-arm64.zip produced no
+    runtime line and was skipped for the unchecksummed upstream fallback."""
+
+    TAG = "b8508"
+
+    def _release(
+        self,
+        minors_lines,
+        ranks = None,
+        cudart = False,
+    ):
+        artifacts = [
+            make_artifact(
+                f"llama-{self.TAG}-bin-win-cuda-{minor}-arm64.zip",
+                install_kind = "windows-arm64-cuda",
+                runtime_line = line,
+                supported_sms = ["75", "80", "86", "89", "90", "100", "120"],
+                max_sm = 120,
+                rank = (ranks or {}).get(minor, 100),
+            )
+            for minor, line in minors_lines
+        ]
+        release = make_release(artifacts, upstream_tag = self.TAG)
+        if cudart:
+            for minor, _ in minors_lines:
+                name = f"cudart-llama-bin-win-cuda-{minor}-arm64.zip"
+                release.assets[name] = f"https://example.com/{name}"
+        return release
+
+    def _host(self, driver):
+        return make_host(
+            system = "Windows", machine = "ARM64", driver_cuda_version = driver, compute_caps = ["120"]
+        )
+
+    def test_the_arm64_legacy_bundle_is_selected(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.1", "cuda13"), ("12.8", "cuda12")])
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result, "no attempt at all: the arch was lost in the legacy ordering"
+        assert result[0].runtime_line == "cuda13"
+        assert result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"
+
+    def test_the_minor_gate_applies_to_arm64_too(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.3", "cuda13"), ("12.8", "cuda12")])
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result and result[0].runtime_line == "cuda12"
+        assert all(not a.name.endswith("13.3-arm64.zip") for a in result)
+
+    def test_the_artifact_gate_reads_the_arm64_name(self, monkeypatch):
+        """Two legacy minors on one line, the higher one ranked first: the line survives on
+        the lower minor, and the per-artifact gate must parse the -arm64 name to drop the
+        higher one; an x64 spelling never matches, and the preferred 13.3 build slips through."""
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        release = self._release([("13.3", "cuda13"), ("13.1", "cuda13")], ranks = {"13.3": 10})
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        names = [a.name for a in result]
+        assert names == [f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"], names
+
+    def test_the_cudart_bundle_pairs_by_the_arm64_name(self, monkeypatch):
+        """The same match feeds the cudart pairing: the arm64 runtime archive rides along."""
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        release = self._release([("13.1", "cuda13")], cudart = True)
+        result = published_windows_cuda_attempts(self._host((13, 1)), release, None, arch = "arm64")
+        assert result and result[0].runtime_name == f"cudart-llama-bin-win-cuda-13.1-arm64.zip"
+
+    def test_the_explicit_arch_wins_over_the_host(self, monkeypatch):
+        """The arch argument is the contract: it must reach the legacy ordering rather than
+        being re-derived from the host, or an x64 host resolving arm64 bundles finds none."""
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        release = self._release([("13.1", "cuda13"), ("12.8", "cuda12")])
+        host = make_host(
+            system = "Windows", machine = "AMD64", driver_cuda_version = (13, 1), compute_caps = ["120"]
+        )
+        result = published_windows_cuda_attempts(host, release, None, arch = "arm64")
+        assert result and result[0].name == f"llama-{self.TAG}-bin-win-cuda-13.1-arm64.zip"
+
+
+class TestAnUpstreamLookupFailureCostsOnlyCuda:
+    """An upstream lookup failure costs only the CUDA bundle, not the published ARM64 CPU fallback."""
+
+    TAG = "b8508"
+    CPU = "app-b8508-windows-arm64-cpu.zip"
+
+    def _plan(self, monkeypatch, assets):
+        mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", assets)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "github_release_asset_digests", lambda repo, tag: {}
+        )
+        monkeypatch.delenv("UNSLOTH_LLAMA_ARM64_CUDA", raising = False)
+        host = make_host(
+            system = "Windows", machine = "ARM64", driver_cuda_version = (13, 4), compute_caps = ["121"]
+        )
+        release = make_release(
+            [
+                make_artifact(
+                    self.CPU,
+                    install_kind = "windows-arm64",
+                    runtime_line = None,
+                    bundle_profile = "windows-cpu-arm64",
+                )
+            ],
+            upstream_tag = self.TAG,
+        )
+        return resolve_release_asset_choice(host, self.TAG, release, make_checksums([self.CPU]))
+
+    def test_an_api_failure_falls_through_to_the_cpu_bundle(self, monkeypatch):
+        def _boom(repo, tag):
+            raise RuntimeError("429 rate limited")
+
+        result = self._plan(monkeypatch, _boom)
+        assert [a.name for a in result] == [self.CPU]
+        assert result[0].install_kind == "windows-arm64"
+
+    def test_an_empty_listing_lands_in_the_same_place(self, monkeypatch):
+        result = self._plan(monkeypatch, lambda repo, tag: {})
+        assert [a.name for a in result] == [self.CPU]
 
 
 class TestResolveReleaseAssetChoicePin:
@@ -2840,14 +3098,13 @@ class TestResolveReleaseAssetChoicePin:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
 
     def test_no_cuda_attempt_on_published_path_for_13_1(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
-        # Once the Blackwell filter drops every published attempt the resolver walks back upstream; stub that fetch
-        # to stay offline (the scanner blocks live GitHub) so it deterministically finds no CUDA build -> fallback.
+        # Stay offline (the scanner blocks live GitHub) so no CUDA build is found.
         monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["12.4"])  # 13.3 gated off for a 13.1 driver
@@ -2857,8 +3114,6 @@ class TestResolveReleaseAssetChoicePin:
             driver_cuda_version = (13, 1),
             compute_caps = ["120"],
         )
-        # The sm_120-incapable upstream cuda-12.4 zip is dropped on Blackwell and the b9360 pin is gone, so no
-        # windows-cuda attempt remains and the manifest resolver walks back instead of selecting cuda-12.4.
         with pytest.raises(PrebuiltFallback):
             resolve_release_asset_choice(host, self.TAG, release, checksums)
 
@@ -2890,6 +3145,217 @@ class TestResolveReleaseAssetChoicePin:
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert "b9360" not in [a.tag for a in result]
+
+
+class TestWindowsAmdWithoutRocmTakesVulkan:
+    """An AMD host without usable ROCm takes the Vulkan bundle on Windows too, matching the Linux gate."""
+
+    TAG = "b10909"
+
+    def _release(self):
+        return make_release(
+            [
+                make_cpu_artifact(
+                    f"app-{self.TAG}-windows-x64-vulkan.zip", install_kind = "windows-vulkan"
+                ),
+                make_cpu_artifact(
+                    f"app-{self.TAG}-windows-x64-cpu.zip", install_kind = "windows-cpu"
+                ),
+            ],
+            upstream_tag = self.TAG,
+        )
+
+    def _checksums(self):
+        return make_checksums(
+            [
+                f"app-{self.TAG}-windows-x64-vulkan.zip",
+                f"app-{self.TAG}-windows-x64-cpu.zip",
+            ]
+        )
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = False,
+            has_intel_gpu = False,
+            has_amd_gpu_without_rocm = True,
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def test_vulkan_is_preferred_over_the_cpu_bundle(self):
+        result = resolve_release_asset_choice(
+            self._host(), self.TAG, self._release(), self._checksums()
+        )
+        assert result[0].install_kind == "windows-vulkan"
+        assert [c.install_kind for c in result] == ["windows-vulkan", "windows-cpu"]
+
+    def test_an_intel_host_is_unchanged(self):
+        result = resolve_release_asset_choice(
+            self._host(has_intel_gpu = True, has_amd_gpu_without_rocm = False),
+            self.TAG,
+            self._release(),
+            self._checksums(),
+        )
+        assert result[0].install_kind == "windows-vulkan"
+
+    def test_a_host_with_usable_rocm_is_not_diverted_to_vulkan(self, monkeypatch):
+        # The windows-rocm branch owns a ROCm host; stub the upstream fetch to avoid offline retries.
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
+        with pytest.raises(PrebuiltFallback):
+            resolve_release_asset_choice(
+                self._host(has_rocm = True), self.TAG, self._release(), self._checksums()
+            )
+
+    def test_a_plain_cpu_windows_host_still_takes_the_cpu_bundle(self):
+        result = resolve_release_asset_choice(
+            self._host(has_amd_gpu_without_rocm = False),
+            self.TAG,
+            self._release(),
+            self._checksums(),
+        )
+        assert result[0].install_kind == "windows-cpu"
+
+
+class TestWindowsMaskedNvidiaTakesCuda:
+    """A masked NVIDIA GPU (CUDA_VISIBLE_DEVICES) must still select CUDA on Windows, as on Linux."""
+
+    TAG = "b10909"
+
+    def _cuda(self):
+        return make_artifact(
+            f"app-{self.TAG}-windows-x64-cuda12-newer.zip",
+            install_kind = "windows-cuda",
+            runtime_line = "cuda12",
+            coverage_class = "newer",
+            supported_sms = ["86", "89", "90", "100", "120"],
+            min_sm = 86,
+            max_sm = 120,
+            bundle_profile = "cuda12-newer",
+            rank = 20,
+        )
+
+    def _release(self):
+        return make_release(
+            [
+                self._cuda(),
+                make_cpu_artifact(
+                    f"app-{self.TAG}-windows-x64-cpu.zip", install_kind = "windows-cpu"
+                ),
+            ],
+            upstream_tag = self.TAG,
+        )
+
+    def _checksums(self):
+        return make_checksums(
+            [
+                f"app-{self.TAG}-windows-x64-cuda12-newer.zip",
+                f"app-{self.TAG}-windows-x64-cpu.zip",
+            ]
+        )
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            driver_cuda_version = (12, 8),
+            visible_cuda_devices = "",
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            compute_caps = [],
+            physical_compute_caps = ["89"],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _no_torch(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+
+    def test_a_masked_host_takes_cuda_not_the_cpu_bundle(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        self._no_torch(monkeypatch)
+        result = resolve_release_asset_choice(
+            self._host(), self.TAG, self._release(), self._checksums()
+        )
+        assert result, "a masked NVIDIA host must still get a CUDA attempt"
+        assert {c.install_kind for c in result} == {"windows-cuda"}
+
+    def test_the_masked_host_keeps_torchs_runtime_preference(self, monkeypatch):
+        # Both usual gates say 'no GPU' under the mask; skip the availability check or cu12 gets CUDA 13.
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        seen = {}
+
+        def _preference(host, **kwargs):
+            seen.update(kwargs)
+            return CudaRuntimePreference(runtime_line = None, selection_log = [])
+
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "detect_torch_cuda_runtime_preference", _preference
+        )
+        resolve_release_asset_choice(self._host(), self.TAG, self._release(), self._checksums())
+        assert seen == {"gpu_hidden_by_mask": True}
+
+    def test_selection_reads_the_physical_caps(self, monkeypatch):
+        # No published or upstream match, so source-build with CUDA, never windows-cpu.
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        self._no_torch(monkeypatch)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
+        with pytest.raises(PrebuiltFallback):
+            resolve_release_asset_choice(
+                self._host(physical_compute_caps = ["61"]),
+                self.TAG,
+                self._release(),
+                self._checksums(),
+            )
+
+    def test_a_masked_host_with_usable_rocm_keeps_rocm(self, monkeypatch):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host, **_: pytest.fail("CUDA selection ran on a ROCm host"),
+        )
+        with pytest.raises(PrebuiltFallback):
+            resolve_release_asset_choice(
+                self._host(has_rocm = True), self.TAG, self._release(), self._checksums()
+            )
+
+    def test_an_explicit_cpu_request_still_takes_the_cpu_bundle(self):
+        host = INSTALL_LLAMA_PREBUILT._apply_host_overrides(self._host(), force_cpu = True)
+        result = resolve_release_asset_choice(host, self.TAG, self._release(), self._checksums())
+        assert [c.install_kind for c in result] == ["windows-cpu"]
+
+    def test_the_direct_upstream_plan_agrees(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda12"])
+        self._no_torch(monkeypatch)
+        names = [
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+        ]
+        release = {
+            "tag_name": self.TAG,
+            "assets": [
+                {
+                    "name": n,
+                    "browser_download_url": f"https://example.com/{n}",
+                    "digest": f"sha256:{_fixture_digest(n)}",
+                }
+                for n in names
+            ],
+        }
+        plan = direct_upstream_release_plan(release, self._host(), UPSTREAM_REPO, "latest")
+        assert plan.attempts[0].install_kind == "windows-cuda"
 
 
 class TestPublishedWindowsCudaAppBundleSmSelection:
@@ -2943,7 +3409,7 @@ class TestPublishedWindowsCudaAppBundleSmSelection:
         )
 
     def test_cuda13_reachable_on_driver_13_0(self, monkeypatch):
-        # Regression: a synthetic '13.1' minor gate dropped the cuda13 line on a 13.0 driver; gating is at major now.
+        # Gating is at the major: a synthetic 13.1 minor gate dropped cuda13 on a 13.0 driver.
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         release = make_release(
             [self._line("cuda12", "newer", 20), self._line("cuda13", "newer", 50)],
@@ -2961,8 +3427,7 @@ class TestPublishedWindowsCudaAppBundleSmSelection:
         assert result[0].name == f"app-{self.TAG}-windows-x64-cuda13-newer.zip"
 
     def test_app_bundle_offered_when_no_runtime_dll_detected(self, monkeypatch):
-        # torch bundles cudart in torch/lib, which DLL probing misses, so detection returns nothing. The app bundle
-        # ships its own runtime, so selection falls back to the driver-derived order instead of the upstream build.
+        # torch's cudart in torch/lib is missed by DLL probing; app bundles ship their own runtime.
         mock_windows_runtime(monkeypatch, [])
         release = make_release(
             [self._line("cuda12", "newer", 20), self._line("cuda13", "newer", 50)],
@@ -3062,9 +3527,7 @@ class TestPublishedRocmGfxSelection:
             ), unbuilt
 
     def test_choice_records_the_concrete_built_archs(self):
-        # The choice carries the arch pair into the install marker, where the runtime GPU gate reads mapped_targets and
-        # drops devices outside it (#7624). It must be the CONCRETE list: recording the umbrella family label instead
-        # would match no device's reported arch and gate every GPU off the host, silently forcing CPU.
+        # mapped_targets must be the CONCRETE list: the family label matches no device's arch (#7624).
         release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
         choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
             release, self._host("gfx1100"), "linux-rocm"
@@ -3073,8 +3536,7 @@ class TestPublishedRocmGfxSelection:
         assert choice.mapped_targets == ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]
 
     def test_family_token_match_still_records_concrete_archs(self):
-        # The update path forwards the family token (gfx110X), so selection matches on gfx_target rather than the
-        # mapped list. It must still record concrete archs: this is the one path where the matched token is not one.
+        # The update path forwards a family token, yet the marker must still record concrete archs.
         release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
         for token in ("gfx110X", "gfx110x"):
             choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
@@ -3104,11 +3566,111 @@ class TestPublishedRocmGfxSelection:
         assert choice.name == "app-b9457-windows-x64-rocm-gfx120X.zip"
 
 
+class TestWindowsMixedAmdUncoveredActiveCard:
+    """RX 5700 XT (gfx1010) at device 0 beside an RX 6500 XT (gfx1034): no Windows HIP bundle
+    covers the card HIP runs on, so the install takes the Vulkan bundle, which runs on both,
+    instead of failing with "no compatible published prebuilt"."""
+
+    TAG = "b11541-mix-2500203"
+    ROCM = f"app-{TAG}-windows-x64-rocm-gfx103X.zip"
+    VULKAN = f"app-{TAG}-windows-x64-vulkan.zip"
+    CPU = f"app-{TAG}-windows-x64-cpu.zip"
+
+    def _release(self):
+        return make_release(
+            [
+                make_cpu_artifact(
+                    self.ROCM,
+                    install_kind = "windows-rocm",
+                    rank = 1000,
+                    gfx_target = "gfx103X",
+                    mapped_targets = ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
+                ),
+                make_cpu_artifact(self.VULKAN, install_kind = "windows-vulkan", rank = 1000),
+                make_cpu_artifact(self.CPU, install_kind = "windows-cpu", rank = 1000),
+            ],
+            release_tag = self.TAG,
+            upstream_tag = "b9457",
+        )
+
+    def _host(self, targets):
+        # What detect_host() returned on the reporter's host, device order kept.
+        return make_host(
+            system = "Windows",
+            machine = "AMD64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+            rocm_gfx_target = targets[0],
+            rocm_gfx_targets = list(targets),
+        )
+
+    def _resolve(
+        self,
+        targets,
+        backend = None,
+    ):
+        route = INSTALL_LLAMA_PREBUILT.route_backend_request(
+            backend = backend,
+            published_repo = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_REPO,
+            published_release_tag = self.TAG,
+            host = self._host(targets),
+        )
+        return route, resolve_release_asset_choice(
+            route.host,
+            self.TAG,
+            self._release(),
+            make_checksums([self.ROCM, self.VULKAN, self.CPU]),
+        )
+
+    @pytest.fixture(autouse = True)
+    def _unpinned(self, monkeypatch):
+        for var in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            "UNSLOTH_ROCM_GFX_ARCH",
+            "UNSLOTH_LLAMA_CPP_BACKEND",
+            "UNSLOTH_FORCE_VULKAN",
+        ):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_rocm_torch_preferred", lambda: False)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: pytest.fail("listed an upstream release"),
+        )
+
+    def test_installs_the_vulkan_bundle(self):
+        route, result = self._resolve(("gfx1010", "gfx1034"))
+        assert [c.name for c in result] == [self.VULKAN, self.CPU]
+        assert route.persist_llama_backend == "auto"
+        assert route.persist_rocm_gfx == "gfx1010"
+
+    def test_a_covered_active_card_keeps_its_rocm_bundle(self):
+        _route, result = self._resolve(("gfx1034", "gfx1010"))
+        assert [c.name for c in result] == [self.ROCM]
+
+    def test_an_explicit_hip_backend_is_not_rerouted(self):
+        with pytest.raises(PrebuiltFallback, match = "no compatible published prebuilt"):
+            self._resolve(("gfx1010", "gfx1034"), backend = "hip")
+
+    @pytest.mark.parametrize("mask_env", ["HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"])
+    def test_a_mask_on_the_uncovered_card_is_never_rerouted(self, monkeypatch, mask_env):
+        # hipinfo under the mask sees only that card; Vulkan would ignore the mask.
+        monkeypatch.setenv(mask_env, "0")
+        with pytest.raises(PrebuiltFallback, match = "no compatible published prebuilt"):
+            self._resolve(("gfx1010",))
+
+
 class TestPublishedRocmBundleCoverage:
     """Every arch the installer routes torch for needs a llama.cpp bundle or a KNOWN_GAPS entry. The gap is silent:
     the GPU trains fine and inference drops to a HIP source build, which is correct but much slower to install."""
 
-    # mapped_targets of each published ROCm bundle, mirroring unslothai/llama.cpp's llama-prebuilt-manifest.json.
+    # Mirrors unslothai/llama.cpp's llama-prebuilt-manifest.json mapped_targets.
     PUBLISHED = {
         "gfx103X": ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
         "gfx110X": ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
@@ -3119,11 +3681,8 @@ class TestPublishedRocmBundleCoverage:
         "gfx90a": ["gfx90a"],
     }
 
-    # Arches _GFX_TO_AMD_INDEX_ARCH routes torch for that no bundle covers.
-    #   gfx1033/1035/1036: RDNA 2 variants, never built.
-    #   gfx1152: Krackan Point (Radeon 860M/840M). Torch has its own repo.amd.com/rocm/whl/gfx1152 leaf but no
-    #     llama.cpp bundle, so these hosts source-build. To close it: publish a -gfx1152 bundle, or add gfx1152
-    #     to the gfx1150 bundle's mapped_targets if that build covers it, then drop it here.
+    # Routed for torch but no bundle: gfx1033/1035/1036 never built; gfx1152 (Krackan) has a torch
+    # leaf but no llama.cpp bundle yet. Drop from here once published.
     KNOWN_GAPS = {"gfx1033", "gfx1035", "gfx1036", "gfx1152"}
 
     def _release(self):
@@ -3173,7 +3732,7 @@ class TestPublishedRocmBundleCoverage:
 
         # Read the table from source; importing the installer pulls a heavy dependency chain this suite does not need.
         stack = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
-        body = re.search(r"_GFX_TO_AMD_INDEX_ARCH.*?=\s*\{(.*?)\n\}", stack, re.S)
+        body = re.search(r"^_GFX_TO_AMD_INDEX_ARCH[^=\n]*=\s*\{(.*?)\n\}", stack, re.S | re.M)
         assert body, "_GFX_TO_AMD_INDEX_ARCH not found in install_python_stack.py"
         routed = set(re.findall(r'"(gfx[0-9a-z]+)":', body.group(1)))
         assert routed, "parsed no arches out of _GFX_TO_AMD_INDEX_ARCH"
@@ -3219,11 +3778,6 @@ class TestPublishedMacosForkSelection:
         )
         assert choice is not None
         assert choice.name == "llama-b9457-bin-macos-x64.tar.gz"
-
-
-# ===========================================================================
-# N.1. apply_approved_hashes -- runtime archive checksum threading
-# ===========================================================================
 
 
 class TestApplyApprovedHashesRuntimePair:
@@ -3295,11 +3849,6 @@ class TestApplyApprovedHashesRuntimePair:
         assert result[0].runtime_sha256 is None
 
 
-# ===========================================================================
-# O. resolve_upstream_asset_choice -- platform routing
-# ===========================================================================
-
-
 class TestResolveUpstreamAssetChoice:
     TAG = "b8508"
 
@@ -3367,8 +3916,7 @@ class TestResolveUpstreamAssetChoice:
         assert result.name == name
 
     def test_windows_blackwell_drops_incapable_cuda_to_cpu(self, monkeypatch):
-        # A Blackwell host on a 13.1 driver gets cuda-13.3 gated off and only the sm_120-incapable cuda-12.4 build left;
-        # it must fall through to the CPU bundle rather than be handed a GPU build it cannot offload.
+        # Blackwell on a 13.1 driver: 13.3 is gated off and 12.4 lacks sm_120, so fall to CPU.
         names = [
             f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip",
             "cudart-llama-bin-win-cuda-13.3-x64.zip",
@@ -3462,11 +4010,6 @@ class TestResolveUpstreamAssetChoice:
         assert result.name == cuda_name
 
 
-# ===========================================================================
-# N.2. Deterministic macOS prebuilt pin (b9415)
-# ===========================================================================
-
-
 def _macos_host(machine = "arm64", version = (15, 5)):
     return make_host(
         system = "Darwin",
@@ -3514,7 +4057,7 @@ class TestPinnedMacosReleaseTag:
 class TestResolveSimpleMacosPin:
     """Pre-26 upstream macOS resolves b9415; macOS 26 keeps latest."""
 
-    TAGS = ["b9442", "b9430", "b9428", "b9415"]  # newest-first feed
+    TAGS = ["b9442", "b9430", "b9428", "b9415"]
 
     def _feed(self, monkeypatch):
         calls = []
@@ -3527,6 +4070,7 @@ class TestResolveSimpleMacosPin:
                     {
                         "name": name,
                         "browser_download_url": f"https://example.com/{name}",
+                        "digest": f"sha256:{_fixture_digest(name)}",
                     }
                 ],
             }
@@ -3570,20 +4114,13 @@ class TestResolveSimpleMacosPin:
         )
         assert requested_tag == "latest"
         assert plans[0].release_tag == "b9442"
-        # No pin: the iterator was asked for latest.
         assert calls[0][2] == "latest"
-
-
-# ===========================================================================
-# Linux arm64 + GPU must not install the x64-only fork bundle
-# ===========================================================================
 
 
 class TestLinuxArm64ForkFallsBackToSource:
     """The fork ships linux-arm64-cuda bundles; an arm64 Linux fork host delegates to the manifest-aware resolver (arm64 CUDA bundle, or source if none matches) instead of hard-failing."""
 
     def test_arm64_nvidia_fork_delegates_to_manifest_resolver(self, monkeypatch):
-        # arm64 fork hosts are no longer blocked up front; routed to the manifest resolver.
         called = {}
 
         def _full(llama_tag, host, repo, tag, **_kw):
@@ -3597,7 +4134,6 @@ class TestLinuxArm64ForkFallsBackToSource:
         assert plans == ["plan"]
 
     def test_x86_64_fork_delegates_to_manifest_resolver(self, monkeypatch):
-        # The old linux-x64 arch guard is gone: x64 fork hosts use the manifest resolver, not filename parsing.
         called = {}
 
         def _full(llama_tag, host, repo, tag, **_kw):
@@ -3611,8 +4147,7 @@ class TestLinuxArm64ForkFallsBackToSource:
         assert plans == ["plan"]
 
     def test_arm64_cpu_on_ggml_org_is_not_blocked(self, monkeypatch):
-        # ggml-org is reachable only via an explicit --published-repo override now, but the guard must still not fire
-        # on arm64 there; it reaches the iterator (empty here -> generic message).
+        # ggml-org is reachable only via --published-repo, but the guard must not fire on arm64 there.
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "iter_release_payloads_by_time",
@@ -3630,11 +4165,6 @@ class TestLinuxArm64ForkFallsBackToSource:
         with pytest.raises(PrebuiltFallback) as exc:
             resolve_simple_install_release_plans("latest", host, "ggml-org/llama.cpp", "")
         assert "linux-x64 prebuilts" not in str(exc.value)
-
-
-# ===========================================================================
-# arm64 Linux GPU: CPU prebuilt fallback after a failed source build (--cpu-fallback)
-# ===========================================================================
 
 
 class TestCpuFallback:
@@ -3665,7 +4195,6 @@ class TestCpuFallback:
             "resolve_simple_install_release_plans",
             _capture,
         )
-        # We only care about the host handed to the resolver before the fallback exit.
         with pytest.raises(SystemExit):
             INSTALL_LLAMA_PREBUILT.install_prebuilt(
                 install_dir = tmp_path / "llama",
@@ -3689,14 +4218,15 @@ class TestCpuFallback:
                 {
                     "name": f"llama-{tag}-bin-ubuntu-arm64.tar.gz",
                     "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-arm64.tar.gz",
+                    "digest": f"sha256:{_fixture_digest('arm64')}",
                 },
                 {
                     "name": f"llama-{tag}-bin-ubuntu-x64.tar.gz",
                     "browser_download_url": f"https://x/llama-{tag}-bin-ubuntu-x64.tar.gz",
+                    "digest": f"sha256:{_fixture_digest('x64')}",
                 },
             ],
         }
-        # A GPU arm64 host can't pick the CPU arm64 bundle on its own.
         with pytest.raises(PrebuiltFallback):
             direct_upstream_release_plan(
                 release, self._arm64_nvidia(), "ggml-org/llama.cpp", "latest"
@@ -3717,8 +4247,7 @@ class TestCpuFallback:
 
     def test_setup_sh_has_arm64_cpu_prebuilt_fallback(self):
         source = self._SETUP_SH.read_text(encoding = "utf-8")
-        # The arm64 GPU last-resort CPU fallback now pulls the fork's arm64 CPU bundle
-        # (app-<tag>-linux-arm64-cpu.tar.gz), not ggml-org's, and is gated on a degraded source build for arm64.
+        # The arm64 GPU last resort pulls the fork's arm64 CPU bundle, gated on a degraded build.
         start = source.index("_ARM64_CPU_CMD=(")
         end = source.index(")", start)
         block = source[start:end]
@@ -3726,11 +4255,6 @@ class TestCpuFallback:
         assert '--published-repo "unslothai/llama.cpp"' in block
         assert '--published-repo "ggml-org/llama.cpp"' not in block
         assert "_LLAMA_CPP_DEGRADED" in source
-
-
-# ===========================================================================
-# setup.sh / setup.ps1: CUDA toolkit newer than driver diagnostics
-# ===========================================================================
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "bash-only Unsloth installer tests")
@@ -3767,11 +4291,7 @@ class TestCudaDriverToolkitMismatchMessage:
         *,
         only_path_dir = False,
     ):
-        """Run `body` under setup.sh's CUDA driver/toolkit helpers, with the usual preamble.
-
-        `only_path_dir` drops the inherited PATH, which is the only way a case that means
-        "no nvidia-smi anywhere" stays honest on a machine that has one in /usr/bin.
-        """
+        """only_path_dir drops the inherited PATH so no nvidia-smi is found, even if /usr/bin has one."""
         script = textwrap.dedent(
             f"""\
             set -euo pipefail
@@ -3839,8 +4359,7 @@ class TestCudaDriverToolkitMismatchMessage:
             "exceeds driver CUDA major 12 (12.9)."
         ) in output
         assert (
-            "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3, or install "
-            "a CUDA 12.x toolkit."
+            "Update the NVIDIA GPU driver to run CUDA Toolkit 13.3, or install a CUDA 12.x toolkit."
         ) in output
         assert "prebuilt CUDA bundle" in output
 
@@ -4045,7 +4564,6 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "Unsloth supports CUDA Toolkit" not in output
 
     def test_setup_sh_nvcc_below_minimum_is_too_old(self, tmp_path):
-        # CUDA toolkit < 12.4 short-circuits to the too_old branch (no mismatch).
         nvcc = self._fake_nvcc(tmp_path, "12.0")
         script = textwrap.dedent(
             f"""\
@@ -4081,7 +4599,6 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "FOUND" not in output
 
     def _cuda_build_decision_output(self, *, nvcc_path, driver):
-        # Mirror setup.sh's source-build decision: keep toolkit, switch, or degrade to CPU.
         script = textwrap.dedent(
             f"""\
             set -euo pipefail
@@ -4131,7 +4648,6 @@ class TestCudaDriverToolkitMismatchMessage:
         assert "ALLOWED=true" in output
 
     def test_setup_sh_compatible_finder_rejects_newer_major_only_candidate(self, tmp_path):
-        # Only alternative is still newer-major than the driver: finder must fail, not pick it.
         blocked_nvcc = self._fake_nvcc(tmp_path, "13.3")
         other_newer_nvcc = self._fake_nvcc(tmp_path, "13.1")
         script = textwrap.dedent(
@@ -4154,15 +4670,9 @@ class TestCudaDriverToolkitMismatchMessage:
 
 
 class TestExactSourceAssetUrl:
-    """exact_source_asset_url resolves the published source-commit asset for mix builds even when the manifest
-    omits the top-level repo/release_tag.
+    """Mix builds' merge commits are never pushed, so the published source-commit asset is the only copy."""
 
-    A mix build's merge commit is never pushed, so its codeload/archive URLs 404 and
-    ``llama.cpp-source-commit-<sha>.tar.gz`` is the only durable copy. An empty asset URL sends hydration to the
-    404-ing commit archive and the whole prebuilt install falls to a source build.
-    """
-
-    COMMIT = "c4fca6de" + "a" * 32  # 40-char sha
+    COMMIT = "c4fca6de" + "a" * 32
     INSTALL_TAG = "b9616-mix-17e50db"
 
     def _artifact(self, *, repo):
@@ -4242,8 +4752,7 @@ class TestExactSourceAssetUrl:
         )
 
     def test_resolves_through_real_parser_chain(self):
-        # The cases above hand-build ApprovedReleaseChecksums; this walks the production path they bypass
-        # (parse_approved_release_checksums -> preferred_source_archive -> exact_source_asset_url).
+        # Walks the production path the hand-built cases bypass.
         payload = {
             "schema_version": 1,
             "component": "llama.cpp",
@@ -4270,3 +4779,299 @@ class TestExactSourceAssetUrl:
             checksums, source_repo, source_archive, exact_source, self.INSTALL_TAG
         )
         assert url == self._expected("unslothai/llama.cpp", self.INSTALL_TAG)
+
+
+class TestDirectUpstreamRequiresAssetDigests:
+    """A None expected_sha256 passes verification, so upstream archives were executed unverified."""
+
+    TAG = "b9365"
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _release(self, *, with_digests):
+        name = f"llama-{self.TAG}-bin-win-cpu-x64.zip"
+        asset = {"name": name, "browser_download_url": f"https://example.com/{name}"}
+        if with_digests:
+            asset["digest"] = f"sha256:{_fixture_digest(name)}"
+        return {"tag_name": self.TAG, "assets": [asset]}
+
+    def test_every_attempt_carries_the_published_digest(self):
+        plan = direct_upstream_release_plan(
+            self._release(with_digests = True), self._host(), UPSTREAM_REPO, "latest"
+        )
+        assert plan.attempts
+        for attempt in plan.attempts:
+            assert attempt.expected_sha256, f"{attempt.name} would be installed unverified"
+
+    def test_a_release_with_no_published_digest_is_refused(self):
+        """Fail closed, exactly as the fork path does when no checksum covers an asset."""
+        with pytest.raises(PrebuiltFallback):
+            direct_upstream_release_plan(
+                self._release(with_digests = False), self._host(), UPSTREAM_REPO, "latest"
+            )
+
+    def test_an_asset_whose_digest_names_another_algorithm_is_not_accepted(self):
+        release = self._release(with_digests = False)
+        release["assets"][0]["digest"] = "md5:" + "0" * 32
+        with pytest.raises(PrebuiltFallback):
+            direct_upstream_release_plan(release, self._host(), UPSTREAM_REPO, "latest")
+
+
+class TestUpstreamDigestKeepsTheFunctionalSmokeTest:
+    """Digests must not disable the smoke test, which validate_prebuilt_choice skips when a sha256
+    is set."""
+
+    TAG = "b9365"
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def _release(self):
+        name = f"llama-{self.TAG}-bin-win-cpu-x64.zip"
+        return {
+            "tag_name": self.TAG,
+            "assets": [
+                {
+                    "name": name,
+                    "browser_download_url": f"https://example.com/{name}",
+                    "digest": f"sha256:{_fixture_digest(name)}",
+                }
+            ],
+        }
+
+    def test_upstream_attempts_are_marked_as_carrying_an_unmanifested_digest(self):
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        assert plan.attempts
+        for attempt in plan.attempts:
+            assert attempt.expected_sha256, attempt.name
+            assert (
+                attempt.unmanifested_digest
+            ), f"{attempt.name} would skip the smoke test on the strength of a release digest"
+
+    def test_the_smoke_test_still_runs_for_every_upstream_attempt(self, monkeypatch):
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+        assert not INSTALL_LLAMA_PREBUILT.staged_validation_enabled()
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        for attempt in plan.attempts:
+            assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(
+                attempt
+            ), f"{attempt.name} lost the functional smoke test it ran while hashless"
+
+    def test_a_manifest_approved_bundle_still_skips_it(self, monkeypatch):
+        """The negative control: the expensive-path gate must still be reachable."""
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", False)
+        monkeypatch.delenv("UNSLOTH_LLAMA_STAGED_VALIDATION", raising = False)
+        approved = AssetChoice(
+            repo = "unslothai/llama.cpp",
+            tag = self.TAG,
+            name = "llama-app-bin-win-cuda-x64.zip",
+            url = "https://example.com/a.zip",
+            source_label = "published",
+            expected_sha256 = "a" * 64,
+        )
+        assert not INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(approved)
+        monkeypatch.setenv("UNSLOTH_LLAMA_STAGED_VALIDATION", "1")
+        assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(approved)
+
+    def test_a_hashless_bundle_is_still_always_validated(self):
+        hashless = AssetChoice(
+            repo = "somebody/llama.cpp",
+            tag = self.TAG,
+            name = "llama-whatever.zip",
+            url = "https://example.com/w.zip",
+            source_label = "upstream",
+        )
+        assert INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(hashless)
+
+    def test_probe_preresolution_agrees_with_the_validation_decision(self):
+        """All three gates must read one predicate, or an unresolved GPU probe demotes a healthy
+        pick to CPU."""
+        source = pathlib.Path(INSTALL_LLAMA_PREBUILT.__file__).read_text(encoding = "utf-8")
+        stale = [
+            line.strip()
+            for line in source.splitlines()
+            if "expected_sha256 is None" in line
+            and "prebuilt_needs_functional_validation" not in line
+        ]
+        # The predicate's own first clause is the single legitimate reader.
+        assert stale == ["if choice.expected_sha256 is None:"], stale
+
+    def test_every_upstream_attempt_resolves_the_probe_up_front(self):
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        assert any(
+            INSTALL_LLAMA_PREBUILT.prebuilt_needs_functional_validation(a) for a in plan.attempts
+        ), "the probe would be resolved lazily inside the per-candidate handler"
+
+
+# ===========================================================================
+# Fork-only prebuilts: no default path downloads from upstream ggml-org
+# ===========================================================================
+
+
+class TestForkOnlyPrebuilts:
+    """Prebuilt binaries and converter scripts come only from unslothai/llama.cpp releases."""
+
+    TAG = "b11443-mix-d65395f"
+    UPSTREAM = "b11443"
+    ARM64_CUDA = f"app-{TAG}-windows-arm64-cuda13-portable.zip"
+    ARM64_CPU = f"app-{TAG}-windows-arm64-cpu.zip"
+
+    def _arm64_release(self):
+        # The two Windows ARM64 entries exactly as the fork's llama-prebuilt-manifest.json lists them.
+        artifacts = [
+            make_artifact(
+                self.ARM64_CUDA,
+                install_kind = "windows-arm64-cuda",
+                bundle_profile = "cuda13-portable",
+                runtime_line = "cuda13",
+                coverage_class = "portable",
+                supported_sms = ["120", "121"],
+                min_sm = 120,
+                max_sm = 121,
+                rank = 60,
+            ),
+            make_cpu_artifact(
+                self.ARM64_CPU,
+                install_kind = "windows-arm64",
+                bundle_profile = "windows-cpu-arm64",
+                rank = 1000,
+            ),
+        ]
+        return make_release(artifacts, release_tag = self.TAG, upstream_tag = self.UPSTREAM)
+
+    def _no_upstream(self, monkeypatch):
+        listed = []
+
+        def _record(repo, tag):
+            listed.append(repo)
+            return {}
+
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", _record)
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_asset_digests", _record)
+        return listed
+
+    def _arm64_host(self, caps):
+        return make_host(
+            system = "Windows", machine = "ARM64", driver_cuda_version = (13, 4), compute_caps = caps
+        )
+
+    def _prefer(self, monkeypatch):
+        mock_windows_runtime(monkeypatch, ["cuda13"])
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.delenv("UNSLOTH_LLAMA_ARM64_CUDA", raising = False)
+
+    def test_windows_arm64_nvidia_selects_the_fork_cuda_bundle(self, monkeypatch):
+        self._prefer(monkeypatch)
+        listed = self._no_upstream(monkeypatch)
+        result = resolve_release_asset_choice(
+            self._arm64_host(["121"]),
+            self.UPSTREAM,
+            self._arm64_release(),
+            make_checksums([self.ARM64_CUDA, self.ARM64_CPU]),
+        )
+        assert [a.name for a in result] == [self.ARM64_CUDA]
+        assert result[0].repo == "unslothai/llama.cpp"
+        assert result[0].install_kind == "windows-arm64-cuda"
+        assert listed == []
+
+    def test_windows_arm64_uncovered_gpu_takes_the_fork_cpu_bundle_not_upstream(self, monkeypatch):
+        """An sm_89 card is outside the fork bundle's 120-121 coverage: CPU bundle, never ggml-org."""
+        self._prefer(monkeypatch)
+        listed = self._no_upstream(monkeypatch)
+        result = resolve_release_asset_choice(
+            self._arm64_host(["89"]),
+            self.UPSTREAM,
+            self._arm64_release(),
+            make_checksums([self.ARM64_CUDA, self.ARM64_CPU]),
+        )
+        assert [a.name for a in result] == [self.ARM64_CPU]
+        assert result[0].repo == "unslothai/llama.cpp"
+        assert UPSTREAM_REPO not in listed
+
+    def test_fork_release_without_a_platform_bundle_never_lists_upstream(self, monkeypatch):
+        listed = self._no_upstream(monkeypatch)
+        host = make_host(system = "Darwin", machine = "arm64", has_usable_nvidia = False)
+        with pytest.raises(PrebuiltFallback, match = "no compatible published prebuilt"):
+            resolve_release_asset_choice(
+                host, self.UPSTREAM, make_release([], release_tag = self.TAG), make_checksums([])
+            )
+        assert listed == []
+
+    def test_converter_fallback_fetches_from_the_fork_release_tag(self, monkeypatch, tmp_path):
+        urls = []
+
+        def _download(url, **kwargs):
+            urls.append(url)
+            return b"import sys\n"
+
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_bytes", _download)
+        INSTALL_LLAMA_PREBUILT.ensure_converter_scripts(
+            tmp_path, self.UPSTREAM, repo = "unslothai/llama.cpp", release_tag = self.TAG
+        )
+        assert urls == [
+            f"https://raw.githubusercontent.com/unslothai/llama.cpp/{self.TAG}/convert_hf_to_gguf.py"
+        ]
+        assert (tmp_path / "convert_hf_to_gguf.py").read_bytes() == b"import sys\n"
+
+    def test_converter_fallback_defaults_to_the_fork(self, monkeypatch, tmp_path):
+        urls = []
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "download_bytes",
+            lambda url, **kwargs: urls.append(url) or b"import sys\n",
+        )
+        INSTALL_LLAMA_PREBUILT.ensure_converter_scripts(tmp_path, self.TAG)
+        assert urls and "ggml-org" not in urls[0]
+        assert urls[0].startswith("https://raw.githubusercontent.com/unslothai/llama.cpp/")
+
+    def test_linux_arm64_vulkan_stays_on_the_fork(self, monkeypatch):
+        host = make_host(
+            system = "Linux",
+            machine = "aarch64",
+            has_usable_nvidia = False,
+            has_physical_nvidia = False,
+            nvidia_smi = None,
+        )
+        _host, repo, tag, _persist = INSTALL_LLAMA_PREBUILT._route_to_vulkan_prebuilt(
+            host, "unslothai/llama.cpp", self.TAG, force_cpu = False, llama_backend = "vulkan"
+        )
+        assert (repo, tag) == ("unslothai/llama.cpp", self.TAG)
+        release = make_release(
+            [
+                make_cpu_artifact(
+                    f"app-{self.TAG}-linux-arm64-vulkan.tar.gz",
+                    install_kind = "linux-vulkan",
+                    bundle_profile = "linux-vulkan-arm64",
+                    rank = 60,
+                )
+            ],
+            release_tag = self.TAG,
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(_host, release)
+        assert [a.name for a in attempts][:1] == [f"app-{self.TAG}-linux-arm64-vulkan.tar.gz"]

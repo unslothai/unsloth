@@ -1,25 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Back-compat for the kept-install path against every marker shape that has shipped.
-
-``UNSLOTH_PREBUILT_INFO.json`` is append-only across twelve shapes with no version field
-and no migration, so an absent key is normal for anything older. These call the deciders
-directly with the shapes real installs carry, rather than driving ``install_prebuilt``
-with a hand-built two-key marker. Platforms are simulated through ``HostInfo``: that
-covers the path decisions and payload tables, not macOS dyld.
-
-Run natively on Windows too (the parity workflow's windows-latest row), where the loader
-answers for real: ``_binary_image_runs`` sees an actual ``ERROR_BAD_EXE_FORMAT`` instead of
-a stubbed ``run_capture``. Two things stay POSIX-only there and are skipped rather than
-weakened: ``os.chmod`` cannot clear an execute bit Windows does not have, and
-``os.access(X_OK)`` is true for any file that exists.
-"""
+"""Kept-install back-compat over every shipped UNSLOTH_PREBUILT_INFO.json shape, which has no version."""
 
 import importlib.util
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -29,8 +15,7 @@ from pathlib import Path
 import pytest
 
 WINDOWS_HOST = os.name == "nt"
-# os.access(path, os.X_OK) answers "does this exist" on Windows, so the executable=False
-# trees below are indistinguishable from healthy ones there.
+# os.X_OK means only 'exists' on Windows, so executable=False trees look healthy there.
 SKIP_X_OK = pytest.mark.skipif(
     WINDOWS_HOST,
     reason = "os.access(X_OK) is always true on Windows, so the guard is POSIX only",
@@ -38,38 +23,27 @@ SKIP_X_OK = pytest.mark.skipif(
 
 
 def _windows_runnable_stub() -> bytes | None:
-    """Bytes of a real .exe that still starts after being copied somewhere else.
+    """Windows rows need a real PE: a pip-style console launcher, as a renamed Microsoft tool trips AV."""
+    from windows_console_stub import console_stub_bytes
 
-    The keep path execs what it finds, so a Windows row needs a genuine PE. Copying
-    python.exe alone loses python3xx.dll and dies 0xC0000135, hence a System32 tool
-    whose imports are all KnownDLLs. Verified by running the copy, not assumed: an
-    unverifiable stub skips the module instead of reporting the loader's refusal as
-    a back-compat failure.
-    """
-    for name in ("where.exe", "hostname.exe"):
-        source = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name
-        if not source.is_file():
-            continue
-        with tempfile.TemporaryDirectory() as probe_dir:
-            copy = Path(probe_dir) / "llama-server.exe"
-            try:
-                shutil.copyfile(source, copy)
-                probe = subprocess.run([str(copy)], capture_output = True, timeout = 30)
-            except Exception:
-                continue
-            # A loader failure returns rather than raises, so an unchecked run would
-            # accept the very missing-DLL image this is picking a candidate to avoid,
-            # and every healthy fixture after it would inherit it.
-            if probe.returncode >= 0xC0000000:
-                continue
-        return source.read_bytes()
-    return None
+    stub = console_stub_bytes(0)
+    if stub is None:
+        return None
+    with tempfile.TemporaryDirectory() as probe_dir:
+        copy = Path(probe_dir) / "llama-server.exe"
+        try:
+            copy.write_bytes(stub)
+            probe = subprocess.run([str(copy)], capture_output = True, timeout = 60)
+        except Exception:
+            return None
+    # A loader failure returns rather than raises, so check the return code.
+    return stub if probe.returncode == 0 else None
 
 
 RUNNABLE_STUB = _windows_runnable_stub() if WINDOWS_HOST else None
 if WINDOWS_HOST and RUNNABLE_STUB is None:
     pytest.skip(
-        "no self-contained System32 .exe to stand in for llama-server",
+        "no runnable console launcher to stand in for llama-server",
         allow_module_level = True,
     )
 
@@ -83,6 +57,32 @@ sys.modules[SPEC.name] = ILP
 SPEC.loader.exec_module(ILP)
 
 HostInfo = ILP.HostInfo
+
+# ERROR_BAD_EXE_FORMAT, what CreateProcess answers for a file that is not a Windows image.
+_ERROR_BAD_EXE_FORMAT = 193
+
+
+@pytest.fixture(autouse = True)
+def _windows_non_pe_is_refused_not_started(monkeypatch):
+    """Windows only: a non-PE .exe gets ERROR_BAD_EXE_FORMAT unstarted, avoiding a 16-bit dialog."""
+    if not WINDOWS_HOST:
+        return
+    real = ILP.run_capture
+
+    def run_capture(command, *args, **kwargs):
+        target = Path(command[0]) if command else None
+        if target is not None and target.is_file():
+            with open(target, "rb") as handle:
+                if handle.read(2) != b"MZ":
+                    raise OSError(
+                        None,
+                        "%1 is not a valid Win32 application",
+                        str(target),
+                        _ERROR_BAD_EXE_FORMAT,
+                    )
+        return real(command, *args, **kwargs)
+
+    monkeypatch.setattr(ILP, "run_capture", run_capture)
 
 
 def _host(**kw) -> HostInfo:
@@ -118,7 +118,6 @@ MACOS = _host(
     macos_version = (15, 5),
 )
 
-# The payload each platform's kinds share, as runtime_payload_health_groups computes it.
 _SHARED_PAYLOAD = {
     "linux": [
         "libllama-common.so",
@@ -127,19 +126,32 @@ _SHARED_PAYLOAD = {
         "libggml-base.so",
         "libggml-cpu.so",
         "libmtmd.so",
+        # llama-server and llama-quantize load these by DT_NEEDED.
+        "libllama-server-impl.so",
+        "libllama-quantize-impl.so",
     ],
     # Written unconditionally: the check is "has", not "has only".
     "windows": [
         "llama.dll",
         "llama-common.dll",
         "llama-server-impl.dll",
+        "llama-quantize-impl.dll",
         "ggml.dll",
         "ggml-base.dll",
         "ggml-cpu.dll",
         "mtmd.dll",
     ],
-    "macos": ["libllama.dylib", "libggml.dylib", "libmtmd.dylib"],
+    "macos": [
+        "libllama-common.dylib",
+        "libllama.dylib",
+        "libggml.dylib",
+        "libggml-base.dylib",
+        "libggml-cpu.dylib",
+        "libmtmd.dylib",
+    ],
 }
+# Non-empty: zero-byte libraries are damage; long enough to survive halving.
+_PAYLOAD_BYTES = "xxxx"
 _BACKEND_PAYLOAD = {
     ("linux", "cuda"): ["libggml-cuda.so"],
     ("linux", "rocm"): ["libggml-hip.so"],
@@ -198,7 +210,8 @@ def build_install(
             else (runnable if runnable_root is None else runnable_root)
         )
         # The keep path execs these. The not-ok file has to be a bad image: ENOEXEC on
-        # POSIX, a non-PE on Windows, where an empty file is a valid do-nothing program.
+        # POSIX, a non-PE on Windows, where an empty file is a valid do-nothing program. The
+        # Windows non-PE is answered by _windows_non_pe_is_refused_not_started, never started.
         if WINDOWS_HOST:
             path.write_bytes(RUNNABLE_STUB if ok else b"not a PE image\n")
         else:
@@ -218,22 +231,22 @@ def build_install(
 
     if payload:
         for name in _SHARED_PAYLOAD[platform]:
-            (runtime_dir / name).write_text("", encoding = "utf-8")
+            (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if payload_backend != "unset":
             for name in _BACKEND_PAYLOAD.get((platform, payload_backend), ()):
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if visual_server:
             for name in _PUBLISHED_PAYLOAD[platform]:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
         if cudart:
             for name in _CUDART_TRIO:
-                (runtime_dir / name).write_text("", encoding = "utf-8")
+                (runtime_dir / name).write_text(_PAYLOAD_BYTES, encoding = "utf-8")
     return install_dir
 
 
-# The shipped marker shapes, oldest first, trimmed to the keys the keep path reads.
+# Shipped marker shapes, oldest first, trimmed to the keys the keep path reads.
 
-S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
+S1 = {
     "requested_tag": "b6099",
     "tag": "b6099",
     "asset": "llama-b6099-bin-ubuntu-x64.tar.gz",
@@ -244,7 +257,7 @@ S1 = {  # 2026-03-25 #4562: no release_tag, no backend, no asset_sha256
     "prebuilt_fallback_used": False,
     "installed_at_utc": "2026-03-26T04:11:07Z",
 }
-S2 = {  # 2026-04-01 #4741: release_tag + fingerprint arrive
+S2 = {
     **S1,
     "release_tag": "b6210",
     "published_repo": "unslothai/llama.cpp",
@@ -254,26 +267,25 @@ S2 = {  # 2026-04-01 #4741: release_tag + fingerprint arrive
     "runtime_line": "cuda12",
     "install_fingerprint": "aa" * 32,
 }
-S5 = {**S2, "force_cpu": False}  # 2026-07-20 #7228
+S5 = {**S2, "force_cpu": False}
 S6 = {
     **S5,
-    "llama_backend": "vulkan",  # 2026-07-27 #7373
+    "llama_backend": "vulkan",
     "asset": "llama-b7001-bin-ubuntu-vulkan-x64.tar.gz",
     "runtime_line": None,
 }
-S7 = {**S5, "ggml_tree": "b7440"}  # 2026-08-04 #7817
+S7 = {**S5, "ggml_tree": "b7440"}
 S8 = {
     **S7,
-    "rocm_gfx": "gfx1151",  # 2026-08-08 #8050
+    "rocm_gfx": "gfx1151",
     "asset": "app-b9001-linux-x64-rocm-gfx110X.tar.gz",
     "runtime_line": None,
 }
-S9 = {**S7, "backend": "cuda", "backend_request": "auto"}  # 2026-08-13 #8520
-S10 = {**S9, "gfx_target": None, "mapped_targets": []}  # 2026-08-13 #7670
-S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}  # 2026-08-18 #8841 == main
-S12 = {**S11, "runtime_asset": None}  # this PR
+S9 = {**S7, "backend": "cuda", "backend_request": "auto"}
+S10 = {**S9, "gfx_target": None, "mapped_targets": []}
+S11 = {**S10, "supported_sms": ["80", "86", "89", "90"]}
+S12 = {**S11, "runtime_asset": None}
 
-# A real marker, produced by actually running studio/install_llama_prebuilt.py.
 S12_REAL = {
     "requested_tag": "latest",
     "tag": "b10698",
@@ -543,7 +555,6 @@ def test_the_stored_backend_choice_reads_the_same_from_every_shape(tmp_path, mar
     assert ILP.persisted_backend_request(install_dir) == expected
 
 
-# ---------------------------------------------------------------------------
 ARM64_LINUX = _host(machine = "aarch64", is_x86_64 = False, is_arm64 = True)
 MACOS_X64 = _host(
     system = "Darwin",

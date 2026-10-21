@@ -30,7 +30,7 @@ import core.inference.media_switch_backends as backends
 import core.inference.media_switch_errors as errors
 import routes.models as models_route
 import utils.openai_auto_switch_settings as settings
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference.openai_auto_download import preferred_quant
 from utils.api_errors import install_api_error_handlers
 from routes.video import router as video_router
@@ -428,6 +428,9 @@ def _client(router, prefix):
     install_api_error_handlers(app)
     app.include_router(router, prefix = prefix)
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    # The caller-class dependency resolves the same bearer scheme, so leaving it live makes a
+    # bare app 401 before the route is reached. An operator session is what this file tests.
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
 
@@ -774,6 +777,47 @@ def test_the_download_plan_asks_the_engine_that_will_load_the_pick(cached_gguf, 
     assert "allow_device_probe" not in asked[0][1]
 
 
+def test_the_load_runs_on_the_card_the_locality_check_planned(
+    cached_gguf, enabled, backend, monkeypatch
+):
+    # Free VRAM moves between the check and the load; re-ranking there could pick a card whose
+    # automatic precision wants an artifact the check never confirmed was cached.
+    import itertools
+
+    from core.inference import diffusion_device as dd
+    from routes import inference as routes
+
+    monkeypatch.setattr(
+        dd, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    ranks = itertools.chain([1, 1], itertools.repeat(0))
+    monkeypatch.setattr(dd, "resolve_auto_cuda_ordinal", lambda: next(ranks))
+    monkeypatch.setattr(dd, "auto_cuda_ranking_possible", lambda: True)
+    planned: list = []
+    backend.download_plan = lambda model_path, **kw: planned.append(kw["gpu_ordinal"]) or {
+        "total_bytes": 0
+    }
+    loaded: list = []
+
+    async def _start(
+        owner,
+        pick,
+        current_subject,
+        hf_token = None,
+    ):
+        loaded.append(await routes._selected_gpu_ordinal(None))
+        backend.repo_id, backend.model_kind = pick.model_path, pick.model_kind
+        backend.gguf_variant = index.published_token(pick) or None
+        backend.phase = "ready"
+
+    monkeypatch.setattr(mas, "_start_load", _start)
+    _switch("city96/FLUX.1-dev-gguf")
+
+    assert loaded and loaded == planned[-1:]
+    # The pin does not outlive the switch.
+    assert locality.planned_gpu_ordinal() == (False, None)
+
+
 def test_two_bpw_builds_of_one_quant_are_not_confused(two_bpw, enabled, backend, loads):
     # The backend's published token collapses IQ4_XS-3.53bpw and -3.97bpw to IQ4_XS, so a
     # resident sibling can never be assumed to be ours and the skip stays refused. The load
@@ -963,7 +1007,7 @@ def test_the_native_fallback_is_only_verified_when_a_binary_must_be_installed(mo
     router = __import__("core.inference.diffusion_engine_router", fromlist = ["x"])
     families = __import__("core.inference.diffusion_families", fromlist = ["x"])
     monkeypatch.setattr(families, "detect_family_for_pick", lambda *a, **k: object())
-    monkeypatch.setattr(router, "predict_engine", lambda fam, model_kind = None: ENGINE_SD_CPP)
+    monkeypatch.setattr(router, "predict_engine", lambda fam, model_kind = None, **_k: ENGINE_SD_CPP)
     monkeypatch.setattr(router, "engine_for", lambda name: name)
 
     monkeypatch.setattr(router, "native_binary_installed", lambda: True)
@@ -1698,6 +1742,117 @@ def test_a_cpu_switch_does_not_hold_the_gates_it_cannot_evict_behind(
 
     assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
     assert held == []
+
+
+@contextlib.contextmanager
+def _chat_loading():
+    """A chat load in flight, as the real one shows it: chat's load lock held."""
+    assert chat._load_lock.acquire(blocking = False)
+    try:
+        yield
+    finally:
+        chat._load_lock.release()
+
+
+@pytest.mark.parametrize("openai_errors", [False, True])
+def test_always_refuses_behind_a_chat_load_without_waiting(
+    flux, enabled, takes_the_gpu, backend, loads, monkeypatch, openai_errors
+):
+    # Under Always the chat load's GPUs aren't known yet, so it overlaps every card: the switch
+    # answers the retryable 409 at once instead of queueing on chat's gate behind the load.
+    import core.inference.gpu_residency as residency
+
+    monkeypatch.setattr(residency, "current_policy", lambda: "always")
+    # The chat load has claimed the GPU.
+    monkeypatch.setattr(arb, "_owner", arb.CHAT)
+    monkeypatch.setattr(arb, "_residents", {arb.CHAT: None})
+
+    def _gate():
+        raise AssertionError("an Always switch must not wait behind a chat load")
+
+    monkeypatch.setattr(chat, "inference_lifecycle_gate", _gate)
+
+    with _chat_loading():
+        began = time.monotonic()
+        with pytest.raises(HTTPException) as excinfo:
+            _switch("black-forest-labs/FLUX.1-dev", openai_errors = openai_errors)
+        elapsed = time.monotonic() - began
+
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.headers["Retry-After"] == "15"
+    detail = excinfo.value.detail
+    if openai_errors:
+        assert detail["error"]["code"] == "gpu_busy"
+    else:
+        assert detail["error"] == "gpu_busy"
+        assert detail["retry_after"] == 15
+        assert isinstance(detail["message"], str)
+        assert set(detail) == {"error", "message", "retry_after"}
+        assert "is set to Always" not in detail["message"]
+        assert "is set to keep loaded" not in detail["message"]
+    assert loads == []
+    assert elapsed < 5.0
+    # The switch's locks went back with the refusal.
+    assert not asyncio.run(_lock_is_held(arb.DIFFUSION))
+
+
+def test_fit_keeps_todays_wait_behind_a_chat_load(
+    flux, enabled, takes_the_gpu, backend, loads, monkeypatch
+):
+    # Only Always refuses: under fit the switch still queues on chat's lifecycle gate, and a
+    # load that holds it past the budget ends in today's 503.
+    import core.inference.gpu_residency as residency
+
+    monkeypatch.setattr(residency, "current_policy", lambda: "fit")
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
+    assert chat._lifecycle_lock.acquire(blocking = False)
+    try:
+        with _chat_loading():
+            with pytest.raises(HTTPException) as excinfo:
+                _switch("black-forest-labs/FLUX.1-dev")
+    finally:
+        chat._lifecycle_lock.release()
+
+    assert excinfo.value.status_code == 503
+    assert loads == []
+
+
+@pytest.mark.parametrize("claim", [{}, {arb.CHAT: frozenset({0})}])
+def test_always_waits_behind_a_cpu_or_placed_chat_load(
+    flux, enabled, takes_the_gpu, backend, loads, monkeypatch, claim
+):
+    # A CPU chat load never claims the GPU, and one on known GPUs is checked for overlap by the
+    # arbiter, so the switch queues on chat's gate as under fit instead of answering the 409.
+    import core.inference.gpu_residency as residency
+
+    monkeypatch.setattr(residency, "current_policy", lambda: "always")
+    monkeypatch.setattr(arb, "_owner", arb.CHAT if claim else None)
+    monkeypatch.setattr(arb, "_residents", dict(claim))
+    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.4)
+    assert chat._lifecycle_lock.acquire(blocking = False)
+    try:
+        with _chat_loading():
+            with pytest.raises(HTTPException) as excinfo:
+                _switch("black-forest-labs/FLUX.1-dev")
+    finally:
+        chat._lifecycle_lock.release()
+
+    assert excinfo.value.status_code == 503
+    assert loads == []
+
+
+def test_cpu_switch_ignores_a_chat_load_under_always(flux, enabled, backend, loads, monkeypatch):
+    # A CPU load evicts nothing on the GPU, so a chat load there is no reason to refuse it.
+    import core.inference.gpu_residency as residency
+
+    monkeypatch.setattr(backends, "load_takes_the_gpu", lambda: False)
+    monkeypatch.setattr(mas, "load_takes_the_gpu", lambda: False)
+    monkeypatch.setattr(residency, "current_policy", lambda: "always")
+
+    with _chat_loading():
+        _switch("black-forest-labs/FLUX.1-dev")
+
+    assert [pick.model_id for _owner, pick in loads] == ["black-forest-labs/FLUX.1-dev"]
 
 
 def test_the_video_route_refuses_a_flow_control_the_target_does_not_expose(monkeypatch):
@@ -2630,3 +2785,59 @@ def test_a_media_request_parked_on_a_gate_is_not_read_as_running_chat_work(monke
             tracker._inflight = tracker._pending = 0
 
     assert [entry.model_id for entry in started] == ["org/target"]
+
+
+def test_a_downloaded_retired_flux3_copy_switches_to_the_base_it_copies(
+    catalog, enabled, backend, loads, tmp_path
+):
+    # unsloth/flux-3-image-klein is a retired full copy that the load route redirects to its BFL base (fetched from the
+    # -FP8 mirror). The switch has to prove THAT load is cached, and recognise the base it publishes as resident.
+    snapshot = tmp_path / "flux3-copy"
+    snapshot.mkdir()
+    (snapshot / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("unsloth/flux-3-image-klein", snapshot, task = mas.IMAGE_TASK))
+    planned: list = []
+
+    def _plan(model_path, **kwargs):
+        planned.append(model_path)
+        return {"total_bytes": backend.missing_bytes}
+
+    backend.download_plan = _plan
+    base = "black-forest-labs/flux-3-image-klein"
+    backend.missing_bytes = 5_000
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("unsloth/flux-3-image-klein")
+    assert excinfo.value.status_code == 409 and loads == []
+    assert planned and set(planned) == {base}
+
+    backend.missing_bytes = 0
+    _switch("unsloth/flux-3-image-klein")
+    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [
+        (base, base, "pipeline")
+    ]
+    # Resident as the base: the same request is answered without another load.
+    _switch("unsloth/flux-3-image-klein")
+    assert len(loads) == 1
+
+
+def test_a_retired_flux3_copy_name_reloads_the_mirror_that_replaced_it(
+    catalog, enabled, backend, loads, tmp_path
+):
+    # Picking the retired copy now stages its base's -FP8 mirror, so a later API request still naming the copy must find
+    # that download rather than answer model_not_found.
+    snapshot = tmp_path / "flux3-fp8"
+    snapshot.mkdir()
+    (snapshot / "modular_model_index.json").write_text("{}")
+    catalog.append(_info("unsloth/flux-3-image-klein-FP8", snapshot, task = mas.IMAGE_TASK))
+    _switch("unsloth/flux-3-image-klein")
+    base = "black-forest-labs/flux-3-image-klein"
+    assert [(p.model_id, p.model_path, p.model_kind) for _owner, p in loads] == [
+        (base, base, "pipeline")
+    ]
+    # The base, resident (as the Images page loads it), answers the copy's name without a reload.
+    _switch("unsloth/flux-3-image-klein")
+    assert len(loads) == 1
+    # A name with no retired mapping still refuses.
+    with pytest.raises(HTTPException) as excinfo:
+        _switch("unsloth/not-a-model")
+    assert excinfo.value.status_code == 404

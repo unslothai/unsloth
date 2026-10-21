@@ -5,12 +5,16 @@ import { authFetch } from "@/features/auth";
 import type { ChatPresetSource } from "../presets/preset-policy";
 import type {
   PermissionMode,
+  SandboxLevel,
   RagAutoInject,
   RagMode,
   RagSource,
   ReasoningEffort,
 } from "../stores/chat-runtime-store";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 import type {
   InferenceParams,
   PersistedInferenceParams,
@@ -32,6 +36,8 @@ export interface PersistedChatSettings {
   inferenceParams?: PersistedInferenceParams;
   /** Last-used params per checkpoint id, replayed on model switch. */
   inferenceParamsByModel?: Record<string, PersistedInferenceParams>;
+  /** Outgoing only: per model id, keys of the entry above the server drops before merging the rest. */
+  forgetInferenceParamsByModel?: Record<string, string[]>;
   rememberParamsPerModel?: boolean;
   customPresets?: PersistedChatPreset[];
   activePreset?: string;
@@ -45,6 +51,7 @@ export interface PersistedChatSettings {
   searchImages?: boolean;
   autoHealToolCalls?: boolean;
   nudgeToolCalls?: boolean;
+  deduplicateToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
   toolCallTimeout?: number;
   reasoningEnabled?: boolean;
@@ -54,13 +61,13 @@ export interface PersistedChatSettings {
   webFetchToolsEnabled?: boolean;
   deepResearchEnabled?: boolean;
   researchWebsitePolicy?: ResearchWebsitePolicy;
+  researchMcpSources?: ResearchMcpSource[];
   researchModelTimeoutSeconds?: number;
-  artifactsEnabled?: boolean;
-  showCanvasMenuItem?: boolean;
   mcpEnabledForChat?: boolean;
   confirmToolCalls?: boolean;
   /** "full" (Full access) is session-only and never leaves the browser. */
   permissionMode?: Exclude<PermissionMode, "full">;
+  sandboxLevel?: SandboxLevel;
   ragSource?: RagSource;
   ragMode?: RagMode;
   ragTopK?: number;
@@ -75,8 +82,8 @@ export interface PersistedChatSettings {
   fitOnDeviceOnly?: boolean;
   /** Local GGUF chats: drop oldest turns instead of erroring at the window. */
   autoCompactEnabled?: boolean;
-  contextPolicy?: "inherit" | "checkpoint" | "rolling";
-  compactionHeadroomRatio?: number;
+  /** Off: a reply or Deep Research run stops once no tab follows it, instead of finishing on the server. */
+  keepRunningWhenTabClosed?: boolean;
 }
 
 interface ChatSettingsResponse {

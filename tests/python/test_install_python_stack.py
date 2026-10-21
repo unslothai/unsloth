@@ -7,15 +7,19 @@ import contextlib
 import importlib
 import inspect
 import io
+import json
+import threading
 import os
 import re
 import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from packaging.version import Version
 
 
 def _shared_setup_1(installs, monkeypatch):
@@ -67,6 +71,156 @@ sys.path.insert(0, str(STUDIO_DIR))
 
 import install_python_stack as ips
 
+STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
+
+
+# Isolate from a host /etc/pip.conf and from a memoised read poisoned by mocked tests.
+@pytest.fixture(autouse = True)
+def _hermetic_pinned_pip_config(request):
+    ips._PINNED_PIP_CONFIG_LISTING = None
+    ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+    if "reads_real_pip_config" in request.keywords:
+        yield
+    else:
+        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: {}):
+            yield
+    ips._PINNED_PIP_CONFIG_LISTING = None
+    ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+
+
+class TestUvOnlyBinaryOnPinnedCommands:
+    """uv ignores PIP_ONLY_BINARY, so pinned uv installs must pass --only-binary to enforce it."""
+
+    PINNED = ("torch", "--index-url", "https://pin.example/whl")
+    AMD = ("torch", "--index-url", "https://repo.amd.com/rocm/whl/gfx1151/")
+
+    def _uv_cmd(self, args):
+        return ips._pinned_cmd_and_env(ips._build_uv_cmd(args))[0]
+
+    def _pip_cmd(self, args):
+        return ips._pinned_cmd_and_env(ips._build_pip_cmd(args))[0]
+
+    def test_a_pinned_uv_command_carries_only_binary_as_flags(self):
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = self._uv_cmd(self.PINNED)
+        assert cmd[-2:] == ["--only-binary", ":all:"]
+
+    def test_each_entry_becomes_its_own_flag(self):
+        """uv takes the option repeatably, not comma joined the way pip spells it."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":none:,numpy"}):
+            cmd = self._uv_cmd(self.PINNED)
+        assert cmd[-4:] == ["--only-binary", ":none:", "--only-binary", "numpy"]
+
+    def test_an_amd_arch_pin_exempts_rocm_on_the_uv_leg(self):
+        """Every torch on a gfx* index requires rocm[libraries], published as an sdist alone."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = self._uv_cmd(self.AMD)
+        assert cmd[-4:] == ["--only-binary", ":all:", "--no-binary", "rocm"]
+
+    def test_an_amd_arch_pip_command_keeps_the_policy_in_env_and_the_exemption_in_argv(self):
+        """pip reads PIP_ONLY_BINARY itself; the command line only has to exempt rocm."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd, env = ips._pinned_cmd_and_env(ips._build_pip_cmd(self.AMD))
+        assert "--only-binary" not in cmd
+        assert cmd[-2:] == ["--no-binary", "rocm"]
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+
+    @pytest.mark.parametrize(
+        "index",
+        (
+            "https://download.pytorch.org/whl/cu128",
+            "https://download.pytorch.org/whl/cpu",
+            "https://download.pytorch.org/whl/xpu",
+            "https://download.pytorch.org/whl/rocm7.2",
+            "https://mirror.corp/gfx1151/cu128",
+            "https://mirror.corp/gfx-private",
+        ),
+    )
+    @pytest.mark.parametrize("leg", ("uv", "pip"))
+    def test_no_other_pin_is_exempted(self, index, leg):
+        """Anywhere else the name would only let an index get a build past the policy."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            args = ("torch", "--index-url", index)
+            cmd = self._uv_cmd(args) if leg == "uv" else self._pip_cmd(args)
+        assert "--no-binary" not in cmd
+
+    @pytest.mark.parametrize(
+        "index",
+        (
+            "https://mirror.corp/amd/gfx120X-all/",
+            "https://mirror.corp/amd/gfx110X-all?token=x",
+        ),
+    )
+    def test_a_mirrored_amd_arch_index_is_exempted_too(self, index):
+        """UNSLOTH_AMD_ROCM_MIRROR / UNSLOTH_ROCM_WINDOWS_MIRROR keep the gfx leaf."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = self._pip_cmd(("torch", "--index-url", index))
+        assert cmd[-2:] == ["--no-binary", "rocm"]
+
+    @pytest.mark.parametrize("policy", ("rocm", ":all:,rocm", ":all:,ROCm"))
+    @pytest.mark.parametrize("leg", ("uv", "pip"))
+    def test_a_package_the_operator_names_is_not_exempted(self, policy, leg):
+        """A command-line --no-binary overrides the operator's own rule for that package."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": policy}):
+            cmd = self._uv_cmd(self.AMD) if leg == "uv" else self._pip_cmd(self.AMD)
+        assert "--no-binary" not in cmd
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize("installer", ("pip_install", "pip_install_try"))
+    def test_the_flag_and_the_environment_can_never_disagree(self, monkeypatch, installer):
+        """Both come from one read. A failed read is not memoised, so asking twice let a
+        transient miss leave the flag off the argv while the retry put the policy in the
+        environment, which uv never reads."""
+        answers = iter(({}, {"PIP_ONLY_BINARY": ":all:"}))
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: next(answers, {}))
+        monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        runs = []
+        monkeypatch.setattr(
+            ips.subprocess,
+            "run",
+            lambda cmd, **kwargs: runs.append((cmd, kwargs.get("env")))
+            or subprocess.CompletedProcess(cmd, 0, b""),
+        )
+        getattr(ips, installer)("torch", *self.PINNED, constrain = False)
+        ((cmd, env),) = runs
+        flagged = cmd[cmd.index("--only-binary") + 1] if "--only-binary" in cmd else None
+        assert flagged == (env or {}).get("PIP_ONLY_BINARY")
+
+    @pytest.mark.reads_real_pip_config
+    def test_the_pip_fallback_runs_with_the_env_its_exemption_came_from(self, monkeypatch):
+        """uv fails, so pip_install falls back. Had run() read the config again, a policy that
+        appeared on that read would refuse rocm with no exemption on the argv."""
+        answers = iter(({}, {}, {"PIP_ONLY_BINARY": ":all:"}))
+        monkeypatch.setattr(ips, "_pinned_pip_config_overrides", lambda *a, **k: next(answers, {}))
+        monkeypatch.delenv("PIP_ONLY_BINARY", raising = False)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        runs = []
+
+        def fake_run(cmd, **kwargs):
+            runs.append((cmd, kwargs.get("env")))
+            return subprocess.CompletedProcess(cmd, 1 if cmd[:1] == ["uv"] else 0, b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        ips.pip_install("torch", *self.AMD, constrain = False)
+        pip_cmd, pip_env = runs[-1]
+        assert pip_cmd[:3] == [sys.executable, "-m", "pip"]
+        assert ("--no-binary" in pip_cmd) == bool((pip_env or {}).get("PIP_ONLY_BINARY"))
+
+    def test_a_non_pinned_command_is_left_alone(self):
+        """It keeps its config file, so uv applies the operator's policy itself."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            assert self._uv_cmd(("torch",)) == ips._build_uv_cmd(("torch",))
+            assert self._pip_cmd(("torch",)) == ips._build_pip_cmd(("torch",))
+
+    def test_no_policy_leaves_the_argv_untouched(self):
+        """An unconfigured host must run exactly the command main ran, AMD indexes included."""
+        env = {k: v for k, v in os.environ.items() if k != "PIP_ONLY_BINARY"}
+        with mock.patch.dict(os.environ, env, clear = True):
+            for args in (self.PINNED, self.AMD):
+                assert self._uv_cmd(args) == ips._build_uv_cmd(args)
+                assert self._pip_cmd(args) == ips._build_pip_cmd(args)
+
 
 class TestBuildUvCmdTorchBackend:
     """Verify _build_uv_cmd only adds --torch-backend when UV_TORCH_BACKEND is set."""
@@ -106,10 +260,7 @@ class TestBuildUvCmdTorchBackend:
         ), f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
 
     def test_uv_torch_backend_skipped_for_pinned_index(self):
-        """A pinned-index command must NOT get --torch-backend: uv's torch backend
-        redirects torch resolution to its own per-backend index even when
-        --index-url is given (verified: cu128 pin + backend cpu installs
-        torch+cpu), defeating the pin."""
+        """A pinned-index command must not get --torch-backend, which redirects torch to uv's own index."""
         for pin_flag in ("--index-url", "--default-index"):
             with mock.patch.dict(os.environ, {"UV_TORCH_BACKEND": "cpu"}):
                 cmd = self._call(("torch", pin_flag, "https://download.pytorch.org/whl/cu128"))
@@ -215,16 +366,7 @@ class TestUvSafePathHardening:
 
 
 class TestPinnedIndexClearsUvEnv:
-    """A pinned torch install (--index-url / --default-index) must neutralise an
-    inherited UV_INDEX / UV_EXTRA_INDEX_URL so the pinned wheel index wins.
-
-    uv treats the default index (--index-url / --default-index) as LOWEST priority,
-    so an inherited UV_INDEX / UV_EXTRA_INDEX_URL (a corporate/CPU mirror) would be
-    searched first and, under uv's default first-index strategy, resolve torch from
-    the wrong mirror -- after which the marker records a wheel index that was never
-    used. install.sh (#6898), install.ps1 and setup.ps1 already clear these for
-    pinned installs; install_python_stack must match (parity across all installers).
-    """
+    """Pinned installs must clear inherited UV_INDEX and UV_EXTRA_INDEX_URL, so the pinned index wins."""
 
     UV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
 
@@ -255,7 +397,7 @@ class TestPinnedIndexClearsUvEnv:
             assert var not in env, f"{var} must be cleared for a pinned-index install"
 
     def test_pinned_default_index_strips_uv_index_vars(self):
-        # default-index must be gated too (matches install.sh / install.ps1).
+        # default-index must be gated too, like install.sh and install.ps1 do.
         cmd = ["uv", "pip", "install", "torch", "--default-index", "https://x/cu126"]
         with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
             env = ips._install_env_for_cmd(cmd)
@@ -263,7 +405,6 @@ class TestPinnedIndexClearsUvEnv:
         assert "UV_INDEX" not in env
 
     def test_non_pinned_install_keeps_user_mirror(self):
-        # A plain install (no --index-url) must NOT scrub the env, so a user's mirror still applies to base packages.
         cmd = ["uv", "pip", "install", "unsloth", "unsloth-zoo"]
         with mock.patch.dict(os.environ, {"UV_INDEX": "https://mirror.corp/simple"}):
             env = ips._install_env_for_cmd(cmd)
@@ -298,11 +439,7 @@ class TestPinnedIndexClearsUvEnv:
         assert env is not None and "UV_TORCH_BACKEND" not in env
 
     def test_pinned_cmd_disables_uv_config_discovery(self):
-        """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin too
-        (verified with uv 0.10: [pip] torch-backend = "cpu" and a non-default
-        [[index]] both resolve torch+cpu against an explicit --index-url /
-        --default-index cu126 pin). Pinned commands must run with UV_NO_CONFIG=1
-        and without an inherited UV_CONFIG_FILE."""
+        """Found uv.toml/pyproject config outranks the CLI index pin; pinned commands set UV_NO_CONFIG=1."""
         with mock.patch.dict(os.environ, {"UV_CONFIG_FILE": "/etc/uv/uv.toml"}):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
@@ -312,10 +449,9 @@ class TestPinnedIndexClearsUvEnv:
         assert "UV_CONFIG_FILE" not in env
 
     def test_pinned_cmd_disables_pip_config_files(self):
-        """The pip FALLBACK honours user/site pip config files (pip config set
-        global.extra-index-url) even with the PIP_* env vars stripped; pip loads
-        NO configuration files when PIP_CONFIG_FILE is os.devnull. Harmless for
-        uv, decisive for the fallback."""
+        """devnull is the ONLY spelling that reaches a SITE or GLOBAL pip.conf. Measured
+        on pip 26.2: naming a real file suppresses the per-user file alone, so a
+        venv-level `no-index` still killed the pin."""
         env = ips._install_env_for_cmd(
             ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
         )
@@ -330,13 +466,7 @@ class TestPinnedIndexClearsUvEnv:
 
 
 class TestSdistOnlyBuildArgs:
-    """A hardened user config must not be able to fail the extras step.
-
-    #8530: `no-build = true` (uv.toml) or `only-binary = :all:` (pip.conf) makes every
-    wheel-less requirement in extras.txt unresolvable, so the install died at "unsloth
-    extras". A PACKAGE-SCOPED --no-binary overrides that for those names only -- verified
-    against uv 0.10 and pip 26: drop one name and that name is refused again.
-    """
+    """Hardened configs must not fail extras; a package-scoped --no-binary exempts only those names."""
 
     def test_emits_no_binary_for_every_sdist_only_package(self):
         args = ips._sdist_only_build_args(*ips.SDIST_ONLY_PACKAGES)
@@ -349,8 +479,7 @@ class TestSdistOnlyBuildArgs:
     def test_openai_whisper_is_covered(self):
         """The package named in the issue, and the transitive one behind omegaconf."""
         assert "openai-whisper" in ips.SDIST_ONLY_PACKAGES
-        # omegaconf==2.3.1 pins antlr4-python3-runtime below the 4.13.2 wheel, so it arrives as a transitive sdist and
-        # fails no-build even though extras.txt never names it.
+        # omegaconf pins antlr4 below the 4.13.2 wheel, so it arrives as an sdist and fails no-build.
         assert "antlr4-python3-runtime" in ips.SDIST_ONLY_PACKAGES
 
     def test_flags_survive_translation_to_uv(self):
@@ -377,13 +506,8 @@ class TestSdistOnlyBuildArgs:
         ],
     )
     def test_mecab_is_exempted_only_where_it_has_no_wheel(self, is_macos, version, expected):
-        """extras.txt pins MeCab==0.996.5 on macOS cp314+, which ships only an sdist.
-
-        MeCab is a C extension, so an unconditional exemption would force a
-        compiler-dependent build on every other host -- a worse bug than the one being
-        fixed. Verified against uv 0.10: 0.996.5 is refused under `no-build = true` for
-        macOS cp314 and resolves with --no-binary MeCab; 0.996.13 stays a wheel elsewhere.
-        """
+        """MeCab is exempt only on macOS cp314+, where 0.996.5 has no wheel; elsewhere it must stay
+        a wheel."""
         with (
             mock.patch.object(ips, "IS_MACOS", is_macos),
             mock.patch.object(sys, "version_info", version),
@@ -415,11 +539,7 @@ class TestSdistOnlyBuildArgs:
         pytest.fail("no pip_install(req=.../diffusers-pin.txt) call found")
 
     def test_the_extras_step_actually_passes_them(self):
-        """The helper existing is not the fix; the extras call site using it is.
-
-        extras.txt is the manifest that carries the wheel-less requirements, and its
-        pip_install() is fatal, so this is the call that #8530 died on.
-        """
+        """The fix is the extras pip_install call site, which is fatal and must pass the exemptions."""
         tree = ast.parse(Path(ips.__file__).read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "pip_install"):
@@ -440,11 +560,8 @@ class TestSdistOnlyBuildArgs:
         pytest.fail("no pip_install(req=.../extras.txt) call found")
 
     def test_matches_the_ci_nobuild_allowlists(self):
-        """CI already ratifies exactly these as audited pure-Python sdist builds.
-
-        If the two lists drift, either CI fails a legitimate build or we exempt a
-        package nobody audited, so pin them together.
-        """
+        """Pin the sdist allowlist to CI's clean-machine-assert.sh, or an unaudited package gets
+        exempted."""
         repo = Path(ips.__file__).resolve().parents[1]
         shell = (repo / ".github/scripts/clean-machine-assert.sh").read_text(encoding = "utf-8")
         allow = shell[shell.index('_allow="$(printf') :]
@@ -459,13 +576,7 @@ class TestSdistOnlyBuildArgs:
 
 
 class TestHardenedPipConfigRelaxation:
-    """`require-hashes = true` in pip.conf killed the pip FALLBACK in #8530.
-
-    Every requirements file we ship is pinned but unhashed, so hash-required mode can
-    never be satisfied. pip applies env vars AFTER config files, so PIP_REQUIRE_HASHES=0
-    in the child env overrides it while pip.conf's index-url, trusted-host, cert and
-    proxy stay in force. It has no command-line equivalent, hence the env var.
-    """
+    """Shipped requirements are unhashed, so PIP_REQUIRE_HASHES=0 goes in the env to override pip.conf."""
 
     HOSTILE = {
         "PIP_REQUIRE_HASHES": "1",
@@ -506,18 +617,399 @@ class TestHardenedPipConfigRelaxation:
             assert ips._install_env_for_cmd(["python", "-m", "pip", "--version"]) is None
             assert ips._install_env_for_cmd(["python", "-m", "ensurepip", "--upgrade"]) is None
 
-    def test_pinned_cmd_strips_restrictive_policy_env(self):
-        """The pinned branch neutralises the config FILES, but an env var outranks a
-        config file, so a hardened shell could still fail a torch repair the pin was
-        supposed to make deterministic."""
+    def test_pinned_cmd_clears_hash_mode_only(self):
+        """Hash enforcement, which our unhashed requirements cannot satisfy, and nothing
+        else the operator hardened: dropping only-binary would let a compromised mirror
+        run a source build they had forbidden."""
         with mock.patch.dict(os.environ, self.HOSTILE):
             env = ips._install_env_for_cmd(
                 ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
             )
         assert env is not None
-        for name in ("PIP_REQUIRE_HASHES", "PIP_ONLY_BINARY", "UV_NO_BUILD", "UV_EXCLUDE_NEWER"):
-            assert name not in env, f"{name} must be cleared for a pinned install"
-        assert env["UV_NO_CONFIG"] == "1" and env["PIP_CONFIG_FILE"] == os.devnull
+        for name in ("PIP_REQUIRE_HASHES", "UV_REQUIRE_HASHES"):
+            assert name not in env, f"{name} cannot be satisfied by an unhashed pin"
+        assert env["PIP_ONLY_BINARY"] == ":all:"
+        assert env["UV_NO_BUILD"] == "1"
+        assert env["UV_NO_CONFIG"] == "1"
+
+    def test_pinned_cmd_clears_an_upload_cutoff_uv_alone_would_honour(self):
+        """Only uv reads it, and pip_install falls back to pip whenever uv fails, so
+        honouring it on the uv leg alone lets the fallback install past the cutoff."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert "UV_EXCLUDE_NEWER" not in env
+
+    def test_pinned_cmd_clears_forced_source_builds(self):
+        """Dropping it is hardening: it would force torch to be BUILT from an sdist the
+        pinned index does not serve."""
+        with mock.patch.dict(os.environ, {"PIP_NO_BINARY": ":all:", "UV_NO_BINARY": ":all:"}):
+            env = ips._install_env_for_cmd(
+                ["python", "-m", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env is not None
+        assert "PIP_NO_BINARY" not in env and "UV_NO_BINARY" not in env
+
+    LISTING = (
+        "global.index-url='https://mirror/simple'\n"
+        "global.extra-index-url='https://other/simple'\n"
+        "global.no-index='true'\n"
+        "global.no-binary=':all:'\n"
+        "global.require-hashes='true'\n"
+        "install.only-binary=':all:'\n"
+        "global.cert='/etc/ssl/corp.pem'\n"
+        "global.proxy='http://proxy.corp:3128'\n"
+        "global.trusted-host='a.corp\\nb.corp'\n"
+        "list.format='columns'\n"
+        ":env:.no-binary=':all:'\n"
+    )
+
+    def _overrides(
+        self,
+        listing = None,
+        subcommand = "install",
+    ):
+        return ips._parse_pinned_pip_config(
+            (self.LISTING if listing is None else listing).encode(), subcommand
+        )
+
+    def test_devnull_gives_the_operators_policy_and_transport_back(self):
+        """only-binary is the security half; cert / proxy / trusted-host are the half
+        that makes a private index reachable, which devnull alone used to drop."""
+        overrides = self._overrides()
+        assert overrides["PIP_ONLY_BINARY"] == ":all:"
+        assert overrides["PIP_CERT"] == "/etc/ssl/corp.pem"
+        assert overrides["PIP_PROXY"] == "http://proxy.corp:3128"
+        assert overrides["PIP_TRUSTED_HOST"] == "a.corp b.corp"
+
+    def test_the_pin_and_the_unsatisfiable_policy_never_come_back(self):
+        """The pin replaces the source keys, no-binary would force a source build, and
+        require-hashes cannot be met. None may come back."""
+        overrides = self._overrides()
+        for name in (
+            "PIP_INDEX_URL",
+            "PIP_EXTRA_INDEX_URL",
+            "PIP_NO_INDEX",
+            "PIP_NO_BINARY",
+            "PIP_REQUIRE_HASHES",
+        ):
+            assert name not in overrides, f"{name} must not survive the pinned scrub"
+
+    def test_options_from_unrelated_sections_are_not_translated(self):
+        """`list.format` becoming PIP_FORMAT would apply it to install."""
+        assert "PIP_FORMAT" not in self._overrides()
+
+    def test_env_entries_are_skipped(self):
+        """The child already inherits them, and re-asserting would undo the scrub."""
+        assert "PIP_NO_BINARY" not in self._overrides()
+
+    @pytest.mark.reads_real_pip_config
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            mock.Mock(returncode = 1, stdout = b""),
+            mock.Mock(returncode = 0, stdout = None),
+            OSError("no pip"),
+            subprocess.TimeoutExpired("pip", 60),
+        ],
+    )
+    def test_a_pip_that_cannot_answer_changes_nothing(self, outcome):
+        """On the path to every pinned install, so anything but a clean listing has to
+        degrade to no overrides."""
+        kwargs = (
+            {"side_effect": outcome}
+            if isinstance(outcome, Exception)
+            else {"return_value": outcome}
+        )
+        with mock.patch.object(ips.subprocess, "run", **kwargs):
+            assert ips._pinned_pip_config_overrides() == {}
+
+    @pytest.mark.reads_real_pip_config
+    def test_only_a_successful_read_is_cached(self):
+        """A transient miss must not cost the operator their cert and proxy for the rest
+        of the run."""
+        listing = b"global.cert='/etc/ssl/corp.pem'\n"
+        with mock.patch.object(ips.subprocess, "run", side_effect = OSError("wedged")):
+            assert ips._pinned_pip_config_overrides() == {}
+        with mock.patch.object(ips.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode = 0, stdout = listing)
+            assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/ssl/corp.pem"}
+            assert run.call_count == 1
+        with mock.patch.object(ips.subprocess, "run") as run:
+            assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/ssl/corp.pem"}
+            assert run.call_count == 0
+
+    def test_garbage_in_the_listing_is_ignored_not_fatal(self):
+        for listing in (
+            b"",
+            b"not a config listing\n",
+            b"global.cert\n",
+            b"=\n",
+            b"global.cert=<unparseable>\n",
+            b"\xff\xfe binary \x00\n",
+        ):
+            assert ips._parse_pinned_pip_config(listing) == {}
+
+    def test_a_command_section_beats_global_for_a_scalar(self):
+        """pip's own precedence for a single-valued option, resolved by position, not by
+        the order the listing prints the two lines in."""
+        for listing in (
+            b"global.timeout='30'\ninstall.timeout='9'\n",
+            b"install.timeout='9'\nglobal.timeout='30'\n",
+        ):
+            assert ips._parse_pinned_pip_config(listing)["PIP_TIMEOUT"] == "9"
+
+    def test_the_section_read_is_the_one_pip_would_apply(self):
+        """A PIP_ variable is command-wide, so each pip command must read its own [section] of pip.conf."""
+        listing = (
+            b"global.timeout='30'\ninstall.only-binary=':all:'\n"
+            b"install.timeout='9'\ndownload.timeout='5'\ndownload.cert='/etc/dl.pem'\n"
+        )
+        for_install = ips._parse_pinned_pip_config(listing, "install")
+        assert for_install["PIP_TIMEOUT"] == "9" and for_install["PIP_ONLY_BINARY"] == ":all:"
+        assert "PIP_CERT" not in for_install
+        for_download = ips._parse_pinned_pip_config(listing, "download")
+        assert for_download["PIP_TIMEOUT"] == "5" and for_download["PIP_CERT"] == "/etc/dl.pem"
+        assert "PIP_ONLY_BINARY" not in for_download, "an install-only policy is not a download one"
+        assert "PIP_FORMAT" not in ips._parse_pinned_pip_config(
+            b"list.format='columns'\n", "install"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd, expected",
+        [
+            (["python", "-m", "pip", "install", "x", "--index-url", "u"], "install"),
+            (["python", "-m", "pip", "download", "x", "--index-url", "u"], "download"),
+            (["python", "-m", "pip", "wheel", "x", "--index-url", "u"], "wheel"),
+            (["uv", "pip", "install", "x", "--index-url", "u"], "install"),
+            (["python", "-m", "pip", "uninstall", "-y", "x"], "install"),
+        ],
+    )
+    def test_the_subcommand_drives_which_section_is_read(self, cmd, expected):
+        assert ips._pip_subcommand_of(cmd) == expected
+
+    @pytest.mark.reads_real_pip_config
+    def test_the_xpu_download_gets_the_download_section(self):
+        """_ensure_xpu_triton's pinned fetch is a `pip download`, so a corporate
+        `[download] cert` must reach it rather than an `[install]` one.
+
+        PIP_CERT is cleared first: the caller's environment legitimately wins over the
+        re-assertion, so a host that exports one would otherwise make this assert on the
+        ambient value and pass or fail for reasons that have nothing to do with sections.
+        """
+        listing = b"download.cert='/etc/dl.pem'\ninstall.cert='/etc/inst.pem'\n"
+        env_without_cert = {k: v for k, v in os.environ.items() if k != "PIP_CERT"}
+        with (
+            mock.patch.object(ips, "_PINNED_PIP_CONFIG_LISTING", listing),
+            mock.patch.dict(os.environ, env_without_cert, clear = True),
+        ):
+            env = ips._install_env_for_cmd(
+                ["python", "-m", "pip", "download", "triton", "--index-url", "https://x/xpu"]
+            )
+        assert env["PIP_CERT"] == "/etc/dl.pem"
+
+    def test_an_empty_inherited_value_is_not_an_override(self):
+        ambient = ""
+        """pip ignores an EMPTY environment value and falls through to the config file
+        (verified with `pip config debug`), which the pinned branch has just switched off
+        with devnull. Treating it as set would lose the operator's cert entirely. Only a
+        truly empty value: a whitespace one is a value pip would use, not ours to
+        second-guess."""
+        with (
+            mock.patch.object(
+                ips, "_pinned_pip_config_overrides", lambda *a, **k: {"PIP_CERT": "/etc/corp.pem"}
+            ),
+            mock.patch.dict(os.environ, {"PIP_CERT": ambient}),
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_CERT"] == "/etc/corp.pem"
+
+    def test_a_repeatable_option_accumulates_across_sections(self):
+        """pip accumulates [global] and [install] repeatable options; a section value must not drop
+        :all:."""
+        listing = b"global.only-binary=':all:'\ninstall.only-binary='numpy'\n"
+        assert ips._parse_pinned_pip_config(listing, "install")["PIP_ONLY_BINARY"] == ":all:,numpy"
+        certs = b"global.cert='/etc/g.pem'\ninstall.cert='/etc/i.pem'\n"
+        assert ips._parse_pinned_pip_config(certs, "install")["PIP_CERT"] == "/etc/i.pem"
+
+    def test_a_non_utf8_listing_is_decoded_the_way_the_child_wrote_it(self, monkeypatch):
+        """A piped child writes its locale encoding, the ANSI code page on Windows, so decode it
+        with that."""
+        path = "C:\\Soci\u00e9t\u00e9\\ca.pem"
+        listing = f"global.cert={path!r}\n".encode("cp1252")
+        monkeypatch.setattr(ips.locale, "getpreferredencoding", lambda *a: "cp1252")
+        assert ips._parse_pinned_pip_config(listing) == {"PIP_CERT": path}
+        assert (
+            ips._decode_pip_output("cert='/etc/caf\u00e9/ca.pem'".encode())
+            == "cert='/etc/caf\u00e9/ca.pem'"
+        )
+        assert ips._parse_pinned_pip_config(b"global.cert=\xff\xfe\x00") == {}
+
+    @pytest.mark.reads_real_pip_config
+    def test_a_wedged_pip_costs_the_run_one_budget_not_one_per_command(self, monkeypatch):
+        """Failures are deliberately not memoised, so a transient miss cannot cost the
+        operator their cert for the whole run. Unbounded, a HANG paid the timeout once per
+        pinned command instead of once."""
+        attempts = []
+
+        def always_fails(cmd, **kwargs):
+            attempts.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        monkeypatch.setattr(ips.subprocess, "run", always_fails)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+        for _ in range(25):
+            assert ips._pinned_pip_config_overrides() == {}
+        assert len(attempts) == 2, attempts
+        assert set(attempts) == {ips._PINNED_PIP_CONFIG_TIMEOUT}
+        assert ips._PINNED_PIP_CONFIG_TIMEOUT * 2 <= 60
+
+    @pytest.mark.reads_real_pip_config
+    def test_a_cheap_failure_does_not_spend_the_budget(self, monkeypatch):
+        """A fresh venv has no pip for the first part of the run. That answer is instant,
+        so budgeting it would mean the operator's cert is lost for the rest of the run the
+        moment pip does appear."""
+        calls = []
+
+        def missing_then_present(cmd, **kwargs):
+            calls.append(1)
+            if len(calls) < 8:
+                raise OSError("no pip yet")
+            return subprocess.CompletedProcess(cmd, 0, b"global.cert='/etc/corp/ca.pem'\n")
+
+        monkeypatch.setattr(ips.subprocess, "run", missing_then_present)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+        for _ in range(7):
+            assert ips._pinned_pip_config_overrides() == {}
+        assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/corp/ca.pem"}
+
+    @pytest.mark.reads_real_pip_config
+    def test_the_read_dictates_the_child_encoding(self, monkeypatch):
+        """Sniffing cannot recover an undictated encoding, so the child is told one."""
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs.get("env") or {})
+            return subprocess.CompletedProcess(cmd, 0, b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+        ips._pinned_pip_config_overrides()
+        assert seen.get("PYTHONIOENCODING") == "utf-8"
+
+    def test_trusted_host_takes_section_precedence_instead(self):
+        """trusted-host takes the section value, not an accumulated list, so a dropped host stays
+        untrusted."""
+        hosts = b"global.trusted-host='global-a.corp'\ninstall.trusted-host='install-b.corp'\n"
+        assert (
+            ips._parse_pinned_pip_config(hosts, "install")["PIP_TRUSTED_HOST"] == "install-b.corp"
+        )
+        many = rb"install.trusted-host='a.corp\nb.corp'"
+        assert ips._parse_pinned_pip_config(many, "install")["PIP_TRUSTED_HOST"] == "a.corp b.corp"
+
+    def test_a_reset_entry_keeps_its_order(self):
+        """pip applies repeatable options in order, and :none: empties the set, so a re-add must survive."""
+        listing = (
+            b"global.only-binary='probe-sdist,probe-wheel'\n"
+            b"install.only-binary=':none:,probe-sdist'\n"
+        )
+        assert ips._parse_pinned_pip_config(listing, "install")["PIP_ONLY_BINARY"] == (
+            "probe-sdist,probe-wheel,:none:,probe-sdist"
+        )
+
+    @pytest.mark.parametrize(
+        "listing, expected",
+        [
+            (
+                b"global.cert='C:\\Program  Files\\ca.pem'",
+                {"PIP_CERT": "C:\\Program  Files\\ca.pem"},
+            ),
+            (
+                b"global.proxy='http://user:pw@proxy.corp:3128'",
+                {"PIP_PROXY": "http://user:pw@proxy.corp:3128"},
+            ),
+            (rb"global.trusted-host='a.corp\nb.corp'", {"PIP_TRUSTED_HOST": "a.corp b.corp"}),
+            # Comma separated, not whitespace: PIP_ONLY_BINARY="a,b" refuses both.
+            (rb"global.only-binary='numpy\nscipy'", {"PIP_ONLY_BINARY": "numpy,scipy"}),
+            (b"global.only-binary=':all:'", {"PIP_ONLY_BINARY": ":all:"}),
+        ],
+    )
+    def test_each_key_is_joined_the_way_pip_reads_it(self, listing, expected):
+        assert ips._parse_pinned_pip_config(listing) == expected
+
+    def test_the_callers_own_environment_wins(self):
+        """The re-assertion fills gaps; it never overwrites a variable the caller set."""
+        with (
+            mock.patch.object(
+                ips,
+                "_pinned_pip_config_overrides",
+                lambda *a, **k: {"PIP_CERT": "/etc/ssl/corp.pem"},
+            ),
+            mock.patch.dict(os.environ, {"PIP_CERT": "/home/me/mine.pem"}),
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_CERT"] == "/home/me/mine.pem"
+
+    @pytest.mark.parametrize(
+        "configured, exported, expected",
+        [
+            ("numpy", "scipy", "numpy,scipy"),
+            (":all:", ":none:", ":all:,:none:"),
+            (":none:", ":all:", ":none:,:all:"),
+        ],
+    )
+    def test_only_binary_from_the_environment_adds_to_the_file(
+        self, configured, exported, expected
+    ):
+        """only-binary accumulates: measured on pip 26.2, the file's entries apply first and the
+        environment's after them. Letting the variable replace the file lost the file's rule."""
+        with (
+            mock.patch.object(
+                ips,
+                "_pinned_pip_config_overrides",
+                lambda *a, **k: {"PIP_ONLY_BINARY": configured},
+            ),
+            mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": exported}),
+        ):
+            cmd, env = ips._pinned_cmd_and_env(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_ONLY_BINARY"] == expected
+        flags = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--only-binary"]
+        assert flags == expected.split(",")
+
+    def test_no_uv_env_var_is_invented_for_a_uv_toml_no_build(self):
+        """Measured on uv 0.10.7: UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv
+        environment variables, so nothing here may pretend to carry a uv.toml no-build
+        onto a pinned command."""
+        src = STACK_SOURCE
+        assert (
+            "_uv_config_build_policy" not in src
+        ), "re-asserting UV_NO_BUILD would promise a guarantee uv does not honour"
+        with mock.patch.dict(os.environ, {"UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"}):
+            assert ips._install_env_for_cmd(["uv", "pip", "install", "-r", "extras.txt"]) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["python", "-m", "pip", "uninstall", "-y", "install"],
+            ["python", "-m", "pip", "config", "list"],
+            [sys.executable, "/opt/tools/install.py", "--download"],
+            ["uv", "pip", "install", "-r", "extras.txt"],
+        ],
+    )
+    def test_only_a_real_pip_install_is_relaxed(self, cmd):
+        """Keyed on the pip SUBCOMMAND, not on the word appearing anywhere in argv."""
+        with mock.patch.dict(os.environ, self.HOSTILE):
+            assert ips._install_env_for_cmd(cmd) is None
 
     def test_the_parent_environment_is_never_mutated(self):
         """The relaxation is a child-env override. Leaking it into os.environ would
@@ -528,6 +1020,35 @@ class TestHardenedPipConfigRelaxation:
             assert os.environ["PIP_REQUIRE_HASHES"] == "1"
             assert os.environ["UV_NO_BUILD"] == "1"
 
+    @pytest.mark.parametrize(
+        "cmd, relaxed",
+        [
+            ([r"C:\Python313\python.exe", "-m", "pip", "install", "x"], True),
+            ([r"C:\venv\Scripts\pip.exe", "install", "x"], True),
+            ([r"C:\venv\Scripts\pip3.13.exe", "download", "x"], True),
+            ([r"C:\Program Files\venv\Scripts\python.exe", "-m", "pip", "wheel", "x"], True),
+            (["/venv/bin/pip", "install", "x"], True),
+            (["/venv/bin/pip3", "install", "x"], True),
+            (["python", "-m", "pip", "-q", "install", "x"], True),
+            (["python", "-m", "pip", "--isolated", "install", "x"], True),
+            (["python", "-m", "pip", "uninstall", "-y", "install"], False),
+            (["python", "-m", "pip", "show", "wheel"], False),
+            (["python", "-m", "pip", "check", "install.txt"], False),
+            (["python", "/opt/tools/install.py"], False),
+            ([r"C:\tools\installer.exe", "--download"], False),
+        ],
+    )
+    def test_the_subcommand_test_reads_every_platform_spelling(self, cmd, relaxed):
+        assert ips._is_pip_subcommand(cmd, ("install", "download", "wheel")) is relaxed
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [[], [""], ["uv"], ["python"], ["python", "-m"], ["python", "-m", "pip"]],
+    )
+    def test_a_degenerate_command_never_raises(self, cmd):
+        """run() routes EVERY command through this, so a non-command must not IndexError."""
+        assert ips._install_env_for_cmd(cmd) is None
+
     def test_the_pip_fallback_receives_the_relaxation(self):
         """End of the real path: uv fails, pip_install falls back through run(), and
         that pip command is the one #8530 died on."""
@@ -536,7 +1057,6 @@ class TestHardenedPipConfigRelaxation:
         def _fake_run(label, cmd, *a, **kw):
             seen["env"] = ips._install_env_for_cmd(cmd)
             seen["cmd"] = cmd
-            # pip_install reads the result to decide whether to attempt recovery.
             return mock.Mock(returncode = 0, stdout = b"")
 
         with (
@@ -555,11 +1075,7 @@ class TestHardenedPipConfigRelaxation:
 
 
 class TestProgressLineNotes:
-    """_progress() leaves the cursor mid-line, so anything printed between two
-    progress steps must close that line first. Before centralising this, a real
-    install glued the torchao message onto the bar:
-      deps  [=======-------------]  5/14  dependency overrides   torch 2.11...
-    """
+    """_progress() leaves the cursor mid-line; print a newline before any message between steps."""
 
     def _render(
         self,
@@ -573,8 +1089,7 @@ class TestProgressLineNotes:
         with (
             mock.patch.dict(os.environ, {"COLUMNS": columns}),
             mock.patch.object(ips, "VERBOSE", verbose),
-            # _HAS_COLOR is resolved once at import from the tty;
-            # pinning it keeps the assertions valid under FORCE_COLOR=1 or `pytest -s` in a terminal.
+            # _HAS_COLOR is resolved at import; pin it so FORCE_COLOR or a tty does not skew asserts.
             mock.patch.object(ips, "_HAS_COLOR", color),
             mock.patch.object(ips, "_TOTAL", 14),
             mock.patch.object(ips, "_STEP", 4),
@@ -591,6 +1106,51 @@ class TestProgressLineNotes:
         assert len(bar_lines) == 1, f"expected one bar line, got {bar_lines!r}"
         assert msg not in bar_lines[0], f"note glued onto the bar: {bar_lines[0]!r}"
         assert any(ln.strip() == msg for ln in out.split("\n")), out
+
+    def _heartbeat(self, *, tty: bool, beats: int) -> str:
+        seen = threading.Event()
+        count = [0]
+        real_draw, real_note = ips._draw_progress, ips._note
+
+        def counted(real):
+            def wrapper(*args, **kwargs):
+                real(*args, **kwargs)
+                if threading.current_thread().name == "flash-attn-heartbeat":
+                    count[0] += 1
+                    if count[0] >= beats:
+                        seen.set()
+
+            return wrapper
+
+        def emit():
+            ips._progress("flash-attn")
+            with ips._install_heartbeat("flash-attn"):
+                assert seen.wait(10), "the heartbeat never fired"
+
+        with (
+            mock.patch.object(ips, "_stdout_is_tty", return_value = tty),
+            mock.patch.object(ips, "_HEARTBEAT_TICK_SECONDS", 0.01),
+            mock.patch.object(ips, "_HEARTBEAT_NOTE_SECONDS", 0.01),
+            mock.patch.object(ips, "_draw_progress", counted(real_draw)),
+            mock.patch.object(ips, "_note", counted(real_note)),
+        ):
+            return self._render(emit)
+
+    def test_captured_install_gets_a_still_installing_note(self):
+        out = self._heartbeat(tty = False, beats = 2)
+        notes = [ln.strip() for ln in out.split("\n") if "still installing" in ln]
+        assert notes[:2] == ["still installing flash-attn (0 min)"] * 2, out
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert all("still installing" not in ln for ln in bar_lines), bar_lines
+
+    def test_terminal_install_redraws_elapsed_time_on_the_bar_line(self):
+        out = self._heartbeat(tty = True, beats = 2)
+        assert "\n" not in out, "the heartbeat must stay on the bar line"
+        frames = out.split("\r")[1:]
+        assert all(" 5/14  flash-attn" in frame for frame in frames), frames
+        assert "flash-attn 0:00" in frames[1]
+        assert frames[-1].rstrip().endswith("flash-attn")
+        assert len(frames[-1]) >= max(len(frame) for frame in frames[1:-1])
 
     def test_note_aligns_under_the_step_value_column(self):
         out = self._render(lambda: (ips._progress("dependency overrides"), ips._note("hello")))
@@ -674,21 +1234,22 @@ class TestProgressLineNotes:
         allowed = [
             (n.lineno, n.end_lineno)
             for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef) and n.name in {"_progress", "_end_progress_line"}
+            if isinstance(n, ast.FunctionDef) and n.name in {"_draw_progress", "_end_progress_line"}
         ]
         offenders = [
             n.lineno
             for n in ast.walk(tree)
             if isinstance(n, ast.Call)
             and isinstance(n.func, ast.Attribute)
-            and n.func.attr in {"write", "flush"}
+            # `write` only: a flush emits nothing and the installer needs one before spawning a child.
+            and n.func.attr == "write"
             and isinstance(n.func.value, ast.Attribute)
             and n.func.value.attr == "stdout"
             and not any(lo <= n.lineno <= hi for lo, hi in allowed)
         ]
         assert not offenders, (
             f"install_python_stack.py:{offenders} write to sys.stdout directly; "
-            "only _progress()/_end_progress_line() may, everything else uses _safe_print()"
+            "only _draw_progress()/_end_progress_line() may, everything else uses _safe_print()"
         )
 
     def test_no_message_starts_with_a_newline(self):
@@ -722,7 +1283,7 @@ class TestProgressLineNotes:
         test makes it wrap: every message fits one line at COLUMNS=100."""
         msg = (
             "AMD GPU detected but ROCm PyTorch could not be auto-installed. Manual install "
-            "may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd"
+            "may be required. See: https://unsloth.ai/docs/get-started/install/amd"
         )
         out = self._render(lambda: ips._note(msg), columns = "60")
         lines = [ln for ln in out.split("\n") if ln.strip()]
@@ -730,8 +1291,7 @@ class TestProgressLineNotes:
         for line in lines:
             assert len(line) - len(line.lstrip()) == ips._INDENT + ips._COL, repr(line)
         assert " ".join(ln.strip() for ln in lines) == msg
-        # break_long_words = False keeps the URL clickable rather than splitting it.
-        assert any("https://docs.unsloth.ai" in ln for ln in lines), out
+        assert any("https://unsloth.ai/docs" in ln for ln in lines), out
 
     def test_note_falls_back_to_the_flat_indent_in_verbose_mode(self):
         """Verbose prints no bar and no step line, so the value column would indent
@@ -781,12 +1341,7 @@ class TestProgressLineNotes:
 
 
 class TestBuildPipCmdUpgradeIntent:
-    """pip has no --upgrade-package, so uv's flag must be translated, not dropped.
-
-    Dropping it made the fallback a no-op on the update path: pip saw the named
-    distributions as already satisfied, installed nothing, and the update
-    reported success.
-    """
+    """pip has no --upgrade-package, so uv's flag must be translated; dropping it made updates no-ops."""
 
     def test_update_path_keeps_the_upgrade_intent(self):
         cmd = ips._build_pip_cmd(
@@ -797,8 +1352,7 @@ class TestBuildPipCmdUpgradeIntent:
         assert "--upgrade-package" not in cmd, "pip does not understand the uv flag"
 
     def test_torch_is_not_dragged_along(self):
-        # only-if-needed is pip's current default, but it is the load-bearing part: eager would
-        # re-resolve the existing torch build.
+        # only-if-needed is load-bearing: eager would re-resolve the existing torch build.
         cmd = ips._build_pip_cmd(("--upgrade-package", "unsloth"))
         assert cmd[cmd.index("--upgrade-strategy") + 1] == "only-if-needed"
 
@@ -835,7 +1389,6 @@ class TestDamagedCorePayloadRepair:
         assert "--reinstall-package" not in cmd
         assert "--force-reinstall" in cmd and "--no-deps" in cmd
         assert cmd.count("x") == 1
-        # It is not an upgrade request, so it must not acquire pip's upgrade flags.
         assert "--upgrade" not in cmd
 
     def test_a_damaged_package_is_reinstalled(self, monkeypatch):
@@ -898,26 +1451,18 @@ class TestDamagedCorePayloadRepair:
             return ["gone"] if seen["n"] == 1 else []
 
         monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", scan)
-        # Stubbed, or the presence check added beside the scan answers for the
-        # host: a source checkout with no unsloth distribution installed would
-        # fail this on the environment rather than on the code.
+        # Stubbed so a source checkout without unsloth installed does not fail on the host.
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: ["1.0"])
         monkeypatch.setattr(ips, "pip_install_try", lambda label, *args: False)
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
         assert ips._repair_damaged_core_payload(("unsloth",)) is True
 
     def test_an_absent_distribution_is_refused_after_the_core_phase(self, monkeypatch):
-        """It has no RECORD to walk, so the scan alone reads it as undamaged.
-
-        The install.sh handoff sets SKIP_STUDIO_BASE=1 and the core phase never
-        runs, so this is the only place that would see unsloth-zoo gone before
-        write_manifest records the environment as a finished install.
-        """
+        """SKIP_STUDIO_BASE=1 skips the core phase, so only this check catches unsloth-zoo missing."""
         monkeypatch.setattr(ips.install_manifest, "damaged_payload_files", lambda *a, **k: [])
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda name: [])
         monkeypatch.setattr(ips, "_safe_print", lambda *a, **k: None)
         assert ips._repair_damaged_core_payload(("unsloth",), require_present = True) is False
-        # Off before the core phase: a fresh run has nothing installed yet.
         assert ips._repair_damaged_core_payload(("unsloth",)) is True
 
     def test_a_present_distribution_passes_the_presence_check(self, monkeypatch):
@@ -934,7 +1479,6 @@ class TestDamagedCorePayloadRepair:
         check scanned zoo, forced a pass, and no repair gate would touch it."""
         for spelling in ("Unsloth", "UNSLOTH", "UnSloth"):
             assert ips._core_package_names(spelling)[1:] == ("unsloth-zoo",), spelling
-        # PEP 503 folds runs of -_.
         assert ips._core_package_names("uns_loth") == ("uns_loth",)
 
     def test_both_repair_sites_use_that_list(self):
@@ -984,18 +1528,8 @@ class TestDuplicateCoreMetadataRepair:
     def test_an_unrewritable_record_stops_the_repair_before_pip_runs(
         self, tmp_path, monkeypatch, capsys
     ):
-        """The invariant that replaced quarantine-and-proceed.
-
-        A record that cannot be made readable cannot be uninstalled by pip either.
-        Moving it aside only hid it: pip removed the readable records, the
-        quarantine was discarded once the reinstall succeeded, and whatever the
-        quarantined release owned alone stayed importable while the repair
-        reported success and deleted the directory that was the evidence.
-
-        So nothing may run: no staging, no pip, and the tree is left as found.
-        A non-UTF-8 METADATA also makes pip raise for the whole environment, so
-        refusing before pip is what that used to need quarantining for.
-        """
+        """An unrewritable record stops the repair before pip runs; quarantine hid it and lost the
+        evidence."""
         malformed = tmp_path / "unsloth-2026.8.12.dist-info"
         malformed.mkdir()
         (malformed / "METADATA").write_bytes(b"\xff\xfe")
@@ -1007,7 +1541,6 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _n: [malformed])
         monkeypatch.setattr(ips.install_manifest, "pip_backup_metadata_paths", lambda _n: [])
         monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
-        # The rewrite is what normally saves this record; deny it to reach the branch.
         monkeypatch.setattr(ips, "_rewrite_minimal_metadata", lambda *a, **k: False)
 
         def refuse(*_a, **_k):
@@ -1025,16 +1558,11 @@ class TestDuplicateCoreMetadataRepair:
     def test_an_unrecorded_stale_record_fails_closed_even_beside_a_good_one(
         self, tmp_path, monkeypatch, capsys
     ):
-        """No RECORD means nothing knows which files that release owned, which is
-        why _rewrite_minimal_metadata fails closed. Waiting for record_count to
-        reach zero missed the case where another record survives: pip uninstalls
-        only that one, the quarantine is discarded on success, and whatever the
-        older release owned alone stays importable while the directory that was
-        the evidence is deleted for good.
-        """
+        """A RECORD-less stale record must fail closed even beside a good one, or its files stay
+        importable."""
         unreadable = tmp_path / "unsloth-2026.8.12.dist-info"
         unreadable.mkdir()
-        (unreadable / "METADATA").write_bytes(b"\xff\xfe")  # no RECORD beside it
+        (unreadable / "METADATA").write_bytes(b"\xff\xfe")
 
         monkeypatch.setattr(
             ips.install_manifest, "installed_versions", lambda _n: ["", "2026.8.15"]
@@ -1050,19 +1578,12 @@ class TestDuplicateCoreMetadataRepair:
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
         assert "cannot be read or rewritten" in capsys.readouterr().err
-        # The evidence stays on disk so a later run can still see the conflict.
         assert unreadable.is_dir()
 
     def test_pips_tilde_backup_is_moved_aside_so_the_loop_can_converge(self, tmp_path, monkeypatch):
-        """The commonest real conflict: pip renamed the outgoing distribution to a
-        `~` sibling and was killed. Its METADATA still says Name: unsloth so it
-        counts as a duplicate, but `pip uninstall unsloth` logs "Ignoring invalid
-        distribution" and skips it, so the loop never converges and the repair
-        fails on every future run. Verified in a real venv before this fix.
-        """
+        """pip's ~ backup keeps Name: unsloth; pip uninstall skips it as invalid, so move it aside."""
         backup = _shared_setup_3(tmp_path)
-        # Two records; one once the backup is aside; none after the uninstall; then the reinstalled one for the final
-        # convergence probe.
+        # Two records; one with the backup aside; none after uninstall; the reinstalled one.
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"]))
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
         monkeypatch.setattr(ips.install_manifest, "invalid_metadata_paths", lambda _name: [])
@@ -1084,12 +1605,8 @@ class TestDuplicateCoreMetadataRepair:
         assert not backup.exists()
 
     def test_a_sole_tilde_backup_is_repaired_by_a_fresh_install(self, tmp_path, monkeypatch):
-        """pip killed after the rename but before the replacement landed leaves the
-        backup alone: one readable version, so a version count sees nothing wrong
-        while the package is genuinely unimportable. Once the backup is aside there
-        is no payload left to lay a replacement over, so installing fresh is right
-        and refusing would abort the installer on a trivially fixable state.
-        """
+        """A sole ~ backup from a killed pip gets a fresh install; refusing would abort on a fixable
+        state."""
         backup = _shared_setup_3(tmp_path)
         probes = iter((["2026.8.12"], [], ["2026.8.15"]))
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _name: next(probes))
@@ -1274,10 +1791,8 @@ class TestDuplicateCoreMetadataRepair:
         )
 
     def test_staging_relaxes_pip_hash_enforcement(self):
-        """require-hashes applies to pip wheel exactly as it does to pip install
-        (measured on pip 26.2: an unpinned name is refused before anything is
-        built), so a hardened machine could never stage a replacement and the
-        repair would abort on the very conflict it exists to remove."""
+        """Staging relaxes PIP_REQUIRE_HASHES, since pip wheel refuses unpinned names under require-
+        hashes."""
         env = ips._install_env_for_cmd(
             [sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", "/staged", "unsloth"]
         )
@@ -1338,18 +1853,12 @@ class TestDuplicateCoreMetadataRepair:
         return calls
 
     def test_the_replacement_is_the_release_and_index_uv_resolved(self, monkeypatch):
-        """Staging must run pip, because uv has no wheel subcommand, and uv's index
-        configuration cannot be reconstructed from the environment: uv also reads
-        uv.toml, pyproject [tool.uv], a user config and UV_CONFIG_FILE, applies an
-        implicit PyPI default, and resolves under an index-strategy pip has no
-        equivalent for. So uv is asked, and its answer is reproduced verbatim."""
+        """uv has no wheel subcommand and its index config cannot be rebuilt, so uv's answer is replayed."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         self._uv_plan(monkeypatch)
         requirement, overrides, _options = ips._uv_staging_plan("unsloth_zoo")
         assert requirement == "unsloth-zoo==2026.8.15"
-        # The annotation names the index the package actually came from, which is the one to reproduce -- not
-        # --index-url, which is only uv's default.
         assert overrides["PIP_INDEX_URL"] == "https://mirror.corp/simple"
         assert overrides["PIP_EXTRA_INDEX_URL"] == ""
         assert overrides["PIP_FIND_LINKS"] == "/opt/wheels"
@@ -1429,10 +1938,8 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._is_direct_reference("unsloth-zoo") is False
 
     def test_replaying_uv_replaces_pips_candidate_sources(self, monkeypatch):
-        """Replaying uv's answer means replacing pip's sources, not adding to them.
-        An inherited PIP_NO_INDEX blocks the index uv picked, and an inherited extra
-        index or find-links directory can satisfy the same version from somewhere uv
-        never looked, which is the provenance swap this path exists to stop."""
+        """Replaying uv's answer replaces pip's sources; inherited PIP_NO_INDEX or extra index can
+        swap them."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         for var, value in (
@@ -1449,7 +1956,6 @@ class TestDuplicateCoreMetadataRepair:
         assert env["PIP_EXTRA_INDEX_URL"] == ""
         assert env["PIP_FIND_LINKS"] == "/opt/wheels"
         assert env["PIP_INDEX_URL"] == "https://mirror.corp/simple"
-        # pip.conf carries the same three settings, so it is replaced by a copy of itself with only those removed.
         assert env["PIP_CONFIG_FILE"].endswith("pip.conf")
         assert env["PIP_CONFIG_FILE"] != os.devnull
 
@@ -1461,10 +1967,8 @@ class TestDuplicateCoreMetadataRepair:
         assert overrides["PIP_FIND_LINKS"] == ""
 
     def test_pip_transport_settings_survive_the_source_replacement(self, tmp_path, monkeypatch):
-        """Dropping pip.conf wholesale would take proxy, cert, client-cert and
-        trusted-host with it, and those are how a private index is reached at all, so
-        uv would resolve and pip would then fail to fetch. The four source keys are
-        removed and everything else is written back."""
+        """Only the four source keys are removed from pip.conf; proxy, cert and trusted-host must
+        survive."""
         listing = (
             b"global.cert='/etc/ssl/corp.pem'\n"
             b"global.proxy='http://proxy.corp:8080'\n"
@@ -1484,12 +1988,10 @@ class TestDuplicateCoreMetadataRepair:
         written = Path(ips._pip_config_without_sources(str(tmp_path))).read_text()
         assert "proxy = http://proxy.corp:8080" in written
         assert "cert = /etc/ssl/corp.pem" in written
-        # A multi-value setting is spelled back as an indented continuation.
         assert "trusted-host =\n    a.corp\n    b.corp" in written
         assert "[install]" in written and "no-binary = numpy" in written
         for dropped in ("index-url", "extra-index-url", "find-links", "no-index"):
             assert dropped not in written, f"{dropped} must not survive"
-        # :env: entries come from the environment, which is overridden separately.
         assert "config-file" not in written
 
     def test_an_unreadable_pip_config_yields_an_empty_one(self, tmp_path, monkeypatch):
@@ -1533,11 +2035,8 @@ class TestDuplicateCoreMetadataRepair:
         assert overrides.get("PIP_ONLY_BINARY") is None
 
     def test_the_keyring_provider_is_translated(self, monkeypatch):
-        """uv reaches an authenticated index through the keyring CLI (uv 0.10.7:
-        `--keyring-provider subprocess` uses the `keyring` command). Carrying only
-        the URL leaves pip unable to fetch what uv just resolved, so every repair
-        on a private index aborts. pip accepts the same two values.
-        """
+        """uv's keyring subprocess provider must be passed to pip too, or pip cannot fetch what uv
+        resolved."""
         self._uv_only(monkeypatch)
         monkeypatch.setenv("UV_KEYRING_PROVIDER", "subprocess")
         monkeypatch.delenv("PIP_KEYRING_PROVIDER", raising = False)
@@ -1567,15 +2066,13 @@ class TestDuplicateCoreMetadataRepair:
     @pytest.mark.parametrize(
         "stdout",
         [
-            # uv 0.10.7 strips userinfo from the `# from` annotation; trusting it hands pip an
-            # unauthenticated private index URL, which 401s and aborts the repair.
+            # uv 0.10.7 strips userinfo from `# from`; trusting it hands pip an unauthenticated URL.
             pytest.param(
                 b"--index-url https://user:secret@private.corp/simple\n"
                 b"unsloth-zoo==1.0\n"
                 b"    # from https://private.corp/simple\n",
                 id = "the_annotated_index_is_recovered_with_its_credentials",
             ),
-            # uv leaves --index-url as the public default, so only --index carries the credentials.
             pytest.param(
                 b"--index-url https://pypi.org/simple\n"
                 b"--extra-index-url https://user:secret@private.corp/simple\n"
@@ -1623,11 +2120,7 @@ class TestDuplicateCoreMetadataRepair:
         assert calls[-1][0][-1] == str(tmp_path)
 
     def test_offline_local_staging_never_reaches_the_index(self, tmp_path, monkeypatch):
-        """The checkout needs no network, but pip builds it in an isolated
-        environment and fetches the build backend for that, which UV_OFFLINE does not
-        reach. Measured: an isolated build of a local project with no index reachable
-        fails at installing build dependencies, and this repository pins its build
-        requirements exactly, so they would be fetched unless already cached."""
+        """UV_OFFLINE does not reach pip's isolated build, which still fetches the build backend."""
         self._uv_only(monkeypatch)
         monkeypatch.setattr(ips, "USE_UV", True)
         monkeypatch.setenv("UV_OFFLINE", "1")
@@ -1662,10 +2155,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "UV_OFFLINE" in capsys.readouterr().err
 
     def test_a_find_links_origin_does_not_displace_the_real_index(self, monkeypatch):
-        """uv annotates a flat source with a file:// URL. That belongs in
-        PIP_FIND_LINKS, which is already set, and must not become PIP_INDEX_URL: an
-        sdist picked out of a flat directory still needs the index for its build
-        backend, so staging would abort."""
+        """A flat-source file:// URL goes in PIP_FIND_LINKS, never PIP_INDEX_URL, which sdist builds
+        need."""
         self._uv_only(monkeypatch)
         self._uv_plan(
             monkeypatch,
@@ -1681,13 +2172,7 @@ class TestDuplicateCoreMetadataRepair:
         assert overrides["PIP_FIND_LINKS"] == "/opt/wheels"
 
     def test_a_sole_unreadable_record_is_made_uninstallable(self, tmp_path):
-        """Quarantining the only record leaves pip nothing to uninstall, so the
-        staged wheel is laid over the existing tree and any module the new release
-        dropped stays on disk, importable, while the repair reports success.
-
-        Verified against a real venv: with the METADATA corrupted pip show raises
-        UnicodeDecodeError for the whole environment; after this rewrite pip
-        uninstalls the package and removes its entire payload."""
+        """A sole unreadable record is rewritten, not quarantined, so pip can uninstall it."""
         record = tmp_path / "realpkg-1.2.3.dist-info"
         record.mkdir()
         (record / "METADATA").write_bytes(b"\xff\xfe")
@@ -1697,8 +2182,6 @@ class TestDuplicateCoreMetadataRepair:
 
         written = (record / "METADATA").read_text()
         assert "Name: realpkg" in written
-        # The version comes from the directory name, where importlib's own fallback reads it when METADATA cannot
-        # be parsed.
         assert "Version: 1.2.3" in written
 
     def test_a_record_without_a_manifest_fails_closed(self, tmp_path):
@@ -1717,10 +2200,8 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._rewrite_minimal_metadata(str(record), "realpkg") is False
 
     def test_a_path_object_is_accepted(self, tmp_path):
-        """install_manifest.invalid_metadata_paths() returns Path, and the repair
-        forwards it verbatim. Passing str here (as the tests around this one do)
-        hid an AttributeError on every real unreadable record.
-        """
+        """invalid_metadata_paths() returns Path objects; passing str hid an AttributeError on real
+        records."""
         record = tmp_path / "realpkg-1.2.3.dist-info"
         record.mkdir()
         (record / "METADATA").write_bytes(b"\xff\xfe")
@@ -1730,13 +2211,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "Version: 1.2.3" in (record / "METADATA").read_text()
 
     def test_an_absent_metadata_is_synthesized_not_quarantined(self, tmp_path):
-        """A record with an intact RECORD but no METADATA at all.
-
-        There is nothing to back up, which is not a failure: quarantining it
-        instead drops its RECORD, so the uninstall loop removes only what the
-        readable record claims and a module shipped solely by the older release
-        stays on disk and importable while the repair reports success.
-        """
+        """A record with no METADATA is synthesized, not quarantined, since quarantine would drop
+        its RECORD."""
         record = tmp_path / "realpkg-1.2.3.dist-info"
         record.mkdir()
         (record / "RECORD").write_text("realpkg/__init__.py,,\n")
@@ -1746,8 +2222,7 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._rewrite_minimal_metadata(record, "realpkg") is True
         assert "Name: realpkg" in (record / "METADATA").read_text()
 
-        # A failure after the rewrite must not leave the synthetic file behind: a readable record would tell the next
-        # run there is nothing left to repair.
+        # A leftover synthetic record would tell the next run there is nothing to repair.
         quarantine.restore()
         assert not (record / "METADATA").exists()
 
@@ -1757,7 +2232,6 @@ class TestDuplicateCoreMetadataRepair:
         record = tmp_path / "unsloth-2026.8.12.dist-info"
         record.mkdir()
         (record / "METADATA").write_bytes(b"\xff\xfe")
-        # Quarantining the only record leaves nothing behind for pip to uninstall.
         probes = iter(([""], []))
         monkeypatch.setattr(ips.install_manifest, "installed_versions", lambda _n: next(probes))
         monkeypatch.setattr(
@@ -1771,7 +2245,6 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips, "_stage_replacement", fake_stage)
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
         assert "Recreate the environment" in capsys.readouterr().err
-        # The record is left where it was, not quarantined into a temporary directory.
         assert record.is_dir()
 
     HASHED_OUT = (
@@ -1783,15 +2256,11 @@ class TestDuplicateCoreMetadataRepair:
     )
 
     def test_the_resolved_artifact_is_pinned_by_hash(self, monkeypatch):
-        """Neither PIP_CONFIG_FILE nor --isolated suppresses a site pip.conf --
-        measured: with both, a venv pip.conf's extra-index-url was still contacted.
-        So pip may consult a source uv never considered, and the hashes are what stop
-        it accepting a different artifact of the same version from one. pip verifies
-        them even with PIP_REQUIRE_HASHES=0, which is also measured."""
+        """Neither PIP_CONFIG_FILE nor --isolated stops pip reading a site pip.conf; hashes pin the
+        artifact."""
         self._uv_only(monkeypatch)
         self._uv_plan(monkeypatch, stdout = self.HASHED_OUT)
         requirement, _overrides, _options = ips._uv_staging_plan("unsloth-zoo")
-        # The pin line is continued with a backslash, which is not part of the pin.
         assert requirement.startswith("unsloth-zoo==2026.8.15 \\\n")
         assert "--hash=sha256:aaaa" in requirement
         assert "--hash=sha256:bbbb" in requirement
@@ -1802,7 +2271,6 @@ class TestDuplicateCoreMetadataRepair:
         args = ips._requirement_args(requirement, str(tmp_path))
         assert args[0] == "-r"
         assert Path(args[1]).read_text().strip() == requirement
-        # It lives in the staging directory, so it is removed with it.
         assert Path(args[1]).parent == tmp_path
 
     def test_an_unhashed_requirement_is_passed_directly(self, tmp_path):
@@ -1810,10 +2278,8 @@ class TestDuplicateCoreMetadataRepair:
         assert list(tmp_path.iterdir()) == []
 
     def test_a_flat_source_with_no_index_forbids_the_index(self, monkeypatch):
-        """A configured no-index looks like this on the way out: uv emits the
-        find-links entry and no index line at all. Leaving PIP_NO_INDEX cleared would
-        hand pip back the default PyPI and let it stage the same name and version
-        from a source uv was told to exclude."""
+        """Keep PIP_NO_INDEX set when uv emits no index line, or pip falls back to PyPI for the same
+        version."""
         self._uv_only(monkeypatch)
         self._uv_plan(
             monkeypatch,
@@ -1838,10 +2304,8 @@ class TestDuplicateCoreMetadataRepair:
     def test_every_unreadable_record_with_a_manifest_is_made_uninstallable(
         self, tmp_path, monkeypatch
     ):
-        """One unreadable record beside a readable one used to be quarantined and
-        discarded, so its RECORD was never applied: the uninstall loop removed only
-        what the readable record claimed, and a module existing solely in the older
-        release stayed on disk and importable while the repair reported success."""
+        """An unreadable record beside a readable one must be made uninstallable or its files stay
+        importable."""
         stale = tmp_path / "unsloth-2026.8.12.dist-info"
         stale.mkdir()
         (stale / "METADATA").write_bytes(b"\xff\xfe")
@@ -1863,15 +2327,12 @@ class TestDuplicateCoreMetadataRepair:
         )
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
-        # It was rewritten for pip rather than moved aside, so its RECORD is applied and nothing is quarantined at all.
         assert taken == []
         assert "Name: unsloth" in (stale / "METADATA").read_text()
 
     def test_a_repaired_package_is_not_rolled_back_by_a_later_failure(self, monkeypatch):
-        """A single quarantine shared across both packages would, when the second
-        fails, restore the first package's stale record on top of the install that
-        has already replaced it: the conflict returns, and its old RECORD then
-        describes a payload that is gone."""
+        """Give each package its own quarantine, or a later failure restores a stale record over the
+        repair."""
         probes = {
             "unsloth": iter((["", "2026.8.15"], ["2026.8.15"], [], ["2026.8.15"])),
             "unsloth-zoo": iter((["", "2026.8.15"],)),
@@ -1886,7 +2347,6 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips.importlib, "invalidate_caches", lambda: None)
         monkeypatch.setattr(ips, "_run_ok", lambda *a, **k: True)
         monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: True)
-        # The second package cannot be staged, so the repair fails after the first one has already been reinstalled.
         staged = iter(("/staged", None))
         monkeypatch.setattr(ips, "_stage_replacement", lambda _n: next(staged))
         monkeypatch.setattr(
@@ -1897,16 +2357,12 @@ class TestDuplicateCoreMetadataRepair:
         )
 
         assert ips._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is False
-        # The first package was committed before the second was attempted, so the rollback at the end can only touch the
-        # one that failed.
         assert events[0] == "discard"
         assert events[-1] == "restore"
 
     def test_a_direct_reference_pin_is_recognised(self, monkeypatch):
-        """An override can redirect a package to a path, repository or URL, and uv
-        then emits `name @ reference` rather than `name==version`. Treating the whole
-        line as the name left the requirement empty and aborted every repair under
-        that policy."""
+        """uv emits name @ reference for direct overrides, so the name must be split out, not the
+        whole line."""
         self._uv_only(monkeypatch)
         self._uv_plan(
             monkeypatch,
@@ -1917,7 +2373,6 @@ class TestDuplicateCoreMetadataRepair:
             ),
         )
         requirement, _overrides, _options = ips._uv_staging_plan("unsloth_zoo")
-        # The reference is kept as written; only the name is parsed out of it.
         assert requirement == "unsloth-zoo @ file:///src/zoo"
 
     @pytest.mark.parametrize(
@@ -1932,10 +2387,8 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._requirement_name(line) == name
 
     def test_the_original_metadata_comes_back_when_the_repair_fails(self, tmp_path):
-        """The rewrite has to happen before staging, and staging can still fail.
-        Without a backup the original is gone and what remains parses, so the next
-        run would see one readable record, decide nothing is wrong, and never attempt
-        the payload repair that is still owed."""
+        """Back up METADATA before rewriting; if staging fails, one readable record would hide the
+        repair."""
         record = _shared_setup_5(tmp_path)
         quarantine = ips._QuarantinedMetadata()
 
@@ -1959,14 +2412,7 @@ class TestDuplicateCoreMetadataRepair:
         assert "Name: unsloth" in (record / "METADATA").read_text()
 
     def test_an_unbackable_metadata_stops_the_repair(self, tmp_path, monkeypatch, capsys):
-        """The reachable route to an unrewritable record: a METADATA that exists but
-        cannot be read, as an elevated install leaves root-owned. back_up fails, so
-        the rewrite is skipped and the record can never be handed to pip.
-
-        Reproduced in a real venv with the file made unreadable: before this refused,
-        the repair returned True, the module only the stale release shipped stayed
-        importable, and its dist-info was deleted, so nothing could report it again.
-        """
+        """An unbackable METADATA must stop the repair, which otherwise deletes the stale dist-info."""
         record = _shared_setup_5(tmp_path)
 
         monkeypatch.setattr(
@@ -1985,7 +2431,6 @@ class TestDuplicateCoreMetadataRepair:
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
         assert "cannot be read or rewritten" in capsys.readouterr().err
-        # Byte for byte what was there, so the conflict is still detected next time.
         assert (record / "METADATA").read_bytes() == b"\xff\xfe"
 
     def test_an_unresolvable_name_stages_nothing(self, monkeypatch):
@@ -2000,10 +2445,8 @@ class TestDuplicateCoreMetadataRepair:
         assert ips._uv_staging_plan("unsloth-zoo") is None
 
     def test_the_uv_upload_cutoff_reaches_pip(self, monkeypatch):
-        """UV_EXCLUDE_NEWER limits candidates by upload time and pip ignores it, so
-        staging could install a release the user's policy excludes. pip's
-        --uploaded-prior-to is the same filter and takes the same date spellings
-        (checked on pip 26.2: a bare 2020-01-01 staged six 1.13.0, not 1.17.0)."""
+        """UV_EXCLUDE_NEWER must reach pip as --uploaded-prior-to, or staging can pick an excluded
+        release."""
         self._uv_only(monkeypatch)
         monkeypatch.setenv("UV_EXCLUDE_NEWER", "2026-01-01")
         monkeypatch.setattr(ips, "USE_UV", False)
@@ -2087,7 +2530,7 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips, "pip_install_try", lambda *a, **k: order.append("install") or True)
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is True
-        # Two records, so two uninstalls: pip removes one per invocation.
+        # pip removes one record per uninstall invocation.
         assert order == ["stage", "uninstall", "uninstall", "install"]
 
     def test_repair_leaves_the_install_alone_when_the_replacement_cannot_be_fetched(
@@ -2134,13 +2577,8 @@ class TestDuplicateCoreMetadataRepair:
         assert "could not uninstall" in capsys.readouterr().err
 
     def test_a_rollback_reinstall_keeps_its_own_metadata(self, monkeypatch, tmp_path, capsys):
-        """The rewritten record is uninstalled, a later uninstall fails, and
-        _restore_from_staged puts the package back from the staged wheel. The
-        finally block then ran quarantine.restore() over the top, either deleting
-        the wheel's valid METADATA (original absent) or overwriting it with the
-        original corrupt bytes, leaving the core package malformed after a
-        recovery that existed to make it whole.
-        """
+        """After restoring from the staged wheel, the finally block must not run
+        quarantine.restore() over it."""
         record = tmp_path / "unsloth-2026.8.15.dist-info"
         record.mkdir()
         (record / "METADATA").write_bytes(b"\xff\xfe")
@@ -2166,7 +2604,6 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips, "_run_ok", uninstall)
 
         def reinstall(*_a, **_k):
-            # The staged wheel recreates the same path with its own valid metadata.
             record.mkdir(exist_ok = True)
             (record / "METADATA").write_text(
                 "Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.8.15\n", encoding = "utf-8"
@@ -2176,17 +2613,13 @@ class TestDuplicateCoreMetadataRepair:
         monkeypatch.setattr(ips, "pip_install_try", reinstall)
 
         assert ips._repair_duplicate_core_metadata(("unsloth",)) is False
-        # Whatever the rollback put back must survive the quarantine unwinding.
         assert record.is_dir()
         assert (record / "METADATA").read_text().startswith("Metadata-Version")
         assert "Name: unsloth" in (record / "METADATA").read_text()
 
     def test_a_quarantined_backup_is_restored_when_staging_fails(self, monkeypatch, tmp_path):
-        """Quarantine's remaining user is pip's ~ leftover, moved aside so the
-        uninstall loop can converge. Moving it and then failing to fetch the
-        replacement would leave the venv worse than it was found, so a failed
-        staging has to put it back.
-        """
+        """A ~ backup moved aside must go back if staging fails, or the venv ends worse than it was
+        found."""
         backup = _shared_setup_3(tmp_path)
         probes = iter((["2026.8.12", "2026.8.15"], ["2026.8.15"]))
 
@@ -2335,38 +2768,110 @@ class TestDuplicateCoreMetadataRepair:
 
 
 class TestDesktopBackendVersionConstraint:
-    """Verify that UNSLOTH_DESKTOP_BACKEND_VERSION adds the floor pin when upgrading unsloth."""
+    """UNSLOTH_DESKTOP_BACKEND_VERSION floors the unsloth upgrade, lowered only for a lagging index (#14031)."""
 
-    def test_spec_includes_floor_when_env_set(self):
-        with mock.patch.dict(os.environ, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"}):
-            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-            package_name = "unsloth"
-            unsloth_spec = (
-                f"{package_name}>={desktop_min_ver}"
-                if (desktop_min_ver and package_name == "unsloth")
-                else package_name
-            )
-            assert unsloth_spec == "unsloth>=2026.8.15"
+    @staticmethod
+    def _fake_uv(have, zoo = None):
+        def run(
+            argv,
+            input = None,
+            **kwargs,
+        ):
+            assert argv[:3] == ["uv", "pip", "compile"] and "--no-deps" in argv
+            out = Path(argv[argv.index("--output-file") + 1])
+            floor = re.search(r">=(\S+)", input)
+            if floor and Version(floor.group(1)) > Version(have):
+                return subprocess.CompletedProcess(argv, 1)
+            if input.strip() == "unsloth-zoo":
+                out.write_text(f"unsloth-zoo=={zoo or have} \\\n", encoding = "utf-8")
+            else:
+                cap = re.search(r"<=(\S+)", input)
+                pick = min(have, cap.group(1), key = Version) if cap else have
+                out.write_text(f"unsloth=={pick}\n", encoding = "utf-8")
+            return subprocess.CompletedProcess(argv, 0)
 
-    def test_spec_bare_when_env_unset(self):
-        with mock.patch.dict(os.environ, {}, clear = True):
-            desktop_min_ver = os.environ.get("UNSLOTH_DESKTOP_BACKEND_VERSION", "").strip()
-            package_name = "unsloth"
-            unsloth_spec = (
-                f"{package_name}>={desktop_min_ver}"
-                if (desktop_min_ver and package_name == "unsloth")
-                else package_name
-            )
-            assert unsloth_spec == "unsloth"
+        return run
+
+    def _spec(
+        self,
+        tmp_path,
+        env,
+        have = "2026.10.3",
+        package = "unsloth",
+        zoo = None,
+    ):
+        with (
+            mock.patch.dict(os.environ, env, clear = True),
+            mock.patch.object(ips.sys, "prefix", str(tmp_path)),
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(
+                ips,
+                "_uv_config_index_policy",
+                return_value = {
+                    "unreadable": False,
+                    "no_index": None,
+                    "extra_indexes": [],
+                    "default_index": None,
+                },
+            ),
+            mock.patch.object(ips.subprocess, "run", side_effect = self._fake_uv(have, zoo)) as run,
+        ):
+            return ips._desktop_unsloth_spec(package), run.call_count
+
+    def test_spec_includes_floor_when_env_set(self, tmp_path):
+        spec, calls = self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.8.15"})
+        assert spec == "unsloth>=2026.8.15"
+        assert calls == 1, "an index that has the release answers the one probe"
+
+    def test_spec_bare_when_env_unset(self, tmp_path):
+        assert self._spec(tmp_path, {})[0] == "unsloth"
+        assert (
+            self._spec(tmp_path, {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6"}, package = "x")[0]
+            == "x"
+        )
+
+    def test_lagging_index_lowers_floor_and_writes_marker(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_DEFAULT_INDEX": "https://feed.example/simple",
+        }
+        spec, _ = self._spec(tmp_path, env)
+        assert spec == "unsloth==2026.10.3"
+        marker = json.loads((tmp_path / ips.FEED_CEILING_MARKER).read_text(encoding = "utf-8"))
+        assert marker == {"requested": "2026.10.6", "available": "2026.10.3"}
+
+        # Once the index has the release, the floor stays and the marker goes.
+        spec, _ = self._spec(tmp_path, env, have = "2026.10.6")
+        assert spec == "unsloth>=2026.10.6"
+        assert not (tmp_path / ips.FEED_CEILING_MARKER).exists()
+
+    def test_extra_index_beside_pypi_counts(self, tmp_path):
+        # first-index: a lagging UV_INDEX mirror shadows PyPI for the packages it carries.
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_EXCLUDE_NEWER_PACKAGE": "unsloth=2026-10-09",
+        }
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
+
+    def test_zoo_lagging_unsloth_caps_the_backend(self, tmp_path):
+        env = {
+            "UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6",
+            "UV_INDEX": "https://feed.example/simple",
+        }
+        assert self._spec(tmp_path, env, zoo = "2026.10.2")[0] == "unsloth==2026.10.2"
+
+    def test_upload_cutoff_alone_counts(self, tmp_path):
+        env = {"UNSLOTH_DESKTOP_BACKEND_VERSION": "2026.10.6", "UV_EXCLUDE_NEWER": "2026-10-09"}
+        assert self._spec(tmp_path, env)[0] == "unsloth==2026.10.3"
 
 
 class TestRecordlessDistributionRecovery:
-    """pip cannot replace a .dist-info with no RECORD, and the venv is reused.
-
-    Observed on the Windows startup job: uv wrote pydantic-core, the pip fallback
-    tried to uninstall it, found no RECORD, and the dependency step died. Nothing
-    clears that state, so the same venv failed the same way on every later run.
-    """
+    """pip can't uninstall a .dist-info with no RECORD, and nothing clears that state from a reused venv."""
 
     _PIP_OUTPUT = (
         b"Attempting uninstall: pydantic-core\n"
@@ -2398,7 +2903,6 @@ class TestRecordlessDistributionRecovery:
         assert not stub.exists()
 
     def test_a_complete_install_of_the_same_name_is_left_alone(self, tmp_path, monkeypatch):
-        # A RECORD means pip knows what it owns; whatever failed, it was not this.
         root = self._site_packages(tmp_path, monkeypatch)
         intact = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = True)
 
@@ -2406,7 +2910,6 @@ class TestRecordlessDistributionRecovery:
         assert intact.exists()
 
     def test_other_packages_are_never_touched(self, tmp_path, monkeypatch):
-        # The blast radius is the names pip named, not every stub in site-packages.
         root = self._site_packages(tmp_path, monkeypatch)
         bystander = self._write_dist_info(root, "fastapi-0.121.0.dist-info", record = False)
 
@@ -2414,7 +2917,6 @@ class TestRecordlessDistributionRecovery:
         assert bystander.exists()
 
     def test_an_unrelated_failure_clears_nothing(self, tmp_path, monkeypatch):
-        # No RECORD marker: a different problem, which deleting metadata cannot fix.
         root = self._site_packages(tmp_path, monkeypatch)
         stub = self._write_dist_info(root, "pydantic_core-2.46.5.dist-info", record = False)
 
@@ -2427,7 +2929,6 @@ class TestRecordlessDistributionRecovery:
         assert ips._purge_recordless_distributions(output) == []
 
     def test_the_name_matches_across_dash_and_underscore_spellings(self, tmp_path, monkeypatch):
-        # pip reports "pydantic-core"; the directory is written "pydantic_core".
         root = self._site_packages(tmp_path, monkeypatch)
         stub = self._write_dist_info(root, "pydantic.core-2.46.5.dist-info", record = False)
 
@@ -2449,6 +2950,7 @@ class TestRecordlessDistributionRecovery:
             *,
             quiet = True,
             check = True,
+            env = None,
         ):
             attempts.append(cmd)
             failed = len(attempts) == 1
@@ -2475,6 +2977,7 @@ class TestRecordlessDistributionRecovery:
             *,
             quiet = True,
             check = True,
+            env = None,
         ):
             attempts.append(cmd)
             return types.SimpleNamespace(returncode = 1, stdout = b"ERROR: no matching distribution")
@@ -2488,10 +2991,7 @@ class TestRecordlessDistributionRecovery:
 
 
 class TestExpectedTorchFlavorResolution:
-    """_expected_torch_flavor_tag / _expected_torch_index_url: the two pure inputs to the
-    Windows flavor invariant. The invariant itself is covered in
-    tests/studio/install/test_cuda_repair.py; these pin the resolution ORDER, which is what
-    decides whether a repair fires against the right index or not at all."""
+    """Pins the resolution order of the torch flavor inputs, which decides whether a repair fires."""
 
     _KEYS = (
         "UNSLOTH_EXPECTED_TORCH_TAG",
@@ -2525,14 +3025,7 @@ class TestExpectedTorchFlavorResolution:
                 assert ips._expected_torch_flavor_tag() == "cu128"
 
     def test_a_resolved_cuda_backend_outranks_a_stale_cpu_record(self):
-        """A CPU pin that was REMOVED must not outlive the install that replaced it.
-
-        install.sh resolves the backend to cuda and installs a CUDA wheel; reading the old
-        manifest here recorded the healthy venv as deliberately CPU-only, and
-        _expected_cpu_flavor_was_chosen() would then read a later CPU wheel as the install
-        working as asked and suppress the mismatch and its repair. The wheel's own tag is
-        what says which cu index this venv came from.
-        """
+        """A resolved cuda backend outranks a stale CPU record; the wheel's own tag names its index."""
         with self._env():
             with (
                 mock.patch.object(ips, "_TORCH_BACKEND", "cuda"),
@@ -2542,9 +3035,6 @@ class TestExpectedTorchFlavorResolution:
                 ),
             ):
                 assert ips._expected_torch_flavor_tag() == "cu128"
-                # And the stale provenance goes with it: pinned answers per family, so the
-                # cpu record cannot speak for a cuda tag. install.sh marks the backend it
-                # derived, which is why the derived cuda does not count as pinned either.
                 with (
                     mock.patch.dict(os.environ, {"UNSLOTH_TORCH_BACKEND_SOURCE": "resolved"}),
                     mock.patch.object(ips, "_RECORDED_TORCH_TAG_PINNED", True),
@@ -2552,9 +3042,6 @@ class TestExpectedTorchFlavorResolution:
                     assert ips._expected_torch_flavor_was_pinned("cu128") is False
 
     def test_a_resolved_cuda_backend_over_a_cpu_wheel_still_reads_the_manifest(self):
-        # Only when the family agrees with the wheel actually installed, the same rule the
-        # cpu/rocm/xpu arm applies: a resolved cuda beside a CPU wheel is the mismatch this
-        # whole path exists to repair, not a reason to call the venv CUDA.
         with self._env():
             with (
                 mock.patch.object(ips, "_TORCH_BACKEND", "cuda"),
@@ -2564,7 +3051,7 @@ class TestExpectedTorchFlavorResolution:
                 assert ips._expected_torch_flavor_tag() == "cu124"
 
     def test_a_gpuless_host_with_nothing_recorded_says_nothing(self):
-        # Inventing a CUDA expectation from an absent GPU would reinstall CUDA torch onto a CPU box on every update.
+        # Inventing CUDA expectations from an absent GPU reinstalls CUDA torch on CPU boxes every update.
         with self._env():
             with (
                 mock.patch.object(ips, "_RECORDED_TORCH_TAG", None),
@@ -2587,16 +3074,14 @@ class TestExpectedTorchFlavorResolution:
                 assert ips._expected_torch_flavor_tag() == "cpu"
 
     def test_the_index_url_is_reused_only_for_its_own_family(self):
-        # setup.ps1 hands over the /cpu index alongside a "rocm" tag on AMD Windows, so repairing from it would install
-        # the very CPU wheel the repair exists to remove.
+        # setup.ps1 passes the /cpu index with a rocm tag on AMD Windows; do not repair from it.
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://mirror.local/whl/cu124/"):
             assert ips._expected_torch_index_url("cu124") == "https://mirror.local/whl/cu124"
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = "https://download.pytorch.org/whl/cpu"):
             assert ips._expected_torch_index_url("cu124") == f"{ips._PYTORCH_WHL_BASE}/cu124"
 
     def test_a_credentialed_index_survives_intact(self):
-        # The URL is forwarded rather than rebuilt: userinfo and a token query are not
-        # reconstructible from a family leaf.
+        # Forward the URL as-is: userinfo and token queries cannot be rebuilt from a leaf.
         url = "https://user:tok@mirror.local/whl/cu128?token=abc"
         with self._env(UNSLOTH_TORCH_INSTALL_INDEX_URL = url):
             assert ips._expected_torch_index_url("cu128") == url
@@ -2614,7 +3099,101 @@ class TestExpectedTorchFlavorResolution:
         source = inspect.getsource(ips.install_python_stack)
         assert "expected_torch_tag = _recordable_torch_flavor_tag(torch_flavor_tag)," in source
         assert "torch_index_url" not in source
-        # And the helper that answers it records a FLAVOR, never a URL, for the same
-        # reason: it is reached with the pin still in the environment.
         helper = inspect.getsource(ips._recordable_torch_flavor_tag)
         assert "return" in helper and "_explicit_torch_index_url()" not in helper
+
+
+PYPI_SPARE = "pypi|UV_DEFAULT_INDEX=https://m/simple|PIP_INDEX_URL=https://m/simple"
+TORCH_SPARE = "torch|UNSLOTH_PYTORCH_MIRROR=https://m/whl"
+UNSYNCED_SPARE = "unsynced|UV_DEFAULT_INDEX=https://pypi.org/simple|UV_INDEX=https://m/simple|UV_INDEX_STRATEGY=unsafe-first-match"
+TORCH_WHL = "https://download.pytorch.org/whl"
+PYPI_DOWN = b"Failed to fetch: `https://pypi.org/simple/foo/`\n  Caused by: operation timed out\n"
+TORCH_DOWN = b"HTTP status server error (503) for url (https://download.pytorch.org/whl/cu128/)\n"
+NO_VERSION = b"no version of foo==9\nhint: `foo` was found on https://pypi.org/simple\n"
+PIN = ("--index-url", "https://proxy.example/simple")
+UV_STALL = (
+    b"Failed to download `torch==2.9.1`: Failed to download distribution due to network timeout.\n"
+)
+OTHER_DOWN = b"error sending request for url (https://repo.example/x/): operation timed out\n"
+PIP_RESET_NAMES_NO_HOST = (
+    b"connection broken by 'ConnectionResetError(54, 'Connection reset by peer')': /simple/\n"
+)
+
+
+class TestMirrorRetry:
+    """A transport failure on a default the installer's probe left alone reruns once through its mirror."""
+
+    @pytest.fixture(autouse = True)
+    def _spared(self, monkeypatch):
+        monkeypatch.setattr(ips, "_PYTORCH_WHL_BASE", TORCH_WHL)
+        monkeypatch.setattr(ips, "_step", lambda *a, **k: None)
+        monkeypatch.setattr(ips, "USE_UV", True)
+        with mock.patch.dict(os.environ):
+            for name in ("UV_DEFAULT_INDEX", "PIP_INDEX_URL", "UNSLOTH_PYTORCH_MIRROR"):
+                os.environ.pop(name, None)
+            os.environ["_UNSLOTH_MIRROR_SPARE"] = f"{PYPI_SPARE} {TORCH_SPARE}"
+            yield
+
+    def _runs(self, monkeypatch, ok, failure):
+        runs = []
+
+        def fake_run(cmd, **kwargs):
+            runs.append((cmd, dict(kwargs.get("env") or os.environ)))
+            passed = ok(*runs[-1])
+            output = PIP_RESET_NAMES_NO_HOST if "-m" in cmd else failure
+            return subprocess.CompletedProcess(cmd, 0 if passed else 1, b"" if passed else output)
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        return runs
+
+    @pytest.mark.parametrize("installer", ("pip_install", "pip_install_try"))
+    @pytest.mark.parametrize("failure", (PYPI_DOWN, UV_STALL))
+    def test_pypi_transport_failure_moves_to_the_mirror(self, monkeypatch, installer, failure):
+        on_mirror = lambda cmd, env: env.get("UV_DEFAULT_INDEX") == "https://m/simple"
+        runs = self._runs(monkeypatch, on_mirror, failure)
+        assert getattr(ips, installer)("deps", "foo", constrain = False) in (None, True)
+        assert "UV_DEFAULT_INDEX" not in runs[0][1] and on_mirror(*runs[-1])
+        assert os.environ["PIP_INDEX_URL"] == os.environ["UV_DEFAULT_INDEX"] == "https://m/simple"
+        assert os.environ["_UNSLOTH_MIRROR_SPARE"] == TORCH_SPARE
+
+    @pytest.mark.parametrize("installer", ("pip_install", "pip_install_try"))
+    @pytest.mark.parametrize("mirror", ("https://m/whl", None))
+    def test_torch_mirror_is_kept_only_when_it_works(self, monkeypatch, installer, mirror):
+        ok = lambda cmd, env: mirror is not None and "https://m/whl/cu128" in cmd
+        runs = self._runs(monkeypatch, ok, UV_STALL)
+        fails = installer == "pip_install" and mirror is None
+        result = None
+        with pytest.raises(SystemExit) if fails else contextlib.nullcontext():
+            result = getattr(ips, installer)(
+                "torch", "--index-url", f"{TORCH_WHL}/cu128", constrain = False
+            )
+        assert result in (None, mirror is not None)
+        assert "https://m/whl/cu128" in runs[-1][0]
+        assert os.environ["_UNSLOTH_MIRROR_SPARE"] == PYPI_SPARE
+        assert os.environ.get("UNSLOTH_PYTORCH_MIRROR") == mirror
+        assert ips._PYTORCH_WHL_BASE == (mirror or TORCH_WHL)
+
+    @pytest.mark.parametrize(
+        "failure, pin",
+        (
+            (NO_VERSION, ()),
+            (OTHER_DOWN, ()),
+            (TORCH_DOWN, ()),
+            (PYPI_DOWN, PIN),
+            (UV_STALL, ("x @ https://github.com/x/x/archive/main.zip",)),
+        ),
+    )
+    def test_other_failures_are_not_retried(self, monkeypatch, failure, pin):
+        runs = self._runs(monkeypatch, lambda cmd, env: False, failure)
+        assert not ips.pip_install_try("x", *pin, "foo", constrain = False)
+        assert len(runs) == 1
+        assert os.environ["_UNSLOTH_MIRROR_SPARE"] == f"{PYPI_SPARE} {TORCH_SPARE}"
+
+    @pytest.mark.parametrize("pin, kept", (((), True), (PIN, False), (("--no-index",), False)))
+    def test_a_release_the_mirror_lacks_reruns_with_pypi(self, monkeypatch, pin, kept):
+        spare = os.environ["_UNSLOTH_MIRROR_SPARE"] = f"{TORCH_SPARE} {UNSYNCED_SPARE}"
+        os.environ["UV_DEFAULT_INDEX"] = mirror = "https://m/simple"
+        self._runs(monkeypatch, lambda cmd, env: env.get("UV_INDEX") == mirror, NO_VERSION)
+        assert ips.pip_install_try("x", *pin, "foo", constrain = False) is kept
+        assert os.environ["UV_DEFAULT_INDEX"] == ("https://pypi.org/simple" if kept else mirror)
+        assert os.environ["_UNSLOTH_MIRROR_SPARE"] == (TORCH_SPARE if kept else spare)

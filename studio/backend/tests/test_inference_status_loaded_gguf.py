@@ -171,6 +171,24 @@ def test_an_auto_applied_chat_template_is_not_reported_as_the_users(status_route
     assert status_route(backend).chat_template_override is None
 
 
+def test_a_bundled_template_on_a_snapshot_path_load_is_not_reported_as_the_users(
+    status_route, monkeypatch
+):
+    from core.inference.chat_templates import resolve_effective_chat_template_override
+
+    monkeypatch.setattr(
+        inference_route,
+        "resolve_effective_chat_template_override",
+        resolve_effective_chat_template_override,
+    )
+    bundled = resolve_effective_chat_template_override(
+        model_identifier = "unsloth/gemma-4-12b-it-GGUF", user_override = None
+    )
+    backend = _StatusBackend("/scan/models--unsloth--gemma-4-12b-it-GGUF/snapshots/abc")
+    backend.chat_template_override = bundled
+    assert status_route(backend).chat_template_override is None
+
+
 def test_status_publishes_the_running_pass_through_arguments(status_route):
     # A tab opened while a model is already running never saw the load, so the only
     # place it can learn what the server was invoked with is here. Without it, a
@@ -204,6 +222,18 @@ def test_status_publishes_mmproj_cpu_recovery(status_route):
 
     assert status.is_vision is True
     assert status.mmproj_fallback_reason == "cpu_offload"
+
+
+def test_status_publishes_the_running_load_warning(status_route):
+    assert status_route(_StatusBackend("org/A-GGUF")).memory_warning is None
+
+    backend = _StatusBackend("org/A-GGUF")
+    backend.last_load_warning = (
+        "Not enough disk space to download BF16 (7.5 GB needed, 7.5 GB free), "
+        "so Q4_1 (2.4 GB) was loaded instead."
+    )
+
+    assert status_route(backend).memory_warning == backend.last_load_warning
 
 
 def test_status_publishes_an_explicit_text_only_mmproj_fallback(status_route):

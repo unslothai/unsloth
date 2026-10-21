@@ -489,6 +489,7 @@ class TestInertProbeFallback:
             "threading.Lock()",
             "threading.RLock()",
             "threading.Event()",
+            "threading.local()",
         }, (
             "the inert branch of LlamaCppBackend.__init__ grew a call that could "
             f"raise: {sorted(set(unguarded_calls))}"

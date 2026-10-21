@@ -37,10 +37,14 @@ export function StopRunningChatsDialog() {
   const sharer = hasNonChat ? "request" : "conversation";
   // Ejecting leaves no model loaded. Saying it "reloads the model" and offering "Stop and reload"
   // promised the opposite of what confirming does, for the destructive one.
-  const unloads = effect === "unload";
-  const lead = unloads
-    ? `${action || "Unloading the model"} leaves no model loaded, and every open ${sharer} shares it, `
-    : `${action ? `${action} reloads the model, ` : "Reloading the model "}which every open ${sharer} shares, `;
+  const unloads = effect !== "reload";
+  // Model-neutral: a cached standard-backend unload also stops the active model's chats.
+  const lead =
+    effect === "unloadOne"
+      ? `${action || "Unloading this model"} cannot wait for running ${sharer}s, `
+      : unloads
+        ? `${action || "Unloading the model"} leaves no model loaded, and every open ${sharer} shares it, `
+        : `${action ? `${action} reloads the model, ` : "Reloading the model "}which every open ${sharer} shares, `;
   const shown = titles.slice(0, 5);
   const remaining = Math.max(0, titles.length - shown.length);
 
@@ -63,7 +67,7 @@ export function StopRunningChatsDialog() {
           </AlertDialogDescription>
         </AlertDialogHeader>
         {shown.length > 0 && (
-          <ul className="max-h-40 overflow-y-auto rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <ul className="max-h-40 overflow-y-auto scroll-rounded rounded-md border bg-muted/40 px-3 py-2 text-sm">
             {shown.map((title) => (
               <li key={title} className="truncate py-0.5">
                 {title}

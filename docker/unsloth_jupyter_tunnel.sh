@@ -22,7 +22,7 @@ PORT="${JUPYTER_PORT:-8888}"
 
 echo "[jupyter-tunnel] waiting for JupyterLab on port ${PORT} ..."
 for _ in $(seq 1 90); do
-    if curl -fsS -o /dev/null "http://localhost:${PORT}/login" 2>/dev/null; then
+    if curl -fsS -o /dev/null --noproxy '*' "http://localhost:${PORT}/login" 2>/dev/null; then
         break
     fi
     sleep 2

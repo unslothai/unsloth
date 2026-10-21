@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc, readSrcAsync } from "./helpers/kit.ts";
+import { atDefaultUiScale, readSrc, readSrcAsync } from "./helpers/kit.ts";
 
-const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+const APP_SIDEBAR = atDefaultUiScale(readSrc("components/app-sidebar.tsx"));
 
 // Touch never fires dragstart, so the row menu is the only way to reorder a
 // list there. A menu behind a trigger without sidebar-touch-reveal is inert on
@@ -23,7 +23,7 @@ function actionClassFor(source: string, label: string): string {
 
 test("only sidebar-touch-reveal actions work on a coarse pointer", async () => {
   // The rule the rest of this file depends on.
-  const css = await readSrcAsync("index.css");
+  const css = atDefaultUiScale(await readSrcAsync("index.css"));
   const coarse = /@media \(pointer: coarse\) \{([\s\S]*?)\n\t\}/.exec(css);
   assert.ok(coarse, "no coarse-pointer block in index.css");
   assert.match(coarse[1], /\.sidebar-row-action\.sidebar-touch-reveal/);

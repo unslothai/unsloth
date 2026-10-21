@@ -45,8 +45,12 @@ export function ViewportControls({
     fitView(buildFitViewOptions(getNodes()));
   }, [fitView, getNodes]);
 
+  // Stack vertically on narrow canvases to clear the Run / Check bar.
   return (
-    <Panel position="bottom-left" className="m-3 flex items-center gap-2">
+    <Panel
+      position="bottom-left"
+      className="m-3 flex items-center gap-2 @max-[48rem]/canvas:flex-col-reverse"
+    >
       <Button
         type="button"
         variant="ghost"

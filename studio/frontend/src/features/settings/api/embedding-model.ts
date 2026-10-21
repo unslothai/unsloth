@@ -19,7 +19,13 @@ export type EmbeddingModelSettings = {
   /** ANY embedder is resident, so Unload has something to do. Saving a new model
    * does not release the old one, so not the same question as `loaded`. */
   backendLoaded: boolean;
+  /** Where the embedder runs, for every embedding model. */
+  embeddingDevice: EmbeddingDevice;
+  /** RAG_EMBED_DEVICE names a device, so the choice is read-only here. */
+  embeddingDeviceLocked: boolean;
 };
+
+export type EmbeddingDevice = "auto" | "cpu" | "gpu";
 
 type ApiEmbeddingModelSettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -35,6 +41,10 @@ type ApiEmbeddingModelSettings = {
   loaded?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   backend_loaded?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  embedding_device?: EmbeddingDevice;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  embedding_device_locked?: boolean;
 };
 
 /** 409 from the backend: the model could not be verified as an embedding model
@@ -56,6 +66,8 @@ function fromApi(settings: ApiEmbeddingModelSettings): EmbeddingModelSettings {
     // A backend predating this field answers only about the selected model,
     // which is the old behaviour and the right fallback.
     backendLoaded: settings.backend_loaded ?? settings.loaded ?? false,
+    embeddingDevice: settings.embedding_device ?? "auto",
+    embeddingDeviceLocked: settings.embedding_device_locked ?? false,
   };
 }
 
@@ -110,6 +122,23 @@ export async function updateEmbeddingModelSettings(
   const settings = fromApi(await res.json());
   bumpInventoryVersion();
   return settings;
+}
+
+/** Moves the embedder to another device; the next index or search reloads it there. */
+export async function updateEmbeddingDevice(
+  device: EmbeddingDevice,
+): Promise<EmbeddingModelSettings> {
+  const res = await authFetch("/api/settings/embedding-model/device", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to save the embedding device"),
+    );
+  }
+  return fromApi(await res.json());
 }
 
 /** What saving a model would need fetched, and whether it is already on disk. */

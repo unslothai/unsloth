@@ -89,6 +89,11 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from core.inference.api_monitor import ApiMonitor
+from core.inference.llama_admission import (
+    ADMISSION_QUEUE_TIMEOUT_ENV,
+    LlamaAdmissionConfig,
+    get_llama_admission_queue,
+)
 from models.inference import (
     ChatMessage,
     ResponsesCustomToolCallInputItem,
@@ -136,6 +141,63 @@ def _codex_apply_patch_tool():
             "syntax": "lark",
             "definition": 'start: "*** Begin Patch" LF hunk+ "*** End Patch" LF?',
         },
+    }
+
+
+def _codex_namespace_tools():
+    forecast_params = {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+    }
+    return [
+        {"type": "function", "name": "exec_command", "parameters": {"type": "object"}},
+        {
+            "type": "namespace",
+            "name": "multi_agent_v1",
+            "description": "Tools for spawning and managing sub-agents.",
+            "tools": [
+                {"type": "function", "name": "spawn_agent", "parameters": {"type": "object"}},
+                {"type": "function", "name": "wait_agent", "parameters": {"type": "object"}},
+            ],
+        },
+        {
+            "type": "namespace",
+            "name": "mcp__weather",
+            "description": "Tools in the mcp__weather namespace.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_forecast",
+                    "description": "Get the weather forecast for a city.",
+                    "strict": False,
+                    "parameters": forecast_params,
+                }
+            ],
+        },
+        {"type": "web_search"},
+    ]
+
+
+def _namespaced_forecast_call_chunk():
+    return {
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_wx",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__weather__get_forecast",
+                                "arguments": '{"city":"Paris"}',
+                            },
+                        }
+                    ]
+                }
+            }
+        ]
     }
 
 
@@ -315,6 +377,26 @@ class TestToolsTranslation:
         assert len(out) == 1
         assert out[0]["function"]["name"] == "search"
 
+    def test_codex_namespace_tools_reach_the_model(self):
+        out = _translate_responses_tools_to_chat(_codex_namespace_tools())
+
+        assert [tool["function"]["name"] for tool in out] == [
+            "exec_command",
+            "multi_agent_v1__spawn_agent",
+            "multi_agent_v1__wait_agent",
+            "mcp__weather__get_forecast",
+        ]
+        assert out[3]["function"] == {
+            "name": "mcp__weather__get_forecast",
+            "description": "Get the weather forecast for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+            "strict": False,
+        }
+
     def test_codex_apply_patch_custom_tool_becomes_a_local_function(self):
         grammar = (
             'start: "*** Begin Patch" LF add_hunk "*** End Patch" LF?\n'
@@ -484,6 +566,33 @@ class TestBuildChatRequest:
             "json_schema": {"name": "Person", "schema": schema, "strict": True},
         }
 
+    def test_text_format_does_not_lock_out_callable_tools(self):
+        payload = ResponsesRequest(
+            input = "Weather in Paris?",
+            tools = [
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                }
+            ],
+            text = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "final_output",
+                    "schema": {"type": "object", "properties": {"temp_c": {"type": "number"}}},
+                    "strict": True,
+                }
+            },
+        )
+        messages = [ChatMessage(role = "user", content = "Weather in Paris?")]
+
+        chat_req = _build_chat_request(payload, messages, stream = True)
+        body = _build_openai_passthrough_body(chat_req, backend_ctx = 4096)
+
+        assert [tool["function"]["name"] for tool in body["tools"]] == ["get_weather"]
+        assert "response_format" not in body
+
     def test_text_format_json_object_becomes_response_format(self):
         payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_object"}})
         messages = [ChatMessage(role = "user", content = "hi")]
@@ -527,6 +636,17 @@ class TestBuildChatRequest:
         chat_req = _build_chat_request(payload, messages, stream = False)
 
         assert chat_req.enable_thinking is False
+
+    def test_chat_template_kwargs_enable_thinking_requires_json_boolean(self):
+        payload = ResponsesRequest(
+            input = "hi",
+            chat_template_kwargs = {"enable_thinking": "false"},
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert chat_req.enable_thinking is None
 
     def test_reasoning_effort_high_enables_local_thinking(self):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
@@ -595,6 +715,27 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[2].role == "tool"
         assert msgs[2].tool_call_id == "call_1"
         assert msgs[2].content == '{"temp": 20}'
+
+    def test_replayed_namespaced_call_keeps_the_name_the_model_called(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "Weather in Paris?"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_wx",
+                    "namespace": "mcp__weather",
+                    "name": "get_forecast",
+                    "arguments": '{"city":"Paris"}',
+                },
+                {"type": "function_call_output", "call_id": "call_wx", "output": "17C"},
+            ],
+            tools = _codex_namespace_tools(),
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert msgs[1].tool_calls[0]["function"]["name"] == "mcp__weather__get_forecast"
+        assert msgs[2].tool_call_id == "call_wx"
 
     def test_custom_tool_call_round_trip_maps_to_local_function(self):
         patch = "*** Begin Patch\n*** Add File: café.txt\n+héllo\n*** End Patch"
@@ -1614,6 +1755,34 @@ class TestResponsesNonStreamingAdapter:
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
 
+    def test_namespaced_call_returns_to_its_namespace(self, monkeypatch):
+        payload = ResponsesRequest(input = "Weather in Paris?", tools = _codex_namespace_tools())
+        body = self._run_with_message(
+            monkeypatch,
+            {
+                "content": None,
+                "tool_calls": [
+                    _namespaced_forecast_call_chunk()["choices"][0]["delta"]["tool_calls"][0],
+                    {
+                        "id": "call_ls",
+                        "type": "function",
+                        "function": {"name": "exec_command", "arguments": "{}"},
+                    },
+                ],
+            },
+            payload = payload,
+        )
+
+        wx, ls = body["output"]
+        assert (wx["type"], wx["namespace"], wx["name"]) == (
+            "function_call",
+            "mcp__weather",
+            "get_forecast",
+        )
+        assert wx["call_id"] == "call_wx"
+        assert ls["name"] == "exec_command"
+        assert "namespace" not in ls
+
     def test_apply_patch_function_becomes_a_custom_tool_call(self, monkeypatch):
         patch = "*** Begin Patch\n*** Add File: nested/a.txt\n+ok\n*** End Patch"
         payload = ResponsesRequest(
@@ -1689,6 +1858,37 @@ class TestResponsesNonStreamingAdapter:
         assert entry["prompt_tokens"] == 2
         assert entry["completion_tokens"] == 3
         assert request.state.skip_api_monitor is False
+
+    def test_monitor_records_client_disconnect_as_cancelled(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [{"message": {"content": "par"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                }
+            )
+
+        async def is_disconnected():
+            return True
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        messages, request = _shared_setup_4()
+        request.is_disconnected = is_disconnected
+
+        asyncio.run(_responses_non_streaming(ResponsesRequest(input = "hi"), messages, request))
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
 
     @staticmethod
     def _run_in_process_completion(
@@ -2611,6 +2811,29 @@ class TestResponsesStreamAdapter:
             "message",
         ]
 
+    def test_streamed_namespaced_call_returns_to_its_namespace(self, monkeypatch):
+        self._install_stream_mock(monkeypatch, [_namespaced_forecast_call_chunk()])
+        payload = ResponsesRequest(
+            input = "Weather in Paris?", stream = True, tools = _codex_namespace_tools()
+        )
+        messages = [ChatMessage(role = "user", content = "Weather in Paris?")]
+
+        lines = self._stream_lines(payload, messages)
+
+        added = self._payloads(lines, "response.output_item.added")[0]["item"]
+        args_done = self._payloads(lines, "response.function_call_arguments.done")[0]
+        done = self._payloads(lines, "response.output_item.done")[0]["item"]
+        completed = self._payloads(lines, "response.completed")[0]["response"]["output"]
+        assert (args_done["namespace"], args_done["name"]) == ("mcp__weather", "get_forecast")
+        for item in (added, done, completed[0]):
+            assert (item["type"], item["namespace"], item["name"]) == (
+                "function_call",
+                "mcp__weather",
+                "get_forecast",
+            )
+        assert done["call_id"] == "call_wx"
+        assert done["arguments"] == '{"city":"Paris"}'
+
     def test_apply_patch_stream_is_restored_to_one_custom_tool_call(self, monkeypatch):
         patch = "*** Begin Patch\n*** Add File: nested/café.txt\n+héllo\n*** End Patch"
         arguments = json.dumps({"input": patch}, ensure_ascii = False)
@@ -3044,14 +3267,14 @@ class TestCodexStyleRequestShapes:
         assert len(req.input) == 3
         assert isinstance(req.input[1], ResponsesUnknownInputItem)
 
-    def test_emitted_reasoning_item_replay_is_dropped_for_local_chat(self):
+    def test_emitted_reasoning_item_replays_as_reasoning_content(self):
         payload = ResponsesRequest(
             input = [
                 {"role": "user", "content": "Hi"},
                 {
                     "type": "reasoning",
                     "id": "rs_1",
-                    "summary": [],
+                    "summary": [{"type": "summary_text", "text": "summary"}],
                     "content": [{"type": "reasoning_text", "text": "plan"}],
                 },
                 {"role": "assistant", "content": "33"},
@@ -3062,7 +3285,90 @@ class TestCodexStyleRequestShapes:
         msgs = _normalise_responses_input(payload)
 
         assert [m.role for m in msgs] == ["user", "assistant", "user"]
-        assert all("plan" not in (m.content or "") for m in msgs if isinstance(m.content, str))
+        assert msgs[1].content == "33"
+        assert msgs[1].reasoning_content == "plan"
+
+    def test_codex_parallel_calls_replay_as_one_turn_with_reasoning(self):
+        payload = ResponsesRequest(
+            store = False,
+            input = [
+                {"type": "message", "role": "user", "content": "list files then read README"},
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "PLAN: ls and cat"}],
+                    "encrypted_content": None,
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "shell",
+                    "arguments": '{"cmd":"ls"}',
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "c2",
+                    "name": "shell",
+                    "arguments": '{"cmd":"cat"}',
+                },
+                {"type": "function_call_output", "call_id": "c1", "output": "README"},
+                {"type": "function_call_output", "call_id": "c2", "output": "hello"},
+            ],
+            tools = [{"type": "function", "name": "shell", "parameters": {"type": "object"}}],
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert [m.role for m in msgs] == ["user", "assistant", "tool", "tool"]
+        assert msgs[1].content is None
+        assert msgs[1].reasoning_content == "PLAN: ls and cat"
+        assert [c["id"] for c in msgs[1].tool_calls] == ["c1", "c2"]
+        body = _build_openai_passthrough_body(
+            _build_chat_request(payload, msgs, stream = True), backend_ctx = 4096
+        )
+        assert [m.get("reasoning_content") for m in body["messages"]] == [
+            None,
+            "PLAN: ls and cat",
+            None,
+            None,
+        ]
+
+    def test_each_turn_keeps_its_own_text_reasoning_and_calls(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "user", "content": "fix it"},
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "read first"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Reading."}],
+                },
+                {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "c1", "output": "code"},
+                {"type": "reasoning", "summary": [], "encrypted_content": "opaque"},
+                {"type": "custom_tool_call", "call_id": "c2", "name": "apply_patch", "input": "p"},
+                {"type": "custom_tool_call_output", "call_id": "c2", "output": "Done!"},
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [{"type": "reasoning_text", "text": "ok"}],
+                },
+                {"role": "user", "content": "thanks"},
+            ],
+            tools = [_codex_apply_patch_tool()],
+        )
+
+        msgs = _normalise_responses_input(payload)
+
+        assert [m.role for m in msgs] == ["user", "assistant", "tool", "assistant", "tool", "user"]
+        assert (msgs[1].content, msgs[1].reasoning_content) == ("Reading.", "read first")
+        assert [c["id"] for c in msgs[1].tool_calls] == ["c1"]
+        assert (msgs[3].content, msgs[3].reasoning_content) == (None, None)
+        assert [c["id"] for c in msgs[3].tool_calls] == ["c2"]
 
     def test_unknown_content_part_type_accepted(self):
         """Unknown content-part types (e.g. future input_audio) validate as
@@ -3677,3 +3983,273 @@ def test_a_complete_responses_stream_still_ends_on_response_completed(monkeypatc
     assert completed["response"]["status"] == "completed"
     assert completed["response"]["incomplete_details"] is None
     assert [item["status"] for item in completed["response"]["output"]] == ["completed"]
+
+
+_OVERFLOW_BODY = json.dumps(
+    {
+        "error": {
+            "code": 400,
+            "message": "request (16608 tokens) exceeds the available context size (2048 tokens), try increasing it",
+            "type": "exceed_context_size_error",
+            "n_prompt_tokens": 16608,
+            "n_ctx": 2048,
+        }
+    }
+)
+
+
+def _failed_stream_error(
+    monkeypatch,
+    handler = None,
+    chunks = (),
+):
+    import routes.inference as inf_mod
+
+    real_async_client = httpx.AsyncClient
+    TestResponsesStreamAdapter._install_stream_mock(monkeypatch, list(chunks))
+    if handler is not None:
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *args, **kwargs: real_async_client(transport = httpx.MockTransport(handler)),
+        )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        response = await _responses_stream(payload, messages, TestResponsesStreamAdapter._Request())
+        return await TestResponsesStreamAdapter._collect(response)
+
+    [failed] = TestResponsesStreamAdapter._payloads(asyncio.run(run()), "response.failed")
+    return failed["response"]["error"]
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "code"),
+    [
+        (400, _OVERFLOW_BODY, "context_length_exceeded"),
+        (500, '{"error":{"code":500,"message":"Context size has been exceeded."}}', "server_error"),
+    ],
+)
+def test_upstream_rejection_fails_the_stream_with_a_string_code(monkeypatch, status, body, code):
+    error = _failed_stream_error(
+        monkeypatch, handler = lambda request: httpx.Response(status, content = body.encode())
+    )
+    assert error["code"] == code
+
+
+@pytest.mark.parametrize(
+    ("message", "code"),
+    [
+        (
+            "request (3868 tokens) exceeds the available context size (2048 tokens), try increasing it",
+            "context_length_exceeded",
+        ),
+        ("Context size has been exceeded.", "server_error"),
+    ],
+)
+def test_in_band_upstream_error_fails_the_stream_with_a_string_code(monkeypatch, message, code):
+    error = _failed_stream_error(monkeypatch, chunks = [{"error": {"code": 500, "message": message}}])
+    assert error["code"] == code
+
+
+def test_unreachable_upstream_fails_the_stream_with_server_error(monkeypatch):
+    def refuse(request):
+        raise httpx.ConnectError("connection refused", request = request)
+
+    assert _failed_stream_error(monkeypatch, handler = refuse)["code"] == "server_error"
+
+
+def test_admission_timeout_fails_the_stream_with_server_is_overloaded(monkeypatch):
+    import routes.inference as inf_mod
+
+    async def fail_send(*_args, **_kwargs):
+        raise AssertionError("a request that never got a slot must not reach llama-server")
+
+    base_url = "http://llama.responses.admission-timeout.test"
+    monkeypatch.setenv(ADMISSION_QUEUE_TIMEOUT_ENV, "0.01")
+    monkeypatch.setattr(
+        inf_mod,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            base_url = base_url,
+            context_length = 4096,
+            effective_parallel_slots = 1,
+            _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fail_send)
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    async def run():
+        queue = get_llama_admission_queue(base_url)
+        blocker = queue.reserve(capacity = 1, config = LlamaAdmissionConfig()).lease_nowait()
+        try:
+            response = await _responses_stream(
+                payload, messages, TestResponsesStreamAdapter._Request()
+            )
+            return await TestResponsesStreamAdapter._collect(response)
+        finally:
+            blocker.release()
+
+    [failed] = TestResponsesStreamAdapter._payloads(asyncio.run(run()), "response.failed")
+    assert failed["response"]["error"]["code"] == "server_is_overloaded"
+
+
+class TestResponsesInProcessStream:
+    _TC = {"index": 0, "id": "c1", "function": {"name": "f", "arguments": "{}"}}
+    _CHUNKS = [
+        {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+        {"choices": [{"delta": {"content": "33"}}]},
+        {"choices": [{"delta": {"tool_calls": [_TC]}}]},
+        {"choices": [{"delta": {}, "finish_reason": "length"}]},
+        {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+    ]
+
+    @staticmethod
+    def _run(
+        monkeypatch,
+        chunks,
+        stop_at = None,
+        taken = -1,
+        entry = {},
+        headers = (),
+        raise_on_stop = False,
+    ):
+        # Streams an in-process run of `chunks`; taken >= 0 cancels after that many events,
+        # None disconnects before the body starts.
+        import routes.inference as inf_mod
+        from starlette.requests import Request
+
+        seen = {"closed": [], "unstarted": 0, "finish": []}
+
+        async def fake_chat(chat_req, request, subject):
+            seen.update(req = chat_req, skip = request.state.skip_api_monitor)
+            seen["ui"] = inf_mod._ui_stream_events_enabled(request)
+            event = seen["event"] = request.state.generation_cancel_event
+
+            async def body():
+                try:
+                    for i, chunk in enumerate(chunks):
+                        if i == stop_at:
+                            event.set()  # a Stop through the run's tracked event
+                            if raise_on_stop:  # as the managed vLLM / SGLang tool path does
+                                raise asyncio.CancelledError()
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    yield "data: [DONE]\n\n"
+                except BaseException as exc:
+                    seen["closed"].append(type(exc).__name__)
+                    raise
+
+            async def unstarted():
+                seen["unstarted"] += 1
+
+            return _SameTaskStreamingResponse(body(), unstarted_cleanup = unstarted)
+
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat)
+        monkeypatch.setattr(
+            inf_mod, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        orchestrator = SimpleNamespace(
+            active_model_name = None if entry is None else "m", models = {"m": entry}
+        )
+        monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: orchestrator)
+        monkeypatch.setattr(inf_mod, "_peek_inference_backend", lambda: orchestrator)
+        monkeypatch.setattr(inf_mod.api_monitor, "finish", lambda _id, *a: seen["finish"].append(a))
+        request = seen["request"] = Request({"type": "http", "headers": list(headers)})
+        payload = ResponsesRequest(input = "hi", stream = True, thread_id = "t1", generation_run_id = "r1")
+
+        async def run():
+            messages = [ChatMessage(role = "user", content = "hi")]
+            response = await _responses_stream(payload, messages, request, monitor_id = "m")
+            if taken is None:
+                return await response._unstarted_cleanup()
+            if taken < 0:
+                return [line async for line in response.body_iterator]
+            for _ in range(taken):
+                await response.body_iterator.__anext__()
+            with pytest.raises(asyncio.CancelledError):
+                await response.body_iterator.athrow(asyncio.CancelledError())
+
+        seen["lines"] = asyncio.run(run())
+        return seen
+
+    def test_a_source_raising_on_stop_still_ends_the_stream_cleanly(self, monkeypatch):
+        seen = self._run(monkeypatch, self._CHUNKS, stop_at = 2, raise_on_stop = True)
+        events = "".join(seen["lines"])
+        assert "response.created" in events and "response.completed" not in events
+        assert ("cancelled",) in seen["finish"]
+
+    def test_without_task_cancelling_a_stop_raised_by_the_source_still_propagates(
+        self, monkeypatch
+    ):
+        # Python < 3.11 has no Task.cancelling, so the old behaviour stays.
+        import routes.inference as inf_mod
+
+        real = inf_mod.asyncio.current_task
+        monkeypatch.setattr(
+            inf_mod.asyncio, "current_task", lambda: SimpleNamespace(wrapped = real())
+        )
+        with pytest.raises(asyncio.CancelledError):
+            self._run(monkeypatch, self._CHUNKS, stop_at = 2, raise_on_stop = True)
+
+    def test_delegated_chat_never_offers_a_control_channel_it_cannot_relay(self, monkeypatch):
+        # An approval_id in a dropped tool_start frame would leave the tool loop waiting.
+        seen = self._run(monkeypatch, self._CHUNKS, headers = [(b"x-unsloth-events", b"1")])
+        assert seen["ui"] is False
+        # Restored after the call: the outer request still carries its own opt-in.
+        import routes.inference as inf_mod
+
+        assert inf_mod._ui_stream_events_enabled(seen["request"]) is True
+
+    def test_chat_chunks_stream_the_same_events_as_llama_server(self, monkeypatch):
+        import re
+
+        def norm(lines):
+            return [
+                re.sub(r'_[0-9a-f]{12}|"created_at": \d+|"model": "[^"]*"', "", l) for l in lines
+            ]
+
+        TestResponsesStreamAdapter._install_stream_mock(monkeypatch, self._CHUNKS)
+        gguf = TestResponsesStreamAdapter()._stream_lines(
+            ResponsesRequest(input = "hi", stream = True), [ChatMessage(role = "user", content = "hi")]
+        )
+        seen = self._run(monkeypatch, self._CHUNKS)
+        assert norm(seen["lines"]) == norm(gguf)
+        assert gguf[-1].startswith("event: response.incomplete")
+        # Reachable by the response's keys; only the outer monitor counts the run.
+        req = seen["req"]
+        resp_id = json.loads(seen["lines"][0].split("data: ", 1)[1])["response"]["id"]
+        keys = (req.cancel_id, req.thread_id, req.generation_run_id, seen["skip"])
+        assert keys == (resp_id, "t1", "r1", True)
+        assert req.stream_options == {"include_usage": True}
+        assert not hasattr(seen["request"].state, "skip_api_monitor")
+
+    @pytest.mark.parametrize("stop_at", [None, 2])
+    def test_inner_failure_and_stop_end_without_success(self, monkeypatch, stop_at):
+        chunks = self._CHUNKS if stop_at else self._CHUNKS[1:2] + [{"error": {"message": "boom"}}]
+        seen = self._run(monkeypatch, chunks, stop_at)
+        names = [line.split("\n", 1)[0] for line in seen["lines"]]
+        assert not {"event: response.completed", "event: response.incomplete"} & set(names)
+        assert (names[-1] == "event: response.failed") is (stop_at is None)
+        assert (seen["finish"][-1:] == [("cancelled",)]) is (stop_at is not None)
+
+    @pytest.mark.parametrize(
+        "taken, closed, unstarted", [(None, [], 1), (1, [], 1), (2, ["CancelledError"], 0)]
+    )
+    def test_outer_cancel_closes_the_inner_stream(self, monkeypatch, taken, closed, unstarted):
+        seen = self._run(monkeypatch, self._CHUNKS, taken = taken)
+        assert (seen["closed"], seen["unstarted"]) == (closed, unstarted)
+        assert seen["finish"][-1] == ("cancelled",)
+        assert seen["event"].is_set() is (taken is not None)
+
+    @pytest.mark.parametrize("entry", [None, {"is_audio": True, "audio_type": "tts"}])
+    def test_only_a_text_model_in_the_orchestrator_streams_through_chat(self, monkeypatch, entry):
+        # An NPU model's provider proxy keeps its own cancel event, so the stream cannot see a
+        # Stop; chat answers a TTS model with a finished clip, not a text stream.
+        with pytest.raises(HTTPException) as err:
+            self._run(monkeypatch, self._CHUNKS, entry = entry)
+        assert err.value.status_code == 400
