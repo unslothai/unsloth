@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   type LanAccessStatus,
+  lanApiUrls,
   normalizeLanAccessStatus,
 } from "./lan-access-state";
 
@@ -24,6 +26,20 @@ async function requestLanAccess(
 }
 
 export const loadLanAccess = () => requestLanAccess();
+
+/** Hands the LAN URLs to the base URL readers, only when they changed: every poll returns a fresh
+ *  array, and publishing it re-rendered each of them every five seconds. */
+export function publishLanUrls(status: LanAccessStatus): void {
+  const next = lanApiUrls(status);
+  const current = usePlatformStore.getState().lanUrls;
+  if (
+    next.length === current.length &&
+    next.every((url, i) => url === current[i])
+  ) {
+    return;
+  }
+  usePlatformStore.setState({ lanUrls: next });
+}
 export const startLanAccess = () =>
   requestLanAccess("/start", { method: "POST" });
 export const stopLanAccess = () =>

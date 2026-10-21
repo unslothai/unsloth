@@ -31,8 +31,8 @@ import {
   createModelConfigHandoffRequestId,
 } from "@/features/model-picker";
 import {
-  lanApiUrls,
   loadLanAccess,
+  publishLanUrls,
   useSettingsDialogStore,
 } from "@/features/settings";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
@@ -928,9 +928,7 @@ export function ApiMonitorPage(): ReactElement {
     const refreshRemoteBase = () => {
       void fetchDeviceType({ force: true });
       loadLanAccess()
-        .then((status) =>
-          usePlatformStore.setState({ lanUrls: lanApiUrls(status) }),
-        )
+        .then(publishLanUrls)
         .catch(() => undefined);
     };
     refreshRemoteBase();
