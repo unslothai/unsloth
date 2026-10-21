@@ -2285,12 +2285,16 @@ def _archive_and_recall(
     recall_budget_tokens: int = 0,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
     branch_messages: Optional[list[dict]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
     Returns ``{"conversation", "events", "counts", "recalled"}``. Never raises: every
     failure degrades to the plain fitted messages. Recall fires at most once per request,
     or the tool loop's per-iteration refit would stack a recall block onto each pass.
+
+    ``cancel_check`` is forwarded to ``archive_turns`` so Chat Stop can interrupt the
+    CPU embedding pass that otherwise blocked llama.cpp (#14519).
     """
     result = {
         "conversation": conversation,
@@ -2314,7 +2318,11 @@ def _archive_and_recall(
         # recall slots on text already in the prompt.
         archived = (
             conversation_archive.archive_turns(
-                thread_id, gone, live = conversation, branch = branch_messages or conversation
+                thread_id,
+                gone,
+                live = conversation,
+                branch = branch_messages or conversation,
+                cancel_check = cancel_check,
             )
             if gone
             else 0
@@ -39263,6 +39271,7 @@ class LlamaCppBackend:
                             chat_template_kwargs = _reasoning_kw,
                             continue_final_message = continue_final_message,
                         ),
+                        cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -40337,6 +40346,7 @@ class LlamaCppBackend:
                                 strict = True,
                                 chat_template_kwargs = _reasoning_kw,
                             ),
+                            cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
                         )
                         conversation = _recalled["conversation"]
                         truncation = {**truncation, **_recalled["counts"]}
@@ -40498,6 +40508,7 @@ class LlamaCppBackend:
                                 style = "inline",
                                 recall_done = True,
                                 branch_messages = _extend_live_branch(conversation),
+                                cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
                             )["counts"]
                         )
                     payload["messages"] = neutralize_control_markup_in_messages(
@@ -43187,6 +43198,7 @@ class LlamaCppBackend:
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                         ),
+                        cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
                     )
                     conversation = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -43331,6 +43343,7 @@ class LlamaCppBackend:
                             style = "inline",
                             recall_done = True,
                             branch_messages = _extend_live_branch(conversation),
+                            cancel_check = lambda: bool(cancel_event and cancel_event.is_set()),
                         )["counts"]
                     )
                 # Recorded rather than only forwarded, for the same reason as the

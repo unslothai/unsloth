@@ -1690,6 +1690,7 @@ def test_a_first_compaction_embeds_its_turns_in_one_pass(conn, monkeypatch):
     """Per group, a long chat's first compaction ran dozens of jobs back to back.
 
     Both backends serialise them, so the reply could not start until the last one landed.
+    With the #14519 batch helper, a short first compaction still fits in one encode call.
     """
     from core.rag import embeddings
 
@@ -1713,6 +1714,76 @@ def test_a_first_compaction_embeds_its_turns_in_one_pass(conn, monkeypatch):
     assert conversation_archive.archive_turns(thread_id, evicted) == 12
     assert len(calls) == 1
     assert calls[0] >= 12
+
+
+def test_archive_embed_honors_cancel_between_batches(conn, monkeypatch):
+    """Chat Stop must interrupt the pre-inference SentenceTransformer.encode (#14519)."""
+    from core.rag import embeddings
+
+    thread_id = "cancel-embed-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_BATCH", 2)
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT", 10_000)
+
+    calls = []
+    real = embeddings.encode_with_identity
+
+    def counted(texts, **kwargs):
+        calls.append(len(texts))
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", counted)
+
+    evicted = []
+    for index in range(8):
+        evicted.append({"role": "user", "content": f"cancel question {index} unique {index}"})
+        evicted.append({"role": "assistant", "content": f"cancel answer {index} unique {index}"})
+
+    # Calls: 1 = pre-encode guard, 2 = before batch 0, 3 = before batch 1.
+    # Allow the first encode batch, then cancel so later groups stay unindexed.
+    state = {"n": 0}
+
+    def cancel_check():
+        state["n"] += 1
+        return state["n"] > 2
+
+    written = conversation_archive.archive_turns(
+        thread_id, evicted, cancel_check = cancel_check
+    )
+    assert 0 < written < 8
+    assert len(calls) == 1
+    # A later pass without cancel finishes the rest (idempotent by digest).
+    assert conversation_archive.archive_turns(thread_id, evicted) == 8 - written
+
+
+def test_archive_embed_caps_chunks_per_call(conn, monkeypatch):
+    """A huge first compaction must not monopolise the generation path (#14519)."""
+    from core.rag import embeddings
+
+    thread_id = "cap-embed-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "4")
+    monkeypatch.setattr(conversation_archive, "_ARCHIVE_EMBED_BATCH", 64)
+
+    calls = []
+    real = embeddings.encode_with_identity
+
+    def counted(texts, **kwargs):
+        calls.append(len(texts))
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", counted)
+
+    evicted = []
+    for index in range(10):
+        evicted.append({"role": "user", "content": f"cap question {index} unique token {index}"})
+        evicted.append({"role": "assistant", "content": f"cap answer {index} unique token {index}"})
+
+    first = conversation_archive.archive_turns(thread_id, evicted)
+    assert 0 < first < 10
+    assert calls and calls[0] <= 4
+    rest = conversation_archive.archive_turns(thread_id, evicted)
+    assert first + rest == 10
 
 
 # --- The subject of a conversation must not be the least findable thing in its archive ---

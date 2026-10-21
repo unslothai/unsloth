@@ -20,8 +20,10 @@ import hashlib
 import logging
 import bisect
 import json
+import os
 import re
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 from storage import rag_db
 
@@ -30,6 +32,15 @@ from .chunking import chunk_pages
 from .parsers import Page
 
 logger = logging.getLogger(__name__)
+
+# Match ingestion: cooperative cancel between batches (#14519). One giant
+# SentenceTransformer.encode of every pending chunk blocked Chat Stop and held
+# the generation worker for minutes on long tool-heavy threads.
+_ARCHIVE_EMBED_BATCH = 64
+# Soft cap per archive_turns call so a first compaction cannot monopolise the
+# pre-inference path; leftover groups stay unindexed and are picked up next time
+# (archive_turns is idempotent by content hash). Override with RAG_ARCHIVE_EMBED_MAX_CHUNKS.
+_ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT = 256
 
 # Instructions, not conversation. An archived system prompt could come back quoted as an "earlier turn" and read as
 # user-authored text.
@@ -358,11 +369,56 @@ def can_archive(thread_id: Optional[str]) -> bool:
         return False
 
 
+def _archive_embed_max_chunks() -> int:
+    raw = os.environ.get("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "").strip()
+    if not raw:
+        return _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _ARCHIVE_EMBED_MAX_CHUNKS_DEFAULT
+
+
+def _embed_pending_chunks(
+    texts: list[str],
+    *,
+    model_name: str,
+    cancel_check: Optional[Callable[[], bool]] = None,
+):
+    """``(vectors, identity, cancelled)`` for archive chunk texts, in batches.
+
+    Returns whatever was completed before a cancel; callers must only write groups
+    whose chunks are fully covered by ``vectors``.
+    """
+    vectors: list = []
+    identity: Optional[str] = None
+    for start in range(0, len(texts), _ARCHIVE_EMBED_BATCH):
+        if cancel_check is not None and cancel_check():
+            return vectors, identity or embeddings.embedding_identity(model_name), True
+        batch = texts[start : start + _ARCHIVE_EMBED_BATCH]
+        out, batch_identity = embeddings.encode_with_identity(
+            batch, model_name = model_name, normalize = True
+        )
+        if identity is None:
+            identity = batch_identity
+        elif batch_identity != identity:
+            # Same rule as ingestion: a mid-pass embedder swap must not label mixed spaces.
+            logger.warning(
+                "conversation_archive.embedder_changed_mid_pass; stopping at %s/%s chunks",
+                len(vectors),
+                len(texts),
+            )
+            break
+        vectors.extend(out)
+    return vectors, identity or embeddings.embedding_identity(model_name), False
+
+
 def archive_turns(
     thread_id: str,
     evicted: list[dict],
     live: Optional[list[dict]] = None,
     branch: Optional[list[dict]] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> int:
     """Index the evicted turns for ``thread_id``. Returns how many were newly written.
 
@@ -373,6 +429,10 @@ def archive_turns(
     ``live`` is the fitted conversation, i.e. what the model can still see. It bounds how many
     copies of a repeated turn the archive is allowed to hold right now; see ``_write_budget``.
     Optional, and omitting it keeps the previous behaviour.
+
+    ``cancel_check`` is polled between embedding batches so Chat Stop can leave the pre-inference
+    archive path (#14519). Already-written groups are kept; incomplete groups are left for a
+    later compaction.
     """
     if not thread_id or not evicted or not enabled():
         return 0
@@ -455,17 +515,90 @@ def archive_turns(
         if not pending:
             return 0
 
-        # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
-        # with a space they were never in.
-        vectors, identity = embeddings.encode_with_identity(
-            [chunk.text for entry in pending for chunk in entry[3]],
-            model_name = model,
-            normalize = True,
+        if cancel_check is not None and cancel_check():
+            logger.info(
+                "conversation_archive.embed_cancelled_before_encode thread_id=%s groups=%s",
+                thread_id,
+                len(pending),
+            )
+            return 0
+
+        # Bound first-compaction work on the generation path (#14519). Deferred groups stay
+        # unindexed and are archived on a later request (idempotent by digest).
+        max_chunks = _archive_embed_max_chunks()
+        chunk_total = sum(len(entry[3]) for entry in pending)
+        if chunk_total > max_chunks:
+            kept, used = [], 0
+            for entry in pending:
+                need = len(entry[3])
+                if used and used + need > max_chunks:
+                    break
+                if need > max_chunks and not kept:
+                    # A single oversized turn: still archive it (one encode), never stall forever
+                    # on dozens of siblings behind it.
+                    kept.append(entry)
+                    used += need
+                    break
+                kept.append(entry)
+                used += need
+            deferred = len(pending) - len(kept)
+            logger.info(
+                "conversation_archive.embed_capped thread_id=%s groups=%s chunks=%s "
+                "cap=%s deferred_groups=%s",
+                thread_id,
+                len(pending),
+                chunk_total,
+                max_chunks,
+                deferred,
+            )
+            pending = kept
+            if not pending:
+                return 0
+
+        texts = [chunk.text for entry in pending for chunk in entry[3]]
+        started = time.monotonic()
+        logger.info(
+            "conversation_archive.embed_start thread_id=%s groups=%s chunks=%s batch=%s",
+            thread_id,
+            len(pending),
+            len(texts),
+            _ARCHIVE_EMBED_BATCH,
         )
+        # Identity from the encode that produced these vectors: a concurrent embedder swap would otherwise label them
+        # with a space they were never in. Batched so Chat Stop can interrupt between batches.
+        vectors, identity, cancelled = _embed_pending_chunks(
+            texts, model_name = model, cancel_check = cancel_check
+        )
+        logger.info(
+            "conversation_archive.embed_done thread_id=%s vectors=%s/%s cancelled=%s elapsed_ms=%s",
+            thread_id,
+            len(vectors),
+            len(texts),
+            cancelled,
+            int((time.monotonic() - started) * 1000),
+        )
+        if not vectors:
+            return 0
+
+        # Only write groups whose chunks were fully embedded; a mid-group cancel leaves that
+        # turn for the next compaction instead of storing a truncated vector set.
+        complete: list = []
         offset = 0
-        for group, span, digest, chunks, seats, budget in pending:
-            group_vectors = vectors[offset : offset + len(chunks)]
-            offset += len(chunks)
+        for entry in pending:
+            n = len(entry[3])
+            if offset + n > len(vectors):
+                break
+            complete.append((entry, vectors[offset : offset + n]))
+            offset += n
+        if cancelled and len(complete) < len(pending):
+            logger.info(
+                "conversation_archive.embed_partial thread_id=%s written_groups=%s/%s",
+                thread_id,
+                len(complete),
+                len(pending),
+            )
+
+        for (group, span, digest, chunks, seats, budget), group_vectors in complete:
             roles = " + ".join(
                 dict.fromkeys(str(message.get("role") or "message") for message in group)
             )
