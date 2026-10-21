@@ -208,6 +208,10 @@ def shrink_video_for_llama(
         raw = base64.b64decode(video_b64)
     except (binascii.Error, ValueError):
         return video_b64
+    from utils.media_playlist import refuse_playlist
+
+    # `-protocol_whitelist file` still lets a playlist read local files: refuse one outright.
+    refuse_playlist(raw)
     try:
         with tempfile.TemporaryDirectory(prefix = "unsloth-video-") as tmp:
             source = Path(tmp) / "clip"

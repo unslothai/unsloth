@@ -51,16 +51,27 @@ def host_wav(tmp_path, monkeypatch):
 
 
 def test_dataset_audio_buffer_playlist_does_not_read_a_host_file(host_wav):
-    with pytest.raises(av.error.FFmpegError):
+    with pytest.raises((av.error.FFmpegError, ValueError)):
         audio_decode._decode_with_av(io.BytesIO(_playlist("host.wav")))
     samples, rate = audio_decode._decode_with_av(io.BytesIO(_wav_bytes()))
     assert rate == 8000 and len(samples) == 4000
 
 
 def test_speech_encode_buffer_playlist_does_not_read_a_host_file(host_wav):
-    with pytest.raises(av.error.FFmpegError):
+    with pytest.raises((av.error.FFmpegError, ValueError)):
         audio_inputs.encode_wav(_playlist("host.wav"), "mp3")
     assert audio_inputs.encode_wav(_wav_bytes(), "mp3")[0]
+
+
+@pytest.mark.parametrize(
+    "module", [audio_inputs, audio_decode], ids = ["audio_inputs", "audio_decode"]
+)
+def test_a_saved_playlist_upload_does_not_read_a_host_file(module, host_wav, tmp_path):
+    # A path may open `file`, so the playlist itself is refused before FFmpeg probes it.
+    upload = tmp_path / "upload.wav"
+    upload.write_bytes(_playlist("host.wav"))
+    with pytest.raises(ValueError):
+        module._av_open(av, str(upload))
 
 
 @pytest.mark.parametrize(
@@ -117,3 +128,33 @@ def test_chat_video_ffmpeg_and_ffprobe_get_a_file_only_whitelist(monkeypatch):
         assert argv[i + 1] == "file"
         source = argv.index("-i") + 1 if "-i" in argv else len(argv) - 1
         assert i < source
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        b"#EXTM3U\n#EXTINF:1,\n/etc/hostname\n",
+        b"\xef\xbb\xbf  ffconcat version 1.0\nfile '/etc/hostname'\n",
+    ],
+)
+def test_a_playlist_upload_is_refused_before_ffmpeg_sees_it(tmp_path, head):
+    from utils.media_playlist import PlaylistRefused, refuse_playlist
+
+    path = tmp_path / "upload.mp4"
+    path.write_bytes(head)
+    for source in (str(path), head, io.BytesIO(head)):
+        with pytest.raises(PlaylistRefused):
+            refuse_playlist(source)
+    # Real media headers pass.
+    refuse_playlist(b"\x00\x00\x00\x18ftypmp42")
+    refuse_playlist(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+
+
+def test_shrink_refuses_a_playlist_clip(monkeypatch):
+    from core.inference import llama_video_input
+    from utils.media_playlist import PlaylistRefused
+
+    clip = base64.b64encode(b"#EXTM3U\n/etc/hostname\n").decode()
+    monkeypatch.setattr(llama_video_input.shutil, "which", lambda name: f"/usr/bin/{name}")
+    with pytest.raises(PlaylistRefused):
+        llama_video_input.shrink_video_for_llama(clip, 1 << 20)

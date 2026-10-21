@@ -131,6 +131,10 @@ def _protocol_options(source) -> dict:
 
 
 def _av_open(av, source):
+    from utils.media_playlist import refuse_playlist
+
+    # `file` stays allowed for a path, so a playlist that names local files is refused here.
+    refuse_playlist(source)
     options = _protocol_options(source)
     try:
         return av.open(source, mode = "r", metadata_errors = "ignore", options = options)

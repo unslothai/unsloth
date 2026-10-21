@@ -48,6 +48,10 @@ def _token_for_url(path: str, token_per_repo_id: Optional[dict]) -> Any:
 def _av_open(av, source):
     """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
     # A probed concat or HLS playlist opens what it names: a path may read files only, a buffer nothing.
+    from utils.media_playlist import refuse_playlist
+
+    # `file` stays allowed for a path, so a playlist that names local files is refused here.
+    refuse_playlist(source)
     local = isinstance(source, (str, os.PathLike))
     options = {"protocol_whitelist": "file" if local else "none"}
     try:
