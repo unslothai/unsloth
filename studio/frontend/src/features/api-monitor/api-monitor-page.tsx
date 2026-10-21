@@ -64,6 +64,8 @@ import {
   type KeyboardEvent,
   type ReactElement,
   type ReactNode,
+  memo,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -90,6 +92,7 @@ import {
 import {
   type MonitorStatusFilter,
   computeStats,
+  countByStatus,
   filterEntries,
   useApiMonitor,
 } from "./use-api-monitor";
@@ -159,15 +162,20 @@ function formatAgo(value: number, now: number): string {
 const AGO_TICK_MS = 10_000;
 
 // Server-clock seconds, so ages read right over a tunnel to a host whose clock differs. Ticks on
-// its own because a paused feed stops the polls that would otherwise re-render the rows.
-function useServerNow(serverTime: number | undefined): number {
+// its own because a paused feed stops the polls that would otherwise re-render the rows. Skew is
+// whole seconds so a poll's jitter does not re-render every row.
+function useServerNow(
+  serverTime: number | undefined,
+  ticking: boolean,
+): number {
   const [tick, setTick] = useState(0);
   useEffect(() => {
+    if (!ticking) return;
     const timer = window.setInterval(() => setTick((n) => n + 1), AGO_TICK_MS);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [ticking]);
   const skew = useMemo(
-    () => (serverTime == null ? 0 : serverTime - Date.now() / 1000),
+    () => (serverTime == null ? 0 : Math.round(serverTime - Date.now() / 1000)),
     [serverTime],
   );
   // biome-ignore lint/correctness/useExhaustiveDependencies: tick is what advances the clock
@@ -449,7 +457,8 @@ function ContextUsageBar({ value }: { value?: number | null }): ReactElement {
   );
 }
 
-function RequestRow({
+// Memoized: polls share unchanged entries, so only the rows that changed re-render.
+const RequestRow = memo(function RequestRow({
   entry,
   selected,
   onSelect,
@@ -457,7 +466,7 @@ function RequestRow({
 }: {
   entry: ApiMonitorEntry;
   selected: boolean;
-  onSelect: () => void;
+  onSelect: (id: string) => void;
   now: number;
 }): ReactElement {
   const age = (
@@ -509,7 +518,7 @@ function RequestRow({
     <button
       type="button"
       data-entry-id={entry.id}
-      onClick={onSelect}
+      onClick={() => onSelect(entry.id)}
       aria-current={selected}
       className={cn(
         "flex w-full min-w-0 flex-col gap-1 rounded-lg px-3 py-2.5 text-left outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring/70",
@@ -573,7 +582,7 @@ function RequestRow({
       </p>
     </button>
   );
-}
+});
 
 function PayloadBlock({
   title,
@@ -979,6 +988,8 @@ export function ApiMonitorPage(): ReactElement {
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>("all");
   const [modelFilter, setModelFilter] = useState<string>(ALL_MODELS);
   const [query, setQuery] = useState("");
+  // Typing stays responsive while the list filters behind it.
+  const deferredQuery = useDeferredValue(query);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -1007,27 +1018,17 @@ export function ApiMonitorPage(): ReactElement {
     [effectiveModelFilter, stats, modelEntries],
   );
   const visible = useMemo(
-    () => filterEntries(modelEntries, statusFilter, query),
-    [modelEntries, statusFilter, query],
+    () => filterEntries(modelEntries, statusFilter, deferredQuery),
+    [modelEntries, statusFilter, deferredQuery],
   );
   const selected = useMemo(
     () => visible.find((entry) => entry.id === selectedId) ?? null,
     [visible, selectedId],
   );
-  // Same predicate as filterEntries, so a tab's count is what picking it lists.
-  const statusCounts = useMemo(() => {
-    const counts: Record<MonitorStatusFilter, number> = {
-      all: modelEntries.length,
-      running: 0,
-      completed: 0,
-      error: 0,
-      cancelled: 0,
-    };
-    for (const entry of modelEntries) {
-      counts[entry.status] += 1;
-    }
-    return counts;
-  }, [modelEntries]);
+  const statusCounts = useMemo(
+    () => countByStatus(modelEntries),
+    [modelEntries],
+  );
 
   // Refetch the selected entry while it streams. Keyed on identity and revision, never
   // on `details`: the fetch rewrites it on success, so depending on it loops.
@@ -1108,7 +1109,7 @@ export function ApiMonitorPage(): ReactElement {
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const activeModel = data?.active_model ?? null;
-  const now = useServerNow(data?.server_time);
+  const now = useServerNow(data?.server_time, entries.length > 0);
   const served = useMemo(
     () => servedModels(loadedModels, activeModel),
     [loadedModels, activeModel],
@@ -1293,20 +1294,20 @@ export function ApiMonitorPage(): ReactElement {
             each request live.
           </p>
         </div>
-        <ToolbarTooltip label="API keys and settings">
+        <ToolbarTooltip label="Create keys, see client examples and API settings">
           <Button
             type="button"
             variant="outline"
-            size="icon"
+            size="sm"
             onClick={openApiSettings}
-            aria-label="API keys and settings"
-            className="rounded-full"
+            className="h-9 gap-1.5 rounded-full px-3.5"
           >
             <HugeiconsIcon
               icon={Key01Icon}
               strokeWidth={1.75}
               className="size-4"
             />
+            API keys
           </Button>
         </ToolbarTooltip>
       </header>
@@ -1600,9 +1601,11 @@ export function ApiMonitorPage(): ReactElement {
             </Select>
           ) : null}
           <div className="ml-auto flex shrink-0 items-center gap-1">
-            <span className="mr-1 text-ui-11 tabular-nums text-muted-foreground">
-              {formatCount(visible.length)} of {formatCount(entries.length)}
-            </span>
+            {visible.length !== entries.length ? (
+              <span className="mr-1 text-ui-11 tabular-nums text-muted-foreground">
+                {formatCount(visible.length)} of {formatCount(entries.length)}
+              </span>
+            ) : null}
             <ToolbarTooltip
               label={paused ? "Resume the live feed" : "Pause the live feed"}
             >
@@ -1730,7 +1733,7 @@ export function ApiMonitorPage(): ReactElement {
                     key={entry.id}
                     entry={entry}
                     selected={entry.id === selectedId}
-                    onSelect={() => setSelectedId(entry.id)}
+                    onSelect={setSelectedId}
                     now={now}
                   />
                 ))

@@ -22,9 +22,9 @@ export const apiMonitorTourSteps: TourStep[] = [
     title: "Model controls",
     body: (
       <>
-        Load or switch the model the API serves, change its run settings, reload
-        the last one, or eject it to free memory. API keys live behind the
-        button at the top.
+        Load or switch the model the API serves, reload the last one, or eject
+        it to free memory. Each model's row below opens its run settings and an
+        API example. Keys are under API keys at the top.
       </>
     ),
   },

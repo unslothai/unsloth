@@ -12,21 +12,20 @@ import type {
 } from "@/features/chat/types/api";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearMonitor } from "./clear-monitor";
+import {
+  type MonitorStatusFilter,
+  countByStatus,
+  filterEntries,
+  mergeMonitorResponse,
+} from "./monitor-snapshot";
 import { type MonitorStats, computeStats } from "./stats";
 
 /** Poll cadence while live. Matches the settings console it replaces. */
 const POLL_INTERVAL_MS = 1500;
 const MAX_CACHED_PROMPT_CHARS = 64 * 1024 * 1024;
 
-export { computeStats };
-export type { MonitorStats };
-
-export type MonitorStatusFilter =
-  | "all"
-  | "running"
-  | "completed"
-  | "error"
-  | "cancelled";
+export { computeStats, countByStatus, filterEntries };
+export type { MonitorStats, MonitorStatusFilter };
 
 function retainDetail(
   previous: Record<string, ApiMonitorEntry>,
@@ -62,35 +61,6 @@ function dropDetail(
   const next = { ...previous };
   delete next[id];
   return next;
-}
-
-export function filterEntries(
-  entries: ApiMonitorEntry[],
-  status: MonitorStatusFilter,
-  query: string,
-): ApiMonitorEntry[] {
-  const needle = query.trim().toLowerCase();
-  return entries.filter((entry) => {
-    if (status !== "all" && entry.status !== status) {
-      return false;
-    }
-    if (!needle) {
-      return true;
-    }
-    // The fields a debugging session keys off. Coerced, not trusted: these arrive over
-    // the network, and one malformed entry throwing here would blank the whole log.
-    return [
-      entry.model,
-      entry.endpoint,
-      entry.prompt_preview,
-      entry.reply_preview,
-      entry.error,
-    ].some((field) =>
-      String(field ?? "")
-        .toLowerCase()
-        .includes(needle),
-    );
-  });
 }
 
 interface UseApiMonitorResult {
@@ -139,7 +109,7 @@ export function useApiMonitor({
   const updateData = useCallback((next: ApiMonitorResponse): void => {
     const ids = new Set(next.entries.map((entry) => entry.id));
     retainedEntryIds.current = ids;
-    setData(next);
+    setData((previous) => mergeMonitorResponse(previous, next));
     setDetails((previous) => {
       const expired = Object.keys(previous).filter((id) => !ids.has(id));
       if (expired.length === 0) return previous;
@@ -181,8 +151,19 @@ export function useApiMonitor({
     }
     let cancelled = false;
     let timer: number | undefined;
+    let inFlight = false;
+
+    // A hidden tab stops polling until it shows again: nobody is reading the log, and the
+    // server it would keep polling may be busy serving the requests it lists.
+    function schedule(): void {
+      timer = window.setTimeout(() => {
+        timer = undefined;
+        if (!document.hidden) poll();
+      }, intervalMs);
+    }
 
     function poll(): void {
+      inFlight = true;
       const requestGeneration = ++listRequestGeneration.current;
       getApiMonitor()
         .then((next) => {
@@ -205,19 +186,33 @@ export function useApiMonitor({
           setError(err instanceof Error ? err.message : "Monitor unavailable");
         })
         .finally(() => {
+          inFlight = false;
           if (cancelled) {
             return;
           }
           if (listRequestGeneration.current === requestGeneration) {
             setLoading(false);
           }
-          timer = window.setTimeout(poll, intervalMs);
+          schedule();
         });
     }
 
+    function onVisibilityChange(): void {
+      if (document.hidden || inFlight) {
+        return;
+      }
+      if (timer !== undefined) {
+        window.clearTimeout(timer);
+        timer = undefined;
+      }
+      poll();
+    }
+
     poll();
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (timer !== undefined) {
         window.clearTimeout(timer);
       }
