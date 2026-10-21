@@ -939,11 +939,11 @@ def _user_device_pick(binary: Optional[str] = None) -> bool:
 
 
 def _vulkan_pin_possible(binary: str, torch) -> bool:
-    """Whether a Vulkan pin is worth the probe: several torch cards, a Vulkan build, nothing the user picked."""
+    """Whether a Vulkan pin is worth the probe: a torch card, a Vulkan build, nothing the user picked."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     return (
-        torch.cuda.device_count() > 1
+        torch.cuda.device_count() >= 1
         and not _user_device_pick()
         and not str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
         and bool(LlamaCppBackend._is_vulkan_backend(binary))
@@ -1008,25 +1008,32 @@ def _vulkan_device_args(
     retry_empty: bool = False,
 ) -> Optional[list]:
     """``--device Vulkan<i>`` for the image model's card (Vulkan ignores visibility masks); [] unpinned, None unknown.
-    One torch card launches as before Vulkan pinning: no probe, no ``--device``."""
+    One torch card and one Vulkan device launch as before Vulkan pinning; non-Vulkan builds never probe."""
     if ordinal is None or ordinal < 0:
         return []
     try:
         import torch
 
-        if torch.cuda.device_count() <= 1 or _user_device_pick():
+        count = torch.cuda.device_count()
+        if count < 1 or _user_device_pick():
             return []
         if not _vulkan_pin_possible(binary, torch):
             # Backends from GGML_BACKEND_PATH are not the ones the probe lists; a HIP mask on a CUDA torch steers nothing.
             from core.inference.llama_cpp import LlamaCppBackend
 
-            if str(os.environ.get("GGML_BACKEND_PATH", "")).strip():
-                return None
-            return [] if not LlamaCppBackend._is_vulkan_backend(binary) else None
-        # Vulkan sees every physical GPU (an iGPU, cards a mask hides), so torch's count says nothing here.
+            if count == 1 or not (
+                str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
+                or LlamaCppBackend._is_vulkan_backend(binary)
+            ):
+                return []
+            return None
+        # Vulkan also lists an iGPU and cards a mask hides (ggml's default takes discrete AND integrated GPUs).
         rows = _vulkan_rows(binary, retry_empty = retry_empty)
         if not rows:
-            return None
+            return None if count > 1 else []
+        if len(rows) == 1 and count == 1:
+            # Nothing to choose: no name match, so a renamed card never declines a single-GPU host.
+            return []
     except Exception:  # noqa: BLE001
         return []
     try:
@@ -1305,7 +1312,8 @@ class PromptUpsamplerSidecar:
             if layers == 0:
                 cmd.append("--no-mmproj-offload")
         if layers:
-            cmd += _vulkan_device_args(binary, ordinal, retry_empty = True) or []
+            # A warm start probed just before its slot: re-probing an empty answer here would run it twice.
+            cmd += _vulkan_device_args(binary, ordinal, retry_empty = not self._warming) or []
         sock.close()
         if is_process_shutting_down():
             raise UpsamplerUnavailableError("Unsloth is shutting down.")
