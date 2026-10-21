@@ -2282,8 +2282,36 @@ def test_a_cuda_torch_never_takes_an_amd_cards_position(spawn_argv, monkeypatch,
     state["names"] = ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4090"]
     state["rows"] = _MIXED_ROWS
     state["ordinal"] = ordinal
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     argv, env = run()
     assert argv[-2:] == ["--device", device] and env == {"CUDA_VISIBLE_DEVICES": str(ordinal)}
+
+
+@pytest.mark.parametrize("order", [None, "FASTEST_FIRST"])
+def test_identical_cuda_cards_are_not_told_apart_outside_pci_order(
+    spawn_argv, warmable, monkeypatch, order
+):
+    # CUDA's default FASTEST_FIRST may not match Vulkan's (PCI) order, so torch's position among twins is no pin.
+    import torch
+
+    state, run = spawn_argv
+    sidecar, launched, _memory, model, _mmproj = warmable
+    _real_card_lookup(monkeypatch, ["AMD Radeon Graphics", "AMD Radeon RX 7600"], {0: 0, 1: 1})
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 2)
+    state["names"] = ["NVIDIA GeForce RTX 4090", "NVIDIA GeForce RTX 4090"]
+    state["rows"] = _MIXED_ROWS
+    state["ordinal"] = 1
+    if order is None:
+        monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
+    else:
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
+    assert pup._vulkan_device_args("b", 1) is None
+    assert "--device" not in run()[0]
+    assert sidecar.warm(binary = "b", model = model, mmproj = None) == "placement"
+    # A card with no twin needs no order to be found.
+    state["names"] = ["NVIDIA GeForce RTX 4090", "AMD Radeon RX 7600"]
+    assert pup._vulkan_device_args("b", 0) == ["--device", "Vulkan2"]
 
 
 @pytest.mark.parametrize(
@@ -2365,8 +2393,9 @@ def test_a_warm_start_probes_an_empty_vulkan_answer_once(spawn_argv, warmable, m
     monkeypatch.setattr(
         sidecar, "_spawn_server", pup.PromptUpsamplerSidecar._spawn_server.__get__(sidecar)
     )
-    sidecar.warm(binary = "/x/llama-server", model = model, mmproj = None)
-    assert len(calls) == 1
+    # Declined, not started unpinned: the first enhanced run re-probes (and pins, or launches as before).
+    assert sidecar.warm(binary = "/x/llama-server", model = model, mmproj = None) == "placement"
+    assert len(calls) == 1 and launched == []
 
 
 @pytest.mark.parametrize(
@@ -2434,6 +2463,56 @@ def test_a_cancelled_warm_start_does_not_wait_out_the_vulkan_probe(warmable, mon
         assert not unload.is_alive()
         warm.join(3)
         assert out == ["cancelled"] and launched == []
+    finally:
+        release.set()
+        warm.join(5)
+
+
+def test_maintenance_waits_for_a_probe_a_cancelled_warm_start_left_running(warmable, monkeypatch):
+    # The probe loads the llama.cpp tree's libraries; replacing that tree under it fails on Windows.
+    import torch
+
+    from core.inference import llama_cpp
+
+    sidecar, launched, _memory, model, _mmproj = warmable
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
+    )
+    for var in ("HIP_VISIBLE_DEVICES", "GGML_BACKEND_PATH", "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+        monkeypatch.delenv(var, raising = False)
+    entered, release = threading.Event(), threading.Event()
+
+    def _probe(b = None):
+        entered.set()
+        release.wait(10)
+        return list(_VULKAN_ROWS)
+
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_run_vulkan_probe", staticmethod(_probe))
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    out, phase = [], []
+    warm = threading.Thread(
+        target = lambda: out.append(sidecar.warm(binary = "b", model = model, mmproj = None))
+    )
+    warm.start()
+
+    def _maintain():
+        with sidecar.update_maintenance():
+            phase.append("replacing")
+
+    try:
+        assert entered.wait(5)
+        maint = threading.Thread(target = _maintain)
+        maint.start()
+        warm.join(3)
+        assert out == ["cancelled"]
+        maint.join(0.5)
+        assert phase == [] and maint.is_alive()
+        release.set()
+        maint.join(5)
+        assert phase == ["replacing"] and launched == []
     finally:
         release.set()
         warm.join(5)

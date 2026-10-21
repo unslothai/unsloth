@@ -972,12 +972,34 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
         except Exception:  # noqa: BLE001
             pass
 
+    global _vulkan_probe_worker
     worker = threading.Thread(target = _work, name = "flux3-pup-vulkan-probe", daemon = True)
+    _vulkan_probe_worker = worker
     worker.start()
     while worker.is_alive():
         worker.join(0.1)
         if cancel is not None and cancel.is_set():
             raise UpsamplerCancelledError("Cancelled.")
+
+
+_vulkan_probe_worker: Optional[threading.Thread] = None
+
+
+def _wait_for_vulkan_probe(timeout: float = 20.0) -> None:
+    """Join a prefetch a cancelled warm start abandoned: its probe can still hold the llama.cpp tree's libraries."""
+    worker = _vulkan_probe_worker
+    if worker is not None and worker.is_alive():
+        worker.join(timeout)
+
+
+def _vulkan_rows_came_back_empty(binary: str) -> bool:
+    """A pinnable host whose cached Vulkan probe listed nothing: a warm start would stay unpinned for good."""
+    try:
+        import torch
+
+        return _vulkan_pin_possible(binary, torch) and not _vulkan_rows(binary)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _vulkan_card_name(ordinal: int, torch) -> tuple:
@@ -998,6 +1020,9 @@ def _vulkan_card_name(ordinal: int, torch) -> tuple:
     if not name:
         return None, None
     if (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip():
+        return name, None
+    # Between identical cards only PCI order matches Vulkan's; FASTEST_FIRST (CUDA's default) may not.
+    if names.count(name) > 1 and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
         return name, None
     return name, names[:ordinal].count(name)
 
@@ -1247,6 +1272,7 @@ class PromptUpsamplerSidecar:
         self._update_in_progress = True
         try:
             self.cancel_pending_load()
+            _wait_for_vulkan_probe()
             with self._request_lock, self._lock:
                 was_active = self.loaded
                 self._release_locked()
@@ -1566,6 +1592,9 @@ class PromptUpsamplerSidecar:
             if slot is None:
                 return why
             slot_held = slot
+            # An empty (maybe transient) probe would leave the server unpinned for good; a real launch re-probes.
+            if _vulkan_rows_came_back_empty(binary):
+                return "placement"
             ordinal = _resident_cuda_ordinal()
             # Unpinnable on a multi-GPU host (the native engine records its card elsewhere): the server would split
             # over every visible card and the probe below would read the wrong one. Its first enhanced run starts it.
