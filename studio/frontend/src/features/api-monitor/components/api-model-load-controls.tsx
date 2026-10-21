@@ -236,7 +236,12 @@ export function ApiModelLoadControls({
   children?: ReactNode;
 }): ReactElement {
   const { selectModel, loadNpuModel, refresh, ejectModel } = runtime;
-  const loadedCount = useChatRuntimeStore((s) => s.loadedModels.length);
+  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const loadedNames = useMemo(
+    () =>
+      loadedModels.map((model) => model.id.split(/[\\/]/).pop() || model.id),
+    [loadedModels],
+  );
   const modelsFromStore = useChatRuntimeStore((s) => s.models);
   const lorasFromStore = useChatRuntimeStore((s) => s.loras);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -456,7 +461,8 @@ export function ApiModelLoadControls({
         // The page unload skips the runtime's load guard, so a replacement mid-load would land after it.
         onEject={busy ? undefined : handleEject}
         onEjectAll={busy || !onEjectAll ? undefined : onEjectAll}
-        loadedCount={loadedCount}
+        loadedCount={loadedModels.length}
+        loadedNames={loadedNames}
         onFoldersChange={() => {
           refreshLocalModels();
         }}
@@ -470,7 +476,7 @@ export function ApiModelLoadControls({
         placeholder="Load model"
         open={selectorOpen && !unloading}
         onOpenChange={setSelectorOpen}
-        className="h-9 max-w-full rounded-full"
+        className="h-9 max-w-full rounded-full sm:max-w-[calc(28rem*var(--ui-space-scale,1))]"
         contentClassName="max-sm:max-w-[calc(100vw-3rem)]"
       />
       <ToolbarTooltip

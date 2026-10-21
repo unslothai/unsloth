@@ -130,10 +130,48 @@ const INSET_OPAQUE =
 
 function formatTime(value: number): string {
   return new Date(value * 1000).toLocaleTimeString([], {
-    hour: "2-digit",
+    hour: "numeric",
     minute: "2-digit",
-    second: "2-digit",
   });
+}
+
+function formatFullTime(value: number): string {
+  return new Date(value * 1000).toLocaleString();
+}
+
+/** "now", "40s", "5m", "3h", then the date: a row's age at a glance. */
+function formatAgo(value: number, now: number): string {
+  const seconds = Math.max(0, Math.round(now - value));
+  if (seconds < 10) return "now";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return new Date(value * 1000).toLocaleDateString([], {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+const AGO_TICK_MS = 10_000;
+
+// Server-clock seconds, so ages read right over a tunnel to a host whose clock differs. Ticks on
+// its own because a paused feed stops the polls that would otherwise re-render the rows.
+function useServerNow(serverTime: number | undefined): number {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick((n) => n + 1), AGO_TICK_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+  const skew = useMemo(
+    () => (serverTime == null ? 0 : serverTime - Date.now() / 1000),
+    [serverTime],
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: tick is what advances the clock
+  return useMemo(() => Date.now() / 1000 + skew, [skew, tick]);
+}
+
+function shortModelName(name: string): string {
+  return name.split(/[\\/]/).pop()?.split(":")[0] || name;
 }
 
 function formatDuration(value?: number | null): string {
@@ -275,9 +313,12 @@ function Stat({
 function CopyButton({
   value,
   label,
+  revealOnHover = false,
 }: {
   value: string;
   label: string;
+  /** Hidden until the pointer is over the nearest `group/copy`; always shown on touch. */
+  revealOnHover?: boolean;
 }): ReactElement {
   const [copied, setCopied] = useState(false);
   // Cancel on cleanup, or navigating away mid-flash sets state after unmount.
@@ -304,7 +345,13 @@ function CopyButton({
             timerRef.current = window.setTimeout(() => setCopied(false), 1800);
           }
         }}
-        className="size-7 shrink-0 rounded-full p-0"
+        className={cn(
+          "size-7 shrink-0 rounded-full p-0",
+          revealOnHover &&
+            !copied &&
+            // Collapsed too, so a hidden button leaves no gap before the next name.
+            "h-7 w-0 border-0 opacity-0 group-hover/copy:w-7 group-hover/copy:opacity-100 focus-visible:w-7 focus-visible:opacity-100 pointer-coarse:w-7 pointer-coarse:opacity-100",
+        )}
       >
         <HugeiconsIcon
           icon={copied ? Tick02Icon : Copy01Icon}
@@ -399,11 +446,18 @@ function RequestRow({
   entry,
   selected,
   onSelect,
+  now,
 }: {
   entry: ApiMonitorEntry;
   selected: boolean;
   onSelect: () => void;
+  now: number;
 }): ReactElement {
+  const age = (
+    <span title={formatFullTime(entry.started_at)}>
+      {formatAgo(entry.started_at, now)}
+    </span>
+  );
   const preview =
     entry.error ||
     entry.reply_preview ||
@@ -425,7 +479,7 @@ function RequestRow({
             {lifecycleLabel(entry)}
           </span>
           <span className="ml-auto shrink-0 text-ui-11 tabular-nums text-muted-foreground">
-            {formatTime(entry.started_at)}
+            {age}
           </span>
         </div>
         <div className="min-w-0 truncate pl-3.5 text-ui-11 text-muted-foreground/80">
@@ -476,7 +530,7 @@ function RequestRow({
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-ui-11 tabular-nums text-muted-foreground">
           {speed ? <span>{speed}</span> : null}
-          <span>{formatTime(entry.started_at)}</span>
+          {age}
         </span>
       </div>
       {/* A prompt or reply excerpt, same as the expanded payload below it. */}
@@ -1028,6 +1082,7 @@ export function ApiMonitorPage(): ReactElement {
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const activeModel = data?.active_model ?? null;
+  const now = useServerNow(data?.server_time);
   const served = useMemo(
     () => servedModels(loadedModels, activeModel),
     [loadedModels, activeModel],
@@ -1192,11 +1247,15 @@ export function ApiMonitorPage(): ReactElement {
             </span>
             <div className="flex min-w-0 flex-col">
               <span className="text-ui-11 text-muted-foreground">Base URL</span>
-              <div className="flex min-w-0 items-center gap-1">
+              <div className="group/copy flex min-w-0 items-center gap-1">
                 <span className="truncate font-mono text-ui-13 text-foreground">
                   {baseUrl}
                 </span>
-                <CopyButton value={baseUrl} label="Copy API base URL" />
+                <CopyButton
+                  value={baseUrl}
+                  label="Copy API base URL"
+                  revealOnHover={true}
+                />
               </div>
             </div>
           </div>
@@ -1227,91 +1286,75 @@ export function ApiMonitorPage(): ReactElement {
                 <Button
                   type="button"
                   variant="outline"
-                  size="icon"
-                  aria-label={served.length > 1 ? "Eject all models" : "Eject"}
+                  size="sm"
                   onClick={() =>
                     void (served.length > 1
                       ? ejectAll()
                       : ejectServed(served[0]))
                   }
                   disabled={ejecting || modelLoading || served.length === 0}
-                  className="rounded-full"
+                  className="h-9 gap-1.5 rounded-full px-3.5"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
                     strokeWidth={1.75}
                     className={cn("size-4", ejecting && "animate-pulse")}
                   />
+                  {ejecting
+                    ? "Ejecting"
+                    : served.length > 1
+                      ? "Eject all"
+                      : "Eject"}
                 </Button>
               </ToolbarTooltip>
             </ApiModelLoadControls>
           </div>
         </div>
-        <div className={cn("border-t px-5 py-3", DIVIDER)}>
-          {served.length > 1 ? (
-            <dl className="flex flex-col gap-1.5">
-              <dt className="text-ui-12 text-muted-foreground">
-                {served.length} models answering requests
-              </dt>
-              {served.map((model) => (
-                <dd
-                  key={model.checkpoint}
-                  className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-1"
-                >
-                  <span className="flex min-w-0 items-center gap-1 text-ui-12">
-                    <span
-                      className="size-1.5 shrink-0 rounded-full bg-emerald-500"
-                      aria-hidden={true}
-                    />
-                    <span className="ml-1 truncate font-mono text-foreground">
-                      {model.name}
-                    </span>
-                    <CopyButton value={model.name} label="Copy model name" />
-                  </span>
-                  {model.active ? (
-                    <dl className="contents">{activeFacts}</dl>
-                  ) : null}
-                  <span className="ml-auto">
-                    <ToolbarTooltip label={`Eject ${model.name}`}>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Eject ${model.name}`}
-                        onClick={() => void ejectServed(model)}
-                        disabled={ejecting || modelLoading}
-                        className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
-                      >
-                        <HugeiconsIcon
-                          icon={RemoveCircleIcon}
-                          strokeWidth={1.75}
-                          className="size-3.5"
-                        />
-                      </Button>
-                    </ToolbarTooltip>
-                  </span>
-                </dd>
-              ))}
-            </dl>
-          ) : (
-            <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
-              <Fact label="Model" className="max-w-full">
-                {served.length === 1 ? (
-                  <>
-                    <span className="truncate font-mono">{served[0].name}</span>
-                    <CopyButton
-                      value={served[0].name}
-                      label="Copy model name"
-                    />
-                  </>
-                ) : (
-                  <span className="text-muted-foreground">None loaded</span>
-                )}
-              </Fact>
-              {served[0]?.active ? activeFacts : null}
-            </dl>
+        <dl
+          className={cn(
+            "flex flex-wrap items-center gap-x-6 gap-y-2 border-t px-5 pt-3.5 pb-5",
+            DIVIDER,
           )}
-        </div>
+        >
+          <Fact
+            label={served.length > 1 ? "Models" : "Model"}
+            className="max-w-full"
+          >
+            {served.length === 0 ? (
+              <span className="text-muted-foreground">None loaded</span>
+            ) : (
+              <span className="flex min-w-0 flex-wrap items-center gap-y-1">
+                {served.map((model, index) => (
+                  <span
+                    key={model.checkpoint}
+                    className="group/copy mr-1.5 flex min-w-0 items-center last:mr-0"
+                  >
+                    <span
+                      title={model.name}
+                      className={cn(
+                        "truncate",
+                        served.length === 1 && "font-mono",
+                      )}
+                    >
+                      {served.length === 1
+                        ? model.name
+                        : shortModelName(model.name)}
+                      {index < served.length - 1 ? (
+                        <span className="text-muted-foreground">,</span>
+                      ) : null}
+                    </span>
+                    <CopyButton
+                      value={model.name}
+                      label={`Copy ${model.name}`}
+                      revealOnHover={true}
+                    />
+                  </span>
+                ))}
+              </span>
+            )}
+          </Fact>
+          {served.some((model) => model.active) ? activeFacts : null}
+        </dl>
       </section>
 
       {error ? <Banner>{error}</Banner> : null}
@@ -1579,6 +1622,7 @@ export function ApiMonitorPage(): ReactElement {
                     entry={entry}
                     selected={entry.id === selectedId}
                     onSelect={() => setSelectedId(entry.id)}
+                    now={now}
                   />
                 ))
               )}

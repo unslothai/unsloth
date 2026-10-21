@@ -124,6 +124,8 @@ interface ModelSelectorProps {
   onEject?: (modelId?: string) => void;
   onEjectAll?: () => void;
   loadedCount?: number;
+  /** Short names of every loaded model; with more than one the trigger lists them instead. */
+  loadedNames?: string[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -177,10 +179,12 @@ function ModelSelectorTrigger({
   dataTour,
   onEject,
   loadedCount = 0,
+  loadedNames,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
 }: {
   loadedCount?: number;
+  loadedNames?: string[];
   currentModel?: ModelOption;
   isLoaded: boolean;
   showCloudIndicator?: boolean;
@@ -193,10 +197,18 @@ function ModelSelectorTrigger({
   placeholder?: string;
 }) {
   const severalLoaded = loadedCount > 1;
-  const triggerTitle = severalLoaded
-    ? `${loadedCount} models loaded`
-    : (currentModel?.name ?? placeholder);
-  const subtitle = severalLoaded ? currentModel?.name : currentModel?.description;
+  // The names alone: one model's format and quant beside a count read as if only it were loaded.
+  const listsNames = severalLoaded && (loadedNames?.length ?? 0) > 1;
+  const triggerTitle = listsNames
+    ? loadedNames?.join(", ")
+    : severalLoaded
+      ? `${loadedCount} models loaded`
+      : (currentModel?.name ?? placeholder);
+  const subtitle = listsNames
+    ? undefined
+    : severalLoaded
+      ? currentModel?.name
+      : currentModel?.description;
   return (
     <PopoverTrigger asChild={true}>
       <button
@@ -288,7 +300,7 @@ function ModelSelectorTrigger({
               </span>
             )}
           </span>
-          {currentModel?.descriptionSuffix && (
+          {!listsNames && currentModel?.descriptionSuffix && (
             <span
               className={cn(
                 "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
@@ -797,6 +809,7 @@ export function ModelSelector({
   placeholder,
   loaded,
   loadedCount,
+  loadedNames,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
@@ -977,6 +990,7 @@ export function ModelSelector({
         dataTour={triggerDataTour}
         onEject={onEject ? () => handleEject() : undefined}
         loadedCount={loadedCount}
+        loadedNames={loadedNames}
         placeholder={placeholder}
       />
       <ModelSelectorContent
