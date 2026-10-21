@@ -505,3 +505,96 @@ def test_the_bnb_gemm_runs_only_on_listed_archs_unless_forced(env, monkeypatch):
     assert utils._BNB_GEMM_4BIT == (env != "0" and (env == "1" or any(listed)))
     assert ok == (env != "0" and (env == "1" or listed[X.device.index]))
     assert (torch.bfloat16 in utils._BNB_GEMM_4BIT_DTYPES) == (env == "1")
+
+
+@pytest.mark.parametrize(
+    "hip, triton_version, env, eager",
+    [
+        (None, (3, 2), None, True),
+        (None, (3, 6), None, True),
+        (None, (3, 7), None, True),
+        (None, (3, 6), "0", False),
+        (None, (3, 6), "1", True),
+        ("7.1", (3, 4), None, False),
+        ("7.1", (3, 5), None, False),
+        ("7.1", (3, 6), None, True),
+        ("7.1", (3, 7), None, True),
+        ("7.1", (3, 6), "0", False),
+        ("7.1", (3, 5), "1", True),
+        ("7.1", (3, 5), "yes", False),
+    ],
+)
+def test_eager_gemv_gate_per_platform(monkeypatch, hip, triton_version, env, eager):
+    """CUDA always; HIP from Triton 3.6; UNSLOTH_TRITON_GEMV_EAGER=0 / =1 overrides, others ignored."""
+    monkeypatch.setattr(torch.version, "hip", hip)
+    monkeypatch.setattr(nf4_gemv, "_TRITON_VERSION", triton_version)
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_TRITON_GEMV_EAGER", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_TRITON_GEMV_EAGER", env)
+    assert nf4_gemv.triton_gemv_eager() is eager
+
+
+@pytest.mark.parametrize("env", [None, "0"], ids = ["default", "switch_off"])
+def test_rocm_batch_1_decode_takes_the_triton_gemv(monkeypatch, env):
+    """A faked ROCm torch with Triton 3.6 (Triton's own launch path, as on HIP): batch-1 decode
+    takes the Triton GEMV unless switched off, and decode rows still dequantize."""
+    from unsloth.kernels import triton_launch, utils
+
+    if not utils._USE_NF4_KERNELS:
+        pytest.skip("NF4 kernels unavailable or disabled")
+    monkeypatch.setattr(torch.version, "hip", "7.1")
+    monkeypatch.setattr(nf4_gemv, "_TRITON_VERSION", (3, 6))
+    monkeypatch.setattr(triton_launch, "_ENABLED", False)
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_TRITON_GEMV_EAGER", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_TRITON_GEMV_EAGER", env)
+    monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
+    monkeypatch.setattr(utils, "_TRITON_GEMV_EAGER", nf4_gemv.triton_gemv_eager())
+    monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
+    calls = []
+    for name in ("_fast_gemv_ctypes", "gemv_nf4_planned", "gemv_nf4"):
+        real = getattr(utils, name)
+        monkeypatch.setattr(
+            utils, name, lambda *a, _r = real, _n = name, **k: calls.append(_n) or _r(*a, **k)
+        )
+    proj = _linear4bit(1024, 4096)
+    q, s = proj.weight.data, proj.weight.quant_state
+    X = torch.randn(1, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    triton_out = gemv_nf4(X, *_args(q, s))
+    bnb_out = _fast_gemv_ctypes(X, q, s)
+    for _ in range(3):
+        calls.clear()
+        got = utils.fast_linear_forward(proj, X)
+        if env is None:
+            assert calls == ["gemv_nf4_planned"] and torch.equal(got, triton_out)
+        else:
+            assert calls == ["_fast_gemv_ctypes"] and torch.equal(got, bnb_out)
+    assert getattr(s, "_unsloth_gemv_plan", None) is None  # no direct relaunch on HIP
+    X2 = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    assert utils._gemv_rows(X2, q, s, None) is None
+
+
+@pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
+@pytest.mark.parametrize("dtype", DTYPES, ids = str)
+@pytest.mark.parametrize("shape", SHAPES + [(12288, 4096), (256, 256)], ids = str)
+def test_eager_decode_route_matches_dequantize_matmul(shape, dtype, nested):
+    """The route eager batch-1 decode takes on this GPU (on ROCm with Triton 3.6+, the Triton
+    GEMV) against dequantize + fp32 matmul, on the Llama 3 8B / Qwen3 8B decode shapes. Reruns
+    of a weight's planned launch must give the same result."""
+    from unsloth.kernels import utils
+
+    if torch.version.hip and nf4_gemv._TRITON_VERSION >= nf4_gemv._HIP_EAGER_MIN_TRITON:
+        assert utils._USE_NF4_KERNELS and utils._TRITON_GEMV_EAGER, "ROCm decode kept bitsandbytes"
+    if not nested and not (utils._USE_NF4_KERNELS and utils._TRITON_GEMV_EAGER):
+        pytest.skip("the ctypes GEMV only takes double quantized states")
+    n, k = shape
+    q, s = _quant(n, k, dtype, nested)
+    X = torch.randn(1, 1, k, dtype = dtype, device = "cuda")
+    ref = (X.float().view(1, k) @ utils.fast_dequantize(q, s).float().t()).view(1, 1, n)
+    got = utils.fast_gemv(X, q, s)
+    assert got.shape == (1, 1, n) and got.dtype == dtype
+    assert _rel_err(got, ref) < TOL[dtype]
+    for _ in range(2):
+        assert torch.equal(utils.fast_gemv(X, q, s), got)
