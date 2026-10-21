@@ -51929,6 +51929,14 @@ def _sd_controls_kwargs(generate: Any, request: Any) -> dict:
             "Prompt weighting, CLIP skip, CFG rescale and variation seeds are supported on the "
             "diffusers engine only."
         )
+    if controls.prompt_weighting is False and getattr(
+        getattr(generate, "__self__", None), "parses_prompt_attention", False
+    ):
+        # sd.cpp reads (word:1.5) itself, so the prompt would still render weighted.
+        raise ValueError(
+            "Turning prompt weighting off is supported on the diffusers engine only: the native "
+            "sd.cpp engine always reads (word:1.2) attention syntax."
+        )
     return {}
 
 

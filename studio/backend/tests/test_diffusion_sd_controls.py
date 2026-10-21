@@ -565,6 +565,35 @@ def test_route_refuses_controls_the_engine_cannot_run():
     assert out["sd_controls"] == SdControls(cfg_rescale = 0.7)
 
 
+def test_route_refuses_weighting_off_on_an_engine_that_parses_attention():
+    # sd.cpp reads (word:1.5) itself, so prompt_weighting false cannot be honoured there.
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+    from routes.inference import _sd_controls_kwargs
+
+    class Literal:
+        def generate(self, *, prompt):
+            return None
+
+    off = SimpleNamespace(
+        prompt_weighting = False,
+        clip_skip = None,
+        cfg_rescale = None,
+        variation_seed = None,
+        variation_strength = None,
+    )
+    native = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    with pytest.raises(ValueError, match = "prompt weighting off"):
+        _sd_controls_kwargs(native.generate, off)
+    # An engine that passes the prompt as plain text already renders it literally.
+    assert _sd_controls_kwargs(Literal().generate, off) == {}
+    assert (
+        _sd_controls_kwargs(
+            native.generate, SimpleNamespace(**{**vars(off), "prompt_weighting": None})
+        )
+        == {}
+    )
+
+
 def test_infotext_names_follow_webui():
     from core.inference.image_gallery import _params_text
 
