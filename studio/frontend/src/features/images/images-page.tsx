@@ -2212,6 +2212,9 @@ export function ImagesPage({
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
   const controlnetSupported = Boolean(status?.loaded && status?.supports_controlnet);
   const controlnetCapable = !external && controlnetSupported;
+  // What Create sends as a ControlNet run (strength 0 runs plain text-to-image): its SDXL pipeline has no CFG rescale.
+  const controlnetEngaged =
+    controlnetCapable && Boolean(controlnetId && controlImage) && workflow === "create" && controlStrength > 0;
   const negativeCapable = !external && status?.supports_negative_prompt !== false;
   // A model that reads no guidance here runs at its default, which the request and recipe then carry.
   const guidanceFixed = !external && status?.loaded === true && status.supports_guidance === false;
@@ -5366,6 +5369,7 @@ export function ImagesPage({
               runChoice,
               baseVariationSeed !== null ? (baseVariationSeed + i * batchSize) % 2 ** 32 : null,
               varying,
+              !controlnetEngaged,
             ),
             ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
@@ -5468,7 +5472,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetEngaged, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5908,7 +5912,9 @@ export function ImagesPage({
             <SliderField
               label="CFG rescale"
               hint={
-                sdCaps.cfg_rescale.recommended
+                controlnetEngaged
+                  ? "Not available with a ControlNet: the SDXL ControlNet pipeline has no CFG rescale. Set the ControlNet strength to 0 or clear it to use this."
+                  : sdCaps.cfg_rescale.recommended
                   ? `Rescales the guided prediction to fix overexposure. This is a v-prediction model: ${sdCaps.cfg_rescale.recommended} is the value from the zero-terminal-SNR paper. 0 = off.`
                   : "Rescales the guided prediction to fix overexposure, mostly for v-prediction checkpoints (0.7 there). 0 = off."
               }
@@ -5917,6 +5923,7 @@ export function ImagesPage({
               max={sdCaps.cfg_rescale.max}
               step={0.05}
               onChange={(v) => setSdChoice((c) => ({ ...c, cfgRescale: v }))}
+              disabled={controlnetEngaged}
             />
           )}
           {sdCaps.variation_seed && workflow === "create" && (

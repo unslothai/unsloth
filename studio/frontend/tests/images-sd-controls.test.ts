@@ -96,7 +96,7 @@ test("image-conditioned workflows never send the variation fields", () => {
     src,
     /const varying = Boolean\(sdCaps\?\.variation_seed\) && workflow === "create" && runChoice\.variationStrength > 0;/,
   );
-  assert.match(src, /% 2 \*\* 32 : null,\n\s+varying,\n\s+\),/);
+  assert.match(src, /% 2 \*\* 32 : null,\n\s+varying,\n\s+!controlnetEngaged,\n\s+\),/);
   assert.match(src, /\{sdCaps\.variation_seed && workflow === "create" && \(/);
 });
 
@@ -306,6 +306,22 @@ test("imported variation values out of the request bounds are named, not randomi
     ]);
   }
   assert.deepEqual(importNotApplied({ prompt: "x", variation_strength: 3 }, "sdxl", false, SDXL), ["variation strength 3"]);
+});
+
+test("Create with an SDXL ControlNet engaged sends no CFG rescale, and the control says why", () => {
+  const choice = { ...DEFAULT_SD_CONTROLS, cfgRescale: 0.7, variationStrength: 0.2, variationSeed: "5" };
+  assert.deepEqual(sdControlsRequestFields(SDXL, choice, null, true, false), {
+    variation_strength: 0.2,
+    variation_seed: 5,
+  });
+  assert.equal(sdControlsRequestFields(SDXL, choice).cfg_rescale, 0.7);
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(
+    src,
+    /const controlnetEngaged =\n\s+controlnetCapable && Boolean\(controlnetId && controlImage\) && workflow === "create" && controlStrength > 0;/,
+  );
+  assert.match(src, /varying,\n\s+!controlnetEngaged,\n\s+\),/);
+  assert.match(src, /disabled=\{controlnetEngaged\}/);
 });
 
 test("pasted A1111 Emphasis: None restores prompt weighting off, and sd.cpp names it as not applied", async () => {

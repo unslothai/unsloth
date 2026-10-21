@@ -61,12 +61,14 @@ export function parseVariationSeed(text: string): number | null {
 }
 
 /** Request fields for the choice, only those off their default; nothing when the model lacks them.
- *  `variation`: false on image-conditioned workflows, whose noise comes from the source (the backend 400s). */
+ *  `variation`: false on image-conditioned workflows, whose noise comes from the source (the backend 400s).
+ *  `rescale`: false with a ControlNet engaged, whose SDXL pipeline has no guidance_rescale (the backend 400s). */
 export function sdControlsRequestFields(
   capability: SdControlsCapability | null | undefined,
   choice: SdControlsChoice,
   variationSeed?: number | null,
   variation = true,
+  rescale = true,
 ): SdControlsRequest {
   if (!capability) return {};
   const out: SdControlsRequest = {};
@@ -75,9 +77,9 @@ export function sdControlsRequestFields(
   const clip = capability.clip_skip;
   if (clip && choice.clipSkip > 1)
     out.clip_skip = Math.min(Math.round(choice.clipSkip), clip.max);
-  const rescale = capability.cfg_rescale;
-  if (rescale && choice.cfgRescale > 0) {
-    out.cfg_rescale = Math.min(choice.cfgRescale, rescale.max);
+  const rescaleCap = capability.cfg_rescale;
+  if (rescale && rescaleCap && choice.cfgRescale > 0) {
+    out.cfg_rescale = Math.min(choice.cfgRescale, rescaleCap.max);
   }
   if (variation && capability.variation_seed && choice.variationStrength > 0) {
     out.variation_strength = Math.min(choice.variationStrength, 1);
