@@ -8098,7 +8098,6 @@ def test_yolo_openclaw_writes_exec_policy(fake_studio, tmp_path):
     state = tmp_path / "agents" / "openclaw"
     config = json.loads((state / "openclaw.json").read_text())
     assert config["tools"]["exec"] == {"host": "gateway", "security": "full", "ask": "off"}
-    # OpenClaw 2026.8.1+ refuses to run while a legacy exec-approvals.json sits in the state dir.
     assert not (state / "exec-approvals.json").exists()
 
 
@@ -8131,7 +8130,7 @@ def test_write_openclaw_config_yolo_unit(tmp_path):
     assert not (path.parent / "exec-approvals.json").exists()
 
 
-# What `unsloth start openclaw --yolo` wrote before approvals moved to OpenClaw's SQLite state.
+# What older `unsloth start openclaw --yolo` wrote.
 LEGACY_OPENCLAW_YOLO_APPROVALS = {
     "version": 1,
     "defaults": {"security": "full", "ask": "off", "askFallback": "full"},
@@ -8161,7 +8160,6 @@ def test_write_openclaw_config_points_user_legacy_approvals_at_openclaw_doctor(
     legacy = {**LEGACY_OPENCLAW_YOLO_APPROVALS, "agents": {"main": {"allowlist": ["git status"]}}}
     approvals.write_text(json.dumps(legacy))
     start.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL, path, yolo = yolo)
-    # Only the yolo defaults go; the recorded allowlist is left for OpenClaw's own import.
     assert json.loads(approvals.read_text()) == {
         "version": 1,
         "agents": {"main": {"allowlist": ["git status"]}},

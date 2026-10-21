@@ -5136,7 +5136,7 @@ def write_openclaw_config(
     gateway.setdefault("mode", "local")
     _subdict(gateway, "auth").setdefault("mode", "none")
     if yolo:
-        # OpenClaw has no --yolo flag; it gates tool execution on BOTH tools.exec AND the host approvals document (the stricter wins). Since 2026.8.1 that document is a row in $OPENCLAW_STATE_DIR/state/openclaw.sqlite whose omitted fields fall back to tools.exec, so a fresh managed dir only needs the config side.
+        # OpenClaw has no --yolo flag. Its host approvals document (SQLite since 2026.8.1) falls back to tools.exec for omitted fields, so the config side is enough.
         exec_policy = _subdict(_subdict(config, "tools"), "exec")
         exec_policy["host"] = "gateway"
         exec_policy["security"] = "full"
@@ -5158,13 +5158,13 @@ def write_openclaw_config(
             exec_policy.pop("host", None)  # routing only; defaults to the gateway host
             exec_policy["security"] = "allowlist"  # only allowlisted commands skip approval
             exec_policy["ask"] = "on-miss"  # prompt on every non-allowlisted command
-    # Older Unsloth wrote --yolo defaults to exec-approvals.json here. OpenClaw 2026.8.1+ reads that file only as a legacy source for `openclaw doctor --fix` to import, and refuses every run while it exists, so drop the yolo defaults in both modes (a stricter default set by the user or OpenClaw is kept). With a prompting tools.exec the stricter of the two layers wins, so an omitted approvals default still prompts.
+    # Older Unsloth wrote --yolo defaults here; OpenClaw 2026.8.1+ refuses every run while this legacy file exists, so drop ours in both modes and keep any other policy.
     approvals = path.parent / "exec-approvals.json"
     if approvals.exists():
         state = _read_json_object(approvals)
         if state is not None:
             defaults = state.get("defaults")
-            # Strip the defaults only when they are exactly the yolo fingerprint; a user-managed mixed policy that merely shares a field (askFallback=full, whose omitted default is deny) must be kept intact.
+            # Exact yolo fingerprint only: a user policy merely sharing askFallback=full must survive.
             yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
             is_yolo = isinstance(defaults, dict) and all(
                 defaults.get(k) == v for k, v in yolo_defaults
@@ -5179,15 +5179,13 @@ def write_openclaw_config(
                     k in ("version", "socket") or (k == "agents" and not v)
                     for k, v in state.items()
                 ):
-                    # Nothing left but our own yolo payload: remove it.
                     approvals.unlink()
                     typer.echo(f"Removed {approvals}")
                 else:
-                    # Keep approvals OpenClaw itself recorded; only the yolo defaults go.
                     _write_private_json(approvals, state)
                     typer.echo(f"Updated {approvals}")
     if approvals.exists():
-        # Whatever remains is the user's own policy, so importing it is OpenClaw's migration, not ours.
+        # The rest is user policy; importing it is OpenClaw's migration, not ours.
         typer.echo(
             f"Note: {approvals} is a legacy exec approvals file, which OpenClaw 2026.8.1+ refuses to run with. "
             f"Import it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
