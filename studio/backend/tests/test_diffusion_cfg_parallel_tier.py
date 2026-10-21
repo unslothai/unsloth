@@ -449,3 +449,40 @@ def test_a_failed_replica_input_copy_falls_back_to_the_source(_zs, monkeypatch):
     assert router.disabled_reason and "replica input copy failed" in router.disabled_reason
     assert router.stats["pairs_parallel"] == 0
     assert cg._OUTSIDE_JOBS == 0
+
+
+def test_a_failed_result_copy_home_recomputes_the_second_half_on_the_source(_zs, monkeypatch):
+    model = _zimage()
+    pipe = types.SimpleNamespace(transformer = model)
+    _zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+    plain = types.SimpleNamespace(transformer = _zimage())
+    _zs.install_zimage_cfg_split(plain, offload_policy = "none")
+    expected = _zimage_steps(plain.transformer, plain, 1)
+    router, _replicas = _router(model)
+
+    def boom(out, primary):
+        raise RuntimeError("peer copy failed")
+
+    monkeypatch.setattr(mg, "_to_primary", boom)
+    got = _zimage_steps(model, pipe, 1)
+    assert router.disabled_reason and "replica call failed" in router.disabled_reason
+    assert router.stats["pairs_parallel"] == 0
+    assert all(torch.equal(a, b) for a, b in zip(got, expected))
+
+
+def test_the_replica_is_built_with_captures_held_off(_zs, monkeypatch):
+    model = _zimage()
+    pipe = types.SimpleNamespace(transformer = model)
+    _zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+    router, replicas = _router(model)
+    factory = router.replica_factory
+    held = []
+
+    def building():
+        held.append(cg._OUTSIDE_JOBS)
+        return factory()
+
+    router.replica_factory = building
+    _zimage_steps(model, pipe, 1)
+    assert held and held[0] >= 1
+    assert cg._OUTSIDE_JOBS == 0

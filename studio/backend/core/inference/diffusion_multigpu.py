@@ -1945,13 +1945,14 @@ class CfgParallelRouter:
                 # source hook state moved during the first half: rerun
                 _mirror_hook_state(self.pairs)
                 second = self.worker.call(_replica_call(self.replica, r_args, r_kwargs))
+            second = _to_primary(second, self.primary)
         except Exception as exc:  # noqa: BLE001 - the caller recomputes the second half on the source
             self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             return first, None
         self.stats["replica_calls"] += 1
         self.stats["steps_parallel"] += 1
         self.stats["pairs_parallel"] += 1
-        return first, _to_primary(second, self.primary)
+        return first, second
 
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
         torch = _torch()
@@ -2107,7 +2108,10 @@ class CfgParallelRouter:
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
                 )
             self.fingerprint = weights_fingerprint(module)
-            with _device_context(self.secondary):
+            from .diffusion_cuda_graph import outside_capture
+
+            # Copying the weights to the replica card is CUDA work another pipeline's capture prohibits.
+            with outside_capture(), _device_context(self.secondary):
                 self.replica = self.replica_factory()
             self.pairs = list(zip(module.modules(), self.replica.modules()))
             self.worker = _ReplicaWorker(self.secondary)
