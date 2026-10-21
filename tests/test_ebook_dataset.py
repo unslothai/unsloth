@@ -131,6 +131,19 @@ def test_cdata_in_xhtml_keeps_literal_text(ebooks):
     )
 
 
+def test_preformatted_text_keeps_its_layout(ebooks):
+    data = b"<html><body><p>Intro  text</p><pre><code>def f():\n    return 1</code></pre></body></html>"
+    assert ebooks._html_text(data) == "Intro text\n\ndef f():\n    return 1"
+
+
+def test_definition_lists_and_figures_do_not_merge_words(ebooks):
+    data = (
+        b"<html><body><dl><dt>Term</dt><dd>Definition</dd></dl>"
+        b"<figure><img src='a.png'/><figcaption>Caption</figcaption></figure><aside>Note</aside></body></html>"
+    )
+    assert ebooks._html_text(data) == "Term\n\nDefinition\n\nCaption\n\nNote"
+
+
 def test_bom_is_dropped_when_xml_declares_utf8(ebooks):
     data = b'\xef\xbb\xbf<?xml version="1.0" encoding="UTF-8"?><html><body><p>Chapter</p></body></html>'
     assert ebooks._html_text(data) == "Chapter"

@@ -39,6 +39,22 @@ _BLOCKS = {
     "h5",
     "h6",
     "pre",
+    "ul",
+    "ol",
+    "dl",
+    "dt",
+    "dd",
+    "table",
+    "caption",
+    "figure",
+    "figcaption",
+    "header",
+    "footer",
+    "main",
+    "aside",
+    "address",
+    "details",
+    "summary",
 }
 _VOID = {
     "area",
@@ -65,6 +81,8 @@ class _BookTextParser(HTMLParser):
         self.parts = []
         self.stack = []
         self.encoding = None
+        # <pre> text is kept verbatim and spliced back after whitespace cleanup.
+        self.preformatted = []
 
     def handle_starttag(self, tag, attrs):
         if tag == "body":
@@ -108,8 +126,12 @@ class _BookTextParser(HTMLParser):
 
     def handle_data(self, data):
         if not self.stack or not self.stack[-1][1]:
-            # Source newlines inside an HTML paragraph render as spaces.
-            self.parts.append(re.sub(r"\s+", " ", data))
+            if any(tag == "pre" for tag, _ in self.stack):
+                self.parts.append(f"\ue000{len(self.preformatted)}\ue001")
+                self.preformatted.append(data)
+            else:
+                # Source newlines inside an HTML paragraph render as spaces.
+                self.parts.append(re.sub(r"\s+", " ", data))
 
     def unknown_decl(self, data):
         if data.startswith("CDATA["):
@@ -140,7 +162,12 @@ def _html_text(data):
     text = unicodedata.normalize("NFC", "".join(parser.parts))
     text = re.sub(r"[^\S\n]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return re.sub(
+        "\ue000(\\d+)\ue001",
+        lambda m: unicodedata.normalize("NFC", parser.preformatted[int(m[1])]),
+        text,
+    )
 
 
 def _archive_path(base, href):
