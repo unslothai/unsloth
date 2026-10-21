@@ -73,6 +73,16 @@ def _params_text(meta: dict[str, Any]) -> str:
         f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
         f"Model: {meta.get('model', '')}"
     )
+    # webui infotext names (processing.create_infotext).
+    if meta.get("variation_strength"):
+        fields += (
+            f", Variation seed: {meta.get('variation_seed')}, "
+            f"Variation seed strength: {meta['variation_strength']}"
+        )
+    if meta.get("clip_skip"):
+        fields += f", Clip skip: {meta['clip_skip']}"
+    if meta.get("guidance_rescale"):
+        fields += f", CFG rescale: {meta['guidance_rescale']}"
     if meta.get("workflow") in _IMG2IMG_WORKFLOWS and meta.get("strength") is not None:
         fields += f", Denoising strength: {meta['strength']}"
     if meta.get("generator"):

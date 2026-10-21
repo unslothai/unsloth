@@ -367,6 +367,16 @@ import {
   sendsEngine,
   withEngineChoice,
 } from "./lib/engine-choice";
+import {
+  DEFAULT_SD_CONTROLS,
+  FALLBACK_VARY_STRENGTH,
+  parseVariationSeed,
+  randomVariationSeed,
+  sdControlsFromRecipe,
+  sdControlsRecipeRows,
+  sdControlsRequestFields,
+  type SdControlsChoice,
+} from "./lib/sd-controls";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -1355,6 +1365,9 @@ function RecipePopover({
               value={samplerRecipeLabel(image.sampler, image.schedule_type) ?? ""}
             />
           ) : null}
+          {sdControlsRecipeRows(image).map(([label, value]) => (
+            <RecipeRow key={label} label={label} value={value} />
+          ))}
           {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
@@ -1734,6 +1747,10 @@ export function ImagesPage({
   const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_images_live_preview_off");
   const livePreview = !livePreviewOff;
   const oversizedOnce = useRef(false);
+  // SDXL prompt weighting / CLIP skip / CFG rescale / variation seed, sent only off their defaults.
+  const [sdChoice, setSdChoice] = useState<SdControlsChoice>(DEFAULT_SD_CONTROLS);
+  // Set by Vary for the next Generate only: the seed to keep and the variation seed to slerp toward.
+  const varyOnce = useRef<{ seed: number; variationSeed: number; strength: number } | null>(null);
   // Set only around a confirmed Load anyway retry.
   const oversizedLoadOnce = useRef(false);
   const lastLoadAttempt = useRef<{ overrideSent: boolean; retry: () => void } | null>(null);
@@ -2117,6 +2134,7 @@ export function ImagesPage({
   const livePreviewUnavailable =
     !external && status?.loaded === true && status.supports_live_preview === false;
   const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
+  const sdCaps = (!external && status?.loaded ? status.sd_controls : null) ?? null;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
   const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
   const samplerChoice = normalizeSamplerChoice(
@@ -2689,6 +2707,7 @@ export function ImagesPage({
     };
     if (samplerOptions.length > 0) changeSamplerChoice(restoredChoice);
     else setRestoredSampler(restoredChoice);
+    setSdChoice(sdControlsFromRecipe(image));
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
     if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
@@ -2842,6 +2861,11 @@ export function ImagesPage({
         ) {
           notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
         }
+      }
+      if (!status?.sd_controls) {
+        if (settings.clip_skip && settings.clip_skip > 1) notApplied.unshift(`CLIP skip ${settings.clip_skip}`);
+        if (settings.guidance_rescale) notApplied.unshift(`CFG rescale ${settings.guidance_rescale}`);
+        if (settings.variation_strength) notApplied.unshift("variation seed");
       }
       if (notApplied.length > 0 || newerRecipeSchema(recipe)) {
         toast.warning("Some settings in this image were not applied", {
@@ -4840,6 +4864,8 @@ export function ImagesPage({
     // Consume before any early return so it never leaks into a later run.
     const allowOversizedSent = allowOversizedField(allowOversized, oversizedOnce.current) === true;
     oversizedOnce.current = false;
+    const vary = sdCaps?.variation_seed ? varyOnce.current : null;
+    varyOnce.current = null;
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
       return;
@@ -4951,7 +4977,9 @@ export function ImagesPage({
     }
     // Resolve a base seed up front, so each sequential image gets a distinct, reproducible seed (base + i).
     let baseSeed: number;
-    if (seed.trim() && !external) {
+    if (vary) {
+      baseSeed = vary.seed;
+    } else if (seed.trim() && !external) {
       const n = Number(seed);
       if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
         toast.error("Seed must be a non-negative integer");
@@ -4961,6 +4989,18 @@ export function ImagesPage({
     } else {
       baseSeed = Math.floor(Math.random() * 2 ** 32);
     }
+    // A variation keeps the seed across runs and advances the variation seed instead (webui subseeds).
+    const runChoice: SdControlsChoice = vary
+      ? { ...sdChoice, variationSeed: String(vary.variationSeed), variationStrength: vary.strength }
+      : sdChoice;
+    const varying = Boolean(sdCaps?.variation_seed) && runChoice.variationStrength > 0;
+    if (varying && runChoice.variationSeed.trim() && parseVariationSeed(runChoice.variationSeed) === null) {
+      toast.error("Variation seed must be an integer from 0 to 4294967295");
+      return;
+    }
+    const baseVariationSeed = varying
+      ? (parseVariationSeed(runChoice.variationSeed) ?? randomVariationSeed())
+      : null;
 
     // Snap to the model's grid and bounds so a half-typed value cannot 400.
     const sent = unifiedEditRun ? editSize : fitSize(width, height, sizeLimits);
@@ -5060,7 +5100,7 @@ export function ImagesPage({
             guidance: effectiveGuidance,
             // Offset runs by the batch size: the native engine seeds image j at seed+j, so a +1 offset
             // would regenerate batch-mates.
-            seed: baseSeed + i * batchSize,
+            seed: varying ? baseSeed : baseSeed + i * batchSize,
             batch_size: batchSize,
             // Transform/Inpaint/Extend send the source image (and mask) with a strength; the backend
             // derives output size from the image.
@@ -5071,6 +5111,11 @@ export function ImagesPage({
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
+            ...sdControlsRequestFields(
+              sdCaps,
+              runChoice,
+              baseVariationSeed !== null ? (baseVariationSeed + i * batchSize) % 2 ** 32 : null,
+            ),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
@@ -5164,7 +5209,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, sdCaps, sdChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5278,6 +5323,20 @@ export function ImagesPage({
       oversizedOnce.current = false;
     });
   }, [oversizedRetryQueued, busy, handleGenerateWithRecall]);
+
+  // Vary: the selected image's seed again, toward a fresh variation seed at a small strength (webui
+  // "Variation seed"); the rest of the request is the current settings.
+  const canVary =
+    !external && Boolean(status?.loaded && sdCaps?.variation_seed) && workflow === "create" && selected !== null;
+  const handleVary = useCallback(() => {
+    if (busy !== null || !selected || !sdCaps?.variation_seed) return;
+    varyOnce.current = {
+      seed: selected.seed,
+      variationSeed: randomVariationSeed(),
+      strength: sdCaps.vary_strength ?? FALLBACK_VARY_STRENGTH,
+    };
+    void handleGenerate();
+  }, [busy, handleGenerate, sdCaps, selected]);
 
   useEffect(() => {
     const pending = pendingRecalledGeneration.current;
@@ -5547,6 +5606,77 @@ export function ImagesPage({
           aria-label="Live preview"
         />
       </div>
+      {sdCaps && (
+        <>
+          {sdCaps.prompt_weighting && (
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                Prompt weighting
+                <InfoHint>
+                  AUTOMATIC1111 syntax: (word:1.2) weights a word, (word) is 1.1x, [word] is 1/1.1x,
+                  \( and \) type a literal bracket, BREAK starts a new 75-token chunk. Prompts past 75
+                  tokens are encoded in chunks instead of cut off. A prompt without this syntax renders
+                  exactly as before. Off reads brackets as plain text.
+                </InfoHint>
+              </span>
+              <Switch
+                checked={sdChoice.promptWeighting}
+                onCheckedChange={(on) => setSdChoice((c) => ({ ...c, promptWeighting: on }))}
+                aria-label="Prompt weighting"
+              />
+            </div>
+          )}
+          {sdCaps.clip_skip && (
+            <SliderField
+              label="CLIP skip"
+              hint={`AUTOMATIC1111 numbering: 1 uses the model's own text-encoder layer. SDXL already reads the penultimate layer, so 1 and 2 render the same (Pony and Illustrious cards often say 2). ${sdCaps.clip_skip.max > 2 ? "3 and up read earlier layers." : ""}`}
+              value={sdChoice.clipSkip}
+              min={1}
+              max={sdCaps.clip_skip.max}
+              step={1}
+              onChange={(v) => setSdChoice((c) => ({ ...c, clipSkip: v }))}
+            />
+          )}
+          {sdCaps.guidance_rescale && (
+            <SliderField
+              label="CFG rescale"
+              hint={
+                sdCaps.guidance_rescale.recommended
+                  ? `Rescales the guided prediction to fix overexposure. This is a v-prediction model: ${sdCaps.guidance_rescale.recommended} is the value from the zero-terminal-SNR paper. 0 = off.`
+                  : "Rescales the guided prediction to fix overexposure, mostly for v-prediction checkpoints (0.7 there). 0 = off."
+              }
+              value={sdChoice.guidanceRescale}
+              min={0}
+              max={sdCaps.guidance_rescale.max}
+              step={0.05}
+              onChange={(v) => setSdChoice((c) => ({ ...c, guidanceRescale: v }))}
+            />
+          )}
+          {sdCaps.variation_seed && (
+            <>
+              <SliderField
+                label="Variation strength"
+                hint="Blends the seed's starting noise toward the variation seed's (AUTOMATIC1111 Variation seed): 0 = off, small values keep the composition, 1 = the variation seed alone. Text to image only. A batch keeps one seed and steps the variation seed."
+                value={sdChoice.variationStrength}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(v) => setSdChoice((c) => ({ ...c, variationStrength: v }))}
+              />
+              {sdChoice.variationStrength > 0 && (
+                <Field label="Variation seed" hint="Leave empty for a random variation seed each run.">
+                  <Input
+                    placeholder="Random if empty"
+                    value={sdChoice.variationSeed}
+                    onChange={(e) => setSdChoice((c) => ({ ...c, variationSeed: e.target.value }))}
+                    aria-label="Variation seed"
+                  />
+                </Field>
+              )}
+            </>
+          )}
+        </>
+      )}
       <LoadedBuildSummary status={status} />
     </>
   );
@@ -6505,6 +6635,24 @@ export function ImagesPage({
                 >
                   Generate
                 </Button>
+                {canVary && (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <Button
+                        className="relative z-10 h-11 px-5"
+                        variant="secondary"
+                        disabled={busy !== null}
+                        onClick={handleVary}
+                      >
+                        Vary
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Re-run with the selected image&apos;s seed and a new variation seed at strength{" "}
+                      {sdCaps?.vary_strength ?? FALLBACK_VARY_STRENGTH}: same composition, small changes
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 {!external && status?.loaded && (canReapply || residentReloadTarget(status) !== null) && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>

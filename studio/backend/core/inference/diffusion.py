@@ -26,6 +26,7 @@ import inspect
 import json
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -334,6 +335,7 @@ from .diffusion_sampler import (
     build_scheduler,
     sampler_options,
 )
+from . import diffusion_sd_controls as sd_controls_mod
 from .diffusion_single_file_converters import (
     CONVERTERS as _ORIGINAL_LAYOUT_CONVERTERS,
     load_original_layout_transformer,
@@ -12063,6 +12065,8 @@ class DiffusionBackend:
         live_preview: Optional[bool] = None,
         sampler: Optional[str] = None,
         schedule_type: Optional[str] = None,
+        # Prompt weighting / CLIP skip / CFG rescale / variation seed (SDXL); None = all off, today's call.
+        sd_controls: Optional["sd_controls_mod.SdControls"] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -12118,6 +12122,18 @@ class DiffusionBackend:
                     batch_size = batch_size,
                     draw_seed = torch.Generator(device = state.device).seed,
                 )
+                # Variation seeds (webui all_subseeds): one per image from the variation seed, and a batch keeps ONE
+                # base seed so it renders variations of a single image. Only when a strength is set.
+                variation_seed_list: Optional[list[int]] = None
+                if sd_controls is not None and sd_controls.variation_strength:
+                    if seeds is None and prompts is None:
+                        jobs = [(p, seed) for p, _ in jobs]
+                    base_variation = (
+                        int(sd_controls.variation_seed)
+                        if sd_controls.variation_seed is not None
+                        else secrets.randbelow(2**32)
+                    )
+                    variation_seed_list = sd_controls_mod.variation_seeds(base_variation, len(jobs))
 
                 # Deferred speed auto: engage the compile profile on the 3rd image. Best-effort; a failure stays eager
                 # and never retries. NOT when a LoRA is requested: a compiled transformer rejects LoRA, breaking every
@@ -12378,6 +12394,7 @@ class DiffusionBackend:
                     pipe.scheduler = swapped
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
                 call_params = inspect.signature(pipe.__call__).parameters
+                sd_controls_mod.validate(sd_controls, fam, pipe, call_params, workflow)
 
                 kwargs: dict[str, Any] = {
                     # prompt / generator / num_images_per_prompt are set per chunk below, one torch.Generator PER
@@ -12674,6 +12691,24 @@ class DiffusionBackend:
 
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
+                kwargs.update(sd_controls_mod.guidance_rescale_kwargs(sd_controls, call_params))
+                weighting_used = [False]
+
+                def _render_chunk(
+                    chunk_kwargs: dict[str, Any], chunk_variation: Optional[list[int]]
+                ):
+                    # Inside the render's grad mode and thread: weighted prompts encode here, and the initial latent
+                    # takes the variation noise. Both are no-ops for a plain request.
+                    if sd_controls_mod.apply_prompt_controls(
+                        pipe, fam, sd_controls, chunk_kwargs, guidance = guidance
+                    ):
+                        weighting_used[0] = True
+                    with sd_controls_mod.variation_latents(
+                        pipe,
+                        chunk_variation,
+                        sd_controls.variation_strength if sd_controls is not None else None,
+                    ):
+                        return pipe(**chunk_kwargs).images
 
                 # EFFECTIVE steps: img2img at strength < 1 denoises a fraction of `steps`.
                 strength_applied = effective_request_strength(
@@ -12821,8 +12856,16 @@ class DiffusionBackend:
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
                             ):
+                                chunk_variation = (
+                                    variation_seed_list[
+                                        len(per_image_seeds) : len(per_image_seeds) + len(chunk)
+                                    ]
+                                    if variation_seed_list
+                                    else None
+                                )
                                 out = render_thread.run(
-                                    "diffusion", lambda: pipe(**chunk_kwargs).images
+                                    "diffusion",
+                                    lambda: _render_chunk(chunk_kwargs, chunk_variation),
                                 )
                             if gen.phase in ("encode", "denoise"):
                                 _flip_to_decode()
@@ -12987,6 +13030,11 @@ class DiffusionBackend:
                     if swapped is not None and sampler != DEFAULT_SAMPLER
                     else None,
                     "schedule_type": resolved_schedule,
+                    **sd_controls_mod.record_fields(
+                        sd_controls,
+                        weighting_used = weighting_used[0],
+                        variation_seed_list = variation_seed_list,
+                    ),
                 }
                 logger.info(
                     "diffusion.generated: %s",
@@ -13326,6 +13374,7 @@ class DiffusionBackend:
             "supports_live_preview": _live_preview_available(state),
             "prompt_hint": state.family.prompt_hint,
             "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),
+            "sd_controls": sd_controls_mod.status_fields(state.family, state.pipe),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),

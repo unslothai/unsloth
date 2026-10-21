@@ -51901,6 +51901,33 @@ def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Option
     return {}
 
 
+def _sd_controls_kwargs(generate: Any, request: Any) -> dict:
+    """``sd_controls`` (prompt weighting, CLIP skip, CFG rescale, variation seed) for an engine whose generate() takes
+    them (diffusers only). A value that changes the render, sent to another engine, is refused (ValueError -> 400)
+    rather than ignored, so a recipe never records a control that did not run."""
+    from core.inference.diffusion_sd_controls import SdControls
+
+    controls = SdControls(
+        prompt_weighting = getattr(request, "prompt_weighting", None),
+        clip_skip = getattr(request, "clip_skip", None),
+        guidance_rescale = getattr(request, "guidance_rescale", None),
+        variation_seed = getattr(request, "variation_seed", None),
+        variation_strength = getattr(request, "variation_strength", None),
+    )
+    try:
+        import inspect
+        if "sd_controls" in inspect.signature(generate).parameters:
+            return {"sd_controls": controls}
+    except (TypeError, ValueError):
+        pass
+    if controls.requested():
+        raise ValueError(
+            "Prompt weighting, CLIP skip, CFG rescale and variation seeds are supported on the "
+            "diffusers engine only."
+        )
+    return {}
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -52343,6 +52370,7 @@ async def _generate_diffusion_image_run(
                     ),
                     **_live_preview_kwarg(backend.generate, request.live_preview),
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
+                    **_sd_controls_kwargs(backend.generate, request),
                 )
             break
         except ImageActivationShortfallError as exc:
@@ -52460,6 +52488,16 @@ async def _generate_diffusion_image_run(
                         "localized_edit": result.get("localized_edit"),
                         "sampler": result.get("sampler"),
                         "schedule_type": result.get("schedule_type"),
+                        "prompt_weighting": result.get("prompt_weighting"),
+                        "clip_skip": result.get("clip_skip"),
+                        "guidance_rescale": result.get("guidance_rescale"),
+                        "variation_seed": (
+                            result["variation_seeds"][index]
+                            if result.get("variation_seeds")
+                            and index < len(result["variation_seeds"])
+                            else None
+                        ),
+                        "variation_strength": result.get("variation_strength"),
                         "created_at": created_at,
                     },
                 )

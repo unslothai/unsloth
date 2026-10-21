@@ -541,6 +541,13 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       }
     } else if (key === "schedule type")
       out.schedule_type = labelId(SCHEDULE_LABELS, value);
+    else if (key === "clip skip" && Number.isInteger(num)) out.clip_skip = num;
+    else if (key === "cfg rescale" && Number.isFinite(num))
+      out.guidance_rescale = num;
+    else if (key === "variation seed" && Number.isSafeInteger(num))
+      out.variation_seed = num;
+    else if (key === "variation seed strength" && Number.isFinite(num))
+      out.variation_strength = num;
     else if (key === "size") {
       const size = SIZE.exec(value);
       if (size) {
@@ -619,6 +626,11 @@ export interface RestorableRecipe {
   model_kind?: string;
   sampler?: string;
   schedule_type?: string;
+  // SDXL controls (lib/sd-controls); absent = off.
+  clip_skip?: number;
+  guidance_rescale?: number;
+  variation_seed?: number;
+  variation_strength?: number;
   // The prompt upsampler's caption and outcome; restore decides the Enhance prompt toggle from them.
   enhanced_prompt?: string | null;
   prompt_enhancement?: "applied" | "off" | "unavailable" | "failed" | null;
@@ -643,6 +655,10 @@ export const APPLIED_RECIPE_KEYS = [
   "localized_edit",
   "sampler",
   "schedule_type",
+  "clip_skip",
+  "guidance_rescale",
+  "variation_seed",
+  "variation_strength",
   "enhanced_prompt",
   "prompt_enhancement",
 ] as const;
@@ -668,6 +684,7 @@ export const INFO_RECIPE_KEYS = [
   "engine",
   "generator",
   "schema_version",
+  "prompt_weighting",
 ] as const;
 
 /** Matches RECIPE_SCHEMA_VERSION in core/inference/image_gallery.py. */
@@ -772,6 +789,14 @@ export function recipeSettings(
     model_kind: r.model_kind === "connection" ? "connection" : undefined,
     sampler: str(r.sampler),
     schedule_type: str(r.schedule_type),
+    // The request's bounds: CLIP skip 1-12, CFG rescale and variation strength 0-1, 32-bit variation seed.
+    clip_skip: clamp(int(r.clip_skip), 1, 12),
+    guidance_rescale: clamp(num(r.guidance_rescale), 0, 1),
+    variation_seed: (() => {
+      const n = int(r.variation_seed);
+      return n !== undefined && n >= 0 && n < 2 ** 32 ? n : undefined;
+    })(),
+    variation_strength: clamp(num(r.variation_strength), 0, 1),
     enhanced_prompt: str(r.enhanced_prompt) ?? null,
     prompt_enhancement:
       r.prompt_enhancement === "applied" ||

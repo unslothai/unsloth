@@ -12,6 +12,7 @@ import {
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
+import type { SdControlsCapability } from "./lib/sd-controls";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -100,6 +101,8 @@ export interface DiffusionStatus {
   prompt_hint?: string | null;
   // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
   samplers?: DiffusionSamplerOption[];
+  // SDXL prompt weighting / CLIP skip / CFG rescale / variation seed; null or absent = none of them.
+  sd_controls?: SdControlsCapability | null;
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
@@ -258,6 +261,12 @@ export interface DiffusionGenerateRequest {
   controlnet?: ControlNetSpecInput;
   sampler?: string;
   schedule_type?: string;
+  // Sent only off their defaults (lib/sd-controls); refused (400) for a model without them.
+  prompt_weighting?: boolean;
+  clip_skip?: number;
+  guidance_rescale?: number;
+  variation_seed?: number;
+  variation_strength?: number;
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
   enhance_prompt?: boolean | null;
@@ -349,6 +358,12 @@ export interface GalleryImage {
   // null = the model's shipped scheduler; schedule_type is the resolved schedule.
   sampler?: string | null;
   schedule_type?: string | null;
+  // null = off; variation_seed is this image's own.
+  prompt_weighting?: boolean | null;
+  clip_skip?: number | null;
+  guidance_rescale?: number | null;
+  variation_seed?: number | null;
+  variation_strength?: number | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
   prompt_enhancement?: PromptEnhancement | null;
