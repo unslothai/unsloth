@@ -67,7 +67,7 @@
     "dexie": "^4.3.0",
     "fflate": "0.8.3",
     "js-yaml": "^4.3.2",
-    "katex": "^0.16.28",
+    "katex": "^0.18.2",
     "lucide-react": "^1.7.0",
     "mammoth": "^1.11.0",
     "marked": "17.0.6",
@@ -139,7 +139,7 @@
     "rolldown": "1.0.3",
     "typescript": "7.0.2",
     "typescript-eslint": "^8.55.0",
-    "vite": "^8.0.16"
+    "vite": "^8.3.4"
   },
   "allowScripts": {
     "@biomejs/biome@1.9.4": true,
