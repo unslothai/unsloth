@@ -432,8 +432,12 @@ def test_regex_extraction_is_explained():
     from core.training.rewards import score_rule, validate_rule
 
     rule = validate_rule(
-        {"type": "regex", "pattern": "[0-9]+", "extract": {"between": ["<answer>", "</answer>"]},
-         "score": {"match": 1.0, "miss": 0.0}}
+        {
+            "type": "regex",
+            "pattern": "[0-9]+",
+            "extract": {"between": ["<answer>", "</answer>"]},
+            "score": {"match": 1.0, "miss": 0.0},
+        }
     )
     hit, miss = {}, {}
     assert score_rule(rule, "<answer>4</answer>", explanation = hit) == 1.0

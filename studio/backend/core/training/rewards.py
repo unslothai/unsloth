@@ -557,8 +557,11 @@ def score_rule(
             text = _extract(text, rule["extract"], explanation)
             if text is None:
                 return finish(
-                    rule["score"]["miss"], "missing_response", response = None,
-                    pattern = rule["pattern"], mode = rule["mode"],
+                    rule["score"]["miss"],
+                    "missing_response",
+                    response = None,
+                    pattern = rule["pattern"],
+                    mode = rule["mode"],
                 )
         checked = text.strip() if rule["mode"] == "fullmatch" else text
         if rule["mode"] == "fullmatch":
