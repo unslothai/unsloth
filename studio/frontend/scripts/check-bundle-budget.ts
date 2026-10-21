@@ -338,8 +338,9 @@ export const BUDGET = {
   // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised by that.
   // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
   // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
-  // 96 chunks). Raised by that.
-  transferBytes: 2_070_864,
+  // 96 chunks). Merged with main at 04d2beec9b the build measures 6,876,583 B raw / 2,070,849 B transfer (97 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_071_038,
   rawBytes: 6_876_743,
 };
 
