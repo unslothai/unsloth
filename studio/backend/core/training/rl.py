@@ -10,7 +10,6 @@ GRPO runs without vLLM: Unsloth only switches TRL to vLLM rollouts when the mode
 from __future__ import annotations
 
 import dataclasses
-import inspect
 import json
 import math
 import os
@@ -273,7 +272,11 @@ def format_rl_dataset(
             # Like TRL's extract_prompt: the longest shared prefix is the prompt, the rest is each
             # completion. The prompt column then holds only the conversation's first turn.
             shared = 0
-            while shared < min(len(chosen), len(rejected)) and chosen[shared] == rejected[shared]:
+            # Compared without nulls: Arrow pads each column's tool arguments with the other
+            # calls' keys, so identical context differs between the two columns.
+            while shared < min(len(chosen), len(rejected)) and _strip_nulls(
+                chosen[shared]
+            ) == _strip_nulls(rejected[shared]):
                 shared += 1
             if shared == min(len(chosen), len(rejected)):
                 # One is a prefix of the other: its last turn is its completion (TRL's extract_prompt).
@@ -400,6 +403,14 @@ def _row_tools(row: dict):
     return tools or None
 
 
+def _strip_nulls(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _strip_nulls(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_strip_nulls(v) for v in value]
+    return value
+
+
 def _drop_nulls(value: Any) -> Any:
     if isinstance(value, dict):
         # Tool-call arguments stay as given: a null there can be the answer (required, nullable).
@@ -438,13 +449,6 @@ def render_preference_rows(dataset, tokenizer):
     columns = getattr(dataset, "column_names", None) or []
     if tokenizer is None or not columns:
         return dataset
-    from trl.data_utils import maybe_apply_chat_template
-
-    # TRL before 0.21 takes no template kwargs; those rows are rendered here instead.
-    trl_takes_kwargs = any(
-        p.kind is inspect.Parameter.VAR_KEYWORD
-        for p in inspect.signature(maybe_apply_chat_template).parameters.values()
-    )
 
     def render(row: dict) -> dict:
         tools, kwargs = _row_tools(row), _row_template_kwargs(row)
@@ -455,23 +459,25 @@ def render_preference_rows(dataset, tokenizer):
             if k not in _TRL_ROW_COLUMNS
         }
         prompt = row.get("prompt")
-        tool_ended = isinstance(prompt, list) and prompt and prompt[-1].get("role") == "tool"
-        if tool_ended or (kwargs and not trl_takes_kwargs and isinstance(prompt, list)):
-            # TRL 0.23 refuses a prompt that ends on a tool result; render it as newer TRL does.
-            render_kwargs = {"tools": tools, "tokenize": False, **kwargs}
-            text = tokenizer.apply_chat_template(
-                prompt, add_generation_prompt = True, **render_kwargs
-            )
-            full = {
-                key: tokenizer.apply_chat_template(prompt + row[key], **render_kwargs)
-                for key in ("chosen", "rejected")
-            }
-            if not all(f.startswith(text) for f in full.values()):
-                # The generation header differs from the reply's (Qwen3's empty think block):
-                # the prompt is then what both branches share, never past the prompt's own text.
-                text = os.path.commonprefix([text, *full.values()])
-            return {"prompt": text, **{key: f[len(text) :] for key, f in full.items()}}
-        return maybe_apply_chat_template(row, tokenizer, tools = tools, **kwargs)
+        if not (isinstance(prompt, list) and prompt):
+            return row
+        # Rendered as TRL's apply_chat_template does, but sliced once from the prompt both
+        # branches share: TRL shortens it for rejected after slicing chosen (Qwen3 think block),
+        # refuses a tool-ended prompt and, before 0.21, takes no template kwargs.
+        render_kwargs = {"tools": tools, "tokenize": False, **kwargs}
+        prefill = prompt[-1].get("role") == "assistant"
+        text = tokenizer.apply_chat_template(
+            prompt,
+            add_generation_prompt = not prefill,
+            continue_final_message = prefill,
+            **render_kwargs,
+        )
+        full = {
+            key: tokenizer.apply_chat_template(prompt + row[key], **render_kwargs)
+            for key in ("chosen", "rejected")
+        }
+        text = os.path.commonprefix([text, *full.values()])
+        return {**row, "prompt": text, **{key: f[len(text) :] for key, f in full.items()}}
 
     return dataset.map(render, remove_columns = [c for c in _TRL_ROW_COLUMNS if c in columns])
 

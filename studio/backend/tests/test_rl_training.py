@@ -1435,3 +1435,66 @@ def test_preference_tool_call_arguments_render_as_mappings():
     )
     render_preference_rows(ds, _Tok())
     assert seen and all(args == {"city": "Paris"} for args in seen)
+
+
+def test_preference_rows_slice_both_branches_from_one_prompt():
+    from core.training.rl import render_preference_rows
+
+    class _Tok:
+        # Qwen3 with thinking off: an empty think block in the header, a filled one on reasoning.
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            add_generation_prompt = False,
+            continue_final_message = False,
+            **kw,
+        ):
+            out = ""
+            for m in messages:
+                if m["role"] == "assistant":
+                    out += f"<a><think>{m.get('reasoning_content') or ''}</think>{m['content']}"
+                else:
+                    out += f"<{m['role']}>{m['content']}"
+            return out + ("<a><think></think>" if add_generation_prompt else "")
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "2+2?"}],
+                "chosen": [{"role": "assistant", "content": "4"}],
+                "rejected": [{"role": "assistant", "content": "5", "reasoning_content": "hm"}],
+            }
+        ]
+    )
+    row = render_preference_rows(ds, _Tok())[0]
+    assert row["prompt"] + row["chosen"] == "<user>2+2?<a><think></think>4"
+    assert row["prompt"] + row["rejected"] == "<user>2+2?<a><think>hm</think>5"
+
+
+def test_full_conversation_pairs_with_structured_tool_arguments_keep_their_shared_context():
+    def call(name, args):
+        return {"type": "function", "function": {"name": name, "arguments": args}}
+
+    context = [
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "tool_calls": [call("weather", {"city": "Paris"})]},
+        {"role": "tool", "content": "sunny"},
+        {"role": "user", "content": "And then?"},
+    ]
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": "Weather in Paris?",
+                "chosen": context
+                + [{"role": "assistant", "content": "", "tool_calls": [call("f", {"x": 1})]}],
+                "rejected": context
+                + [{"role": "assistant", "content": "", "tool_calls": [call("f", {"y": 2})]}],
+            }
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    row = out[0]
+    assert [m["role"] for m in row["prompt"]] == ["user", "assistant", "tool", "user"]
+    assert len(row["chosen"]) == 1 and len(row["rejected"]) == 1
