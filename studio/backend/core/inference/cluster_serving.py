@@ -1178,6 +1178,12 @@ def _link_nodes(verify: bool = True) -> List[Node]:
             else:
                 _UNVERIFIED.discard(peer.node_id)
         host, port = (verified[0], verified[1]) if verified else candidates[0]
+        if not verify:
+            # A status read verifies nothing: an existing relay keeps the destination a verified pass gave it,
+            # or any LAN host announcing this worker's public id and fingerprint could re-point it.
+            current = relays.destination(peer.node_id)
+            if current is not None:
+                host, port = current
         try:
             endpoint = relays.ensure(peer.node_id, host, port)
         except Exception as exc:

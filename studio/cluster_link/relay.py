@@ -127,6 +127,11 @@ class RelayManager:
     def endpoints(self) -> Dict[str, str]:
         return {n: r.endpoint for n, r in self._relays.items()}
 
+    def destination(self, node_id: str) -> Optional[Tuple[str, int]]:
+        """Where an existing relay sends its sessions (host, agent port), or None."""
+        relay = self._relays.get(node_id)
+        return (relay.host, relay.agent_port) if relay is not None else None
+
     def counters(self, node_id: str) -> Dict[str, int]:
         relay = self._relays.get(node_id)
         return dict(relay.counters) if relay else {}
@@ -255,8 +260,11 @@ class RelayManager:
         return reply
 
     async def _native_close(self, node_id: str, timeout: float) -> Dict[str, Any]:
+        reply = await self._control(node_id, {"type": "native_close"}, timeout, paired = False)
+        # Only an answer ends the watch: after a failed close (the worker briefly unreachable) it keeps
+        # revalidating and, once the worker is no longer authorized here, retries the close itself.
         self._stop_native_watch(node_id)
-        return await self._control(node_id, {"type": "native_close"}, timeout, paired = False)
+        return reply
 
     def _stop_native_watch(self, node_id: str) -> None:
         watch = self._native_watches.pop(node_id, None)

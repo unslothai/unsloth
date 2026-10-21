@@ -1589,3 +1589,43 @@ def test_a_failed_native_revocation_is_retried_until_the_worker_answers(
     assert native.allowlist_path(link.agent.native_port).read_text().split() == []
     assert _wait(lambda: link.agent.rpc_pid not in (None, pid_native), 10.0)
     assert _wait(lambda: "w1" not in link.relay._native_watches, 5.0)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_a_failed_explicit_native_close_keeps_the_revocation_watch(
+    make_link, tmp_path, monkeypatch
+):
+    # Studio's removal path calls native_close() itself; if that one attempt cannot reach the agent, the
+    # watch must survive and retry, or the removed worker keeps its native session for good.
+    from studio.cluster_link import native
+
+    import studio.cluster_link.relay as relay_mod
+
+    monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)
+    monkeypatch.setattr(relay_mod, "NATIVE_CLOSE_RETRY_MAX_S", 0.4, raising = False)
+    trusted = {"ok": True}
+    link = _native_link(
+        make_link, tmp_path, relay_authorize = lambda pid: trusted["ok"] and pid.node_id == "w1"
+    )
+    assert link.relay.native("w1")["type"] == "native_ok"
+    pid_native = link.agent.rpc_pid
+    plain, failures = link.relay._control, []
+
+    async def flaky(
+        node,
+        request,
+        timeout,
+        paired = True,
+    ):
+        if request.get("type") == "native_close" and not failures:
+            failures.append(request)
+            raise OSError("network unreachable")
+        return await plain(node, request, timeout, paired = paired)
+
+    link.relay._control = flaky
+    assert link.relay.native_close("w1") is False  # the explicit close fails once
+    trusted["ok"] = False  # the worker is removed on the master
+    link.relay.remove("w1")  # as _drop_stale_relays does next
+    assert _wait(lambda: link.agent.mode == "loopback", 15.0)
+    assert native.allowlist_path(link.agent.native_port).read_text().split() == []
+    assert _wait(lambda: link.agent.rpc_pid not in (None, pid_native), 10.0)

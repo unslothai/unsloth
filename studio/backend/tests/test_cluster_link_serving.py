@@ -48,13 +48,18 @@ class FakeRegistry:
 class FakeRelays:
     def __init__(self):
         self.ports = {}
+        self.dest = {}
         self.statuses = {}
         self.removed = []
         self.stopped = False
 
     def ensure(self, node_id, host, agent_port):
         port = self.ports.setdefault(node_id, 41000 + len(self.ports))
+        self.dest[node_id] = (host, agent_port)
         return f"127.0.0.1:{port}"
+
+    def destination(self, node_id):
+        return self.dest.get(node_id)
 
     def status(
         self,
@@ -599,3 +604,21 @@ def test_every_status_read_sees_workers_paired_or_removed_since(monkeypatch, rel
     assert st.nodes == planned  # a load in flight keeps the nodes it planned against
     FakeRegistry.peers = FakeRegistry.peers + [peer("node-c", "attic", "c" * 64, ("192.168.1.30",))]
     assert {n["name"] for n in st.status()["nodes"]} == {"desk", "attic"}
+
+
+def test_a_status_read_never_repoints_a_verified_relay_at_a_spoofed_sighting(monkeypatch, relays):
+    # Planning verified node-a at its real address; a LAN host then announces node-a's public id and
+    # fingerprint from elsewhere. A status read checks nothing over the network, so it must leave the
+    # relay where verification put it, or the next RPC connection goes to the spoofer.
+    real = ("192.168.1.20", 50070)
+    honest = SimpleNamespace(host = real[0], agent_port = real[1], fp = FP_A, seen_at = 1.0)
+    sightings = {"node-a": [honest]}
+    monkeypatch.setattr(cs, "_sightings", lambda: {n: s[0] for n, s in sightings.items()})
+    monkeypatch.setattr(cs, "_sighting_candidates", lambda node_id: sightings.get(node_id, []))
+    st = cs.state()
+    st.refresh_nodes()  # verified planning pass
+    assert relays.destination("node-a") == real
+    spoof = SimpleNamespace(host = "10.6.6.6", agent_port = 50070, fp = FP_A, seen_at = 2.0)
+    sightings["node-a"] = [spoof, honest]
+    st.status()
+    assert relays.destination("node-a") == real
