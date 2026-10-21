@@ -589,3 +589,37 @@ def test_a_cached_probe_rereads_the_shared_library(tmp_path, monkeypatch):
         LlamaCppBackend.probe_server_capabilities(str(binary))["fit_measures_borrowed_drafts"]
         is True
     )
+
+
+def _dsv41_dspark_pair():
+    """DeepSeek-V4.1 target and its DSpark drafter, dims read off the published GGUFs."""
+    target = LlamaCppBackend.__new__(LlamaCppBackend)
+    target._embedding_length, target._vocab_size = 5120, 129280
+    draft = LlamaCppBackend.__new__(LlamaCppBackend)
+    for k, v in dict(
+        _architecture = "dflash",
+        _embedding_length = 5120,
+        _n_layers = 3,
+        _n_heads = 64,
+        _n_kv_heads = 1,
+        _kv_key_length = 512,
+        _kv_value_length = 512,
+        _feed_forward_length = 2304,
+        _expert_feed_forward_length = 2304,
+        _vocab_size = 129280,
+    ).items():
+        setattr(draft, k, v)
+    target._draft_backend_for = lambda path: draft
+    return target
+
+
+@pytest.mark.parametrize("ub, measured_mib", [(512, 725.5), (2048, 2900.5)])
+def test_a_dspark_prompt_graph_is_priced_with_the_micro_batch(ub, measured_mib):
+    """llama.cpp b11734 reserves 725.5 MiB at -ub 512 and 2900.5 MiB at 2048 for this
+    drafter's compute; the old flat 349 MiB let the reserve fall 2.2 GiB short."""
+    b = _dsv41_dspark_pair()
+    got = (
+        b._mtp_draft_compute_bytes(8192, drafter_path = "/d.gguf", n_ubatch = ub)
+        + LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES
+    ) / 2**20
+    assert measured_mib <= got <= measured_mib * 1.25

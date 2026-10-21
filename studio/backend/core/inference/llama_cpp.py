@@ -19080,6 +19080,20 @@ class LlamaCppBackend:
             draft_width = getattr(db, "_compute_activation_width", lambda: 0)()
             if draft_width > 0:
                 width = draft_width + 2 * (getattr(self, "_embedding_length", None) or 0)
+            if getattr(db, "_architecture", None) == "dflash" and draft_width > 0:
+                # A DFlash/DSpark block scores every micro-batch token over the borrowed
+                # vocabulary and attends with full-width heads: its prompt graph grows
+                # with the micro-batch (DeepSeek-V4.1 DSpark, b11734: 725.5 MiB at -ub
+                # 512, 2900.5 MiB at 2048, against 349 MiB flat).
+                vocab = (
+                    getattr(db, "_vocab_size", None)
+                    or getattr(self, "_vocab_size", None)
+                    or _ASSUMED_MAX_VOCAB
+                )
+                heads = (getattr(db, "_n_heads", None) or 0) * (
+                    getattr(db, "_kv_key_length", None) or 0
+                )
+                width = max(width, 2 * vocab + 2 * heads + draft_width)
         activations = int(width * ub * 4 * self._COMPUTE_BUFFER_SAFETY)
         spec = verify_rows + max(0, ub * 2 * n_ctx + activations - self._MTP_DRAFT_COMPUTE_BYTES)
         if getattr(db, "_architecture", None) == "dflash":
