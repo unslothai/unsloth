@@ -15,7 +15,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """get_statistics() fetches its stats repos concurrently under ONE 120 s limit: one child per
 repo, one after another, blocked from_pretrained ~76 s behind a slow proxy (#14366).
-Helpers loaded by AST, CPU only, no network."""
+Helpers loaded by AST; huggingface_hub, psutil and unsloth_zoo are stubs: CPU only, no network, no deps."""
 
 import ast
 import functools
@@ -29,8 +29,6 @@ import threading
 import time
 import types
 
-import huggingface_hub
-import psutil
 import pytest
 
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
@@ -41,7 +39,7 @@ class _Props:
     total_memory = 32 * 1024**3
 
 
-def _load(monkeypatch, limiter):
+def _load(monkeypatch, limiter, snapshot_download):
     tree = ast.parse(_UTILS.read_text(encoding = "utf-8"))
     keep = [
         node
@@ -52,7 +50,7 @@ def _load(monkeypatch, limiter):
         "os": os,
         "functools": functools,
         "socket": socket,
-        "psutil": psutil,
+        "psutil": types.SimpleNamespace(cpu_count = lambda logical = True: 4),
         "logger": logging.getLogger("unsloth"),
         "torch": types.SimpleNamespace(
             cuda = types.SimpleNamespace(get_device_properties = lambda i: _Props())
@@ -68,6 +66,17 @@ def _load(monkeypatch, limiter):
     rl = types.ModuleType("unsloth_zoo.rl_environments")
     rl.execute_with_time_limit = limiter
     zoo.rl_environments = rl
+    hub = types.ModuleType("huggingface_hub")
+    hub.__path__ = []
+    hub.snapshot_download = snapshot_download
+    hub_utils = types.ModuleType("huggingface_hub.utils")
+    bars = {"disabled": False}
+    hub_utils.are_progress_bars_disabled = lambda: bars["disabled"]
+    hub_utils.disable_progress_bars = lambda: bars.update(disabled = True)
+    hub_utils.enable_progress_bars = lambda: bars.update(disabled = False)
+    hub.utils = hub_utils
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils", hub_utils)
     monkeypatch.setitem(sys.modules, "unsloth_zoo", zoo)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.rl_environments", rl)
     for k in (
@@ -105,14 +114,12 @@ class _Recorder:
 
 
 @pytest.fixture
-def rec(monkeypatch):
-    rec = _Recorder()
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", rec.snapshot_download)
-    return rec
+def rec():
+    return _Recorder()
 
 
 def test_repos_fetched_concurrently(monkeypatch, rec):
-    ns = _load(monkeypatch, rec.limiter)
+    ns = _load(monkeypatch, rec.limiter, rec.snapshot_download)
     t0 = time.perf_counter()
     ns["get_statistics"](False)
     elapsed = time.perf_counter() - t0
@@ -124,7 +131,7 @@ def test_repos_fetched_concurrently(monkeypatch, rec):
 
 
 def test_one_time_limited_child_with_process_backend(monkeypatch, rec):
-    ns = _load(monkeypatch, rec.limiter)
+    ns = _load(monkeypatch, rec.limiter, rec.snapshot_download)
     ns["get_statistics"](False)
     # SIGALRM cannot interrupt worker threads; only a killed child bounds a hung download.
     assert rec.limits == [(120, {"backend": "process"})]
@@ -140,15 +147,14 @@ def test_hf_down_message_kept(monkeypatch, rec):
 
         return wrap
 
-    ns = _load(monkeypatch, limiter)
+    ns = _load(monkeypatch, limiter, rec.snapshot_download)
     with pytest.raises(TimeoutError, match = "HuggingFace seems to be down"):
         ns["get_statistics"](False)
 
 
 def test_failed_repo_is_swallowed_and_others_still_fetched(monkeypatch):
     rec = _Recorder(fail = {"repeat"})
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", rec.snapshot_download)
-    ns = _load(monkeypatch, rec.limiter)
+    ns = _load(monkeypatch, rec.limiter, rec.snapshot_download)
     assert ns["get_statistics"](False) is None
     assert len(rec.calls) == 4
 
@@ -162,7 +168,7 @@ def test_failed_repo_is_swallowed_and_others_still_fetched(monkeypatch):
     ],
 )
 def test_opt_outs_make_no_request(monkeypatch, rec, env, local_files_only):
-    ns = _load(monkeypatch, rec.limiter)
+    ns = _load(monkeypatch, rec.limiter, rec.snapshot_download)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     ns["get_statistics"](local_files_only)
