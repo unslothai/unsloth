@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import inspect
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -291,3 +292,77 @@ def test_external_connection_refuses_inpaint_mask_fields(client, monkeypatch, fi
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == "An external image connection only supports text to image."
     assert looked_up == []
+
+
+class _PilInpaintPipe(_FakeInpaintPipe):
+    """Returns a solid green picture over the whole canvas, as a pipeline with no overlay does."""
+
+    def __call__(self, **kw):
+        from PIL import Image
+
+        super().__call__(**kw)
+        n = kw.get("num_images_per_prompt", 1)
+        size = kw["image"].size
+        return types.SimpleNamespace(images = [Image.new("RGB", size, (0, 200, 0)) for _ in range(n)])
+
+
+class _PilInpaintPipeline(_FakeInpaintPipeline):
+    __call__ = _PilInpaintPipe.__call__
+
+    @classmethod
+    def from_pipe(cls, base_pipe, **kwargs):
+        _FakeInpaintPipeline.from_pipe(base_pipe, **kwargs)
+        return _PilInpaintPipe()
+
+
+class _PilCropInpaintPipe(_PilInpaintPipe):
+    def __call__(
+        self,
+        *,
+        padding_mask_crop = None,
+        **kw,
+    ):
+        return super().__call__(padding_mask_crop = padding_mask_crop, **kw)
+
+
+class _PilCropInpaintPipeline(_FakeInpaintPipeline):
+    __call__ = _PilCropInpaintPipe.__call__
+
+    @classmethod
+    def from_pipe(cls, base_pipe, **kwargs):
+        _FakeInpaintPipeline.from_pipe(base_pipe, **kwargs)
+        return _PilCropInpaintPipe()
+
+
+def test_mask_blur_pastes_the_render_back_through_the_soft_mask(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import diffusers
+
+    # Real inpaint pipelines binarize mask_image, so the soft edge only reaches the picture through the overlay.
+    monkeypatch.setattr(diffusers, "ZImageInpaintPipeline", _PilInpaintPipeline, raising = False)
+    backend = _loaded_backend(tmp_path)
+    out = _inpaint(backend, mask_blur = 4)
+    img = out["images"][0]
+    source, render = (120, 30, 30), (0, 200, 0)
+    # Mask square is x, y in [16, 48): far outside keeps the source, the centre is the render.
+    assert img.getpixel((2, 2)) == source
+    assert img.getpixel((32, 32)) == render
+    edge = img.getpixel((15, 32))
+    assert edge not in (source, render)
+    assert render[1] > edge[1] > source[1] and source[0] > edge[0] > render[0]
+    assert out["mask_blur"] == 4
+    # Unblurred inpaint is unchanged: the pipeline's own output comes back as is.
+    plain = _inpaint(backend)["images"][0]
+    assert plain.getpixel((2, 2)) == render
+
+
+def test_only_masked_with_blur_is_not_overlaid_twice(fake_runtime, tmp_path, monkeypatch):
+    import diffusers
+
+    # padding_mask_crop already pastes back through the blurred mask inside the pipeline.
+    monkeypatch.setattr(diffusers, "ZImageInpaintPipeline", _PilCropInpaintPipeline, raising = False)
+    backend = _loaded_backend(tmp_path)
+    out = _inpaint(backend, mask_blur = 4, inpaint_only_masked = True)
+    assert _FakeInpaintPipe.last_kwargs["padding_mask_crop"] == 32
+    assert out["images"][0].getpixel((2, 2)) == (0, 200, 0)

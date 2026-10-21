@@ -332,6 +332,7 @@ from .diffusion_mask import (
     ONLY_MASKED_UNSUPPORTED_MSG,
     blur_mask,
     inpaint_class_accepts_padding_mask_crop,
+    overlay_with_mask,
     resolve_padding,
 )
 from .diffusion_sampler import (
@@ -12389,6 +12390,7 @@ class DiffusionBackend:
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
                 call_params = inspect.signature(pipe.__call__).parameters
                 mask_blur_applied = inpaint_padding_applied = None
+                soft_overlay = None
                 if workflow == "inpaint" and mask_pil is not None:
                     inpaint_padding_applied = resolve_padding(inpaint_only_masked, inpaint_padding)
                     if (
@@ -12400,6 +12402,10 @@ class DiffusionBackend:
                         # After the snap/resize above, so the radius is in source-image pixels.
                         mask_pil = blur_mask(mask_pil, mask_blur)
                         mask_blur_applied = int(mask_blur)
+                        # The pipeline binarizes the mask, so the blur only reaches the picture through this
+                        # overlay. padding_mask_crop already overlays with the blurred mask.
+                        if inpaint_padding_applied is None and init_pil is not None:
+                            soft_overlay = (init_pil, mask_pil)
 
                 kwargs: dict[str, Any] = {
                     # prompt / generator / num_images_per_prompt are set per chunk below, one torch.Generator PER
@@ -12890,6 +12896,8 @@ class DiffusionBackend:
                                 images.extend(layers_out)
                                 per_image_seeds.extend(s for _ in layers_out)
                         else:
+                            if soft_overlay is not None:
+                                out = [overlay_with_mask(o, *soft_overlay) for o in out]
                             images.extend(out)
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))

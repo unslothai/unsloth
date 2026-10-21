@@ -17,7 +17,7 @@ torch = pytest.importorskip("torch")
 diffusers = pytest.importorskip("diffusers")
 np = pytest.importorskip("numpy")
 
-from PIL import Image  # noqa: E402
+from PIL import Image, ImageFilter  # noqa: E402
 
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
@@ -172,3 +172,34 @@ def test_only_masked_refused_when_pipeline_lacks_padding_mask_crop(backend, monk
     assert backend.status()["supports_inpaint_only_masked"] is False
     with pytest.raises(ValueError, match = "Only masked"):
         _render(backend, inpaint_only_masked = True)
+
+
+def test_mask_blur_feathers_the_render_into_the_source(backend, monkeypatch):
+    # The pipeline binarizes mask_image, so the blur reaches the picture only through the overlay back onto the source.
+    cls = diffusers.StableDiffusionXLInpaintPipeline
+    original = cls.__call__
+    raw = []
+
+    @functools.wraps(original)
+    def recording(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        raw.append(np.asarray(result.images[0].convert("RGB"), dtype = np.float64))
+        return result
+
+    monkeypatch.setattr(cls, "__call__", recording)
+    _, ref = _render(backend)
+    _, img = _render(backend, mask_blur = 8)
+    src = np.asarray(_source(), dtype = np.float64)
+    # Far from the mask the source survives; the plain render re-encodes it through the VAE.
+    assert int(np.abs(img[:8, :8] - src[:8, :8]).max()) <= 2
+    assert int(np.abs(ref[:8, :8] - src[:8, :8]).max()) > 2
+    # Everywhere, A1111's apply_overlay: the render pasted over the source through the blurred mask.
+    m = (np.asarray(_mask().filter(ImageFilter.GaussianBlur(8)), dtype = np.float64) / 255.0)[
+        ..., None
+    ]
+    expected = m * raw[-1] + (1 - m) * src
+    assert float(np.abs(img - expected).max()) <= 1.5
+    # Just outside the painted square the mask is partial, so the pixel is a real mix of the two.
+    y, x = 64, 36
+    assert 0.05 < m[y, x, 0] < 0.5
+    assert float(np.abs(raw[-1][y, x] - src[y, x]).max()) > 10

@@ -27,6 +27,25 @@ def blur_mask(mask: Any, radius: Optional[int]) -> Any:
     return mask.filter(ImageFilter.GaussianBlur(int(radius)))
 
 
+def overlay_with_mask(image: Any, source: Any, mask: Any) -> Any:
+    """``image`` pasted over ``source`` through the (blurred) ``mask``, as A1111's apply_overlay does.
+
+    Inpaint pipelines binarize the mask they are handed, so without this a blur only moves the hard edge.
+    A non-PIL output (a latent or tensor return) is returned unchanged."""
+    from PIL import Image
+
+    if not isinstance(image, Image.Image):
+        return image
+    size = image.size
+    if source.size != size:
+        source = source.resize(size, Image.LANCZOS)
+    if mask.size != size:
+        mask = mask.resize(size, Image.BILINEAR)
+    mode = image.mode
+    out = Image.composite(image.convert("RGB"), source.convert("RGB"), mask.convert("L"))
+    return out if mode == "RGB" else out.convert(mode)
+
+
 def resolve_padding(only_masked: Optional[bool], padding: Optional[int]) -> Optional[int]:
     """The ``padding_mask_crop`` value, or None when "Only masked" is off."""
     if not only_masked:
