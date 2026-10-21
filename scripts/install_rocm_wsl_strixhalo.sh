@@ -258,17 +258,20 @@ $SUDO tee "$_envfile" >/dev/null <<EOF
 # >>> Unsloth ROCm-on-WSL >>>
 export HSA_ENABLE_DXG_DETECTION=1
 export PATH="${ROCM_DIR}/bin:\${PATH}"
-export LD_LIBRARY_PATH="${ROCM_DIR}/lib:\${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${ROCM_DIR}/lib\${LD_LIBRARY_PATH:+:\${LD_LIBRARY_PATH}}"
 # <<< Unsloth ROCm-on-WSL <<<
 EOF
-# also drop into ~/.bashrc for interactive shells
+# also drop into ~/.bashrc for interactive shells; an older block left a trailing ':' (the cwd) on an empty LD_LIBRARY_PATH, so replace it
+if [ -n "${HOME:-}" ] && grep -qF 'lib:${LD_LIBRARY_PATH:-}' "${HOME}/.bashrc" 2>/dev/null; then
+    sed -i '/^# >>> Unsloth ROCm-on-WSL >>>$/,/^# <<< Unsloth ROCm-on-WSL <<<$/d' "${HOME}/.bashrc"
+fi
 if [ -n "${HOME:-}" ] && ! grep -q "Unsloth ROCm-on-WSL" "${HOME}/.bashrc" 2>/dev/null; then
     cat "$_envfile" >> "${HOME}/.bashrc"
 fi
 # export into the current process so verification below works immediately
 export HSA_ENABLE_DXG_DETECTION=1
 export PATH="${ROCM_DIR}/bin:${PATH}"
-export LD_LIBRARY_PATH="${ROCM_DIR}/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${ROCM_DIR}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 # ── Step 5: verify the runtime enumerates the GPU ────────────────────────────
 say "Verifying rocminfo enumerates the GPU over DXG"
