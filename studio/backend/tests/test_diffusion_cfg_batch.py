@@ -739,3 +739,35 @@ def test_the_trial_prices_the_batched_steps_preparation_and_verification(monkeyp
     shape = cb.router_for(pipe).last_shape
     assert shape.off is not None and "measured no gain" in shape.off
     assert min(shape.batched_s) == pytest.approx(1.9)
+
+
+@pytest.mark.parametrize("offload_policy", ["none", "group"])
+def test_an_explicit_speed_off_request_keeps_one_branch_per_call(monkeypatch, offload_policy):
+    # speed_mode="off" is the bit-identical reference path; a doubled batch can pick other GEMM / attention tiles.
+    def pipe():
+        model = Flux2Transformer2DModel()
+        return _Pipe(_offloaded(model) if offload_policy == "group" else model)
+
+    off = pipe()
+    reason = cb.install_cfg_batch(off, offload_policy = offload_policy, speed_mode = "off")
+    assert reason is not None and "speed_mode=off" in reason and cb.router_for(off) is None
+    assert "forward" not in off.transformer.__dict__
+    assert "speed_mode=off" in cb.cfg_batch_decline(
+        pipe(), offload_policy = offload_policy, speed_mode = " OFF "
+    )
+    for speed in (None, "default", "max"):  # unset keeps the default-on lever
+        assert cb.cfg_batch_decline(pipe(), offload_policy = offload_policy, speed_mode = speed) is None
+    monkeypatch.setenv(cb.CFG_BATCH_ENV, "force")
+    assert cb.cfg_batch_decline(pipe(), offload_policy = offload_policy, speed_mode = "off") is None
+
+
+def test_both_backends_pass_the_requested_speed_mode():
+    import inspect
+
+    from core.inference import diffusion, video
+    for module in (diffusion, video):
+        src = inspect.getsource(module)
+        calls = [c for c in src.split("install_cfg_batch(")[1:] if not c.startswith("pipe: Any")]
+        assert calls and all(
+            "speed_mode = speed_mode" in c.split(")")[0] for c in calls
+        ), module.__name__

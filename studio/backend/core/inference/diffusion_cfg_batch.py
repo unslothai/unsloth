@@ -23,9 +23,10 @@ doubled call needs room for twice a plain call's activations; an OOM turns the s
 
 Not always bit-exact (other GEMM / attention tiles): B200 bf16 resident FLUX.2-klein-base-4B is bitwise equal,
 Wan2.1-T2V-1.3B LPIPS 0.019 mean; offloaded FLUX.2-klein-base LPIPS ~0.01. ``UNSLOTH_DIFFUSION_CFG_BATCH=0`` keeps the exact
-one-branch-per-call path; ``force`` also batches an unlisted class (the trial's discarded calls must be side-effect
-free). Declined for per-call activation scaling (NVFP4 without frozen global scales), whose scale would change with the
-doubled batch, and for denoisers already wrapped by another forward layer.
+one-branch-per-call path, as does a request with ``speed_mode="off"``; ``force`` batches anyway, an unlisted class too
+(the trial's discarded calls must be side-effect free). Declined for per-call activation scaling (NVFP4 without frozen
+global scales), whose scale would change with the doubled batch, and for denoisers already wrapped by another forward
+layer.
 
 Compiled denoisers: the doubled shape compiles a second graph per block, allowed only in a shape's trial render.
 Offloaded compiled denoisers batch; resident compiled ones and shapes judged before a later compile stay plain. A
@@ -194,11 +195,24 @@ def per_call_scaled(module: Any) -> Optional[str]:
     return None
 
 
-def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
-    """Why both guidance branches cannot share one forward on this load, else None."""
+def _speed_off_requested(speed_mode: Optional[str]) -> bool:
+    """The request asked for ``speed_mode="off"`` (unset is not a request): the bit-identical reference path."""
+    return speed_mode is not None and str(speed_mode).strip().lower() == "off"
+
+
+def cfg_batch_decline(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    speed_mode: Optional[str] = None,
+) -> Optional[str]:
+    """Why both guidance branches cannot share one forward on this load, else None. ``speed_mode`` is the request's own
+    value: an explicit ``off`` keeps one branch per call (a doubled batch can pick other tiles); ``force`` overrides."""
     mode = cfg_batch_mode()
     if mode == "off":
         return f"{CFG_BATCH_ENV}=0"
+    if mode != "force" and _speed_off_requested(speed_mode):
+        return f"speed_mode=off keeps one branch per call ({CFG_BATCH_ENV}=force batches anyway)"
     torch = _torch()
     denoiser = getattr(pipe, "transformer", None)
     if not isinstance(denoiser, torch.nn.Module):
@@ -825,12 +839,13 @@ def install_cfg_batch(
     pipe: Any,
     *,
     offload_policy: str,
+    speed_mode: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
     """Arm :class:`CfgBatchRouter` on ``pipe.transformer``; the decline reason, or None when armed. An optional lever:
-    it never fails a load."""
+    it never fails a load. ``speed_mode`` is the request's value (None = unset)."""
     try:
-        return _install(pipe, offload_policy = offload_policy, logger = logger)
+        return _install(pipe, offload_policy = offload_policy, speed_mode = speed_mode, logger = logger)
     except Exception as exc:  # noqa: BLE001
         if logger is not None:
             logger.info("diffusion.cfg_batch: not armed (%s: %s)", type(exc).__name__, exc)
@@ -841,9 +856,10 @@ def _install(
     pipe: Any,
     *,
     offload_policy: str,
+    speed_mode: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[str]:
-    reason = cfg_batch_decline(pipe, offload_policy = offload_policy)
+    reason = cfg_batch_decline(pipe, offload_policy = offload_policy, speed_mode = speed_mode)
     if reason is not None:
         if logger is not None:
             logger.info("diffusion.cfg_batch: not armed (%s)", reason)

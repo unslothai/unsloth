@@ -9929,8 +9929,10 @@ class DiffusionBackend:
                     )
                     # After every forward wrapper of the speed / graph layers, so the replica sees the final module.
                     install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
-                    # both branches through one offloaded forward; declines when CFG-parallel took the slot
-                    install_cfg_batch(pipe, offload_policy = effective_policy, logger = logger)
+                    # both branches through one forward; declines when CFG-parallel took the slot or speed_mode=off was asked
+                    install_cfg_batch(
+                        pipe, offload_policy = effective_policy, speed_mode = speed_mode, logger = logger
+                    )
                     # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new
                     install_zimage_cfg_split(pipe, offload_policy = effective_policy, logger = logger)
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
