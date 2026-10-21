@@ -25,8 +25,9 @@ def _override_branch(path):
     raise AssertionError(f"bf16 override not found in {path.name}")
 
 
-def _resolve(path, device_type, dtype, supports):
+def _resolve(path, device_type, dtype, supports, zoo_keeps = True):
     namespace = {
+        "xpu_keeps_explicit_bf16": lambda: device_type == "xpu" and zoo_keeps,
         "torch": torch,
         "os": types.SimpleNamespace(environ = {}),
         "dtype": dtype,
@@ -46,3 +47,18 @@ def test_explicit_bf16_kept_on_xpu_only(name):
     assert _resolve(path, "cuda", torch.bfloat16, False) is torch.float16
     assert _resolve(path, "hip", torch.bfloat16, False) is torch.float16
     assert _resolve(path, "xpu", torch.bfloat16, True) is torch.bfloat16
+    # Beside a zoo whose vLLM path still downgrades, the load downgrades too, so both agree.
+    assert _resolve(path, "xpu", torch.bfloat16, False, zoo_keeps = False) is torch.float16
+
+
+def test_explicit_bf16_on_xpu_follows_the_paired_zoo(monkeypatch):
+    from unsloth import device_type as dt
+
+    zoo = pytest.importorskip("unsloth_zoo.device_type")
+    monkeypatch.setattr(dt, "DEVICE_TYPE", "xpu")
+    monkeypatch.delattr(zoo, "XPU_KEEPS_EXPLICIT_BF16", raising = False)
+    assert dt.xpu_keeps_explicit_bf16() is False
+    monkeypatch.setattr(zoo, "XPU_KEEPS_EXPLICIT_BF16", True, raising = False)
+    assert dt.xpu_keeps_explicit_bf16() is True
+    monkeypatch.setattr(dt, "DEVICE_TYPE", "cuda")
+    assert dt.xpu_keeps_explicit_bf16() is False

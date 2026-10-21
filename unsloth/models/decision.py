@@ -29,6 +29,7 @@ from ._utils import (
     is_bfloat16_supported,
 )
 from .loader_utils import is_distributed
+from ..device_type import xpu_keeps_explicit_bf16
 from ._decision_fast import compiled_encoder, pad_length
 from ._decision_common import *  # noqa: F401,F403
 
@@ -631,7 +632,7 @@ def _clef_bnb_config(dtype):
     from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
 
     # XPU keeps an explicit bf16 request in bf16 (emulated if need be), as the loaders do.
-    keep_bf16 = dtype == torch.bfloat16 and _device().type == "xpu"
+    keep_bf16 = dtype == torch.bfloat16 and _device().type == "xpu" and xpu_keeps_explicit_bf16()
     float16 = dtype == torch.float16 or (not is_bfloat16_supported() and not keep_bf16)
     return BitsAndBytesConfig(
         load_in_4bit = True,

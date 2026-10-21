@@ -19,7 +19,7 @@ from .loader_utils import (
     requested_device_map,
     unmarked_device_map,
 )
-from ..device_type import DEVICE_TYPE
+from ..device_type import DEVICE_TYPE, xpu_keeps_explicit_bf16
 from ._utils import (
     config_return_dict,
     SUPPORTS_BFLOAT16,
@@ -2524,7 +2524,7 @@ class FastSentenceTransformer(FastModel):
                 else:
                     dtype = torch.float32
             # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
-            elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and DEVICE_TYPE != "xpu":
+            elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
                 print("Unsloth: Device does not support bfloat16. Using float16 instead.")
                 dtype = torch.float16
 

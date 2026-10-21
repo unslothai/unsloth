@@ -242,6 +242,7 @@ try:
 except:
     from huggingface_hub.utils._token import get_token
 from ..device_type import (
+    xpu_keeps_explicit_bf16,
     get_device_stats,
     clean_gpu_cache,
     is_hip,
@@ -3380,7 +3381,7 @@ class FastBaseModel:
             if dtype == torch.float16:
                 dtype = torch.bfloat16
         # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and DEVICE_TYPE != "xpu":
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)

@@ -262,6 +262,18 @@ def xpu_supports_native_bf16():
     return True
 
 
+def xpu_keeps_explicit_bf16():
+    """An explicit bf16 request on XPU stays bf16 (emulated if need be) only beside an unsloth_zoo
+    that does the same for vLLM, so the engine and the HF weights it shares agree on one dtype."""
+    if DEVICE_TYPE != "xpu":
+        return False
+    try:
+        import unsloth_zoo.device_type as zoo_device_type
+    except Exception:
+        return False
+    return bool(getattr(zoo_device_type, "XPU_KEEPS_EXPLICIT_BF16", False))
+
+
 def zoo_shares_xpu_bf16():
     """True once unsloth_zoo has _xpu_bf16_supported. An older zoo still counts emulated bf16 for
     trainer AMP, gradient checkpointing and vLLM, so keep the old XPU answer there to load alike."""

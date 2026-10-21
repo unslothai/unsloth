@@ -1478,6 +1478,7 @@ def test_clef_keeps_an_explicit_bf16_model_in_bf16_on_xpu(monkeypatch):
     model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, xpu) is None
     monkeypatch.setattr(decision, "_device", lambda: xpu)
+    monkeypatch.setattr(decision, "xpu_keeps_explicit_bf16", lambda: True)
     assert decision._clef_bnb_config(torch.bfloat16).bnb_4bit_compute_dtype == torch.bfloat16
     assert decision._clef_bnb_config(None).bnb_4bit_compute_dtype == torch.float16
     monkeypatch.setattr(decision, "_device", lambda: cuda)
