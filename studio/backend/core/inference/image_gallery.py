@@ -82,6 +82,9 @@ def _params_text(meta: dict[str, Any]) -> str:
         fields += ", Inpaint area: Only masked"
         if meta.get("inpaint_padding") is not None:
             fields += f", Masked area padding: {meta['inpaint_padding']}"
+    # Static flow shift, read back by the paste parser; base / max shift stay in the recipe chunk only.
+    if meta.get("shift") is not None:
+        fields += f", Shift: {meta['shift']}"
     if meta.get("generator"):
         fields += f", Version: {meta['generator']}"
     lines.append(fields)

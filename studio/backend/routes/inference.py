@@ -51905,6 +51905,27 @@ def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Option
     return {}
 
 
+def _shift_kwargs(generate: Any, request: Any) -> dict:
+    """``shift`` / ``base_shift`` / ``max_shift`` for an engine whose generate() takes them (diffusers only).
+
+    Omitted on every engine when unset, so an older call is unchanged; a value sent to another engine
+    is refused (ValueError -> 400) rather than silently ignored."""
+    values = {
+        "shift": getattr(request, "shift", None),
+        "base_shift": getattr(request, "base_shift", None),
+        "max_shift": getattr(request, "max_shift", None),
+    }
+    if all(v is None for v in values.values()):
+        return {}
+    try:
+        import inspect
+        if "shift" in inspect.signature(generate).parameters:
+            return values
+    except (TypeError, ValueError):
+        pass
+    raise ValueError("Shift is supported on the diffusers engine only.")
+
+
 def _inpaint_mask_kwargs(generate: Any, request: Any) -> dict:
     """Inpaint mask kwargs generate() accepts; only the set ones, so an untouched request is unchanged."""
     try:
@@ -52023,6 +52044,9 @@ async def _external_image_generation(
         or body.localized_edit
         or body.sampler
         or body.schedule_type
+        or body.shift is not None
+        or body.base_shift is not None
+        or body.max_shift is not None
         or body.mask_blur is not None
         or body.inpaint_only_masked is not None
         or body.inpaint_padding is not None
@@ -52365,6 +52389,7 @@ async def _generate_diffusion_image_run(
                     ),
                     **_live_preview_kwarg(backend.generate, request.live_preview),
                     **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
+                    **_shift_kwargs(backend.generate, request),
                     **_inpaint_mask_kwargs(backend.generate, request),
                 )
             break
@@ -52484,9 +52509,17 @@ async def _generate_diffusion_image_run(
                         "sampler": result.get("sampler"),
                         "schedule_type": result.get("schedule_type"),
                         **{
-                            k: result[k]
-                            for k in ("mask_blur", "inpaint_only_masked", "inpaint_padding")
-                            if result.get(k) is not None
+                            key: result[key]
+                            for key in (
+                                "shift",
+                                "base_shift",
+                                "max_shift",
+                                "embeddings",
+                                "mask_blur",
+                                "inpaint_only_masked",
+                                "inpaint_padding",
+                            )
+                            if result.get(key) not in (None, [])
                         },
                         "created_at": created_at,
                     },

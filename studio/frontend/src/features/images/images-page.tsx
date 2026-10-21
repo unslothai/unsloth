@@ -319,6 +319,7 @@ import {
   type ImportedRecipe,
   importedRecipe,
   importNotApplied,
+  textualInversionLabel,
   isGenerationParametersPaste,
   loraTagNames,
   matchLoraTagsForImport,
@@ -355,6 +356,17 @@ import {
   SCHEDULE_LABELS,
   withSamplerChoice,
 } from "./lib/sampler-choice";
+import {
+  EMPTY_SHIFT,
+  shiftFromRecipe,
+  shiftNotApplied,
+  shiftRequestFields,
+  splitInstalledEmbeddings,
+  type ShiftValue,
+  withEmbeddingTrigger,
+} from "./lib/shift-choice";
+import { listDiffusionEmbeddings } from "./embeddings-api";
+import { EmbeddingsField, ShiftField } from "./shift-embeddings-controls";
 import {
   enhancePromptRequestField,
   enhanceRestoreFor,
@@ -2217,6 +2229,21 @@ export function ImagesPage({
     },
     [samplerChoice, samplerModelKey, samplerOptions],
   );
+  const shiftControl = !external && status?.loaded ? (status.shift_control ?? null) : null;
+  const [shiftState, setShiftState] = useState<{ key: string; value: ShiftValue }>({
+    key: "",
+    value: EMPTY_SHIFT,
+  });
+  const shiftValue = shiftState.key === samplerModelKey ? shiftState.value : EMPTY_SHIFT;
+  const setShiftValue = useCallback(
+    (value: ShiftValue) => setShiftState({ key: samplerModelKey, value }),
+    [samplerModelKey],
+  );
+  const embeddingsEnabled = !external && status?.loaded === true && !!status.textual_inversion;
+  const insertEmbedding = useCallback((trigger: string, target: "prompt" | "negative") => {
+    if (target === "negative") setNegativePrompt((p) => withEmbeddingTrigger(p, trigger));
+    else setPrompt((p) => withEmbeddingTrigger(p, trigger));
+  }, [setPrompt]);
   // Enhance prompt (FLUX.3's prompt upsampler): stored per family, defaulting to the family's own default. A
   // restore or "Use as prompt" sets a one-off override that the next toggle or family change drops.
   const upsamplerCapability = promptUpsamplerCapability(status, Boolean(external));
@@ -2778,6 +2805,7 @@ export function ImagesPage({
     setHeight(restored.height);
     // The batch shared one base seed, so a batch_index>0 image only reproduces by replaying the whole batch.
     setBatchSize(image.batch_size ?? 1);
+    setShiftValue(shiftFromRecipe(image));
     const m = matchAspect(restored.width, restored.height);
     setAspect(m.key);
     setPortrait(m.portrait);
@@ -2842,7 +2870,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -2894,6 +2922,21 @@ export function ImagesPage({
           notes: loraTagNames(recipe.lora_tags).map((n) => `LoRA ${n} (model changed during import)`),
         };
       }
+      // TI hashes: the prompt names each embedding, so on a model that takes them an installed one applies.
+      const tiNames = Array.isArray(recipe.textual_inversions)
+        ? recipe.textual_inversions.filter((x): x is string => typeof x === "string")
+        : [];
+      let tiMatch: { installed: string[]; missing: string[] } | null = null;
+      if (tiNames.length > 0 && embeddingsEnabled && status?.family) {
+        const triggers = await listDiffusionEmbeddings(status.family).then(
+          (r) => r.embeddings.map((e) => e.trigger),
+          () => null,
+        );
+        if (seq !== importSeq.current) return false;
+        // A list fetched for a model that is no longer loaded says nothing: the names are reported plainly.
+        if (triggers && loadedModelKey(statusRef.current) === modelBefore)
+          tiMatch = splitInstalledEmbeddings(tiNames, triggers);
+      }
       const merged =
         tagged.loras.length > 0
           ? { ...recipe, loras: [...(Array.isArray(recipe.loras) ? recipe.loras : []), ...tagged.loras] }
@@ -2942,8 +2985,22 @@ export function ImagesPage({
         ...tagged.unmatched.map((name) => `LoRA ${name} (not installed)`),
         ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
         ...tagged.notes,
+        ...shiftNotApplied(recipe, shiftControl),
         ...unknownRecipeKeys(recipe),
       ];
+      if (tiMatch) {
+        const { installed, missing } = tiMatch;
+        const resolved = new Map<string, string | null>([
+          ...installed.map((n): [string, null] => [textualInversionLabel(n), null]),
+          ...missing.map((n): [string, string] => [textualInversionLabel(n), `${textualInversionLabel(n)} (not installed)`]),
+        ]);
+        const kept = notApplied.flatMap((item) => {
+          if (!resolved.has(item)) return [item];
+          const label = resolved.get(item);
+          return label ? [label] : [];
+        });
+        notApplied.splice(0, notApplied.length, ...kept);
+      }
       const baked = Array.isArray(recipe.baked_loras)
         ? recipe.baked_loras.filter((x): x is string => typeof x === "string")
         : [];
@@ -2992,7 +3049,7 @@ export function ImagesPage({
       }
       return true;
     },
-    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily],
+    [restoreSettings, width, height, steps, guidance, status, samplerOptions, availableLoras, loraCapable, loraCatalogFamily, embeddingsEnabled, shiftControl],
   );
   const importSettingsFromFile = useCallback(
     async (file: File | Uint8Array) => {
@@ -5249,6 +5306,7 @@ export function ImagesPage({
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
             ...samplerRequestFields(samplerOptions, samplerChoice),
+            ...shiftRequestFields(shiftControl, shiftValue),
             ...enhancePromptRequestField(upsamplerCapability, enhanceOn),
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
@@ -5346,7 +5404,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, enhanceOn, upsamplerCapability, prompt, negativePrompt, negativeEngaged, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, shiftControl, shiftValue, width, height, steps, effectiveGuidance, seed, batchSize, count, workflow, initImage, maskImage, strength, maskBlur, inpaintOnlyMasked, inpaintPadding, status?.supports_inpaint_only_masked, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, multiImageEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -6697,6 +6755,12 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
+            <ShiftField control={shiftControl} value={shiftValue} onChange={setShiftValue} />
+            <EmbeddingsField
+              family={status?.family}
+              enabled={embeddingsEnabled}
+              onInsert={insertEmbedding}
+            />
             {!external && (
               <>
                 <Field

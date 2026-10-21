@@ -72,6 +72,7 @@ from .diffusion_families import (
     canonical_base,
     cache_holds_files,
     comfy_flow_shift_for,
+    comfy_shift_node_for,
     default_generation_params,
     generation_params_with_grid,
     detect_family_for_pick,
@@ -275,6 +276,7 @@ from . import diffusion_compile_cache as compile_cache
 from .diffusion_compile_config import family_filters_reductions
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
+from . import diffusion_embeddings
 from . import diffusion_te_release as te_release
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
@@ -333,6 +335,9 @@ from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_
 from .diffusion_flow_shift import (
     SAMPLE_SIGMAS_KEY,
     apply_comfy_flow_shift,
+    requested_flow_shift,
+    scheduler_with_flow_shift,
+    shift_control,
     install_sample_sigmas,
     pipe_sample_sigmas,
     sample_sigmas_for_steps,
@@ -471,6 +476,17 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
             "model is reloaded. Reload the model with the new adapter weights."
         )
+
+
+def _state_shift_node(state: Any) -> Optional[str]:
+    """The ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*) of the loaded checkpoint, or None."""
+    return comfy_shift_node_for(
+        state.family,
+        getattr(state, "gguf_filename", None),
+        getattr(state, "repo_id", None),
+        getattr(state, "display_repo_id", None),
+        getattr(state, "base_repo", None),
+    )
 
 
 def _guidance_supported(state: Any) -> bool:
@@ -12130,6 +12146,9 @@ class DiffusionBackend:
         live_preview: Optional[bool] = None,
         sampler: Optional[str] = None,
         schedule_type: Optional[str] = None,
+        shift: Optional[float] = None,
+        base_shift: Optional[float] = None,
+        max_shift: Optional[float] = None,
         # Inpaint only: None / 0 / False keep the plain inpaint call.
         mask_blur: Optional[int] = None,
         inpaint_only_masked: Optional[bool] = None,
@@ -12171,6 +12190,8 @@ class DiffusionBackend:
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None
+            applied_embeddings: Optional[diffusion_embeddings.AppliedEmbeddings] = None
+            applied_shift: Optional[float] = None
             restore_vae: Optional[Callable[[], None]] = None
             restore_resident: Optional[Callable[[], None]] = None
             bg = None
@@ -12538,6 +12559,30 @@ class DiffusionBackend:
                         kwargs["width"] = iw
                     if "height" in call_params:
                         kwargs["height"] = ih
+                if shift is not None or base_shift is not None or max_shift is not None:
+                    shift_w, shift_h = kwargs.get("width"), kwargs.get("height")
+                    if (not shift_w or not shift_h) and init_pil is not None:
+                        shift_w, shift_h = init_pil.size
+                    if pipe_sample_sigmas(state.pipe) is not None:
+                        # Tuned on the shipped scheduler, like the load-time ComfyUI shift (which skips it too).
+                        raise ValueError(
+                            "This checkpoint ships its own sampling schedule, so Shift is not available."
+                        )
+                    shift_node = _state_shift_node(state)
+                    applied_shift = requested_flow_shift(
+                        shift_node,
+                        shift = shift,
+                        base_shift = base_shift,
+                        max_shift = max_shift,
+                        width = shift_w or width,
+                        height = shift_h or height,
+                        defaults = shift_control(shift_node, pipe.scheduler),
+                    )
+                    shifted = scheduler_with_flow_shift(pipe.scheduler, applied_shift)
+                    if shifted is not pipe.scheduler:
+                        if restore_scheduler is None:
+                            restore_scheduler = (pipe, pipe.scheduler)
+                        pipe.scheduler = shifted
                 if (
                     negative_prompt
                     and _negative_prompt_engaged(state.family, guidance)
@@ -12549,6 +12594,16 @@ class DiffusionBackend:
                 ):
                     # Qwen-Image true CFG needs a negative present; ComfyUI encodes an empty one.
                     kwargs["negative_prompt"] = ""
+                applied_embeddings = diffusion_embeddings.apply(
+                    pipe,
+                    getattr(state.family, "textual_inversion", None),
+                    {
+                        "prompt": [p for p, _ in jobs],
+                        "negative_prompt": kwargs.get("negative_prompt"),
+                    },
+                    marker_owners = (state.pipe,),
+                    logger = logger,
+                )
                 if workflow == "controlnet" and control_pil is not None:
                     # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg
                     # is signature-gated.
@@ -12877,6 +12932,8 @@ class DiffusionBackend:
                         elif state.transformer_cache:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
+                        if applied_embeddings is not None:
+                            chunk_kwargs = applied_embeddings.rewrite(chunk_kwargs)
                         # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
                         install_device_postprocess(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
@@ -13093,6 +13150,14 @@ class DiffusionBackend:
                     "inpaint_only_masked": True if inpaint_padding_applied is not None else None,
                     "inpaint_padding": inpaint_padding_applied,
                 }
+                if applied_shift is not None:
+                    result["shift"] = shift
+                    result["base_shift"] = base_shift
+                    result["max_shift"] = max_shift
+                    result["applied_flow_shift"] = applied_shift
+                if applied_embeddings is not None:
+                    result["embeddings"] = list(applied_embeddings.used)
+                    result["embeddings_skipped"] = list(applied_embeddings.skipped)
                 logger.info(
                     "diffusion.generated: %s",
                     format_generation_for_log(
@@ -13107,6 +13172,8 @@ class DiffusionBackend:
             finally:
                 if restore_scheduler is not None:
                     restore_scheduler[0].scheduler = restore_scheduler[1]
+                if applied_embeddings is not None:
+                    applied_embeddings.restore()
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 if static_skip_pipe is not None:
@@ -13436,6 +13503,11 @@ class DiffusionBackend:
             "supports_live_preview": _live_preview_available(state),
             "prompt_hint": state.family.prompt_hint,
             "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),
+            # Hidden for a checkpoint that ships its own sampling grid (the load-time ComfyUI shift skips it too).
+            "shift_control": None
+            if pipe_sample_sigmas(state.pipe) is not None
+            else shift_control(_state_shift_node(state), getattr(state.pipe, "scheduler", None)),
+            "textual_inversion": getattr(state.family, "textual_inversion", None),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
