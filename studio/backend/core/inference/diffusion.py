@@ -173,6 +173,8 @@ from .diffusion_memory import (
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
     estimate_safetensors_dense_mib,
+    _available_system_memory_mib,
+    _windows_commit_headroom_mib,
     file_size_mib,
     largest_streamable_companion_mib,
     normalize_memory_mode,
@@ -10937,6 +10939,9 @@ class DiffusionBackend:
         # the pre-built single-file DiT (GGUF) already sits on the host before from_pretrained runs
         prebuilt = file_size_mib(single_file_path) or 0
         total, available = host_ram_mib()
+        # keep visible which side binds the available figure: physical RAM or the Windows commit headroom
+        physical = _available_system_memory_mib()
+        commit = _windows_commit_headroom_mib()
         decision = decide_small_host(
             comps,
             dtype,
@@ -10946,17 +10951,28 @@ class DiffusionBackend:
             lora_active = lora_active,
             prebuilt_host_mib = prebuilt,
         )
+        physical_display = f"{physical} MiB" if physical is not None else "-"
+        commit_display = f"{commit} MiB" if commit is not None else "-"
         if decision.engaged or decision.refuse:
             logger.info(
-                "diffusion.small_host: engaged=%s (%s); stored-dtype components=%s; prebuilt=%d MiB",
+                "diffusion.small_host: engaged=%s (%s); stored-dtype components=%s; prebuilt=%d MiB; "
+                "host available: physical %s, commit %s",
                 decision.engaged,
                 decision.reason,
                 decision.storage_dtypes,
                 prebuilt,
+                physical_display,
+                commit_display,
             )
         elif decision.available_mib is not None:
             # a measured non-route decision logs too, so a fits case is not silent (see #13432)
-            logger.info("diffusion.small_host: engaged=%s (%s)", decision.engaged, decision.reason)
+            logger.info(
+                "diffusion.small_host: engaged=%s (%s); host available: physical %s, commit %s",
+                decision.engaged,
+                decision.reason,
+                physical_display,
+                commit_display,
+            )
         if decision.refuse:
             raise RuntimeError(decision.refuse)
         return decision

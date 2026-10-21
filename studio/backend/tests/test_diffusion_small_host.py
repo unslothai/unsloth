@@ -194,6 +194,8 @@ def test_a_measured_fits_decision_logs_its_numbers(tmp_path, monkeypatch):
             records.append(event % args if args else event)
 
     monkeypatch.setattr(dif, "host_ram_mib", lambda: (47 * 1024, 30 * 1024))
+    monkeypatch.setattr(dif, "_available_system_memory_mib", lambda: 45 * 1024)
+    monkeypatch.setattr(dif, "_windows_commit_headroom_mib", lambda: 58 * 1024)
     monkeypatch.setattr(
         dif,
         "stored_components",
@@ -212,7 +214,10 @@ def test_a_measured_fits_decision_logs_its_numbers(tmp_path, monkeypatch):
         r"dense float16 load \(\d+ MiB\) fits 30720 MiB available host RAM",
         decision.reason,
     )
-    assert f"diffusion.small_host: engaged=False ({decision.reason})" in records
+    assert (
+        f"diffusion.small_host: engaged=False ({decision.reason}); "
+        "host available: physical 46080 MiB, commit 59392 MiB" in records
+    )
 
 
 def test_lora_keeps_the_dense_load():
