@@ -1241,3 +1241,47 @@ def test_grpo_prompts_with_arrow_filled_null_fields_render_without_them():
     assert rendered and out[0]["prompt"] == "q a t:hm q2" and out[1]["prompt"] == "q a q2"
     clean = Dataset.from_list([{"prompt": [{"role": "user", "content": "q"}]}])
     assert render_grpo_prompts(clean, _Tok(), None) == (clean, False)
+
+
+def test_alpaca_instruction_and_input_both_reach_the_prompt():
+    ds = Dataset.from_list(
+        [
+            {
+                "instruction": "Identify the odd one out.",
+                "input": "Twitter, Instagram, Telegram",
+                "chosen": "Telegram",
+                "rejected": "Twitter",
+            },
+            {"instruction": "Say hi.", "input": "", "chosen": "hi", "rejected": "no"},
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo")
+    assert (
+        out[0]["prompt"][-1]["content"]
+        == "Identify the odd one out.\n\nTwitter, Instagram, Telegram"
+    )
+    assert out[1]["prompt"][-1]["content"] == "Say hi."
+    ignored, _ = format_rl_dataset(ds, "dpo", mapping = {"input": "ignore"})
+    assert ignored[0]["prompt"][-1]["content"] == "Identify the odd one out."
+
+
+def test_sharegpt_turns_and_single_message_cells_become_messages():
+    ds = Dataset.from_list(
+        [
+            {
+                "conversations": [
+                    {"from": "system", "value": "Be brief."},
+                    {"from": "human", "value": "2+2?"},
+                ],
+                "chosen": {"from": "gpt", "value": "4"},
+                "rejected": {"from": "gpt", "value": "5"},
+            }
+        ]
+    )
+    out, _ = format_rl_dataset(ds, "dpo", mapping = {"conversations": "prompt"})
+    assert out[0]["prompt"] == [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "2+2?"},
+    ]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
+    assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
