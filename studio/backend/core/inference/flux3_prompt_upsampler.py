@@ -972,9 +972,8 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
         except Exception:  # noqa: BLE001
             pass
 
-    global _vulkan_probe_worker
     worker = threading.Thread(target = _work, name = "flux3-pup-vulkan-probe", daemon = True)
-    _vulkan_probe_worker = worker
+    _vulkan_probe_workers[:] = [w for w in _vulkan_probe_workers if w.is_alive()] + [worker]
     worker.start()
     while worker.is_alive():
         worker.join(0.1)
@@ -982,21 +981,26 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
             raise UpsamplerCancelledError("Cancelled.")
 
 
-_vulkan_probe_worker: Optional[threading.Thread] = None
+_vulkan_probe_workers: list = []
 
 
 def _wait_for_vulkan_probe(timeout: float = 20.0) -> None:
-    """Join a prefetch a cancelled warm start abandoned: its probe can still hold the llama.cpp tree's libraries."""
-    worker = _vulkan_probe_worker
-    if worker is not None and worker.is_alive():
-        worker.join(timeout)
+    """Join prefetches cancelled warm starts abandoned: their probes can still hold the llama.cpp tree's libraries."""
+    deadline = time.monotonic() + timeout
+    for worker in list(_vulkan_probe_workers):
+        worker.join(max(0.0, deadline - time.monotonic()))
 
 
 def _vulkan_rows_came_back_empty(binary: str) -> bool:
-    """A pinnable host whose cached Vulkan probe listed nothing: a warm start would stay unpinned for good."""
+    """A pinnable multi-GPU host whose cached Vulkan probe listed nothing: a warm start would stay unpinned for good.
+    One torch card warm-starts unpinned as before."""
     try:
         import torch
-        return _vulkan_pin_possible(binary, torch) and not _vulkan_rows(binary)
+        return (
+            torch.cuda.device_count() > 1
+            and _vulkan_pin_possible(binary, torch)
+            and not _vulkan_rows(binary)
+        )
     except Exception:  # noqa: BLE001
         return False
 

@@ -2372,7 +2372,8 @@ def test_one_torch_card_and_one_vulkan_device_launch_as_before(
     assert bool(calls) is vulkan
 
 
-def test_a_warm_start_probes_an_empty_vulkan_answer_once(spawn_argv, warmable, monkeypatch):
+@pytest.mark.parametrize("cards", [1, 2])
+def test_a_warm_start_probes_an_empty_vulkan_answer_once(spawn_argv, warmable, monkeypatch, cards):
     # The real spawn after the warm start's own probe: re-probing that empty answer would run it twice.
     import torch
 
@@ -2381,7 +2382,8 @@ def test_a_warm_start_probes_an_empty_vulkan_answer_once(spawn_argv, warmable, m
     state, _run = spawn_argv
     sidecar, launched, _memory, model, _mmproj = warmable
     calls = []
-    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: cards)
+    monkeypatch.setattr(pup, "_cuda_device_count", lambda: cards)
     monkeypatch.setattr(pup, "_resident_cuda_ordinal", lambda: 0)
     monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 120.0)
     monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
@@ -2393,9 +2395,54 @@ def test_a_warm_start_probes_an_empty_vulkan_answer_once(spawn_argv, warmable, m
     monkeypatch.setattr(
         sidecar, "_spawn_server", pup.PromptUpsamplerSidecar._spawn_server.__get__(sidecar)
     )
-    # Declined, not started unpinned: the first enhanced run re-probes (and pins, or launches as before).
-    assert sidecar.warm(binary = "/x/llama-server", model = model, mmproj = None) == "placement"
-    assert len(calls) == 1 and launched == []
+    # Several cards: declined, not started unpinned; the first enhanced run re-probes (and pins, or launches as
+    # before). One card goes on to the spawn unpinned, as before pinning.
+    out = sidecar.warm(binary = "/x/llama-server", model = model, mmproj = None)
+    assert (out == "placement") is (cards > 1)
+    assert len(calls) == 1
+
+
+def test_maintenance_waits_for_every_abandoned_vulkan_probe(monkeypatch):
+    # Two warm starts cancelled within one probe's timeout leave two probes holding the llama.cpp libraries.
+    import torch
+
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
+    )
+    for var in ("HIP_VISIBLE_DEVICES", "GGML_BACKEND_PATH", "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+        monkeypatch.delenv(var, raising = False)
+    monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
+    monkeypatch.setattr(pup, "_vulkan_probe_workers", [], raising = False)
+    releases = [threading.Event(), threading.Event()]
+    entered = []
+
+    def _probe(b = None):
+        release = releases[len(entered)]
+        entered.append(b)
+        release.wait(10)
+        return []
+
+    monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_run_vulkan_probe", staticmethod(_probe))
+    try:
+        for _ in releases:
+            cancel = threading.Event()
+            threading.Timer(0.2, cancel.set).start()
+            with pytest.raises(pup.UpsamplerCancelledError):
+                pup._prefetch_vulkan_rows("b", cancel)
+        releases[1].set()
+        waiter = threading.Thread(target = pup._wait_for_vulkan_probe, args = (10,))
+        waiter.start()
+        waiter.join(0.5)
+        assert waiter.is_alive()
+        releases[0].set()
+        waiter.join(5)
+        assert not waiter.is_alive()
+    finally:
+        for release in releases:
+            release.set()
 
 
 @pytest.mark.parametrize(
