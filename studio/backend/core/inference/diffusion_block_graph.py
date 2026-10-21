@@ -1631,12 +1631,12 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
                 break
         if target is None:
             continue
-        original = target.forward
         # compiles the live class forward: a per-arch patch installed after the hook captured the original runs too
         fn = torch.compile(live, **dict(kwargs))
         if guard is not None and callable(getattr(guard, "wrap", None)):
             fn = guard.wrap(fn, live, transformer)
-            guard.restores.append(lambda ref = target, f = original: setattr(ref, "forward", f))
+            # A failed compile falls back to the live forward, so a class patch keeps running eager below the hook.
+            guard.restores.append(lambda ref = target, f = live: setattr(ref, "forward", f))
         from . import diffusion_block_restride
 
         if diffusion_block_restride.is_wrapped(compiled):

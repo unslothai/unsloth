@@ -358,6 +358,24 @@ def test_compile_below_the_hook_engages_after_a_class_patch_lands_on_the_hooked_
     assert torch.allclose(got, want, atol = 1e-6)
 
 
+def test_a_compile_failure_below_the_hook_keeps_the_class_patch(monkeypatch):
+    # A handled compile failure restores each hook's forward: it must be the patched live forward, not the
+    # definition-time one the hook captured, or later blocks silently drop the per-arch fusion.
+    from core.inference.diffusion_speed import _CompileGuard
+
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"backend": "eager", "fullgraph": False, "dynamic": True}
+    net._unsloth_compile_guard = _CompileGuard(None)
+    marker = lambda *a, **k: None  # noqa: E731
+    for b in net.blocks:
+        b._compiled_call_impl = marker
+    monkeypatch.setattr(Block, "forward", _shifted_forward)
+    assert bg.compile_below_offload_hooks(net) == 2
+    net._unsloth_compile_guard.fail(RuntimeError("compile failed"), net)
+    for b in net.blocks:
+        assert getattr(b._unsloth_below_hook_ref.forward, "__func__", None) is _shifted_forward
+
+
 def test_block_graphs_find_the_compute_below_a_hook_that_predates_a_class_patch(monkeypatch):
     net = _hooked_net(blocks = 2)
     monkeypatch.setattr(Block, "forward", _shifted_forward)
