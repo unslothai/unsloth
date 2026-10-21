@@ -592,6 +592,64 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
 
     output_path: Any = None
     try:
+        from core.export.reap import current_reap_key
+
+        reap = cmd.get("reap") if export_type in ("merged", "base", "gguf") else None
+        if (
+            not reap
+            and export_type in ("merged", "base", "gguf")
+            and current_reap_key(backend) is not None
+        ):
+            # The loaded model is the pruned one now; "no REAP" must not export it. Studio loads
+            # the checkpoint again for every export run; an API client has to do the same.
+            _send_response(
+                resp_queue,
+                {
+                    "type": response_type,
+                    "success": False,
+                    "message": "This model was pruned with REAP for an earlier export. Load it "
+                    "again to export it without pruning.",
+                    "output_path": None,
+                    "ts": time.time(),
+                },
+            )
+            return
+        if (
+            reap
+            and export_type == "base"
+            and (getattr(backend, "is_peft", False) or getattr(backend, "_reap_merged_peft", False))
+        ):
+            # Merging for REAP would get a LoRA past export_base_model's PEFT refusal.
+            reap = None
+        if reap:
+            from core.export.reap import apply_reap, reap_staging_parent
+
+            _send_response(
+                resp_queue,
+                {"type": "status", "message": "Pruning experts with REAP...", "ts": time.time()},
+            )
+            ok, reap_message = apply_reap(
+                backend,
+                reap,
+                reap_staging_parent(cmd.get("save_directory")),
+                # The export's token, else the one the checkpoint was loaded with.
+                hf_token = cmd.get("hf_token") or getattr(backend, "_checkpoint_token", None),
+            )
+            if not ok:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": response_type,
+                        "success": False,
+                        "message": reap_message,
+                        "output_path": None,
+                        "ts": time.time(),
+                    },
+                )
+                return
+            if reap_message:
+                logger.info(reap_message)
+        backend._local_export_path = None
         if export_type == "merged":
             success, message, output_path = backend.export_merged_model(
                 save_directory = cmd.get("save_directory", ""),
@@ -636,6 +694,12 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
             )
         else:
             success, message = False, f"Unknown export type: {export_type}"
+        # A failed Hub upload leaves complete local files: merged / base record their folder once the
+        # local save finishes. GGUF exports keep one report per file themselves.
+        local_path = output_path or getattr(backend, "_local_export_path", None)
+        if (success or local_path) and export_type in ("merged", "base"):
+            from core.export.reap import sync_reap_report
+            sync_reap_report(backend, local_path)
 
         _send_response(
             resp_queue,

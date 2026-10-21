@@ -345,11 +345,11 @@ export const BUDGET = {
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  // Opt-in reply times (#14500: the Settings > Chat row, its eager English strings and the reply footer gate)
-  // add 1,509 B raw / 304 B transfer (6,878,582 -> 6,880,091 B raw, 2,071,484 -> 2,071,788 B transfer against
-  // db0753a, one machine and build, Node 24, 97 chunks). Raised by that.
-  transferBytes: 2_071_878,
-  rawBytes: 6_880_288,
+  // REAP on the Export page (#14130) passes its options through the eager export runtime store (the card is
+  // in the lazy export page): +371 B raw / +119 B transfer (6,878,631 -> 6,879,002 B raw, 2,071,507 ->
+  // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
+  transferBytes: 2_071_693,
+  rawBytes: 6_879_150,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
