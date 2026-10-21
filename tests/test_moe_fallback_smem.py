@@ -242,11 +242,28 @@ def test_estimate_matches_compiled_kernels(ac, monkeypatch, gpu):
     try:
         _compile_shared(
             forward._grouped_gemm_forward_kernel,
-            dict(x_ptr = "*bf16", w_ptr = "*bf16", y_ptr = "*bf16", m_sizes_ptr = "*i32",
-                 gather_indices_ptr = "*i64", topk_weights_ptr = "*bf16"),
-            dict(NUM_EXPERTS = 8, TOPK = 2, N = n, K = k, BLOCK_SIZE_M = 32, BLOCK_SIZE_N = 32,
-                 BLOCK_SIZE_K = 32, PERMUTE_X = True, PERMUTE_Y = False),
-            arch, 4, 2,
+            dict(
+                x_ptr = "*bf16",
+                w_ptr = "*bf16",
+                y_ptr = "*bf16",
+                m_sizes_ptr = "*i32",
+                gather_indices_ptr = "*i64",
+                topk_weights_ptr = "*bf16",
+            ),
+            dict(
+                NUM_EXPERTS = 8,
+                TOPK = 2,
+                N = n,
+                K = k,
+                BLOCK_SIZE_M = 32,
+                BLOCK_SIZE_N = 32,
+                BLOCK_SIZE_K = 32,
+                PERMUTE_X = True,
+                PERMUTE_Y = False,
+            ),
+            arch,
+            4,
+            2,
         )
     except Exception as e:
         pytest.skip(f"Triton cannot cross compile on this host: {type(e).__name__}: {e}")
@@ -254,31 +271,61 @@ def test_estimate_matches_compiled_kernels(ac, monkeypatch, gpu):
         for which in ("heuristic", "default"):
             for kind, c in zip(("fwd", "dX", "dW"), _pick(ac, which, n, k, act, weight)):
                 consts = dict(
-                    NUM_EXPERTS = 8, TOPK = 2, N = n, K = k, BLOCK_SIZE_M = c.BLOCK_SIZE_M,
-                    BLOCK_SIZE_N = c.BLOCK_SIZE_N, BLOCK_SIZE_K = c.BLOCK_SIZE_K,
-                    PERMUTE_X = True, PERMUTE_Y = False,
+                    NUM_EXPERTS = 8,
+                    TOPK = 2,
+                    N = n,
+                    K = k,
+                    BLOCK_SIZE_M = c.BLOCK_SIZE_M,
+                    BLOCK_SIZE_N = c.BLOCK_SIZE_N,
+                    BLOCK_SIZE_K = c.BLOCK_SIZE_K,
+                    PERMUTE_X = True,
+                    PERMUTE_Y = False,
                 )
                 a, w = names[act], names[seen]
                 if kind == "fwd":
                     compiled = _compile_shared(
                         forward._grouped_gemm_forward_kernel,
-                        dict(x_ptr = a, w_ptr = w, y_ptr = a, m_sizes_ptr = "*i32",
-                             gather_indices_ptr = "*i64", topk_weights_ptr = a),
-                        consts, arch, c.num_warps, c.num_stages,
+                        dict(
+                            x_ptr = a,
+                            w_ptr = w,
+                            y_ptr = a,
+                            m_sizes_ptr = "*i32",
+                            gather_indices_ptr = "*i64",
+                            topk_weights_ptr = a,
+                        ),
+                        consts,
+                        arch,
+                        c.num_warps,
+                        c.num_stages,
                     )
                 elif kind == "dX":
                     compiled = _compile_shared(
                         backward._grouped_gemm_dX_kernel,
-                        dict(dY_ptr = a, w_ptr = w, dX_ptr = a, gather_indices_ptr = "*i64",
-                             m_sizes_ptr = "*i32"),
-                        consts, arch, c.num_warps, c.num_stages,
+                        dict(
+                            dY_ptr = a,
+                            w_ptr = w,
+                            dX_ptr = a,
+                            gather_indices_ptr = "*i64",
+                            m_sizes_ptr = "*i32",
+                        ),
+                        consts,
+                        arch,
+                        c.num_warps,
+                        c.num_stages,
                     )
                 else:
                     compiled = _compile_shared(
                         backward._grouped_gemm_dW_per_expert_kernel,
-                        dict(x_ptr = a, dY_ptr = a, dW_ptr = w, m_sizes_ptr = "*i32",
-                             gather_indices_ptr = "*i64"),
-                        dict(consts, EXPERTS_POW2 = 8), arch, c.num_warps,
+                        dict(
+                            x_ptr = a,
+                            dY_ptr = a,
+                            dW_ptr = w,
+                            m_sizes_ptr = "*i32",
+                            gather_indices_ptr = "*i64",
+                        ),
+                        dict(consts, EXPERTS_POW2 = 8),
+                        arch,
+                        c.num_warps,
                         1 if act == F32 else c.num_stages,
                     )
                 estimate = ac._estimate_smem(kind, c, act.itemsize, seen.itemsize, capability)

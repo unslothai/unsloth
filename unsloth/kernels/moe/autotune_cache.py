@@ -503,7 +503,9 @@ def _fit_config_to_smem(
         elif config.num_stages > 2:
             config.num_stages -= 1
         else:
-            name = max(("BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K"), key = lambda n: getattr(config, n))
+            name = max(
+                ("BLOCK_SIZE_M", "BLOCK_SIZE_N", "BLOCK_SIZE_K"), key = lambda n: getattr(config, n)
+            )
             if getattr(config, name) > _MIN_SMEM_BLOCK:
                 setattr(config, name, getattr(config, name) // 2)
             elif config.num_stages > 1:
