@@ -92,6 +92,18 @@ test("a snapshot-pinned repo shows the pinned snapshot, not a cache lookup", () 
   });
 });
 
+test("an MLX precision-folder pick looks up its repo without a GGUF variant", () => {
+  const mlx = target({
+    id: "mlx-community/Qwen3.5-2B",
+    isGguf: false,
+    ggufVariant: "6-bit",
+  });
+  assert.deepEqual(resolveModelLocation(mlx), {
+    kind: "cachedRepo",
+    repoId: "mlx-community/Qwen3.5-2B",
+  });
+});
+
 test("the settings id is preferred when the load id only spells the quant", () => {
   const cached = target({
     id: "unsloth/Repo-GGUF:Q4_K_M",

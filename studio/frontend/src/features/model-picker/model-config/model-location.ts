@@ -48,6 +48,7 @@ export function resolveModelLocation(
   if (!repoId || looksLikeLocalPath(repoId) || isOllamaModelId(repoId)) {
     return null;
   }
-  const variant = target.ggufVariant?.trim();
+  // The endpoint's variant lookup matches GGUF files only; an MLX precision folder resolves to its snapshot.
+  const variant = target.isGguf ? target.ggufVariant?.trim() : undefined;
   return { kind: "cachedRepo", repoId, ...(variant ? { variant } : {}) };
 }
