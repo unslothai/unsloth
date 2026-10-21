@@ -310,6 +310,10 @@ def test_hooks_create_graph_kill_switch_and_non_leaf_fall_back(monkeypatch):
     W = _param(E, N, K, torch.bfloat16)
     _fallback_check(W, cfgs, c, lambda: c.backward(W, cfgs, create_graph = True))
 
+    W = _param(E, N, K, torch.bfloat16)
+    with torch.autograd.detect_anomaly(check_nan = True):
+        _fallback_check(W, cfgs, c, lambda: c.backward(W, cfgs))
+
     monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "0")
     _fallback_check(W, cfgs, c, lambda: c.backward(W, cfgs))
     monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")

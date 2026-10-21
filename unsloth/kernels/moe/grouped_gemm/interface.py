@@ -817,10 +817,16 @@ def _dW_accumulate_target(ctx, X, autotune):
     every case where AccumulateGrad would do more than `param.grad += dW` falls back to the
     returned-gradient path: compiling (the AOT backward graph decides statically), autograd.grad or
     backward(inputs=) not covering W, create_graph, no gradient yet (AccumulateGrad steals the fresh
-    buffer, so there is nothing to save), tensor hooks, layout or dtype mismatch, autotune.
-    The grad may be narrower than X (bf16 weights, fp32 activations): the add still runs in fp32.
+    buffer, so there is nothing to save), tensor hooks, anomaly mode, layout or dtype mismatch,
+    autotune. Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook)
+    cannot be enumerated from Python and see None for W here; UNSLOTH_MOE_DW_ACCUMULATE=0 restores
+    the returned-gradient path. The grad may be narrower than X (bf16 weights, fp32 activations):
+    the add still runs in fp32.
     """
     if torch.compiler.is_compiling() or _is_tracing(X) or torch.is_grad_enabled():
+        return None
+    # Anomaly mode checks the returned gradients for NaN; an in-place add returns None for W.
+    if torch.is_anomaly_enabled():
         return None
     if autotune or not _dW_accumulate_enabled():
         return None
