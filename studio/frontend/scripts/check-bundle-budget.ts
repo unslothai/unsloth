@@ -350,7 +350,10 @@ export const BUDGET = {
   // 2,071,626 B transfer against 4df9ce74f, one machine and build, Node 24, 97 chunks). Raised by that.
   // The NPU setup card (#14524): +439 B raw / +122 B transfer against fc91656ff (Node 24, 97 chunks), where main
   // was already 1 B transfer over; transfer set to the measured build, raw raised by the growth.
-  transferBytes: 2_071_816,
+  // #14524 set transfer to its own measured build with no headroom; merged next to #14508 the startup set
+  // compresses 7 B larger (2_071_823 B at 5ab80ffdb4, Node 24), so main is over. Measured + 189 B, raw unchanged
+  // (already 244 B above the measured 6_879_345).
+  transferBytes: 2_072_012,
   rawBytes: 6_879_589,
 };
 
