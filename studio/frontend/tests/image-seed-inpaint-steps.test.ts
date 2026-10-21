@@ -225,22 +225,22 @@ test("an imported Only masked the loaded pipeline cannot crop is reported as not
   const page = readSrc("features/images/images-page.tsx");
   assert.match(
     page,
-    /\.\.\.inpaintOptionsNotApplied\(settings, status\.supports_inpaint_only_masked === true\),/,
+    /const missed = inpaintOptionsNotApplied\(settings, status\.supports_inpaint_only_masked === true\);\n\s+notApplied\.unshift\(\.\.\.missed\);/,
   );
 });
 
-test("an Only masked imported before any model loads is checked once the model arrives", () => {
+test("Only masked on with a model that cannot crop is reported once per model, however it got there", () => {
   const page = readSrc("features/images/images-page.tsx");
+  // One effect over the status and the switch: an import, a restore, a toggle or a model switch.
   assert.match(
     page,
-    /onlyMaskedRecheck\.current = !status\?\.loaded && settings\.inpaint_only_masked === true;/,
+    /const key =\n\s+status\?\.loaded && inpaintOnlyMasked && status\.supports_inpaint_only_masked !== true\n\s+\? onlyMaskedKeyOf\(status\)\n\s+: null;\n\s+if \(key === null\) \{\n\s+onlyMaskedNotified\.current = null;\n\s+return;\n\s+\}\n\s+if \(onlyMaskedNotified\.current === key\) return;\n\s+onlyMaskedNotified\.current = key;/,
   );
+  assert.match(page, /\}, \[status, inpaintOnlyMasked, inpaintPadding\]\);/);
+  // The import names it in its own toast, so the effect does not repeat it.
   assert.match(
     page,
-    /if \(!onlyMaskedRecheck\.current \|\| !status\?\.loaded\) return;\n\s+onlyMaskedRecheck\.current = false;\n\s+const missed = inpaintOptionsNotApplied\(\n\s+\{ inpaint_only_masked: inpaintOnlyMasked, inpaint_padding: inpaintPadding \},\n\s+status\.supports_inpaint_only_masked === true,\n\s+\);/,
+    /if \(missed\.length > 0\) onlyMaskedNotified\.current = onlyMaskedKeyOf\(status\);/,
   );
-  assert.match(
-    page,
-    /\}, \[status\?\.loaded, status\?\.supports_inpaint_only_masked, inpaintOnlyMasked, inpaintPadding\]\);/,
-  );
+  assert.doesNotMatch(page, /onlyMaskedRecheck/);
 });

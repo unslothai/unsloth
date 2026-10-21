@@ -440,6 +440,9 @@ function useImageModels(
 const labelOf = (labels: Record<string, string>, id: string) =>
   Object.hasOwn(labels, id) ? labels[id] : id;
 
+// Identifies a loaded model for the once-per-model Only masked notice.
+const onlyMaskedKeyOf = (s: DiffusionStatus): string => `${s.repo_id ?? ""}|${s.family ?? ""}`;
+
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
@@ -2802,20 +2805,28 @@ export function ImagesPage({
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
-  const onlyMaskedRecheck = useRef(false);
+  // Notified once per loaded model while Only masked is on but that model's pipeline cannot crop, so
+  // the hidden switch never drops the setting silently, whatever turned it on or switched the model.
+  const onlyMaskedNotified = useRef<string | null>(null);
   useEffect(() => {
-    if (!onlyMaskedRecheck.current || !status?.loaded) return;
-    onlyMaskedRecheck.current = false;
-    const missed = inpaintOptionsNotApplied(
-      { inpaint_only_masked: inpaintOnlyMasked, inpaint_padding: inpaintPadding },
-      status.supports_inpaint_only_masked === true,
-    );
-    if (missed.length > 0) {
-      toast.warning("Some settings in this image were not applied", {
-        description: `Not applied: ${missed.join(", ")}. This model or build does not support them.`,
-      });
+    const key =
+      status?.loaded && inpaintOnlyMasked && status.supports_inpaint_only_masked !== true
+        ? onlyMaskedKeyOf(status)
+        : null;
+    if (key === null) {
+      onlyMaskedNotified.current = null;
+      return;
     }
-  }, [status?.loaded, status?.supports_inpaint_only_masked, inpaintOnlyMasked, inpaintPadding]);
+    if (onlyMaskedNotified.current === key) return;
+    onlyMaskedNotified.current = key;
+    const missed = inpaintOptionsNotApplied(
+      { inpaint_only_masked: true, inpaint_padding: inpaintPadding },
+      false,
+    );
+    toast.warning("Some settings were not applied", {
+      description: `Not applied: ${missed.join(", ")}. This model or build does not support them.`,
+    });
+  }, [status, inpaintOnlyMasked, inpaintPadding]);
   const applyImportedRecipe = useCallback(
     async (recipe: ImportedRecipe) => {
       const tagged = await matchLoraTagsForImport(
@@ -2883,12 +2894,11 @@ export function ImagesPage({
         notApplied.unshift("LoRAs");
       }
       if (status?.loaded) {
-        notApplied.unshift(
-          ...inpaintOptionsNotApplied(settings, status.supports_inpaint_only_masked === true),
-        );
+        const missed = inpaintOptionsNotApplied(settings, status.supports_inpaint_only_masked === true);
+        notApplied.unshift(...missed);
+        // Named in this toast, so the Only masked effect does not repeat it for this model.
+        if (missed.length > 0) onlyMaskedNotified.current = onlyMaskedKeyOf(status);
       }
-      // No model yet: whether it can crop is only known once one loads, so check then.
-      onlyMaskedRecheck.current = !status?.loaded && settings.inpaint_only_masked === true;
       if (status?.supports_negative_prompt === false && settings.negative_prompt && settings.guidance > 0) {
         notApplied.unshift("negative prompt");
       }
