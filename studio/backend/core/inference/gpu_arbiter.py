@@ -278,6 +278,16 @@ def _release_idle_video_servers(reason: str) -> None:
         logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)
 
 
+def _release_idle_decision_worker() -> None:
+    module = sys.modules.get("core.systemone.laya_runtime")
+    if module is None:
+        return
+    try:
+        module.evict_idle_worker()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_arbiter: could not release the idle decision worker: %s", exc)
+
+
 def _evict_video() -> None:
     from core.inference.video import get_video_backend
     get_video_backend().unload()
@@ -729,6 +739,8 @@ def acquire_for(
         if owner != VIDEO and not (coreside and VIDEO in _residents):
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
+        if owner != DECISIONS and (register is not None or replacing):
+            _release_idle_decision_worker()
         if owner != DIFFUSION or register is not None or replacing:
             # A load (or another kind taking the GPU) gets the segmenter's VRAM; an image model's re-assert keeps it.
             _release_mask_segmenter(f"GPU acquired for {owner}", handover = True)

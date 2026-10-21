@@ -223,6 +223,23 @@ def test_shutdown_ends_a_gpu_worker(home, client, gpu):
     assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
+def test_a_chat_load_ends_an_idle_gpu_worker(home, client, gpu, monkeypatch):
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    assert _put(client, enabled = True, model = _fine_tune(home, "laya_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT)
+    with laya_runtime._run_lock:
+        gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None)
+    assert gpu.closed == 0
+    gpu_arbiter.acquire_for(gpu_arbiter.CHAT, lambda: None)
+    assert gpu.closed == 1
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+    assert _post(client).status_code == 200
+    assert gpu.placed == ["cuda", "cuda"]
+
+
 def test_training_takes_the_gpu_from_a_load_in_flight_or_a_model_it_missed(home, client, gpu):
     def training_starts():
         gpu.training, gpu.on_build = True, None
@@ -637,6 +654,16 @@ def test_a_chat_model_that_takes_the_gpu_stops_the_reload(home, client, clef, mo
     settings = client.get("/api/settings/systemone").json()
     assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
     assert len(clef.agents) == 2
+
+
+def test_an_image_load_ends_an_idle_clef_worker(home, client, clef):
+    from core.inference import gpu_arbiter
+
+    assert _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    gpu_arbiter.acquire_for(gpu_arbiter.DIFFUSION, lambda: None)
+    assert clef.agents[0].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
 
 
 def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
