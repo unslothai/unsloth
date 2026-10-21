@@ -1475,25 +1475,43 @@ class _ReplicaWorker:
         self._thread = threading.Thread(
             target = self._loop, name = f"unsloth-cfg-replica-{device}", daemon = True
         )
+        # Everything this thread does on CUDA, from binding its card to a job dropping its inputs, is held out of the
+        # source card's graph recordings: they use the global capture mode, which prohibits this thread's
+        # allocations (and its context set-up) for as long as one records anywhere in the process.
+        from .diffusion_cuda_graph import capture_hold
+
+        capture_hold()
         self._thread.start()
 
     def _loop(self) -> None:
+        from .diffusion_cuda_graph import capture_release, held_work
+
         torch = _torch()
-        if getattr(self.device, "type", None) == "cuda":
-            try:
-                torch.cuda.set_device(self.device)
-            except Exception:  # noqa: BLE001
-                pass
+        try:
+            with held_work():
+                if getattr(self.device, "type", None) == "cuda":
+                    try:
+                        torch.cuda.set_device(self.device)
+                    except Exception:  # noqa: BLE001
+                        pass
+        finally:
+            capture_release()
         while True:
             job = self._jobs.get()
             if job is None:
                 return
             fn, ctx, modes, done = job
+            job = None
             try:
-                done["result"] = ctx.run(self._run, fn, modes)
-            except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's thread
-                done["error"] = exc
+                with held_work():
+                    try:
+                        done["result"] = ctx.run(self._run, fn, modes)
+                    except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's thread
+                        done["error"] = exc
+                    # the inputs die here, inside the hold, not when the next job replaces them
+                    fn = ctx = None
             finally:
+                capture_release()
                 done["event"].set()
 
     def _run(self, fn: Callable[[], Any], modes: dict) -> Any:
@@ -1522,6 +1540,9 @@ class _ReplicaWorker:
             "autocast": autocast,
         }
         done: dict[str, Any] = {"event": threading.Event()}
+        from .diffusion_cuda_graph import capture_hold
+
+        capture_hold()
         self._jobs.put((fn, contextvars.copy_context(), modes, done))
         return done
 
@@ -1904,7 +1925,7 @@ class CfgParallelRouter:
         finally:
             self.next_carry = []
             self.prefetched.clear()
-        job = self.worker.submit(_outside_capture(self.replica, r_args, r_kwargs))
+        job = self.worker.submit(_replica_call(self.replica, r_args, r_kwargs))
         self._pairing = True
         try:
             first = primary_call()
@@ -1919,7 +1940,7 @@ class CfgParallelRouter:
             if _hook_state(self.pairs) != hook_state:
                 # the source's state moved during the first half: run the second again on what it is now
                 _mirror_hook_state(self.pairs)
-                second = self.worker.call(_outside_capture(self.replica, r_args, r_kwargs))
+                second = self.worker.call(_replica_call(self.replica, r_args, r_kwargs))
         except Exception as exc:  # noqa: BLE001 - the caller recomputes the second half on the source
             self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             return first, None
@@ -1997,7 +2018,7 @@ class CfgParallelRouter:
             "leaves": _leaves((p_args, p_kwargs)),
             "by_value": {path for path, kind in kinds.items() if kind[0] == "b0eq"},
             "snapshots": snapshots,
-            "job": self.worker.submit(_outside_capture(replica, r_args, r_kwargs)),
+            "job": self.worker.submit(_replica_call(replica, r_args, r_kwargs)),
         }
 
     def _take_prediction(self, args: tuple, kwargs: dict) -> Any:
@@ -2142,20 +2163,12 @@ class CfgParallelRouter:
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica
-        out = self.worker.call(_outside_capture(replica, r_args, r_kwargs))
+        out = self.worker.call(_replica_call(replica, r_args, r_kwargs))
         return move_to_device(out, self.primary)
 
 
-def _outside_capture(replica: Any, args: tuple, kwargs: dict) -> Callable[[], Any]:
-    """A replica job that never overlaps a CUDA-graph recording on the source card: the recordings use the global
-    capture mode, which prohibits the replica thread's allocations for as long as one records anywhere in the process."""
-
-    def job() -> Any:
-        from .diffusion_cuda_graph import outside_capture
-        with outside_capture():
-            return replica(*args, **kwargs)
-
-    return job
+def _replica_call(replica: Any, args: tuple, kwargs: dict) -> Callable[[], Any]:
+    return lambda: replica(*args, **kwargs)
 
 
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()

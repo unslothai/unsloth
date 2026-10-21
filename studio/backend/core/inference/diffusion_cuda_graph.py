@@ -138,11 +138,15 @@ def _disabled_reason() -> str:
 # and neither holds the lock while it records, so captures do not serialise against each other.
 _CAPTURE_LOCK = threading.Lock()
 _CAPTURE_DEPTH = 0
-# A CFG-parallel replica runs a whole forward on another thread (diffusion_multigpu), far longer than a query, so it
-# cannot hold the lock across its calls; it counts itself in instead, and a capture waits for the count to drain.
+# A CFG-parallel replica runs whole forwards on its own thread (diffusion_multigpu), far longer than a query, so it
+# cannot hold the lock across its calls. Each piece of that work is counted in from the moment it is queued (thread
+# start, job submit) until it has finished and dropped its inputs, and a capture waits for the count to drain.
 _CAPTURE_IDLE = threading.Condition(_CAPTURE_LOCK)
 _OUTSIDE_JOBS = 0
 _OUTSIDE_LOCAL = threading.local()
+# A held count that never drains (a worker that died) must not hang every later capture: it then records anyway, and
+# a capture that the other thread does invalidate fails and runs eager, as any failed capture does.
+OUTSIDE_WAIT_S = 120.0
 
 
 @contextlib.contextmanager
@@ -155,7 +159,7 @@ def _capturing():
     global _CAPTURE_DEPTH
     with _CAPTURE_IDLE:
         if not getattr(_OUTSIDE_LOCAL, "depth", 0):
-            _CAPTURE_IDLE.wait_for(lambda: _OUTSIDE_JOBS == 0)
+            _CAPTURE_IDLE.wait_for(lambda: _OUTSIDE_JOBS <= 0, timeout = OUTSIDE_WAIT_S)
         _CAPTURE_DEPTH += 1
     try:
         yield
@@ -165,22 +169,42 @@ def _capturing():
             _CAPTURE_IDLE.notify_all()
 
 
-@contextlib.contextmanager
-def outside_capture():
-    """For CUDA work on another thread (a CFG-parallel replica forward): waits for every recording to end and holds
-    new ones off until the block exits, so its allocations never land inside a global-mode capture."""
+def capture_hold() -> None:
+    """Count one piece of off-thread CUDA work in (queued now, run later): no capture begins until its release."""
     global _OUTSIDE_JOBS
     with _CAPTURE_IDLE:
-        _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0)
         _OUTSIDE_JOBS += 1
+
+
+def capture_release() -> None:
+    global _OUTSIDE_JOBS
+    with _CAPTURE_IDLE:
+        _OUTSIDE_JOBS = max(0, _OUTSIDE_JOBS - 1)
+        _CAPTURE_IDLE.notify_all()
+
+
+@contextlib.contextmanager
+def held_work():
+    """Run a held piece of work: waits for a recording another thread began first, and lets this thread record
+    without waiting on its own hold."""
+    with _CAPTURE_IDLE:
+        _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0, timeout = OUTSIDE_WAIT_S)
     _OUTSIDE_LOCAL.depth = getattr(_OUTSIDE_LOCAL, "depth", 0) + 1
     try:
         yield
     finally:
         _OUTSIDE_LOCAL.depth -= 1
-        with _CAPTURE_IDLE:
-            _OUTSIDE_JOBS -= 1
-            _CAPTURE_IDLE.notify_all()
+
+
+@contextlib.contextmanager
+def outside_capture():
+    """``capture_hold`` + ``held_work`` + ``capture_release`` around one block on the calling thread."""
+    capture_hold()
+    try:
+        with held_work():
+            yield
+    finally:
+        capture_release()
 
 
 @contextlib.contextmanager

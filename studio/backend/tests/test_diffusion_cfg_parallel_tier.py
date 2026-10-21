@@ -307,3 +307,41 @@ def test_a_graph_armed_at_load_moves_under_a_later_router(monkeypatch):
     finally:
         mg.uninstall_cfg_parallel(pipe)
     assert dit.__dict__["forward"] is graph
+
+
+def test_a_queued_replica_job_holds_captures_off_until_it_has_dropped_its_inputs():
+    worker = mg._ReplicaWorker(torch.device("cpu"))
+    worker.call(lambda: None)  # thread started and bound
+    assert cg._OUTSIDE_JOBS == 0
+    gate = threading.Event()
+    dropped = []
+
+    class Input:
+        def __del__(self):
+            dropped.append(cg._OUTSIDE_JOBS)
+
+    def job(x = Input()):
+        gate.wait(5)
+        return 1
+
+    # held from submit, before the worker even picks it up
+    done = worker.submit(job)
+    del job
+    assert cg._OUTSIDE_JOBS == 1
+    captured = threading.Event()
+
+    def capture():
+        with cg._capturing():
+            captured.set()
+
+    t = threading.Thread(target = capture)
+    t.start()
+    assert not captured.wait(0.3)
+    gate.set()
+    assert mg._ReplicaWorker.wait(done) == 1
+    assert captured.wait(5)
+    t.join(5)
+    # the job's inputs were released while the hold was still counted
+    assert dropped == [1]
+    assert cg._OUTSIDE_JOBS == 0
+    worker.close()
