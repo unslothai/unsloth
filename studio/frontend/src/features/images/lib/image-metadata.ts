@@ -551,7 +551,7 @@ export function a1111Fields(line: string): Array<[string, string]> {
 }
 
 // Keys that identify a file or the writer and set nothing: read, never reported as not applied.
-const A1111_INFO_KEYS = new Set([
+export const A1111_INFO_KEYS: ReadonlySet<string> = new Set([
   "model hash",
   "vae hash",
   "lora hashes",
@@ -961,8 +961,20 @@ export function unknownRecipeKeys(r: ImportedRecipe): string[] {
   });
 }
 
-// DiffusionGenerateRequest.steps is 1-100 (STEPS_REQUEST_MAX in image-generation-defaults).
-const RECIPE_STEPS_MAX = 100;
+// The request's bounds for each clamped recipe number (DiffusionGenerateRequest; steps is
+// STEPS_REQUEST_MAX in image-generation-defaults): recipeSettings clamps, importNotApplied says so.
+const RECIPE_BOUNDS = {
+  steps: { lo: 1, hi: 100, label: "Steps", integer: true },
+  guidance: { lo: 0, hi: 20, label: "CFG scale", integer: false },
+  batch_size: { lo: 1, hi: 32, label: "batch size", integer: true },
+  strength: { lo: 0, hi: 1, label: "denoising strength", integer: false },
+  mask_blur: { lo: 0, hi: 64, label: "Mask blur", integer: true },
+  inpaint_padding: { lo: 0, hi: 256, label: "masked area padding", integer: true },
+} as const;
+const bounded = (r: ImportedRecipe, key: keyof typeof RECIPE_BOUNDS): number | undefined => {
+  const b = RECIPE_BOUNDS[key];
+  return clamp(b.integer ? int(r[key]) : num(r[key]), b.lo, b.hi);
+};
 
 /** `family`: the loaded model's family, when one is loaded. */
 export function importNotApplied(
@@ -970,10 +982,13 @@ export function importNotApplied(
   family?: string | null,
 ): string[] {
   const out: string[] = [];
-  const steps = int(r.steps);
-  const stepsSent = clamp(steps, 1, RECIPE_STEPS_MAX);
-  if (steps !== undefined && stepsSent !== steps)
-    out.push(`Steps ${steps} (clamped to ${stepsSent})`);
+  for (const key of Object.keys(RECIPE_BOUNDS) as (keyof typeof RECIPE_BOUNDS)[]) {
+    const b = RECIPE_BOUNDS[key];
+    const raw = b.integer ? int(r[key]) : num(r[key]);
+    const sent = bounded(r, key);
+    if (raw !== undefined && sent !== raw)
+      out.push(`${b.label} ${raw} (clamped to ${sent})`);
+  }
   const clipSkip = num(r.clip_skip);
   // SDXL already encodes from the penultimate layer, which is what A1111 / Forge render for Clip skip
   // 1 and 2 (Forge minimal_clip_skip=2; A1111 skips CLIP-G never, CLIP-L only with sdxl_clip_l_skip).
@@ -989,6 +1004,9 @@ export function importNotApplied(
     out.push(
       `variation seed ${variation}${variationStrength !== undefined ? ` (strength ${variationStrength})` : ""}`,
     );
+  } else if (variation === undefined && variationStrength !== undefined && variationStrength !== 0) {
+    // A strength with no seed still varies the image (A1111 then draws a random variation seed).
+    out.push(`variation strength ${variationStrength}`);
   }
   if (r.hires && typeof r.hires === "object" && !Array.isArray(r.hires)) {
     const parts = Object.entries(r.hires as Record<string, unknown>)
@@ -1072,18 +1090,18 @@ export function recipeSettings(
     width: width && width > 0 ? width : d.width,
     height: height && height > 0 ? height : d.height,
     // Clamped to the request's bounds: other tools allow more (AUTOMATIC1111 goes to 150 steps).
-    steps: clamp(int(r.steps), 1, RECIPE_STEPS_MAX) ?? d.steps,
-    guidance: clamp(num(r.guidance), 0, 20) ?? d.guidance,
+    steps: bounded(r, "steps") ?? d.steps,
+    guidance: bounded(r, "guidance") ?? d.guidance,
     seed: seedOf(r.seed),
     batch_seed: seedOf(r.batch_seed),
-    batch_size: clamp(int(r.batch_size), 1, 32) ?? 1,
+    batch_size: bounded(r, "batch_size") ?? 1,
     model: str(r.model) ?? null,
     workflow: str(r.workflow),
     loras: Array.isArray(r.loras)
       ? uniqueLoras(r.loras.flatMap(loraOf)).slice(0, MAX_LORAS)
       : [],
     // The request takes strength in (0, 1]: 0 leaves no denoising steps, so it is not restored.
-    strength: positive(clamp(num(r.strength), 0, 1)),
+    strength: positive(bounded(r, "strength")),
     upscale: clamp(num(r.upscale), 1, 4),
     // The request caps reference images at 9; restore builds an array of this length.
     reference_image_count: clamp(int(r.reference_image_count), 0, 9),
@@ -1100,12 +1118,12 @@ export function recipeSettings(
       r.prompt_enhancement === "failed"
         ? r.prompt_enhancement
         : null,
-    mask_blur: clamp(int(r.mask_blur), 0, 64),
+    mask_blur: bounded(r, "mask_blur"),
     inpaint_only_masked:
       typeof r.inpaint_only_masked === "boolean"
         ? r.inpaint_only_masked
         : undefined,
-    inpaint_padding: clamp(int(r.inpaint_padding), 0, 256),
+    inpaint_padding: bounded(r, "inpaint_padding"),
   };
 }
 
