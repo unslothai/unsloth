@@ -558,16 +558,16 @@ def mlx_backend_active() -> bool:
 def collect_mlx_info() -> dict:
     """Everything the MLX preflight needs. Never imports torch, never raises."""
     info = {
-        "platform" : f"{platform.system()} {platform.machine()}",
-        "mlx" : None,
-        "metal" : False,
-        "device" : None,
-        "architecture" : None,
-        "memory_gib" : None,
-        "working_set_gib" : None,
-        "zoo" : None,
-        "zoo_mlx" : False,
-        "errors" : [],
+        "platform": f"{platform.system()} {platform.machine()}",
+        "mlx": None,
+        "metal": False,
+        "device": None,
+        "architecture": None,
+        "memory_gib": None,
+        "working_set_gib": None,
+        "zoo": None,
+        "zoo_mlx": False,
+        "errors": [],
     }
     try:
         info["mlx"] = importlib.metadata.version("mlx")
@@ -575,6 +575,7 @@ def collect_mlx_info() -> dict:
         info["errors"].append(f"mlx version: {type(e).__name__}: {e}")
     try:
         import mlx.core as mx
+
         info["metal"] = bool(mx.metal.is_available())
         details = None
         get_info = getattr(mx, "device_info", None)
@@ -591,10 +592,10 @@ def collect_mlx_info() -> dict:
         info["architecture"] = details.get("architecture")
         memory = details.get("memory_size")
         if isinstance(memory, (int, float)):
-            info["memory_gib"] = round(memory / (1024 ** 3), 2)
+            info["memory_gib"] = round(memory / (1024**3), 2)
         working_set = details.get("max_recommended_working_set_size")
         if isinstance(working_set, (int, float)):
-            info["working_set_gib"] = round(working_set / (1024 ** 3), 2)
+            info["working_set_gib"] = round(working_set / (1024**3), 2)
     except Exception as e:
         info["errors"].append(f"mlx: {type(e).__name__}: {e}")
     try:
@@ -628,9 +629,7 @@ def verdict_mlx(info: dict) -> Tuple[bool, List[str]]:
             "supported Apple Silicon machine and that macOS is up to date."
         ]
     if not info.get("device"):
-        return False, [
-            "MLX did not report a device. The GPU may be unavailable to this process."
-        ]
+        return False, ["MLX did not report a device. The GPU may be unavailable to this process."]
     return True, [
         "Apple Silicon GPU through the MLX backend. Multi-GPU, NCCL and peer-copy "
         "checks do not apply to this backend, so they were skipped."
