@@ -438,6 +438,30 @@ def test_a_short_fit_evicts_the_least_recently_used_slot_and_names_it(backends, 
     assert model_slots.slots[-1].request.model_path == "org/C-GGUF"
 
 
+def test_a_load_cancelled_after_a_short_fit_evicts_nothing(backends, monkeypatch):
+    _, extra = backends
+    extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0"), 5.0
+    older = _slot("org/D-GGUF", "Q4_K_M", last_used = 1.0)
+    model_slots.slots.append(older)
+    cancel = threading.Event()
+    _gated_load_fakes(monkeypatch, short_fits = [1])
+    short = inf._run_tracked_load_model_impl
+
+    async def load(request, *args, **kwargs):
+        cancel.set()  # the API request is cancelled while the first attempt reports its shortfall
+        return await short(request, *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inf.load_model_gated(
+                request, None, "s", background = True, impl_kwargs = {"load_cancel_event": cancel}
+            )
+        )
+    assert exc.value.status_code == 409 and older in model_slots.slots and older.llama.is_active
+
+
 def test_eviction_takes_as_many_lru_slots_as_the_shortfall_needs(backends, monkeypatch):
     _, extra = backends
     extra.request, extra.last_used = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0"), 3.0

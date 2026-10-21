@@ -18674,6 +18674,12 @@ def _owner_session(fastapi_request) -> bool:
     return not _request_has_api_key(fastapi_request)
 
 
+def _raise_if_load_cancelled(attempt: _ScopedLoadAttempt, impl_kwargs: Optional[dict]) -> None:
+    request_cancel = (impl_kwargs or {}).get("load_cancel_event")
+    if attempt.cancel_event.is_set() or (request_cancel is not None and request_cancel.is_set()):
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
+
+
 async def _run_tracked_load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -18967,6 +18973,8 @@ async def load_model_gated(
                         )
                         break
                     except (GpuMemoryShortError, HTTPException) as exc:
+                        # Before any eviction below: a cancelled load unloads nothing to make room.
+                        _raise_if_load_cancelled(attempt, impl_kwargs)
                         measured = isinstance(exc, GpuMemoryShortError)
                         if not measured:
                             if extra is None and _ran_out_of_memory(exc):
@@ -19053,13 +19061,7 @@ async def load_model_gated(
                                     )
                                     # The drain can outlast a sidecar install or a cancel: never unload for nothing.
                                     _raise_if_sidecar_swap_in_progress()
-                                    request_cancel = (impl_kwargs or {}).get("load_cancel_event")
-                                    if attempt.cancel_event.is_set() or (
-                                        request_cancel is not None and request_cancel.is_set()
-                                    ):
-                                        raise HTTPException(
-                                            status_code = 409, detail = "Model load cancelled"
-                                        )
+                                    _raise_if_load_cancelled(attempt, impl_kwargs)
                                 else:
                                     _raise_or_cancel_active_generations(
                                         force = request.force_cancel_active,
