@@ -19,8 +19,10 @@ import triton
 
 from .kernels.backward import (
     _autotuned_grouped_gemm_dW_kernel,
+    _autotuned_grouped_gemm_dW_per_expert_kernel,
     _autotuned_grouped_gemm_dX_kernel,
     _grouped_gemm_dW_kernel,
+    _grouped_gemm_dW_per_expert_kernel,
     _grouped_gemm_dX_kernel,
 )
 from .kernels.forward import (
@@ -105,7 +107,12 @@ def _autotuner_for(kernel, device):
         run = getattr(tuner, "run", None)
         if run is not None:
 
-            def _run_single_flight(*args, _run = run, _lock = lock, **kwargs):
+            def _run_single_flight(
+                *args,
+                _run = run,
+                _lock = lock,
+                **kwargs,
+            ):
                 with _lock:
                     return _run(*args, **kwargs)
 
@@ -486,6 +493,13 @@ def _grouped_gemm_dX_impl(
     return dX
 
 
+def _use_per_expert_dW_kernel():
+    """Per-expert dW grid (one program per (expert, n, k) tile); UNSLOTH_MOE_DW_KERNEL=legacy restores the
+    kernel that walks every expert inside each (n, k) program. Measured faster on every shape, dtype and GPU
+    tried (A100, L4, RTX PRO 6000, B200), so there is no shape routing."""
+    return os.environ.get("UNSLOTH_MOE_DW_KERNEL", "").strip().lower() != "legacy"
+
+
 def _launch_grouped_gemm_dW(
     X: torch.Tensor,
     dY: torch.Tensor,
@@ -562,6 +576,7 @@ def _launch_grouped_gemm_dW(
     M_grad, N = dY.shape
 
     assert M_grad == total_tokens, f"dY M ({M_grad}) != total_tokens ({total_tokens})"
+    per_expert = _use_per_expert_dW_kernel()
 
     if accumulate:
         # Read-modify-write into an existing gradient: one program owns each (expert, n, k) tile.
@@ -571,7 +586,8 @@ def _launch_grouped_gemm_dW(
         assert dW_out.is_contiguous() and dW_out.device == X.device
         dW = dW_out
     else:
-        dW = torch.zeros(
+        # The per-expert kernel writes every tile (zeros for an empty expert); the legacy one skips them.
+        dW = (torch.empty if per_expert else torch.zeros)(
             (num_experts, N, K), device = X.device, dtype = X.dtype if dW_dtype is None else dW_dtype
         )
     if use_tma_store and (dW.element_size() > X.element_size() or dW.data_ptr() % 16 != 0):
@@ -583,6 +599,12 @@ def _launch_grouped_gemm_dW(
         pass
 
     def grid(META):
+        if per_expert:
+            return (
+                num_experts
+                * triton.cdiv(N, META["BLOCK_SIZE_N"])
+                * triton.cdiv(K, META["BLOCK_SIZE_K"]),
+            )
         return (NUM_SMS,)
 
     if debug:
@@ -622,6 +644,13 @@ def _launch_grouped_gemm_dW(
     }
     if accumulate:
         kernel_args["ACCUMULATE"] = True
+    if per_expert:
+        kernel_args["EXPERTS_POW2"] = triton.next_power_of_2(num_experts)
+        if X.element_size() >= 4:
+            # fp32 operands (fp32 RMSNorm outputs in a bf16 full finetune): the tf32 dot reads both tiles
+            # M-major, and a multi-stage pipeline doubles shared memory and halves occupancy; one stage is
+            # faster for every tile measured. The legacy kernel never pipelines this loop either.
+            num_stages = 1
 
     if not autotune:
         kernel_args.update(
@@ -637,11 +666,18 @@ def _launch_grouped_gemm_dW(
             }
         )
 
-    kernel = (
-        _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device)
-        if autotune
-        else _grouped_gemm_dW_kernel
-    )
+    if per_expert:
+        kernel = (
+            _autotuner_for(_autotuned_grouped_gemm_dW_per_expert_kernel, X.device)
+            if autotune
+            else _grouped_gemm_dW_per_expert_kernel
+        )
+    else:
+        kernel = (
+            _autotuner_for(_autotuned_grouped_gemm_dW_kernel, X.device)
+            if autotune
+            else _grouped_gemm_dW_kernel
+        )
 
     is_fake = _is_tracing(X, dY)
     if not is_fake:

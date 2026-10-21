@@ -111,8 +111,10 @@ def _load(
                 n: _Kernel(launches, guard_stack)
                 for n in (
                     "_autotuned_grouped_gemm_dW_kernel",
+                    "_autotuned_grouped_gemm_dW_per_expert_kernel",
                     "_autotuned_grouped_gemm_dX_kernel",
                     "_grouped_gemm_dW_kernel",
+                    "_grouped_gemm_dW_per_expert_kernel",
                     "_grouped_gemm_dX_kernel",
                 )
             }
