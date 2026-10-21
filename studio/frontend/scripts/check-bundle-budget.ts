@@ -338,8 +338,11 @@ export const BUDGET = {
   // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised by that.
   // The browser panel's page history (#14283) on top measures 6,876,588 B raw / 2,070,700 B transfer (merged with
   // main at 04d2beec9, Node 24, 97 chunks). Raised to that plus the same margin.
-  transferBytes: 2_070_889,
-  rawBytes: 6_876_748,
+  // The MCP app tool arguments on the approval card (#14458) in the eager chat UI add 341 B raw / 110 B transfer
+  // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
+  // 96 chunks). Raised by that.
+  transferBytes: 2_070_999,
+  rawBytes: 6_877_089,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
