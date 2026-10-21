@@ -345,8 +345,11 @@ export const BUDGET = {
   // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
   // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
   // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
-  transferBytes: 2_071_574,
-  rawBytes: 6_878_779,
+  // The streamed lookup-table fit tier (#14465) in the eager GGUF fit classifier and model picker adds 703 B raw /
+  // 347 B transfer (6,878,617 -> 6,879,320 B raw, 2,071,511 -> 2,071,858 B transfer against 4d7ebf5ce, one machine
+  // and build, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_072_047,
+  rawBytes: 6_879_480,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
