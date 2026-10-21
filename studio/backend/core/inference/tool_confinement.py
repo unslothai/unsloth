@@ -40,7 +40,11 @@ _FS_MAKE_SYM = 1 << 12
 _FS_REFER = 1 << 13  # ABI 2
 _FS_TRUNCATE = 1 << 14  # ABI 3
 _FS_IOCTL_DEV = 1 << 15  # ABI 5
-_SCOPE_SIGNAL = 1 << 1  # ABI 6: signals confined to the same domain
+# ABI 6: abstract AF_UNIX sockets (X11's @/tmp/.X11-unix, `unix:abstract=` buses) and signals confined
+# to the same domain. Pathname sockets such as systemd's /run/user/<uid>/bus stay reachable: only ABI 9's
+# LANDLOCK_ACCESS_FS_RESOLVE_UNIX fences those.
+_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
+_SCOPE_SIGNAL = 1 << 1
 _FS_ABI1_MASK = (1 << 13) - 1
 
 _SYSTEM_READ_ROOTS = (
@@ -463,7 +467,9 @@ def _linux_confinement(sandbox_site_dir: str) -> Optional[Confinement]:
     rules = _landlock_rules(abi, sandbox_site_dir)
     return Confinement(
         mechanism = f"landlock-abi{abi}",
-        preexec = partial(_landlock_preexec, handled, rules, _SCOPE_SIGNAL),
+        preexec = partial(
+            _landlock_preexec, handled, rules, _SCOPE_SIGNAL | _SCOPE_ABSTRACT_UNIX_SOCKET
+        ),
     )
 
 
