@@ -1469,3 +1469,124 @@ def test_the_every_length_switch_keeps_block_graphs(stub_torch, monkeypatch):
     assert cg.prompt_length_reason(pipe) is not None
     monkeypatch.setenv(cg.EVERY_LENGTH_ENV, "1")
     assert cg.prompt_length_reason(pipe) is None
+
+
+def test_real_cuda_new_length_eager_step_hands_blocks_the_recorded_tensor_kind():
+    """FLUX.3 base with a reference image recompiled a single-stream block on the first prompt length seen after the
+    first render: the ungraphed step passed the cached conditioning states (inference tensors) straight to the
+    compiled block, which the capture had compiled for its normal-tensor statics (dispatch-key guard mismatch)."""
+    torch = pytest.importorskip("torch")
+    if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    import torch.nn as nn
+    from torch._dynamo.testing import CompileCounter
+
+    torch._dynamo.reset()
+    counter = CompileCounter()
+
+    class Block(nn.Module):
+        def forward(self, x, mod):
+            return x * (1 + mod) + mod
+
+    class LenDiT(nn.Module):
+        def __init__(self, dim):
+            super().__init__()
+            self.proj = nn.Linear(dim, dim)
+            self.block = torch.compile(Block(), backend = counter, dynamic = False)
+
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            mod,
+            return_dict = True,
+        ):
+            x = self.proj(hidden_states) + encoder_hidden_states.mean()
+            # ``mod`` reaches the compiled block without an op, as FLUX.3's cached states do.
+            out = self.block(x, mod)
+            return types.SimpleNamespace(sample = out) if return_dict else (out,)
+
+    dim = 32
+    torch.manual_seed(0)
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})(dim).to("cuda").eval()
+    handle = cg.GraphedForward(module).enable()
+    assert handle.length_varies
+    hidden = torch.randn(1, 16, dim, device = "cuda")
+
+    def render(text_len):
+        outs = []
+        with torch.inference_mode():
+            txt = torch.randn(1, text_len, dim, device = "cuda")
+            mod = torch.randn(1, 16, dim, device = "cuda")
+            # The reference skips the compiled block: compiling it here would warm the very variant under test.
+            x = module.proj(hidden) + txt.mean()
+            want = x * (1 + mod) + mod
+            for _ in range(3):
+                outs.append((module(hidden, txt, mod, return_dict = False)[0], want))
+        cg.seal_lengths([handle])
+        return outs
+
+    try:
+        render(5)
+        assert handle.stats["captures"] == 1 and handle.stats["replays"] == 3
+        frames = counter.frame_count
+        for got, want in render(9):
+            assert torch.allclose(got, want)
+        assert handle.stats["length_eager"] == 3 and handle.stats["captures"] == 1
+        # Before: 1 more frame (the block recompiled for an inference ``mod``).
+        assert counter.frame_count == frames
+    finally:
+        cg.uninstall_all([handle])
+
+
+def test_new_length_eager_step_hands_blocks_normal_tensors_on_cpu(monkeypatch):
+    """CPU twin of the CUDA test above, through the real ``__call__``: a sealed image scope at a new prompt length
+    runs the step ungraphed, and the compiled block must see the normal-tensor kind the capture's statics gave it."""
+    torch = pytest.importorskip("torch")
+    if not hasattr(torch, "_dynamo"):
+        pytest.skip("needs torch._dynamo")
+    import torch.nn as nn
+    from torch._dynamo.testing import CompileCounter
+
+    monkeypatch.delenv(cg.EVERY_LENGTH_ENV, raising = False)
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    seen: list = []
+
+    class Block(nn.Module):
+        def forward(self, x, mod):
+            return x * (1 + mod) + mod
+
+    block = torch.compile(Block(), backend = counter, dynamic = False)
+
+    class LenDiT(nn.Module):
+        def forward(
+            self,
+            hidden_states,
+            encoder_hidden_states,
+            mod,
+            return_dict = True,
+        ):
+            seen.append(mod.is_inference())
+            return (block(hidden_states + encoder_hidden_states.mean(), mod),)
+
+    module = type("Flux3Transformer2DModel", (LenDiT,), {})()
+    handle = _armed(module)
+    assert handle.length_varies and handle.plan is None
+    hidden = torch.randn(1, 16, 8)
+    try:
+        with torch.inference_mode():
+            txt, mod = torch.randn(1, 9, 8), torch.randn(1, 16, 8)
+            # What a capture records from: normal-tensor statics (``_statics``), here compiling the block once.
+            statics = handle._statics([hidden, txt, mod])
+            handle.orig(*statics, return_dict = False)
+            frames = counter.frame_count
+            handle._sealed_scopes.add(cg._image_scope((hidden,), {}))
+            got = module(hidden, txt, mod, return_dict = False)[0]
+        assert handle.stats["length_eager"] == 1 and handle.stats["captures"] == 0
+        # Before: the inference ``mod`` failed the dispatch-key guard and the block compiled a second time.
+        assert counter.frame_count == frames
+        assert seen == [False, False]
+        assert torch.equal(got, (hidden + txt.mean()) * (1 + mod) + mod)
+    finally:
+        cg.uninstall_all([handle])

@@ -1026,6 +1026,31 @@ class GraphedForward:
         self.stats["eager_calls"] += 1
         return self.orig(*args, **kwargs)
 
+    def _eager_as_recorded(self, args: tuple, kwargs: dict) -> Any:
+        """An eager step of a module that also replays graphs, on inputs of the kind its captures recorded from. An
+        unplanned capture records from normal-tensor statics (``_statics``), so a forward that hands an input straight
+        to a compiled block (FLUX.3's cached conditioning states) compiled that block for normal tensors; an inference
+        tensor fails its dispatch-key guard and recompiles it. Only inference leaves are copied, as the replay does."""
+        if self.plan is not None:
+            # A planned capture's statics keep the live tensors' kind already.
+            return self._eager(args, kwargs)
+        live: list = []
+        try:
+            spec = _flatten((args, kwargs), live)
+        except TypeError:
+            return self._eager(args, kwargs)
+        picks = [
+            i
+            for i, t in enumerate(live)
+            if callable(getattr(t, "is_inference", None)) and t.is_inference()
+        ]
+        if not picks:
+            return self._eager(args, kwargs)
+        for i, fresh in zip(picks, self._statics([live[i] for i in picks])):
+            live[i] = fresh
+        args, kwargs = _rebuild(spec, live)
+        return self._eager(args, kwargs)
+
     def _engage_fallback(self) -> None:
         """Arm the per-block graphs once this whole-step graph dropped a key or failed: the calls it now leaves eager
         run through them. Between forwards' blocks (the step has not started), so the slot ring can change."""
@@ -1164,7 +1189,7 @@ class GraphedForward:
                 # A prompt length first seen after the first render: no warm-up, no capture, no eviction on this
                 # render. (An offloaded key it recorded before re-records after its weights moved, as before.)
                 self.stats["length_eager"] += 1
-                return self._eager(eager_args, eager_kwargs)
+                return self._eager_as_recorded(eager_args, eager_kwargs)
             if self.placement is not None and speed_check_enabled():
                 if key in self._dropped:
                     return self._eager(eager_args, eager_kwargs)
@@ -1205,7 +1230,7 @@ class GraphedForward:
                             self.max_graphs,
                             type(self.module).__name__,
                         )
-                return self._eager(eager_args, eager_kwargs)
+                return self._eager_as_recorded(eager_args, eager_kwargs)
             captured = None
             stream_before = _current_stream()
             try:
