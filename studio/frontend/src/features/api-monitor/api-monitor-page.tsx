@@ -48,12 +48,14 @@ import {
   Copy01Icon,
   CursorPointer02Icon,
   Delete02Icon,
+  FlashIcon,
   Key01Icon,
   PauseIcon,
   PlayIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
+  Timer01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -168,10 +170,6 @@ function useServerNow(serverTime: number | undefined): number {
   );
   // biome-ignore lint/correctness/useExhaustiveDependencies: tick is what advances the clock
   return useMemo(() => Date.now() / 1000 + skew, [skew, tick]);
-}
-
-function shortModelName(name: string): string {
-  return name.split(/[\\/]/).pop()?.split(":")[0] || name;
 }
 
 function formatDuration(value?: number | null): string {
@@ -521,16 +519,35 @@ function RequestRow({
           {compactEndpoint(entry.endpoint)}
         </span>
         <span className="ml-auto shrink-0 text-ui-11 tabular-nums text-muted-foreground">
-          {entryDuration(entry)}
+          {age}
         </span>
       </div>
       <div className="flex min-w-0 items-center gap-2 pl-4">
         <span className="truncate text-ui-11 text-muted-foreground">
           {entry.model}
         </span>
-        <span className="ml-auto flex shrink-0 items-center gap-2 text-ui-11 tabular-nums text-muted-foreground">
-          {speed ? <span>{speed}</span> : null}
-          {age}
+        <span className="ml-auto flex shrink-0 items-center gap-2.5 text-ui-11 tabular-nums text-muted-foreground">
+          <span
+            className="flex items-center gap-1"
+            title="Total time: queue wait, prompt processing and generation"
+          >
+            <HugeiconsIcon
+              icon={Timer01Icon}
+              strokeWidth={1.75}
+              className="size-3"
+            />
+            {entryDuration(entry)}
+          </span>
+          {speed ? (
+            <span className="flex items-center gap-1" title="Generation speed">
+              <HugeiconsIcon
+                icon={FlashIcon}
+                strokeWidth={1.75}
+                className="size-3"
+              />
+              {speed}
+            </span>
+          ) : null}
         </span>
       </div>
       {/* A prompt or reply excerpt, same as the expanded payload below it. */}
@@ -718,7 +735,7 @@ function RequestDetail({
         title="Timing"
         items={[
           { label: "Started", value: formatTime(entry.started_at) },
-          { label: "Duration", value: entryDuration(entry) },
+          { label: "Total time", value: entryDuration(entry) },
           { label: "First token", value: formatDuration(entry.ttft_ms) },
           // Duration minus this is the queue wait, not slow decoding.
           { label: "Generating", value: formatDuration(entry.decode_ms) },
@@ -1310,51 +1327,76 @@ export function ApiMonitorPage(): ReactElement {
             </ApiModelLoadControls>
           </div>
         </div>
-        <dl
-          className={cn(
-            "flex flex-wrap items-center gap-x-6 gap-y-2 border-t px-5 pt-3.5 pb-5",
-            DIVIDER,
-          )}
-        >
-          <Fact
-            label={served.length > 1 ? "Models" : "Model"}
-            className="max-w-full"
-          >
-            {served.length === 0 ? (
-              <span className="text-muted-foreground">None loaded</span>
-            ) : (
-              <span className="flex min-w-0 flex-wrap items-center gap-y-1">
-                {served.map((model, index) => (
-                  <span
-                    key={model.checkpoint}
-                    className="group/copy mr-1.5 flex min-w-0 items-center last:mr-0"
-                  >
+        <div className={cn("border-t px-5 pt-3.5 pb-5", DIVIDER)}>
+          {served.length > 1 ? (
+            <dl className="flex flex-col gap-1.5">
+              <dt className="text-ui-12 text-muted-foreground">
+                {served.length} models answering requests
+              </dt>
+              {served.map((model) => (
+                <dd
+                  key={model.checkpoint}
+                  className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-1"
+                >
+                  <span className="group/copy flex min-w-0 items-center gap-1 text-ui-12">
                     <span
-                      title={model.name}
-                      className={cn(
-                        "truncate",
-                        served.length === 1 && "font-mono",
-                      )}
-                    >
-                      {served.length === 1
-                        ? model.name
-                        : shortModelName(model.name)}
-                      {index < served.length - 1 ? (
-                        <span className="text-muted-foreground">,</span>
-                      ) : null}
+                      className="size-1.5 shrink-0 rounded-full bg-emerald-500"
+                      aria-hidden={true}
+                    />
+                    <span className="ml-1 truncate font-mono text-foreground">
+                      {model.name}
                     </span>
                     <CopyButton
                       value={model.name}
-                      label={`Copy ${model.name}`}
+                      label="Copy model name"
                       revealOnHover={true}
                     />
                   </span>
-                ))}
-              </span>
-            )}
-          </Fact>
-          {served.some((model) => model.active) ? activeFacts : null}
-        </dl>
+                  {model.active ? (
+                    <dl className="contents">{activeFacts}</dl>
+                  ) : null}
+                  <span className="ml-auto">
+                    <ToolbarTooltip label={`Eject ${model.name}`}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Eject ${model.name}`}
+                        onClick={() => void ejectServed(model)}
+                        disabled={ejecting || modelLoading}
+                        className="size-7 rounded-full p-0 text-muted-foreground hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={RemoveCircleIcon}
+                          strokeWidth={1.75}
+                          className="size-3.5"
+                        />
+                      </Button>
+                    </ToolbarTooltip>
+                  </span>
+                </dd>
+              ))}
+            </dl>
+          ) : (
+            <dl className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <Fact label="Model" className="group/copy max-w-full">
+                {served.length === 1 ? (
+                  <>
+                    <span className="truncate font-mono">{served[0].name}</span>
+                    <CopyButton
+                      value={served[0].name}
+                      label="Copy model name"
+                      revealOnHover={true}
+                    />
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">None loaded</span>
+                )}
+              </Fact>
+              {served[0]?.active ? activeFacts : null}
+            </dl>
+          )}
+        </div>
       </section>
 
       {error ? <Banner>{error}</Banner> : null}
@@ -1439,7 +1481,9 @@ export function ApiMonitorPage(): ReactElement {
           <div
             role="radiogroup"
             aria-label="Filter by status"
-            className="hub-tab-toggle inline-flex h-8 max-w-full items-center rounded-full"
+            // Sunk toward the page on this raised card, as hub.css does for panels: washed over
+            // the card, the track sat one step from the selected pill.
+            className="hub-tab-toggle inline-flex h-8 max-w-full items-center rounded-full dark:[--hub-tab-track:color-mix(in_srgb,var(--background)_55%,transparent)]"
           >
             {STATUS_FILTERS.map((option) => {
               const active = statusFilter === option.value;
