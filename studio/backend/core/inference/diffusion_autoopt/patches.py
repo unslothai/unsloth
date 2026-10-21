@@ -569,7 +569,6 @@ def _builtin_specs() -> list[PatchSpec]:
             warn = "qwen-image-2.1 convrot sharing",
             env = "UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED",
         ),
-        # Per-instance attributes on the blocks (read only inside the compile): nothing process-global to restore.
         PatchSpec(
             "moss_fused",
             STAGE_PRE_COMPILE,

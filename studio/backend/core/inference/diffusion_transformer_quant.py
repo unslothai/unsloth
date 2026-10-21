@@ -410,7 +410,6 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = _profile_table("scheme_deny", q
 # ``FamilyProfile.auto_prefer``: a family's head of the ``auto`` order, ahead of ``_AUTO_LADDER``.
 _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = _profile_table("auto_prefer", quant = True)
 
-# ``FamilyProfile.auto_scheme_skip``: schemes left out of the family's ``auto`` order (explicit requests unaffected).
 _FAMILY_AUTO_SKIP: dict[str, frozenset[str]] = _profile_table("auto_scheme_skip", quant = True)
 
 

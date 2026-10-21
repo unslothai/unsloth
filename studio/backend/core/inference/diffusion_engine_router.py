@@ -748,7 +748,6 @@ def select_and_activate_engine(
     if sd_cpp_pref in _DISABLE_TOKENS and not prefer_native:
         return _activate(ENGINE_DIFFUSERS, "native engine disabled (UNSLOTH_DIFFUSION_SD_CPP=0)")
     if native_gguf_only(fam, model_kind):
-        # diffusers cannot build this family from a GGUF (it refuses the pick), so the GPU default does not apply
         prefer_native = True
 
     target = resolve_diffusion_device_target()
@@ -874,8 +873,7 @@ def select_and_activate_engine(
         reason = f"{reason}; UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} not honoured"
         logger.warning("image load stays on torch's device: %s", reason)
     if requested == ENGINE_SD_CPP or native_gguf_only(fam, model_kind):
-        # The load asked for native, or only native can build it: say why it cannot run, before anything unloads,
-        # rather than load it on diffusers behind its back.
+        # Refuse before anything unloads rather than silently fall back to diffusers.
         raise ValueError(f"The native sd.cpp engine cannot load this model here: {reason}.")
     if before_fallback is not None:
         before_fallback()
@@ -1074,7 +1072,6 @@ def family_buildable_here(
     if fam is None:
         return False
     if native_gguf_only(fam, model_kind):
-        # Only native builds this GGUF, so the diffusers class says nothing; the prediction refuses an incapable build.
         try:
             return predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
         except Exception:  # noqa: BLE001 -- refused or unprobeable: not buildable here

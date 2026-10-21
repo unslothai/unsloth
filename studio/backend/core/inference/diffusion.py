@@ -4352,9 +4352,7 @@ class DiffusionBackend:
                 f"multiple transformers), not from a single-file or GGUF checkpoint; "
                 f"select the pipeline repo."
             )
-        # MOSS-Image: a transformer-only file runs natively only. The route validates every pick here before the
-        # router chooses an engine, so a GGUF the router sends to sd.cpp passes; one it cannot (engine pinned to
-        # diffusers, native disabled, or an sd.cpp build older than the family's support) is refused before eviction.
+        # MOSS-Image GGUFs run on sd.cpp only; refuse picks the router cannot send there before eviction.
         if getattr(fam, "native_transformer_files_only", False) and (
             kind == "single_file"
             or (
@@ -8643,8 +8641,7 @@ class DiffusionBackend:
                                     finally:
                                         self._stop_load_prefetch()
                                 elif fam.name == MOSS_IMAGE_FAMILY_NAME:
-                                    # The repos ship remote code: assemble the in-tree port per component (safetensors
-                                    # and JSON only), from the staged dir when there is one.
+                                    # Remote-code repos: assemble the in-tree port per component.
                                     from .diffusion_moss_image import load_moss_image_pipeline
                                     try:
                                         pipe = load_moss_image_pipeline(
@@ -10530,8 +10527,6 @@ class DiffusionBackend:
             pipe.to(device)
             return pipe
         if getattr(fam, "name", None) == MOSS_IMAGE_FAMILY_NAME:
-            # Remote-code repos: the in-tree port, assembled per component, with the hosted pre-cast encoder when the
-            # request resolves to one (krea's branch below, same reason).
             from .diffusion_moss_image import load_moss_image_pipeline
 
             moss_te = None

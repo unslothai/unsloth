@@ -54,7 +54,6 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 25, guidance: 3 },
   { match: "ideogram", steps: 20, guidance: 7 },
-  // MOSS-Image (SFT and Base): ComfyUI's MOSS workflow, 50 steps at CFG 3 (euler / sgm_uniform, shift 5).
   { match: "moss-image", steps: 50, guidance: 3 },
   { match: "moss_image", steps: 50, guidance: 3 },
   { match: "mossimage", steps: 50, guidance: 3 },

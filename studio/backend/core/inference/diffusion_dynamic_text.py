@@ -89,9 +89,7 @@ _ZIMAGE_SOURCES: tuple[str, ...] = (
     r".*\['args'\]\[[0-2]\]$",
 )
 
-# MOSS-Image: no padding at all (each branch runs at its true text length, cond and uncond differ), so every prompt is
-# a new length. The joint block takes [image ; text] and its RoPE tables, the text refiner block the text alone, both
-# as (x, rope=(cos, sin), ...).
+# MOSS-Image: unpadded text (cond and uncond differ), so every prompt is a new length.
 _MOSS_IMAGE_SOURCES: tuple[str, ...] = (
     "L['x']",
     "L['rope'][0]",

@@ -54,8 +54,7 @@ MOSS_IMAGE_SCHEDULER_CLASS = "MOSSImageScheduler"
 MIN_TRANSFORMERS = "5.3.0"
 SIGMAS_ENV = "UNSLOTH_MOSS_SIGMAS"
 SIGMA_SCHEDULES = ("sgm_uniform", "training_grid")
-# Set on a ``_Block`` by Studio's speed layer (diffusion_moss_fused) and read only inside a compiled block:
-# ``(fused Linear, q, k, v, runner)`` for the one-GEMM q/k/v projection, and the runner for every block Linear.
+# Set by diffusion_moss_fused, read only inside a compiled block.
 FUSED_QKV_ATTR = "_unsloth_moss_fused_qkv"
 LINEAR_RUNNER_ATTR = "_unsloth_moss_linear"
 QK_ROPE_ATTR = "_unsloth_moss_qk_rope"
@@ -68,9 +67,6 @@ def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------------------------------------------------
 
 
 def _compute_dtype(linear: nn.Module) -> torch.dtype:
@@ -91,7 +87,6 @@ class _RMSNorm(nn.Module):
 
 
 def _situ(hidden, gate):
-    # SiTU-GLU: soft-capped SiLU-like gate times a soft-capped value.
     return (4.0 * torch.tanh(gate / 4.0) * torch.sigmoid(gate)) * (25.0 * torch.tanh(hidden / 25.0))
 
 
@@ -254,7 +249,6 @@ class _Block(nn.Module, _AttentionMixin):
         self.proj["ffn_down"] = nn.Linear(ffn_dim, dim, bias = False)
 
     def _linear(self, name, x):
-        # Studio's speed layer may hand the compiled block a linear runner (int8: one probed act-quant kernel)
         run = self.__dict__.get(LINEAR_RUNNER_ATTR) if torch.compiler.is_compiling() else None
         return self.proj[name](x) if run is None else run(self.proj[name], x)
 
@@ -275,7 +269,6 @@ class _Block(nn.Module, _AttentionMixin):
         q, k, v = self._qkv(y)
         fused = self.__dict__.get(QK_ROPE_ATTR) if torch.compiler.is_compiling() else None
         if fused is not None and q.dtype == torch.bfloat16:
-            # Studio's one-pass q/k RMSNorm + RoPE (+ v relayout) into [B, H, S, D], the port's eager roundings kept
             q, k, v = fused(
                 q, k, v, self.q_norm.weight, self.k_norm.weight, rope[0], rope[1], self.heads
             )
@@ -328,7 +321,6 @@ class _RoPE(nn.Module):
         if self.bands.dtype != torch.float32 or self.bands.device.type == "meta":
             self.bands = self._default_bands(device)
         bands = self.bands.to(device)
-        # Coordinates: (r, f, h, w); sequence order is image followed by text.
         h, w = torch.meshgrid(
             torch.arange(height, device = device), torch.arange(width, device = device), indexing = "ij"
         )
@@ -513,9 +505,6 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         return Transformer2DModelOutput(sample = sample)
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Scheduler
-# ---------------------------------------------------------------------------------------------------------------------
 
 from diffusers import FlowMatchEulerDiscreteScheduler  # noqa: E402
 
@@ -617,9 +606,6 @@ class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
         super().set_timesteps(device = device, sigmas = list(sigmas))
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Pipeline
-# ---------------------------------------------------------------------------------------------------------------------
 
 from diffusers import DiffusionPipeline  # noqa: E402
 
@@ -845,8 +831,7 @@ class MOSSImagePipeline(DiffusionPipeline):
             width // 16,
         )
         if latents is None:
-            # Sampled in fp32 (promoting bf16 noise afterward cannot restore its precision), on the CPU from the
-            # generator's seed: the noise ComfyUI draws for that seed.
+            # fp32 CPU noise from the generator seed, matching ComfyUI.
             latents = comfy_noise(shape, generator, device)
         elif tuple(latents.shape) != shape:
             raise ValueError(f"latents must have shape {shape}.")
@@ -926,9 +911,6 @@ class MOSSImagePipeline(DiffusionPipeline):
         return self.vae.decode(z, return_dict = False)[0].clamp(-1, 1)
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# Loader
-# ---------------------------------------------------------------------------------------------------------------------
 
 
 def transformers_version_ok() -> tuple[bool, Optional[str]]:

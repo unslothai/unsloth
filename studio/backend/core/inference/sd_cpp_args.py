@@ -70,7 +70,6 @@ class SdCppModelFiles:
     llm: Optional[str] = None
     llm_vision: Optional[str] = None
     qwen2vl: Optional[str] = None
-    # A tokenizer.json for --tokenizer (MOSS-Image: sd.cpp refuses the model without its Qwen3.5 tokenizer.json).
     tokenizer: Optional[str] = None
 
 

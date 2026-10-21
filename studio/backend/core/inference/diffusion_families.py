@@ -101,9 +101,7 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
-    # True when a transformer-only file (a GGUF) loads ONLY through the native sd.cpp engine: diffusers cannot build
-    # this family's denoiser from one (MOSS-Image, an in-tree port with no single-file loader). The engine router sends
-    # such a GGUF to sd.cpp on any backend, and the diffusers loader refuses transformer-only picks.
+    # Transformer-only files (GGUF) load only via sd.cpp; diffusers has no single-file loader (MOSS-Image).
     native_transformer_files_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
@@ -210,8 +208,7 @@ class DiffusionFamily:
     # VAE latent-format override for sd-cli (--vae-format): "flux2" for FLUX.2, None otherwise
     sd_cpp_vae_format: Optional[str] = None
     sd_cpp_text_encoders: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
-    # (repo_id, filename) of a tokenizer.json sd-cli needs on --tokenizer: sd.cpp's MOSS-Image conditioner refuses to
-    # run without the official Qwen3.5 tokenizer.json. None for every family that tokenizes from its encoder file.
+    # (repo_id, filename) of a tokenizer.json for sd-cli --tokenizer (MOSS-Image requires it).
     sd_cpp_tokenizer: Optional[tuple[str, str]] = None
     # mflux ModelConfig name (None = no MLX); ``_by_base`` maps a lowercase base repo to another config.
     mlx_model_config: Optional[str] = None
@@ -325,9 +322,7 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
-# MOSS-Image's 5.1B DiT is a small denoiser: bf16 while it fits, INT8-ConvRot only when bf16 would offload. B200, 14
-# prompts at 1024^2 / 50 steps, LPIPS-alex mean against the eager bf16 port: Studio bf16 0.025, INT8-ConvRot 0.049. Same
-# rule as the other small DiTs (FLUX.2 / FLUX.3-klein, Z-Image).
+# MOSS-Image: bf16 while it fits, else INT8-ConvRot (LPIPS 0.025 bf16 vs 0.049 int8, B200).
 _MOSS_IMAGE_BF16_WHEN_RESIDENT = "a small denoiser stays bf16 while it fits (INT8-ConvRot doubles LPIPS against the reference: 0.049 vs 0.025)"
 
 # FLUX.1's sd-cli encoders are BFL's own diffusers files, read as-is: sd.cpp loads the CLIP-L text_encoder and the
@@ -368,13 +363,8 @@ _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
-# MOSS-Image transformer-quant keep-list for every scheme (plans/moss_quant.md, baked into the hosted files): the whole
-# text_embedder (projection + 2 refiner blocks), the timestep MLP and the shared / head AdaLN modulations stay bf16;
-# the 252 block Linears (q/k/v/o/ffn_up_gate/ffn_down) quantise. int8 ConvRot with it scored LPIPS 0.058 against the
-# bf16 port (12 prompts, 1-ulp floor 0.041), against 0.077 with the generic exclusions alone and 0.075 keeping only
-# text_embedder.proj. video_embedder / final_linear_video sit under the 512-feature floor and stay bf16 anyway.
+# MOSS-Image keep-list (plans/moss_quant.md): text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
-# The 252 rotated Linears of the hosted int8 ConvRot builds (every input width is a multiple of 256).
 _MOSS_IMAGE_CONVROT_SUFFIXES = (
     "proj.q",
     "proj.k",
@@ -1253,10 +1243,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Two DiTs assembled per-component, so no transformer-only single-file / GGUF load.
         pipeline_only = True,
     ),
-    # MOSS-Image (OpenMOSS-Team): a 5.1B single-stream DiT (42 blocks sharing one AdaLN, a 2-block text refiner) on a
-    # Qwen3.5-9B text encoder and the FLUX.2 small-decoder VAE. The repos ship the transformer and scheduler as remote
-    # code, so the pipeline is the in-tree port in diffusion_moss_image (safetensors + JSON only, no repo code); the
-    # encoder needs transformers >= 5.3. SFT and Base share the architecture, the pipeline and the sampling recipe.
+    # MOSS-Image: remote-code repos, so the pipeline is the in-tree port in diffusion_moss_image; encoder needs transformers >= 5.3.
     DiffusionFamily(
         name = MOSS_IMAGE_FAMILY_NAME,
         label = "MOSS-Image",
@@ -1271,13 +1258,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
                 variant_repos = ("unsloth/MOSS-Image-Base-FP8",),
                 default_on = True,
             ),
-            # The Base builds record family "moss-image-base"; the quant tables answer to it too.
             quant_names = ("moss-image-base",),
-            # fp8 scored 0.163 on both SFT and Base (7x int8 ConvRot's summed local error), mxfp8 was not measured:
-            # explicit picks only.
+            # fp8 scored LPIPS 0.163 (int8 ConvRot 0.058): explicit picks only.
             auto_scheme_skip = frozenset({"fp8", "mxfp8"}),
             auto_bf16_when_resident = _MOSS_IMAGE_BF16_WHEN_RESIDENT,
-            # The FLUX.2 VAE and the same 2x2 packed, BatchNorm-normalised 128-channel latent.
             preview_factors = "flux2",
         ),
         pipeline_class = "MOSSImagePipeline",
@@ -1292,15 +1276,13 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ("int8", "MOSS-Image-SFT-INT8.safetensors"),
             ("fp8", "MOSS-Image-SFT-FP8.safetensors"),
         ),
-        # Base differs from SFT only in its transformer shards and has its own builds (MOSS-Image-Base-*.safetensors).
         prequant_variant_repos = (
             ("openmoss-team/moss-image-base", "int8", "unsloth/MOSS-Image-Base-FP8"),
             ("openmoss-team/moss-image-base", "fp8", "unsloth/MOSS-Image-Base-FP8"),
         ),
-        # Any other scheme on Base quantises Base's own weights, never SFT's file.
+        # Other schemes on Base quantise Base's own weights, never SFT's file.
         prequant_excluded_bases = ("openmoss-team/moss-image-base",),
-        # Qwen3.5-9B int8 ConvRot (16.79 -> 11.49 GB): LPIPS 0.059 against the bf16 encoder (bf16 DiT, 12 prompts),
-        # text rendering intact. Without the hosted file the automatic default keeps the dense bf16 encoder.
+        # Qwen3.5-9B int8 ConvRot: LPIPS 0.059 vs bf16; without the hosted file auto keeps bf16.
         te_quant_auto = "int8",
         aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
         prompt_hint = (
@@ -1309,22 +1291,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         dimension_multiple = 16,
         # ComfyUI lists bf16 / fp32 only for MOSS-Image; the residual stream overflows float16.
         fp16_incompatible = True,
-        # The fp32 FLUX.2 VAE decode is the only conv work. cudnn.benchmark's plan search on it took 254 s and a 73 GiB
-        # transient workspace on the first 1024^2 decode (B200), then settled on a 4x slower plan (0.34 vs 0.08 s warm)
-        # with different pixels, so the family keeps cuDNN's heuristic pick.
+        # cudnn.benchmark on the fp32 VAE decode took 254 s / 73 GiB and picked a 4x slower plan: keep the heuristic.
         cudnn_benchmark = False,
-        # The diffusers route assembles per component (the hosted int8 / fp8 builds are state dicts seeded into it).
-        # GGUFs run on stable-diffusion.cpp: upstream master-975 added MOSS-Image; its model-version name is the gate.
         native_transformer_files_only = True,
-        # The repo's own VAE: the FLUX.2 VAE with MOSS's small decoder (decoder channels 96-384, not FLUX.2-dev's), the
-        # same file the diffusers route decodes with. sd-cli reads the diffusers layout as-is.
+        # MOSS's own small-decoder FLUX.2 VAE, not FLUX.2-dev's.
         sd_cpp_vae = ("OpenMOSS-Team/MOSS-Image-SFT", "vae/diffusion_pytorch_model.safetensors"),
-        # Stock Qwen3.5-9B (MOSS's text_encoder shards are that model minus the head), as GGUF.
         sd_cpp_text_encoders = (("unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q8_0.gguf", "llm"),),
-        # sd.cpp refuses MOSS without the official tokenizer.json (SFT and Base ship the same one).
         sd_cpp_tokenizer = ("OpenMOSS-Team/MOSS-Image-SFT", "tokenizer/tokenizer.json"),
-        # The model-version name master-975 added (diffusion_engine.cpp model_version_to_str). No flow-shift override:
-        # sd.cpp's MOSS default is ComfyUI's shift 5.
+        # sd.cpp master-975 model_version_to_str name; its default flow shift is already 5.
         sd_cpp_arch_marker = "MOSS-Image",
     ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
@@ -2119,8 +2093,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
-    # MOSS-Image (SFT and Base): ComfyUI's MOSS workflow runs 50 steps at CFG 3 (euler / sgm_uniform, shift 5), as
-    # does the reference pipeline.
+    # MOSS-Image: ComfyUI workflow, 50 steps at CFG 3.
     ("moss-image", 50, 3.0),
     ("moss_image", 50, 3.0),
     ("mossimage", 50, 3.0),
@@ -2601,8 +2574,7 @@ _PIPELINE_PROBE_FILES: dict[str, str] = {
 }
 
 
-# Pipelines Studio ships in tree (diffusion_moss_image) because diffusers has none: judged by what they import, not
-# by a diffusers class. (diffusers module file proving the VAE class, transformers floor, family label).
+# In-tree pipelines: (diffusers VAE module, transformers floor, family label).
 _IN_TREE_PIPELINES: dict[str, tuple[str, str, str]] = {
     "MOSSImagePipeline": ("models/autoencoders/autoencoder_kl_flux2.py", "5.3.0", "MOSS-Image"),
 }

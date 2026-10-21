@@ -150,8 +150,7 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, ...]]] = {
             "flux-3-image-klein-base-text_encoder-INT8-ConvRot.safetensors",
         ),
     },
-    # MOSS-Image's Qwen3.5-9B (Qwen3_5Model, headless): MLP + full-attention projections int8 (128 Linears); the
-    # gated-delta projections, embeddings and the unused vision tower stay bf16. SFT and Base share it (a group below).
+    # MOSS-Image Qwen3.5-9B: MLP + full-attention Linears int8; gated-delta, embeddings, vision stay bf16.
     "moss-image": {
         "text_encoder": (
             "unsloth/MOSS-Image-SFT-FP8",
@@ -304,8 +303,7 @@ _TE_INT8_CONVROT_BUDGET_SCALES = {
     "krea-2": 0.60,
     "flux.3-klein": 0.60,
     "flux.3-klein-base": 0.60,
-    # MOSS-Image's Qwen3.5-9B keeps its gated-delta projections and embeddings dense: 11,488,171,720 bytes against
-    # 16,785,478,992 dense (0.684), rounded up.
+    # 11,488,171,720 / 16,785,478,992 bytes (0.684), rounded up.
     "moss-image": 0.69,
     **{
         name: 0.62
@@ -651,8 +649,7 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "black-forest-labs/flux.2-klein-base-9b",
         }
     ),
-    # Qwen3.5-9B: MOSS-Image SFT and Base ship the same four text_encoder/ shards (LFS sha256 compared 2026-10-20);
-    # the two repos differ only in their transformer shards.
+    # MOSS-Image SFT and Base share identical text_encoder shards (LFS sha256).
     frozenset(
         {
             "openmoss-team/moss-image-sft",

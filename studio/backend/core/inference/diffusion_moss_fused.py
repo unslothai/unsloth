@@ -168,14 +168,7 @@ def uninstall(transformer: Any = None) -> None:
             block.__dict__.pop(QK_ROPE_ATTR, None)
 
 
-# ---------------------------------------------------------------------------------------------------------------------
-# q/k RMSNorm + split-half RoPE (+ v relayout) in one kernel
-# ---------------------------------------------------------------------------------------------------------------------
-# comfy-kitchen's ``rms_rope_split_half`` analogue. Inductor emits three kernels for this stretch of the block (the q/k
-# norms, the RoPE, the copies into the attention layout); one pass reads q, k and v once and writes them in the
-# [B, H, S, D] layout cuDNN / flash take. Every eager bf16 rounding of the port is kept (norm -> bf16, * weight -> bf16,
-# x * cos and rotate(x) * sin -> bf16 each, their sum -> bf16); only the fp32 sum of squares and the reciprocal square
-# root can differ from torch's in the last bit.
+# Fuses q/k RMSNorm + RoPE + layout copy into one pass; keeps every eager bf16 rounding of the port.
 MOSS_QK_ROPE_ENV = "UNSLOTH_DIFFUSION_MOSS_QK_ROPE"
 _QK_ROPE_OP = "moss_qk_norm_rope"
 _HEADS_PER_PROGRAM = 8
@@ -206,8 +199,7 @@ def _qk_rope_kernel() -> Any:
         EPS: tl.constexpr,
         D: tl.constexpr,
     ):
-        # the two halves of each head: rotate(x) = [-x2, x1], so out1 = x1*cos - x2*sin and out2 = x2*cos + x1*sin,
-        # each product and the sum rounded to bf16 as the eager ops do
+        # rotate(x) = [-x2, x1]; each product and sum rounded to bf16 like eager
         x1 = tl.load(x_ptr + base + h * D + j, mask = mask, other = 0.0).to(tl.float32)
         x2 = tl.load(x_ptr + base + h * D + D // 2 + j, mask = mask, other = 0.0).to(tl.float32)
         r = 1.0 / tl.sqrt_rn((tl.sum(x1 * x1, axis = 1) + tl.sum(x2 * x2, axis = 1)) / D + EPS)
@@ -393,8 +385,7 @@ def qk_rope_device_ok(index: int) -> bool:
                 return False
             for a, r in zip(got[:2], ref[:2]):
                 diff = (a.float() - r.float()).abs()
-                # The rotation keeps each (j, j + D/2) pair's magnitude, and a rounding tie upstream moves an output by
-                # at most a couple of ulps of the larger rotated term, so the bound scales with the pair magnitude.
+                # A bf16 tie moves an output a few ulps of the pair magnitude.
                 rf = r.float()
                 pair = (
                     rf[..., : rf.shape[-1] // 2].square() + rf[..., rf.shape[-1] // 2 :].square()

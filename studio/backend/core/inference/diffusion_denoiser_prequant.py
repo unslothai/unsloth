@@ -139,7 +139,6 @@ def denoiser_prequant_pipe_kwargs(
         class_name = str(getattr(fam, "transformer_class", ""))
         transformer_cls = getattr(diffusers, class_name, None)
         if transformer_cls is None:
-            # Studio's in-tree ports (MOSS-Image) are not diffusers attributes.
             from .diffusion_moss_image import in_tree_class
             transformer_cls = in_tree_class(class_name)
         if transformer_cls is None:
