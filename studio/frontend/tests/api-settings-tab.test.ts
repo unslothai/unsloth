@@ -51,3 +51,11 @@ test("LAN URLs publish only when they change", () => {
     /setState\(\{ lanUrls/,
   );
 });
+
+test("the API page marks one served row as the primary, found by checkpoint first", () => {
+  const page = readSrc("features/api-monitor/api-monitor-page.tsx");
+  assert.match(page, /active: index === activeIndex,/);
+  assert.match(page, /\(model\.checkpoint \?\? model\.id\) === residentCheckpoint/);
+  // The primary's Run settings stays off when its live settings cannot be opened.
+  assert.match(page, /\(model\.active && !canEditSettings\)/);
+});

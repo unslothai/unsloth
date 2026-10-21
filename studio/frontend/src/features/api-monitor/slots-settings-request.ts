@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isStandaloneGgufPath } from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- The barrel pulls in React components, which node tests cannot load.
 import {
   type ModelConfigHandoffRequest,
@@ -82,6 +83,9 @@ export function keptRunSettingsRequest(
   model: { checkpoint: string; quant: string | null },
   requestId: string,
 ): ModelConfigHandoffRequest {
+  // A standalone .gguf reports a filename label as its quant; its settings are saved without one,
+  // as residentModelConfigTarget keys them, or Run settings would open and save a second record.
+  const standalone = isStandaloneGgufPath(model.checkpoint);
   return {
     requestId,
     id: model.checkpoint,
@@ -90,8 +94,8 @@ export function keptRunSettingsRequest(
     meta: {
       source: "local",
       isLora: false,
-      ggufVariant: model.quant ?? undefined,
-      isGguf: model.quant != null,
+      ggufVariant: standalone ? undefined : (model.quant ?? undefined),
+      isGguf: standalone || model.quant != null,
       isDownloaded: true,
     },
   };

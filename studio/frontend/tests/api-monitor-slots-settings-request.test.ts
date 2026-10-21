@@ -157,3 +157,20 @@ test("a kept model's settings open on its own checkpoint and quant", () => {
   assert.equal(safetensors.meta.ggufVariant, undefined);
   assert.equal(safetensors.meta.isGguf, false);
 });
+
+test("a kept standalone GGUF opens its saved settings, keyed without the filename quant", () => {
+  const request = keptRunSettingsRequest(
+    { checkpoint: "/models/gemma-3-270m-it-Q4_K_M.gguf", quant: "Q4_K_M" },
+    "kept",
+  );
+  assert.equal(request.meta.ggufVariant, undefined);
+  assert.equal(request.meta.isGguf, true);
+  // A repo id still carries its quant: it has several to choose between.
+  assert.equal(
+    keptRunSettingsRequest(
+      { checkpoint: "unsloth/gemma-3-270m-it-GGUF", quant: "Q4_K_M" },
+      "kept",
+    ).meta.ggufVariant,
+    "Q4_K_M",
+  );
+});

@@ -31,3 +31,41 @@ def test_an_operator_pin_wins_over_the_recommendation(monkeypatch):
         )
     )
     assert got["temperature"] == 0.25
+
+
+class _LoadedQwen:
+    is_loaded = True
+    model_identifier = "unsloth/Qwen3-4B-GGUF"
+    hf_variant = "Q4_K_M"
+    supports_reasoning = True
+
+
+def test_the_loaded_model_resolves_with_its_thinking_mode(monkeypatch):
+    # Its template defaults to thinking off here: the non-thinking table applies, as on the
+    # request path, not the family's thinking recommendation.
+    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: _LoadedQwen())
+    seen = []
+    monkeypatch.setattr(
+        inference_routes,
+        "_sampling_thinking_mode",
+        lambda backend, payload: seen.append(payload) or False,
+    )
+    expected = inference_config.resolve_effective_sampling(
+        "unsloth/Qwen3-4B-GGUF", {}, thinking = False
+    )
+    assert expected != inference_config.resolve_effective_sampling("unsloth/Qwen3-4B-GGUF", {})
+    for name in ("unsloth/Qwen3-4B-GGUF", "unsloth/Qwen3-4B-GGUF:Q4_K_M"):
+        got = asyncio.run(
+            inference_routes.get_sampling_defaults(model = name, current_subject = "owner")
+        )
+        assert got == expected
+    # The request it judges sends no reasoning controls of its own.
+    assert all(p.enable_thinking is None and p.reasoning_effort is None for p in seen)
+
+    # Another model is not the loaded one, so no thinking mode is assumed for it.
+    other = asyncio.run(
+        inference_routes.get_sampling_defaults(
+            model = "unsloth/gemma-3-270m-it-GGUF", current_subject = "owner"
+        )
+    )
+    assert other == inference_config.resolve_effective_sampling("unsloth/gemma-3-270m-it-GGUF", {})

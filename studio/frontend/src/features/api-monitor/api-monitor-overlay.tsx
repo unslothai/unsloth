@@ -501,7 +501,7 @@ function ApiMonitorPanel({
 
             {/* Soft tile, as the Hub and Train pages group readouts. */}
             {/* Nudged down 1.5px: the label's line box pads below its ink, so even padding sat the text high. */}
-            <div className="grid grid-cols-4 rounded-[14px] bg-muted/45 pt-[11.5px] pb-[8.5px] dark:bg-background/45">
+            <div className="grid grid-cols-4 rounded-[14px] bg-muted/45 pt-[calc(11.5px*var(--ui-space-scale,1))] pb-[calc(8.5px*var(--ui-space-scale,1))] dark:bg-background/45">
               <StatCell
                 label="In flight"
                 value={stats.active.toLocaleString()}

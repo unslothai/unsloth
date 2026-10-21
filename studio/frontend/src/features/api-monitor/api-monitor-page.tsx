@@ -270,15 +270,28 @@ type ServedModel = {
 function servedModels(
   loaded: { id: string; quant?: string | null; checkpoint?: string }[],
   activeModel: string | null,
+  residentCheckpoint: string | null | undefined,
 ): ServedModel[] {
   const activeId = monitorSelection(activeModel).id;
-  const rows = loaded.map((model) => ({
+  // Two local files can share a public name, so at most one row is the primary: the one whose
+  // checkpoint the status names, else the first whose name matches. Marking both ejected the primary.
+  const named = (model: { id: string }): boolean =>
+    Boolean(activeId) && modelIdsMatch(model.id, activeId);
+  const byCheckpoint = residentCheckpoint
+    ? loaded.findIndex(
+        (model) =>
+          named(model) && (model.checkpoint ?? model.id) === residentCheckpoint,
+      )
+    : -1;
+  const activeIndex =
+    byCheckpoint >= 0 ? byCheckpoint : loaded.findIndex(named);
+  const rows = loaded.map((model, index) => ({
     name:
       model.quant && !model.id.includes(":")
         ? `${model.id}:${model.quant}`
         : model.id,
     checkpoint: model.checkpoint ?? model.id,
-    active: Boolean(activeId) && modelIdsMatch(model.id, activeId),
+    active: index === activeIndex,
     quant: model.quant ?? null,
   }));
   if (activeModel && !rows.some((row) => row.active)) {
@@ -931,6 +944,7 @@ export function ApiMonitorPage(): ReactElement {
   const lanUrls = usePlatformStore((s) => s.lanUrls);
   const runtime = useChatModelRuntime();
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
   const [unloading, setUnloading] = useState(false);
   const [ejectingKept, setEjectingKept] = useState(false);
   const [exampleModel, setExampleModel] = useState<ServedModel | null>(null);
@@ -1163,8 +1177,8 @@ export function ApiMonitorPage(): ReactElement {
   const activeModel = data?.active_model ?? null;
   const now = useServerNow(data?.server_time, entries.length > 0);
   const served = useMemo(
-    () => servedModels(loadedModels, activeModel),
-    [loadedModels, activeModel],
+    () => servedModels(loadedModels, activeModel, residentCheckpoint),
+    [loadedModels, activeModel, residentCheckpoint],
   );
   // The monitor reads only the primary server, so with that one ejected a kept model can still
   // be answering while it reports idle.
@@ -1215,7 +1229,7 @@ export function ApiMonitorPage(): ReactElement {
   const openRunSettings = (model: ServedModel): void => {
     const requestId = createModelConfigHandoffRequestId();
     setConfigRequest(
-      model.active && canEditSettings
+      model.active
         ? runSettingsRequest(resident, requestId)
         : keptRunSettingsRequest(model, requestId),
     );
@@ -1229,7 +1243,11 @@ export function ApiMonitorPage(): ReactElement {
         aria-label={`Run settings for ${model.name}`}
         aria-haspopup="dialog"
         onClick={() => openRunSettings(model)}
-        disabled={ejecting || modelLoading}
+        // The primary opens only on its live settings: a file-picked GGUF whose access lapsed has none
+        // to reload from, and the kept-model fallback would send Run its bare label.
+        disabled={
+          ejecting || modelLoading || (model.active && !canEditSettings)
+        }
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground"
       >
         <HugeiconsIcon

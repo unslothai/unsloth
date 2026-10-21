@@ -23100,8 +23100,29 @@ async def get_sampling_defaults(model: str, current_subject: str = Depends(get_c
     model's recommendation, then the schema default), so the API page's example request shows the
     values a client would actually get. Off-loop: the first read of a model loads its YAML.
     """
+    return await asyncio.to_thread(_sampling_defaults_for, model)
+
+
+def _sampling_defaults_for(model: str) -> dict:
+    """``resolve_effective_sampling`` as the request path calls it. For the loaded llama model that
+    keys on its identifier and passes its default thinking mode: Qwen3-family recommendations
+    differ between thinking and non-thinking, and leaving it out shows values a request never gets.
+    """
     from utils.inference.inference_config import resolve_effective_sampling
-    return await asyncio.to_thread(resolve_effective_sampling, model, {})
+
+    model_id, thinking = model, None
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        identifier = getattr(llama_backend, "model_identifier", None)
+        names = {n for n in (identifier, _llama_public_model_id(llama_backend)) if n}
+        if model in names or model.rsplit(":", 1)[0] in names:
+            model_id = identifier or model
+            # A request that sends no reasoning controls, so the template's own default applies.
+            thinking = _sampling_thinking_mode(
+                llama_backend,
+                ChatCompletionRequest(messages = [{"role": "user", "content": "Hello!"}]),
+            )
+    return resolve_effective_sampling(model_id, {}, thinking = thinking)
 
 
 @studio_router.delete("/monitor")
