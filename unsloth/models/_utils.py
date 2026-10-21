@@ -7697,10 +7697,24 @@ def _strip_torchao_fake_quantization(model):
     from torchao.quantization import quantize_
     from torchao.quantization.qat import QATConfig
 
+    # torchao's NVFP4 / MX QAT linears fake-quantize inside forward() and carry no weight_fake_quantizer.
+    try:
+        from torchao.prototype import qat as prototype_qat
+    except Exception:
+        prototype_qat = None
+    forward_fake_quant = tuple(
+        cls
+        for cls in (
+            getattr(prototype_qat, "NVFP4FakeQuantizedLinear", None),
+            getattr(prototype_qat, "MXFakeQuantizedLinear", None),
+        )
+        if isinstance(cls, type)
+    )
     quantize_(
         model,
         QATConfig(step = "convert"),
-        filter_fn = lambda m, _: hasattr(m, "weight_fake_quantizer"),
+        filter_fn = lambda m, _: hasattr(m, "weight_fake_quantizer")
+        or isinstance(m, forward_fake_quant),
     )
 
 
