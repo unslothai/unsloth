@@ -1209,8 +1209,9 @@ def test_peak_model_identity_names_the_whole_build(monkeypatch):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert (
-        "peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base, fetch_base)" in src
+    # whitespace-free: the formatter may wrap the call
+    assert "peak_model=_peak_model_identity(repo_id,gguf_filename,kind,base,fetch_base)" in "".join(
+        src.split()
     )
 
 
