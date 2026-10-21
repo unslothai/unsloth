@@ -332,6 +332,7 @@ from .diffusion_mask import (
     ONLY_MASKED_UNSUPPORTED_MSG,
     blur_mask,
     inpaint_class_accepts_padding_mask_crop,
+    mask_is_empty,
     overlay_with_mask,
     resolve_padding,
 )
@@ -12398,6 +12399,9 @@ class DiffusionBackend:
                         and "padding_mask_crop" not in call_params
                     ):
                         raise ValueError(ONLY_MASKED_UNSUPPORTED_MSG)
+                    if inpaint_padding_applied is not None and mask_is_empty(mask_pil):
+                        # diffusers' crop box needs a nonzero pixel; with none this is a plain inpaint.
+                        inpaint_padding_applied = None
                     if mask_blur:
                         # After the snap/resize above, so the radius is in source-image pixels.
                         mask_pil = blur_mask(mask_pil, mask_blur)

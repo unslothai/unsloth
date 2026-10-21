@@ -366,3 +366,35 @@ def test_only_masked_with_blur_is_not_overlaid_twice(fake_runtime, tmp_path, mon
     out = _inpaint(backend, mask_blur = 4, inpaint_only_masked = True)
     assert _FakeInpaintPipe.last_kwargs["padding_mask_crop"] == 32
     assert out["images"][0].getpixel((2, 2)) == (0, 200, 0)
+
+
+def test_only_masked_with_an_empty_mask_runs_as_a_plain_inpaint(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import base64
+    import io
+
+    import diffusers
+    from PIL import Image
+
+    # diffusers' crop region needs a nonzero mask pixel; an all-black mask would fail before denoising.
+    monkeypatch.setattr(diffusers, "ZImageInpaintPipeline", _CropInpaintPipeline, raising = False)
+    backend = _loaded_backend(tmp_path)
+    buf = io.BytesIO()
+    Image.new("L", (64, 64), 0).save(buf, format = "PNG")
+    out = backend.generate(
+        prompt = "a red door",
+        steps = 4,
+        guidance = 0.0,
+        seed = 5,
+        init_image = _tiny_png_b64(),
+        mask_image = base64.b64encode(buf.getvalue()).decode(),
+        strength = 0.7,
+        inpaint_only_masked = True,
+        mask_blur = 4,
+    )
+    assert _FakeInpaintPipe.last_kwargs.get("padding_mask_crop") is None
+    assert out["inpaint_only_masked"] is None and out["inpaint_padding"] is None
+    # A painted mask still crops.
+    _inpaint(backend, inpaint_only_masked = True)
+    assert _FakeInpaintPipe.last_kwargs["padding_mask_crop"] == 32

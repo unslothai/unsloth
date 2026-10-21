@@ -27,6 +27,11 @@ def blur_mask(mask: Any, radius: Optional[int]) -> Any:
     return mask.filter(ImageFilter.GaussianBlur(int(radius)))
 
 
+def mask_is_empty(mask: Any) -> bool:
+    """No nonzero pixel: diffusers' get_crop_region would find a zero-area box."""
+    return mask.convert("L").getbbox() is None
+
+
 def overlay_with_mask(image: Any, source: Any, mask: Any) -> Any:
     """``image`` pasted over ``source`` through the (blurred) ``mask``, as A1111's apply_overlay does.
 
