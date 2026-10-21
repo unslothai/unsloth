@@ -1978,7 +1978,7 @@ def export_capability() -> dict:
     elif platform.system() == "Darwin" and _running_under_rosetta():
         reason = "rosetta"
         message = (
-            "Studio is running under Rosetta (x86_64 Python), so export is disabled. Re-run the installer from a "
+            "Unsloth is running under Rosetta (x86_64 Python), so export is disabled. Re-run the installer from a "
             "native arm64 terminal to enable export."
         )
     elif _gpu_present_but_unusable_message("export", verdict) is not None:
@@ -2079,7 +2079,7 @@ def _video_capability_verdict() -> dict:
     elif platform.system() == "Darwin" and _running_under_rosetta():
         reason = "rosetta"
         message = (
-            "Studio is running under Rosetta (x86_64 Python), which has no Metal (MPS) device for the "
+            "Unsloth is running under Rosetta (x86_64 Python), which has no Metal (MPS) device for the "
             "video pipelines. Re-run the installer from a native arm64 terminal to enable video generation."
         )
     elif platform.system() == "Darwin":

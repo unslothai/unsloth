@@ -1741,6 +1741,8 @@ def test_the_seeded_denoiser_artifact_is_fetched_under_the_load_cancel_event(mon
         _load_token = 1,
         _cancel_event = cancel,
         transformer_quant = "nvfp4",
+        # pinned: on a CUDA host an unset request also plans the hosted FP8 text encoder, a second fetch
+        text_encoder_quant = "off",
     )
 
     assert [(r, f) for r, f, _ in fetched] == [

@@ -313,12 +313,20 @@ export const BUDGET = {
   // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
   // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Chat safety for diagrams, redirect links and approval cards adds 617 B raw / 238 B transfer (6,862,624 ->
+  // 6,863,241 B raw, 2,066,394 -> 2,066,632 B transfer against 731cb16c2, one machine and build, the diagram
+  // source check itself loaded with the first diagram). Raised to that build plus the same margin.
+  // The sidebar Projects menu's Projects home item and its strings add 240 B raw / no transfer (6,862,692 ->
+  // 6,862,932 B raw, 2,066,441 -> 2,066,440 B transfer against 2aeeceb07e, one machine and build, 96 chunks).
+  // Merged with main at 2552ee3895 the build measures 6,863,532 B raw / 2,066,692 B transfer (Node 26, 97 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
+  // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
   // Sharing a connection with every account adds the shared flags to the eager provider mapping: 180 B raw /
   // 20 B transfer (6,862,624 -> 6,862,804 B raw, 2,066,394 -> 2,066,414 B transfer against 723a43b02, one
-  // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised to
-  // that build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_066_603,
-  rawBytes: 6_862_964,
+  // machine and build, Node 22, 96 chunks); the share switch itself is in the lazy Connections tab. Raised by that.
+  transferBytes: 2_067_247,
+  rawBytes: 6_864_218,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -147,6 +147,13 @@ def _require_run(run_id: str) -> dict:
     return run
 
 
+def _require_tools_enabled() -> None:
+    """A run searches the web and the knowledge base from the supervisor's task, outside this
+    request, so the caller's server-side tool policy is applied before a run is set going."""
+    if get_tool_policy() is False:
+        raise HTTPException(status_code = 403, detail = "Tools are disabled on this server")
+
+
 def _sync_assistant(run: dict, text: str | None = None) -> None:
     message_id = db.discover_and_bind_assistant_message(run["id"])
     if not message_id:
@@ -512,6 +519,7 @@ def create_research_run(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    _require_tools_enabled()
     thread = get_chat_thread(payload.threadId)
     if thread is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -608,6 +616,7 @@ def approve_research_plan(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
+    _require_tools_enabled()
     _require_run(run_id)
     try:
         db.approve(run_id, payload.planRevision, payload.planHash)
@@ -645,6 +654,7 @@ def retry_research_run(
     current_subject: str = Depends(get_current_subject),
     payload: RetryResearchRun | None = None,
 ):
+    _require_tools_enabled()
     _require_run(run_id)
     model_timeout = None
     website_policy = None

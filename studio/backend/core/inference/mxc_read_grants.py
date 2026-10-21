@@ -84,7 +84,7 @@ def _transaction():
         except Timeout as exc:
             # Another Studio process is still granting: its tree may be half propagated.
             raise ReadGrantError(
-                f"another Studio process holds the MXC read-grant record: {exc}"
+                f"another Unsloth process holds the MXC read-grant record: {exc}"
             ) from exc
         except OSError as exc:
             # No lock file means no process can be granting through this record either.
@@ -407,7 +407,7 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
     if current != record[key].get("identity"):
         # Moved, replaced, or reached through a new junction: revoking would edit a folder Studio never touched.
         logger.warning(
-            "Not revoking the MXC read grant on %s: it is no longer the folder Studio granted", key
+            "Not revoking the MXC read grant on %s: it is no longer the folder Unsloth granted", key
         )
         record.pop(key)
         return "dropped"
