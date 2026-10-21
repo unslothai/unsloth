@@ -3054,8 +3054,7 @@ LAYER_SPLIT_DECODE_SPEEDUP = {
 LAYER_SPLIT_DECODE_ONLY_SPEEDUP = 0.95
 LAYER_SPLIT_PREFILL_SPEEDUP = (1.7, 1.85)
 
-# llama-server ``--pipeline-groups N`` (unslothai/llama.cpp PR #187): N contexts from one model, so
-# one group's batch runs on the peer's layers while the other's runs here.
+# --pipeline-groups N (unslothai/llama.cpp PR #187): one group decodes on the peer's layers while another runs here.
 PIPELINE_GROUPS_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL, llama-server --pipeline-groups 2 with --device RPC0,CUDA0, two DGX "
     "Sparks, 2026-09-05, uncapped clocks, two repeats"
@@ -3170,8 +3169,7 @@ def split_mtp_note() -> str:
     )
 
 
-# Pipeline groups AND speculative decoding on the same layer split: unslothai/llama.cpp PR #187
-# (a1dd7c5e8) gives every group its own speculative state, so the pair is accepted.
+# Groups AND speculation: PR #187 (a1dd7c5e8) gives every group its own speculative state.
 GROUPS_X_MTP_MEASUREMENT = (
     "Qwen3.8-27B-UD-Q4_K_XL, llama-server --kv-unified --pipeline-groups 2 --spec-type "
     "draft-mtp with --device RPC0,CUDA0, unslothai/llama.cpp PR #187 a1dd7c5e8, two DGX "
@@ -5179,7 +5177,6 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
 
     save_dir = _save_dir_of(plan["node0"])
     if save_dir and _is_data_parallel(plan["node0"]):
-        # Data parallel has no stages.
         print(f"  data parallel: rank 0 wrote the whole checkpoint to {save_dir}")
         print("  nothing to collect from the peer; no merge step is needed")
         return rc

@@ -1886,7 +1886,6 @@ def _main_data_parallel(args) -> int:
         tok.pad_token = tok.eos_token
     # Right padding needs no attention mask for a causal model; only labels exclude pads.
     tok.padding_side = "right"
-    # Reject a base checkpoint here, before both ranks load a full model.
     if args.data and getattr(tok, "chat_template", None) is None:
         raise SystemExit(
             f"--data formats each row with the tokenizer's chat template, and {args.model} "
