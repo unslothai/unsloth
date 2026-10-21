@@ -15789,10 +15789,15 @@ def _gguf_memory_breakdown(
     lookup_table_bytes = min(main_bytes, _lt_bytes)
     lookup_table_on_disk = False
     if lookup_table_bytes:
-        # Streamed only on a build with a lazy mode whose devices keep it on disk.
+        # Streamed only on a build with a lazy mode whose devices keep it on disk. A pin
+        # strips the device flags and their env twins at launch, so it does here too.
+        _lt_extras, _lt_env = extras, dict(os.environ)
+        if selected_gpu_ids:
+            _lt_extras = LlamaCppBackend._strip_device_extra_args(extras)
+            LlamaCppBackend._clear_device_placement_env(_lt_env)
         lookup_table_on_disk = _lt_backend.lookup_tables_stream_by_default(
-            extras,
-            os.environ,
+            _lt_extras,
+            _lt_env,
             gpu_ids = selected_gpu_ids,
             tensor_parallel = tensor_parallel,
         )

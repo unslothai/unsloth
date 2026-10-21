@@ -670,6 +670,9 @@ class TestEstimate:
         assert breakdown().lookup_table_on_disk is True
         assert breakdown(selected_gpu_ids = [0]).lookup_table_on_disk is False
         assert breakdown(selected_gpu_ids = [1]).lookup_table_on_disk is True
+        # The pin owns placement: a stale --device naming the discrete card is stripped.
+        stale = breakdown(selected_gpu_ids = [0], llama_extra_args = ["--device", "Vulkan1"])
+        assert stale.lookup_table_on_disk is False
 
     def test_an_explicit_lazy_mode_on_prices_every_flagged_table(self, breakdown, monkeypatch):
         from hub.utils import gguf_lookup_tables as glt
