@@ -660,6 +660,7 @@ class MlxDiffusionBackend:
         loras: Optional[list[tuple[str, float]]] = None,
         gpu_ids: Optional[list[int]] = None,
         gpu_ordinal: Optional[int] = None,
+        allow_oversized_load: bool = False,
         **_ignored: Any,
     ) -> dict[str, Any]:
         if isinstance(hf_token, str):
