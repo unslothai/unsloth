@@ -61,6 +61,7 @@ function renderer() {
     useChatRuntimeStore: () => "thread",
     useChatProjectScope: () => null,
     markdownSandboxImageSrc: () => null,
+    backendPathUrl: (url: string) => url,
     useSandboxImage: () => ({ state: { status: "idle" } }),
     HugeiconsIcon: "icon",
     Download01Icon: "download",
