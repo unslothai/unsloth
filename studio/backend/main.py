@@ -745,8 +745,7 @@ def banner_autofill_available(app_state, environ) -> bool:
     api_only = getattr(app_state, "api_only", None)
     if api_only is None:
         api_only = environ.get("UNSLOTH_API_ONLY") == "1"
-    # A desktop-owned backend never injects (the shell signs in with its own secret), but the
-    # console still gets the path, not the password: the desktop log ends up in bug reports.
+    # Desktop-owned: the console gets the path, never the password (desktop logs land in bug reports).
     return not api_only or _desktop_owner() is not None
 
 
@@ -3133,8 +3132,7 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     if installation_has_managed_accounts():
         return html_bytes, None
 
-    # The desktop shell signs in with its own secret and never reads the page credential, and any
-    # local process (tool code included) can fetch this page from the loopback port.
+    # The desktop shell never reads it, and any local process can fetch this page from loopback.
     if _desktop_owner() is not None:
         return html_bytes, None
 
