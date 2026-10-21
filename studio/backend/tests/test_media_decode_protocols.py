@@ -155,6 +155,7 @@ def test_chat_video_ffmpeg_and_ffprobe_get_a_file_only_whitelist(monkeypatch):
         b'<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" '
         b'profiles="urn:mpeg:dash:profile:isoff-on-demand:2011"><Period><AdaptationSet>'
         b"<Representation><BaseURL>host.wav</BaseURL></Representation></AdaptationSet></Period></MPD>\n",
+        b"<!--" + b" " * 8192 + b'--><mpd profiles="URN:MPEG:DASH:PROFILE:ISOFF-LIVE:2011"></mpd>',
     ],
 )
 def test_a_playlist_upload_is_refused_before_ffmpeg_sees_it(tmp_path, head):
@@ -165,8 +166,10 @@ def test_a_playlist_upload_is_refused_before_ffmpeg_sees_it(tmp_path, head):
     for source in (str(path), head, io.BytesIO(head)):
         with pytest.raises(PlaylistRefused):
             refuse_playlist(source)
-    # Real media headers pass.
+    # Real media headers pass, as does "<MPD" text that FFmpeg would not probe as DASH.
     refuse_playlist(b"\x00\x00\x00\x18ftypmp42")
+    refuse_playlist(b"ID3\x04\x00\x00\x00\x00\x00\x10TIT2 <MPD> notes")
+    refuse_playlist(b"\x00" + head)
     refuse_playlist(b"RIFF\x00\x00\x00\x00WAVEfmt ")
 
 

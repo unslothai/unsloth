@@ -9,7 +9,7 @@ import io
 import os
 from typing import Any
 
-_HEAD_BYTES = 4096
+_HEAD_BYTES = 1 << 20  # FFmpeg grows its probe buffer past a few KB
 _PLAYLIST_MARKS = (b"#EXTM3U", b"ffconcat")
 
 
@@ -37,7 +37,10 @@ def _head(source: Any) -> bytes:
 
 def refuse_playlist(source: Any) -> None:
     """Raise ``PlaylistRefused`` when ``source`` looks like an HLS, concat or DASH playlist."""
-    head = _head(source).lstrip(b"\xef\xbb\xbf \t\r\n")
-    # FFmpeg's DASH probe looks for "<MPD" anywhere in the probe buffer, not only at the start.
-    if head.startswith(_PLAYLIST_MARKS) or b"<MPD" in head:
+    raw = _head(source)
+    head = raw.lstrip(b"\xef\xbb\xbf \t\r\n")
+    # Mirrors FFmpeg's dash_probe: case-insensitive "<MPD" plus a DASH profile, up to the first NUL.
+    text = raw.split(b"\x00", 1)[0].lower()
+    dash = b"<mpd" in text and (b"dash:profile" in text or b"3gpp:pss:profile:dash1" in text)
+    if head.startswith(_PLAYLIST_MARKS) or dash:
         raise PlaylistRefused("Playlists are not accepted as media uploads.")
