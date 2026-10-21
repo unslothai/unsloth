@@ -342,8 +342,11 @@ export const BUDGET = {
   // (6,862,706 -> 6,863,047 B raw, 2,066,422 -> 2,066,532 B transfer against 2aeeceb07e, one machine and build,
   // 96 chunks). Raised by that.
   // Floating panels remembering their dropped spot (#14355) add 701 B raw / 211 B transfer. Raised by that.
-  transferBytes: 2_071_210,
-  rawBytes: 6_877_790,
+  // The Settings > Chat memory editor (#14357) keeps its strings in the eager English locale and the AGENTS.md
+  // cache counter in the chat adapter (the section itself is lazy): +989 B raw / +364 B transfer over main
+  // (6,863,532 -> 6,864,521 B raw, 2,066,692 -> 2,067,056 B transfer at e08466e82, 97 chunks). Raised by that.
+  transferBytes: 2_071_574,
+  rawBytes: 6_878_779,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
