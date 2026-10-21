@@ -220,7 +220,7 @@ export function offerKey(status: LlamaUpdateStatus): string {
     llama: status.llama.update_available
       ? [status.llama.installed_tag, status.llama.latest_tag]
       : null,
-    // whisper.cpp rides along, so its releases never reopen a dismissed card; null matches older stored keys.
+    // whisper.cpp rides along; null matches keys stored before it joined.
     whisper: null,
     migration: status.backend_migration_available
       ? [

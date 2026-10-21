@@ -181,7 +181,6 @@ LLAMA_CHANGELOG = {
     "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/b10333-mix-e34b418",
     "error": None,
 }
-# A whisper.cpp-only release, which never opens the runtime card by itself.
 WHISPER_STATUS = dict(
     LLAMA_STATUS,
     llama_update_available = False,

@@ -348,8 +348,6 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
         "update_size_bytes": sub.get("update_size_bytes"),
         "skip_reason": plan.get("skip_reason"),
     }
-    # whisper.cpp never raises the update item by itself: it rides along with the next llama.cpp or
-    # audio.cpp update (_settle_whisper_rider), so its separate releases stop re-showing the card.
     status["update_component"] = "llama" if status["llama_update_available"] else None
     return status
 
