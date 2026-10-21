@@ -313,8 +313,7 @@ export const BUDGET = {
   // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
   // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
   // Raised to that build plus the same 160 B raw / 189 B transfer margin.
-  // Floating panels keeping their dropped position (#14355) add 701 B raw / 211 B transfer in the eager Live
-  // monitor, API monitor and Loaded models panels. Raised by that.
+  // Floating panels remembering their dropped spot (#14355) add 701 B raw / 211 B transfer. Raised by that.
   transferBytes: 2_066_794,
   rawBytes: 6_863_485,
 };
