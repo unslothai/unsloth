@@ -28,6 +28,7 @@ from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any, Callable
 
+from utils.cpu_threads import fit_threads_to_affinity, runtime_capped_openblas_loaded
 from utils.hardware.hardware import DeviceType, get_device
 from utils.transformers_dtype import dtype_kwargs
 from utils.utils import hf_env_offline
@@ -558,6 +559,52 @@ def _gate_st_custom_modules() -> None:
             setattr(module, "import_module_class", import_module_class)
 
 
+def _route_linears_through_onednn(model) -> int:
+    """Run a CPU model's fp32 Linear layers in oneDNN when torch's BLAS is Windows ROCm's OpenBLAS.
+
+    That DLL does ~4 GFLOPS per core against MKL's ~130, so bge-small indexed ~7x slower on all cores
+    (#14313). oneDNN ships in the same wheel; the vectors match to ~2e-7, so the index stays valid.
+    Probed on the model's own first layer; any doubt keeps the stock path. Returns layers rerouted.
+    """
+    if not runtime_capped_openblas_loaded():
+        return 0
+    try:
+        import torch
+
+        if not getattr(torch.version, "hip", None) or not torch.backends.mkldnn.is_available():
+            return 0
+        linears = [
+            m
+            for m in model.modules()
+            if type(m) is torch.nn.Linear
+            and m.weight.device.type == "cpu"
+            and m.weight.dtype == torch.float32
+        ]
+        if not linears:
+            return 0
+
+        class OneDnnLinear(torch.nn.Linear):
+            def forward(self, x):
+                return torch.ops.mkldnn._linear_pointwise(x, self.weight, self.bias, "none", [], "")
+
+        probe = linears[0]
+        with torch.inference_mode():
+            x = torch.randn(2, 5, probe.in_features)
+            expected = torch.nn.functional.linear(x, probe.weight, probe.bias)
+            got = OneDnnLinear.forward(probe, x)
+        if got.shape != expected.shape or not torch.allclose(got, expected, rtol = 1e-4, atol = 1e-5):
+            return 0
+    except Exception:  # noqa: BLE001 -- the stock path is always correct
+        return 0
+    for module in linears:
+        module.__class__ = OneDnnLinear
+    logger.info(
+        "embedding model: %d Linear layers run in oneDNN (ROCm OpenBLAS is slow on CPU)",
+        len(linears),
+    )
+    return len(linears)
+
+
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
     accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU; see ``_load_dtype``
@@ -652,6 +699,7 @@ def _get(model_name: str | None = None):
                         _model = SentenceTransformer(load_target, **st_kwargs)
                 finally:
                     _emit_load_reports(report)
+            _route_linears_through_onednn(_model)
             _name = name
             if download_pending:
                 # Retire only once the model is constructed: retiring earlier let a failed construction fall through
@@ -692,6 +740,8 @@ def _st_encode(
         # Admission and model lookup are one lease: lookup first would let unload clear the globals while
         # this call still held a strong reference.
         model = _get(model_name)
+        # Affinity narrowed in Task Manager mid-index must reach this thread's pool (#14313).
+        fit_threads_to_affinity()
         os.environ["TOKENIZERS_PARALLELISM"] = "true"
         try:
             with _inference_ctx():

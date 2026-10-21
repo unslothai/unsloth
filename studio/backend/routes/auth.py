@@ -280,16 +280,16 @@ def _client_ip(request: Request | None) -> str:
     if request is None:
         return "_unknown"
     if _trust_forwarded_for():
+        # Rightmost entry only: the trusted proxy appends the client it saw, and everything left of
+        # it is the caller's own text, so keying on it would let each guess pick a fresh bucket.
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            # First entry is the originating client.
-            normalized = _normalize_forwarded_addr(xff.split(",", 1)[0])
+            normalized = _normalize_forwarded_addr(xff.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
         fwd = request.headers.get("forwarded", "")
         if fwd:
-            # First element only; multi-element headers can't fork buckets.
-            normalized = _forwarded_for_from_element(fwd.split(",", 1)[0])
+            normalized = _forwarded_for_from_element(fwd.rsplit(",", 1)[-1])
             if normalized:
                 return normalized
     return (request.client.host if request.client else None) or "_unknown"

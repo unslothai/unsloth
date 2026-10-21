@@ -13,7 +13,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
+use tauri::webview::{
+    DownloadEvent, NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse,
+};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, State, Url, Webview,
     WebviewBuilder, WebviewUrl,
@@ -859,11 +861,21 @@ fn macos_at_least(major: isize) -> bool {
     })
 }
 
-/// Pages' own profile, proxied via `browser_proxy` (macOS: set on first load).
+/// Pages ask before using a capture device. With no handler wry grants every WKWebView capture
+/// request on macOS without a prompt, so any page could open the microphone the app holds for
+/// dictation. `Default` is WebKit's own per-site prompt there and the platform default elsewhere
+/// (WebView2's prompt, WebKitGTK's deny), so only the silent grant goes away.
+fn page_permission(_kind: PermissionKind) -> PermissionResponse {
+    PermissionResponse::Default
+}
+
+/// Pages' own profile, proxied via `browser_proxy` (macOS: set on first load). Every
+/// browser-panel webview is built through here, so none can miss the permission handler.
 fn with_page_profile<R: Runtime>(
     builder: WebviewBuilder<R>,
     app: &AppHandle<R>,
 ) -> Result<WebviewBuilder<R>, String> {
+    let builder = builder.on_permission_request(|_, kind| page_permission(kind));
     let proxy = crate::browser_proxy::address()?;
     #[cfg(target_os = "macos")]
     {
@@ -2257,6 +2269,42 @@ fn take_finished(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn page_capture_requests_are_never_granted_silently() {
+        for kind in [
+            PermissionKind::Microphone,
+            PermissionKind::Camera,
+            PermissionKind::DisplayCapture,
+            PermissionKind::Other,
+        ] {
+            assert!(
+                !matches!(page_permission(kind), PermissionResponse::Allow),
+                "{kind:?} must not be granted without asking"
+            );
+        }
+    }
+
+    #[test]
+    fn every_page_webview_gets_the_permission_handler() {
+        // A Windows checkout may carry CRLF line endings.
+        let source = include_str!("browser_webview.rs").replace("\r\n", "\n");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        let start = code.find("fn with_page_profile").unwrap();
+        let body = &code[start..start + code[start..].find("\n}\n").unwrap()];
+        assert!(
+            body.contains(".on_permission_request("),
+            "with_page_profile must install the page permission handler"
+        );
+        let builders = code.matches("WebviewBuilder::new(").count();
+        let profiled = code.matches("with_page_profile(").count();
+        assert!(builders > 0);
+        assert_eq!(
+            builders,
+            profiled,
+            "every page WebviewBuilder must go through with_page_profile"
+        );
+    }
+
     #[test]
     fn a_finished_path_matching_no_reservation_settles_only_a_sole_one() {
         let (a, b) = (PathBuf::from("/s/a.zip"), PathBuf::from("/s/b.zip"));

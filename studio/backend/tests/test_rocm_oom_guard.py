@@ -205,6 +205,19 @@ class TestDeviceNameFallback:
             "AMD Radeon 860M Graphics",
             "Radeon 840M",
             "AMD Radeon 840M Graphics",
+            # gfx1153 Krackan Point 2 (Ryzen AI 5 330)
+            "AMD Radeon(TM) 820M Graphics",
+            # gfx1151 Strix Halo (Ryzen AI Max 380)
+            "AMD Radeon 8040S Graphics",
+            # gfx1103 Phoenix / Hawk Point
+            "AMD Radeon(TM) 780M",
+            "AMD Radeon 760M Graphics",
+            "AMD Radeon 740M",
+            # gfx1035 Rembrandt
+            "AMD Radeon 680M",
+            "AMD Radeon(TM) 660M",
+            # gfx1036 Raphael / Dragon Range, gfx1037 Mendocino
+            "AMD Radeon(TM) 610M",
             # case variants
             "RADEON 8060S GRAPHICS",
             "radeon 8050s",
@@ -230,6 +243,12 @@ class TestDeviceNameFallback:
             # Superficially similar substrings but discrete
             "Radeon RX 580",
             "Radeon VII",
+            # discrete mobile parts whose digits contain an APU name
+            "AMD Radeon RX 7600M XT",
+            "AMD Radeon RX 6800M",
+            "AMD Radeon RX 6650M",
+            "AMD Radeon Pro W6600M",
+            "AMD Radeon RX 7800M",
         ],
     )
     def test_discrete_not_misclassified(self, device_name: str) -> None:
