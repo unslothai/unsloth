@@ -2093,6 +2093,8 @@ class CfgParallelRouter:
         module = self.module_ref()
         if module is None:
             return
+        from .diffusion_cuda_graph import OutsideWorkRefused, outside_capture
+
         t0 = time.perf_counter()
         try:
             hooked = _hooks_present(module)
@@ -2114,8 +2116,6 @@ class CfgParallelRouter:
                     f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
                 )
             self.fingerprint = weights_fingerprint(module)
-            from .diffusion_cuda_graph import outside_capture
-
             # Copying the weights to the replica card is CUDA work another pipeline's capture prohibits.
             with outside_capture(), _device_context(self.secondary):
                 self.replica = self.replica_factory()
@@ -2131,8 +2131,12 @@ class CfgParallelRouter:
                 )
         except Exception as exc:  # noqa: BLE001
             self.replica = None
-            with contextlib.suppress(Exception):
-                _torch().cuda.empty_cache()
+            # A refused build allocated nothing, and its capture is still recording: no allocator call may run now.
+            # Any other failure frees what it left behind, itself with captures held off.
+            if not isinstance(exc, OutsideWorkRefused):
+                with contextlib.suppress(Exception):
+                    with outside_capture():
+                        _torch().cuda.empty_cache()
             self.disable(f"replica unavailable: {exc}")
 
     def _prefetch(self, args: tuple, kwargs: dict) -> None:

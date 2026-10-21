@@ -627,3 +627,53 @@ def test_a_refused_worker_job_reports_an_error_and_the_worker_keeps_serving(monk
     assert worker.call(lambda: 7) == 7
     assert cg._OUTSIDE_JOBS == 0
     worker.close()
+
+
+def _long_capture():
+    recording, stop = threading.Event(), threading.Event()
+
+    def run():
+        with cg._capturing():
+            recording.set()
+            stop.wait(10)
+
+    t = threading.Thread(target = run)
+    t.start()
+    assert recording.wait(5)
+
+    def end():
+        stop.set()
+        t.join(5)
+
+    return end
+
+
+def test_a_replica_build_refused_by_a_recording_makes_no_allocator_call(monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
+    flushes = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: flushes.append(cg.capture_in_progress()))
+    router, replicas = _router(_Dit())
+    end = _long_capture()
+    try:
+        router._build_replica()
+    finally:
+        end()
+    assert router.replica is None and replicas == []
+    assert "replica unavailable" in router.disabled_reason
+    # the capture was still recording: no empty_cache while it ran
+    assert flushes == []
+    assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0
+
+
+def test_a_failed_replica_build_flushes_with_captures_held_off(monkeypatch):
+    flushes = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: flushes.append(cg._OUTSIDE_JOBS))
+    router, _replicas = _router(_Dit())
+
+    def boom():
+        raise RuntimeError("CUDA out of memory on the replica card")
+
+    router.replica_factory = boom
+    router._build_replica()
+    assert "replica unavailable" in router.disabled_reason
+    assert flushes == [1] and cg._OUTSIDE_JOBS == 0
