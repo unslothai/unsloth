@@ -270,7 +270,6 @@ function SamplingDefaultsDialog({
   );
 }
 
-/** The run settings row that opens the editor and says whether this model has saved values. */
 export function SamplingDefaultsRow({
   modelId,
   chatModelId,
@@ -318,7 +317,6 @@ export function SamplingDefaultsRow({
   const openEditor = async () => {
     setOpening(true);
     try {
-      // Fresh, so another tab's save is what the fields start from.
       const resolved = await fetchModelSamplingDefaults(modelId);
       setStored({ modelId, saved: resolved });
       setOpenCount((count) => count + 1);

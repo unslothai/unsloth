@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Sampling defaults saved for one model. The backend applies them to OpenAI and Anthropic
-// requests that leave a value unset, including the one that switches the model in.
-
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
@@ -35,7 +32,7 @@ export async function fetchModelSamplingDefaults(
   return body.resolved ?? {};
 }
 
-/** Replace one model's saved defaults; an empty object forgets the model. Returns what is stored. */
+/** An empty object forgets the model. */
 export async function putModelSamplingDefaults(
   modelId: string,
   sampling: SamplingDefaults,
@@ -58,7 +55,6 @@ export async function putModelSamplingDefaults(
   return body.resolved ?? {};
 }
 
-/** What a request naming this model gets for every field it leaves out. */
 export async function fetchEffectiveSampling(
   modelId: string,
 ): Promise<SamplingDefaults> {
