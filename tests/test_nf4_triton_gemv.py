@@ -249,6 +249,7 @@ def test_planned_rows_are_reused_without_an_out(monkeypatch):
     # fast_geglu_inference calls the gate and up projections with out = None.
     utils = _utils_with_kernels()
     from unsloth.kernels import triton_launch
+
     if not triton_launch._ENABLED:
         pytest.skip("plans are kept only with the direct launcher (off on HIP)")
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
