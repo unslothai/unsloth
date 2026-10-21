@@ -11637,14 +11637,14 @@ class DiffusionBackend:
 
         if _small_host_int8(pipe):
             raise ValueError(
-                "LoRA is not available on this load: system RAM was too small for the dense model, so Studio "
+                "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "
                 "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Load the "
-                "model with the LoRA selected (Studio then keeps the dense transformer), or use a host with more RAM."
+                "model with the LoRA selected (Unsloth then keeps the dense transformer), or use a host with more RAM."
             )
         if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
             raise ValueError(
                 "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
-                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Studio then "
+                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Unsloth then "
                 "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
             )
         if not diffusion_lora.supports_lora(
