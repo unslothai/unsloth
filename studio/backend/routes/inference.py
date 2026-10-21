@@ -23112,7 +23112,11 @@ def _sampling_defaults_for(model: str) -> dict:
 
     model_id, thinking = model, None
     llama_backend = get_llama_cpp_backend()
-    if getattr(llama_backend, "is_loaded", False):
+    # Another account's resident stays hidden, as on the monitor: resolving against it would tell
+    # the caller which model that account has loaded.
+    if getattr(llama_backend, "is_loaded", False) and not account_access.resident_hidden(
+        "chat", _monitor_active_model()
+    ):
         identifier = getattr(llama_backend, "model_identifier", None)
         names = {n for n in (identifier, _llama_public_model_id(llama_backend)) if n}
         if model in names or model.rsplit(":", 1)[0] in names:

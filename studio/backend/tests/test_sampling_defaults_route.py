@@ -65,3 +65,21 @@ def test_the_loaded_model_resolves_with_its_thinking_mode(monkeypatch):
         )
     )
     assert other == inference_config.resolve_effective_sampling("unsloth/gemma-3-270m-it-GGUF", {})
+
+
+def test_a_resident_hidden_from_the_caller_is_not_resolved_against(monkeypatch):
+    # A managed account must not learn another account's resident from the values returned.
+    monkeypatch.setattr(inference_routes, "get_llama_cpp_backend", lambda: _LoadedQwen())
+    monkeypatch.setattr(inference_routes, "_sampling_thinking_mode", lambda backend, payload: False)
+    monkeypatch.setattr(
+        inference_routes, "_monitor_active_model", lambda: "unsloth/Qwen3-4B-GGUF:Q4_K_M"
+    )
+    monkeypatch.setattr(
+        inference_routes.account_access, "resident_hidden", lambda modality, reference = None: True
+    )
+    got = asyncio.run(
+        inference_routes.get_sampling_defaults(
+            model = "unsloth/Qwen3-4B-GGUF", current_subject = "managed"
+        )
+    )
+    assert got == inference_config.resolve_effective_sampling("unsloth/Qwen3-4B-GGUF", {})
