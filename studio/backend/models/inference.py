@@ -3382,6 +3382,10 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
         ...,
         description = "Conversation messages in OpenAI chat form",
     )
+    max_tokens: Optional[int] = Field(None, ge = 1)
+    context_overflow: Optional[Literal["error", "truncate_middle", "truncate_oldest"]] = None
+    context_policy: Optional[Literal["checkpoint", "rolling"]] = None
+    compaction_headroom_ratio: Optional[float] = Field(None, ge = 0.0, le = 0.9)
     tools: Optional[list[dict]] = Field(
         None,
         description = "Optional OpenAI tool definitions included in the prompt",
@@ -4589,6 +4593,13 @@ class DiffusionLoadRequest(BaseModel):
         "cut), low_vram (offload every component, lowest VRAM, slower). "
         "Overrides cpu_offload when set.",
     )
+    allow_oversized_load: bool = Field(
+        False,
+        description = "Attempt the load even when the unified-memory check (Apple Silicon, integrated "
+        "GPUs) estimates its weights will not fit. The check stays on by default; an oversized load "
+        "can exhaust memory, swap heavily, stop the server or make the computer unresponsive. Same "
+        "effect as the server's UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1, for this load only.",
+    )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
@@ -5411,6 +5422,11 @@ class DiffusionLoadProgressResponse(BaseModel):
     bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
     fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+    error_code: Optional[str] = Field(
+        None,
+        description = "Stable code for error: 'unified-memory-load' when the unified-memory check refused "
+        "the load (retry with allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class DiffusionResolvedControl(BaseModel):
@@ -5512,6 +5528,11 @@ class DiffusionDownloadPlanResponse(BaseModel):
         "/images/load on any plan failure, which would start that very download. Null means "
         "nothing is known to be wrong -- the check reads metadata only and stays silent on an "
         "unreadable header, an unmapped base or an offline host.",
+    )
+    incompatible_code: Optional[str] = Field(
+        None,
+        description = "Stable code for incompatible_reason: 'unified-memory-load' when the unified-memory "
+        "check refused the pick (send allow_oversized_load to attempt it anyway); null otherwise.",
     )
 
 
@@ -6615,6 +6636,13 @@ class VideoLoadRequest(BaseModel):
         "(stream the transformer, near-resident speed, moderate VRAM cut), low_vram "
         "(offload every component, lowest VRAM, slower).",
     )
+    allow_oversized_load: bool = Field(
+        False,
+        description = "Attempt the load even when the unified-memory check (Apple Silicon, integrated "
+        "GPUs) estimates its weights will not fit. The check stays on by default; an oversized load "
+        "can exhaust memory, swap heavily, stop the server or make the computer unresponsive. Same "
+        "effect as the server's UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1, for this load only.",
+    )
     speed_mode: Optional[Literal["off", "eager", "default", "max"]] = Field(
         None,
         description = "Opt-in speed optims (default off -> bit-identical output): "
@@ -7050,6 +7078,11 @@ class VideoLoadProgressResponse(BaseModel):
         None, description = "Estimated total bytes to download (null = unknown)"
     )
     error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+    error_code: Optional[str] = Field(
+        None,
+        description = "Stable code for error: 'unified-memory-load' when the unified-memory check refused "
+        "the load (retry with allow_oversized_load to attempt it anyway); null otherwise.",
+    )
 
 
 class VideoGenerationDefaults(BaseModel):
