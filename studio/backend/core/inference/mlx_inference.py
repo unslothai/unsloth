@@ -2991,8 +2991,32 @@ class _MLXPromptCacheHistory:
         self._trim = trim
         self._max_bytes = max_bytes
         self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
+        self._oversized = None
+
+    def _take_oversized(self, key, tokens):
+        held, self._oversized = self._oversized, None
+        if held is None:
+            return None
+        held_key, held_tokens, cache, nbytes = held
+        if held_key != key:
+            return None
+        common = next(
+            (i for i, (a, b) in enumerate(zip(held_tokens, tokens)) if a != b),
+            min(len(held_tokens), len(tokens)),
+        )
+        prefix = min(common, len(tokens) - 1)
+        # A prefix within budget is the LRU's to serve, so chats under it behave as before.
+        if prefix * nbytes <= self._max_bytes * len(held_tokens):
+            return None
+        excess = len(held_tokens) - prefix
+        if excess and not (self._can_trim(cache) and self._trim(cache, excess) == excess):
+            return None
+        return cache, list(tokens[prefix:])
 
     def fetch(self, model, key, tokens):
+        held = self._take_oversized(key, tokens)
+        if held is not None:
+            return held
         cache, rest = self._lru.fetch_nearest_cache(key, list(tokens))
         if cache is not None:
             if rest:
@@ -3012,19 +3036,11 @@ class _MLXPromptCacheHistory:
         return cache if self._prepare is None else self._prepare(cache), list(tokens)
 
     def insert(self, key, tokens, cache):
-        # An over-budget entry evicts itself and every other conversation.
         sizes = [_kv_entry_nbytes(entry) for entry in cache]
         if any(size is None for size in sizes):
             logger.debug("MLX prompt cache: skipping state whose size is unmeasurable")
             return
         nbytes = sum(sizes)
-        if nbytes > self._max_bytes:
-            logger.debug(
-                "MLX prompt cache: skipping %.2f GB entry over the %.2f GB budget",
-                nbytes / 1e9,
-                self._max_bytes / 1e9,
-            )
-            return
         covered = _kv_prefix_coverage(cache)
         if covered is None:
             logger.debug("MLX prompt cache: skipping cache with unverifiable prefix coverage")
@@ -3039,6 +3055,15 @@ class _MLXPromptCacheHistory:
             return
         tokens = tokens[:covered]
         if not tokens:
+            return
+        if nbytes > self._max_bytes:
+            # In the LRU it would evict itself and every other conversation.
+            logger.debug(
+                "MLX prompt cache: holding %.2f GB entry over the %.2f GB budget for its next turn",
+                nbytes / 1e9,
+                self._max_bytes / 1e9,
+            )
+            self._oversized = (key, tokens, cache, nbytes)
             return
         self._lru.insert_cache(key, tokens, cache)
 

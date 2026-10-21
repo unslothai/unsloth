@@ -3185,6 +3185,38 @@ def test_mlx_prompt_cache_skips_entries_over_budget(monkeypatch):
     assert tuple(range(50)) not in stored
 
 
+def test_mlx_prompt_cache_keeps_reusing_a_conversation_over_budget(monkeypatch):
+    from core.inference.mlx_inference import _MLXPromptCacheHistory
+
+    _install_fake_prompt_cache_api(monkeypatch)
+
+    history = _MLXPromptCacheHistory(6, 1000)
+    history.insert("key", [7, 8, 9], [_FakeCacheEntry(offset = 3, nbytes = 400)])
+    turn = list(range(50))
+    long_cache = [_FakeCacheEntry(offset = 50, nbytes = 5000)]
+    history.insert("key", turn, long_cache)
+    assert tuple(turn) not in history._lru.entries["key"]
+
+    cache, rest = history.fetch(object(), "key", turn + [50, 51])
+    assert cache is long_cache
+    assert rest == [50, 51]
+
+    cache[0].offset = 52
+    history.insert("key", turn + [50, 51], cache)
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is long_cache
+    assert cache[0].offset == 45
+    assert rest == [99]
+
+    history.insert("key", turn[:45], cache)
+    cache, rest = history.fetch(object(), "key", [7, 8, 9, 10])
+    assert cache is not long_cache
+    assert rest == [10]
+    cache, rest = history.fetch(object(), "key", turn[:45] + [99])
+    assert cache is not long_cache
+    assert rest == turn[:45] + [99]
+
+
 def test_mlx_prompt_cache_keys_on_what_the_kv_covers(monkeypatch):
     from core.inference.mlx_inference import _MLXPromptCacheHistory
 
