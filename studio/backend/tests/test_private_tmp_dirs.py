@@ -18,10 +18,7 @@ import pytest
 pytestmark = pytest.mark.skipif(not hasattr(os, "getuid"), reason = "POSIX owner and mode checks")
 
 _SEED_SRC = (
-    Path(__file__).resolve().parents[1]
-    / "plugins"
-    / "data-designer-github-repo-seed"
-    / "src"
+    Path(__file__).resolve().parents[1] / "plugins" / "data-designer-github-repo-seed" / "src"
 )
 
 
@@ -54,13 +51,11 @@ def tmp(monkeypatch, tmp_path):
 
 def _ltx():
     from core.inference import video_ltx25
-
     return video_ltx25.ltx25_transformer_config_dir
 
 
 def _tmp_root():
     from utils.paths import storage_roots
-
     return storage_roots.tmp_root
 
 
