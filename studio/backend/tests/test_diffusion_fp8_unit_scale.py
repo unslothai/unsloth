@@ -319,6 +319,10 @@ print(json.dumps({"installed": installed, "calls": len(calls), "unit": all(a == 
 
 def _fp8_gpu() -> bool:
     try:
+        # ROCm reports gfx versions as the capability (gfx1151 -> (11, 5)), which is not an sm_89 check, and Studio
+        # never runs torchao fp8 on ROCm (diffusion_precision / diffusion_transformer_quant decline it).
+        if getattr(torch.version, "hip", None):
+            return False
         return torch.cuda.is_available() and torch.cuda.get_device_capability() >= (8, 9)
     except Exception:  # noqa: BLE001
         return False

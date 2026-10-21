@@ -36,6 +36,11 @@ def _from_diffusers(module: str, name: str):
 def _env(monkeypatch):
     monkeypatch.delenv(mg.MULTIGPU_ENV, raising = False)
     monkeypatch.delenv(mg.CFG_PARALLEL_ENV, raising = False)
+    # make_selection drops ordinals torch cannot address and cards of a lower capability than the primary, both read
+    # from the real host. The fake cards here must not depend on it: a one-GPU host (an APU, a single discrete card)
+    # would otherwise see every [0, 1] selection collapse to None. Tests that probe those filters patch them again.
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 8)
+    monkeypatch.setattr(mg, "_capability", lambda o: None)
     yield
 
 
@@ -1836,6 +1841,20 @@ def test_a_card_torch_cannot_address_is_not_a_secondary(monkeypatch):
     assert mg.make_selection(0, [0, 1]) is None
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
     assert mg.make_selection(0, [0, 1]) == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+
+
+def test_two_discrete_rocm_cards_split_like_cuda(monkeypatch):
+    """2x 7900 XTX / MI300: a HIP torch with two addressable discrete cards plans the same split CUDA does."""
+    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setattr(mg, "_capability", lambda o: (11, 0))  # gfx1100, as ROCm reports it
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
+    selection = mg.make_selection(0, [0, 1])
+    assert selection == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
+    with mg.selection_scope(selection):
+        plan = _plan()
+    assert plan.offload_policy == dm.OFFLOAD_NONE and plan.secondary_ordinal == 1
 
 
 def test_refinement_keeps_an_explicit_cpu_offload(monkeypatch):
