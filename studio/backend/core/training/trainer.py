@@ -3196,6 +3196,7 @@ class UnslothTrainer:
 
     @staticmethod
     def _resolve_local_path(dataset_file: str) -> Path:
+        dataset_file = os.path.expanduser(dataset_file)
         if os.path.isabs(dataset_file):
             return Path(dataset_file)
         if os.path.exists(dataset_file):
@@ -3391,7 +3392,18 @@ class UnslothTrainer:
                     logger.info(f"[DEBUG] Dataset cache_files: {dataset.cache_files}\n")
 
                 if local_eval_datasets and eval_enabled:
-                    eval_all_files = self._resolve_local_files(local_eval_datasets)
+                    eval_saved = self._load_saved_dataset(local_eval_datasets)
+                    eval_all_files = (
+                        []
+                        if eval_saved is not None
+                        else self._resolve_local_files(local_eval_datasets)
+                    )
+                    if eval_saved is not None:
+                        eval_dataset = eval_saved
+                        has_separate_eval_source = True
+                        logger.info(
+                            f"Loaded {len(eval_dataset)} eval samples from a saved dataset folder\n"
+                        )
                     if eval_all_files:
                         eval_loader = self._loader_for_files(eval_all_files)
                         eval_dataset = load_dataset(

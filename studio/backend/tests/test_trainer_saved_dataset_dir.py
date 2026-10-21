@@ -130,3 +130,39 @@ def test_the_mlx_worker_resolves_a_studio_dataset_name_before_the_saved_probe(
         "yes",
         "no",
     ]
+
+
+def test_a_saved_to_disk_eval_folder_loads_as_saved(trainer, tmp_path):
+    from datasets import Dataset
+
+    train, evals = tmp_path / "train", tmp_path / "eval"
+    Dataset.from_list(_ROWS).save_to_disk(str(train))
+    Dataset.from_list(_ROWS[:2]).save_to_disk(str(evals))
+
+    result = trainer.load_and_format_dataset(
+        None, local_datasets = [str(train)], local_eval_datasets = [str(evals)], eval_steps = 0.5
+    )
+
+    assert result is not None
+    assert len(result[1]) == 2
+
+
+@pytest.mark.parametrize("escape", ["state_file", "dict_split"])
+def test_a_saved_manifest_pointing_outside_its_folder_is_refused(tmp_path, escape):
+    from datasets import Dataset, DatasetDict
+    from utils.datasets.saved import load_saved_dataset
+
+    Dataset.from_list(_ROWS).save_to_disk(str(tmp_path / "outside"))
+    folder = tmp_path / "saved"
+    if escape == "state_file":
+        Dataset.from_list(_ROWS).save_to_disk(str(folder))
+        state = json.loads((folder / "state.json").read_text())
+        arrow = next((tmp_path / "outside").glob("*.arrow")).name
+        state["_data_files"] = [{"filename": f"../outside/{arrow}"}]
+        (folder / "state.json").write_text(json.dumps(state))
+    else:
+        DatasetDict(train = Dataset.from_list(_ROWS)).save_to_disk(str(folder))
+        (folder / "dataset_dict.json").write_text(json.dumps({"splits": ["../outside"]}))
+
+    with pytest.raises(ValueError, match = "outside its folder"):
+        load_saved_dataset(folder)

@@ -108,6 +108,7 @@ def _dataset_modalities(
             return False, False
 
     def preview(path):
+        path = os.path.expanduser(path)
         if not os.path.isabs(path) and not os.path.exists(path):
             path = resolve_dataset_path(path)
         saved = load_saved_dataset(path)

@@ -388,3 +388,21 @@ def test_a_gated_upstream_vlm_is_checked_through_its_public_mirror(tmp_path, mon
     )
 
     assert trainer.load_kwargs["is_dataset_image"] is True
+
+
+def test_a_home_relative_local_dataset_is_checked_for_images(tmp_path, monkeypatch):
+    from datasets import Dataset
+
+    Dataset.from_list(_IMAGE_ROWS).to_parquet(str(tmp_path / "images.parquet"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    trainer = _train(
+        tmp_path,
+        monkeypatch,
+        "--model",
+        _local_model(tmp_path, _VISION_CONFIG, _TEXT_TOKENIZER),
+        "--local-dataset",
+        "~/images.parquet",
+    )
+
+    assert trainer.load_kwargs["is_dataset_image"] is True
