@@ -227,10 +227,10 @@ def format_rl_dataset(
     roles = resolve_role_columns(columns, objective, mapping)
     # Rewards read their compare_to column by name, so keep it even when it also fills a role.
     extra = [c for c in keep_columns if c in columns and c not in _RL_OUTPUT_COLUMNS[objective]]
-    if objective != "grpo":
-        # TRL reads these per row when templating preference data (tools from 1.x on).
-        used = set(roles.values())
-        extra += [c for c in _TRL_ROW_COLUMNS if c in columns and c not in used and c not in extra]
+    # Each row's own tool schemas and template kwargs; GRPO prompts are rendered with its tools.
+    row_columns = _TRL_ROW_COLUMNS if objective != "grpo" else ("tools",)
+    used = set(roles.values())
+    extra += [c for c in row_columns if c in columns and c not in used and c not in extra]
     if objective == "grpo":
         present = set(extra) | {"prompt"} | ({"answer"} if "answer" in roles else set())
         absent = sorted({c for c in keep_columns if c not in present})
@@ -356,23 +356,31 @@ def render_grpo_prompts(
     template = getattr(tokenizer, "chat_template", None) or ""
     thinking = enable_thinking is not None and "enable_thinking" in template
     columns = getattr(dataset, "column_names", None) or []
-    nulls = not {"image", "images"} & set(columns) and _has_null_fields(dataset)
-    if not (thinking or nulls or _has_tool_ended_prompts(dataset)):
-        return dataset, False
+    text_only = not {"image", "images"} & set(columns)
+    nulls = text_only and _has_null_fields(dataset)
+    # TRL's GRPO reads no per-row tools: rendered here, or the model never sees the schemas.
+    tools = (
+        text_only and "tools" in columns and any(_row_tools({"tools": t}) for t in dataset["tools"])
+    )
+    drop = ["tools"] if "tools" in columns else []
+    if not (thinking or nulls or tools or _has_tool_ended_prompts(dataset)):
+        return (dataset.remove_columns(drop) if drop else dataset), False
     kwargs = {"enable_thinking": bool(enable_thinking)} if thinking else {}
 
     def render(row: dict) -> dict:
+        row_tools = _row_tools(row)
         return {
             "prompt": tokenizer.apply_chat_template(
                 _without_nulls(row["prompt"]),
                 tokenize = False,
                 add_generation_prompt = True,
+                **({"tools": row_tools} if row_tools else {}),
                 **kwargs,
             )
         }
 
     map_kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
-    return dataset.map(render, **map_kwargs), True
+    return dataset.map(render, remove_columns = drop, **map_kwargs), True
 
 
 def render_prompts_without_thinking(
