@@ -154,3 +154,28 @@ def test_falls_back_to_the_trainer_old_forward(monkeypatch, case):
     assert not hasattr(trainer, "_unsloth_rollout_logps_as_old_batches")
     # Warned once per reason, not per batch.
     assert sum("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD" in str(w.message) for w in caught) == 1
+
+
+def test_ranks_agree_on_the_fallback(monkeypatch):
+    # One rank with a non-finite rollout logprob must pull every rank onto the trainer's own pi_old:
+    # under FSDP / ZeRO-3 that forward is collective.
+    monkeypatch.setenv("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD", "1")
+    _Zoo(monkeypatch, True)
+    sampling, mask = _batch()
+    other_rank_finite = {"value": 0}
+
+    class _Acc:
+        num_processes = 2
+
+        def gather(self, t):
+            return torch.cat([t, torch.tensor([other_rank_finite["value"]], dtype = t.dtype)])
+
+    trainer = SimpleNamespace(args = SimpleNamespace(loss_type = "dapo"), accelerator = _Acc())
+    decide = _decision()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert decide(trainer, sampling, mask) is False
+    other_rank_finite["value"] = 1
+    assert decide(trainer, sampling, mask) is True
+    assert trainer._unsloth_rollout_logps_as_old_fallbacks == 1
+    assert trainer._unsloth_rollout_logps_as_old_batches == 1

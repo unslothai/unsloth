@@ -3663,7 +3663,12 @@ def _unsloth_grpo_rollout_logps_as_old(
     loss_mask = completion_mask.to(torch.bool)
     if tool_mask is not None:
         loss_mask = loss_mask & tool_mask.to(device = loss_mask.device, dtype = torch.bool)
-    if not torch.isfinite(sampling_per_token_logps[loss_mask]).all():
+    finite = torch.isfinite(sampling_per_token_logps[loss_mask]).all()
+    accelerator = getattr(trainer, "accelerator", None)
+    if getattr(accelerator, "num_processes", 1) > 1:
+        # Every rank takes the same branch: under FSDP / ZeRO-3 the old-policy forward is collective.
+        finite = accelerator.gather(finite.to(torch.int32).reshape(1)).min()
+    if not bool(finite):
         # vLLM could not score some tokens (NaN): those need the trainer's own pi_old.
         return _skip("some rollout logprobs on loss tokens are not finite")
     trainer._unsloth_rollout_logps_as_old_batches = (
