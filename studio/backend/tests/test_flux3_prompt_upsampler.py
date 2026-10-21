@@ -2634,7 +2634,9 @@ def test_a_start_cancelled_before_its_probe_never_starts_one(monkeypatch):
     assert calls == [] and pup._vulkan_probe_workers == []
 
 
-def test_a_lone_vulkan_device_of_another_vendor_declines_the_warm_start(spawn_argv, warmable, monkeypatch):
+def test_a_lone_vulkan_device_of_another_vendor_declines_the_warm_start(
+    spawn_argv, warmable, monkeypatch
+):
     # A CUDA torch's image model on an RTX 4090 while Vulkan reaches only an AMD iGPU: not the same card.
     import torch
 
@@ -2658,6 +2660,5 @@ def test_a_lone_vulkan_device_of_another_vendor_declines_the_warm_start(spawn_ar
 def test_maintenance_never_joins_an_unstarted_probe(monkeypatch):
     # A worker is registered only once started, so a maintenance pass cannot hit "cannot join thread".
     import inspect
-
     source = inspect.getsource(pup._prefetch_vulkan_rows)
     assert source.index("worker.start()") < source.index("_vulkan_probe_workers[:]")
