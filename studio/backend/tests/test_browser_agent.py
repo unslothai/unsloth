@@ -445,6 +445,8 @@ def test_repeated_browser_calls_run_again_and_keep_the_tools():
         # ... and reads a backslash in the path as a slash.
         "https://www.google.com/foo\\..\\url?q=http://127.0.0.1:8888/private",
         "https://www.google.com//.././url?q=http://127.0.0.1/private",
+        # ... and maps the host the way IDNA does.
+        "https://www.google\u3002com/url?q=http://127.0.0.1/private",
     ],
 )
 def test_redirect_target_is_checked_like_the_link(url):

@@ -28,6 +28,7 @@ const HOSTILE = [
   "flowchart LR\n  A[\"<span style='background:#117;rl(https://attacker.example/c)'>x</span>\"]",
   "flowchart LR\n  A[\"<b style='background:&#x75;rl(https://attacker.example/c)'>x</b>\"]",
   "flowchart LR\nA-->B\n\fstyle A fill:url(https://attacker.example/x)",
+  "flowchart LR\n  A[\"<span style='background:&bsol;75rl(https://attacker.example/x)'>x</span>\"]",
   "  ---\n  config:\n    themeVariables:\n      xyChart:\n        plotColorPalette: url(https://attacker.example/x)\n  ---\nxychart-beta\n  bar [1, 2]",
 ];
 

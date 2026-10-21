@@ -26,7 +26,8 @@ const STYLE_FETCH = /\\|url\s*\(|image(?:-set)?\s*\(|cross-fade\s*\(|element\s*\
 const STYLED_TAG = /<([a-z][^<>]*\bstyle\s*=[^<>]*)/gi;
 // Numeric character references, which mermaid (`#117;`) and the browser (`&#117;`) both decode.
 const CHAR_REF = /(?:&#|#)(x[0-9a-f]+|\d+);?/gi;
-const CSS_FETCH = /url|image|cross-fade|element\s*\(|@import|\\/i;
+// `&` left after the numeric decode is a named reference (`&bsol;` is a backslash), so it counts too.
+const CSS_FETCH = /url|image|cross-fade|element\s*\(|@import|\\|&/i;
 
 // Mermaid drops a whole line starting with `%%` before parsing (an `%%{init}%%` directive stays).
 const COMMENT_LINE = /^[^\S\n]*%%(?!\{).*$/gm;

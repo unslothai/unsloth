@@ -426,7 +426,9 @@ def _redirect_target(url: str) -> Optional[str]:
     (``unwrapRedirect`` in features/browser/address.ts), or None."""
     try:
         parsed = urlsplit(url)
-        host = (parsed.hostname or "").removeprefix("www.")
+        # The tab's URL parser maps the host (UTS 46): full-width letters and ideographic dots too.
+        host = unicodedata.normalize("NFKC", parsed.hostname or "").replace("\u3002", ".").lower()
+        host = host.rstrip(".").removeprefix("www.")
     except ValueError:
         return None
     query = parse_qs(parsed.query)

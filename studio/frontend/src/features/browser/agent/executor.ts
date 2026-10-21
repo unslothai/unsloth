@@ -875,9 +875,10 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
         if (signal?.aborted) return { ok: false, error: STOPPED };
       }
       const sent = Date.now();
-      useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: here }, { replace: false });
+      // Straight to the landing page that was gated: the store unwraps only one redirect hop.
+      useBrowserStore.getState().navigate(ready.id, { url: end, from: here }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
-      return loaded ? arrive(loaded, clicked.navigate, action, context, sent) : { ok: false, error: "the browser tab closed." };
+      return loaded ? arrive(loaded, end, action, context, sent) : { ok: false, error: "the browser tab closed." };
     }
     note = clicked.note;
   } else if (action.op === "type") {
