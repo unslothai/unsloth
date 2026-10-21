@@ -134,6 +134,14 @@ def _gemma3n(tmp_path: Path) -> str:
 # A. The header scan
 
 
+def test_split_names_keep_the_extension_as_written():
+    from hub.utils.gguf_lookup_tables import shard_names
+    assert shard_names("d/M-00001-of-00002.GGUF") == [
+        "d/M-00001-of-00002.GGUF",
+        "d/M-00002-of-00002.GGUF",
+    ]
+
+
 class TestHeaderScan:
     def test_real_table_sizes(self, tmp_path):
         from hub.utils.gguf_lookup_tables import local_lookup_info
@@ -621,6 +629,13 @@ class TestEstimate:
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set())
         )
+        # A discrete Linux host on every runner: a macOS runner would take the Apple path.
+        import utils.hardware as hw
+
+        monkeypatch.setattr(hw, "is_apple_silicon", lambda: False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+        )
         # 16 GiB of free RAM cannot hold the 26.82 GiB table: it streams.
         monkeypatch.setattr(
             ri.LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 16 * 1024)
@@ -637,7 +652,7 @@ class TestEstimate:
         def run(gguf = None, **kw):
             cfg = config if gguf is None else SimpleNamespace(**{**vars(config), "gguf_file": gguf})
             return ri._gguf_memory_breakdown(
-                cfg, gguf or path, n_ctx = 4096, gpu_memory_mode = "auto", **kw
+                cfg, gguf or path, n_ctx = 4096, **{"gpu_memory_mode": "auto", **kw}
             )
 
         yield run
@@ -724,7 +739,7 @@ class TestEstimate:
         monkeypatch.setattr(
             ri.LlamaCppBackend,
             "_apple_metal_memory_budget_bytes",
-            lambda self: int(budget_gib * GIB),
+            staticmethod(lambda: int(budget_gib * GIB)),
         )
         monkeypatch.setattr(
             ri.LlamaCppBackend,
@@ -757,6 +772,23 @@ class TestEstimate:
         monkeypatch.setattr(ri.LlamaCppBackend, "_gguf_tensor_scan", indexed)
         b = breakdown(llama_extra_args = ["-ot", "per_layer_token_embd_0=CUDA0"])
         assert b.lookup_table_on_disk is True
+
+    def test_a_device_override_charges_a_resident_table_wholly_to_the_gpu(
+        self, breakdown, tmp_path, monkeypatch
+    ):
+        """A layer fraction does not apply to a tensor an -ot pins: --gpu-layers 0 with the
+        table on CUDA0 still has the whole table on the card."""
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_OVERRIDE_TENSOR", raising = False)
+        table = 8960 * 262144 // 32 * 24
+        b = breakdown(
+            gguf = _gemma3n(tmp_path),
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+            llama_extra_args = ["-ot", "per_layer_token_embd=CUDA0"],
+        )
+        assert b.lookup_table_bytes == 0
+        assert b.gpu_bytes >= table
 
     def test_a_device_override_keeps_the_table_streamed_as_the_launch_does(
         self, breakdown, monkeypatch

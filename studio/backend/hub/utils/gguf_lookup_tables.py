@@ -24,7 +24,7 @@ from typing import Callable, Optional
 
 from core.inference.lookup_tables import LAZY_READ_TENSORS, lazy_read_bytes
 
-_SPLIT_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+_SPLIT_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})(\.gguf)$", re.IGNORECASE)
 _SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 _STRING, _ARRAY, _UINT32 = 8, 9, 4
 _FIRST_READ = 8 << 20
@@ -154,9 +154,10 @@ def shard_names(filename: str) -> list[str]:
     match = _SPLIT_RE.match(base)
     if not match:
         return [filename]
-    prefix, _index, total = match.groups()
+    # The extension as written: a case-sensitive filesystem or Hub has no .gguf for .GGUF.
+    prefix, _index, total, ext = match.groups()
     return [
-        f"{head}{sep}{prefix}-{i:05d}-of-{int(total):05d}.gguf" for i in range(1, int(total) + 1)
+        f"{head}{sep}{prefix}-{i:05d}-of-{int(total):05d}{ext}" for i in range(1, int(total) + 1)
     ]
 
 

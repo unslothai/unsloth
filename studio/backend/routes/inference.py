@@ -15828,11 +15828,12 @@ def _gguf_memory_breakdown(
             for name in names or ["per_layer_token_embd.weight"]
         )
 
+    # A resident table a device override places goes wholly to that card, whatever the
+    # layer fraction says (deepseek41's loader still forces it to the host).
+    _lt_device_bytes = 0
     if lookup_table_bytes:
-        # Read resident, a device override applies to the table (deepseek41's loader
-        # still forces it to the host), so it stays in the GPU share.
         if not lookup_table_on_disk and _lt_arch != "deepseek41" and _lt_override_moves_table():
-            lookup_table_bytes = 0
+            _lt_device_bytes, lookup_table_bytes = lookup_table_bytes, 0
     if lookup_table_on_disk:
         # The launch reads the table resident (--lazy-mode off) where RAM holds it beside
         # the host share of the weights with a margin, unless the user set a lazy mode
@@ -15848,9 +15849,11 @@ def _gguf_memory_breakdown(
         )
         from core.inference.llama_server_args import fit_target_margin_in
 
-        _lt_user = any(
-            str(_lt_env.get(env_name) or "").strip() or _extra_args_set_any_flag(_lt_extras, flags)
-            for flags, env_name in _LAZY_MODE_SPELLINGS.values()
+        # Only the spelling this build reads, as _managed_lazy_mode_flags decides it.
+        _lt_flags, _lt_env_name = _LAZY_MODE_SPELLINGS.get(_lt_flag, (frozenset({_lt_flag}), ""))
+        _lt_user = bool(
+            (_lt_env_name and str(_lt_env.get(_lt_env_name) or "").strip())
+            or _extra_args_set_any_flag(_lt_extras, _lt_flags)
         )
         _lt_avail = LlamaCppBackend._available_system_memory_mib()
         _lt_device_share = max(0, main_bytes - lookup_table_bytes)
@@ -15879,6 +15882,9 @@ def _gguf_memory_breakdown(
                 host_only += runtime.kv_bytes
             footprint = (
                 _lt_device_share
+                # The drafter and projector files and pass-through adapters load too.
+                + companion_bytes
+                + adapter_bytes
                 + runtime.kv_bytes
                 + runtime.compute_bytes
                 + drafter_runtime_bytes
@@ -15958,7 +15964,8 @@ def _gguf_memory_breakdown(
         if _resolved_mmproj_offload(llama_extra_args) is False:
             host_companion_bytes = min(companion_bytes, mmproj_bytes)
     gpu_weights = (
-        int((main_bytes - lookup_table_bytes) * gpu_fraction)
+        int((main_bytes - lookup_table_bytes - _lt_device_bytes) * gpu_fraction)
+        + _lt_device_bytes
         + int(adapter_bytes * gpu_fraction)
         + companion_bytes
         - host_companion_bytes

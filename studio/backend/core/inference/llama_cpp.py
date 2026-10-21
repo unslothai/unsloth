@@ -11604,11 +11604,13 @@ class LlamaCppBackend:
             return []
         flag = str(caps.get("lazy_mode_flag") or "--lazy-mode")
         source_env = os.environ if env is None else env
-        for flags, env_name in _LAZY_MODE_SPELLINGS.values():
-            if str(source_env.get(env_name) or "").strip() or _extra_args_set_any_flag(
-                extra_args, flags
-            ):
-                return []
+        # Only the spelling this build reads is the user's choice; the other one (a stale
+        # env twin from an older build) is ignored by llama.cpp, as _effective_lazy_mode is.
+        flags, env_name = _LAZY_MODE_SPELLINGS.get(flag, (frozenset({flag}), ""))
+        if (env_name and str(source_env.get(env_name) or "").strip()) or _extra_args_set_any_flag(
+            extra_args, flags
+        ):
+            return []
         if auto_resolves_off:
             return []
         table = self._lazy_read_host_bytes(

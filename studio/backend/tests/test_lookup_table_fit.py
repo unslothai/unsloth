@@ -345,6 +345,16 @@ def _flash_next_launch(tmp_path, *, ram_gib, **kwargs):
     )
 
 
+def test_a_stale_spelling_from_another_build_is_not_the_users_choice(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """llama.cpp reads only its own spelling, so an older build's env twin left set does
+    not stop the managed resident choice."""
+    monkeypatch.setenv("LLAMA_ARG_TENSOR_READ_LAZY", "off")
+    backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128)
+    assert _lazy_values(cmd) == ["off"], cmd
+
+
 def test_flash_next_keeps_its_table_resident_where_ram_holds_it(tmp_path, _moe_cache_host):
     backend, cmd = _flash_next_launch(tmp_path, ram_gib = 128)
     assert _lazy_values(cmd) == ["off"], cmd
@@ -403,8 +413,11 @@ def test_the_in_place_fit_on_retry_hands_the_table_back(tmp_path, _moe_cache_hos
         def fake_popen(cmd, **kw):
             if not cmd or str(cmd[0]) != "/fake/llama-server":
                 return placement._REAL_POPEN(cmd, **kw)
-            cmds.append(list(cmd))
-            rc = 1 if len(cmds) == 1 else None
+            # A device probe (--list-devices on Windows) is not a server spawn: it exits 0.
+            spawn = "-m" in cmd
+            if spawn:
+                cmds.append(list(cmd))
+            rc = (1 if len(cmds) == 1 else None) if spawn else 0
             return type(
                 "Process",
                 (),
