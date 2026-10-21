@@ -4170,6 +4170,7 @@ def test_offload_is_priced_by_what_unsloth_zoos_offload_takes(tmp_path, monkeypa
     offload = pytest.importorskip("unsloth_zoo.mlx.offload")
     if not _HAVE_MLX or not hasattr(offload, "plan_offload"):
         pytest.skip("needs MLX and an unsloth_zoo that offloads")
+    mm.mlx_offload_planner.cache_clear()
     planner = mm.mlx_offload_planner()
     assert planner is offload
     import mlx.core as mx
