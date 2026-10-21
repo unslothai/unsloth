@@ -636,7 +636,7 @@ def test_concurrent_ensure_for_one_worker_makes_one_relay(tmp_path, monkeypatch)
 
     monkeypatch.setattr(relay_mod.asyncio, "start_server", counting_start)
     # The asyncio listener is what two creators raced on; the threaded one binds synchronously.
-    monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", "1")
+    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", raising = False)
     pki = Pki(tmp_path / "pki")
     relays = RelayManager(pki.leaf("m1", "master"), lambda pid: True)
     try:
@@ -1225,9 +1225,9 @@ def _session_threads():
 @pytest.mark.parametrize("mode", ["threaded", "async"])
 def test_sessions_take_the_path_the_kill_switch_selects(make_link, monkeypatch, mode):
     if mode == "async":
-        monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", "1")
+        monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", raising = False)
     else:
-        monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
+        monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", "1")
     link = make_link()
     payload = os.urandom(MIB + 5)
     assert _echo(link, payload, fragment = True) == payload
@@ -1244,7 +1244,7 @@ def test_sessions_take_the_path_the_kill_switch_selects(make_link, monkeypatch, 
 def test_a_threaded_session_carries_a_bulk_reply_byte_exact_both_ways(make_link, monkeypatch):
     # Upload and download at once, each fragmented: the one thread per session must never stall a
     # direction behind the other or reorder bytes.
-    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
+    monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", "1")
     link = make_link()
     payload = os.urandom(8 * MIB + 3)
     assert _echo(link, payload, fragment = True) == payload
@@ -1258,7 +1258,7 @@ def test_revocation_cuts_a_live_threaded_session(make_link, monkeypatch, side):
 
     monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)
     monkeypatch.setattr(agent_mod, "REVALIDATE_S", 0.2)
-    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
+    monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", "1")
     trusted = {"ok": True}
     if side == "relay":
         link = make_link(relay_authorize = lambda pid: trusted["ok"] and pid.node_id == "w1")
@@ -1280,7 +1280,7 @@ def _fds() -> int:
 
 
 def test_abrupt_disconnects_leave_no_session_threads_or_sockets(make_link, monkeypatch):
-    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
+    monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", "1")
     link = make_link()
     linux = sys.platform.startswith("linux")
     before = _fds() if linux else 0
@@ -1308,7 +1308,7 @@ def test_abrupt_disconnects_leave_no_session_threads_or_sockets(make_link, monke
 
 
 def test_concurrent_ensure_makes_one_threaded_listener(tmp_path, monkeypatch):
-    monkeypatch.delenv("UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE", raising = False)
+    monkeypatch.setenv("UNSLOTH_CLUSTER_LINK_THREADED_SPLICE", "1")
     pki = Pki(tmp_path / "pki")
     relays = RelayManager(pki.leaf("m1", "master"), lambda pid: True)
     try:

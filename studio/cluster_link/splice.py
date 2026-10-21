@@ -266,17 +266,17 @@ async def splice(
         await asyncio.gather(_close(a, not clean), _close(b, not clean), return_exceptions = True)
 
 
-# Threaded sessions (the default): once an RPC session is admitted its bytes move in two plain
-# threads, one per direction, blocked in recv on each socket, with no event loop, selector, protocol
-# callbacks or MemoryBIO copies in between. asyncio's TLS layer cost several times the TLS crypto on
-# ggml-rpc's round trips. UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE=1 restores the asyncio path above.
-ASYNC_SPLICE_ENV = "UNSLOTH_CLUSTER_LINK_ASYNC_SPLICE"
+# Threaded sessions (opt in): once an RPC session is admitted its bytes move in two plain threads,
+# one per direction, with no event loop in between. Measured on Colab G4 and Kaggle T4x2 it was no
+# faster than the asyncio path above (the TLS cost is the relay hop itself; llama.cpp's own TLS
+# transport removes it), so asyncio stays the default. UNSLOTH_CLUSTER_LINK_THREADED_SPLICE=1 opts in.
+THREADED_SPLICE_ENV = "UNSLOTH_CLUSTER_LINK_THREADED_SPLICE"
 WRITE_MAX = 256 * 1024
 WAIT_S = 1.0
 
 
 def threaded_sessions() -> bool:
-    return os.environ.get(ASYNC_SPLICE_ENV, "").strip().lower() not in ("1", "true", "yes", "on")
+    return os.environ.get(THREADED_SPLICE_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def tune_raw_socket(sock: socket.socket) -> None:
