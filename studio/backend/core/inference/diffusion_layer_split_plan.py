@@ -392,7 +392,6 @@ def plan_layer_split(
     )
 
 
-
 _BLOCK_LIST_ATTRS: tuple[str, ...] = (
     "transformer_blocks",
     "single_transformer_blocks",
@@ -534,7 +533,6 @@ def undo_layer_split(pipe: Any) -> None:
                     _remove_group_offload_hooks(module)
     with contextlib.suppress(Exception):
         mg.undo_split(pipe)
-
 
 
 _APPLIED: "weakref.WeakKeyDictionary[Any, LayerSplit]" = weakref.WeakKeyDictionary()

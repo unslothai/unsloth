@@ -40,8 +40,6 @@ def _check(split, limits):
     return split
 
 
-
-
 def test_packs_a_dit_too_big_for_one_card_over_two():
     limits = {0: 18000, 1: 18000}
     split, reason = lsp.plan_layer_split(
@@ -373,8 +371,6 @@ def test_a_denoiser_without_a_block_list_has_no_layout():
     assert lsp._denoiser_layouts(Pipe()) is None
 
 
-
-
 @dataclasses.dataclass
 class _Target:
     supports_model_cpu_offload: bool = True
@@ -630,8 +626,6 @@ def test_video_two_expert_cut_when_neither_expert_fits_a_card(monkeypatch, engin
     split = refined.layer_split
     assert split is not None
     assert {r.denoiser for r in split.ranges} == {"transformer", "transformer_2"}
-
-
 
 
 def _layer_plan(monkeypatch, engine):

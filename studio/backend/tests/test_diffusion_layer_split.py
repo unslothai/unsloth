@@ -278,6 +278,7 @@ class _Recorder:
             if tensor_fn is None:
                 self.out_moves.append(str(device))
             else:
+
                 def counted(t):
                     self.in_moves.append(str(device))
                     return t

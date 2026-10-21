@@ -53,8 +53,6 @@ def _assignment(dit) -> dict:
     return out
 
 
-
-
 def test_block_graphs_record_each_block_on_its_own_card(monkeypatch):
     dit = FakeDiT(dim = 1024, double = 4, single = 3)
     pipe, _, card = _split(monkeypatch, dit)
@@ -160,8 +158,6 @@ def test_arm_block_graphs_leaves_a_resident_one_card_denoiser_alone(monkeypatch)
     applied = {"cuda_graph": False}
     target = types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda:0")
     assert cg.arm_block_graphs(pipe, applied, target = target, family = None, hooked = False) == ()
-
-
 
 
 def test_split_block_classes_register_with_a_copy_of_their_base_metadata(monkeypatch):
@@ -295,8 +291,6 @@ def test_apply_step_cache_stays_off_on_a_split_without_the_guard(monkeypatch):
     ls.undo_layer_split(pipe)
 
 
-
-
 def _int8_dit(monkeypatch, cards):
     """Every Linear eligible; its weight's card read from ``cards`` (module -> ordinal)."""
     dit = FakeDiT(dim = 64, double = 2, single = 2)
@@ -377,8 +371,6 @@ def test_one_card_int8_swap_never_reads_a_weight_card(monkeypatch):
         assert g8._swap_on(dit, None, 0) == len(recs)
     finally:
         g8.uninstall(dit)
-
-
 
 
 def _swiglu_module(stale_device = "meta"):
@@ -476,8 +468,6 @@ def test_arm_block_graphs_re_homes_the_split_records_before_arming(monkeypatch):
     cg.arm_block_graphs(pipe, {"cuda_graph": False}, target = target, family = None, hooked = False)
     assert order == [("rehome", dit), ("arm", dit)]
     ls.undo_layer_split(pipe)
-
-
 
 
 def test_segments_are_per_card_runs_within_one_block_list(monkeypatch):
@@ -612,8 +602,6 @@ def test_video_generate_bypasses_graphs_after_the_auto_cache_toggle():
     bypass = src.index("diffusion_cuda_graph.set_bypass(", toggle)
     assert "cache_breaks_graph(state.transformer_cache)" in src[bypass : bypass + 200]
     assert bypass < src.index("if static_skip:", toggle)
-
-
 
 
 def test_split_guard_wraps_the_mixed_stream_tail_once():

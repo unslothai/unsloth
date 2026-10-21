@@ -832,7 +832,6 @@ class SegmentGraph:
             out.append(p)
         return tuple(out)
 
-
     def call(self, i: int, args: tuple, kwargs: dict) -> Any:
         if self.poisoned or not self.enabled:
             return _NOT_HANDLED
@@ -999,7 +998,6 @@ class SegmentGraph:
 
     def _abandon(self) -> None:
         self._reset_forward()
-
 
     def _chain(self, rec: _SegRecord, ext: list) -> list:
         results: list = []
