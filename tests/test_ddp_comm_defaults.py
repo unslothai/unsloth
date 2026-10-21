@@ -19,13 +19,26 @@ import _ddp_comm_defaults_worker as worker  # noqa: E402
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "two gloo ranks over TCP localhost")
 
+
+def _bf16_hook_supported():
+    # Mirrors DistributedDataParallel._check_comm_hook: a torch build check, not a GPU or
+    # backend check. CPU wheels refuse bf16_compress_hook with TypeError even on gloo (#14065 CI).
+    try:
+        import torch.distributed as dist
+        built = torch.version.cuda is not None or torch.version.hip is not None
+        return built and dist.is_nccl_available() and torch.cuda.nccl.version() >= (2, 10)
+    except Exception:
+        return False
+
+
 CASES = [
     ("full", "full", {}, {}),
     ("full_off", "full", {"UNSLOTH_DDP_GRADIENT_AS_BUCKET_VIEW": "0"}, {}),
     ("peft", "peft", {}, {}),
-    ("bf16_hook", "full", {"UNSLOTH_DDP_COMM_HOOK": "bf16"}, {}),
     ("fp16_hook", "peft", {"UNSLOTH_DDP_COMM_HOOK": "fp16"}, {}),
 ]
+if _bf16_hook_supported():
+    CASES.append(("bf16_hook", "full", {"UNSLOTH_DDP_COMM_HOOK": "bf16"}, {}))
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
 
@@ -112,7 +125,8 @@ def test_lora_keeps_gradients_unaliased(ranks):
 
 
 def test_comm_hook_opt_in(ranks):
-    for name, kind in (("bf16_hook", "full"), ("fp16_hook", "peft")):
+    hook_cases = [(name, kind) for name, kind, *_ in CASES if name.endswith("_hook")]
+    for name, kind in hook_cases:
         case = ranks[0][name]
         assert case["hooks"] >= 1, name
         _assert_parity(case, kind, exact = False)

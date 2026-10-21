@@ -5065,19 +5065,11 @@ def write_openclaw_config(
     gateway.setdefault("mode", "local")
     _subdict(gateway, "auth").setdefault("mode", "none")
     if yolo:
-        # OpenClaw gates exec on BOTH tools.exec and the approvals file (stricter wins); set both, like
-        # `openclaw exec-policy preset yolo`.
+        # OpenClaw has no --yolo flag. Its host approvals document (SQLite since 2026.8.1) falls back to tools.exec for omitted fields, so the config side is enough.
         exec_policy = _subdict(_subdict(config, "tools"), "exec")
         exec_policy["host"] = "gateway"
         exec_policy["security"] = "full"
         exec_policy["ask"] = "off"
-        # ask=off means nothing is prompted, so the runtime socket block is unnecessary.
-        approvals = path.parent / "exec-approvals.json"
-        _write_private_json(
-            approvals,
-            {"version": 1, "defaults": {"security": "full", "ask": "off", "askFallback": "full"}},
-        )
-        typer.echo(f"Updated {approvals}")
     else:
         # An omitted exec policy means security=full, ask=off, so a non-yolo run must WRITE a prompting
         # policy. Only replace our permissive one.
@@ -5093,31 +5085,42 @@ def write_openclaw_config(
         )
         if permissive:
             exec_policy = _subdict(_subdict(config, "tools"), "exec")
-            exec_policy.pop("host", None)
-            exec_policy["security"] = "allowlist"
-            exec_policy["ask"] = "on-miss"
-        # Drop only the yolo defaults from the approvals file.
-        approvals = path.parent / "exec-approvals.json"
-        if approvals.exists():
-            state = _read_json_object(approvals)
-            if state is not None:
-                defaults = state.get("defaults")
-                # Only the exact yolo fingerprint; a mixed user policy sharing a field stays.
-                yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
-                is_yolo = isinstance(defaults, dict) and all(
-                    defaults.get(k) == v for k, v in yolo_defaults
-                )
-                if is_yolo:
-                    for k, _ in yolo_defaults:
-                        del defaults[k]
-                    if not defaults:
-                        del state["defaults"]
-                    if set(state) <= {"version"}:
-                        approvals.unlink()
-                        typer.echo(f"Removed {approvals}")
-                    else:
-                        _write_private_json(approvals, state)
-                        typer.echo(f"Updated {approvals}")
+            exec_policy.pop("host", None)  # routing only; defaults to the gateway host
+            exec_policy["security"] = "allowlist"  # only allowlisted commands skip approval
+            exec_policy["ask"] = "on-miss"  # prompt on every non-allowlisted command
+    # Older Unsloth wrote --yolo defaults here; OpenClaw 2026.8.1+ refuses every run while this legacy file exists, so drop ours in both modes and keep any other policy.
+    approvals = path.parent / "exec-approvals.json"
+    if approvals.exists():
+        state = _read_json_object(approvals)
+        if state is not None:
+            defaults = state.get("defaults")
+            # Exact yolo fingerprint only: a user policy merely sharing askFallback=full must survive.
+            yolo_defaults = (("security", "full"), ("ask", "off"), ("askFallback", "full"))
+            is_yolo = isinstance(defaults, dict) and all(
+                defaults.get(k) == v for k, v in yolo_defaults
+            )
+            if is_yolo:
+                for k, _ in yolo_defaults:
+                    del defaults[k]
+                if not defaults:
+                    del state["defaults"]
+                # Socket metadata and an empty agents map carry no policy (doctor retires such a stub too).
+                if all(
+                    k in ("version", "socket") or (k == "agents" and not v)
+                    for k, v in state.items()
+                ):
+                    approvals.unlink()
+                    typer.echo(f"Removed {approvals}")
+                else:
+                    _write_private_json(approvals, state)
+                    typer.echo(f"Updated {approvals}")
+    if approvals.exists():
+        # The rest is user policy; importing it is OpenClaw's migration, not ours.
+        typer.echo(
+            f"Note: {approvals} is a legacy exec approvals file, which OpenClaw 2026.8.1+ refuses to run with. "
+            f"Import it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
+            err = True,
+        )
     if json.dumps(config, sort_keys = True) != before:
         _write_private_json(path, config)
         typer.echo(f"Updated {path}")
