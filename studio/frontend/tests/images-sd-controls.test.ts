@@ -224,4 +224,6 @@ test("pasted A1111 Clip skip, CFG Rescale and Variation seed restore into the SD
   const src = readSrc("features/images/images-page.tsx");
   assert.match(src, /if \(!variationApplies\(merged, sdCaps\)\)/);
   assert.match(src, /isNativeEngineStatus\(status\)\),\n\s+sdCaps,/);
+  // importNotApplied already names the controls a model lacks; the page must not add them again.
+  assert.doesNotMatch(src, /notApplied\.unshift\(`CLIP skip|notApplied\.unshift\(`CFG rescale|notApplied\.unshift\("variation seed"\)/);
 });

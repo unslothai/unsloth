@@ -3005,11 +3005,6 @@ export function ImagesPage({
           notApplied.unshift(`schedule ${labelOf(SCHEDULE_LABELS, settings.schedule_type)}`);
         }
       }
-      if (!status?.sd_controls) {
-        if (settings.clip_skip && settings.clip_skip > 1) notApplied.unshift(`CLIP skip ${settings.clip_skip}`);
-        if (settings.cfg_rescale) notApplied.unshift(`CFG rescale ${settings.cfg_rescale}`);
-        if (settings.variation_strength) notApplied.unshift("variation seed");
-      }
       if (notApplied.length > 0 || newerRecipeSchema(recipe)) {
         toast.warning("Some settings in this image were not applied", {
           description:
