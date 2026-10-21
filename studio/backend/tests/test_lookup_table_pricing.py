@@ -248,6 +248,36 @@ def _answer(variants, sources = None):
 
 
 class TestListing:
+    @pytest.fixture(autouse = True)
+    def _streams_here(self, monkeypatch):
+        from hub.services.models import gguf_variants as gv
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: True)
+
+    def test_a_host_that_reads_the_tables_resident_lists_no_discount(self, tmp_path, monkeypatch):
+        """An iGPU / APU resolves lazy auto to off, so the listing prices the whole file."""
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+
+        monkeypatch.setattr(gv, "_host_streams_lookup_tables", lambda: False)
+        path = _dsv41(tmp_path)
+        answer = _answer(
+            [
+                GgufVariantDetail(
+                    filename = os.path.basename(path),
+                    quant = "UD-IQ1_S",
+                    size_bytes = 216 * GIB,
+                    downloaded = True,
+                )
+            ],
+            {"ud-iq1_s": path},
+        )
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                answer, "unsloth/X-GGUF", hf_token = None, offline = True, prefer_local_cache = False
+            )
+        )
+        assert out is answer
+
     def test_both_variant_models_carry_the_field(self):
         from hub.schemas.inventory import GgufVariantDetail as HubDetail
         from models.models import GgufVariantDetail as RouteDetail
@@ -314,10 +344,54 @@ class TestListing:
         )
         assert [v.lookup_table_bytes for v in out.response.variants] == [FLASH_NEXT_TABLE, 0]
 
-    def test_a_cold_architecture_never_blocks_the_listing(self, monkeypatch):
-        """An unknown repo pays no Hub round trip in its listing: the architecture is
-        fetched in the background and priced from the next listing on."""
+    def test_a_small_repo_never_asks_the_hub_for_its_architecture(self, monkeypatch):
+        """No row can hold a streamed table (each is under 4 GiB): no Hub round trip."""
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None))
+        monkeypatch.setattr(
+            gv, "_hub_repo_architecture", lambda *a, **k: pytest.fail("no Hub call")
+        )
+        answer = _answer([GgufVariantDetail(filename = "a.gguf", quant = "Q2", size_bytes = GIB)])
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                answer, "o/small", hf_token = None, offline = False, prefer_local_cache = False
+            )
+        )
+        assert out is answer
+
+    def test_a_cold_architecture_is_priced_on_the_first_listing(self, monkeypatch):
+        from hub.schemas.inventory import GgufVariantDetail
+        from hub.services.models import gguf_variants as gv
+        from hub.utils import gguf_lookup_tables as glt
+
+        fetched = []
+
+        def arch(repo, token):
+            fetched.append(repo)
+            return "qwen4exp"
+
+        monkeypatch.setattr(gv, "_hub_repo_architecture", arch)
+        monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None))
+        monkeypatch.setattr(
+            glt,
+            "remote_lookup_info",
+            lambda repo, name, token, identity = None, **k: ("qwen4exp", FLASH_NEXT_TABLE),
+        )
+        rows = [GgufVariantDetail(filename = "a.gguf", quant = "Q2", size_bytes = 40 * GIB)]
+        out = asyncio.run(
+            gv._with_lookup_tables(
+                _answer(rows), "o/cold", hf_token = None, offline = False, prefer_local_cache = False
+            )
+        )
+        assert [v.lookup_table_bytes for v in out.response.variants] == [FLASH_NEXT_TABLE]
+        assert fetched == ["o/cold"]
+
+    def test_a_slow_architecture_lookup_is_bounded_by_the_deadline(self, monkeypatch):
+        """A late answer never holds the listing past its deadline, and is asked once."""
         import threading
+        import time
 
         from hub.schemas.inventory import GgufVariantDetail
         from hub.services.models import gguf_variants as gv
@@ -331,30 +405,31 @@ class TestListing:
             release.wait(5)
             return "qwen4exp"
 
+        monkeypatch.setattr(gv, "_LOOKUP_DEADLINE_S", 0.2)
         monkeypatch.setattr(gv, "_hub_repo_architecture", slow_arch)
         monkeypatch.setattr(gv, "_cached_hub_repo_architecture", lambda *a, **k: (False, None))
         monkeypatch.setattr(
             glt, "remote_lookup_info", lambda *a, **k: pytest.fail("no header read yet")
         )
-        rows = [GgufVariantDetail(filename = "a.gguf", quant = "Q2", size_bytes = 1)]
+        rows = [GgufVariantDetail(filename = "a.gguf", quant = "Q2", size_bytes = 40 * GIB)]
         answer = _answer(rows)
         try:
             for _ in range(3):
+                started = time.monotonic()
                 out = asyncio.run(
                     gv._with_lookup_tables(
-                        answer, "o/cold", hf_token = None, offline = False, prefer_local_cache = False
+                        answer, "o/slow", hf_token = None, offline = False, prefer_local_cache = False
                     )
                 )
                 assert out is answer
+                assert time.monotonic() - started < 2.0
         finally:
             release.set()
-        # Submitted once, not once per listing.
         for _ in range(50):
             if not gv._lookup_inflight:
                 break
-            import time
             time.sleep(0.05)
-        assert fetched == ["o/cold"]
+        assert fetched == ["o/slow"]
 
     def test_offline_or_a_non_lazy_arch_never_reads_the_hub(self, monkeypatch):
         from hub.schemas.inventory import GgufVariantDetail
@@ -407,11 +482,22 @@ class TestEstimate:
             "_get_gguf_size_bytes",
             staticmethod(lambda p: int(self.WEIGHTS)),
         )
-        # A build with the lazy mode, as the Studio prebuilt is.
+        # A build with the lazy mode, as the Studio prebuilt is, on one discrete card.
         monkeypatch.setattr(
             ri.LlamaCppBackend,
             "probe_server_capabilities",
             classmethod(lambda cls, binary = None: {"found": True, "supports_lazy_mode": True}),
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: False)
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gpu_memory",
+            staticmethod(lambda binary = None, **k: [(0, 22000, 24576)]),
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set())
         )
         ri._estimate_files_cache.clear()
         ri._estimate_config_cache.clear()
@@ -455,6 +541,23 @@ class TestEstimate:
             ri.LlamaCppBackend,
             "probe_server_capabilities",
             classmethod(lambda cls, binary = None: {"found": True}),
+        )
+        b = breakdown()
+        assert b.lookup_table_on_disk is False
+        assert b.weights_bytes == int(round(self.WEIGHTS))
+
+    def test_an_integrated_gpu_reads_the_table_resident(self, breakdown, monkeypatch):
+        """A Vulkan iGPU has no mmap support, so llama.cpp resolves auto to off."""
+        import routes.inference as ri
+
+        monkeypatch.delenv("LLAMA_ARG_LAZY_MODE", raising = False)
+        monkeypatch.setattr(
+            ri.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
+        )
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "_get_gpu_memory",
+            staticmethod(lambda binary = None, **k: [(0, 30000, 0)]),
         )
         b = breakdown()
         assert b.lookup_table_on_disk is False

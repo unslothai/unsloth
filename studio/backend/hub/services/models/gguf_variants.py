@@ -1381,30 +1381,32 @@ async def _lookup_thread(fn, /, *args):
     return await loop.run_in_executor(_LOOKUP_POOL, call)
 
 
-def _lookup_submit_once(key, fn, /, *args) -> bool:
-    """Run ``fn(*args)`` on the lookup pool unless ``key`` is already in flight.
-    Fire and forget: the result lands in the module caches for the next listing."""
+async def _lookup_await_once(key, deadline: float, fn, /, *args):
+    """``fn(*args)`` on the lookup pool, awaited until ``deadline`` (loop time); None when
+    late or already in flight. A late call keeps running."""
     with _lookup_arch_lock:
         if key in _lookup_inflight:
-            return False
+            return None
         _lookup_inflight.add(key)
 
     def _run():
         try:
-            fn(*args)
-        except Exception as exc:  # noqa: BLE001 -- optional enrichment
-            logger.debug("lookup tables: background read failed (%s)", exc)
+            return fn(*args)
         finally:
             with _lookup_arch_lock:
                 _lookup_inflight.discard(key)
 
-    try:
-        _LOOKUP_POOL.submit(contextvars.copy_context().run, _run)
-    except RuntimeError:  # pool shut down at exit
+    task = asyncio.ensure_future(_lookup_thread(_run))
+    loop = asyncio.get_running_loop()
+    done, _pending = await asyncio.wait({task}, timeout = max(0.0, deadline - loop.time()))
+    if task not in done:
+        return None
+    if task.cancelled() or task.exception() is not None:
+        # The pool refused it (shut down at exit), so _run never released the key.
         with _lookup_arch_lock:
             _lookup_inflight.discard(key)
-        return False
-    return True
+        return None
+    return task.result()
 
 
 def _cached_hub_repo_architecture(repo_id: str, hf_token: Optional[str]):
@@ -1415,6 +1417,27 @@ def _cached_hub_repo_architecture(repo_id: str, hf_token: Optional[str]):
     if hit is not None and hit[1] > time.monotonic():
         return True, hit[0]
     return False, None
+
+
+_LOOKUP_HOST_TTL_S = 60.0
+_lookup_host_streams: list = [None, 0.0]
+
+
+def _host_streams_lookup_tables() -> bool:
+    """Whether a default launch here streams the tables (an iGPU / APU reads them resident)."""
+    now = time.monotonic()
+    with _lookup_arch_lock:
+        streams, expires = _lookup_host_streams
+    if streams is not None and expires > now:
+        return streams
+    try:
+        from routes.inference import get_llama_cpp_backend
+        streams = bool(get_llama_cpp_backend().lookup_tables_stream_by_default())
+    except Exception:  # noqa: BLE001 -- unknown: price the tables as resident
+        streams = False
+    with _lookup_arch_lock:
+        _lookup_host_streams[:] = [streams, now + _LOOKUP_HOST_TTL_S]
+    return streams
 
 
 def _lookup_remote_enabled() -> bool:
@@ -1496,6 +1519,7 @@ async def _with_lookup_tables(
     """``answer`` with ``lookup_table_bytes`` filled per variant. Never raises; a row it
     cannot size keeps 0, which prices the whole file the way the listing always did."""
     try:
+        from core.inference.lookup_tables import LAZY_READ_AUTO_MIN_BYTES
         from hub.utils.gguf_lookup_tables import (
             lazy_architecture,
             local_lookup_info,
@@ -1527,13 +1551,21 @@ async def _with_lookup_tables(
         if remote_ok:
             # Its own try: a Hub failure must not drop the local answers above.
             try:
+                deadline = asyncio.get_running_loop().time() + _LOOKUP_DEADLINE_S
                 if arch is None:
-                    # Never waited on: an ordinary repo's listing pays nothing. A cold
-                    # architecture is fetched in the background for the next listing.
                     known, arch = _cached_hub_repo_architecture(repo_id, hf_token)
-                    if not known:
-                        _lookup_submit_once(
-                            ("arch", repo_id.lower()), _hub_repo_architecture, repo_id, hf_token
+                    # A cold architecture is waited on within the listing's deadline only
+                    # when a row is big enough to hold a streamed table; a late answer
+                    # lands in the cache for the next listing.
+                    if not known and any(
+                        int(v.size_bytes or 0) > LAZY_READ_AUTO_MIN_BYTES for _i, v in unresolved
+                    ):
+                        arch = await _lookup_await_once(
+                            ("arch", repo_id.lower()),
+                            deadline,
+                            _hub_repo_architecture,
+                            repo_id,
+                            hf_token,
                         )
                 if lazy_architecture(arch):
                     tasks = {}
@@ -1566,13 +1598,16 @@ async def _with_lookup_tables(
                     if tasks:
                         # One deadline for the whole listing; late reads keep running
                         # and land in the cache for the next one.
-                        done, _pending = await asyncio.wait(tasks, timeout = _LOOKUP_DEADLINE_S)
+                        done, _pending = await asyncio.wait(
+                            tasks,
+                            timeout = max(0.0, deadline - asyncio.get_running_loop().time()),
+                        )
                         for task in done:
                             if not task.cancelled() and task.exception() is None:
                                 found[tasks[task]] = int(task.result() or 0)
             except Exception as exc:  # noqa: BLE001 -- keep the local answers
                 logger.debug("lookup tables: Hub reads skipped for %s (%s)", repo_id, exc)
-        if not any(found.values()):
+        if not any(found.values()) or not await listing_thread(True, _host_streams_lookup_tables):
             return answer
         updated = [
             v.model_copy(update = {"lookup_table_bytes": int(found.get(i, 0) or 0)})

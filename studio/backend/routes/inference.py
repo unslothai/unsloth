@@ -15763,31 +15763,18 @@ def _gguf_memory_breakdown(
     # A lookup table llama.cpp reads lazily (TENSOR_READ_LAZY, over 4 GiB, --lazy-mode auto
     # by default) stays mmap'd from disk and pages in only the rows a token touches, and an
     # input embedding is host-pinned in every mode. So it leaves the GPU share always, and
-    # the resident total whenever lazy reading engages. The panel cannot see the device
-    # set, so it assumes a discrete GPU: on an iGPU / APU llama.cpp resolves auto to off
-    # and the table is resident, which this under-reports by the table.
-    from core.inference.llama_cpp import (
-        _effective_lazy_mode,
-        _override_places_tensor_on_device,
-    )
+    # the resident total whenever lazy reading engages (not on an iGPU / APU, where
+    # llama.cpp resolves auto to off).
+    from core.inference.llama_cpp import _override_places_tensor_on_device
     from hub.utils.gguf_lookup_tables import local_lookup_info
 
     _lt_arch, _lt_bytes = local_lookup_info(gguf_path)
     lookup_table_bytes = min(main_bytes, _lt_bytes)
     lookup_table_on_disk = False
     if lookup_table_bytes:
-        # Streamed only on a build with a lazy mode, read in the build's own spelling.
-        try:
-            _lt_caps = LlamaCppBackend.probe_server_capabilities()
-        except Exception:  # noqa: BLE001 -- unknown build: price the table as resident
-            _lt_caps = {}
-        lookup_table_on_disk = bool(_lt_caps.get("supports_lazy_mode")) and (
-            _effective_lazy_mode(
-                extras,
-                os.environ,
-                flag = str(_lt_caps.get("lazy_mode_flag") or "--lazy-mode"),
-            )
-            != "off"
+        # Streamed only on a build with a lazy mode whose devices keep it on disk.
+        lookup_table_on_disk = get_llama_cpp_backend().lookup_tables_stream_by_default(
+            extras, os.environ
         )
         # Read resident, a device override applies to the table (deepseek41's loader
         # still forces it to the host), so it stays in the GPU share.

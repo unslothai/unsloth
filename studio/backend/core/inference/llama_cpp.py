@@ -11533,6 +11533,42 @@ class LlamaCppBackend:
             list(gpu_indices) if gpu_indices else None
         )
 
+    def lookup_tables_stream_by_default(
+        self,
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """Whether a launch on this host leaves lazily read lookup tables on disk: a build
+        with a lazy mode that is not off, and (under auto) model devices that support mmap.
+        False when it cannot tell, which prices the tables as resident."""
+        _env = os.environ if env is None else env
+        try:
+            binary = self._find_llama_server_binary()
+            caps = self.probe_server_capabilities(binary)
+            if not caps.get("supports_lazy_mode"):
+                return False
+            mode = _effective_lazy_mode(
+                extra_args, _env, flag = str(caps.get("lazy_mode_flag") or "--lazy-mode")
+            )
+            if mode != "auto":
+                return mode == "on"
+            vulkan = self._is_vulkan_backend(binary)
+            rows = list(self._get_gpu_memory(binary, for_llama_server = True) or ())
+            shared = {idx for idx, _free, total in rows if total <= 0} if vulkan else set()
+            return not self._lazy_auto_resolves_off(
+                gpu_indices = None,
+                detected_gpus = [(idx, free) for idx, free, _total in rows],
+                shared_gpu_ids = shared,
+                is_vulkan_backend = vulkan,
+                probe_integrated_cuda = False,
+                extra_args = extra_args,
+                env = _env,
+                device_list = False,
+                integrated_gpu_ids = shared,
+            )
+        except Exception:
+            return False
+
     def _managed_lazy_mode_flags(
         self,
         model_path: Optional[str],
@@ -32700,8 +32736,21 @@ class LlamaCppBackend:
                         return None
                     if int(getattr(layout, "lm_head_bytes", 0) or 0):
                         need -= int(getattr(layout, "token_embd_bytes", 0) or 0)
-                    # Per-layer lookup tables are input-layer too and never duplicated.
-                    need -= int(getattr(layout, "per_layer_embd_bytes", 0) or 0)
+                    # Per-layer lookup tables are input-layer too and never duplicated,
+                    # unless an -ot moves one onto the device (as in the fit).
+                    per_layer = int(getattr(layout, "per_layer_embd_bytes", 0) or 0)
+                    scan = self._gguf_tensor_scan(model_path) if per_layer else None
+                    if (
+                        scan is not None
+                        and scan[0] not in _HOST_FORCED_TABLE_ARCHS
+                        and any(
+                            _override_places_tensor_on_device(name, run_argv, env)
+                            for name in scan[1]
+                            if _is_per_layer_embedding(name)
+                        )
+                    ):
+                        per_layer = 0
+                    need -= per_layer
                     if not engages and self._nextn_predict_layers:
                         need -= int(getattr(layout, "excluded_block_bytes", 0) or 0)
                     return need
