@@ -380,8 +380,9 @@ def converted_host_bytes(
     """Anonymous host RAM bytes loading ``path`` at ``dtype`` writes, from the header alone.
 
     Tensors already at the target dtype stay memory-mapped (droppable page cache) and cost 0.
-    ``dequantized(key)``: True = quantized weight widened to ``dtype``, False = kept as codes,
-    None = not quantized. Unreadable header returns 0 (no claim)."""
+    ``dequantized(key)``: None = not quantized, 0 / False = kept as codes, else the dense elements each
+    stored element expands to (True = 1; 2 for nvfp4, which packs two columns per byte) when widened
+    to ``dtype``. Unreadable header returns 0 (no claim)."""
     from .diffusion_comfy_quant import _read_header
 
     try:
@@ -402,7 +403,7 @@ def converted_host_bytes(
             continue
         verdict = dequantized(key) if dequantized is not None else None
         if verdict is not None:
-            total += numel * _ST_ITEMSIZE[target] if verdict else 0
+            total += numel * int(verdict) * _ST_ITEMSIZE[target]
             continue
         if stored not in _ST_FLOATS:
             continue

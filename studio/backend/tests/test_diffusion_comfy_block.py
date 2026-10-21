@@ -627,3 +627,18 @@ def test_mxfp8_e8m0_scales_are_priced_one_byte(tmp_path):
     path = _layer_file(tmp_path, "mxfp8", rows = 4096, cols = 8192)
     # 32 MiB of fp8 codes + 1 MiB of e8m0 block scales + the comfy_quant bytes, rounded up (35 at 2 bytes)
     assert cq.comfy_resident_mib(path, keep_int8 = False, keep_fp8 = False, keep_mxfp8 = True) == 34
+
+
+def test_dequantized_nvfp4_is_priced_at_its_unpacked_width(block_file, monkeypatch):
+    """nvfp4 packs two columns per byte, so the header's numel is half the dense N x K the dequantization
+    allocates; the host RAM check must price the dense weight."""
+    import core.inference.diffusion_single_file_converters as conv
+
+    path, _tensors, expected = block_file("nvfp4")
+    seen = []
+    monkeypatch.setattr(
+        conv, "refuse_host_ram_shortfall", lambda path, need, why, logger = None: seen.append(need)
+    )
+    _load(path)
+    dense = sum(t.numel() for t in expected.values()) * 4  # float32 compute
+    assert seen and seen[0] >= dense
