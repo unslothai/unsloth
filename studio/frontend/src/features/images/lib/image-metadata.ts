@@ -785,13 +785,16 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       n !== undefined
     )
       out.inpaint_padding = n;
-    // `TI hashes: "name: hash, ..."` lists the embeddings the prompt used; Studio loads none.
+    // `TI hashes`: the prompt names each embedding, so an installed one applies; importNotApplied names the rest.
     else if (key === "ti hashes") {
+      const names: string[] = [];
       for (const item of value.split(",")) {
         const name = item.slice(0, item.lastIndexOf(":") > 0 ? item.lastIndexOf(":") : undefined).trim();
-        if (name) notApplied.push(`textual inversion ${name}`);
+        if (name) names.push(name);
       }
+      if (names.length > 0) out.textual_inversions = names;
     }
+    else if (key === "shift" && n !== undefined) out.shift = n;
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
     else if (key === "emphasis") {
       if (value && value.toLowerCase() !== "original")
@@ -907,6 +910,9 @@ export interface RestorableRecipe {
   cfg_rescale?: number;
   variation_seed?: number;
   variation_strength?: number;
+  shift?: number;
+  base_shift?: number;
+  max_shift?: number;
   // The prompt upsampler's caption and outcome; restore decides the Enhance prompt toggle from them.
   enhanced_prompt?: string | null;
   prompt_enhancement?: "applied" | "off" | "unavailable" | "failed" | null;
@@ -938,6 +944,9 @@ export const APPLIED_RECIPE_KEYS = [
   "cfg_rescale",
   "variation_seed",
   "variation_strength",
+  "shift",
+  "base_shift",
+  "max_shift",
   "enhanced_prompt",
   "prompt_enhancement",
   "mask_blur",
@@ -967,6 +976,8 @@ export const INFO_RECIPE_KEYS = [
   "generator",
   "schema_version",
   "prompt_weighting",
+  // The prompt names the embeddings it used, so restoring the prompt is what applies them.
+  "embeddings",
 ] as const;
 
 /** Matches RECIPE_SCHEMA_VERSION in core/inference/image_gallery.py. */
@@ -978,6 +989,7 @@ export const PENDING_RECIPE_KEYS = [
   "lora_tags",
   "prompt_emphasis",
   "prompt_escaped_brackets",
+  "textual_inversions",
   "parameters_not_applied",
 ] as const;
 
@@ -1078,6 +1090,10 @@ export function importNotApplied(
       .map(([k, v]) => `${k}: ${String(v)}`);
     if (parts.length > 0) out.push(`hires fix (${parts.join(", ")})`);
   }
+  if (Array.isArray(r.textual_inversions)) {
+    for (const name of r.textual_inversions)
+      if (typeof name === "string" && name) out.push(textualInversionLabel(name));
+  }
   if (Array.isArray(r.parameters_not_applied)) {
     for (const item of r.parameters_not_applied)
       if (typeof item === "string") out.push(item);
@@ -1095,6 +1111,11 @@ export function variationApplies(
   if (!sdControls?.variation_seed || strength === undefined || strength <= 0) return false;
   const workflow = typeof r.workflow === "string" ? r.workflow : undefined;
   return workflow === undefined || workflow === "txt2img" || workflow === "create" || workflow === "controlnet";
+}
+
+/** How importNotApplied names a TI hashes embedding; the page re-labels the ones it matched. */
+export function textualInversionLabel(name: string): string {
+  return `textual inversion ${name}`;
 }
 
 export function newerRecipeSchema(r: ImportedRecipe): boolean {
@@ -1195,6 +1216,13 @@ export function recipeSettings(
       return n !== undefined && n >= 0 && n < 2 ** 32 ? n : undefined;
     })(),
     variation_strength: clamp(num(r.variation_strength), 0, 1),
+    // The request's bounds: shift in (0, 100], base / max shift in [0, 100].
+    shift: (() => {
+      const n = num(r.shift);
+      return n !== undefined && n > 0 && n <= 100 ? n : undefined;
+    })(),
+    base_shift: clamp(num(r.base_shift), 0, 100),
+    max_shift: clamp(num(r.max_shift), 0, 100),
     enhanced_prompt: str(r.enhanced_prompt) ?? null,
     prompt_enhancement:
       r.prompt_enhancement === "applied" ||

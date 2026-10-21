@@ -3216,6 +3216,50 @@ async def scan_diffusion_loras(
     }
 
 
+@router.get("/diffusion-embeddings")
+async def scan_diffusion_embeddings(
+    family: Optional[str] = Query(
+        default = None, description = "Filter to embeddings this diffusion family can use"
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """List textual-inversion embeddings in ``<studio_home>/embeddings/diffusion`` for the Images page.
+
+    The filename stem is the trigger word: naming it in a prompt or negative prompt uses the embedding.
+    ``family`` keeps only files of that family's format (an unknown family, or one without embeddings,
+    lists none). One directory scan reading safetensors headers only; no network.
+    """
+    from core.inference import diffusion_embeddings
+
+    kind = None
+    if family:
+        fam = next((f for f in _diffusion_families() if f.name == family.strip().lower()), None)
+        kind = getattr(fam, "textual_inversion", None) if fam is not None else None
+    entries = (
+        await asyncio.to_thread(diffusion_embeddings.list_embeddings, kind)
+        if kind is not None or not family
+        else []
+    )
+    return {
+        "embeddings": [
+            {
+                "id": e.id,
+                "trigger": e.id,
+                "kind": e.kind,
+                "vectors": e.vectors,
+                "size_bytes": e.size_bytes,
+            }
+            for e in entries
+        ],
+        "embeddings_dir": str(diffusion_embeddings.embeddings_dir()),
+    }
+
+
+def _diffusion_families():
+    from core.inference.diffusion_families import _FAMILIES
+    return _FAMILIES
+
+
 @router.get("/diffusion-controlnets")
 async def scan_diffusion_controlnets(
     family: Optional[str] = Query(

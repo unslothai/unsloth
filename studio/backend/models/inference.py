@@ -5109,6 +5109,28 @@ class DiffusionGenerateRequest(BaseModel):
         description = "How far toward the variation seed's noise: 0 = off, 1 = the variation seed alone. "
         "With a batch, every image keeps the seed and image i uses variation_seed + i.",
     )
+    shift: Optional[float] = Field(
+        None,
+        gt = 0.0,
+        le = 100.0,
+        description = "Static flow shift for this generation, as ComfyUI's ModelSamplingSD3 / "
+        "ModelSamplingAuraFlow `shift`, on models whose status `shift_control.node` is 'sd3'. "
+        "Omitted keeps the model's schedule.",
+    )
+    base_shift: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 100.0,
+        description = "ComfyUI ModelSamplingFlux `base_shift` (default 0.5) for models whose status "
+        "`shift_control.node` is 'flux'. Omitted with `max_shift` keeps the model's schedule.",
+    )
+    max_shift: Optional[float] = Field(
+        None,
+        ge = 0.0,
+        le = 100.0,
+        description = "ComfyUI ModelSamplingFlux `max_shift` (default 1.15), applied at the output "
+        "size, for models whose status `shift_control.node` is 'flux'.",
+    )
     mask_blur: Optional[int] = Field(
         None,
         ge = 0,
@@ -5335,6 +5357,18 @@ class GalleryImage(BaseModel):
     )
     variation_strength: Optional[float] = Field(
         None, description = "Variation strength; null = no variation"
+    )
+    shift: Optional[float] = Field(
+        None, description = "Requested static flow shift; null = the model's"
+    )
+    base_shift: Optional[float] = Field(
+        None, description = "Requested ModelSamplingFlux base shift; null = the model's"
+    )
+    max_shift: Optional[float] = Field(
+        None, description = "Requested ModelSamplingFlux max shift; null = the model's"
+    )
+    embeddings: Optional[list[str]] = Field(
+        None, description = "Textual-inversion embeddings the prompts used (filename stems)"
     )
     mask_blur: Optional[int] = Field(
         None, description = "Inpaint mask blur radius (px) applied; null = none"
@@ -5822,6 +5856,18 @@ class DiffusionStatusResponse(BaseModel):
         "{prompt_weighting, clip_skip {min, max, default, same_as_default_through}, cfg_rescale "
         "{min, max, default, recommended}, variation_seed, vary_strength, prediction_type}. Null when "
         "the loaded model has none of them (every non-SDXL family, the native and MLX engines).",
+    )
+    shift_control: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "The Shift control the loaded flow-matching model takes, or null to hide it: "
+        "{node: 'sd3', shift} (one static shift, ComfyUI ModelSamplingSD3 / AuraFlow; shift = the "
+        "loaded value or null when resolution-dependent) or {node: 'flux', base_shift, max_shift} "
+        "(ComfyUI ModelSamplingFlux defaults). Diffusers engine only.",
+    )
+    textual_inversion: Optional[str] = Field(
+        None,
+        description = "Textual-inversion embedding format the loaded model takes ('sdxl'), or null when "
+        "it takes none. Embeddings are listed by GET /api/models/diffusion-embeddings.",
     )
     # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(

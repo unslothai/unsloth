@@ -13,6 +13,7 @@ import {
 } from "./lib/memory-refusal";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { SdControlsCapability } from "./lib/sd-controls";
+import type { ShiftControl } from "./lib/shift-choice";
 
 // One Advanced control's resolved value and provenance, for the Advanced-panel badges. `value` is the engaged
 // value (null when off), `requested` is what the caller asked for (null = left to the backend), `source` is "auto"
@@ -105,6 +106,10 @@ export interface DiffusionStatus {
   samplers?: DiffusionSamplerOption[];
   // SDXL prompt weighting / CLIP skip / CFG rescale / variation seed; null or absent = none of them.
   sd_controls?: SdControlsCapability | null;
+  // The Shift override the loaded flow-matching model takes; null/absent = no Shift control.
+  shift_control?: ShiftControl | null;
+  // Textual-inversion embedding format the loaded model takes ("sdxl"); null/absent = no embeddings.
+  textual_inversion?: string | null;
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
@@ -273,6 +278,10 @@ export interface DiffusionGenerateRequest {
   cfg_rescale?: number;
   variation_seed?: number;
   variation_strength?: number;
+  // `shift` for "sd3", `base_shift` / `max_shift` for "flux"; omitted = the model's own schedule.
+  shift?: number;
+  base_shift?: number;
+  max_shift?: number;
   // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
   // family that supports it.
   enhance_prompt?: boolean | null;
@@ -370,6 +379,10 @@ export interface GalleryImage {
   cfg_rescale?: number | null;
   variation_seed?: number | null;
   variation_strength?: number | null;
+  shift?: number | null;
+  base_shift?: number | null;
+  max_shift?: number | null;
+  embeddings?: string[] | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
   prompt_enhancement?: PromptEnhancement | null;
@@ -388,7 +401,7 @@ export interface DiffusionGenerateResponse {
   images: GalleryImage[];
 }
 
-async function parseJson<T>(response: Response): Promise<T> {
+export async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     throw new Error(await readFastApiError(response));
   }
