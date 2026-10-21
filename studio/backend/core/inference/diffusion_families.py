@@ -431,8 +431,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
         pipeline_class = "Flux2KleinPipeline",
-        # B200: inductor benchmarks the fused q/k RMSNorm persistent reduction per process; its XBLOCK = 1 pick sums in
-        # another order and rendered another latent (LPIPS up to 0.073), saved for every later start from that home.
+        # B200: a per-process XBLOCK pick for the q/k RMSNorm reduction changed the latent and stuck to the compile home.
         filter_reduction_configs_archs = ((10, 0),),
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
@@ -1029,8 +1028,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             auto_prefer = _GATED_AUTO_PREFER,
             preview_factors = "zimage",
         ),
-        # B200 races here too: 1 of 4 fresh servers benchmarked a block reduction at R0_BLOCK 1024 (others 4096) and
-        # rendered another latent on two of three seeds; with the filter 4/4 matched bitwise.
+        # B200 too: 1 of 4 fresh servers picked R0_BLOCK 1024 (others 4096) and rendered other latents.
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS + ((10, 0),),
         cudnn_benchmark = False,
         comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)

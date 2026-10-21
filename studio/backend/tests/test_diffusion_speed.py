@@ -676,8 +676,6 @@ def test_cudnn_benchmark_opt_out_image_families():
     ],
 )
 def test_reduction_filter_archs(monkeypatch, repo, cap, pinned):
-    # Fresh B200 servers rendered other latents when a block reduction benchmarked to another config (Z-Image R0_BLOCK,
-    # FLUX.2 Klein the q/k RMSNorm persistent-reduction XBLOCK).
     from core.inference import diffusion_compile_config as cc
     from core.inference.diffusion_families import detect_family
 
