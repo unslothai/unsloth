@@ -22148,7 +22148,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _image_arch_is_pickable(
-        gguf_path: Optional[str], model_identifier: Optional[str], arch: Optional[str] = None
+        gguf_path: Optional[str],
+        model_identifier: Optional[str],
+        arch: Optional[str] = None,
     ) -> bool:
         """The Images picker's fail-open buildability gate (Qwen-Image-2.1 needs diffusers 0.41)."""
         try:

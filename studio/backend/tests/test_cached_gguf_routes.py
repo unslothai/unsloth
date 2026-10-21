@@ -2685,7 +2685,11 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
 
 def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
     """krea2-arch GGUFs (molbal/krea2-gguf) are images, not chat RUN (#14474)."""
-    for hints in ((), ("custom/my-mix-Q4_K_M.gguf",), ("molbal/krea2-gguf", "krea2_turbo-Q4_0.gguf")):
+    for hints in (
+        (),
+        ("custom/my-mix-Q4_K_M.gguf",),
+        ("molbal/krea2-gguf", "krea2_turbo-Q4_0.gguf"),
+    ):
         assert models_route._arch_to_task("krea2", hints) == "text-to-image"
         assert models_route._arch_to_task("KREA2", hints) == "text-to-image"
 
