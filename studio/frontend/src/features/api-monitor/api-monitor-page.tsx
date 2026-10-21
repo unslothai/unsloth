@@ -8,7 +8,6 @@ import { apiMonitorTourSteps } from "./tour";
 // Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
-import { SegmentedPill } from "@/components/segmented-control";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -65,7 +64,6 @@ import {
   type ReactElement,
   type ReactNode,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -980,7 +978,6 @@ export function ApiMonitorPage(): ReactElement {
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const statusPillId = useId();
 
   // Requests only: a load row's model is a path or repo, not what a client named.
   const loggedModels = useMemo(() => {
@@ -1504,16 +1501,13 @@ export function ApiMonitorPage(): ReactElement {
               placeholder="Search requests"
               aria-label="Search API requests"
               title="Matches the model, endpoint, prompt, reply or error"
-              className="h-8 pl-8"
+              className="pl-8"
             />
           </div>
-          {/* Same markup as Settings' Hugging Face / ModelScope source toggle. */}
-          <div
-            role="radiogroup"
+          {/* The Library page's tab strip (library-header.tsx TabStrip). */}
+          <nav
             aria-label="Filter by status"
-            // Sunk toward the page on this raised card, as hub.css does for panels: washed over
-            // the card, the track sat one step from the selected pill.
-            className="hub-tab-toggle inline-flex h-8 max-w-full items-center rounded-full dark:[--hub-tab-track:color-mix(in_srgb,var(--background)_55%,transparent)]"
+            className="flex max-w-full gap-1 overflow-x-auto [scrollbar-width:none]!"
           >
             {STATUS_FILTERS.map((option) => {
               const active = statusFilter === option.value;
@@ -1522,23 +1516,21 @@ export function ApiMonitorPage(): ReactElement {
                 <button
                   key={option.value}
                   type="button"
-                  // biome-ignore lint/a11y/useSemanticElements: a pill segment, as in the Settings source toggle.
-                  role="radio"
-                  aria-checked={active}
+                  aria-current={active ? "page" : undefined}
                   onClick={() => setStatusFilter(option.value)}
                   className={cn(
-                    "relative flex h-8 shrink-0 items-center gap-1 rounded-full px-3 text-xs font-medium transition-colors",
-                    active
-                      ? "text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
+                    "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
+                    // Library's RAISED_SURFACE, lifted a step further in dark: this strip sits on a
+                    // card, where bg-card would match the card itself.
+                    active &&
+                      "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
                   )}
                 >
-                  {active && <SegmentedPill group={`${statusPillId}-status`} />}
-                  <span className="relative z-10">{option.label}</span>
+                  {option.label}
                   {option.value !== "all" && count > 0 ? (
                     <span
                       className={cn(
-                        "relative z-10 tabular-nums text-muted-foreground",
+                        "tabular-nums text-muted-foreground",
                         option.value === "error" &&
                           "text-red-600 dark:text-red-400",
                       )}
@@ -1549,12 +1541,12 @@ export function ApiMonitorPage(): ReactElement {
                 </button>
               );
             })}
-          </div>
+          </nav>
           {loggedModels.length > 1 ? (
             <Select value={effectiveModelFilter} onValueChange={setModelFilter}>
               <SelectTrigger
                 aria-label="Filter by model"
-                className="h-8 max-w-64 rounded-full text-xs"
+                className="h-9 max-w-64 rounded-full"
               >
                 <SelectValue />
               </SelectTrigger>
@@ -1578,27 +1570,31 @@ export function ApiMonitorPage(): ReactElement {
               <Button
                 type="button"
                 variant="ghost"
-                size="sm"
+                size="icon"
+                aria-label={
+                  paused ? "Resume the live feed" : "Pause the live feed"
+                }
                 aria-pressed={paused}
                 onClick={() => setPaused(!paused)}
                 className={cn(
-                  "h-8 gap-1.5 rounded-full px-3",
-                  paused && "text-amber-700 dark:text-amber-500",
+                  "rounded-full",
+                  // The only sign the list has stopped updating, so it stays coloured while paused.
+                  paused &&
+                    "bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-500",
                 )}
               >
                 <HugeiconsIcon
                   icon={paused ? PlayIcon : PauseIcon}
                   strokeWidth={1.75}
-                  className="size-3.5"
+                  className="size-4"
                 />
-                {paused ? "Paused" : "Live"}
               </Button>
             </ToolbarTooltip>
             <ToolbarTooltip label="Refresh">
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
+                size="icon"
                 onClick={refresh}
                 disabled={refreshing}
                 aria-label="Refresh"
@@ -1615,7 +1611,7 @@ export function ApiMonitorPage(): ReactElement {
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
+                size="icon"
                 disabled={entries.length === 0}
                 onClick={() => {
                   setSelectedId(null);
