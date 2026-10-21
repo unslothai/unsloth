@@ -106,8 +106,8 @@ def test_native_load_installs_fallback_and_guard_tracks_actual_processors(monkey
 
     pipe, modules = make_pipe()
     target = SimpleNamespace(backend = "rocm", device = "cuda:0", dtype = torch.bfloat16)
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: True)
-    monkeypatch.setattr("core.inference.diffusion.sdpa_math_only", lambda t: True)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: True)
+    monkeypatch.setattr("core.inference.diffusion.sdpa_math_only", lambda t, *_: True)
     monkeypatch.setattr(attention, "_is_cuda_rocm", lambda t: True)
     monkeypatch.setattr(attention, "guard_rocm_fused_sdpa", lambda *a: ())
     assert _quadratic_attention(target, None, pipe)
@@ -124,7 +124,7 @@ def test_native_load_installs_fallback_and_guard_tracks_actual_processors(monkey
 @pytest.mark.parametrize("change", ["parallel", "custom", "non_native"])
 def test_guard_never_credits_uncovered_processors(monkeypatch, change):
     pipe, modules = make_pipe()
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: True)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: True)
     assert bounded.install(pipe, SimpleNamespace(backend = "rocm"))
     if change == "parallel":
         modules[0].processor._parallel_config = object()
@@ -137,9 +137,9 @@ def test_guard_never_credits_uncovered_processors(monkeypatch, change):
 
 def test_healthy_fused_install_and_non_rocm_keep_stock(monkeypatch):
     pipe, modules = make_pipe()
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: False)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: False)
     assert not bounded.install(pipe, SimpleNamespace(backend = "rocm"))
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: True)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: True)
     assert not bounded.install(pipe, SimpleNamespace(backend = "cuda"))
     assert all(type(m.processor) is qmod.QwenImage21AttnProcessor for m in modules)
 
@@ -159,7 +159,7 @@ def test_causal_chunk_offsets_include_preceding_segments():
 def test_failed_bounded_processor_inspection_keeps_quadratic_guard(monkeypatch):
     from core.inference import diffusion
 
-    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda t: True)
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda t, *_: True)
 
     def failed(pipe):
         raise RuntimeError("processor unavailable")
@@ -184,7 +184,7 @@ def test_mps_installs_bounded_attention_without_trusting_the_probe(monkeypatch):
     pipe, modules = make_pipe()
     target = SimpleNamespace(backend = "mps", device = "mps", dtype = torch.bfloat16)
     # MPS SDPA ignores sdpa_kernel, so the probe reports fused kernels it does not run.
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: False)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: False)
     warned = []
     monkeypatch.setattr(attention, "warn_if_sdpa_math_only", lambda *a, **k: warned.append(a))
     attention.apply_attention_backend(pipe, None, target = target)
@@ -205,7 +205,7 @@ def test_mps_installs_bounded_attention_without_trusting_the_probe(monkeypatch):
     ],
 )
 def test_bounded_attention_targets(monkeypatch, target, math_only, expected):
-    monkeypatch.setattr(attention, "sdpa_math_only", lambda t: math_only)
+    monkeypatch.setattr(attention, "sdpa_math_only", lambda t, *_: math_only)
     assert bounded.needs_bounded_attention(target) is expected
 
 

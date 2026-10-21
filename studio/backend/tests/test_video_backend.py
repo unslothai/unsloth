@@ -8729,7 +8729,7 @@ def test_a_failed_generation_logs_the_resolved_request(fake_runtime, tmp_path, m
     # Log the request shape behind an OOM (#8225).
     backend, video_mod = _shared_setup_1(tmp_path)
     _shared_setup_6(backend, monkeypatch)
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target, *_: False)
     records = _capture_generate_failures(monkeypatch)
 
     with pytest.raises(RuntimeError):
@@ -8767,7 +8767,7 @@ def test_the_failure_log_carries_no_prompt_text(fake_runtime, tmp_path, monkeypa
     monkeypatch.setattr(
         type(backend._state.pipe), "__call__", _failing_pipe_call(RuntimeError("kaboom"))
     )
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: False)
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target, *_: False)
     records = _capture_generate_failures(monkeypatch)
 
     with pytest.raises(RuntimeError):
@@ -8782,7 +8782,7 @@ def test_an_oom_on_a_math_only_device_names_the_quadratic_cost(fake_runtime, tmp
     # With no fused kernel, an OOM should carry the score-matrix diagnosis.
     backend, video_mod = _shared_setup_1(tmp_path)
     _shared_setup_6(backend, monkeypatch)
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target, *_: True)
     records = _shared_setup_10(backend, monkeypatch)
 
     assert len(records) == 2
@@ -8797,7 +8797,7 @@ def test_a_non_oom_failure_does_not_blame_attention(fake_runtime, tmp_path, monk
         "__call__",
         _failing_pipe_call(RuntimeError("scheduler produced NaN sigmas")),
     )
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: True)
+    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target, *_: True)
     records = _shared_setup_10(backend, monkeypatch)
 
     assert len(records) == 1
@@ -8843,7 +8843,7 @@ def test_a_broken_diagnostic_never_replaces_the_real_failure(fake_runtime, tmp_p
     backend, video_mod = _shared_setup_1(tmp_path)
     _shared_setup_6(backend, monkeypatch)
 
-    def _boom(target):
+    def _boom(target, *_):
         raise RuntimeError("the probe itself is broken")
 
     monkeypatch.setattr(video_mod, "sdpa_math_only", _boom)
@@ -8883,7 +8883,7 @@ def test_the_oom_diagnosis_is_skipped_when_an_external_backend_ran(
     )
     probed: list = []
 
-    def _never(target):
+    def _never(target, *_):
         probed.append(target)
         return True
 
@@ -8905,8 +8905,13 @@ def test_the_oom_probe_uses_the_dtype_the_run_actually_used(fake_runtime, tmp_pa
     backend._state = replace(backend._state, dtype = "float32", attention_backend = None)
     _shared_setup_6(backend, monkeypatch)
     seen: list = []
-    monkeypatch.setattr(video_mod, "sdpa_math_only", lambda target: seen.append(target) or True)
+    monkeypatch.setattr(
+        video_mod, "sdpa_math_only", lambda target, *a: seen.append((target, *a)) or True
+    )
+    # The family's head dims travel with the record too: MPS answers per head dim.
+    monkeypatch.setattr(video_mod, "_dit_head_dims", lambda pipe: {128})
     records = _shared_setup_10(backend, monkeypatch)
+    assert [a for _, *a in seen] == [[[128]]]
 
     assert any("dtype=float32" in line for line in records)
     assert len(seen) == 1
