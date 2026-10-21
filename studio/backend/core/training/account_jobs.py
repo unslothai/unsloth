@@ -512,7 +512,7 @@ def validate_recipe_access(recipe) -> None:
         seed_type = recipe.get("seed_type")
         if seed_type in {"hf", "github_repo"} and not str(recipe.get("token") or "").strip():
             raise HTTPException(status_code = 403, detail = "Supply your own seed-source token")
-        # A folder seed with no path falls back to host folders (the server's cwd, ~/.codex).
+        # A folder seed with no path falls back to host folders (cwd, ~/.codex).
         if (
             seed_type in {"agent_rollout", "directory", "file_contents"}
             and not str(recipe.get("path") or "").strip()

@@ -145,8 +145,7 @@ def _apply_data_designer_image_context_patch() -> None:
         normalized = _normalize_image_context_value(context_value, base_path = base_path)
         if not managed_account():
             return original_auto_resolve(self, normalized, base_path)
-        # Load a managed account's image path under its workspace rule; the engine gets no base_path,
-        # so it never opens a file by itself.
+        # Managed image paths load under the workspace rule; with no base_path the engine never opens files.
         if (
             isinstance(normalized, str)
             and not normalized.lower().startswith(("http://", "https://", "data:"))
@@ -410,8 +409,7 @@ def _apply_data_designer_mixed_type_parquet_patch() -> None:
 
 
 def _apply_data_designer_seed_uri_quote_patch() -> None:
-    # data-designer reads every seed as FROM '<uri>': quote the URI for DuckDB so a quote in a
-    # file name or Hub path stays part of the path. No ImportError guard: never run unquoted.
+    # Seeds are read as FROM '<uri>': quote it for DuckDB. No ImportError guard: never run unquoted.
     from data_designer.engine.resources.seed_reader import SeedReader  # pyright: ignore[reportMissingImports]
 
     if getattr(SeedReader, "_unsloth_seed_uri_quote_patch_applied", False):
@@ -434,8 +432,7 @@ def _ignore_sqlfluff_inline_config(*_args: Any, **_kwargs: Any) -> None:
 
 
 def _apply_data_designer_sql_inline_config_patch() -> None:
-    # sqlfluff applies "-- sqlfluff:<key>:<value>" lines of the linted text to its own config, and
-    # that text is recipe data. The dialect always comes from the column's code_lang.
+    # sqlfluff applies inline "-- sqlfluff:" config from the linted text (recipe data); code_lang sets the dialect.
     try:
         from data_designer.engine.validators.sql import SQLValidator  # pyright: ignore[reportMissingImports]
     except ImportError:
