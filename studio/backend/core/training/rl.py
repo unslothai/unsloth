@@ -385,7 +385,7 @@ def render_grpo_prompts(
         )
         out = {
             "prompt": tokenizer.apply_chat_template(
-                _without_nulls(prompt),
+                _without_padded_arguments(_without_nulls(prompt), row_tools),
                 tokenize = False,
                 add_generation_prompt = not prefill,
                 **({"continue_final_message": True} if prefill else {}),
@@ -454,6 +454,34 @@ def _row_template_kwargs(row: dict) -> dict:
     return {k: v for k, v in (row.get("chat_template_kwargs") or {}).items() if v is not None}
 
 
+def _without_padded_arguments(messages: Any, tools: Any) -> Any:
+    """Drop a null argument the called tool's schema does not declare: Arrow pads each call's
+    arguments with the keys other calls use. Declared (nullable) arguments keep their null."""
+    if not isinstance(messages, list) or not isinstance(tools, list):
+        return messages
+    declared = {}
+    for tool in tools:
+        fn = tool.get("function", tool) if isinstance(tool, dict) else None
+        if isinstance(fn, dict) and fn.get("name"):
+            declared[fn["name"]] = set(((fn.get("parameters") or {}).get("properties") or {}))
+
+    def prune(call: Any) -> Any:
+        fn = call.get("function") if isinstance(call, dict) else None
+        args = fn.get("arguments") if isinstance(fn, dict) else None
+        if not isinstance(args, dict) or fn.get("name") not in declared:
+            return call
+        keep = declared[fn["name"]]
+        args = {k: v for k, v in args.items() if v is not None or k in keep}
+        return {**call, "function": {**fn, "arguments": args}}
+
+    return [
+        {**m, "tool_calls": [prune(c) for c in m["tool_calls"]]}
+        if isinstance(m, dict) and isinstance(m.get("tool_calls"), list)
+        else m
+        for m in messages
+    ]
+
+
 def _without_nulls(value: Any) -> Any:
     # Arrow gives every message every field another one has, as None; templates would render
     # those as real values. A message's own null content and its tool-call arguments stay.
@@ -477,11 +505,20 @@ def render_preference_rows(dataset, tokenizer):
     if tokenizer is None or not columns:
         return dataset
 
+    from utils.datasets.chat_templates import _thinking_as_reasoning_content
+
+    def messages(value: Any, tools: Any) -> Any:
+        value = _without_padded_arguments(_without_nulls(value), tools)
+        # A `thinking` field renders as the template's reasoning, as in SFT.
+        return (
+            _thinking_as_reasoning_content(tokenizer, value) if isinstance(value, list) else value
+        )
+
     def render(row: dict) -> dict:
         tools, kwargs = _row_tools(row), _row_template_kwargs(row)
         # Passed explicitly, never left in the row: TRL 0.25+ would expand it a second time.
         row = {
-            k: _without_nulls(v) if k in ("prompt", "chosen", "rejected") else v
+            k: messages(v, tools) if k in ("prompt", "chosen", "rejected") else v
             for k, v in row.items()
             if k not in _TRL_ROW_COLUMNS
         }
@@ -527,7 +564,7 @@ def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
             if prompt and isinstance(prompt[-1], dict) and prompt[-1].get("role") == "assistant":
                 kwargs["continue_final_message"] = True
             prompt = tokenizer.apply_chat_template(
-                _without_nulls(prompt),
+                _without_padded_arguments(_without_nulls(prompt), tools),
                 tokenize = False,
                 add_generation_prompt = not kwargs.get("continue_final_message"),
                 **kwargs,

@@ -1655,3 +1655,116 @@ def test_a_reward_comparing_to_a_prefill_named_column_scores_the_plain_completio
     )
     reward = make_reward_func({"name": "exact", "rule": rule})
     assert reward(completions = ["OK"], prefill = ["OK"]) == [2.0]
+
+
+def test_preference_rows_drop_arrow_padding_from_structured_tool_arguments():
+    pytest.importorskip("trl")
+    from core.training.rl import render_preference_rows
+
+    seen = []
+
+    class _Tok:
+        chat_template = "plain"
+
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            **kw,
+        ):
+            for m in messages:
+                for call in m.get("tool_calls") or []:
+                    seen.append(call["function"]["arguments"])
+            return "".join(f"<{m['role']}>{m.get('content')}" for m in messages)
+
+    def call(name, args):
+        return {"type": "function", "function": {"name": name, "arguments": args}}
+
+    def schema(name, *props):
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "parameters": {"type": "object", "properties": {p: {} for p in props}},
+            },
+        }
+
+    tools = [schema("weather", "city", "units"), schema("calc", "expression")]
+
+    def row(chosen):
+        return {
+            "tools": json.dumps(tools),
+            "prompt": [{"role": "user", "content": "w?"}],
+            "chosen": [{"role": "assistant", "content": "", "tool_calls": [chosen]}],
+            "rejected": [{"role": "assistant", "content": "No."}],
+        }
+
+    # Two rows calling different tools: Arrow pads each row's arguments with the other's keys.
+    ds = Dataset.from_list(
+        [
+            row(call("weather", {"city": "Paris"})),
+            row(call("calc", {"expression": "1+1"})),
+        ]
+    )
+    render_preference_rows(ds, _Tok())
+    assert {"city": "Paris"} in seen and {"expression": "1+1"} in seen
+
+
+def test_declared_nullable_tool_arguments_keep_their_null():
+    from core.training.rl import _without_padded_arguments
+
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "update", "parameters": {"properties": {"nickname": {}}}},
+        }
+    ]
+    msgs = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"function": {"name": "update", "arguments": {"nickname": None, "x": None}}}
+            ],
+        }
+    ]
+    assert _without_padded_arguments(msgs, tools)[0]["tool_calls"][0]["function"]["arguments"] == {
+        "nickname": None
+    }
+
+
+def test_preference_rows_render_a_thinking_field_as_reasoning():
+    pytest.importorskip("trl")
+    from core.training.rl import render_preference_rows
+
+    class _Tok:
+        chat_template = "{{ message.reasoning_content }}"
+
+        def apply_chat_template(
+            self,
+            messages,
+            tools = None,
+            tokenize = False,
+            add_generation_prompt = False,
+            **kw,
+        ):
+            out = ""
+            for m in messages:
+                out += f"<{m['role']}>"
+                if m.get("reasoning_content"):
+                    out += f"<think>{m['reasoning_content']}</think>"
+                out += m["content"]
+            return out + ("<assistant>" if add_generation_prompt else "")
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [{"role": "user", "content": "2+2?"}],
+                "chosen": [{"role": "assistant", "content": "4", "thinking": "2 and 2 is 4"}],
+                "rejected": [{"role": "assistant", "content": "4", "thinking": "guess"}],
+            }
+        ]
+    )
+    row = render_preference_rows(ds, _Tok())[0]
+    assert row["chosen"] != row["rejected"]
+    assert "2 and 2 is 4" in row["chosen"] and "guess" in row["rejected"]
