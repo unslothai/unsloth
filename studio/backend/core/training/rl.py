@@ -519,8 +519,13 @@ def drop_long_prompts(dataset, tokenizer, max_prompt_length: int):
             kwargs = _row_template_kwargs(row)
             if tools:
                 kwargs["tools"] = tools
+            if prompt and isinstance(prompt[-1], dict) and prompt[-1].get("role") == "assistant":
+                kwargs["continue_final_message"] = True
             prompt = tokenizer.apply_chat_template(
-                _without_nulls(prompt), tokenize = False, add_generation_prompt = True, **kwargs
+                _without_nulls(prompt),
+                tokenize = False,
+                add_generation_prompt = not kwargs.get("continue_final_message"),
+                **kwargs,
             )
         return (
             len(text_tokenizer(prompt, add_special_tokens = False)["input_ids"]) <= max_prompt_length
