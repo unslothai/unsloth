@@ -1003,6 +1003,21 @@ def authorize_download(repo_id: str, repo_type: str, hf_token) -> None:
 
 
 def require_media_references(request) -> None:
+    from utils.paths.path_utils import is_network_or_device_path
+
+    # Before the resolve()/is_dir() calls below: touching a share path is already an outbound SMB sign-in.
+    fields = (
+        "model_path",
+        "gguf_filename",
+        "transformer_prequant_path",
+        "text_encoder_file",
+        "vae_file",
+    )
+    for name in fields:
+        value = getattr(request, name, None)
+        for item in value if isinstance(value, (list, tuple)) else [value]:
+            if isinstance(item, str) and is_network_or_device_path(item):
+                raise HTTPException(status_code = 404, detail = "Model not found")
     require_media_adapters(request)
     for name in ("gguf_filename", "transformer_prequant_path"):
         reference = getattr(request, name, None)

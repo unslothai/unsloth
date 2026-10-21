@@ -39,7 +39,15 @@ def test_a_folder_holding_an_hf_home_is_not_granted(roots, tmp_path):
     cache = tmp_path / "cache"
     hf_home = cache / "huggingface"
     hf_home.mkdir(parents = True)
+    (hf_home / "stored_tokens").write_text("[]")
     assert roots(cache, hf_homes = [hf_home]) == ()
+
+
+def test_a_folder_holding_a_cache_only_home_is_still_granted(roots, tmp_path):
+    # A cache switch or download home with only hub bytes holds no credential.
+    models = tmp_path / "models"
+    (models / "hf" / "hub").mkdir(parents = True)
+    assert roots(models, hf_homes = [models / "hf"]) == (os.path.realpath(models),)
 
 
 @pytest.mark.parametrize("name", ["token", "stored_tokens", ".env", ".git-credentials", ".netrc"])

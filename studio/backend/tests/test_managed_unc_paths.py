@@ -136,3 +136,34 @@ def test_a_folder_scan_refuses_a_unc_path_before_resolving_it(studio_home, unc_c
     finally:
         reset_account(token)
     assert unc_calls == []
+
+
+@pytest.mark.parametrize(
+    "field", ["model_path", "transformer_prequant_path", "text_encoder_file", "vae_file"]
+)
+def test_media_references_refuse_a_unc_path_before_resolving_it(studio_home, unc_calls, field):
+    from types import SimpleNamespace
+
+    request = SimpleNamespace(model_path = "org/model", adapters = None)
+    setattr(request, field, [UNC] if field == "text_encoder_file" else UNC)
+    token = bind_account(ALICE)
+    try:
+        with pytest.raises(HTTPException) as info:
+            account_access.require_media_references(request)
+        assert info.value.status_code == 404
+    finally:
+        reset_account(token)
+    assert unc_calls == []
+
+
+def test_a_diffusion_data_dir_refuses_a_unc_path_before_resolving_it(studio_home, unc_calls):
+    from routes import training
+
+    token = bind_account(ALICE)
+    try:
+        with pytest.raises(HTTPException) as info:
+            training._resolve_diffusion_data_dir(UNC)
+        assert info.value.status_code == 403
+    finally:
+        reset_account(token)
+    assert unc_calls == []

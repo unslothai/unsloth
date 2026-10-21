@@ -662,7 +662,14 @@ def _hf_home_roots() -> tuple[str, ...]:
     homes: list[str] = []
     try:
         from utils.hf_cache_settings import known_hf_cache_homes
-        homes.extend(os.path.realpath(str(home)) for home in known_hf_cache_homes())
+
+        # Cache history and download homes often hold only hub bytes; a home counts once it holds a token.
+        for home in known_hf_cache_homes():
+            home = os.path.realpath(str(home))
+            if any(
+                os.path.lexists(os.path.join(home, name)) for name in ("token", "stored_tokens")
+            ):
+                homes.append(home)
     except Exception:  # noqa: BLE001 - never fail a launch over the cache settings
         pass
     # HF_TOKEN_PATH moves token, and stored_tokens beside it, out of the HF home.
