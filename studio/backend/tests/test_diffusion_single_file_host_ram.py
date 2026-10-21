@@ -142,3 +142,41 @@ def test_kill_switch_and_unreadable_ram_never_refuse(tmp_path, monkeypatch, krea
     monkeypatch.delenv(small_host.HOST_RAM_CHECK_ENV)
     _host(monkeypatch, available_mib = None)
     conv.load_original_layout_transformer(krea2, str(path), dict(_KWARGS))
+
+
+def _spy_need(monkeypatch):
+    seen = []
+    real = conv.refuse_host_ram_shortfall
+
+    def spy(path, need_bytes, why, logger = None):
+        seen.append(need_bytes)
+        return real(path, need_bytes, why, logger)
+
+    monkeypatch.setattr(conv, "refuse_host_ram_shortfall", spy)
+    return seen
+
+
+def test_fp16_pipeline_counts_the_deferred_dequantization(tmp_path, monkeypatch, krea2):
+    """fp16 with ``_keep_in_fp32_modules`` defers the dtype choice until after key conversion, but
+    with no fp8 runtime (always the case off bf16) every fp8 layer is still expanded to fp16."""
+    path, widened = _write(tmp_path, "fp8_scaled")
+    scan = cq.refuse_comfy_quant(str(path))
+    seen = _spy_need(monkeypatch)
+    _host(monkeypatch, available_mib = 64 * 1024)
+    model = cq.load_comfy_quant_transformer(
+        krea2,
+        str(path),
+        scan,
+        {**_KWARGS, "torch_dtype": torch.float16},
+        int8_backend = None,
+        fp8_backend = None,
+    )
+    assert model.transformer_blocks[0].attn.to_q.weight.dtype == torch.float16
+    # Everything else in the file is bf16, widened to fp16 (or fp32 for the kept norms) as well.
+    keep = krea2._keep_in_fp32_modules
+    rest = sum(
+        v.numel() * (4 if any(m in k.split(".") for m in keep) else 2)
+        for k, v in safetensors_torch.load_file(str(path)).items()
+        if v.dtype == torch.bfloat16
+    )
+    assert seen and seen[0] >= widened + rest

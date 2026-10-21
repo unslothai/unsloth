@@ -1039,8 +1039,11 @@ def load_comfy_quant_transformer(
     # Without a runtime (fp8 below sm_89) layers widen to ``dtype`` in host RAM: refuse before an OOM.
     from .diffusion_single_file_converters import converted_host_bytes, refuse_host_ram_shortfall
 
+    # Mirrors the source loop below: a layer is kept as codes only with a runtime for its format (fp16_keep
+    # merely defers the dtype choice; the layer is still expanded) and, for a block format, no key map.
     _widened = {
-        layer.name + ".weight": not (backends.get(layer.format) or fp16_keep)
+        layer.name + ".weight": not backends.get(layer.format)
+        or (layer.format in BLOCK_SIZES and key_map is not None)
         for layer in scan.layers.values()
     }
     refuse_host_ram_shortfall(
