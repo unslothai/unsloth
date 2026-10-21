@@ -10178,15 +10178,55 @@ def _requested_execution_mode(tool_execution_mode: str, disable_sandbox: bool) -
 _with_session_packages = os_sandbox.with_session_packages
 
 
-def _software_safeguards_launch(plan, fault: str):
-    """Prepare an unisolated launch, retaining session packages and recording *fault*."""
+def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]":
+    """argv and env for an approved host-access launch: nothing it loads comes from the sandbox-writable workdir.
+
+    HOME and (for the python tool) the script move to a private per-call directory outside every workdir, and the
+    session packages stay off PYTHONPATH/PATH; earlier sandboxed calls can write all of those in the workdir. The
+    cwd stays the workdir, so relative paths in the approved code resolve as before.
+    """
+    private = tempfile.mkdtemp(prefix = "unsloth-host-call-")
+    try:
+        env = dict(plan.env)
+        env["HOME"] = private
+        if sys.platform == "win32":
+            env["HOMEDRIVE"], env["HOMEPATH"] = os.path.splitdrive(private)
+        argv = tuple(plan.argv)
+        if script is not None and argv:
+            # Written here, not read back from the workdir copy: a sandboxed call could have replaced that file.
+            path = os.path.join(private, os.path.basename(argv[-1]))
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding = "utf-8") as f:
+                f.write(script)
+            argv = (*argv[:-1], path)
+            # The script's own folder stays off sys.path too (CPython >= 3.11).
+            env["PYTHONSAFEPATH"] = "1"
+        return argv, env, private
+    except BaseException:
+        shutil.rmtree(private, ignore_errors = True)
+        raise
+
+
+def _software_safeguards_launch(
+    plan,
+    fault: str,
+    *,
+    off_workdir: bool = False,
+    host_script: "str | None" = None,
+):
+    """Prepare an unisolated launch, retaining session packages (unless *off_workdir*) and recording *fault*."""
     full = plan.requested_mode == "full"
+    argv, env, cleanup_paths = plan.argv, None, []
+    if off_workdir:
+        argv, env, private = _host_access_launch(plan, host_script)
+        cleanup_paths.append(private)
     return os_sandbox.PreparedSandboxLaunch(
-        argv = plan.argv,
+        argv = argv,
         workdir = plan.workdir,
-        env = _with_session_packages(plan.env, plan.workdir),
+        env = env if env is not None else _with_session_packages(plan.env, plan.workdir),
         preexec_fn = plan.preexec_fn,
         backend = "software-safeguards",
+        cleanup_paths = cleanup_paths,
         timeout_seconds = plan.timeout_seconds,
         close_fds = plan.close_fds,
         terminate_descendants = plan.terminate_descendants,
@@ -10239,12 +10279,19 @@ def _prepare_tool_launch(
     *,
     host_access_approved: bool = False,
     user_folder: bool = False,
+    host_script: "str | None" = None,
 ):
     """Fall back only when the backend is unavailable; unsafe workdirs, build failures and (outside `full`) planner errors refuse."""
     if user_folder and plan.requested_mode == "auto":
         os_sandbox.recheck_overran_workdir(plan.workdir)
     if host_access_approved and plan.requested_mode == "auto":
-        return _software_safeguards_launch(plan, "user_approved_host_access")
+        # A chosen project folder is never a sandbox workdir in auto, so its calls keep importing from it.
+        return _software_safeguards_launch(
+            plan,
+            "user_approved_host_access",
+            off_workdir = not user_folder,
+            host_script = host_script,
+        )
     # A project folder the owner picked is host access they granted: the isolation's workdir scan would refuse common
     # repositories (hard links from git clone --local, pnpm, uv) and walk large trees on every call. Decided up front,
     # never after a scan finding, which tool code could plant to drop its own boundary.
@@ -11072,7 +11119,9 @@ def _get_project_workdir(session_id: str) -> str | None:
         return None
     root_real = os.path.realpath(root_path)
     sandbox_real = os.path.realpath(sandbox_path)
-    if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
+    # The rule _get_workdir applies to a chat's folder: tool code can rename its workdir and leave a link, which is
+    # dropped, never followed. Strictly below the root, so `sandbox -> .` cannot make the root the workdir either.
+    if os.path.islink(sandbox_path) or not sandbox_real.startswith(root_real + os.sep):
         return None
     from storage.studio_db import available_project_working_folder
 
@@ -23794,6 +23843,7 @@ def _python_exec(
                 ),
                 host_access_approved = host_access_approved and _reaches_host_paths("python", code),
                 user_folder = _is_user_project_folder(session_id, workdir),
+                host_script = code,
             )
             proc = os_sandbox.spawn_prepared_launch(
                 prepared, **_apply_prepared_launch(prepared, popen_kwargs)

@@ -1316,6 +1316,7 @@ def _share_cache_paths(monkeypatch, cache):
 
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: _Paths()
+    module.effective_cache_home = lambda: cache
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
 
 
@@ -1558,11 +1559,13 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
         path.mkdir(parents = True)
     import utils.hf_cache_settings as cache_settings
 
+    # datasets/assets follow the real HF home, which a Studio-selected folder leaves in place.
+    monkeypatch.setenv("HF_HOME", str(home))
     monkeypatch.setattr(
         cache_settings,
         "get_hf_cache_paths",
         lambda: cache_settings.HuggingFaceCachePaths(
-            cache_home = home, hub_cache = hub, xet_cache = xet, source = "studio"
+            cache_home = hub.parent, hub_cache = hub, xet_cache = xet, source = "studio"
         ),
     )
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
@@ -1579,6 +1582,7 @@ def _real_cache(monkeypatch, home):
     paths = types.SimpleNamespace(cache_home = home, hub_cache = home / "hub", xet_cache = home / "xet")
     module = types.ModuleType("utils.hf_cache_settings")
     module.get_hf_cache_paths = lambda: paths
+    module.effective_cache_home = lambda: home
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
 
 
@@ -2051,6 +2055,7 @@ def test_the_cache_bind_itself_drops_a_component_holding_studio_state(monkeypatc
         hub_cache = str(state),
         xet_cache = str(elsewhere / "xet"),
     )
+    settings.effective_cache_home = lambda: elsewhere
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
 
@@ -2080,6 +2085,7 @@ def test_a_cache_configured_as_a_home_directory_is_not_shared(monkeypatch, tmp_p
         hub_cache = str(home),
         xet_cache = str(models / "xet"),
     )
+    settings.effective_cache_home = lambda: models
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", settings)
     monkeypatch.setattr(sandbox_linux, "_cache_hazard_within_deadline", lambda name, path: None)
 

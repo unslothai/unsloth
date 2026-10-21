@@ -843,10 +843,11 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
     """Inner cache subdirectory -> host directory, per component (HF_HUB_CACHE=/mnt/models is NOT /mnt/models/hub)."""
     binds: dict[str, str] = {}
     try:
-        from utils.hf_cache_settings import get_hf_cache_paths
+        from utils.hf_cache_settings import effective_cache_home, get_hf_cache_paths
 
         paths = get_hf_cache_paths()
-        home = os.path.abspath(str(paths.cache_home))
+        # datasets/assets live under the real HF home, not the display home (which can be the hub itself).
+        home = os.path.abspath(str(effective_cache_home()))
         resolved = {"hub": str(paths.hub_cache), "xet": str(paths.xet_cache)}
     except Exception:  # noqa: BLE001 - a launch never fails over a cache lookup
         logger.debug("could not resolve the configured Hugging Face cache", exc_info = True)
@@ -984,6 +985,10 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "--seccomp",
             str(seccomp.fileno()),
             *(("--tmpfs", "/proc") if empty_proc else ("--proc", "/proc")),
+            # A root-run Studio leaves the tool at uid 0: host sysctls stay read-only.
+            "--ro-bind-try",
+            "/proc/sys",
+            "/proc/sys",
             "--dev",
             "/dev",
             "--dir",
