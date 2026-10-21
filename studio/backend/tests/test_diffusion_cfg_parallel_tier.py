@@ -527,3 +527,103 @@ def test_a_failed_prefetch_copy_is_harmless():
     assert bad.held and not router.prefetched
     assert cg._OUTSIDE_JOBS == 0
 
+
+def test_a_prefetch_refused_by_a_long_recording_makes_no_copy(monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
+    router = _bare_router()
+    carried = _FakeCopy()
+    router.carry = [carried]
+    recording, stop = threading.Event(), threading.Event()
+
+    def long_capture():
+        with cg._capturing():
+            recording.set()
+            stop.wait(5)
+
+    t = threading.Thread(target = long_capture)
+    t.start()
+    assert recording.wait(5)
+    try:
+        router._prefetch((), {})
+    finally:
+        stop.set()
+        t.join(5)
+    assert carried.held == [] and not router.prefetched
+    assert cg._OUTSIDE_JOBS == 0 and cg._CAPTURE_DEPTH == 0
+
+
+def test_a_capture_that_outwaits_replica_work_is_refused_not_recorded(monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
+    cg.capture_hold()  # replica-side work that never drains (this thread has no held_work of its own)
+    try:
+        ran = []
+        with pytest.raises(cg.CaptureRefused):
+            with cg._capturing():
+                ran.append(cg._CAPTURE_DEPTH)
+        assert ran == [] and cg._CAPTURE_DEPTH == 0
+        assert cg.capture_refused_now()
+        # a stale count is not waited on again
+        monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 30.0)
+        with pytest.raises(cg.CaptureRefused):
+            with cg._capturing():
+                ran.append(1)
+        assert ran == []
+    finally:
+        cg.capture_release()
+    assert not cg.capture_refused_now()
+    with cg._capturing():
+        ran.append(cg._CAPTURE_DEPTH)
+    assert ran == [1] and cg._CAPTURE_DEPTH == 0
+
+
+def test_replica_work_that_outwaits_a_recording_is_refused_and_never_runs(monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
+    recording, stop = threading.Event(), threading.Event()
+
+    def long_capture():
+        with cg._capturing():
+            recording.set()
+            stop.wait(5)
+
+    t = threading.Thread(target = long_capture)
+    t.start()
+    assert recording.wait(5)
+    ran = []
+    try:
+        with pytest.raises(cg.OutsideWorkRefused):
+            with cg.outside_capture():
+                ran.append(1)
+        assert ran == [] and cg._OUTSIDE_JOBS == 0
+    finally:
+        stop.set()
+        t.join(5)
+    with cg.outside_capture():
+        ran.append(1)
+    assert ran == [1] and cg._OUTSIDE_JOBS == 0
+
+
+def test_a_refused_worker_job_reports_an_error_and_the_worker_keeps_serving(monkeypatch):
+    monkeypatch.setattr(cg, "OUTSIDE_WAIT_S", 0.05)
+    recording, stop = threading.Event(), threading.Event()
+
+    def long_capture():
+        with cg._capturing():
+            recording.set()
+            stop.wait(5)
+
+    t = threading.Thread(target = long_capture)
+    t.start()
+    assert recording.wait(5)
+    ran = []
+    try:
+        # started while the capture records: the start-up bind is refused, the thread lives on
+        worker = mg._ReplicaWorker(torch.device("cpu"))
+        with pytest.raises(cg.OutsideWorkRefused):
+            worker.call(lambda: ran.append(1))
+        assert ran == [] and cg._OUTSIDE_JOBS == 0
+    finally:
+        stop.set()
+        t.join(5)
+    assert worker.call(lambda: 7) == 7
+    assert cg._OUTSIDE_JOBS == 0
+    worker.close()

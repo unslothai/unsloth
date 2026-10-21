@@ -1504,6 +1504,8 @@ class _ReplicaWorker:
                         torch.cuda.set_device(self.device)
                     except Exception:  # noqa: BLE001
                         pass
+        except Exception:  # noqa: BLE001 - refused while a capture records: each job binds its device anyway
+            pass
         finally:
             capture_release()
         while True:
@@ -1513,12 +1515,16 @@ class _ReplicaWorker:
             fn, ctx, modes, done = job
             job = None
             try:
-                with held_work():
-                    try:
-                        done["result"] = ctx.run(self._run, fn, modes)
-                    except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's thread
-                        done["error"] = exc
-                    # drop inputs inside the hold
+                try:
+                    with held_work():
+                        try:
+                            done["result"] = ctx.run(self._run, fn, modes)
+                        except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's thread
+                            done["error"] = exc
+                        # drop inputs inside the hold
+                        fn = ctx = None
+                except Exception as exc:  # noqa: BLE001 - refused while a capture records: the job never ran
+                    done["error"] = exc
                     fn = ctx = None
             finally:
                 capture_release()

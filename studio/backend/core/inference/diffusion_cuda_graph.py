@@ -142,8 +142,29 @@ _CAPTURE_DEPTH = 0
 _CAPTURE_IDLE = threading.Condition(_CAPTURE_LOCK)
 _OUTSIDE_JOBS = 0
 _OUTSIDE_LOCAL = threading.local()
-# A count that never drains (dead worker) must not hang captures: record anyway; a broken capture runs eager.
+# A count that never drains (dead worker) must not hang captures: after this long the capture is refused and the step
+# runs eager. Symmetrically, replica work that waits this long on a recording is refused and its branch runs on the source.
 OUTSIDE_WAIT_S = 120.0
+# Set by a refusal, cleared once the replica-side count drains: while it stands, captures refuse without waiting again.
+_OUTSIDE_STUCK = [False]
+
+
+class CaptureExclusionTimeout(RuntimeError):
+    """A capture or a replica-side job gave up waiting on the other side of the capture exclusion."""
+
+
+class CaptureRefused(CaptureExclusionTimeout):
+    """Raised by ``_capturing`` BEFORE the depth is raised and before any recording begins: nothing to clean up."""
+
+
+class OutsideWorkRefused(CaptureExclusionTimeout):
+    """Raised by ``held_work`` before the replica-side work runs: none of its CUDA calls were made."""
+
+
+def capture_refused_now() -> bool:
+    """Whether a capture would be refused without waiting (a stale replica-side count is still standing)."""
+    with _CAPTURE_IDLE:
+        return _OUTSIDE_STUCK[0] and _OUTSIDE_JOBS > 0 and not getattr(_OUTSIDE_LOCAL, "depth", 0)
 
 
 @contextlib.contextmanager
@@ -151,12 +172,21 @@ def _capturing():
     """Mark a capture as recording for the duration of the block.
 
     The depth MUST be raised before ``torch.cuda.graph`` is entered, which is what makes the
-    ordering above hold; keep this the outermost of the two context managers.
+    ordering above hold; keep this the outermost of the two context managers. Raises
+    ``CaptureRefused`` (depth untouched, nothing recorded) when replica-side work did not drain in time.
     """
     global _CAPTURE_DEPTH
     with _CAPTURE_IDLE:
         if not getattr(_OUTSIDE_LOCAL, "depth", 0):
-            _CAPTURE_IDLE.wait_for(lambda: _OUTSIDE_JOBS <= 0, timeout = OUTSIDE_WAIT_S)
+            drained = (_OUTSIDE_JOBS <= 0) or (
+                not _OUTSIDE_STUCK[0]
+                and _CAPTURE_IDLE.wait_for(lambda: _OUTSIDE_JOBS <= 0, timeout = OUTSIDE_WAIT_S)
+            )
+            if not drained:
+                _OUTSIDE_STUCK[0] = True
+                raise CaptureRefused(
+                    f"replica-side CUDA work still running after {OUTSIDE_WAIT_S:g}s; capture refused"
+                )
         _CAPTURE_DEPTH += 1
     try:
         yield
@@ -176,14 +206,21 @@ def capture_release() -> None:
     global _OUTSIDE_JOBS
     with _CAPTURE_IDLE:
         _OUTSIDE_JOBS = max(0, _OUTSIDE_JOBS - 1)
+        if _OUTSIDE_JOBS == 0:
+            _OUTSIDE_STUCK[0] = False
         _CAPTURE_IDLE.notify_all()
 
 
 @contextlib.contextmanager
 def held_work():
-    """Waits for another thread's recording; this thread may then record without waiting on its own hold."""
+    """Waits for another thread's recording; this thread may then record without waiting on its own hold.
+
+    Raises ``OutsideWorkRefused`` (the body never runs) when a recording is still going after ``OUTSIDE_WAIT_S``."""
     with _CAPTURE_IDLE:
-        _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0, timeout = OUTSIDE_WAIT_S)
+        if not _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0, timeout = OUTSIDE_WAIT_S):
+            raise OutsideWorkRefused(
+                f"a CUDA graph capture still recording after {OUTSIDE_WAIT_S:g}s; replica work refused"
+            )
     _OUTSIDE_LOCAL.depth = getattr(_OUTSIDE_LOCAL, "depth", 0) + 1
     try:
         yield
@@ -1337,6 +1374,17 @@ class GraphedForward:
             stream_before = _current_stream()
             try:
                 captured = self._capture(args, kwargs, call, key)
+            except CaptureRefused as exc:
+                # Nothing was recorded: this step runs eager and a later call tries the capture again.
+                _restore_stream(stream_before)
+                self.stats["capture_refusals"] = self.stats.get("capture_refusals", 0) + 1
+                if self.logger is not None:
+                    self.logger.warning(
+                        "diffusion.cuda_graph: capture deferred on %s (%s); this step runs eager",
+                        type(self.module).__name__,
+                        exc,
+                    )
+                exc.__traceback__ = None
             except Exception as exc:  # noqa: BLE001 - a failed capture must never fail the render
                 # torch.cuda.graph's __exit__ raises in capture_end before it leaves its capture stream, so the thread
                 # would run everything after (the eager retry, the rest of the process) on the capture stream.
@@ -1506,6 +1554,9 @@ class GraphedForward:
         refuse_if_exhausted(
             self.logger
         )  # before the warm-ups, and before the step skip's counters are saved
+        if capture_refused_now():
+            # Replica-side work already outlasted one capture's wait: skip the warm-ups as well.
+            raise CaptureRefused("replica-side CUDA work still running; capture refused")
         # Under an offload placement the capture also records the copy-stream onloads (OffloadPlacement.record).
         record = call if self.placement is None else self.placement.recorder(call)
         # Side stream: a workspace first created DURING capture is only valid while recording.
@@ -1557,7 +1608,9 @@ class GraphedForward:
                 with _capturing(), recorder(graph, pool = pool):
                     out = record(*static_args, **static_kwargs)
             except BaseException as exc:
-                retire_failed_capture(graph, pool, exc)
+                # A refusal is raised before the recording begins: the graph and the pool were never touched.
+                if not isinstance(exc, CaptureRefused):
+                    retire_failed_capture(graph, pool, exc)
                 raise
             finally:
                 if skip_stats is not None:
