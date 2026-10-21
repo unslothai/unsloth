@@ -216,7 +216,7 @@ export function ParamSlider({
           max={max}
           step={step}
           {...sliderProps}
-          className="panel-slider min-w-0 flex-1"
+          className="min-w-0 flex-1"
           disabled={disabled}
         />
         <NumericValueInput
@@ -261,7 +261,6 @@ export function ParamSlider({
         max={max}
         step={step}
         {...sliderProps}
-        className="panel-slider"
         disabled={disabled}
       />
     </div>
