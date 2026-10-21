@@ -327,8 +327,9 @@ export const BUDGET = {
   // build, Node 24, 97 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // Browser store sync across windows (#14277) adds 545 B raw / 288 B transfer on top (6,872,325 B raw, 2,069,596 B
   // transfer merged with main at 4962983b0, Node 24, 97 chunks). Raised to that plus the same margin.
-  transferBytes: 2_069_785,
-  rawBytes: 6_872_485,
+  // The runtime update card's skip and Undo (#14436) add 1,706 B raw / 424 B transfer against 444f63275c.
+  transferBytes: 2_070_209,
+  rawBytes: 6_874_191,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
