@@ -27,7 +27,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showUnslothUpdates",
     "settings.general.notifications.showLlamaUpdates",
-    "settings.general.notifications.showWhisperUpdates",
     "settings.general.notifications.showAudioCppUpdates",
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
@@ -128,6 +127,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.modelSelection.title",
     "settings.chat.modelSelection.fitOnDeviceOnly",
     "settings.chat.currentDate.label",
+    "settings.chat.memory.title",
+    "settings.chat.memory.enable",
     "settings.general.autoTitleNewChats",
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
@@ -453,6 +454,8 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
     "settings.resources.modelMemory.mediaIdleUnloadKeywords",
   "settings.general.modelAutoSwitch.keepKv":
     "settings.general.modelAutoSwitch.keepKvKeywords",
+  "settings.chat.memory.title": "settings.chat.memory.keywords",
+  "settings.chat.memory.enable": "settings.chat.memory.keywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
   "settings.chat.keepRunningWhenTabClosed":
     "settings.chat.keepRunningWhenTabClosedKeywords",

@@ -1462,3 +1462,131 @@ def test_evict_counts_a_key_another_evictor_took(monkeypatch, tmp_path):
     monkeypatch.setattr(os, "rename", another_process_got_there_first)
     assert cc.evict(root = tmp_path, max_bytes = 1500) == []
     assert not taken.exists() and nxt.exists()
+
+
+def _bundle_ctx(tmp_path):
+    return cc.CacheContext(
+        key = "abc",
+        dir = tmp_path / "abc",
+        bundle = tmp_path / "abc" / "cache.bin",
+        manifest_path = tmp_path / "abc" / "manifest.json",
+        env_fp = "e",
+        model_fp = "m",
+        mode = "auto",
+    )
+
+
+def _grouped_mega_cache():
+    # The per-type group format these tests exercise is torch 2.8+; torch 2.7 wrote one flat artifact list.
+    cache_mod = pytest.importorskip("torch.compiler._cache")
+    if not hasattr(cache_mod, "_deserialize_single_cache"):
+        pytest.skip("torch build without per-type artifact groups")
+    return cache_mod
+
+
+def test_a_resave_after_a_recompile_restores_every_graph(tmp_path, monkeypatch):
+    # Before the merge, a re-saved bundle restored only the newest per-type group (torch loads them with dict()).
+    _grouped_mega_cache()
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "first-resolution", b"one")
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "second-resolution", b"two")
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        data = (ctx.dir / manifest["bundle"]).read_bytes()
+        restored = M.deserialize(data)
+        assert sorted(a.key for a in restored["inductor"]) == [
+            "first-resolution",
+            "second-resolution",
+        ]
+    finally:
+        M.clear()
+
+
+def test_a_resave_keeps_both_contents_of_a_repeated_inductor_key(tmp_path, monkeypatch):
+    _grouped_mega_cache()
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "kept", b"one")
+        M.record_artifact("inductor", "tuned", b"old")
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "tuned", b"new")
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        restored = M.deserialize((ctx.dir / manifest["bundle"]).read_bytes())
+        assert [(a.key, bytes(a.content)) for a in restored["inductor"]] == [
+            ("kept", b"one"),
+            ("tuned", b"old"),
+            ("tuned", b"new"),
+        ]
+    finally:
+        M.clear()
+
+
+def test_a_resave_keeps_every_guarded_candidate_and_applies_a_repeated_autotune_key_last(
+    tmp_path, monkeypatch
+):
+    # Inductor candidates sharing a key are separate guarded entries; an autotune key is one slot, written in order.
+    _grouped_mega_cache()
+    from torch.compiler._cache import CacheArtifactManager as M
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", str(tmp_path))
+    M._ensure_cache_artifacts_registered()
+    M.clear()
+    try:
+        M.record_artifact("inductor", "graph", b"shape-a")
+        M.record_artifact("autotune", "kernel", {"best": "old"})
+        assert cc._write_bundle(_bundle_ctx(tmp_path), None)
+        M.record_artifact("inductor", "graph", b"shape-b")
+        M.record_artifact("autotune", "kernel", {"best": "new"})
+        ctx = _bundle_ctx(tmp_path)
+        assert cc._write_bundle(ctx, None)
+        manifest = json.loads(ctx.manifest_path.read_text())
+        restored = M.deserialize((ctx.dir / manifest["bundle"]).read_bytes())
+        assert sorted(bytes(a.content) for a in restored["inductor"]) == [b"shape-a", b"shape-b"]
+        assert json.loads(restored["autotune"][-1].content) == {"best": "new"}
+    finally:
+        M.clear()
+
+
+def test_the_bundle_is_serialised_under_torch_compile_lock(tmp_path, monkeypatch):
+    # An artifact recorded while torch serialises is cleared from the pending list but stays "seen": lost for good.
+    # A compile on another thread (a render, a background compile) records under compile_lock, so the save takes it.
+    import threading
+
+    import torch
+    from torch._dynamo import convert_frame
+
+    lock = threading.RLock()
+    held = []
+
+    def save():
+        held.append(lock._is_owned())
+        return None
+
+    monkeypatch.setattr(convert_frame, "compile_lock", lock)
+    # raising=False: torch 2.6 has no Mega-cache API, the lock is what is under test
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", save, raising = False)
+    cc._write_bundle(_bundle_ctx(tmp_path), None)
+    assert held == [True]
+
+
+def test_a_flat_artifact_list_is_saved_as_is_without_a_warning(monkeypatch):
+    # torch 2.7 (flat artifact list, no _deserialize_single_cache): saves must not log a merge failure.
+    cache_mod = pytest.importorskip("torch.compiler._cache")
+    monkeypatch.delattr(cache_mod, "_deserialize_single_cache", raising = False)
+    warnings = []
+    logger = types.SimpleNamespace(warning = lambda *a: warnings.append(a))
+    assert cc._one_group_per_type(b"flat-list-bundle", logger) == b"flat-list-bundle"
+    assert warnings == []

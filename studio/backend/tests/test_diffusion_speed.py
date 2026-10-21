@@ -9,6 +9,7 @@ gating logic and the best-effort applier run without a GPU or real diffusers.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 
@@ -28,6 +29,20 @@ from core.inference.diffusion_speed import (
     restore_backend_flags,
     snapshot_backend_flags,
 )
+
+
+_needs_torch = pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason = "needs torch")
+
+
+@pytest.fixture(autouse = True)
+def _undo_slice_identity_fix():
+    """Undo the process-wide torch 2.13+ SliceVariable patch apply_speed_optims may install."""
+    from core.inference import diffusion_dynamic_text as dt
+
+    was_installed = "original" in dt._SLICE_STATE
+    yield
+    if not was_installed and "original" in dt._SLICE_STATE:
+        dt.uninstall_slice_identity_fix()
 
 
 def _stub_gguf_accel(monkeypatch):
@@ -660,7 +675,27 @@ def test_cudnn_benchmark_opt_out_image_families():
     # Unmeasured families keep the benchmark.
     from core.inference.diffusion_families import _FAMILIES
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
-    assert off == {"qwen-image", "flux.1", "z-image", "sdxl"}
+    assert off == {"qwen-image", "flux.1", "flux.2-dev", "z-image", "sdxl"}
+
+
+@pytest.mark.parametrize(
+    "repo, cap, pinned",
+    [
+        ("Tongyi-MAI/Z-Image-Turbo", (10, 0), True),
+        ("Tongyi-MAI/Z-Image-Turbo", (8, 9), True),
+        ("Tongyi-MAI/Z-Image-Turbo", (9, 0), False),
+        ("black-forest-labs/FLUX.2-klein-4B", (10, 0), True),
+        ("black-forest-labs/FLUX.2-klein-base-4B", (10, 0), True),
+        ("black-forest-labs/FLUX.2-klein-4B", (8, 9), False),
+        ("black-forest-labs/FLUX.1-schnell", (10, 0), False),
+    ],
+)
+def test_reduction_filter_archs(monkeypatch, repo, cap, pinned):
+    from core.inference import diffusion_compile_config as cc
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.setattr(cc, "_device_capability", lambda: cap)
+    assert cc.family_filters_reductions(detect_family(repo)) is pinned
 
 
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
@@ -2541,6 +2576,7 @@ def test_pinned_denoiser_engages_the_int8_gemm_after_placement(monkeypatch):
     assert calls == [] and not eager["int8_gemm"]
 
 
+@_needs_torch
 @pytest.mark.parametrize(
     "offload_active, denoiser_offloaded, expected",
     [(True, False, False), (True, True, True), (True, None, True), (False, None, False)],
@@ -2822,6 +2858,7 @@ def test_native_quant_never_runs_the_rocm_probe():
     assert guarded
 
 
+@_needs_torch
 def test_rocm_kill_switch_declines_the_planned_dequant_step(monkeypatch):
     import torch
 
@@ -3079,6 +3116,7 @@ def test_rocm_probe_still_runs_for_a_compilable_model(monkeypatch):
     assert len(calls) == 1
 
 
+@_needs_torch
 def test_rocm_probe_answer_is_read_without_waiting_for_another_probe(monkeypatch):
     import threading
 

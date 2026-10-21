@@ -5159,6 +5159,277 @@ def _counted_body(payload):
 
 
 @pytest.mark.parametrize(
+    ("fields", "recall_expected"),
+    [
+        ({}, True),
+        ({"tool_choice": "none"}, False),
+        ({"max_tool_calls_per_message": 0}, False),
+        ({"max_tool_calls_per_message": 1}, True),
+        ({"tool_choice": "none", "enable_tools": True}, True),
+    ],
+)
+def test_chat_count_tokens_respects_checkpoint_recall_eligibility(
+    monkeypatch, fields, recall_expected
+):
+    _, counted = _count_tokens_backend(monkeypatch, supports_tools = True)
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)
+    monkeypatch.setattr(inference_route, "_thread_has_conversation_archive", lambda _thread: True)
+    monkeypatch.setattr(inference_route, "_thread_has_checkpoint", lambda *_args: True)
+    payload = _count_request(
+        [
+            {"role": "user", "content": "Continue."},
+            {"role": "assistant", "content": "Done."},
+        ],
+        **{
+            "thread_id": "compacted-thread",
+            "context_overflow": "truncate_oldest",
+            "context_policy": "checkpoint",
+            "enable_tools": False,
+            "enabled_tools": [],
+            **fields,
+        },
+    )
+
+    assert _counted_body(payload)["input_tokens"] == 10
+    assert [tool["function"]["name"] for tool in counted["tools"] or []] == (
+        ["search_conversation"] if recall_expected else []
+    )
+    assert ("search_conversation" in json.dumps(counted["messages"])) is recall_expected
+
+
+@pytest.mark.parametrize("policy", ["checkpoint", "rolling"])
+def test_chat_count_tokens_replays_saved_compaction_without_archive_work(monkeypatch, policy):
+    from core.rag import conversation_archive
+
+    _count_tokens_backend(monkeypatch, supports_tools = True)
+    backend = inference_route.get_llama_cpp_backend()
+    backend._effective_context_length = 2048
+    counted = []
+
+    def count(messages, *_args, **_kwargs):
+        counted.append(messages)
+        return sum(max(1, len(str(message.get("content", ""))) // 4) for message in messages)
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("A token recount must not write or query the conversation archive")
+
+    backend.count_chat_tokens = count
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+    monkeypatch.setattr(conversation_archive, "can_archive", lambda _thread: True)
+    monkeypatch.setattr(conversation_archive, "has_archive", lambda _thread: True)
+    monkeypatch.setattr(conversation_archive, "archive_turns", unexpected)
+    monkeypatch.setattr(llama_cpp_mod, "_archive_is_degraded", unexpected)
+    monkeypatch.setattr(llama_cpp_mod, "_archive_and_recall", unexpected)
+    messages = []
+    for index in range(4):
+        messages.extend(
+            [
+                {"role": "user", "content": f"Old passage {index}: " + "x" * 3200},
+                {"role": "assistant", "content": f"Read passage {index}."},
+            ]
+        )
+    messages.extend(
+        [
+            {"role": "user", "content": "Continue with the current question."},
+            {"role": "assistant", "content": "Here is the current answer."},
+        ]
+    )
+    stored = [
+        {**message, "id": f"m-{index}", "parentId": f"m-{index - 1}" if index else None}
+        for index, message in enumerate(messages)
+    ]
+    stored[-1]["metadata"] = {
+        "contextTruncation": {
+            "fits": True,
+            "checkpoint": policy == "checkpoint",
+            "boundary_messages": 6,
+            "boundary_anchor": messages[6]["content"],
+        }
+    }
+    monkeypatch.setattr(studio_db, "list_chat_messages", lambda _thread: stored)
+    payload = _count_request(
+        messages,
+        thread_id = "compacted-thread",
+        context_overflow = "truncate_oldest",
+        context_policy = policy,
+        max_tokens = 256,
+        enable_tools = policy == "rolling",
+        enabled_tools = [],
+    )
+
+    body = _counted_body(payload)
+
+    assert 0 < body["input_tokens"] < 2048
+    rendered = json.dumps(counted[-1])
+    assert "Old passage 0" not in rendered
+    assert "Old passage 3" in rendered
+    assert "Here is the current answer." in rendered
+    assert "search_conversation" in rendered
+    assert body["input_tokens"] == count(counted[-1])
+
+
+@pytest.mark.parametrize("context_overflow", [None, "error", "truncate_oldest"])
+def test_chat_count_tokens_keeps_uncompacted_branches_intact(monkeypatch, context_overflow):
+    _count_tokens_backend(monkeypatch)
+    backend = inference_route.get_llama_cpp_backend()
+    backend._effective_context_length = 2048
+    messages = [
+        {"role": "user", "content": "old passage " + "x" * 12000},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "latest question"},
+    ]
+    seen = []
+
+    def count(candidate, *_args, **_kwargs):
+        seen.append(candidate)
+        return 3200
+
+    backend.count_chat_tokens = count
+    monkeypatch.setattr(studio_db, "list_chat_messages", lambda _thread: [])
+    body = _counted_body(
+        _count_request(
+            messages,
+            thread_id = "uncompacted-thread",
+            context_overflow = context_overflow,
+            enable_tools = False,
+        )
+    )
+
+    assert body["input_tokens"] == 3200
+    assert seen == [messages]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"tools": [{"type": "function", "function": {"name": "client_tool"}}]},
+        {"response_format": {"type": "json_object"}},
+    ],
+    ids = ["client_tools", "guided_json"],
+)
+def test_chat_count_tokens_does_not_replay_studio_compaction_on_passthrough(monkeypatch, fields):
+    _count_tokens_backend(monkeypatch, supports_tools = True)
+    backend = inference_route.get_llama_cpp_backend()
+    backend._effective_context_length = 2048
+    messages = []
+    for index in range(3):
+        messages.extend(
+            [
+                {"role": "user", "content": f"Passage {index}: " + "x" * 3200},
+                {"role": "assistant", "content": "Read."},
+            ]
+        )
+    stored = [
+        {**message, "id": f"m-{index}", "parentId": f"m-{index - 1}" if index else None}
+        for index, message in enumerate(messages)
+    ]
+    stored[-1]["metadata"] = {
+        "contextTruncation": {
+            "fits": True,
+            "checkpoint": True,
+            "manual": True,
+            "boundary_messages": 2,
+            "boundary_anchor": messages[2]["content"],
+        }
+    }
+    seen = []
+
+    def count(candidate, *_args, **_kwargs):
+        seen.append(candidate)
+        return sum(len(message["content"]) // 4 for message in candidate)
+
+    backend.count_chat_tokens = count
+    monkeypatch.setattr(_tp, "get_tool_policy", lambda: None)
+    monkeypatch.setattr(studio_db, "list_chat_messages", lambda _thread: stored)
+    payload = _count_request(
+        messages,
+        thread_id = "compacted-thread",
+        context_overflow = "truncate_oldest",
+        context_policy = "checkpoint",
+        max_tokens = 256,
+        enable_tools = False,
+        **fields,
+    )
+
+    body = _counted_body(payload)
+
+    assert seen == [messages]
+    assert body["input_tokens"] == sum(len(message["content"]) // 4 for message in messages)
+
+
+@pytest.mark.parametrize("checkpoint_boundary", [True, False])
+@pytest.mark.parametrize("context_length", [2048, 16384])
+def test_chat_count_tokens_prices_saved_boundary_without_enforcing_reply_budget(
+    monkeypatch, checkpoint_boundary, context_length
+):
+    _count_tokens_backend(monkeypatch)
+    backend = inference_route.get_llama_cpp_backend()
+    backend._effective_context_length = context_length
+    messages = []
+    for index in range(3):
+        messages.extend(
+            [
+                {"role": "user", "content": f"Passage {index}: " + "x" * 3200},
+                {"role": "assistant", "content": "Read."},
+            ]
+        )
+    counted = []
+
+    def count(candidate, *_args, **_kwargs):
+        counted.append(candidate)
+        return sum(len(message["content"]) // 4 for message in candidate)
+
+    backend.count_chat_tokens = count
+    monkeypatch.setattr(llama_cpp_mod, "_can_reset_epoch", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        llama_cpp_mod,
+        "_sticky_compaction_details",
+        lambda *_args, **_kwargs: (2, checkpoint_boundary, False),
+    )
+    payload = _count_request(
+        messages,
+        thread_id = "compacted-thread",
+        context_overflow = "truncate_oldest",
+        context_policy = "checkpoint" if checkpoint_boundary else "rolling",
+        max_tokens = 512,
+        enable_tools = False,
+    )
+
+    body = _counted_body(payload)
+
+    if context_length == 2048:
+        assert 1536 < body["input_tokens"] < 2048
+        assert "Passage 0" not in json.dumps(counted[-1])
+        assert len(counted) == 2
+    else:
+        assert counted == [messages]
+    assert body["input_tokens"] == sum(len(message["content"]) // 4 for message in counted[-1])
+
+
+def test_chat_count_tokens_checks_checkpoint_recall_off_the_event_loop(monkeypatch):
+    _count_tokens_backend(monkeypatch, supports_tools = True)
+    event_loop_thread = threading.get_ident()
+    checked = []
+
+    def recall_eligible(_payload):
+        checked.append(threading.get_ident())
+        assert checked[-1] != event_loop_thread
+        return False
+
+    monkeypatch.setattr(inference_route, "_checkpoint_recall_may_enable_tools", recall_eligible)
+    payload = _count_request(
+        [{"role": "user", "content": "Continue."}],
+        thread_id = "compacted-thread",
+        context_overflow = "truncate_oldest",
+        enable_tools = False,
+    )
+
+    assert _counted_body(payload)["input_tokens"] == 10
+    assert len(checked) == 1
+
+
+@pytest.mark.parametrize(
     "content",
     [
         pytest.param("hello", id = "plain_string"),
@@ -5186,6 +5457,7 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
         return [{"type": "function", "function": {"name": "web_search"}}]
@@ -5238,6 +5510,7 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -5346,6 +5619,7 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -5471,6 +5745,7 @@ def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -5883,6 +6158,7 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
         tools_on,
         mcp_allowed,
         supports_vision = False,
+        checkpoint_fitted = False,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -12899,3 +13175,138 @@ def test_completions_on_mlx_refuses_an_audio_cpp_target_before_it_loads(monkeypa
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
     assert exc.value.status_code == 400 and rec.calls == []
+
+
+def _beside_case(
+    monkeypatch,
+    mode,
+    primary_speaks,
+    audio_type = "snac",
+):
+    """A switch to a target of ``audio_type`` with a GGUF primary that is (or is not) a speech model."""
+    from core.inference import model_slots
+    from utils import multi_model_settings
+
+    backend, recorder = _speech_case(monkeypatch, audio_type)
+    primary = SimpleNamespace(is_active = True, _is_audio = primary_speaks)
+    monkeypatch.setattr(inference_route, "_llama_cpp_backend", primary)
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_mode", lambda: mode)
+    monkeypatch.setattr(model_slots, "slots", [])
+    slot = model_slots.ExtraSlot(_FakeBackend(), SimpleNamespace(active_model_name = None), "owner")
+    gated = []
+
+    async def load_model_gated(request, fastapi_request, current_subject, **kwargs):
+        gated.append((request, kwargs))
+        model_slots.slots.append(slot)
+        inference_route.routed_slot.set(slot)
+
+    monkeypatch.setattr(inference_route, "load_model_gated", load_model_gated)
+    # The stub getters always answer with the primary, which a slot load leaves alone.
+    monkeypatch.setattr(inference_route, "_reject_unservable_model", _noop_reject)
+    return backend, recorder, slot, gated
+
+
+@pytest.mark.parametrize("mode", ["fit", "always"])
+def test_a_speech_switch_keeps_the_chat_model_loaded(monkeypatch, mode):
+    backend, recorder, slot, gated = _beside_case(monkeypatch, mode, primary_speaks = False)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "tester", require_speech = True
+        )
+    )
+    assert recorder.calls == [] and len(gated) == 1
+    request, kwargs = gated[0]
+    assert request.alongside and request.model_path == "/local/B.gguf"
+    assert kwargs["current_request_counted"] is True and kwargs["background"] is True
+    assert slot.llama._openai_advertised_id == "org/B-GGUF"
+    assert backend.model_identifier == "org/A-GGUF"
+
+
+@pytest.mark.parametrize(
+    "mode,primary_speaks",
+    [("off", False), ("fit", True), ("always", True)],
+)
+def test_a_speech_switch_still_replaces_under_off_or_another_speech_model(
+    monkeypatch, mode, primary_speaks
+):
+    backend, recorder, _slot, gated = _beside_case(monkeypatch, mode, primary_speaks)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            "org/B-GGUF", object(), "tester", require_speech = True
+        )
+    )
+    assert gated == [] and len(recorder.calls) == 1
+    assert not recorder.calls[0].alongside
+
+
+def test_a_chat_switch_keeps_a_loaded_speech_model(monkeypatch):
+    _backend, recorder, _slot, gated = _beside_case(
+        monkeypatch, "fit", primary_speaks = True, audio_type = None
+    )
+    asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "tester"))
+    assert recorder.calls == [] and len(gated) == 1 and gated[0][0].alongside
+
+
+@pytest.mark.parametrize("primary_speaks", [False, True])
+def test_a_chat_request_naming_a_speech_model_is_classified_by_its_target(
+    monkeypatch, primary_speaks
+):
+    _backend, recorder, _slot, gated = _beside_case(monkeypatch, "fit", primary_speaks)
+    asyncio.run(inference_route._maybe_auto_switch_model("org/B-GGUF", object(), "tester"))
+    if primary_speaks:
+        assert gated == [] and len(recorder.calls) == 1
+    else:
+        assert recorder.calls == [] and len(gated) == 1 and gated[0][0].alongside
+
+
+def test_a_kept_slot_unloaded_before_it_is_reserved_refuses_the_request(monkeypatch):
+    from core.inference import model_slots
+
+    backend, recorder, slot, gated = _beside_case(monkeypatch, "fit", primary_speaks = False)
+    monkeypatch.setattr(model_slots, "reserve", lambda _slot: False)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                "org/B-GGUF", object(), "tester", require_speech = True
+            )
+        )
+    assert exc.value.status_code == 503 and len(gated) == 1
+    assert getattr(backend, "_openai_advertised_id", None) != "org/B-GGUF"
+
+
+def test_a_background_tracked_load_keeps_the_request_cancel_and_no_user_warnings(monkeypatch):
+    seen = {}
+
+    async def impl(request, fastapi_request, current_subject, **kwargs):
+        seen.update(kwargs, warnings = inference_route._load_warnings_reach_user.get())
+        if "request_cancel" in seen:
+            seen["request_cancel"].set()
+            for _ in range(50):
+                if kwargs["load_cancel_event"].is_set():
+                    break
+                await asyncio.sleep(0.02)
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", impl)
+    request = LoadRequest(model_path = "org/B-GGUF")
+    for background in (True, False):
+        seen.clear()
+        attempt = inference_route._begin_load_attempt(request, "tester")
+        cancel = threading.Event()
+        impl_kwargs = None
+        if background:
+            seen["request_cancel"] = cancel
+            impl_kwargs = {"load_cancel_event": cancel}
+        asyncio.run(
+            inference_route._run_tracked_load_model_impl(
+                request,
+                object(),
+                "tester",
+                attempt = attempt,
+                impl_kwargs = impl_kwargs,
+                background = background,
+            )
+        )
+        inference_route._finish_load_attempt(attempt)
+        assert seen["load_cancel_event"] is attempt.cancel_event
+        assert seen["warnings"] is (not background)
+        assert attempt.cancel_event.is_set() is background

@@ -5,6 +5,7 @@ import { withBackgroundLoadNotice } from "@/lib/model-lifecycle-events";
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { parseLoadJson } from "@/lib/multi-model-refusal";
+import { withAllowOversizedLoad } from "@/lib/unified-memory-load-refusal";
 import {
   isMemoryEstimateRefusal,
   MEMORY_REFUSAL_HEADER,
@@ -82,11 +83,15 @@ export interface DiffusionStatus {
   native_engine_eligible?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
+  // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
+  lora_after_reload?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).
+  supports_inpaint_only_masked?: boolean;
   // The guidance a negative prompt is used above; null when guidance does not gate it, absent on older backends.
   negative_prompt_min_guidance?: number | null;
   // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
@@ -162,6 +167,8 @@ export interface DiffusionLoadProgress {
   bytes_total: number;
   fraction: number;
   error: string | null;
+  /** Absent on an older backend. */
+  error_code?: string | null;
 }
 
 export interface DiffusionLoadRequest {
@@ -217,6 +224,8 @@ export interface DiffusionLoadRequest {
   // quantisation and compile, so a quantized load that omits them rejects every generation. Ignored by bf16 /
   // bnb-4bit, which apply at generate time.
   loras?: LoraSpecInput[];
+  // Omitted = refuse as usual; withAllowOversizedLoad fills it from the persisted setting.
+  allow_oversized_load?: boolean;
 }
 
 export interface DiffusionGenerateRequest {
@@ -235,6 +244,10 @@ export interface DiffusionGenerateRequest {
   init_image?: string;
   mask_image?: string;
   strength?: number;
+  // Absent = today's behaviour; only_masked is refused (400) unless supports_inpaint_only_masked.
+  mask_blur?: number;
+  inpaint_only_masked?: boolean;
+  inpaint_padding?: number;
   // Upscale (hires fix): factor > 1 with an init_image enlarges the source and re-denoises at low strength.
   upscale?: number;
   allow_oversized?: boolean;
@@ -345,6 +358,9 @@ export interface GalleryImage {
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
   prompt_enhancement?: PromptEnhancement | null;
+  mask_blur?: number | null;
+  inpaint_only_masked?: boolean | null;
+  inpaint_padding?: number | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
@@ -414,7 +430,7 @@ export async function loadDiffusionModel(body: DiffusionLoadRequest): Promise<Di
         await authFetch("/api/inference/images/load", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(withAllowOversizedLoad(body)),
         }),
       ),
     async (signal) => (await getDiffusionLoadProgress(signal)).phase,
@@ -443,6 +459,8 @@ export interface DiffusionDownloadPlan {
      *  speak, refuse the pick here, since the alternative is the loader saying the same thing after a ~19 GB
      *  download. */
   incompatible_reason?: string | null;
+  /** Absent on an older backend. */
+  incompatible_code?: string | null;
 }
 
 /** What to stage through the download manager before loading this pick. */
@@ -453,7 +471,7 @@ export async function getDiffusionDownloadPlan(
     await authFetch("/api/inference/images/download-plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify(withAllowOversizedLoad(body)),
     }),
   );
 }

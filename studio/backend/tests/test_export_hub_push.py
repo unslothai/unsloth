@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import weakref
+
 import functools
 import importlib.util
 import sys
@@ -502,6 +504,8 @@ def test_mlx_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
     assert seen["uploaded"] == _MLX_MERGED_FILES
     assert output_path == str(export_dir.resolve())
     assert backend.current_model.merges == [_MLX_EXPORTS[export][3]] * 2
+    # A REAP report an earlier export pushed to this repo is deleted in the same commit.
+    assert seen["delete_patterns"] == ["reap_report.json"]
     assert seen["folder"] != output_path
     assert not Path(seen["folder"]).exists()
 
@@ -933,6 +937,127 @@ def test_lora_gguf_export_push_to_a_reused_folder_does_not_upload_its_leftovers(
     assert Path(seen["folder"]).name == export_dir.name
     assert not Path(seen["folder"]).exists()
     assert seen["uploaded"] == _LORA_GGUF_FILES
+
+
+def _reap_pruned(backend, monkeypatch):
+    # As apply_reap leaves it: the pruning key and the kept experts on the loaded model. The stub
+    # core.export package of this harness gets the real reap module the export imports.
+    spec = importlib.util.spec_from_file_location(
+        "core.export.reap", Path(__file__).resolve().parents[1] / "core/export/reap.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "core.export.reap", module)
+    backend._reap_key = (0.5, 512, None)
+    backend._reap_model = weakref.ref(backend.current_model)
+    backend.current_model._unsloth_reap_report = {"model.layers.0.mlp": [0, 2]}
+    return backend
+
+
+@pytest.mark.parametrize("reused", [False, True])
+def test_merged_push_of_a_reap_pruned_model_uploads_its_report(tmp_path, monkeypatch, reused):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _reap_pruned(
+        _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_merged", calls, seen), monkeypatch
+    )
+    export_dir = tmp_path / "export"
+    if reused:
+        export_dir.mkdir()
+        (export_dir / "adapter_config.json").write_text("{}")
+    success, message, output_path = backend.export_merged_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    # Written before the upload, into whichever folder was uploaded.
+    assert "reap_report.json" in seen["uploaded"]
+    assert Path(output_path, "reap_report.json").is_file()
+
+
+def test_merged_push_into_a_folder_with_a_stale_report_uploads_none(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_stale", calls, seen)
+    _reap_pruned(backend, monkeypatch)
+    backend._reap_key = None  # not pruned this time
+    export_dir = tmp_path / "export-torchao-fp8"
+    export_dir.mkdir(parents = True)
+    (export_dir / "reap_report.json").write_text('{"kept_experts": {}}')
+    success, message, output_path = backend.export_merged_model(
+        str(tmp_path / "export"),
+        compressed_method = "torchao_fp8",
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+    assert success is True, message
+    assert seen["folder"] == output_path
+    assert "reap_report.json" not in seen["uploaded"]
+    assert not Path(output_path, "reap_report.json").exists()
+
+
+def test_base_push_of_a_reap_pruned_model_uploads_its_report(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _reap_pruned(
+        _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_base", calls, seen), monkeypatch
+    )
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "old.Q4_K_M.gguf").write_bytes(b"GGUF")
+    success, message, output_path = backend.export_base_model(
+        str(export_dir), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    assert "reap_report.json" in seen["uploaded"]
+
+
+def test_base_and_adapter_exports_after_a_reap_merge_of_a_lora_load(tmp_path, monkeypatch):
+    # REAP merged the adapters in memory (is_peft is False now); the load is still a LoRA one.
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_merged_peft", calls, seen)
+    backend._reap_merged_peft = True
+    success, message, _ = backend.export_base_model(str(tmp_path / "base"))
+    assert success is False and "PEFT model" in message
+    assert not (tmp_path / "base").exists()
+    success, message, _ = backend.export_lora_adapter(str(tmp_path / "lora"))
+    assert success is False and "merged into the model for a REAP export" in message
+
+
+@pytest.mark.parametrize("method", ["merged", "base"])
+def test_hub_uploads_delete_a_reap_report_left_in_a_reused_repo(tmp_path, monkeypatch, method):
+    # upload_folder never removes remote files; one it uploads in the same commit is kept, so a
+    # pruned export keeps its new report and any other export drops an old one.
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(
+        monkeypatch, f"test_export_hub_push_reap_delete_{method}", calls, seen
+    )
+    export = backend.export_merged_model if method == "merged" else backend.export_base_model
+    success, message, _ = export(
+        str(tmp_path / "export"), push_to_hub = True, repo_id = "model", hf_token = "hf_fake"
+    )
+    assert success is True, message
+    assert seen["delete_patterns"] == ["reap_report.json"]
+
+
+def test_cleanup_clears_reap_state_even_when_an_unload_fails(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _reap_pruned(
+        _non_mlx_backend(monkeypatch, "test_export_hub_push_reap_cleanup", calls, seen), monkeypatch
+    )
+    backend._reap_model = weakref.ref(backend.current_model)
+
+    def unload(name):
+        raise RuntimeError("inference engine is busy")
+
+    backend.inference_backend = types.SimpleNamespace(
+        models = {"chat": object()}, unload_model = unload
+    )
+    assert backend.cleanup_memory() is False
+    assert backend._reap_key is None and backend._reap_model is None
 
 
 class _GgufModel:

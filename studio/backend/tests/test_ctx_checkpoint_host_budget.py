@@ -478,7 +478,10 @@ class TestCheckpointsNeverReachAVramFigure:
         assert "0 if self._rollback_state_bytes(1) > 0 else _requested_ctx_checkpoints" in source
         assert source.count("ctx_checkpoints = _fit_ctx_checkpoints,") == 1
         # +1: the drafter probe's one-slot fit (#8872)
-        assert source.count("ctx_checkpoints = _placement_ctx_checkpoints,") == 7
+        # Per subset (incl. the drafter's slot search): a discrete-tier subset pays none.
+        # The context ceiling (best_cap) prices per subset too.
+        assert source.count("ctx_checkpoints = _placement_ctx_checkpoints,") == 2
+        assert source.count("ctx_checkpoints = _subset_ckpts(") == 4
         assert source.count("_kv_bytes(effective_ctx, _effective_ctx_checkpoints)") == 1
 
     def test_the_fit_is_unmoved_by_the_new_term(self):

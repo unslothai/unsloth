@@ -131,6 +131,28 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     assert calls == []
 
 
+def test_stop_recomputation_does_not_demote(monkeypatch):
+    """#14063: checkpoint early-stop is control flow; demoting on it raised CheckpointError."""
+    from torch.utils.checkpoint import _StopRecomputationError
+
+    M = _load()
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            raise _StopRecomputationError()
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    cls = _toy_class()
+    M._wrap(cls, {})
+    layer = cls()
+    with pytest.raises(_StopRecomputationError):
+        layer(torch.randn(2, 4, 8, requires_grad = True))
+    assert layer._unsloth_block_mode == M._FIRST_MODE
+    assert layer.__dict__.get("_unsloth_block_checked", 0) == 0
+
+
 def test_cache_calls_keep_the_stock_forward(monkeypatch):
     from transformers.cache_utils import DynamicCache
 
@@ -667,12 +689,15 @@ def test_nf4_block_route_matches_both_checkpoint_halves(monkeypatch, linear_env)
     O._TRACE, O._TRACE_BF16, O._LINEAR = True, True, linear_env
     O._eligible = lambda self, x, weight, quant_state: True
     O._linear = lambda x, weight, quant_state, bias: torch.full_like(x, 7.0)
+    O._float_packed_as_uint8 = lambda weight: weight
     kernels.bnb_override = O
 
     class Linear4bit(torch.nn.Module):
         def __init__(self, dtype, bias):
             super().__init__()
-            self.weight = types.SimpleNamespace(quant_state = types.SimpleNamespace(dtype = dtype))
+            self.weight = types.SimpleNamespace(
+                dtype = torch.uint8, quant_state = types.SimpleNamespace(dtype = dtype)
+            )
             self.bias = torch.nn.Parameter(torch.zeros(8)) if bias else None
 
         def forward(self, x):
@@ -892,3 +917,54 @@ def test_selective_dequant_off_never_reads_a_packed_expert_stack(monkeypatch):
     M._experts_outside(layer)
     assert reads == []
     assert not getattr(layer.mlp.experts, "_unsloth_block_outside", False)
+
+
+def test_zero3_partitioned_training_keeps_the_stock_forward(monkeypatch):
+    import weakref
+
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(M, "_torch_supported", lambda: True)
+
+    class FakeDsConfig:
+        def is_zero3(self):
+            return True
+
+    ds = types.ModuleType("transformers.integrations.deepspeed")
+    config = FakeDsConfig()
+    ds._hf_deepspeed_config_weak_ref = weakref.ref(config)
+    monkeypatch.setitem(sys.modules, ds.__name__, ds)
+
+    cls = _toy_class()
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([cls(), cls()])
+    assert M.patch_block_compile(model) == []
+
+    # ZeRO-3 configured after the load (TrainingArguments built later): the forward checks.
+    ds._hf_deepspeed_config_weak_ref = None
+    assert M.patch_block_compile(model) == [cls.__name__]
+    x = torch.randn(2, 4, 8, requires_grad = True)
+    ds._hf_deepspeed_config_weak_ref = weakref.ref(config)
+    model.layers[0](x).sum().backward()
+    assert calls == []
+    # Parameters partitioned by deepspeed.zero.Init (ds_id) without a live HF config; the first
+    # parameter can be an unpartitioned adapter.
+    ds._hf_deepspeed_config_weak_ref = None
+    monkeypatch.setitem(sys.modules, "deepspeed", types.ModuleType("deepspeed"))
+    params = list(model.layers[1].parameters())
+    assert len(params) > 1
+    params[-1].ds_id = 0
+    model.layers[1](x).sum().backward()
+    assert calls == []
+    model.layers[0](x).sum().backward()
+    assert calls
