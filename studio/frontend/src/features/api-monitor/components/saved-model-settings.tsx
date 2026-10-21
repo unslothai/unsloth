@@ -6,6 +6,7 @@
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import {
   type ApiModelOverride,
   type ApiModelOverrides,
@@ -23,6 +24,7 @@ import {
 } from "react";
 import { toast } from "sonner";
 import { forgetModelOverride } from "../forget-model-override";
+import { useSingleLine } from "../use-single-line";
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
@@ -129,6 +131,8 @@ function describeOverride(override: ApiModelOverride): string[] {
 export function SavedModelSettingsPanel(): ReactElement {
   const [overrides, setOverrides] = useState<ApiModelOverrides | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorRef, errorSingle] = useSingleLine<HTMLDivElement>();
+  const [emptyRef, emptySingle] = useSingleLine<HTMLParagraphElement>();
   const [forgetting, setForgetting] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -204,7 +208,13 @@ export function SavedModelSettingsPanel(): ReactElement {
       </div>
 
       {error ? (
-        <div className="rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400">
+        <div
+          ref={errorRef}
+          className={cn(
+            "border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400",
+            errorSingle ? "rounded-full" : "rounded-xl",
+          )}
+        >
           {error}
         </div>
       ) : overrides == null ? (
@@ -214,7 +224,13 @@ export function SavedModelSettingsPanel(): ReactElement {
           ))}
         </div>
       ) : entries.length === 0 ? (
-        <p className="rounded-xl border border-dashed border-border/80 px-4 py-6 text-center text-sm text-muted-foreground">
+        <p
+          ref={emptyRef}
+          className={cn(
+            "border border-dashed border-border/80 px-4 text-center text-sm text-muted-foreground",
+            emptySingle ? "rounded-full py-3" : "rounded-xl py-6",
+          )}
+        >
           No saved settings yet. Turn on &quot;Remember for this model&quot; in
           a model&apos;s Run settings and API loads will use them too.
         </p>

@@ -76,6 +76,7 @@ import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { useApiMonitorOverlayStore } from "./overlay-store";
+import { useSingleLine } from "./use-single-line";
 import { PAYLOAD_SHOW_ALL_MAX_CHARS, payloadPreview } from "./payload-preview";
 import { ToolbarTooltip } from "./components/toolbar-tooltip";
 import { unloadResident } from "./unload-resident";
@@ -408,10 +409,15 @@ function Banner({
   children: ReactNode;
   onDismiss?: () => void;
 }): ReactElement {
+  const [ref, singleLine] = useSingleLine<HTMLDivElement>();
   return (
     <div
+      ref={ref}
       role="alert"
-      className="flex items-start gap-3 rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400"
+      className={cn(
+        "flex items-start gap-3 border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-600 dark:text-red-400",
+        singleLine ? "rounded-full" : "rounded-xl",
+      )}
     >
       <span className="min-w-0 flex-1 break-words">{children}</span>
       {onDismiss ? (
@@ -546,15 +552,14 @@ const RequestRow = memo(function RequestRow({
           {entry.model}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-ui-11 tabular-nums text-muted-foreground">
-          {entry.prompt_tokens != null || entry.completion_tokens != null ? (
-            <span title="Tokens in (prompt) and out (completion)">
-              {optionalCount(entry.prompt_tokens)} in ·{" "}
-              {optionalCount(entry.completion_tokens)} out
-            </span>
-          ) : null}
+          {/* Tokens ride the tooltip: niche next to time and speed, and the detail pane has them. */}
           <span
             className="flex items-center gap-1"
-            title="Total time: queue wait, prompt processing and generation"
+            title={
+              entry.prompt_tokens != null || entry.completion_tokens != null
+                ? `Total time: queue wait, prompt processing and generation\nTokens: ${optionalCount(entry.prompt_tokens)} in, ${optionalCount(entry.completion_tokens)} out`
+                : "Total time: queue wait, prompt processing and generation"
+            }
           >
             <HugeiconsIcon
               icon={Timer01Icon}
@@ -609,6 +614,8 @@ function PayloadBlock({
   const canShowAll =
     !truncated && preview !== body && body.length <= PAYLOAD_SHOW_ALL_MAX_CHARS;
   const shown = showAll && canShowAll ? body : preview;
+  const [boxRef, singleLine] = useSingleLine<HTMLPreElement>();
+  const copyable = Boolean(body) && !truncated;
   return (
     <section className="flex min-w-0 flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
@@ -632,23 +639,36 @@ function PayloadBlock({
               preview only
             </span>
           ) : null}
-          {body && !truncated ? (
-            <CopyButton value={body} label={`Copy ${title.toLowerCase()}`} />
-          ) : null}
         </div>
       </div>
-      {/* Prompt and reply bodies, so keep them out of the reload snapshot. */}
-      <pre
-        data-reload-snapshot-sensitive
-        className={cn(
-          "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded rounded-lg p-3 text-ui-11 leading-[1.55]",
-          tone === "error"
-            ? "bg-red-500/5 text-red-700 dark:text-red-400"
-            : INSET,
-        )}
-      >
-        {loading && !body ? "Loading…" : shown || "–"}
-      </pre>
+      {/* The copy button sits in the box it copies, not on the title row. */}
+      <div className="relative min-w-0">
+        {/* Prompt and reply bodies, so keep them out of the reload snapshot. */}
+        <pre
+          ref={boxRef}
+          data-reload-snapshot-sensitive
+          className={cn(
+            "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded p-3 text-ui-11 leading-[1.55]",
+            singleLine ? "rounded-full" : "rounded-lg",
+            copyable && "pr-11",
+            tone === "error"
+              ? "bg-red-500/5 text-red-700 dark:text-red-400"
+              : INSET,
+          )}
+        >
+          {loading && !body ? "Loading…" : shown || "–"}
+        </pre>
+        {copyable ? (
+          <div
+            className={cn(
+              "absolute right-1.5",
+              singleLine ? "top-1/2 -translate-y-1/2" : "top-1.5",
+            )}
+          >
+            <CopyButton value={body} label={`Copy ${title.toLowerCase()}`} />
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -1326,14 +1346,15 @@ export function ApiMonitorPage(): ReactElement {
             each request live.
           </p>
         </div>
-        <ToolbarTooltip label="API settings: keys, usage examples, access and model switching">
+        <ToolbarTooltip label="API settings">
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
             size="icon"
             onClick={openApiSettings}
             aria-label="API settings"
-            className="rounded-full"
+            // The outline only on hover: at rest it sits back beside the title.
+            className="rounded-full border border-transparent hover:border-border"
           >
             <HugeiconsIcon
               icon={Settings02Icon}
@@ -1547,9 +1568,9 @@ export function ApiMonitorPage(): ReactElement {
           hint="while decoding"
         />
         <Stat
-          label="Tokens in / out"
-          value={`${formatCount(modelStats.inputTokens)} / ${formatCount(modelStats.outputTokens)}`}
-          hint={`${formatCount(modelStats.totalTokens)} total`}
+          label="Tokens"
+          value={formatCount(modelStats.totalTokens)}
+          hint={`${formatCount(modelStats.inputTokens)} in · ${formatCount(modelStats.outputTokens)} out`}
         />
       </section>
 
