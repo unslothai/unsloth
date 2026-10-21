@@ -9489,8 +9489,10 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
-            if not speed_offload and _video_denoiser_hooked(pipe):
-                # compiled for a resident denoiser but it landed hooked: move the compile below the offload hooks (as the image backend)
+            if _video_denoiser_hooked(pipe):
+                # Below the offload hooks (as the image backend), whether the speed layer planned the offload or a split
+                # fell back to a hooked placement: compiled through them, each block splits at the hook's
+                # torch.compiler.disable'd pre / post forward.
                 compile_pipe_below_offload_hooks(pipe, logger)
             # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
             graph_applied = arm_graphs_after_placement(

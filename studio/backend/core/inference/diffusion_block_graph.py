@@ -1127,6 +1127,33 @@ def _is_original_forward(fn: Any, module: Any) -> bool:
     )
 
 
+def _own_forward(fn: Any, module: Any) -> Any:
+    """``module``'s live class ``forward`` (bound) when ``fn`` is the forward a hook captured from it, else None.
+
+    A hook registered before a class-level patch of ``forward`` (the deferred profile's per-arch fusions land on
+    render 3, after group offload hooked every block at load) still holds the class's own definition-time forward.
+    That is the same callable slot, so it is matched too, and the live (patched) forward is what runs below the hook,
+    exactly as when the patch came first."""
+    if getattr(fn, "__self__", None) is not module:
+        return None
+    func = getattr(fn, "__func__", None)
+    cls = type(module)
+    live = getattr(cls, "forward", None)
+    if func is None or live is None:
+        return None
+    if func is live:
+        return fn
+    qualname = getattr(func, "__qualname__", None)
+    owner = getattr(func, "__module__", None)
+    for base in cls.__mro__:
+        if qualname == f"{base.__qualname__}.forward" and owner == base.__module__:
+            try:
+                return live.__get__(module, cls)
+            except Exception:  # noqa: BLE001 - not a descriptor: leave the hook's forward alone
+                return None
+    return None
+
+
 def _inner_hook_reason(block: Any) -> Optional[str]:
     """Why a block's own subtree moves weights mid-forward (per-layer offload), which no recording can hold."""
     for name, sub in block.named_modules():
@@ -1459,23 +1486,24 @@ def install_block_graphs(
                 registry = getattr(block, "_diffusers_hook", None)
                 refs = list(getattr(registry, "_fn_refs", None) or ())
                 target = getattr(block, "_unsloth_below_hook_ref", None)
-                if target not in refs:
-                    target = next(
-                        (
-                            r
-                            for r in refs
-                            if _is_original_forward(getattr(r, "forward", None), block)
-                        ),
-                        None,
-                    )
+                compute = None
+                if target in refs:
+                    compute = target.forward
+                else:
+                    target = None
+                    for r in refs:
+                        compute = _own_forward(getattr(r, "forward", None), block)
+                        if compute is not None:
+                            target = r
+                            break
                 if target is None:
                     refused["a stacked hook chain"] = refused.get("a stacked hook chain", 0) + 1
                     continue
-                compute = target.forward
+                original_fwd = target.forward
                 graph = BlockGraph(block, compute, block_shared)
                 target.forward = graph
 
-                def restore(ref: Any = target, fn: Any = compute) -> None:
+                def restore(ref: Any = target, fn: Any = original_fwd) -> None:
                     if ref.forward is not fn:
                         ref.forward = fn
             elif compiled is not None:
@@ -1595,20 +1623,19 @@ def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
         if compiled is None or _group_offload_hook(block) is None:
             continue
         registry = getattr(block, "_diffusers_hook", None)
-        target = next(
-            (
-                r
-                for r in list(getattr(registry, "_fn_refs", None) or ())
-                if _is_original_forward(getattr(r, "forward", None), block)
-            ),
-            None,
-        )
+        target = live = None
+        for r in list(getattr(registry, "_fn_refs", None) or ()):
+            live = _own_forward(getattr(r, "forward", None), block)
+            if live is not None:
+                target = r
+                break
         if target is None:
             continue
         original = target.forward
-        fn = torch.compile(original, **dict(kwargs))
+        # compiles the live class forward: a per-arch patch installed after the hook captured the original runs too
+        fn = torch.compile(live, **dict(kwargs))
         if guard is not None and callable(getattr(guard, "wrap", None)):
-            fn = guard.wrap(fn, original, transformer)
+            fn = guard.wrap(fn, live, transformer)
             guard.restores.append(lambda ref = target, f = original: setattr(ref, "forward", f))
         from . import diffusion_block_restride
 
