@@ -89,6 +89,14 @@ _ZIMAGE_SOURCES: tuple[str, ...] = (
     r".*\['args'\]\[[0-2]\]$",
 )
 
+# MOSS-Image: no padding at all (each branch runs at its true text length, cond and uncond differ), so every prompt is
+# a new length. The joint block takes [image ; text] and its RoPE tables, the text refiner block the text alone, both
+# as (x, rope=(cos, sin), ...).
+_MOSS_IMAGE_SOURCES: tuple[str, ...] = (
+    "L['x']",
+    "L['rope'][0]",
+    "L['rope'][1]",
+)
 # Prompt-length policy for every denoiser class Studio loads (the ONE list; test_diffusion_prompt_length_policy checks
 # it covers diffusion_families and video_families). A tuple: the denoiser's text length follows the prompt, and these
 # are the repeated block's dynamo sources that carry it. FIXED_LENGTH: the pipeline pads every prompt to one length
@@ -108,6 +116,7 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "Ideogram4Transformer2DModel": FIXED_LENGTH,  # token ids left-padded into max_sequence_length 2048
     "UNet2DConditionModel": FIXED_LENGTH,  # CLIP padded to 77
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
+    "MOSSImageTransformer": _MOSS_IMAGE_SOURCES,
     "LTX2VideoTransformer3DModel": FIXED_LENGTH,  # Gemma left-padded to max_sequence_length 1024
     "WanTransformer3DModel": FIXED_LENGTH,  # UMT5 padded to max_sequence_length 512
     "HunyuanVideo15Transformer3DModel": FIXED_LENGTH,  # padded to the tokenizer max length
@@ -127,6 +136,7 @@ _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
+    "MOSSImageTransformer": _MOSS_IMAGE_SOURCES,
 }
 
 # Unbacked: a backed symbol specialises size 1, and H3's temb has 1 row on step 1, 2 after (a second compile).

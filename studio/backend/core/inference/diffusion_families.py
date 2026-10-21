@@ -353,6 +353,11 @@ _FLUX3_SD_CPP_ARCH_MARKER = "Flux.3 Image Klein"
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
+MOSS_IMAGE_FAMILY_NAME = "moss-image"
+# MOSS-Image transformer-quant keep-list, empty until the quant track measures one (plans/moss_quant.md). Baked into
+# hosted artifacts once they exist, so freeze it before building any.
+_MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ()
+
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
@@ -1217,6 +1222,35 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Two DiTs assembled per-component, so no transformer-only single-file / GGUF load.
         pipeline_only = True,
     ),
+    # MOSS-Image (OpenMOSS-Team): a 5.1B single-stream DiT (42 blocks sharing one AdaLN, a 2-block text refiner) on a
+    # Qwen3.5-9B text encoder and the FLUX.2 small-decoder VAE. The repos ship the transformer and scheduler as remote
+    # code, so the pipeline is the in-tree port in diffusion_moss_image (safetensors + JSON only, no repo code); the
+    # encoder needs transformers >= 5.3. SFT and Base share the architecture, the pipeline and the sampling recipe.
+    DiffusionFamily(
+        name = MOSS_IMAGE_FAMILY_NAME,
+        label = "MOSS-Image",
+        profile = FamilyProfile(
+            # Quant keep-list placeholder, filled by the MOSS quant track (plans/moss_quant.md) once measured: the
+            # shared modulation, timestep MLP, embedders and the output head are the candidates (ComfyUI's quantised
+            # checkpoints keep them high precision).
+            quant_exclude_tokens = _MOSS_IMAGE_QUANT_KEEP,
+            # The FLUX.2 VAE and the same 2x2 packed, BatchNorm-normalised 128-channel latent.
+            preview_factors = "flux2",
+        ),
+        pipeline_class = "MOSSImagePipeline",
+        transformer_class = "MOSSImageTransformer",
+        base_repo = "OpenMOSS-Team/MOSS-Image-SFT",
+        named_variant_bases = ("OpenMOSS-Team/MOSS-Image-Base",),
+        aliases = ("moss-image-sft", "moss-image-base", "mossimage", "moss_image"),
+        prompt_hint = (
+            "MOSS-Image reads plain captions, tag lists or JSON layouts; raise CFG (3 to 6) for short prompts."
+        ),
+        dimension_multiple = 16,
+        # ComfyUI lists bf16 / fp32 only for MOSS-Image; the residual stream overflows float16.
+        fp16_incompatible = True,
+        # Assembled per component from the diffusers folders; no transformer-only single file or GGUF yet.
+        pipeline_only = True,
+    ),
     # SDXL is the one U-Net family: the denoiser is ``pipe.unet`` and a single-file ``.safetensors`` is the WHOLE
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
     DiffusionFamily(
@@ -2007,6 +2041,11 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream", 50, 5.0),
     # Ideogram 4: an explicit 48 steps at 7 still runs the card's tapered schedule.
     ("ideogram", 20, 7.0),
+    # MOSS-Image (SFT and Base): ComfyUI's MOSS workflow runs 50 steps at CFG 3 (euler / sgm_uniform, shift 5), as
+    # does the reference pipeline.
+    ("moss-image", 50, 3.0),
+    ("moss_image", 50, 3.0),
+    ("mossimage", 50, 3.0),
     # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
     ("sdxl-turbo", 3, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
@@ -2484,6 +2523,48 @@ _PIPELINE_PROBE_FILES: dict[str, str] = {
 }
 
 
+# Pipelines Studio ships in tree (diffusion_moss_image) because diffusers has none: judged by what they import, not
+# by a diffusers class. (diffusers module file proving the VAE class, transformers floor, family label).
+_IN_TREE_PIPELINES: dict[str, tuple[str, str, str]] = {
+    "MOSSImagePipeline": ("models/autoencoders/autoencoder_kl_flux2.py", "5.3.0", "MOSS-Image"),
+}
+
+
+def in_tree_pipeline(pipeline_class: Optional[str]) -> bool:
+    """Whether ``pipeline_class`` is one of Studio's in-tree pipelines (no diffusers class of that name)."""
+    return str(pipeline_class or "") in _IN_TREE_PIPELINES
+
+
+def _installed_transformers_version() -> Optional[str]:
+    try:
+        from importlib.metadata import version
+
+        installed = version("transformers")
+    except Exception:  # noqa: BLE001 - not installed / unreadable metadata
+        return None
+    return installed.strip() if isinstance(installed, str) and installed.strip() else None
+
+
+def in_tree_pipeline_refusal(pipeline_class: str, family_name: str) -> Optional[str]:
+    """Why this environment cannot build the in-tree ``pipeline_class``, or None when it can. Import-free."""
+    vae_file, min_transformers, label = _IN_TREE_PIPELINES[pipeline_class]
+    installed = _installed_transformers_version()
+    if installed is None:
+        return f"'{family_name}' ({label}) needs transformers >= {min_transformers}, which is not installed."
+    if not _installed_at_least(installed, min_transformers):
+        return (
+            f"'{family_name}' ({label}) needs transformers >= {min_transformers} for its Qwen3.5 text encoder "
+            f"(transformers.Qwen3_5Model), but this environment has transformers {installed}. Update Unsloth Studio "
+            f"(or run: pip install -U 'transformers>={min_transformers}') and restart it."
+        )
+    if _diffusers_package_has_file(vae_file) is False:
+        return (
+            f"'{family_name}' ({label}) needs a diffusers with the FLUX.2 VAE (AutoencoderKLFlux2). "
+            f"{DIFFUSERS_UPDATE_REMEDY}"
+        )
+    return None
+
+
 def _diffusers_package_has_file(relative: str) -> Optional[bool]:
     """Whether the installed diffusers package contains ``relative``; None when it cannot be located."""
     try:
@@ -2668,6 +2749,11 @@ def assert_pipeline_class_available(
     except Exception:  # noqa: BLE001, S110 - optimisation only, and this module has no logger
         pass
 
+    if in_tree_pipeline(pipeline_class):
+        reason = in_tree_pipeline_refusal(pipeline_class, family_name)
+        if reason is not None:
+            raise ValueError(reason)
+        return
     try:
         # diffusers' LTX-2 modules import a transformers class the pinned transformers lacks; see ltx2_import_compat.
         from .ltx2_import_compat import ensure_ltx2_pipelines_importable, is_ltx2_pipeline_class
@@ -2798,6 +2884,8 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     # is False -- which would hide the model.
     if not name:
         return True
+    if in_tree_pipeline(name):
+        return in_tree_pipeline_refusal(name, getattr(fam, "name", name)) is None
     probe_file = _PIPELINE_PROBE_FILES.get(name)
     if probe_file is not None:
         has_file = _diffusers_package_has_file(probe_file)

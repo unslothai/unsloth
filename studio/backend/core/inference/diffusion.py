@@ -140,6 +140,7 @@ from .diffusion_hidream import (
     hidream_te4_kwargs,
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
+from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
 from .diffusion_flux3 import (
     FLUX3_COMPONENTS,
     FLUX3_COMPONENT_FOLDERS,
@@ -1872,6 +1873,15 @@ def _install_gguf_dim_restore(logger: Any) -> None:
 
 
 @functools.lru_cache(maxsize = None)
+def _family_model_class(diffusers: Any, name: str) -> Any:
+    """``getattr(diffusers, name)``, or Studio's in-tree class of that name (MOSS-Image), imported on first use."""
+    if name in ("MOSSImagePipeline", "MOSSImageTransformer", "MOSSImageScheduler"):
+        from .diffusion_moss_image import in_tree_class
+
+        return in_tree_class(name)
+    return getattr(diffusers, name)
+
+
 def _no_recast_pipeline_class(pipe_cls: Any) -> Any:
     """``pipe_cls`` with the dtype half of ``.to()`` dropped; device moves still work. Pipelines
     built by ``from_pipe`` share the resident pipeline's module objects, so a dtype cast through
@@ -3876,6 +3886,11 @@ class DiffusionBackend:
             # The supplied-component loader resolves classes from a model_index.json, which FLUX.3 does not ship, and
             # its encoder is a Qwen3-VL with its processor in the same folder: refuse up front rather than load the
             # official encoder and VAE in place of the files the user picked.
+            raise ValueError(
+                f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
+                "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
+            )
+        if fam.name == MOSS_IMAGE_FAMILY_NAME and (vae_file or text_encoder_files):
             raise ValueError(
                 f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
                 "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
@@ -7248,8 +7263,8 @@ class DiffusionBackend:
                 comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
                 # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer
                 comfy_compile = False
-                transformer_cls = getattr(diffusers, fam.transformer_class)
-                pipeline_cls = getattr(diffusers, fam.pipeline_class)
+                transformer_cls = _family_model_class(diffusers, fam.transformer_class)
+                pipeline_cls = _family_model_class(diffusers, fam.pipeline_class)
 
                 # Decide placement up front (weights still on CPU). Budgets the GGUF; dense is preflighted below.
                 plan = self._plan_memory(
@@ -8413,6 +8428,25 @@ class DiffusionBackend:
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
                                             family_name = fam.name,
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
+                                elif fam.name == MOSS_IMAGE_FAMILY_NAME:
+                                    # The repos ship remote code: assemble the in-tree port per component (safetensors
+                                    # and JSON only), from the staged dir when there is one.
+                                    from .diffusion_moss_image import load_moss_image_pipeline
+
+                                    try:
+                                        pipe = load_moss_image_pipeline(
+                                            _base_local_dir or fetch_base,
+                                            dtype,
+                                            hf_token = hf_token,
+                                            check_cancelled = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            local_files_only = local_files_only,
+                                            text_encoder = pipe_kwargs.get("text_encoder"),
+                                            transformer = pipe_kwargs.get("transformer"),
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -10246,6 +10280,22 @@ class DiffusionBackend:
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
                 family_name = getattr(fam, "name", None),
+            )
+            check_cancelled()
+            pipe.to(device)
+            return pipe
+        if getattr(fam, "name", None) == MOSS_IMAGE_FAMILY_NAME:
+            # Remote-code repos: the in-tree port, assembled per component.
+            from .diffusion_moss_image import load_moss_image_pipeline
+
+            check_cancelled()
+            pipe = load_moss_image_pipeline(
+                base_local_dir or base,
+                dtype,
+                hf_token = hf_token,
+                transformer = transformer,
+                check_cancelled = check_cancelled,
+                local_files_only = local_files_only,
             )
             check_cancelled()
             pipe.to(device)
@@ -13407,7 +13457,7 @@ def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
     name = getattr(fam, "name", None)
     if is_flux3_family(fam):
         return FLUX3_COMPONENTS
-    if name == KREA2_FAMILY_NAME:
+    if name in (KREA2_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME):
         return ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
     if name == IDEOGRAM4_FAMILY_NAME:
         return (

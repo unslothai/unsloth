@@ -83,7 +83,11 @@ def _situ(hidden, gate):
     return (4.0 * torch.tanh(gate / 4.0) * torch.sigmoid(gate)) * (25.0 * torch.tanh(hidden / 25.0))
 
 
-def _validate_skip_layers(layers, depth, name = "skip_layers"):
+def _validate_skip_layers(
+    layers,
+    depth,
+    name = "skip_layers",
+):
     layers = () if layers is None else tuple(layers)
     if any(type(index) is not int or not 0 <= index < depth for index in layers):
         raise ValueError(f"{name} must contain integer block indices in [0, {depth}).")
@@ -123,7 +127,14 @@ def _dispatch_attention():
 _DISPATCH = _dispatch_attention()
 
 
-def _attention(q, k, v, tables, heads, backend = None):
+def _attention(
+    q,
+    k,
+    v,
+    tables,
+    heads,
+    backend = None,
+):
     shape = (*q.shape[:2], heads, q.shape[-1] // heads)
     q = _rotate(q.reshape(shape), tables)
     k = _rotate(k.reshape(shape), tables)
@@ -191,7 +202,9 @@ class _Block(nn.Module, _AttentionMixin):
         self.processor = _AttnProcessor()
         self.norm1, self.norm2 = _RMSNorm(dim), _RMSNorm(dim)
         self.q_norm, self.k_norm = _RMSNorm(dim // heads), _RMSNorm(dim // heads)
-        self.proj = nn.ModuleDict({name: nn.Linear(dim, dim, bias = False) for name in ("q", "k", "v", "o")})
+        self.proj = nn.ModuleDict(
+            {name: nn.Linear(dim, dim, bias = False) for name in ("q", "k", "v", "o")}
+        )
         self.proj["ffn_up_gate"] = nn.Linear(dim, 2 * ffn_dim, bias = False)
         self.proj["ffn_down"] = nn.Linear(ffn_dim, dim, bias = False)
 
@@ -202,7 +215,9 @@ class _Block(nn.Module, _AttentionMixin):
         y = y.to(dtype)
         q = self.q_norm(self.proj["q"](y).unflatten(-1, (self.heads, -1))).flatten(2)
         k = self.k_norm(self.proj["k"](y).unflatten(-1, (self.heads, -1))).flatten(2)
-        attn = _attention(q, k, self.proj["v"](y), rope, self.heads, self.processor._attention_backend)
+        attn = _attention(
+            q, k, self.proj["v"](y), rope, self.heads, self.processor._attention_backend
+        )
         x = x + self.proj["o"](attn) * gate_a[:, None]
         y = self.norm2(x) * (1 + scale_f[:, None]) + shift_f[:, None]
         hidden, gate = self.proj["ffn_up_gate"](y.to(dtype)).chunk(2, -1)
@@ -225,7 +240,11 @@ class _RoPE(nn.Module):
         exponent = torch.arange(self.num_bands, device = "cpu", dtype = torch.float32) / self.num_bands
         return (1 / (self.base**exponent)).to(device)
 
-    def _apply(self, fn, recurse = True):
+    def _apply(
+        self,
+        fn,
+        recurse = True,
+    ):
         super()._apply(fn, recurse = recurse)
         # .float() cannot recover frequencies already rounded by .to(bf16).
         self.bands = self._default_bands(self.bands.device)
@@ -247,7 +266,11 @@ class _RoPE(nn.Module):
         h, w = torch.meshgrid(
             torch.arange(height, device = device), torch.arange(width, device = device), indexing = "ij"
         )
-        image = torch.stack((torch.zeros_like(h), torch.full_like(h, text_length), h, w), -1).flatten(0, 1).float()
+        image = (
+            torch.stack((torch.zeros_like(h), torch.full_like(h, text_length), h, w), -1)
+            .flatten(0, 1)
+            .float()
+        )
         image[:, 2] -= (height - 1) / 2
         image[:, 3] -= (width - 1) / 2
         text = torch.zeros(text_length, 4, device = device, dtype = torch.float32)
@@ -274,7 +297,6 @@ class _RoPE(nn.Module):
 def _model_bases():
     from diffusers.configuration_utils import ConfigMixin
     from diffusers.models.modeling_utils import ModelMixin
-
     return ModelMixin, ConfigMixin
 
 
@@ -305,18 +327,27 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
     ):
         super().__init__()
         if dim % num_heads or (dim // num_heads) % 8 or freq_dim % 2:
-            raise ValueError("Require dim divisible by heads, head_dim divisible by 8, and even freq_dim.")
+            raise ValueError(
+                "Require dim divisible by heads, head_dim divisible by 8, and even freq_dim."
+            )
         self.video_embedder = nn.Linear(latent_channels, dim)
         self.text_embedder = _TextProjection(text_dim, dim, ffn_dim, num_heads)
         self.rope = _RoPE(dim // num_heads, rope_base)
-        self.time_embedding = nn.Sequential(nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
+        self.time_embedding = nn.Sequential(
+            nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim)
+        )
         self.shared_block_modulation = nn.Linear(dim, 6 * dim)
         self.layers = nn.ModuleList([_Block(dim, ffn_dim, num_heads) for _ in range(num_layers)])
         self.final_norm_video = _RMSNorm(dim)
         self.final_linear_video = nn.Linear(dim, latent_channels, bias = False)
         self.video_head_modulation = nn.Linear(dim, 2 * dim)
 
-    def load_training_state_dict(self, state_dict, *, prefix = ""):
+    def load_training_state_dict(
+        self,
+        state_dict,
+        *,
+        prefix = "",
+    ):
         """Load a consolidated raw/EMA model mapping, strictly; no silent key drops."""
         if prefix:
             if any(not key.startswith(prefix) for key in state_dict):
@@ -344,8 +375,12 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         phase = times.double()[:, None] * freq
         embedding = torch.cat((phase.cos(), phase.sin()), -1).float()
         time = self.time_embedding(embedding.to(self.time_embedding[0].weight.dtype)).float()
-        mod = self.shared_block_modulation(time.to(self.shared_block_modulation.weight.dtype)).view(batch, 6, -1)
-        head = self.video_head_modulation(time.to(self.video_head_modulation.weight.dtype)).view(batch, 2, -1)
+        mod = self.shared_block_modulation(time.to(self.shared_block_modulation.weight.dtype)).view(
+            batch, 6, -1
+        )
+        head = self.video_head_modulation(time.to(self.video_head_modulation.weight.dtype)).view(
+            batch, 2, -1
+        )
         return mod, head
 
     def forward(
@@ -372,7 +407,9 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         mask = encoder_attention_mask
         if mask is not None:
             if refined_text is not None:
-                raise ValueError("refined_text is unpadded; pass no encoder_attention_mask with it.")
+                raise ValueError(
+                    "refined_text is unpadded; pass no encoder_attention_mask with it."
+                )
             # The reference checks a mask on every call; it costs a host sync, so only a mask that is given is checked.
             if mask.shape != text_in.shape[:2] or not torch.all((mask == 0) | (mask == 1)):
                 raise ValueError("encoder_attention_mask must be a binary [B, S] mask.")
@@ -423,7 +460,11 @@ def _time_snr_shift(shift: float, t):
     return shift * t / (1 + (shift - 1) * t)
 
 
-def sgm_uniform_sigmas(steps: int, shift: float, num_train_timesteps: int = 1000) -> list:
+def sgm_uniform_sigmas(
+    steps: int,
+    shift: float,
+    num_train_timesteps: int = 1000,
+) -> list:
     """ComfyUI ``sgm_uniform`` over ``ModelSamplingDiscreteFlow`` (multiplier 1), in its fp32 ops, without the
     terminal zero: ``linspace(sigma_max, sigma_min, steps + 1)[:-1]`` re-shifted, as ``comfy.samplers.normal_scheduler``
     with ``sgm=True``."""
@@ -433,7 +474,12 @@ def sgm_uniform_sigmas(steps: int, shift: float, num_train_timesteps: int = 1000
     return [float(_time_snr_shift(shift, ts)) for ts in timesteps]
 
 
-def training_grid_sigmas(steps: int, shift: float, training_shift: float, total: int = 1000) -> list:
+def training_grid_sigmas(
+    steps: int,
+    shift: float,
+    training_shift: float,
+    total: int = 1000,
+) -> list:
     """The reference pipeline's schedule: shifted linspace snapped to the nearest of the training grid's sigmas."""
 
     def grid(count, s):
@@ -445,7 +491,9 @@ def training_grid_sigmas(steps: int, shift: float, training_shift: float, total:
     training = grid(total, training_shift).flip(0)
     upper = torch.searchsorted(training, sigmas).clamp(max = total - 1)
     lower = (upper - 1).clamp(min = 0)
-    nearest = torch.where((sigmas - training[lower]).abs() <= (training[upper] - sigmas).abs(), lower, upper)
+    nearest = torch.where(
+        (sigmas - training[lower]).abs() <= (training[upper] - sigmas).abs(), lower, upper
+    )
     return torch.unique_consecutive(training[nearest]).tolist()
 
 
@@ -459,15 +507,29 @@ class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
     ``training_grid`` (the reference pipeline's nearest-training-sigma snapping); None reads ``UNSLOTH_MOSS_SIGMAS``."""
 
     @register_to_config
-    def __init__(self, num_train_timesteps = 1000, shift = 5.0, training_shift = 1.0, sigma_schedule = None):
+    def __init__(
+        self,
+        num_train_timesteps = 1000,
+        shift = 5.0,
+        training_shift = 1.0,
+        sigma_schedule = None,
+    ):
         super().__init__(num_train_timesteps = num_train_timesteps, shift = 1.0)
-        self.register_to_config(shift = shift, training_shift = training_shift, sigma_schedule = sigma_schedule)
+        self.register_to_config(
+            shift = shift, training_shift = training_shift, sigma_schedule = sigma_schedule
+        )
 
     def resolved_sigma_schedule(self) -> str:
         chosen = getattr(self.config, "sigma_schedule", None)
         return chosen if chosen in SIGMA_SCHEDULES else default_sigma_schedule()
 
-    def set_timesteps(self, num_inference_steps = 50, device = None, sigmas = None, **kwargs):
+    def set_timesteps(
+        self,
+        num_inference_steps = 50,
+        device = None,
+        sigmas = None,
+        **kwargs,
+    ):
         if sigmas is None:
             if num_inference_steps is None or num_inference_steps < 1:
                 raise ValueError("Steps and shifts must be positive.")
@@ -481,7 +543,9 @@ class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
                     self.config.num_train_timesteps,
                 )
             else:
-                sigmas = sgm_uniform_sigmas(num_inference_steps, self.config.shift, self.config.num_train_timesteps)
+                sigmas = sgm_uniform_sigmas(
+                    num_inference_steps, self.config.shift, self.config.num_train_timesteps
+                )
         # Already shifted: no second shift.
         self._shift = 1.0
         super().set_timesteps(device = device, sigmas = list(sigmas))
@@ -509,12 +573,42 @@ def _offloaded(module: Any) -> bool:
     return False
 
 
+def comfy_noise(shape, generator, device):
+    """Initial fp32 noise as ComfyUI draws it: ``torch.randn`` on the CPU from the seed (``comfy.sample.prepare_noise``).
+
+    A CPU generator is used as given (the reference pipeline's ``randn_tensor`` draws a CPU generator's noise on the
+    CPU too, so the two agree bit for bit); an accelerator generator contributes only its seed, so a Studio seed renders
+    what ComfyUI renders for it. A list holds one generator per image; None draws from the global CPU stream."""
+    gens = list(generator) if isinstance(generator, (list, tuple)) else [generator]
+
+    def _cpu(g):
+        if g is None or g.device.type == "cpu":
+            return g
+        return torch.Generator("cpu").manual_seed(int(g.initial_seed()))
+
+    if len(gens) == 1:
+        noise = torch.randn(shape, generator = _cpu(gens[0]), dtype = torch.float32)
+    else:
+        if len(gens) != shape[0]:
+            raise ValueError(f"Got {len(gens)} generators for {shape[0]} images; pass one per image.")
+        row = (1, *shape[1:])
+        noise = torch.cat([torch.randn(row, generator = _cpu(g), dtype = torch.float32) for g in gens])
+    return noise.to(device)
+
+
 class MOSSImagePipeline(DiffusionPipeline):
     model_cpu_offload_seq = "text_encoder->transformer->vae"
     _optional_components = ["text_encoder", "tokenizer", "vae"]
     _callback_tensor_inputs = ["latents"]
 
-    def __init__(self, transformer, scheduler, text_encoder = None, tokenizer = None, vae = None):
+    def __init__(
+        self,
+        transformer,
+        scheduler,
+        text_encoder = None,
+        tokenizer = None,
+        vae = None,
+    ):
         super().__init__()
         self.register_modules(
             transformer = transformer,
@@ -533,7 +627,12 @@ class MOSSImagePipeline(DiffusionPipeline):
         return self._interrupt
 
     @torch.no_grad()
-    def encode_prompt(self, prompt, max_sequence_length = 4096, device = None):
+    def encode_prompt(
+        self,
+        prompt,
+        max_sequence_length = 4096,
+        device = None,
+    ):
         """``(embeds [B, L, C], mask [B, L] bool)``: each prompt through the chat template, encoded unpadded on its own
         (Qwen3.5's gated-delta layers see no padding), then right-padded into one batch."""
         if self.text_encoder is None or self.tokenizer is None:
@@ -638,7 +737,9 @@ class MOSSImagePipeline(DiffusionPipeline):
             raise ValueError("Provide exactly one of prompt and prompt_embeds.")
         device = self._execution_device
         if prompt_embeds is None:
-            prompt_embeds, prompt_attention_mask = self.encode_prompt(prompt, max_sequence_length, device)
+            prompt_embeds, prompt_attention_mask = self.encode_prompt(
+                prompt, max_sequence_length, device
+            )
         batch = prompt_embeds.shape[0]
 
         def prepare(embeds, mask):
@@ -656,13 +757,19 @@ class MOSSImagePipeline(DiffusionPipeline):
         if do_cfg:
             if negative_prompt_embeds is None:
                 negative_prompt = "" if negative_prompt is None else negative_prompt
-                negatives = [negative_prompt] * batch if isinstance(negative_prompt, str) else list(negative_prompt)
+                negatives = (
+                    [negative_prompt] * batch
+                    if isinstance(negative_prompt, str)
+                    else list(negative_prompt)
+                )
                 if len(negatives) != batch:
                     raise ValueError("negative_prompt must match prompt batch size.")
                 negative_prompt_embeds, negative_prompt_attention_mask = self.encode_prompt(
                     negatives, max_sequence_length, device
                 )
-            negative, negative_mask = prepare(negative_prompt_embeds, negative_prompt_attention_mask)
+            negative, negative_mask = prepare(
+                negative_prompt_embeds, negative_prompt_attention_mask
+            )
         shape = (
             batch * num_images_per_prompt,
             self.transformer.config.latent_channels,
@@ -670,10 +777,9 @@ class MOSSImagePipeline(DiffusionPipeline):
             width // 16,
         )
         if latents is None:
-            from diffusers.utils.torch_utils import randn_tensor
-
-            # Sampled in fp32: promoting bf16 noise afterward cannot restore its precision.
-            latents = randn_tensor(shape, generator = generator, device = device, dtype = torch.float32)
+            # Sampled in fp32 (promoting bf16 noise afterward cannot restore its precision), on the CPU from the
+            # generator's seed: the noise ComfyUI draws for that seed.
+            latents = comfy_noise(shape, generator, device)
         elif tuple(latents.shape) != shape:
             raise ValueError(f"latents must have shape {shape}.")
         else:
@@ -694,20 +800,29 @@ class MOSSImagePipeline(DiffusionPipeline):
                 continue
             skip_active = slg_start <= step_index / num_steps < slg_stop
             # CFG combines fp32 predictions, even when the DiT runs in bf16.
-            prediction = self.transformer(latents, timestep, **cond_kw).sample.float()
+            # return_dict=False: a CUDA-graph replay hands back a tuple, never a dataclass.
+            prediction = self.transformer(latents, timestep, **cond_kw, return_dict = False)[0].float()
             conditional = prediction
             if do_cfg:
-                skip_kwargs = {"skip_layers": uncond_skip_kw} if uncond_skip_kw and skip_active else {}
-                uncond = self.transformer(latents, timestep, **uncond_kw, **skip_kwargs).sample.float()
+                skip_kwargs = (
+                    {"skip_layers": uncond_skip_kw} if uncond_skip_kw and skip_active else {}
+                )
+                uncond = self.transformer(
+                    latents, timestep, **uncond_kw, **skip_kwargs, return_dict = False
+                )[0].float()
                 prediction = uncond + guidance_scale * (prediction - uncond)
             if slg_kw and slg_scale > 0 and skip_active:
-                skipped = self.transformer(latents, timestep, **cond_kw, skip_layers = slg_kw).sample.float()
+                skipped = self.transformer(
+                    latents, timestep, **cond_kw, skip_layers = slg_kw, return_dict = False
+                )[0].float()
                 if not do_cfg:
                     prediction = skipped
                 prediction = prediction + slg_scale * (conditional - skipped)
             latents = self.scheduler.step(prediction, timestep, latents, return_dict = False)[0]
             if callback_on_step_end is not None:
-                callback_kwargs = {name: locals()[name] for name in callback_on_step_end_tensor_inputs}
+                callback_kwargs = {
+                    name: locals()[name] for name in callback_on_step_end_tensor_inputs
+                }
                 callback_outputs = callback_on_step_end(self, step_index, timestep, callback_kwargs)
                 if callback_outputs is not None:
                     latents = callback_outputs.pop("latents", latents)
@@ -729,9 +844,15 @@ class MOSSImagePipeline(DiffusionPipeline):
         z = latents.to(dtype = self.vae.dtype)
         bn = self.vae.bn
         eps = self.vae.config.batch_norm_eps
-        z = z * (bn.running_var + eps).sqrt().to(z).view(1, -1, 1, 1) + bn.running_mean.to(z).view(1, -1, 1, 1)
+        z = z * (bn.running_var + eps).sqrt().to(z).view(1, -1, 1, 1) + bn.running_mean.to(z).view(
+            1, -1, 1, 1
+        )
         b, c, h, w = z.shape
-        z = z.reshape(b, c // 4, 2, 2, h, w).permute(0, 1, 4, 2, 5, 3).reshape(b, c // 4, 2 * h, 2 * w)
+        z = (
+            z.reshape(b, c // 4, 2, 2, h, w)
+            .permute(0, 1, 4, 2, 5, 3)
+            .reshape(b, c // 4, 2 * h, 2 * w)
+        )
         return self.vae.decode(z, return_dict = False)[0].clamp(-1, 1)
 
 
@@ -744,13 +865,11 @@ def transformers_version_ok() -> tuple[bool, Optional[str]]:
     """``(new enough, installed version)`` for the Qwen3.5 text encoder."""
     try:
         from importlib.metadata import version
-
         installed = version("transformers")
     except Exception:  # noqa: BLE001 - unreadable metadata: let the import decide
         return True, None
     try:
         from packaging.version import Version
-
         return Version(Version(installed).base_version) >= Version(MIN_TRANSFORMERS), installed
     except Exception:  # noqa: BLE001
         return True, installed
@@ -777,7 +896,6 @@ def assert_transformers_supported() -> None:
 def _live_cache_dir() -> Optional[str]:
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
-
         return active_hf_hub_cache()
     except Exception:  # noqa: BLE001 - outside the Studio tree the hub default applies
         return None
@@ -799,7 +917,9 @@ def drop_vision_tower(text_encoder: Any) -> bool:
 def load_moss_image_text_encoder(source: str, dtype, **common):
     from transformers import Qwen3_5Model
 
-    text_encoder = Qwen3_5Model.from_pretrained(source, subfolder = "text_encoder", dtype = dtype, **common)
+    text_encoder = Qwen3_5Model.from_pretrained(
+        source, subfolder = "text_encoder", dtype = dtype, **common
+    )
     drop_vision_tower(text_encoder)
     return text_encoder.eval()
 
