@@ -123,13 +123,25 @@ def _write_json(path: Path, meta: dict[str, Any]) -> None:
         raise
 
 
-def _av_open(av, source: str):
+def _protocol_options(source) -> dict:
+    # A probed concat or HLS playlist opens the files or URLs it names: a path may read
+    # files only, a buffer nothing.
+    local = isinstance(source, (str, os.PathLike))
+    return {"protocol_whitelist": "file" if local else "none"}
+
+
+def _av_open(av, source):
+    from utils.media_playlist import refuse_playlist
+
+    # `file` stays allowed for a path, so a playlist that names local files is refused here.
+    refuse_playlist(source)
+    options = _protocol_options(source)
     try:
-        return av.open(source, mode = "r", metadata_errors = "ignore")
+        return av.open(source, mode = "r", metadata_errors = "ignore", options = options)
     except TypeError as exc:
         if "metadata_errors" not in str(exc):
             raise
-        return av.open(source, mode = "r", format = None)
+        return av.open(source, mode = "r", format = None, options = options)
 
 
 def _decoded_frames(av, container):
@@ -181,7 +193,7 @@ def transcode(
         try:
             container = _av_open(av, str(src))
         except Exception as exc:  # noqa: BLE001 - not a container PyAV knows
-            raise AudioInputError(400, "This file is not audio Studio can read.") from exc
+            raise AudioInputError(400, "This file is not audio Unsloth can read.") from exc
         with container:
             if not container.streams.audio:
                 raise AudioInputError(400, "This file has no audio stream.")
@@ -214,7 +226,7 @@ def transcode(
                 raise
             except Exception as exc:  # noqa: BLE001 - a corrupt stream mid-file keeps what decoded
                 if not frames:
-                    raise AudioInputError(400, "This file is not audio Studio can read.") from exc
+                    raise AudioInputError(400, "This file is not audio Unsloth can read.") from exc
                 logger.info("audio_inputs: decode stopped early after %d frames: %s", frames, exc)
         if out is not None:
             out.close()

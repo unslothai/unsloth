@@ -423,7 +423,7 @@ def quant_layers(path: str) -> dict[str, Any]:
         shown = "; ".join(scan.problems[:3])
         more = f" (and {len(scan.problems) - 3} more)" if len(scan.problems) > 3 else ""
         raise ComponentFileError(
-            f"'{os.path.basename(path)}' uses a ComfyUI quantization Studio cannot load as a text encoder "
+            f"'{os.path.basename(path)}' uses a ComfyUI quantization Unsloth cannot load as a text encoder "
             f"or VAE: {shown}{more}. Supported: unquantized, scaled fp8 (float8_e4m3fn / float8_e5m2), nvfp4, "
             "mxfp8 and int8_tensorwise (with or without ConvRot); use the bf16 or fp8 file instead."
         )

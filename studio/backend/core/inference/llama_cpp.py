@@ -17446,7 +17446,7 @@ class LlamaCppBackend:
         free_gb = math.floor(max(0.0, free_budget_mib) / 1024)
         return (
             f"A context of {requested_ctx:,} tokens needs about {need_gb} GB of unified "
-            f"memory, more than the {free_gb} GB Studio budgets from the memory free right "
+            f"memory, more than the {free_gb} GB Unsloth budgets from the memory free right "
             "now. It fits under the GPU's wired memory limit, so it is loading anyway, but "
             "macOS may have to compress or swap other apps to make room and generation may "
             "slow down. Lower the context or free memory to avoid that."

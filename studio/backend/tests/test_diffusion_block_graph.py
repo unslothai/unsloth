@@ -172,6 +172,56 @@ def test_a_host_tensor_input_is_never_recorded():
     handle.free()
 
 
+def test_a_block_graph_keys_on_the_roots_branch_flag():
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(masked = False)
+    root._unsloth_graph_key_extra = lambda: root.masked
+
+    def compute(x):
+        y = block.lin(x)
+        return y * 0.5 if root.masked else y
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        root.masked = True
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 2
+
+
+def test_a_block_graph_runs_eager_while_a_step_cache_is_on():
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(_unsloth_step_cache = None)
+
+    def compute(x):
+        y = block.lin(x)
+        return (
+            y * 0.5 if root._unsloth_step_cache else y
+        )  # what the cache hooks change inside the forward
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        replays = graph.stats["replays"]
+        root._unsloth_step_cache = "fbcache@0.12"
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1 and graph.stats["replays"] == replays
+
+
 def test_weight_placement_is_none_while_a_weight_is_on_the_host():
     view = bg._WeightView(Block())
     assert view.placement(None) is None
@@ -890,3 +940,22 @@ def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
     assert handles == () and not applied["cuda_graph"]
     assert cg.status_reason(pipe, False).startswith(cg.PROMPT_LENGTH_REASON)
     assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
+
+
+def test_a_model_offloaded_denoiser_reason_names_both_opt_ins(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe.transformer._hf_hook = types.SimpleNamespace()
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
+    reason = pipe._unsloth_cuda_graph_reason
+    assert handles == () and applied["cuda_graph"] is False
+    assert cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV in reason and bg.BLOCK_GRAPHS_ENV in reason
+
+
+def test_a_model_offloaded_denoiser_keeps_a_specific_whole_step_refusal(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe.transformer._hf_hook = types.SimpleNamespace()
+    pipe._unsloth_cuda_graph_reason = "forward is not capture-safe: its rewrite is disabled"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
+    reason = pipe._unsloth_cuda_graph_reason
+    assert handles == () and reason.startswith("forward is not capture-safe")
+    assert cg.MODEL_OFFLOAD_CUDA_GRAPH_ENV not in reason and bg.BLOCK_GRAPHS_ENV in reason
