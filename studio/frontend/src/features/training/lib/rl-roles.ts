@@ -146,27 +146,3 @@ export function syncRlMapping(
   }
   return next;
 }
-
-/** The system message training sends, as format_rl_dataset picks it: the prompt's own system
- * turn, then the mapped system column, then the configured fallback. */
-export function effectiveSystemPrompt(
-  promptCell: unknown,
-  systemCell: unknown,
-  fallback: string,
-): string {
-  const text = (value: unknown) =>
-    value === null || value === undefined ? "" : String(value);
-  const turn = Array.isArray(promptCell)
-    ? promptCell.find(
-        (m) =>
-          typeof m === "object" &&
-          m !== null &&
-          (m as { role?: unknown }).role === "system",
-      )
-    : undefined;
-  return (
-    text((turn as { content?: unknown } | undefined)?.content) ||
-    text(systemCell) ||
-    fallback
-  );
-}

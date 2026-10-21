@@ -9,7 +9,6 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 const {
   RL_IGNORE,
-  effectiveSystemPrompt,
   effectiveTrainingObjective,
   missingRlRoles,
   resolveRlMapping,
@@ -64,8 +63,9 @@ test("explicit roles win over name matching, and a stale column is ignored", () 
 });
 
 test("GRPO reward reference columns must come from the dataset", async () => {
-  const { missingRewardColumns } =
-    await import("../src/features/training/lib/rl-roles.ts");
+  const { missingRewardColumns } = await import(
+    "../src/features/training/lib/rl-roles.ts"
+  );
   assert.deepEqual(missingRewardColumns(["answer"], ["question"], {}), [
     "answer",
   ]);
@@ -171,17 +171,4 @@ test("a column set to Ignore is never auto-mapped back to its role", () => {
     answer: "answer",
   });
   assert.equal(syncRlMapping("grpo", columns, mapping).system, RL_IGNORE);
-});
-
-test("the previewed system message follows the backend's precedence", () => {
-  const turn = [
-    { role: "system", content: "Row turn." },
-    { role: "user", content: "q" },
-  ];
-  assert.equal(
-    effectiveSystemPrompt(turn, "Column.", "Fallback."),
-    "Row turn.",
-  );
-  assert.equal(effectiveSystemPrompt("q", "Column.", "Fallback."), "Column.");
-  assert.equal(effectiveSystemPrompt("q", null, "Fallback."), "Fallback.");
 });

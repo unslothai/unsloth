@@ -108,13 +108,13 @@ export type {
   Extraction,
   RewardDraft,
 } from "./lib/reward-editor";
+export { effectiveSystemPrompt } from "./lib/rl-system-prompt";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
 export { rlChartKeys } from "./lib/rl-chart-keys";
 export {
   RL_IGNORE,
   RL_REQUIRED_ROLES,
   RL_ROLES,
-  effectiveSystemPrompt,
   effectiveTrainingObjective,
   missingRlRoles,
   rlObjectiveSupported,

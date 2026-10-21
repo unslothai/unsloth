@@ -58,14 +58,8 @@ export function PromptFormatSection(): ReactElement {
     ([, role]) => role === "prompt",
   )?.[0];
   const userText = promptColumn ? previewCell(previewRow?.[promptColumn]) : "";
-  const systemColumn = Object.entries(s.mapping).find(
-    ([, role]) => role === "system",
-  )?.[0];
-  const effectiveSystem = effectiveSystemPrompt(
-    promptColumn ? previewRow?.[promptColumn] : undefined,
-    systemColumn ? previewRow?.[systemColumn] : undefined,
-    s.prompt,
-  );
+  // A row's own system message wins in training, so the preview and tag check use it too.
+  const system = effectiveSystemPrompt(previewRow, s.mapping, s.prompt);
 
   const selected = new Set(s.rewards.map((r) => r.name));
   const tags = [
@@ -75,7 +69,7 @@ export function PromptFormatSection(): ReactElement {
         .flatMap((r) => ruleTags(r.rule)),
     ),
   ];
-  const missingTags = tags.filter((tag) => !effectiveSystem.includes(tag));
+  const missingTags = tags.filter((tag) => !system.includes(tag));
 
   const choose = (value: string) => {
     if (value === "notebook") {
@@ -151,12 +145,10 @@ export function PromptFormatSection(): ReactElement {
             <span
               className={cn(
                 "whitespace-pre-wrap break-words",
-                effectiveSystem.trim() === "" && "text-muted-foreground italic",
+                system.trim() === "" && "text-muted-foreground italic",
               )}
             >
-              {effectiveSystem.trim() === ""
-                ? t("rl.prompt.noSystem")
-                : effectiveSystem}
+              {system.trim() === "" ? t("rl.prompt.noSystem") : system}
             </span>
             <span className="text-sky-700 dark:text-sky-300">
               {t("rl.prompt.user")}

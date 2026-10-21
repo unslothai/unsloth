@@ -1587,7 +1587,7 @@ def test_grpo_prefill_prompts_are_continued_and_scored_with_their_prefill():
         prompts = list(out["prompt"]),
         completions = ["4</answer>", "<answer>6</answer>"],
         answer = list(out["answer"]),
-        prefill = list(out["prefill"]),
+        _studio_prefill = list(out["_studio_prefill"]),
     )
     assert scores == [2.0, 2.0]
 
@@ -1618,3 +1618,40 @@ def test_prefill_prompts_are_measured_as_continued():
         [{"prompt": [{"role": "user", "content": "a b"}, {"role": "assistant", "content": "c"}]}]
     )
     assert len(drop_long_prompts(rows, _Tok(), 3)) == 1
+
+
+def test_full_conversations_opening_on_a_greeting_keep_their_context_despite_arrow_padding():
+    def call(name, args):
+        return {"type": "function", "function": {"name": name, "arguments": args}}
+
+    context = [
+        {"role": "assistant", "content": "Hi, how can I help?"},
+        {"role": "user", "content": "Weather in Paris?"},
+        {"role": "assistant", "content": "", "tool_calls": [call("weather", {"city": "Paris"})]},
+        {"role": "tool", "content": "sunny"},
+        {"role": "user", "content": "And then?"},
+    ]
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": context,
+                "chosen": context
+                + [{"role": "assistant", "content": "", "tool_calls": [call("f", {"x": 1})]}],
+                "rejected": context
+                + [{"role": "assistant", "content": "", "tool_calls": [call("f", {"y": 2})]}],
+            }
+        ]
+    )
+    for objective in ("dpo", "orpo"):
+        row = format_rl_dataset(ds, objective)[0][0]
+        assert len(row["chosen"]) == 1 and len(row["rejected"]) == 1
+
+
+def test_a_reward_comparing_to_a_prefill_named_column_scores_the_plain_completion():
+    from core.training.rewards import make_reward_func, validate_rule
+
+    rule = validate_rule(
+        {"type": "exact_match", "compare_to": "prefill", "score": {"match": 2, "miss": -1}}
+    )
+    reward = make_reward_func({"name": "exact", "rule": rule})
+    assert reward(completions = ["OK"], prefill = ["OK"]) == [2.0]

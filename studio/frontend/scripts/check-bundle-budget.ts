@@ -352,13 +352,14 @@ export const BUDGET = {
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
   // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
   // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
-  // budget, which keeps main's margin (re-added on top of main at acc10af9d).
+  // budget, which keeps main's margin (re-added on top of main at acc10af9d). The GRPO prompt preview reading
+  // each row's own system message adds 405 B raw / 154 B transfer (6,906,755 -> 6,907,160 B raw at 528a73372).
   // The reward editor and the stepped Train page (#14074) add 14,122 B raw / 5,047 B transfer over #12601 at
   // 0be041016 (6,871,896 -> 6,886,018 B raw, 2,069,487 -> 2,074,534 B transfer, one machine and build, 96 chunks):
   // the editor, wizard and explanation strings join the eager English catalog and the step state sits in the
   // eager training store. Raised to the measured build plus a 160 B raw / 189 B transfer margin.
-  transferBytes: 2_085_325,
-  rawBytes: 6_921_068,
+  transferBytes: 2_085_479,
+  rawBytes: 6_921_473,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
