@@ -2063,12 +2063,15 @@ def _drop_fp8_dequantize_conversions(model):
         if plain is None:
             try:
                 from transformers.conversion_mapping import get_model_conversion_mapping
-
                 plain = get_model_conversion_mapping(model, None, None)
             except Exception:
                 plain = []
         match = next(
-            (c for c in plain if type(c) is type(conversion) and _targets(c) == _targets(conversion)),
+            (
+                c
+                for c in plain
+                if type(c) is type(conversion) and _targets(c) == _targets(conversion)
+            ),
             None,
         )
         if match is None:

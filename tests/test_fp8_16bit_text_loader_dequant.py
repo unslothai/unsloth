@@ -153,7 +153,9 @@ def _write_tiny_block_fp8_qwen3_moe(path):
                     n, k = value.shape
                     blocks = value.float().view(n // 128, 128, k // 128, 128)
                     scale = blocks.abs().amax(dim = (1, 3)) / 448.0
-                    tensors[key] = (blocks / scale[:, None, :, None]).view(n, k).to(torch.float8_e4m3fn)
+                    tensors[key] = (
+                        (blocks / scale[:, None, :, None]).view(n, k).to(torch.float8_e4m3fn)
+                    )
                     tensors[key.replace(".weight", ".weight_scale_inv")] = scale.float()
                 else:
                     tensors[key] = value
