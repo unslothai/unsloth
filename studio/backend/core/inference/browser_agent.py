@@ -409,10 +409,9 @@ def _redirect_target(url: str) -> Optional[str]:
     except ValueError:
         return None
     query = parse_qs(parsed.query)
-    # The tab's URL parser resolves dot segments (%2e included) before the path is compared.
-    path = urlsplit(
-        urljoin("http://h/", re.sub(r"%2e", ".", parsed.path, flags = re.IGNORECASE))
-    ).path
+    # The tab's URL parser reads `\` as `/` and resolves dot segments (%2e included) first.
+    spelled = re.sub(r"%2e", ".", parsed.path.replace("\\", "/"), flags = re.IGNORECASE)
+    path = urlsplit(urljoin("http://h/", spelled)).path
     target = None
     if (host == "duckduckgo.com" or host.endswith(".duckduckgo.com")) and path == "/l/":
         target = (query.get("uddg") or [None])[0]

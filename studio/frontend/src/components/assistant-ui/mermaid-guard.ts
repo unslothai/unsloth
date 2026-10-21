@@ -31,6 +31,10 @@ const CSS_FETCH = /url|image|cross-fade|element\s*\(|@import|\\/i;
 // Mermaid drops a whole line starting with `%%` before parsing (an `%%{init}%%` directive stays).
 const COMMENT_LINE = /^[ \t]*%%(?!\{).*$/gm;
 
+// `details Actor: id` in a sequence diagram merges the page element `id`'s JSON (an `icon` too),
+// which this cannot see; the line is dropped.
+const DETAILS_LINE = /^[ \t]*details\b[^:\n[({]*:.*$/gim;
+
 // `properties Actor: {json}` in a sequence diagram, where `icon` is drawn as an <image>.
 const ACTOR_PROPERTIES = /(^|;)([ \t]*properties\b[^:\n;#]*:)([^#\n;]*)/gim;
 
@@ -107,6 +111,7 @@ export function stripRemoteDiagramImages(source: string): string {
   out += source.slice(at);
   return out
     .replace(FETCHING_TAG, "#lt;")
+    .replace(DETAILS_LINE, "")
     .replace(STYLED_TAG, (whole, tag: string) => {
       const decoded = tag.replace(CHAR_REF, (_ref, code: string) => {
         const point = code[0].toLowerCase() === "x" ? parseInt(code.slice(1), 16) : Number(code);

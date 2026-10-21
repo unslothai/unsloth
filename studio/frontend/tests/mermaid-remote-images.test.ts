@@ -76,3 +76,13 @@ test("every surface that draws a diagram uses the guarded plugin", () => {
     assert.match(text, /mermaid-plugin"/, path);
   }
 });
+
+test("a sequence actor cannot take its properties from an element on the page", () => {
+  const source = "sequenceDiagram\n  participant Alice\n  details Alice: payload\n  Alice->>Bob: hi";
+  const out = stripRemoteDiagramImages(source);
+  assert.equal(/details/.test(out), false, out);
+  assert.match(out, /Alice->>Bob: hi/);
+  // A flowchart node that happens to be called details is left alone.
+  const flow = "flowchart LR\n  details[Details: here] --> B";
+  assert.equal(stripRemoteDiagramImages(flow), flow);
+});
