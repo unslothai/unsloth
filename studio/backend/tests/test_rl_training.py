@@ -1531,3 +1531,62 @@ def test_grpo_prompts_carry_each_rows_tool_schemas():
     assert done and "tools" not in rendered.column_names
     assert rendered[0]["prompt"] == "[weather]Weather in Paris?"
     assert rendered[1]["prompt"] == "[]2+2?"
+
+
+def test_grpo_prefill_prompts_are_continued_and_scored_with_their_prefill():
+    from core.training.rewards import make_reward_func, validate_rule
+    from core.training.rl import render_grpo_prompts
+
+    class _Tok:
+        chat_template = "{{ enable_thinking }}"
+
+        def apply_chat_template(
+            self,
+            messages,
+            tokenize = False,
+            add_generation_prompt = False,
+            continue_final_message = False,
+            **kw,
+        ):
+            text = "".join(f"<{m['role']}>{m['content']}" for m in messages)
+            if continue_final_message:
+                return text
+            return text + ("<end><assistant>" if add_generation_prompt else "<end>")
+
+    ds = Dataset.from_list(
+        [
+            {
+                "prompt": [
+                    {"role": "user", "content": "2+2?"},
+                    {"role": "assistant", "content": "<answer>"},
+                ],
+                "answer": "4",
+            },
+            {"prompt": [{"role": "user", "content": "3+3?"}], "answer": "6"},
+        ]
+    )
+    out, done = render_grpo_prompts(ds, _Tok(), False)
+    assert done and out[0]["prompt"] == "<user>2+2?<assistant><answer>"
+    assert out[1]["prompt"] == "<user>3+3?<end><assistant>"
+    reward = make_reward_func(
+        {
+            "name": "exact",
+            "rule": validate_rule(
+                {
+                    "type": "exact_match",
+                    "compare_to": "answer",
+                    "extract": {"between": ["<answer>", "</answer>"]},
+                    "normalize": ["strip"],
+                    "score": {"match": 2, "miss": 0},
+                    "missing": 0,
+                }
+            ),
+        }
+    )
+    scores = reward(
+        prompts = list(out["prompt"]),
+        completions = ["4</answer>", "<answer>6</answer>"],
+        answer = list(out["answer"]),
+        prefill = list(out["prefill"]),
+    )
+    assert scores == [2.0, 2.0]
