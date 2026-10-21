@@ -42,13 +42,18 @@ def _isolate(monkeypatch):
 
 
 class TestCoerceFraction:
-    @pytest.mark.parametrize("value", [0.0, 0.80, 0.9, 0.97, 1.0, "0.85", "1.00"])
+    @pytest.mark.parametrize(
+        "value", [0.10, 0.30, 0.50, 0.80, 0.9, 0.97, 1.0, "0.25", "0.85", "1.00"]
+    )
     def test_accepts_in_range(self, value):
         assert vb.coerce_fraction(value) == pytest.approx(float(value))
 
     @pytest.mark.parametrize(
         "value",
         [
+            0.0,
+            0.05,
+            0.099,
             1.01,
             -1.0,
             2.0,  # out of range
@@ -159,7 +164,7 @@ class TestState:
 class TestWrite:
     def test_rejects_out_of_range(self, monkeypatch):
         monkeypatch.setattr(vb, "_invalidate", lambda _key: None)
-        for bad in (-0.25, 1.5, float("nan"), "abc"):  # negatives stay illegal; the floor is now 0.0
+        for bad in (0.0, 0.05, -0.25, 1.5, float("nan"), "abc"):
             with pytest.raises(ValueError):
                 vb.set_vram_budget_fraction(bad)
 
