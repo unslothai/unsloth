@@ -13,11 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ADAPTER_BIN = "adapter_model.safetensors"
 ADAPTER_CFG = "adapter_config.json"
-# Written by each rank at save time: how many stages there were meant to be, and how deep the model
-# is.
 STAGE_META = "unsloth_stage.json"
-# Written per stage and expected to differ: the merged adapter is the union of the stages, so a
-# per-stage module list says nothing about a config mismatch.
+# Per-stage and expected to differ: the merged adapter is the union.
 _CFG_IGNORED = frozenset({"base_model_name_or_path"})
 _CFG_UNIONED = frozenset({"target_modules"})
 _LAYER_RE = re.compile(r"\.(?:layers|h)\.(\d+)\.")
@@ -86,8 +83,6 @@ def plan_merge(root: str) -> Dict[str, Any]:
     stages = [inspect_stage(p) for p in stage_dirs(root)]
     problems: List[str] = []
 
-    # Two stages claiming one layer means the split is not what we think, and a union would silently
-    # keep whichever was written last.
     seen: Dict[int, str] = {}
     for st in stages:
         for n in st["layers"]:
@@ -98,8 +93,7 @@ def plan_merge(root: str) -> Dict[str, Any]:
                 )
             seen[n] = st["path"]
 
-    # Contiguity alone cannot see a truncated run: [0] equals range(1), so a rank that died before
-    # saving passed the directory check and merged half a model.
+    # Contiguity alone cannot see a truncated run.
     if len(stages) < 2:
         problems.append(
             f"only {osp.basename(stages[0]['path'])} is present, and a layer split has at least "
@@ -116,9 +110,7 @@ def plan_merge(root: str) -> Dict[str, Any]:
     if covered and covered[0] != 0:
         problems.append(f"layers 0..{covered[0]-1} are in no stage")
 
-    # The recorded world size, which is the only thing that can see a MISSING LAST stage: losing the
-    # highest-numbered one leaves the remaining directories contiguous from 0 and their layers
-    # contiguous from 0 too, so every check above passes on half a model.
+    # The recorded world size is the only way to detect a MISSING LAST stage.
     worlds = {int(st["meta"]["world"]) for st in stages if isinstance(st["meta"].get("world"), int)}
     if not worlds:
         problems.append(
@@ -141,8 +133,6 @@ def plan_merge(root: str) -> Dict[str, Any]:
             f"the stages cover {len(covered)} layers and the model has {next(iter(depths))}"
         )
 
-    # Every stage holds the non-layer modules, so a trained copy is indistinguishable from an
-    # untouched one: a genuine ambiguity, not a tie to break.
     non_layer: Dict[str, List[str]] = {}
     for st in stages:
         for k in st["keys"]:
@@ -216,8 +206,7 @@ def merge(
                 tensors[k] = f.get_tensor(k)
                 provenance[k] = osp.basename(st["path"])
 
-    # Both written to temporary names first, so a failed or interrupted write leaves the previous
-    # pair intact; only the two renames at the end replace it.
+    # Temp names first, so an interrupted write leaves the previous pair intact.
     os.makedirs(out, exist_ok = True)
     bin_tmp = osp.join(out, ADAPTER_BIN + ".tmp")
     cfg_tmp = osp.join(out, ADAPTER_CFG + ".tmp")
@@ -275,8 +264,6 @@ def _cmd_merge(
         print("  (--force merges anyway, for a deliberate one-rank run or a partial recovery)")
         return 1
     if not plan["ok"]:
-        # `merge()` has always taken this; nothing reached it, so the escape hatch the refusal
-        # points at could not be used from the command users are told to run.
         print("  --force: merging despite the problems above")
     if dry_run or not out:
         print(f"  would write {out or '<--out DIR>'}")

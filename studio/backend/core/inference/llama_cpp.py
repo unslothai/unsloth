@@ -39113,8 +39113,7 @@ class LlamaCppBackend:
         from core.inference.spark_serving import route_base_url
 
         if route_base_url(self) is not None:
-            # Behind the two-Spark router a slot id is local to whichever replica decoded the round,
-            # and /slots is answered by the primary: an erase would clear another chat's cache.
+            # Behind the router slot N may be the peer's: erasing it would clear another chat's cache.
             return False
         try:
             response = httpx.post(
