@@ -195,7 +195,7 @@ const MODALITY_ICONS: Record<DatasetModality, IconSvgElement> = {
   video: FlimSlateIcon,
 };
 
-const THUMB = "var(--slider-thumb-size)";
+const THUMB = "var(--hub-range-thumb)";
 const SLIDER_FG =
   "[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_68%,var(--background))] dark:[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_86%,var(--background))]";
 const RANGE_FILL = "bg-(--hub-slider-fg)";
@@ -276,7 +276,7 @@ function RangeStops({
         )}
       </legend>
       {/* Inset by an end pill's overhang, so the pills line up with the labels above. */}
-      <div className={cn("relative mx-4.5 pt-7", SLIDER_FG)}>
+      <div className={cn("hub-range relative mx-4.5 pt-7", SLIDER_FG)}>
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
             label === null && !covered(i) ? null : (
@@ -316,9 +316,9 @@ function RangeStops({
               [spec.max]: next[1] === last ? undefined : spec.stops[next[1]],
             });
           }}
-          className="group/range relative flex h-(--slider-thumb-size) w-full touch-none select-none items-center"
+          className="group/range relative flex h-(--hub-range-thumb) w-full touch-none select-none items-center"
         >
-          <SliderPrimitive.Track className="relative h-(--slider-track-height) w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+          <SliderPrimitive.Track className="relative h-(--hub-range-track) w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
             {spec.stops.map((_, i) =>
               // Under the range, which covers them where it runs, so its fill stays unbroken.
               i === 0 || i === last ? null : (
@@ -341,7 +341,7 @@ function RangeStops({
               aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
               aria-valuetext={chip(index)}
               className={cn(
-                "relative block size-(--slider-thumb-size) cursor-grab rounded-full ring-(--hub-slider-fg)/20 outline-none focus-visible:ring-4 active:cursor-grabbing",
+                "relative block size-(--hub-range-thumb) cursor-grab rounded-full ring-(--hub-slider-fg)/20 outline-none focus-visible:ring-4 active:cursor-grabbing",
                 RANGE_FILL,
               )}
             />

@@ -316,8 +316,10 @@ export const BUDGET = {
   // Chat safety for diagrams, redirect links and approval cards adds 617 B raw / 238 B transfer (6,862,624 ->
   // 6,863,241 B raw, 2,066,394 -> 2,066,632 B transfer against 731cb16c2, one machine and build, the diagram
   // source check itself loaded with the first diagram). Raised to that build plus the same margin.
-  transferBytes: 2_066_821,
-  rawBytes: 6_863_401,
+  // Slider tracks round to whole screen pixels at any zoom: theme-boot.js publishes --device-px before first
+  // paint, 1,501 -> 1,847 B (served uncompressed, so 346 B raw and transfer). Raised by that, same margin.
+  transferBytes: 2_067_167,
+  rawBytes: 6_863_747,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
