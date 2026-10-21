@@ -196,3 +196,122 @@ def test_not_zimage_and_uninstall_restores_the_class():
     zs.uninstall_zimage_cfg_split(pipe)
     assert cls.__dict__.get("__call__") is before
     assert zs.zimage_cfg_split_status(pipe) == {"armed": False}
+
+
+def _denoise(
+    pipe,
+    model,
+    guided,
+    steps,
+    seed,
+    skip = None,
+    cond_len = 45,
+    neg_len = 9,
+):
+    """A Z-Image denoise loop as ZImagePipeline runs it: one transformer call per step (2 samples when guided), the
+    step-end callback after it. Returns the per-step noise predictions."""
+    from core.inference import diffusion_step_skip as ss
+
+    if skip is not None:
+        ss.reset_static_step_skip(pipe, steps, step_signal = True)
+    latent = _latent(seed)
+    cond, neg = _caption(cond_len, seed), _caption(neg_len, seed + 1)
+    preds = []
+    with zs.render(pipe, 1):
+        for i in range(steps):
+            t = torch.tensor([1.0 - i / steps])
+            if guided:
+                out = _run(model, [latent, latent.clone()], t.repeat(2), [cond, neg])
+                pred = out[0] + 2.0 * (out[0] - out[1])
+            else:
+                pred = _run(model, [latent], t, [cond])[0]
+            preds.append(pred)
+            latent = latent - pred / steps
+            if skip is not None:
+                ss.mark_step_end(pipe)
+    return preds
+
+
+def _static_pipe(compile_blocks):
+    from core.inference import diffusion_step_skip as ss
+
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+    if compile_blocks:
+        _compile_blocks(model)
+    settings = {"mode": "taylor1", "head": 0.2, "tail": 0.1, "every": 2, "min_steps": 12}
+    assert ss.install_static_step_skip(pipe, settings = settings) == "static"
+    return pipe, model, ss._find(pipe)
+
+
+def test_static_step_skip_splits_and_turning_cfg_on_compiles_nothing_new():
+    torch._dynamo.reset()
+    pipe, model, skip = _static_pipe(compile_blocks = True)
+    _denoise(pipe, model, False, 12, 0, skip)
+    warm = _graphs()
+    assert warm > 0
+    _denoise(pipe, model, True, 12, 1, skip)
+    assert _graphs() == warm
+    # The split sits above the skip: every guided step splits, then each branch is skipped or computed.
+    assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 12, "batched": 0}
+    assert skip.stats["skipped"] > 0
+
+
+def test_static_step_skip_split_matches_the_batched_schedule(monkeypatch):
+    """Same steps skipped, same predictions: the split only keys cond as ``#0`` and uncond as ``#1``."""
+    pipe, model, skip = _static_pipe(compile_blocks = False)
+    split = _denoise(pipe, model, True, 12, 2, skip)
+    split_stats = dict(skip.stats)
+    assert zs.zimage_cfg_split_status(pipe)["split"] == 12
+    zs.uninstall_zimage_cfg_split(pipe)
+    from core.inference import diffusion_step_skip as ss
+
+    ss.uninstall_static_step_skip(pipe)
+    monkeypatch.setenv(zs.ZIMAGE_CFG_SPLIT_ENV, "0")
+    pipe_b, model_b, skip_b = _static_pipe(compile_blocks = False)
+    batched = _denoise(pipe_b, model_b, True, 12, 2, skip_b)
+    # Two calls per step instead of one, the same steps skipped.
+    assert split_stats["skipped"] == 2 * skip_b.stats["skipped"] > 0
+    assert split_stats["computed"] == 2 * skip_b.stats["computed"]
+    for s, b in zip(split, batched):
+        torch.testing.assert_close(s, b, atol = 1e-4, rtol = 1e-4)
+
+
+def test_static_step_skip_without_a_step_signal_keeps_the_batched_call():
+    from core.inference import diffusion_step_skip as ss
+
+    pipe, model, skip = _static_pipe(compile_blocks = False)
+    # No step-end callback: one counter per key, which a step's two calls would advance twice.
+    ss.reset_static_step_skip(pipe, 12, step_signal = False)
+    with zs.render(pipe, 1):
+        _run(model, *_guided_args(_latent(3), torch.tensor([0.4]), 45, 9, 3))
+    assert zs.zimage_cfg_split_status(pipe) == {"armed": True, "split": 0, "batched": 1}
+
+
+def test_cfg_parallel_router_splits_and_keeps_both_branches_on_the_primary():
+    from core.inference.diffusion_multigpu import CfgParallelRouter
+
+    torch._dynamo.reset()
+    model = _model()
+    pipe = types.SimpleNamespace(transformer = model)
+    zs.install_zimage_cfg_split(pipe, offload_policy = "none")
+    t = torch.tensor([0.4])
+    x, tt, cap = _guided_args(_latent(4), t, 45, 9, 4)
+    with zs.render(pipe, 1):
+        plain = _run(model, x, tt, cap)
+    _compile_blocks(model)
+    router = CfgParallelRouter(model, primary = "cpu", secondary = "cpu")
+    model.__dict__["forward"] = router
+    model._unsloth_cfg_router = router
+    with zs.render(pipe, 1):
+        _run(model, [_latent(0)], t, [_caption(9, 0)])
+        _run(model, [_latent(1)], t, [_caption(45, 1)])
+        warm = _graphs()
+        routed = _run(model, x, tt, cap)
+        _denoise(pipe, model, True, 3, 5)
+    assert _graphs() == warm
+    assert router.replica is None and router.stats["replica_calls"] == 0
+    for a, b in zip(routed, plain):
+        assert torch.equal(a, b)
+    assert zs.zimage_cfg_split_status(pipe)["batched"] == 0

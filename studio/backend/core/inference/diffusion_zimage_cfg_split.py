@@ -18,8 +18,12 @@ bit-exact: a single sample with no mask can pick other attention / GEMM tiles th
 
 Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
-recompile. Declined per call under a step cache / static step skip (they key cond and uncond on the one batched call)
-and a CFG-parallel router. Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
+recompile. Under a static step skip it splits when the skip keys the two calls of a step apart (Studio's step
+signal: call ``#0`` is the conditional branch, ``#1`` the unconditional, both on the batched call's schedule), and
+under a CFG-parallel router (it never pairs Z-Image calls, so both branches stay on the primary card as before).
+Declined per call under a step cache (FBCache keeps one residual per cache_context, which two calls would share; no
+Z-Image pipeline opens one, so it never engages there) and a skip with no per-step call order. Kill switch:
+``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 """
 
 from __future__ import annotations
@@ -56,14 +60,32 @@ def _is_zimage(module: Any) -> bool:
     return type(module).__name__ == _TRANSFORMER_CLASS
 
 
+def _skip_keys_calls_apart(skip: Any) -> bool:
+    """Whether a static step skip with a plan keys the cond and uncond calls of one step apart.
+
+    It keys a call by its ``cache_context`` name, else (with a step signal) by its ordinal within the step, else by
+    one shared counter that a step's two calls would advance twice. Z-Image opens no cache_context, so with the
+    step signal Studio always passes the conditional call is ``#0`` and the unconditional ``#1``, each skipped or
+    computed on the step the batched call would be."""
+    if not hasattr(skip, "plan"):
+        return False
+    if not skip.plan:
+        return True
+    return getattr(skip, "context", None) is None and bool(getattr(skip, "step_signal", False))
+
+
 def _declined_now(module: Any) -> Optional[str]:
     slots = getattr(module, "__dict__", {})
+    # FBCache keeps one residual per cache_context; two calls in one context would compare cond against uncond.
+    # Unreachable today: no Z-Image pipeline opens a cache_context, so apply_step_cache refuses them.
     if getattr(module, "_unsloth_step_cache", None):
         return "step cache"
-    if getattr(slots.get("forward"), "_unsloth_outer_forward", False):
-        return "static step skip"
-    if getattr(module, "_unsloth_cfg_router", None) is not None:
-        return "cfg parallel"
+    outer = slots.get("forward")
+    if getattr(outer, "_unsloth_outer_forward", False) and not _skip_keys_calls_apart(outer):
+        return "static step skip without a per-step call order"
+    # A CFG-parallel router needs no decline: it pairs branches by the identity of the first tensor argument, which
+    # for Z-Image is the timestep, a fresh tensor per call (the batched call too), so it runs every call on the
+    # primary card either way.
     if getattr(module, "training", False):
         return "training"
     return None
