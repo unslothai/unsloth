@@ -100,6 +100,7 @@ from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.host_paths import redact_host_paths
 from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
+from utils.security.consent import managed_remote_code_refused
 from utils.utils import (
     canonical_model_repo_id,
     hf_dns_dead,
@@ -1259,6 +1260,9 @@ def _reject_untrainable_model_request(
                         "training_remote_model_not_decision",
                         f"{request.model_name} is not a decision model (Laya or Clef).",
                     )
+                if _is_decision_checkpoint(request) and managed_account():
+                    # A Hub decision adapter loads its base as well: authorize it like any adapter.
+                    _authorize_adapter_base(request.model_name, hf_token)
                 return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
                 raise _training_start_error(
@@ -1293,9 +1297,27 @@ def _reject_untrainable_model_request(
                 "needs joint_head.safetensors and joint_head_config.json beside config.json "
                 "(or LoRA adapters).",
             )
+        if managed_account() and _has_adapter_metadata(folder):
+            # FastDecisionModel loads the adapter's base: check and pin it like any adapter.
+            from core.export.decision import DecisionExportError, adapter_base
+
+            try:
+                adapter_base(folder)
+            except DecisionExportError as exc:
+                raise _training_start_error(400, "training_decision_adapter_base", str(exc))
+            base = _authorize_adapter_base(str(folder), hf_token)
+            # The worker re-reads the pin at the model root, so pin only a root adapter.
+            pin = None if request.model_subfolder else base or ""
+            return _ModelPreflightResult(model_name, model_local_path, None, adapter_base_pin = pin)
         return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
+        if managed_account() and _has_adapter_metadata(path):
+            # The loader still follows adapter_config.json to its base, so check and pin it.
+            adapter_base = _authorize_adapter_base(str(path), hf_token)
+            return _ModelPreflightResult(
+                model_name, model_local_path, cached_model_pin, adapter_base_pin = adapter_base or ""
+            )
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _has_adapter_metadata(path) or (
         model_format == "adapter" and _has_local_adapter_weights(path)
@@ -1398,7 +1420,7 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
     if not is_owner_context():
         raise HTTPException(
             status_code = 403,
-            detail = "Only the Studio owner can fine-tune decision models, since only the "
+            detail = "Only the Unsloth owner can fine-tune decision models, since only the "
             "owner's fine-tunes can be served by the Decision API.",
         )
     if sys.version_info < (3, 10):
@@ -2354,7 +2376,8 @@ async def start_training(
             "require_exact_dataset_resource": resume_requires_exact_dataset,
             "require_validated_model_snapshot": cached_model_pin is not None,
             "adapter_base_pin": getattr(model_preflight, "adapter_base_pin", None),
-            "trust_remote_code": request.trust_remote_code,
+            # A managed account never forwards remote code to the worker.
+            "trust_remote_code": request.trust_remote_code and not managed_remote_code_refused(),
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "subject": current_subject,
             "gpu_ids": request.gpu_ids,
@@ -4421,7 +4444,7 @@ async def upload_diffusion_dataset(
     if cleaned.casefold() in _reserved_diffusion_dataset_names():
         raise HTTPException(
             status_code = 400,
-            detail = f"'{cleaned}' is reserved for Studio's internal dataset storage.",
+            detail = f"'{cleaned}' is reserved for Unsloth's internal dataset storage.",
         )
     folder = _resolve_dataset_folder(name, must_exist = False)
     # serialize same-folder imports because the training interlock permits mutations; duplicate checks run here

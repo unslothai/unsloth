@@ -1385,6 +1385,8 @@ class _LoadState:
     eager_patched: bool = False
     # Deferred speed auto: the load stays eager, generate() engages `default` at the 3rd generation
     speed_deferred: bool = False
+    # That deferred engagement compiled the denoiser: LoRAs are off until a reload, which defers again.
+    speed_auto_compiled: bool = False
     # Auto static skip plan for that deferred `default` tier, installed when it engages.
     deferred_static_plan: Optional[dict] = None
     # Successful generations on this load; drives the deferred engagement above.
@@ -11637,14 +11639,14 @@ class DiffusionBackend:
 
         if _small_host_int8(pipe):
             raise ValueError(
-                "LoRA is not available on this load: system RAM was too small for the dense model, so Studio "
+                "LoRA is not available on this load: system RAM was too small for the dense model, so Unsloth "
                 "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Load the "
-                "model with the LoRA selected (Studio then keeps the dense transformer), or use a host with more RAM."
+                "model with the LoRA selected (Unsloth then keeps the dense transformer), or use a host with more RAM."
             )
         if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
             raise ValueError(
                 "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
-                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Studio then "
+                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Unsloth then "
                 "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
             )
         if not diffusion_lora.supports_lora(
@@ -11966,6 +11968,7 @@ class DiffusionBackend:
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
+        object.__setattr__(state, "speed_auto_compiled", bool(speed_applied.get("compiled")))
         object.__setattr__(
             state, "cuda_graphs", tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
         )
@@ -13254,6 +13257,7 @@ class DiffusionBackend:
                 "workflows": [],
                 "conditioning": None,
                 "supports_lora": False,
+                "lora_after_reload": False,
                 "supports_controlnet": False,
                 "resolved": None,
                 "generation_defaults": None,
@@ -13265,6 +13269,16 @@ class DiffusionBackend:
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
         speed_optims = int8_gemm_live(state.pipe, speed_optims)
+        lora_gate = dict(
+            engine = "diffusers",
+            family = state.family.name,
+            model_kind = state.kind,
+            transformer_quant = state.transformer_quant,
+        )
+        compiled = "compiled" in (getattr(state, "speed_optims", ()) or ())
+        lora_load_ok = not _small_host_int8(state.pipe) and not comfy_block_runtime_layers(
+            getattr(state.pipe, "transformer", None)
+        )
         return {
             "loaded": True,
             "repo_id": state.repo_id,
@@ -13315,15 +13329,13 @@ class DiffusionBackend:
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
-            "supports_lora": diffusion_lora.supports_lora(
-                engine = "diffusers",
-                family = state.family.name,
-                model_kind = state.kind,
-                transformer_quant = state.transformer_quant,
-                compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
-            )
-            and not _small_host_int8(state.pipe)
-            and not comfy_block_runtime_layers(getattr(state.pipe, "transformer", None)),
+            "supports_lora": lora_load_ok
+            and diffusion_lora.supports_lora(compiled = compiled, **lora_gate),
+            # Only Speed=Auto's 3rd-image compile blocks LoRA: a reload stays eager until then.
+            "lora_after_reload": lora_load_ok
+            and compiled
+            and getattr(state, "speed_auto_compiled", False)
+            and diffusion_lora.supports_lora(compiled = False, **lora_gate),
             "small_host": small_host_engaged_on(state.pipe),
             "supports_controlnet": diffusion_controlnet.supports_controlnet(
                 engine = "diffusers",

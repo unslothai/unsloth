@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
-import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
+import { type AnnotateEvent, type FrameMessage, parseFrameMessage, userActionGate } from "./frame-message";
 import { pageRequests } from "./page-requests";
 import {
   onPageStorageClear,
@@ -106,15 +106,6 @@ export function sendFrameCommand(tabId: string, command: FrameCommand): boolean 
   return true;
 }
 
-// Messages that open tabs or apps, or run shortcuts. Pages can post anything, so check them here.
-const isUserAction = (message: FrameMessage) =>
-  (message.type === "navigate" && message.newTab === true) ||
-  message.type === "external" ||
-  message.type === "shortcut";
-
-// Activation outlives the click that loaded the page, so user actions are also rate limited, per page.
-const USER_ACTION_INTERVAL_MS = 1000;
-
 /** Recent user activation in the focused frame; without the API, focus opens a tab but never the system browser. */
 function userActive(frame: HTMLIFrameElement, message: FrameMessage): boolean {
   if (document.activeElement !== frame) return false;
@@ -166,7 +157,7 @@ export function PageFrame({
     // A page loads and leaves once; repeats are spam.
     let loaded = false;
     let left = false;
-    let lastUserAction = Number.NEGATIVE_INFINITY;
+    const userAction = userActionGate();
     // The page's requests to its own site, answered through the shell, which relays to the page.
     const requests = pageRequests(
       requestForPage,
@@ -215,13 +206,8 @@ export function PageFrame({
         return;
       }
       if (message.type === "typed" && left) return;
-      if (isUserAction(message)) {
-        if (!userActive(frame, message)) return;
-        // Shortcuts too: a script can queue many before the first one moves focus off the page.
-        const now = performance.now();
-        if (now - lastUserAction < USER_ACTION_INTERVAL_MS) return;
-        lastUserAction = now;
-      }
+      message = userAction(message, userActive(frame, message), performance.now());
+      if (!message) return;
       if (message.type === "loaded") {
         if (loaded) message = { type: "title", title: message.title };
         loaded = true;

@@ -215,7 +215,7 @@ export const ar = {
     importBookmarksDoneOne: "تم استيراد {count} إشارة مرجعية.",
     importBookmarksDoneMany: "تم استيراد {count} إشارة مرجعية.",
     importBookmarksNone: "لا توجد إشارات مرجعية جديدة في هذا الملف.",
-    importBookmarksPartial: "تم استيراد {count}، لكن لم يتسع لـ {leftOut} أخرى: يحتفظ Studio بما يصل إلى {max} إشارة مرجعية.",
+    importBookmarksPartial: "تم استيراد {count}، لكن لم يتسع لـ {leftOut} أخرى: يحتفظ Unsloth بما يصل إلى {max} إشارة مرجعية.",
     importBookmarksFailed: "تعذّرت قراءة الملف. اختر ملف HTML للإشارات المرجعية مُصدَّرًا من متصفح.",
     downloadsTitle: "التنزيلات",
     askWhereToSaveSetting: "السؤال عن مكان حفظ كل ملف",
@@ -266,7 +266,7 @@ export const ar = {
     annotationScreenshotsAlways: "التضمين دائمًا",
     annotationScreenshotsNever: "عدم التضمين أبدًا",
     clearDataSetting: "مسح بيانات التصفح",
-    clearDataSettingDescription: "مسح سجل التصفح وسجل التنزيلات والصفحات المخزنة مؤقتًا. تحتفظ الصفحات بملفات تعريف الارتباط وبيانات المواقع فقط حتى إعادة تحميل Studio.",
+    clearDataSettingDescription: "مسح سجل التصفح وسجل التنزيلات والصفحات المخزنة مؤقتًا. تحتفظ الصفحات بملفات تعريف الارتباط وبيانات المواقع فقط حتى إعادة تحميل Unsloth.",
     manage: "إدارة",
     fullView: {
       enter: "عرض كامل",
@@ -844,6 +844,7 @@ export const ar = {
       byProject: "حسب المشروع",
       inOneList: "في قائمة واحدة",
       sortChatsBy: "ترتيب المحادثات حسب",
+      projectsHome: "صفحة المشاريع",
       lastUpdated: "آخر تحديث",
       manualOrder: "ترتيب يدوي",
       switchedToManual: "الترتيب يدوي الآن: اسحب الصفوف لإعادة ترتيبها",
@@ -1446,15 +1447,15 @@ export const ar = {
       dictation: {
         audioUploadTitle: "الإملاء باستخدام تسجيل",
         audioUploadDescription:
-          "يتطلب متصفحك اتصالاً آمنًا (HTTPS) للتسجيل مباشرةً في Studio. على اتصال HTTP هذا، استخدم مسجل هاتفك أو اختر تسجيلاً محفوظًا بدلاً من ذلك. سينسخ خادم Studio الصوت ويضيف النص إلى رسالتك.",
+          "يتطلب متصفحك اتصالاً آمنًا (HTTPS) للتسجيل مباشرةً في Unsloth. على اتصال HTTP هذا، استخدم مسجل هاتفك أو اختر تسجيلاً محفوظًا بدلاً من ذلك. سينسخ خادم Unsloth الصوت ويضيف النص إلى رسالتك.",
         audioUploadChooseFile: "اختيار تسجيل",
         audioUploadRecord: "تسجيل الصوت",
         audioUploadIphoneHint:
           "على iPhone، احفظ تسجيلاً من Voice Memos أو من تطبيق تسجيل آخر، ثم اختره هنا.",
         audioUploadServerModelNote:
-          "يستخدم هذا التسجيل النموذج المحلي الموضّح أعلاه على خادم Studio، حتى إذا كان الإملاء العادي يستخدم محركًا مختلفًا.",
+          "يستخدم هذا التسجيل النموذج المحلي الموضّح أعلاه على خادم Unsloth، حتى إذا كان الإملاء العادي يستخدم محركًا مختلفًا.",
         audioUploadAutomatic: "تلقائي",
-        audioUploadModelReady: "جاهز على خادم Studio هذا",
+        audioUploadModelReady: "جاهز على خادم Unsloth هذا",
         audioUploadRetryTitle: "تعذّر نسخ {file}",
         audioUploadRetry: "إعادة محاولة النسخ",
         audioUploadChooseModel:
@@ -1962,7 +1963,7 @@ export const ar = {
         menuSubtitle: "يشغّل البحث في الملفات",
         device: "جهاز التضمين",
         deviceDescription:
-          "مكان تشغيل نموذج التضمين، لكل النماذج. تفهرس GPU مجموعات المستندات الكبيرة أسرع، لكنها تُبقي جزءًا من VRAM مستخدمًا حتى إعادة تشغيل Studio.",
+          "مكان تشغيل نموذج التضمين، لكل النماذج. تفهرس GPU مجموعات المستندات الكبيرة أسرع، لكنها تُبقي جزءًا من VRAM مستخدمًا حتى إعادة تشغيل Unsloth.",
         deviceAuto: "تلقائي",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2397,7 +2398,7 @@ export const ar = {
         multiModelHint: "يشمل نماذج المحادثة والصوت والصور والفيديو. يجيب كل نموذج محادثة محمّل عن الطلبات التي تذكره بالاسم. مع عدة كروت رسوميات، يحاول Unsloth وضع النموذج الجديد على كرت لا يستخدمه نموذج آخر. يترك خيار «عندما تتسع» نحو 1 جيجابايت فارغة. ولا يفرّغ الخياران «عندما تتسع» و«دائمًا» أبدًا نموذجًا على كرت آخر.",
         allowOversizedLoad: "السماح بتحميل النماذج الكبيرة جدًا",
         allowOversizedLoadDescription: "تحميل نماذج الصور والفيديو حتى عندما يشير فحص الذاكرة إلى أنها لن تتسع.",
-        allowOversizedLoadHint: "ينطبق عندما يتشارك المعالج ووحدة GPU ذاكرة واحدة (Apple Silicon ووحدات GPU المدمجة). يرفض Studio التحميل عندما يكون تقديره لأوزان النموذج أكبر من الذاكرة المتبقية بعد حجز مساحة لنظام التشغيل. عند تفعيل هذا الخيار تتم محاولة التحميل على أي حال. قد يخطئ التقدير في أي اتجاه: قد يفشل التحميل الكبير جدًا أو يستهلك كل الذاكرة أو يسبب تبديلًا كثيفًا للذاكرة أو توقف الكمبيوتر عن الاستجابة أو إيقاف Studio. معطل افتراضيًا.",
+        allowOversizedLoadHint: "ينطبق عندما يتشارك المعالج ووحدة GPU ذاكرة واحدة (Apple Silicon ووحدات GPU المدمجة). يرفض Unsloth التحميل عندما يكون تقديره لأوزان النموذج أكبر من الذاكرة المتبقية بعد حجز مساحة لنظام التشغيل. عند تفعيل هذا الخيار تتم محاولة التحميل على أي حال. قد يخطئ التقدير في أي اتجاه: قد يفشل التحميل الكبير جدًا أو يستهلك كل الذاكرة أو يسبب تبديلًا كثيفًا للذاكرة أو توقف الكمبيوتر عن الاستجابة أو إيقاف Unsloth. معطل افتراضيًا.",
         mediaIdleUnloadDescription:
           "حرّر ذاكرة VRAM بتفريغ نموذجَي الصور والفيديو بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذجين محمَّلين، والحد الأدنى 60 ثانية.",
         mlockVetoed: "يبقى ‎--mlock‎ معطَّلاً: تثبيت النموذج سيحجز ذاكرة تكفي حجمه كاملاً. ولا يزال التفريغ التلقائي عند الخمول معطَّلاً.",
@@ -2841,7 +2842,7 @@ export const ar = {
       importFailed: "فشل الاستيراد.",
       importFromSource: "الاستيراد من {source}",
       importFromSourceDescription:
-        "انسخ محادثاتك في {source} إلى Studio، مجمّعة حسب المشروع.",
+        "انسخ محادثاتك في {source} إلى Unsloth، مجمّعة حسب المشروع.",
       importingAction: "جارٍ الاستيراد...",
       importedSourceOneChat: "تم استيراد محادثة واحدة من {source}.",
       importedSourceChatCount:
@@ -3266,7 +3267,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "اتصل التطبيق بخادم Studio يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
+          "اتصل التطبيق بخادم Unsloth يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
@@ -3865,7 +3866,7 @@ export const ar = {
           "أدخل معدل تعلم تضمين أكبر من 0 وأقل من 1.",
         decisionColumnsMissing:
           "تحتاج نماذج القرارات إلى الأعمدة state وquestions وgold (أو answers). الأعمدة الناقصة: {columns}.",
-        decisionOwnerOnly: "يمكن لمالك Studio فقط ضبط نماذج القرارات.",
+        decisionOwnerOnly: "يمكن لمالك Unsloth فقط ضبط نماذج القرارات.",
         hfDatasetRequired: "اختر مجموعة بيانات Hugging Face أولًا.",
         hfDatasetSplitRequired: "اختر قسم التدريب أو أدخله أولًا.",
         localDatasetRequired: "اختر مجموعة بيانات محلية أولًا.",

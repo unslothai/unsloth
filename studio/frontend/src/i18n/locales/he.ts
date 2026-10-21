@@ -224,7 +224,7 @@ export const he = {
     importBookmarksDoneOne: "יובאה {count} סימנייה.",
     importBookmarksDoneMany: "יובאו {count} סימניות.",
     importBookmarksNone: "אין סימניות חדשות בקובץ הזה.",
-    importBookmarksPartial: "יובאו {count}, אבל עוד {leftOut} לא נכנסו: Studio שומר עד {max} סימניות.",
+    importBookmarksPartial: "יובאו {count}, אבל עוד {leftOut} לא נכנסו: Unsloth שומר עד {max} סימניות.",
     importBookmarksFailed: "לא ניתן לקרוא את הקובץ. בחרו קובץ HTML של סימניות שיוצא מדפדפן.",
     downloadsTitle: "הורדות",
     askWhereToSaveSetting: "לשאול היכן לשמור כל קובץ",
@@ -276,7 +276,7 @@ export const he = {
     annotationScreenshotsNever: "לעולם לא לכלול",
     clearDataSetting: "ניקוי נתוני גלישה",
     clearDataSettingDescription:
-      "נקה את היסטוריית הגלישה, היסטוריית ההורדות והדפים השמורים במטמון. הדפים שומרים קובצי Cookie ונתוני אתרים רק עד לטעינה מחדש של Studio.",
+      "נקה את היסטוריית הגלישה, היסטוריית ההורדות והדפים השמורים במטמון. הדפים שומרים קובצי Cookie ונתוני אתרים רק עד לטעינה מחדש של Unsloth.",
     manage: "ניהול",
     fullView: {
       enter: "עבור לתצוגה מלאה",
@@ -526,7 +526,7 @@ export const he = {
     seedHelp: "קובע את הזרע האקראי של המנוע. צ'אטים במקביל עדיין יכולים לשנות תשובות שנדגמו.",
     default: "ברירת מחדל",
     installRequired: "נדרשת התקנה",
-    ownerRequired: "בקש מבעל ה-Studio להתקין מנוע זה.",
+    ownerRequired: "בקש מבעל Unsloth להתקין מנוע זה.",
     cancelInstall: "בטל התקנה",
     installed: "מותקנת גרסה {version}",
     repair: "תיקון",
@@ -540,8 +540,8 @@ export const he = {
     confirm: "להתקין את {engine} {version}? ההורדה עשויה להגיע לכמה גיגה-בייט.",
     confirmSized: "להתקין את {engine} {version}? הורדה של כ-{size}.",
     wslSetup:
-      "ב-Windows, {engine} פועל בסביבת WSL2 פרטית ש-Studio מגדיר. תופיע בקשת מנהל אחת, וייתכן שיידרש אתחול.",
-    wslReady: "ב-Windows, {engine} פועל בתוך סביבת WSL2 הפרטית של Studio.",
+      "ב-Windows, {engine} פועל בסביבת WSL2 פרטית ש-Unsloth מגדיר. תופיע בקשת מנהל אחת, וייתכן שיידרש אתחול.",
+    wslReady: "ב-Windows, {engine} פועל בתוך סביבת WSL2 הפרטית של Unsloth.",
     wslRestart:
       "הפעל מחדש את Windows כדי לסיים את הפעלת WSL2, ולאחר מכן לחץ שוב על התקנה.",
     background: "ההתקנה פועלת ברקע.",
@@ -925,6 +925,7 @@ export const he = {
       byProject: "לפי פרויקט",
       inOneList: "ברשימה אחת",
       sortChatsBy: "מיין צ'אטים לפי",
+      projectsHome: "דף הפרויקטים",
       lastUpdated: "עודכן לאחרונה",
       manualOrder: "סדר ידני",
       switchedToManual: "מיון ידני: גרור שורות כדי לשנות סדר",
@@ -1037,7 +1038,7 @@ export const he = {
     title: "הגדרות",
     dialog: {
       title: "הגדרות",
-      description: "נהל את העדפות ה-Unsloth שלך.",
+      description: "נהל את העדפות Unsloth שלך.",
       closeAriaLabel: "סגור הגדרות",
       searchPlaceholder: "חיפוש בהגדרות…",
       searchNoResults: "לא נמצאו הגדרות.",
@@ -1557,15 +1558,15 @@ export const he = {
       dictation: {
         audioUploadTitle: "הכתבה מהקלטה",
         audioUploadDescription:
-          "הדפדפן שלך דורש חיבור מאובטח (HTTPS) כדי להקליט ישירות ב-Studio. בחיבור HTTP זה, השתמש במקליט של הטלפון או בחר הקלטה שמורה במקום. שרת ה-Studio שלך יתמלל את האודיו ויוסיף את הטקסט להודעה שלך.",
+          "הדפדפן שלך דורש חיבור מאובטח (HTTPS) כדי להקליט ישירות ב-Unsloth. בחיבור HTTP זה, השתמש במקליט של הטלפון או בחר הקלטה שמורה במקום. שרת Unsloth שלך יתמלל את האודיו ויוסיף את הטקסט להודעה שלך.",
         audioUploadChooseFile: "בחר הקלטה",
         audioUploadRecord: "הקלט אודיו",
         audioUploadIphoneHint:
           "ב-iPhone, שמור הקלטה מ-Voice Memos או מאפליקציית הקלטה אחרת, ולאחר מכן בחר אותה כאן.",
         audioUploadServerModelNote:
-          "הקלטה זו משתמשת במודל המקומי שמוצג למעלה בשרת ה-Studio, גם אם ההכתבה הרגילה משתמשת במנוע אחר.",
+          "הקלטה זו משתמשת במודל המקומי שמוצג למעלה בשרת Unsloth, גם אם ההכתבה הרגילה משתמשת במנוע אחר.",
         audioUploadAutomatic: "אוטומטי",
-        audioUploadModelReady: "מוכן בשרת Studio זה",
+        audioUploadModelReady: "מוכן בשרת Unsloth זה",
         audioUploadRetryTitle: "לא ניתן לתמלל את {file}",
         audioUploadRetry: "נסה לתמלל שוב",
         audioUploadChooseModel: "בחר מודל מקומי לזיהוי דיבור בהגדרות הקול.",
@@ -2077,7 +2078,7 @@ export const he = {
         menuSubtitle: "מפעיל את חיפוש הקבצים",
         device: "התקן הטמעה",
         deviceDescription:
-          "היכן רץ מודל ההטמעה, לכל המודלים. GPU מאנדקס אוספי מסמכים גדולים מהר יותר, אבל משאיר חלק מה-VRAM בשימוש עד ש-Studio מופעל מחדש.",
+          "היכן רץ מודל ההטמעה, לכל המודלים. GPU מאנדקס אוספי מסמכים גדולים מהר יותר, אבל משאיר חלק מה-VRAM בשימוש עד ש-Unsloth מופעל מחדש.",
         deviceAuto: "אוטומטי",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2504,7 +2505,7 @@ export const he = {
           "חל על מודלי צ'אט, דיבור, תמונה ווידאו. כל מודל צ'אט טעון עונה לבקשות שמציינות אותו. כשיש כמה מעבדי GPU, Unsloth מנסה למקם מודל חדש ב-GPU שאף מודל אחר אינו משתמש בו. ”כשהם נכנסים” משאיר כ-1 GB פנוי. ”כשהם נכנסים” ו”תמיד” לעולם אינם פורקים מודל ב-GPU אחר.",
         allowOversizedLoad: "לאפשר טעינת מודלים גדולים מדי",
         allowOversizedLoadDescription: "לטעון מודלי תמונה ווידאו גם כשבדיקת הזיכרון קובעת שהם לא ייכנסו.",
-        allowOversizedLoadHint: "חל כאשר המעבד וה-GPU חולקים מאגר זיכרון אחד (Apple Silicon, מעבדים גרפיים משולבים). Studio מסרב לטעינה כאשר ההערכה שלו למשקלי המודל גדולה מהזיכרון שנותר אחרי שמירת מקום למערכת ההפעלה. כשאפשרות זו מופעלת, הטעינה תנוסה בכל זאת. ההערכה יכולה לטעות לשני הכיוונים: טעינה גדולה מדי עלולה להיכשל, לנצל את כל הזיכרון, לגרום להחלפה כבדה לדיסק או לתקיעת המחשב, או לעצור את Studio. כבוי כברירת מחדל.",
+        allowOversizedLoadHint: "חל כאשר המעבד וה-GPU חולקים מאגר זיכרון אחד (Apple Silicon, מעבדים גרפיים משולבים). Unsloth מסרב לטעינה כאשר ההערכה שלו למשקלי המודל גדולה מהזיכרון שנותר אחרי שמירת מקום למערכת ההפעלה. כשאפשרות זו מופעלת, הטעינה תנוסה בכל זאת. ההערכה יכולה לטעות לשני הכיוונים: טעינה גדולה מדי עלולה להיכשל, לנצל את כל הזיכרון, לגרום להחלפה כבדה לדיסק או לתקיעת המחשב, או לעצור את Unsloth. כבוי כברירת מחדל.",
         mediaIdleUnloadDescription:
           "פנה VRAM על ידי פריקת מודלי תמונה ווידאו לאחר מספר שניות ללא פעילות. 0 שומר אותם טעונים, מינימום 60.",
         mlockVetoed:
@@ -2961,7 +2962,7 @@ export const he = {
       importFailed: "הייבוא נכשל.",
       importFromSource: "ייבוא מ-{source}",
       importFromSourceDescription:
-        "העתק את השיחות שלך מ-{source} אל Studio, מקובצות לפי הפרויקט שאליו הן שייכות.",
+        "העתק את השיחות שלך מ-{source} אל Unsloth, מקובצות לפי הפרויקט שאליו הן שייכות.",
       importingAction: "מייבא...",
       importedSourceOneChat: "שיחה אחת יובאה מ-{source}.",
       importedSourceChatCount: "{count} שיחות יובאו מ-{source}.",
@@ -3388,7 +3389,7 @@ export const he = {
         desktopAvailableDescription:
           "עדכן כעת ואפליקציית שולחן העבודה תופעל מחדש בסיום.",
         desktopExternalServer:
-          "האפליקציה התחברה לשרת Studio שכבר פועל ואינה יכולה לעדכן אותו. עצור את השרת, ואז צא מאפליקציית שולחן העבודה ופתח אותה מחדש כדי לעדכן.",
+          "האפליקציה התחברה לשרת Unsloth שכבר פועל ואינה יכולה לעדכן אותו. עצור את השרת, ואז צא מאפליקציית שולחן העבודה ופתח אותה מחדש כדי לעדכן.",
         desktopManualInstall:
           "פתח את דף השחרור כדי להתקין את חבילת ה-Linux העדכנית ביותר.",
         desktopCheckFailed: "לא ניתן לבדוק עדכונים",
@@ -3959,7 +3960,7 @@ export const he = {
         decisionColumnsMissing:
           "מודלי החלטה צריכים את העמודות state, questions ו-gold (או answers). חסרות: {columns}.",
         decisionOwnerOnly:
-          "רק הבעלים של Studio יכול לבצע כוונון עדין למודלי החלטה.",
+          "רק הבעלים של Unsloth יכול לבצע כוונון עדין למודלי החלטה.",
         hfDatasetRequired: "בחר תחילה מערך נתונים מ-Hugging Face.",
         hfDatasetSplitRequired: "בחר או הזן תחילה פיצול אימון.",
         localDatasetRequired: "בחר תחילה מערך נתונים מקומי.",

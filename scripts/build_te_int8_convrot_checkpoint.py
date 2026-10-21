@@ -111,7 +111,7 @@ def main(argv = None) -> int:
         "--load",
         choices = ("shards", "transformers", "ideogram4"),
         default = "shards",
-        help = "ideogram4: build the encoder with Studio's Ideogram 4 loader (vendor fp8 + weight_scale "
+        help = "ideogram4: build the encoder with Unsloth's Ideogram 4 loader (vendor fp8 + weight_scale "
         "dequantized to a bf16 Qwen3VLModel), then quantize it like --load transformers",
     )
     p.add_argument(
