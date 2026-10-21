@@ -74,6 +74,7 @@ def _load(
         "get_device_capability",
         lambda device = None: caps[state["current"] if device is None else device],
     )
+
     def get_device_properties(device = None):
         index = state["current"] if device is None else getattr(device, "index", device)
         major, minor = caps[index]
