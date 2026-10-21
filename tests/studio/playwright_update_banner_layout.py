@@ -1253,12 +1253,11 @@ def main() -> int:
             # whisper.cpp rides along with llama.cpp and audio.cpp: alone it never opens the runtime card.
             llama_payload[0] = WHISPER_STATUS
             boot(page, "/")
-            facts = measure(page, f"{width}x{height} new chat whisper")
             cards = page.locator('[data-testid="llama-update-banner"]').count()
             check(
                 f"{width}x{height}: a whisper.cpp-only release opens no runtime card",
                 cards == 0,
-                f"cards={cards} text={facts['llamaText']!r}",
+                f"cards={cards}",
             )
             if (width, height) == (VIEWPORTS[2:5] if SPOT else VIEWPORTS)[0]:
                 llama_payload[0] = AUDIO_STATUS
