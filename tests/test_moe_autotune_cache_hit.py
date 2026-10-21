@@ -64,9 +64,15 @@ def _tuned_configs():
 
     # Distinct from both the heuristic and the default tiles.
     return (
-        KernelConfigForward(BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 256, BLOCK_SIZE_K = 128, num_warps = 4, num_stages = 3),
-        KernelConfigBackward_dX(BLOCK_SIZE_M = 32, BLOCK_SIZE_N = 128, BLOCK_SIZE_K = 64, num_warps = 4, num_stages = 4),
-        KernelConfigBackward_dW(BLOCK_SIZE_M = 128, BLOCK_SIZE_N = 64, BLOCK_SIZE_K = 32, num_warps = 8, num_stages = 5),
+        KernelConfigForward(
+            BLOCK_SIZE_M = 64, BLOCK_SIZE_N = 256, BLOCK_SIZE_K = 128, num_warps = 4, num_stages = 3
+        ),
+        KernelConfigBackward_dX(
+            BLOCK_SIZE_M = 32, BLOCK_SIZE_N = 128, BLOCK_SIZE_K = 64, num_warps = 4, num_stages = 4
+        ),
+        KernelConfigBackward_dW(
+            BLOCK_SIZE_M = 128, BLOCK_SIZE_N = 64, BLOCK_SIZE_K = 32, num_warps = 8, num_stages = 5
+        ),
     )
 
 
