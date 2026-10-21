@@ -601,6 +601,35 @@ def test_a_segment_starts_only_on_a_lazily_routed_chain(monkeypatch):
         assert walked  # it got past the gate
 
 
+def test_a_segment_never_starts_while_a_step_cache_is_on(monkeypatch):
+    walked = []
+    real_walk = bg._walk
+    monkeypatch.setattr(bg, "_walk", lambda tree, live: walked.append(1) or real_walk(tree, live))
+    shared = bg._Shared(1, None)
+    root = nn.Linear(4, 4)
+    shared.root = root
+    root.__dict__[ls._SPLIT_ATTR + "_root"] = types.SimpleNamespace(lazy_now = True)
+    root._unsloth_step_cache = "fbcache@0.12"
+    seg = bg.SegmentGraph([bg.BlockGraph(nn.Linear(4, 4), lambda x: x, shared) for _ in range(2)], shared)
+    with torch.inference_mode():
+        assert seg.call(0, (torch.zeros(2, 4),), {}) is bg._NOT_HANDLED
+    assert walked == []
+
+
+def test_video_generate_bypasses_graphs_after_the_auto_cache_toggle():
+    # an auto First-Block-Cache re-decided per generation: graphs armed while it was off must run eager once it is
+    # on, as the image backend does per chunk
+    import inspect
+
+    from core.inference import video as V
+
+    src = inspect.getsource(V.VideoBackend)
+    toggle = src.index("toggled = maybe_toggle_step_cache(")
+    bypass = src.index("diffusion_cuda_graph.set_bypass(", toggle)
+    assert "cache_breaks_graph(state.transformer_cache)" in src[bypass : bypass + 200]
+    assert bypass < src.index("if static_skip:", toggle)
+
+
 # --- FBCache head / tail streams -----------------------------------------------------------------------------------
 
 

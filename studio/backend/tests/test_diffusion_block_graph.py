@@ -198,6 +198,32 @@ def test_a_block_graph_keys_on_the_roots_branch_flag():
         assert graph.stats["captures"] == 2
 
 
+def test_a_block_graph_runs_eager_while_a_step_cache_is_on():
+    # An auto First-Block-Cache that turns on at generate time puts its hooks on blocks recorded without them: the
+    # cached step's tail must not replay the full block (diffusion_cuda_graph.GraphedForward has the same belt)
+    _cuda()
+    block = Block().cuda()
+    root = types.SimpleNamespace(_unsloth_step_cache = None)
+
+    def compute(x):
+        y = block.lin(x)
+        return y * 0.5 if root._unsloth_step_cache else y  # what the cache hooks change inside the forward
+
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    shared.root = root
+    graph = bg.BlockGraph(block, compute, shared)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1
+        replays = graph.stats["replays"]
+        root._unsloth_step_cache = "fbcache@0.12"
+        for _ in range(3):
+            assert torch.equal(graph(x), compute(x))
+        assert graph.stats["captures"] == 1 and graph.stats["replays"] == replays
+
+
 def test_weight_placement_is_none_while_a_weight_is_on_the_host():
     view = bg._WeightView(Block())
     assert view.placement(None) is None

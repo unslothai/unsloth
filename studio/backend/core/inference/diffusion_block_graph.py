@@ -469,7 +469,14 @@ class BlockGraph:
         if _bg_capture_suppressed() or _step_recording():
             # a whole-step graph above records this block's kernels (diffusion_cuda_graph), not a nested replay
             return self.compute(*args, **kwargs)
-        if not self.enabled or self.bypassed or self.poisoned or self.churned or _bg_eager_forced():
+        if (
+            not self.enabled
+            or self.bypassed
+            or self.poisoned
+            or self.churned
+            or _bg_eager_forced()
+            or _step_cache_live(self.shared.root)
+        ):
             return self._eager(args, kwargs)
         segment = self.segment
         if segment is not None:
@@ -723,6 +730,16 @@ def _root_key_extra(root: Any) -> Any:
     return ("x", extra()) if callable(extra) else None
 
 
+def _step_cache_live(root: Any) -> bool:
+    """Whether a step cache (First-Block-Cache) is engaged on the denoiser: its hooks decide inside the forward, per
+    step and per cond / uncond context, which a recording cannot see. Belt to the caller's per-chunk ``set_bypass``,
+    as ``GraphedForward`` does: an auto cache that turns on at generate time keeps every block eager."""
+    try:
+        return bool(getattr(root, "_unsloth_step_cache", None)) if root is not None else False
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _lazy_chain(root: Any) -> bool:
     """Whether this forward of a split ``root`` routes lazily: its class is one the split verified to pass each block's
     outputs straight to the next block, and the call carries no residual input. Only such a chain may replay as one
@@ -835,7 +852,11 @@ class SegmentGraph:
     def _start(self, args: tuple, kwargs: dict) -> Any:
         self._reset_forward()
         torch = _torch()
-        if torch.is_grad_enabled() or not _lazy_chain(self.shared.root):
+        if (
+            torch.is_grad_enabled()
+            or not _lazy_chain(self.shared.root)
+            or _step_cache_live(self.shared.root)
+        ):
             return _NOT_HANDLED
         live: list = []
         try:

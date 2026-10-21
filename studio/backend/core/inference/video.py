@@ -12242,6 +12242,16 @@ class VideoBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
+                # A step cache keys residuals on the cond / uncond context, which a graph key cannot see: graphs armed
+                # while an auto cache was off (per-card block graphs on a layer split) run eager while it is on, as on
+                # the image backend. Re-taken per generation, since an auto decision is.
+                graph_handles = tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
+                if graph_handles:
+                    from . import diffusion_cuda_graph
+
+                    diffusion_cuda_graph.set_bypass(
+                        graph_handles, cache_breaks_graph(state.transformer_cache)
+                    )
                 if static_skip:
                     # Auto skip was measured on text-to-video only.
                     conditioned = bool(first_pil is not None or last_pil is not None or references)
