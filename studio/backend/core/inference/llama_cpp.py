@@ -5274,6 +5274,21 @@ _LLAMA_COMMON_LIB_NAMES = (
 )
 
 
+_CUDA_LIKE_DEVICE_RE = re.compile(r"(?i)(cuda|rocm|hip)\d+$")
+
+
+def _spawn_draft_on_target(run_cmd: List[str], spawn_devices: Optional[str]) -> bool:
+    """Whether the spawned argv's CUDA / ROCm draft pin names the target's device: the one
+    --device / LLAMA_ARG_DEVICE names, else the masked child's device 0. Other pins (MTL0,
+    Vulkan, RPC) were settled at planning, where the backend is known."""
+    pin = _extra_args_draft_device_pin(run_cmd)
+    if pin is None or not _CUDA_LIKE_DEVICE_RE.match(pin.strip()):
+        return True
+    if spawn_devices:
+        return pin.strip().lower() == spawn_devices.strip().lower()
+    return int(re.sub(r"\D", "", pin)) == 0
+
+
 def _distinct_device_count(devices) -> int:
     """Distinct names in a ``--device`` list: a repeated card is one memory pool."""
     return len({d.strip().lower() for d in str(devices).split(",") if d.strip()})
@@ -6534,6 +6549,8 @@ def _drop_sidecar_margins(
     integrity_flags: List[str],
     rebuilt_integrity: List[str],
     override_pairs: Iterable[List[str]],
+    *,
+    user_args: Iterable[str] = (),
 ) -> List[str]:
     """``cmd`` with the sidecar reserve taken back off, for a launch without the drafter.
 
@@ -6541,8 +6558,17 @@ def _drop_sidecar_margins(
     recovery may already have rewritten the rest of that block (``--kv-unified`` gone), so
     matching the whole block would miss. Each trailing pair a launch appended goes newest
     first and from the back, so a user's identical earlier pair survives and their own
-    trailing margin is last again."""
+    trailing margin is last again. A pair is only Studio's while ``cmd`` holds more copies
+    than the emitted ``user_args`` do, so running this twice cannot eat the user's margin."""
     out = list(cmd)
+    user = [str(a) for a in user_args]
+
+    def _count(tokens: List[str], pair: List[str]) -> int:
+        return sum(tokens[i : i + len(pair)] == pair for i in range(len(tokens) - len(pair) + 1))
+
+    def _studio_owns(pair: List[str]) -> bool:
+        return bool(pair) and _count(out, pair) > _count(user, pair)
+
     if "--fit-target" in integrity_flags:
         old_at = integrity_flags.index("--fit-target")
         old_margin = integrity_flags[old_at : old_at + 2]
@@ -6551,9 +6577,11 @@ def _drop_sidecar_margins(
             new_at = rebuilt_integrity.index("--fit-target")
             new_margin = rebuilt_integrity[new_at : new_at + 2]
         at = _subsequence_index(out, old_margin, 0)
-        if out[at : at + 2] == old_margin:
+        if out[at : at + 2] == old_margin and _studio_owns(old_margin):
             out[at : at + 2] = new_margin
     for pair in reversed(list(override_pairs)):
+        if not _studio_owns(pair):
+            continue
         for i in range(len(out) - len(pair), -1, -1):
             if out[i : i + len(pair)] == pair:
                 del out[i : i + len(pair)]
@@ -6800,8 +6828,9 @@ def _draft_card_share_unknown(
         return True
     args = [str(a) for a in extra_args] if extra_args else []
     for i, raw in enumerate(args):
-        name, eq, inline = raw.partition("=")
-        if name in _DRAFT_N_CPU_MOE_FLAGS and _is_positive_int(
+        _, eq, inline = raw.partition("=")
+        # _flag_name: llama.cpp reads --spec_draft_n_cpu_moe as the hyphenated flag.
+        if _flag_name(raw) in _DRAFT_N_CPU_MOE_FLAGS and _is_positive_int(
             inline if eq else (args[i + 1] if i + 1 < len(args) else None)
         ):
             return True
@@ -6843,8 +6872,8 @@ def _draft_n_ubatch(
     found = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_DRAFT_N_UBATCH")
     tokens = [str(a) for a in args] if args else []
     for i, raw in enumerate(tokens):
-        name, eq, inline = raw.partition("=")
-        if name == "--spec-draft-n-ubatch":
+        _, eq, inline = raw.partition("=")
+        if _flag_name(raw) == "--spec-draft-n-ubatch":
             found = inline if eq else (tokens[i + 1] if i + 1 < len(tokens) else None)
     return int(str(found).strip()) if _is_positive_int(found) else None
 
@@ -28319,6 +28348,8 @@ class LlamaCppBackend:
                         # here would free the reserve for a drafter that still loads.
                         and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
                         and not _draft_cpu_no_embedded
+                        # A partly offloaded drafter's card share is unpriced (as below).
+                        and not _draft_share_unknown
                         and not tensor_parallel
                         and gpus
                         and effective_ctx > 0
@@ -28756,6 +28787,52 @@ class LlamaCppBackend:
 
                     # Unified-memory budget (0 off Apple Silicon) for the no-GPU Metal cap below.
                     _apple_budget_mib = self._apple_metal_memory_budget_bytes() // (1024 * 1024)
+
+                    def _sidecar_planned_device_count() -> int:
+                        # The child's devices as planned now: the selected GPUs, unless
+                        # surviving --device extras or LLAMA_ARG_DEVICE name them.
+                        count = len(gpu_indices if gpu_indices is not None else _detected_gpus)
+                        if not _gpu_ids_own_device_flags:
+                            named = _extra_args_main_device(extra_args) or os.environ.get(
+                                "LLAMA_ARG_DEVICE"
+                            )
+                            if named:
+                                count = _distinct_device_count(named)
+                        return count
+
+                    def _draft_on_target_device_now() -> bool:
+                        # A draft pinned to another device allocates there: only a pin naming
+                        # the target's device (MTL0, or Vulkan0 under MoltenVK, on Apple
+                        # Silicon) is charged to it. Read when called: GPU selection moves.
+                        pin = _extra_args_draft_device_pin(extra_args)
+                        if pin is None:
+                            return True
+                        # The picker strips competing --device extras at emission.
+                        main = _extra_args_main_device(
+                            self._strip_device_extra_args(extra_args)
+                            if _gpu_ids_own_device_flags
+                            else extra_args
+                        )
+                        if main is None and not _gpu_ids_own_device_flags:
+                            main = os.environ.get("LLAMA_ARG_DEVICE") or None
+                        if main is None and is_vulkan_backend:
+                            ids = (
+                                gpu_indices
+                                if gpu_indices is not None
+                                else [g[0] for g in _detected_gpus]
+                            )
+                            main = (
+                                f"Vulkan{ids[0]}"
+                                if ids
+                                else ("Vulkan0" if _apple_budget_mib > 0 else None)
+                            )
+                        elif main is None and _apple_budget_mib > 0:
+                            main = "MTL0"
+                        elif main is None and _CUDA_LIKE_DEVICE_RE.match(pin.strip()):
+                            # CUDA / ROCm: the picker remaps pins into the child's mask, so
+                            # only the spawned argv can tell (_spawn_draft_on_target).
+                            return True
+                        return bool(main) and pin.strip().lower() == main.strip().lower()
 
                     if tensor_parallel and tp_gpus:
                         # Pooled usable budget (after each device's compute buffer)
@@ -29315,6 +29392,8 @@ class LlamaCppBackend:
                             # A bare --model-draft in extras still loads (has_dft()).
                             and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
                             and not _draft_share_unknown
+                            # A drafter pinned to another device (RPC) is not Metal's to hold.
+                            and _draft_on_target_device_now()
                         ):
                             # The un-reserved budget: _apple_fit_budget_mib already holds
                             # a fraction back for this drafter under the flat fallback.
@@ -29343,7 +29422,14 @@ class LlamaCppBackend:
                                 _sc_target_only_mib
                                 <= _apple_budget_mib
                                 < _sc_target_mib
-                                + self._sidecar_fit_reserve_mib(_mtp_bytes(_sc_ctx), mtp_draft_path)
+                                # The same reserve the launch carries (flat when unsized).
+                                + self._sidecar_fit_reserve_mib(
+                                    _mtp_bytes(_sc_ctx),
+                                    mtp_draft_path,
+                                    flat_mib = math.ceil(
+                                        _flat_mtp_reserve * max(0, _apple_budget_mib)
+                                    ),
+                                )
                             ):
                                 logger.info(
                                     "Auto: the %s sidecar does not fit in unified memory "
@@ -30092,54 +30178,8 @@ class LlamaCppBackend:
                             if "draft-dspark" in _child_spec_types
                             else ("dflash" if "draft-dflash" in _child_spec_types else None)
                         )
-                    # --fit-target is one margin for every device, so only a single-device
-                    # launch can carry the reserve.
-                    _fit_device_count = len(
-                        gpu_indices if gpu_indices is not None else _detected_gpus
-                    )
-                    # Surviving --device extras or LLAMA_ARG_DEVICE decide the child's devices.
-                    if not _gpu_ids_own_device_flags:
-                        _reserve_devices = _extra_args_main_device(extra_args) or os.environ.get(
-                            "LLAMA_ARG_DEVICE"
-                        )
-                        if _reserve_devices:
-                            _fit_device_count = _distinct_device_count(_reserve_devices)
-                    # A draft pinned to another device allocates there; keep the reserve
-                    # only for a pin naming the target's device (MTL0, or Vulkan0 under
-                    # MoltenVK, on Apple Silicon).
-                    _draft_pin = _extra_args_draft_device_pin(extra_args)
-                    _draft_on_target_device = True
-                    if _draft_pin is not None:
-                        # The picker strips competing --device extras at emission.
-                        _main_dev = _extra_args_main_device(
-                            self._strip_device_extra_args(extra_args)
-                            if _gpu_ids_own_device_flags
-                            else extra_args
-                        )
-                        if _main_dev is None and is_vulkan_backend:
-                            _target_ids = (
-                                gpu_indices
-                                if gpu_indices is not None
-                                else [g[0] for g in _detected_gpus]
-                            )
-                            _main_dev = (
-                                f"Vulkan{_target_ids[0]}"
-                                if _target_ids
-                                else ("Vulkan0" if _apple_budget_mib > 0 else None)
-                            )
-                        elif _main_dev is None and _apple_budget_mib > 0:
-                            _main_dev = "MTL0"
-                        elif (
-                            _main_dev is None
-                            and re.match(r"(?i)(cuda|rocm|hip)\d+$", _draft_pin.strip())
-                            and self._device_ordinal(_draft_pin.strip()) == 0
-                        ):
-                            # CUDA / ROCm: the child's mask numbers a single target card 0.
-                            # Another backend's device 0 (Vulkan0, RPC0) is a different pool.
-                            _main_dev = _draft_pin
-                        _draft_on_target_device = bool(_main_dev) and (
-                            _draft_pin.strip().lower() == _main_dev.strip().lower()
-                        )
+                    _fit_device_count = _sidecar_planned_device_count()
+                    _draft_on_target_device = _draft_on_target_device_now()
                     if (
                         _mtp_will_engage
                         and _mtp_reserves_gpu
@@ -30148,7 +30188,6 @@ class LlamaCppBackend:
                         # Part of the drafter off the card (-ngld, a draft tensor
                         # override) is unpriced: charging the whole file starves the target.
                         and not _draft_share_unknown
-                        and (_apple_budget_mib > 0 or _fit_device_count == 1)
                         # A fitter that measures borrowed-tensor drafts needs no reserve.
                         and not server_caps.get("fit_measures_borrowed_drafts")
                     ):
@@ -30220,7 +30259,6 @@ class LlamaCppBackend:
                             _ub: Optional[int] = _effective_ubatch,
                             _floor: int = _sidecar_compute_mib,
                             _flat: int = _sidecar_flat_mib,
-                            _auto_ctx: bool = _sidecar_auto_ctx,
                             _native: Optional[int] = self._context_length,
                         ) -> int:
                             # A --flash-attn off respawn pads the draft cache to f16, and
@@ -30230,10 +30268,13 @@ class LlamaCppBackend:
                             _kv_unified = _kv_unified_from_args(
                                 run_args, default = _kv_unified, env = child_env
                             )
-                            if _auto_ctx:
+                            # The final argv decides: a trailing -c 0 asks for the native length.
+                            try:
                                 _ctx = _sidecar_child_ctx(
                                     run_args, child_env, _native, _np, _kv_unified
                                 )
+                            except ValueError:
+                                pass  # a malformed -c is the launch's error to report, not this
                             _ub = _draft_n_ubatch(run_args, child_env) or _ub
                             _v = self._estimate_mtp_overhead_bytes(
                                 _ctx,
@@ -30257,7 +30298,10 @@ class LlamaCppBackend:
                                 self._sidecar_fit_reserve_mib(_v or 0, _dp, flat_mib = _flat) + _floor
                             )
 
-                        if use_fit:
+                        # --fit-target is one margin for every device, so only a single-device
+                        # launch carries it; priced regardless, since a later narrowing (the
+                        # arch gate, the kernel-image retry) can leave one card at spawn.
+                        if use_fit and (_apple_budget_mib > 0 or _fit_device_count == 1):
                             _sidecar_fit_reserve_mib = _sidecar_fit_reserve_eligible_mib
                     if _mtp_will_engage:
                         _mtp_note = self._mtp_reserve_note(
@@ -32447,7 +32491,14 @@ class LlamaCppBackend:
                 # Reconcile the sidecar reserve with the child as launched: extras can turn
                 # the fitter on, name the drafter under any alias, or carry a larger margin
                 # (argv or the inherited env) that the reserve must sit on top of.
-                if _sidecar_fit_reserve_eligible_mib and server_caps.get("supports_fit_target"):
+                # The user's tokens as emitted: what margin cleanup must leave in place.
+                _sidecar_user_tokens = list(_emit_extra_args) if _mem_extras else []
+                if (
+                    _sidecar_fit_reserve_eligible_mib
+                    and server_caps.get("supports_fit_target")
+                    # Re-read: a failed GPU selection falls back to every card.
+                    and (_apple_budget_mib > 0 or _sidecar_planned_device_count() == 1)
+                ):
                     _sidecar_child_env = dict(os.environ)
                     if gpu_memory_mode == "manual":
                         self._clear_manual_placement_env(_sidecar_child_env)
@@ -33581,10 +33632,15 @@ class LlamaCppBackend:
                         _spawn_devices = _extra_args_main_device(run_cmd) or env.get(
                             "LLAMA_ARG_DEVICE"
                         )
+                        # No mask (None) means the child sees every detected card.
                         _spawn_device_count = (
                             _distinct_device_count(_spawn_devices)
                             if _spawn_devices
-                            else len(_child_gpu_physical_ids or ())
+                            else len(
+                                _child_gpu_physical_ids
+                                if _child_gpu_physical_ids is not None
+                                else _detected_gpus
+                            )
                         )
                         if _sidecar_fit_reserve_eligible_mib:
                             # Re-derived each spawn, so it can fall as well as rise: drop
@@ -33598,11 +33654,13 @@ class LlamaCppBackend:
                                     fit_target_floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _sidecar_override_pairs,
+                                user_args = _sidecar_user_tokens,
                             )
                             _sidecar_fit_reserve_mib = 0
                         if (
                             _sidecar_fit_reserve_eligible_mib
                             and _spawn_device_count <= 1
+                            and _spawn_draft_on_target(run_cmd, _spawn_devices)
                             and server_caps.get("supports_fit_target")
                         ):
                             # Emitted flags and extras are final only here.
@@ -33624,6 +33682,12 @@ class LlamaCppBackend:
                             )
                             if _spawn_flags:
                                 run_cmd = [*run_cmd, *_spawn_flags]
+                                if _spawn_reserve != _sidecar_fit_reserve_eligible_mib:
+                                    logger.info(
+                                        "Sidecar reserve repriced for this launch's argv: "
+                                        "%.2f GB.",
+                                        _spawn_reserve / 1024,
+                                    )
                                 _sidecar_fit_reserve_mib = _spawn_reserve
                                 if list(_spawn_flags) not in _sidecar_override_pairs:
                                     _sidecar_override_pairs.append(list(_spawn_flags))
@@ -34882,6 +34946,7 @@ class LlamaCppBackend:
                                     fit_target_floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _sidecar_override_pairs,
+                                user_args = _sidecar_user_tokens,
                             )
                             _sidecar_override_pairs.clear()
                             _sidecar_reserve_reprice = functools.partial(
@@ -35139,7 +35204,11 @@ class LlamaCppBackend:
                             fit_target_floor_mib = _metal_fit_target_floor_mib,
                         )
                         fallback_cmd = _drop_sidecar_margins(
-                            fallback_cmd, _integrity_flags, _fb_integrity, _sidecar_override_pairs
+                            fallback_cmd,
+                            _integrity_flags,
+                            _fb_integrity,
+                            _sidecar_override_pairs,
+                            user_args = _sidecar_user_tokens,
                         )
                     # Restore the cut slots; if they fail (unified KV refused), retry as cut.
                     _fb_cut = (
@@ -39079,7 +39148,8 @@ class LlamaCppBackend:
         The planner's byte-accurate reserve (draft weights + draft KV + draft compute +
         target verification rows), never less than the sidecar file itself, which is
         all that is known when the reserve fell back to the flat fraction (0 bytes).
-        ``flat_mib``: that fraction of the target's pool, the floor when neither is known.
+        ``flat_mib``: that fraction of the target's pool, passed only when the planner held
+        it back, so it is a floor: the child keeps at least what the plan kept.
         Rounded up: a short MiB is a short allocation.
         """
         try:
@@ -39087,9 +39157,7 @@ class LlamaCppBackend:
         except Exception:
             file_bytes = 0
         need = max(int(reserve_bytes or 0), file_bytes)
-        if need <= 0:
-            return max(0, int(flat_mib or 0))
-        return math.ceil(need / (1024 * 1024))
+        return max(math.ceil(need / (1024 * 1024)), max(0, int(flat_mib or 0)))
 
     @staticmethod
     def _ctx_integrity_flags(

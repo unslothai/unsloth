@@ -240,7 +240,7 @@ def test_the_draft_context_failure_confirms_the_poison(message, confirmed):
         (),
         {"status_code": 500, "json": lambda self: {"error": {"message": message}}},
     )()
-    with patch.object(_lc.httpx, "post", return_value = resp):
+    with patch.object(_lc.httpx, "post", return_value = resp, create = True):
         assert backend._metal_compute_failure_confirmed() is confirmed
 
 
