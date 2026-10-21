@@ -11,6 +11,7 @@ user's identical margin alone, and the underscore spellings llama.cpp accepts ar
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -147,3 +148,24 @@ def test_metal_auto_keeps_a_drafter_pinned_to_another_device(tmp_path, monkeypat
     # The same budget with the drafter on Metal still drops it.
     cmd, backend = _r2._metal_cmd(tmp_path, monkeypatch, "auto", budget_gib = 9.1, sub = "local")
     assert "--model-draft" not in cmd
+
+
+def test_a_repeated_device_is_one_card_for_the_draft_pin():
+    argv = ["--device", "CUDA0,CUDA0", "--device-draft", "CUDA0"]
+    assert _lc._spawn_draft_on_target(argv, "CUDA0,CUDA0")
+    assert not _lc._spawn_draft_on_target(["--device-draft", "CUDA1"], "CUDA0,CUDA0")
+
+
+def test_an_unread_native_length_prices_the_fitters_minimum_context():
+    assert _lc._sidecar_child_ctx([], {}, None, 1, True) == _lc._LLAMA_FIT_MIN_CTX
+    assert _lc._sidecar_child_ctx([], {}, None, 4, False) == 4 * _lc._LLAMA_FIT_MIN_CTX
+    assert _lc._sidecar_child_ctx(["-c", "8192"], {}, None, 4, False) == 8192
+
+
+@pytest.mark.parametrize("extras", [("-ngld", "1"), ("-otd", "blk\\.0\\.=CPU")])
+def test_a_partly_placed_drafter_keeps_its_compute_floor(tmp_path, extras):
+    backend, gguf = _r2._cuda_backend(tmp_path)
+    margin = _r4._margin(_dspark(backend, gguf, tmp_path, extra_args = list(extras)))
+    floor = math.ceil(_lc.LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024))
+    # Not the whole 8 GiB file, but not nothing either.
+    assert 1024 + floor <= margin < _FLOOR

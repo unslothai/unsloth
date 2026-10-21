@@ -5285,7 +5285,9 @@ def _spawn_draft_on_target(run_cmd: List[str], spawn_devices: Optional[str]) -> 
     if pin is None or not _CUDA_LIKE_DEVICE_RE.match(pin.strip()):
         return True
     if spawn_devices:
-        return pin.strip().lower() == spawn_devices.strip().lower()
+        # A repeated card (CUDA0,CUDA0) is one device, as _distinct_device_count counts it.
+        named = {d.strip().lower() for d in spawn_devices.split(",") if d.strip()}
+        return named == {pin.strip().lower()}
     return int(re.sub(r"\D", "", pin)) == 0
 
 
@@ -6858,7 +6860,8 @@ def _sidecar_child_ctx(
             ctx = None
     if ctx and ctx > 0:
         return ctx
-    bound = int(native_ctx or 0)
+    # Native length unread: an enabled fitter still keeps llama.cpp's 4096-token minimum.
+    bound = int(native_ctx or 0) or _LLAMA_FIT_MIN_CTX
     if not kv_unified:
         bound *= max(1, int(n_parallel or 1))
     return bound
@@ -30185,9 +30188,6 @@ class LlamaCppBackend:
                         and _mtp_reserves_gpu
                         and _sidecar_kind_for_fit is not None
                         and _draft_on_target_device
-                        # Part of the drafter off the card (-ngld, a draft tensor
-                        # override) is unpriced: charging the whole file starves the target.
-                        and not _draft_share_unknown
                         # A fitter that measures borrowed-tensor drafts needs no reserve.
                         and not server_caps.get("fit_measures_borrowed_drafts")
                     ):
@@ -30224,13 +30224,18 @@ class LlamaCppBackend:
                         # cushion to the child, or its fitter spends it on target layers.
                         _sidecar_flat_mib = 0
                         if _flat_mtp_reserve > 0:
+                            # One card's pool: the reserve only reaches a single-device
+                            # child, which a multi-GPU plan narrowed at spawn may become.
                             _flat_pool_mib = (
                                 _apple_budget_mib
                                 if _apple_budget_mib > 0
-                                else sum(
-                                    free
-                                    for idx, free in gpus
-                                    if gpu_indices is None or idx in gpu_indices
+                                else max(
+                                    (
+                                        free
+                                        for idx, free in gpus
+                                        if gpu_indices is None or idx in gpu_indices
+                                    ),
+                                    default = 0,
                                 )
                             )
                             _sidecar_flat_mib = math.ceil(
@@ -30298,6 +30303,13 @@ class LlamaCppBackend:
                                 self._sidecar_fit_reserve_mib(_v or 0, _dp, flat_mib = _flat) + _floor
                             )
 
+                        if _draft_share_unknown:
+                            # Part of the drafter off the card (-ngld, a draft tensor override):
+                            # its weights' card share is unpriced and charging the whole file
+                            # starves the target, but the part still on the card runs its
+                            # compute buffer there, so that floor stays.
+                            _sidecar_fit_reserve_eligible_mib = _sidecar_compute_mib
+                            _sidecar_reserve_reprice = None
                         # --fit-target is one margin for every device, so only a single-device
                         # launch carries it; priced regardless, since a later narrowing (the
                         # arch gate, the kernel-image retry) can leave one card at spawn.
