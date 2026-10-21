@@ -124,11 +124,16 @@ test("finished replies render as written; cut replies are still repaired", async
       "length",
     ),
     message([text("Then **bol"), SOURCE], COMPLETE, "length"),
-    message([text("call `foo(")], { type: "incomplete", reason: "cancelled" }),
-    message([reasoning("so **maybe")], {
-      type: "incomplete",
-      reason: "cancelled",
-    }),
+    message(
+      [text("call `foo(")],
+      { type: "incomplete", reason: "cancelled" },
+      "cancelled",
+    ),
+    message(
+      [reasoning("so **maybe")],
+      { type: "incomplete", reason: "cancelled" },
+      "cancelled",
+    ),
     message([text("- >= 16 GB of RAM")], COMPLETE),
     message([text("It takes 5~10 minutes and uses 20~30 GB.")], COMPLETE),
   ]);

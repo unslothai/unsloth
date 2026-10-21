@@ -1030,19 +1030,12 @@ export function hasIncompleteLinkRepair(
 // Skips only remend's link pass, whose placeholder renders as "[blocked]"; every other repair still runs.
 export const LITERAL_LINK_REMEND = { links: false, images: false } as const;
 
-// A finished reply keeps remend's literal escapes (`- > 25`, `20~25`) but none of its completions.
+// A finished reply keeps remend's literal escapes (`- > 25`, `20~25`) but not its marker completions.
 export const FINISHED_TEXT_REMEND = {
+  ...LITERAL_LINK_REMEND,
   bold: false,
-  boldItalic: false,
-  htmlTags: false,
-  images: false,
   inlineCode: false,
-  inlineKatex: false,
   italic: false,
-  katex: false,
-  links: false,
-  setextHeadings: false,
-  strikethrough: false,
 } as const;
 
 export function repairStreamingMarkdown(source: string): string {

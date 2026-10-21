@@ -180,7 +180,7 @@ test("streaming reparses only the active Markdown tail", () => {
   );
   assert.equal(
     jsxAttribute(streamdown, "remend")?.initializer?.getText(source),
-    "{remendOptions}",
+    "{cut ? LITERAL_LINK_REMEND : FINISHED_TEXT_REMEND}",
   );
   assert.equal(
     jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
@@ -194,12 +194,12 @@ test("streaming reparses only the active Markdown tail", () => {
 });
 
 test("retained block and sandbox changes move Streamdown's render identity", () => {
-  // Streamdown's memo also ignores rehypePlugins, parseIncompleteMarkdown and remend.
+  // Streamdown's memo also ignores rehypePlugins and remend.
   const streamdown = findChatStreamdown();
   assert.ok(streamdown, "chat <Streamdown> is missing");
   assert.equal(
     jsxAttribute(streamdown, "key")?.initializer?.getText(source),
-    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${repairSettled}`}",
+    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}",
   );
   assert.match(
     source.getText(),

@@ -14,13 +14,12 @@ import { Streamdown } from "streamdown";
 import {
   FINISHED_TEXT_REMEND,
   LITERAL_LINK_REMEND,
-  hasIncompleteLinkRepair,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
- * before parsing it, and Unsloth runs it on every settled body (completions only on a cut one,
- * `repairSettled`), so a version bump is a rendering change.
+ * before parsing it, and Unsloth runs it on every settled body (marker completions only on a cut
+ * one), so a version bump is a rendering change.
  *
  * These are RUN, not scraped. Every assertion below is either a call into the resolved package or
  * a render through Streamdown, so the file fails if the dependency is downgraded, if the override
@@ -129,7 +128,7 @@ function settledParseIncompleteMarkdown(cut: boolean): boolean {
   );
   const value: unknown = new Function(
     "incrementalRender",
-    "repairSettled",
+    "cut",
     `return (${expression});`,
   )(null, cut);
   assert.equal(
@@ -147,11 +146,7 @@ function renderSettled(markdown: string, cut = true): string {
       {
         mode: "streaming",
         parseIncompleteMarkdown: settledParseIncompleteMarkdown(cut),
-        remend: !cut
-          ? FINISHED_TEXT_REMEND
-          : hasIncompleteLinkRepair(markdown)
-            ? LITERAL_LINK_REMEND
-            : undefined,
+        remend: cut ? LITERAL_LINK_REMEND : FINISHED_TEXT_REMEND,
       },
       markdown,
     ),
