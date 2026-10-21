@@ -1951,3 +1951,36 @@ def test_wired_resident_with_unknown_gpus_keeps_layer(tmp_path, monkeypatch):
     cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
     assert _split_flag(cmd) != "tensor"
     assert "unknown" in backend._auto_split_decision.reason
+
+
+@pytest.mark.parametrize(
+    "sidecar, tensor",
+    [
+        # whisper.cpp on a GPU: STT publishes no GPU ids, so it may hold either card.
+        (dict(loaded_model = "small", device = "whisper.cpp", _forced_cpu = False), False),
+        (dict(loaded_model = None, device = None, loading = True), False),
+        # Known CPU-only sidecars hold no card.
+        (dict(loaded_model = "small", device = "whisper.cpp", _forced_cpu = True), True),
+        (dict(loaded_model = "small", device = "cpu"), True),
+        (dict(loaded_model = "small", device = "llama.cpp", _gpu_disabled = True), True),
+    ],
+)
+def test_wired_resident_dictation_gpu_keeps_layer(tmp_path, monkeypatch, sidecar, tensor):
+    import core.inference.stt_registry as stt_registry
+
+    backend, gguf = _wired_backend(
+        tmp_path, monkeypatch, memory = TWO_T4_MEM, model_gib = 6, names = TWO_T4_NAMES
+    )
+    loading = sidecar.pop("loading", False)
+    fake = types.SimpleNamespace(is_loading = lambda: loading, **sidecar)
+    monkeypatch.setattr(
+        stt_registry,
+        "sidecar_for",
+        lambda engine: fake
+        if engine == "gguf"
+        else types.SimpleNamespace(is_loading = lambda: False, loaded_model = None, device = None),
+    )
+    cmd = _launch(backend, gguf, gpu_memory_mode = "auto", n_ctx = 4096)["cmd"]
+    assert (_split_flag(cmd) == "tensor") is tensor
+    if not tensor:
+        assert "unknown" in backend._auto_split_decision.reason

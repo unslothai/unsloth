@@ -771,6 +771,29 @@ def _is_gpu_device_lost(exc: BaseException) -> bool:
     return any(marker in text for marker in _GPU_DEVICE_LOST_MARKERS)
 
 
+def _stt_may_hold_a_gpu() -> bool:
+    """Whether a dictation sidecar is loading or resident off the CPU. Unknown counts as held."""
+    try:
+        from core.inference.stt_registry import STT_ENGINES, sidecar_for
+        for engine in STT_ENGINES:
+            sidecar = sidecar_for(engine)
+            if sidecar.is_loading():
+                return True
+            if not sidecar.loaded_model:
+                continue
+            disabled = getattr(sidecar, "_gpu_disabled", None)
+            cpu_only = (
+                str(sidecar.device or "").strip().lower() == "cpu"
+                or disabled is True
+                or (disabled is None and getattr(sidecar, "_forced_cpu", False) is True)
+            )
+            if not cpu_only:
+                return True
+    except Exception:  # noqa: BLE001 - an unreadable sidecar may hold any card
+        return True
+    return False
+
+
 class _UnloadedSince:
     """A load cancel event that is set once ``backend`` was unloaded after ``epoch`` was read.
     load_model clears the backend's own cancel event on entry, which would forget that."""
@@ -37201,7 +37224,10 @@ class LlamaCppBackend:
     def _gpus_held_by_others(self) -> Optional[frozenset]:
         """GPUs another server or resident media model holds: reservations plus each live
         child's devices (companions included). None when a child's devices are unknown
-        (unpinned, Vulkan): it may hold any card."""
+        (unpinned, Vulkan): it may hold any card, as may a GPU dictation sidecar
+        (STT publishes no GPU ids)."""
+        if _stt_may_hold_a_gpu():
+            return None
         held = set(self._vram_reserved_by_others_mib())
         for backend in _serving_backends_snapshot():
             if backend is not self and getattr(backend, "is_active", False):
