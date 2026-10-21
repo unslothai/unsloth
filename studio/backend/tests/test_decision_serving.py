@@ -928,7 +928,9 @@ def test_a_loading_clef_worker_dies_with_unsloth(tmp_path):
 
 
 def test_shutdown_ends_a_clef_worker(home, client, clef):
-    assert _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    assert (
+        _put(client, enabled = True, model = _clef_fine_tune(home, "clef_served_1")).status_code == 200
+    )
     assert _post(client).status_code == 200
     laya_runtime.shutdown()
     assert clef.agents[0].closed
