@@ -16,22 +16,18 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Core's unsloth/models/reap.py keys, plus the raw config.json names transformers maps onto them
-# through attribute_map (HunYuan moe_topk, Ernie moe_k), which Core reads as num_experts_per_tok
-# but a raw config dict does not; checked on text_config first, then the top-level config.
+# Core's top-k keys plus the raw config.json aliases transformers maps through attribute_map.
 _NUM_EXPERTS_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 _TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts", "moe_topk", "moe_k")
 # Decoder layers that hand state to the next layer (prev_* arguments), which Core refuses since it
 # calibrates one layer at a time: GLM-5 / HY-V4 sparse-attention top-k indices, ZAYA router states.
 _STATEFUL_MODEL_TYPES = frozenset({"glm_moe_dsa", "glm5_next", "glm5_next_text", "hy_v4", "zaya"})
-# Hash-routed MoE (a fixed token to expert table, tid2eid), which Core refuses since dropped experts
-# cannot be remapped.
+# Hash-routed MoE (tid2eid): Core refuses it since dropped experts cannot be remapped.
 _HASH_ROUTED_MODEL_TYPES = frozenset({"deepseek_v4"})
 _N_GROUP_KEYS = ("n_group", "num_expert_group")
 _TOPK_GROUP_KEYS = ("topk_group", "top_k_group")
 REPORT_NAME = "reap_report.json"
-# Written into each staging copy (the export worker's pid), so a parent can remove what a killed
-# worker left behind without trusting a path it did not create.
+# The export worker's pid, so a parent only removes staging copies it can prove a dead worker made.
 _OWNER_FILE = ".unsloth_reap_owner"
 
 
@@ -66,14 +62,10 @@ def _model_parallel(distributed) -> bool:
     )
 
 
-# Serialized quantization REAP can still prune once Studio loads the model in 16-bit; any other
-# quant_method (FP8, compressed-tensors / SparseML, ModelOpt, GPTQ, AWQ, ...) stays packed or is
-# rewritten to FP8 by the loader, and Core's 16 / 32-bit weight check refuses it only after a full
-# load. mxfp4: gpt-oss dequantizes to bf16 without native kernels (Core refuses it clearly
-# otherwise). bitsandbytes only for the Hub ids Unsloth swaps for their 16-bit original.
+# Quantization a 16-bit load unpacks (gpt-oss mxfp4; bitsandbytes only for Hub ids Unsloth maps to
+# 16-bit); anything else stays packed and Core refuses it only after a full load.
 _UNPACKED_QUANT_METHODS = {"mxfp4"}
-# Older ModelOpt exports declare their quantization here instead of in config.json; the loader
-# reads it the same way (attach_hf_quant_config).
+# Older ModelOpt exports declare quantization here (attach_hf_quant_config reads it too).
 _HF_QUANT_CONFIG = "hf_quant_config.json"
 
 
@@ -235,7 +227,6 @@ def moe_info_from_config(
         if not topk_group:
             # Core refuses grouped routing it cannot prune per group.
             return None
-        # Core prunes per group, so the UI must count the same way.
         info.update(n_group = n_group, topk_group = topk_group)
     return info
 
@@ -258,14 +249,12 @@ def moe_export_info(
         if is_local_path(model):
             local = Path(normalize_path(model)).expanduser()
             has_config = (local / "config.json").is_file()
-            # Unsloth's loader re-attaches a LoRA folder's trained MTP head, which REAP refuses. A
-            # full checkpoint's head is attached only per its training manifest (checked below).
+            # The loader re-attaches a LoRA folder's trained MTP head, which REAP refuses.
             if (local / "adapter_config.json").is_file() and (
                 local / "mtp_head.safetensors"
             ).is_file():
                 return None
-            # An adapter folder may carry a config.json too; the export loader follows
-            # adapter_config.json, so the probe does as well.
+            # The export loader follows adapter_config.json even beside a config.json.
             if not has_config or (local / "adapter_config.json").is_file():
                 base = adapter_base or _local_adapter_base(str(local))
                 if base and _depth < 2 and base != model:
@@ -298,7 +287,6 @@ def moe_export_info(
     except MoeProbeError:
         raise
     except ValueError as exc:
-        # A malformed config.json (JSONDecodeError and friends) stays malformed: hide the option.
         logger.debug("MoE detection skipped for '%s': %s", model, exc)
         return None
     except Exception as exc:
@@ -333,8 +321,7 @@ def _calibration_dataset(dataset: Optional[str], hf_token):
     from datasets import load_dataset
 
     kwargs = {} if hf_token is None else {"token": hf_token}
-    # Streaming reads only the rows Core uses. No split is forced: like Core, take `train`, else the
-    # only split (calibration sets often ship just `validation` or `test`).
+    # Like Core: no split forced, take `train` else the only split.
     splits = load_dataset(dataset, streaming = True, **kwargs)
     if not isinstance(splits, dict):
         return splits
@@ -410,12 +397,9 @@ def apply_reap(
         sweep_reap_staging()
         staging = _staging_dir(staging_parent)
         _register_staging(staging.name)
-        # Attached now, so an unload after a failure below also removes it.
         backend._reap_staging = staging
         sparsity, samples, dataset = key
-        # save_directory repoints the model at the pruned copy, so every later save, merge or GGUF
-        # conversion reads the pruned weights and never the original checkpoint. GGUF files are named
-        # after that folder, so it carries the model's own name.
+        # save_directory repoints every later save / merge / GGUF at the pruned copy, named after the model.
         source = str(getattr(model.config, "_name_or_path", "") or "")
         name = Path(source.rstrip("/\\") or "model").name
         FastLanguageModel.reap_prune(
@@ -435,8 +419,7 @@ def apply_reap(
         except Exception as cleanup_exc:
             logger.warning("Could not unload after a failed REAP run: %s", cleanup_exc)
         if not unloaded:
-            # cleanup_memory reports its own failures as False; the model must still never be
-            # exported again from this worker, so drop it here.
+            # cleanup_memory may report failure; this worker must never export the model again.
             backend.current_model = None
             backend.current_tokenizer = None
             backend.current_checkpoint = None
@@ -445,7 +428,6 @@ def apply_reap(
             f"REAP expert pruning failed: {exc}. The model was unloaded since it may be partly "
             "pruned; load it again to export."
         ) from exc
-    # The model now points at the staging copy; Hub cards should name the model it came from.
     model._unsloth_reap_source = source or None
     backend._reap_key = key
     # The settings belong to this model object only (see current_reap_key).
@@ -590,7 +572,6 @@ def sweep_reap_staging(dead_pid: Optional[int] = None) -> None:
         alive = None
     entries = _read_registry()
     if not entries:
-        # Nothing was ever staged: no file is created or rewritten for users who never use REAP.
         return
     keep = []
     for entry in entries:
