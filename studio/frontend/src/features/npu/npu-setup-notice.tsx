@@ -18,7 +18,7 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
     >
       {setUp ? (
         <p className="text-muted-foreground">
-          These models run on the AMD NPU, separately from the GPU models below.
+          These models run on the AMD NPU, not on the GPU.
         </p>
       ) : (
         <NpuEnableCard catalog={catalog} />
@@ -71,14 +71,13 @@ function NpuEnableCard({ catalog }: { catalog: NpuCatalog }) {
         This PC has an AMD Ryzen AI NPU
       </p>
       <p className="text-muted-foreground">
-        The NPU can run its own builds of models such as Qwen and Gemma without
-        using the GPU. Enable it to list them here, separately from the GPU
-        models below.
+        The NPU runs its own builds of models such as Qwen and Gemma, alongside
+        your GPU models rather than instead of them. Enable it to see them.
       </p>
       <div className="flex items-center justify-between gap-3">
         <span className="text-muted-foreground">
           {status.runtime_installed
-            ? "The NPU runtime is installed but not running."
+            ? "The NPU runtime is already downloaded."
             : "One-time setup: downloads about 47 MB and checks the NPU driver."}
         </span>
         <Button size="sm" onClick={() => void enable()} disabled={enabling}>
