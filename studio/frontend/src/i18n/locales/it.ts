@@ -49,6 +49,11 @@ export const it = {
     removeFromMessage: "Rimuovi dal messaggio",
   },
   browser: {
+    drafts: {
+      title: "Scaricare una pagina con testo inserito?",
+      description: "Per mantenere la chat reattiva, solo tre pagine nascoste con testo inserito restano in esecuzione. Continuando verrà scaricata {pages} e il testo non salvato potrebbe andare perso. Annulla torna alla scheda precedente.",
+      confirm: "Scarica e continua",
+    },
     agentSettings: {
       title: "Uso del browser",
       enable: "Consenti ai modelli di usare il browser",
@@ -2328,6 +2333,9 @@ export const it = {
         multiModelDescriptionAlways:
           "Caricare un modello non ne scarica mai un altro. Un modello che non entra non viene caricato. Lo scaricamento automatico per inattività e l'addestramento liberano comunque memoria.",
         multiModelHint: "Vale per i modelli di chat, voce, immagini e video. Ogni modello di chat caricato risponde alle richieste che lo nominano. Con più GPU, Unsloth prova a mettere un nuovo modello su una GPU che nessun altro modello usa. «Se c'è spazio» lascia circa 1 GB libero. «Se c'è spazio» e «Sempre» non scaricano mai un modello su un'altra GPU.",
+        allowOversizedLoad: "Consenti il caricamento di modelli troppo grandi",
+        allowOversizedLoadDescription: "Carica modelli di immagini e video anche quando il controllo della memoria indica che non entrano.",
+        allowOversizedLoadHint: "Si applica quando CPU e GPU condividono un'unica memoria (Apple Silicon, GPU integrate). Studio rifiuta il caricamento quando la stima dei pesi del modello supera la memoria rimasta dopo la riserva per il sistema operativo. Con questa opzione attiva, il caricamento viene tentato comunque. La stima può sbagliare in entrambe le direzioni: un caricamento troppo grande può fallire, esaurire la memoria, far usare molto lo swap al computer o bloccarlo, oppure chiudere Studio. Disattivato per impostazione predefinita.",
         mediaIdleUnloadDescription:
           "Libera la VRAM scaricando i modelli di immagini e video dopo il numero indicato di secondi di inattività. 0 li mantiene in memoria; il minimo è 60.",
         mlockVetoed: "--mlock resta disattivato: bloccare il modello riserverebbe RAM per l'intero modello. Lo scaricamento automatico in inattività resta disattivato.",
@@ -3151,6 +3159,7 @@ export const it = {
       audioCppVersion: "Versione di audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrata",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

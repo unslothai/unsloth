@@ -21,6 +21,7 @@ export type FrameMessage =
   | { type: "upload" }
   | { type: "scriptNavigation" }
   | { type: "needsBrowser" }
+  | { type: "typed"; reset?: boolean }
   /** Find in page: how many matches the query has, and which one is shown (-1: none). */
   | { type: "findResult"; count: number; active: number }
   /** The page's current markup, for printing; null when it couldn't be copied or was too large. */
@@ -211,6 +212,8 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     case "scriptNavigation":
     case "needsBrowser":
       return { type: message.type };
+    case "typed":
+      return message.reset === true ? { type: "typed", reset: true } : { type: "typed" };
     case "findResult": {
       const { count, active } = message;
       return Number.isInteger(count) && Number.isInteger(active) && (count as number) >= 0 && (active as number) >= -1 && (active as number) < Math.max(count as number, 1)

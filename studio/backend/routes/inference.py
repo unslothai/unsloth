@@ -6484,14 +6484,14 @@ _ROSTER_COUNT_SQL = (
 
 
 def _roster_scopes(rag_scope: dict) -> list[str]:
-    """KB is exclusive, matching retrieval. Thread precedes project so a file just
-    attached to this chat survives truncation."""
+    """Matches _resolve_scope. The pick precedes project so a just-attached file survives
+    truncation."""
     from core.rag.store import kb_scope, project_scope, thread_scope
 
-    if rag_scope.get("kb_id"):
-        return [kb_scope(rag_scope["kb_id"])]
     scopes = []
-    if rag_scope.get("thread_id"):
+    if rag_scope.get("kb_id"):
+        scopes.append(kb_scope(rag_scope["kb_id"]))
+    elif rag_scope.get("thread_id"):
         scopes.append(thread_scope(rag_scope["thread_id"]))
     if rag_scope.get("project_id"):
         scopes.append(project_scope(rag_scope["project_id"]))
@@ -39056,13 +39056,14 @@ _LLAMA_DEFAULT_SAMPLERS = (
 # (tools/server/server-schema.cpp) plus OpenAI's. A field llama-server reads only while another
 # is on is off with it.
 _MLX_COMPLETION_FIELDS_OFF = {
-    "logprobs": lambda v, b: v == 0,
-    "n_probs": lambda v, b: v == 0,
     # best_of equal to the choice count asks for no hidden candidates; llama-server ignores it.
     "best_of": lambda v, b: v in (1, _llama_value(b, "n_cmpl")),
     "suffix": lambda v, b: v == "",
     # A lazy grammar waits for a trigger; this one constrains from the first token.
     "grammar_lazy": lambda v, b: v is False or _llama_grammar_off(b),
+    # Ours are pre-sampler; llama-server's post_sampling_probs flips that and renames fields,
+    # but only with n_probs, so refuse only together.
+    "post_sampling_probs": lambda v, b: v is False or not _llama_value(b, "n_probs"),
     "timings_per_token": lambda v, b: v is False,
     "return_tokens": lambda v, b: v is False,
     "return_progress": lambda v, b: v is False,
@@ -39215,6 +39216,17 @@ def _mlx_completions_refusal(body: dict) -> Optional[str]:
             )
     if body.get("stream") is True and len(prompts) * (_llama_value(body, "n_cmpl") or 1) > 1:
         return "Streaming more than one completion is not supported for MLX models."
+    n_probs = _llama_value(body, "n_probs")
+    if n_probs not in (None, False) and not (_is_token_id(n_probs) and n_probs >= 0):
+        return f"Field 'n_probs': Value must be a non-negative integer, but got {n_probs}"
+    if n_probs:
+        # Only the reported tokens: a prompt's own logprobs (echo) are not computed.
+        if body.get("stream") is True:
+            return "'logprobs' is not supported with stream for MLX models."
+        if body.get("echo") is True:
+            return "'logprobs' is not supported with echo for MLX models."
+        if len(prompts) * (_llama_value(body, "n_cmpl") or 1) > 1:
+            return "'logprobs' is supported for one completion per request on MLX models."
     try:
         _llama_logit_bias(body.get("logit_bias"))
         _mlx_completion_grammar(body)
@@ -39229,6 +39241,22 @@ def _active_mlx_backend():
     name = getattr(backend, "active_model_name", None)
     models = getattr(backend, "models", None)
     if name and isinstance(models, dict) and models.get(name, {}).get("is_mlx"):
+        return backend
+    return None
+
+
+def _active_managed_engine_backend():
+    backend = _peek_inference_backend()
+    name = getattr(backend, "active_model_name", None)
+    models = getattr(backend, "models", None)
+    engine = getattr(backend, "_managed_engine", None)
+    if (
+        engine is not None
+        and name
+        and isinstance(models, dict)
+        and models.get(name, {}).get("engine") in ("vllm", "sglang")
+        and engine.alive()
+    ):
         return backend
     return None
 
@@ -39357,6 +39385,8 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         subject = current_subject,
     )
 
+    n_probs = _llama_value(body, "n_probs") or 0
+
     def generate(prompt_ids, choice = 0):
         return backend.generate_completion(
             prompt_ids,
@@ -39364,6 +39394,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             stats_holder = stats_holder,
             max_new_tokens = budget,
             **{**sampling, "seed": _choice_seed(sampling["seed"], choice)},
+            **({"n_probs": n_probs} if n_probs else {}),
         )
 
     def choice_end(prompt_ids, stats):
@@ -39547,8 +39578,15 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                     cached_tokens = (cached_tokens or 0) + cached
             completion_tokens += usage["completion_tokens"]
             prefix = resolved[prompt_index]["text"] if echo else ""
+            token_logprobs = (stats or {}).get("token_logprobs") if n_probs else None
             choices.append(
-                {"text": prefix + text, "index": index, "logprobs": None, "finish_reason": reason}
+                {
+                    "text": prefix + text,
+                    "index": index,
+                    # llama-server's shape, null when nothing was generated.
+                    "logprobs": {"content": token_logprobs} if token_logprobs else None,
+                    "finish_reason": reason,
+                }
             )
             replies.append(text)
     except asyncio.CancelledError:
@@ -39606,7 +39644,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     OpenAI-compatible text completions endpoint (non-chat).
 
     Proxies to the running llama-server's ``/v1/completions`` when a GGUF model is
-    loaded, and serves an MLX model in process.
+    loaded or to a managed vLLM/SGLang engine's, and serves an MLX model in process.
     """
     from utils.hardware import DeviceType, get_device
 
@@ -39643,7 +39681,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 )
             if not _completions_prompt_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
-            _raise_ignored_completions_params(_pre, echo = not _mlx_device)
+            # A resident managed engine serves echo; a switch to a GGUF still refuses it below.
+            _raise_ignored_completions_params(
+                _pre, echo = not (_mlx_device or _active_managed_engine_backend() is not None)
+            )
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the
@@ -39666,7 +39707,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     )
     llama_backend = get_llama_cpp_backend()
     mlx_backend = None if llama_backend.is_loaded else _active_mlx_backend()
-    if not llama_backend.is_loaded and mlx_backend is None:
+    engine_backend = (
+        None
+        if llama_backend.is_loaded or mlx_backend is not None
+        else _active_managed_engine_backend()
+    )
+    if not llama_backend.is_loaded and mlx_backend is None and engine_backend is None:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
             _raw_body_model(body),
@@ -39685,6 +39731,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _SCHEMA_VALIDATION_EXECUTOR, _mlx_completions_refusal, body
         )
         return await _mlx_completions(request, current_subject, mlx_backend, body, refusal)
+    if engine_backend is not None:
+        _raise_ignored_completions_params(body, echo = False)
+        from routes.managed_engine_chat import managed_engine_completions
+        return await managed_engine_completions(request, current_subject, engine_backend, body)
     _raise_ignored_completions_params(body)
 
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful
@@ -44346,6 +44396,72 @@ def _count_model_id(model_id, via_api_key):
     ]
 
 
+def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs):
+    from core.inference.llama_cpp import (
+        _can_reset_epoch,
+        _compaction_fit_kwargs,
+        _fit_with_instruction_pins,
+        _memory_tool_withheld,
+        _sticky_compaction_details,
+    )
+
+    def count_tokens(candidate):
+        return backend.count_chat_tokens(
+            candidate,
+            None,
+            tools,
+            strict = True,
+            chat_template_kwargs = template_kwargs,
+            # A generation can start between /apply-template and /tokenize.
+            should_abort = lambda: model_slots.routed_generation_count() > 0,
+        )
+
+    context_length = getattr(backend, "_effective_context_length", None)
+    thread_id = getattr(payload, "thread_id", None)
+    if (
+        _rolling_context_policy(payload) is not None
+        and context_length
+        and thread_id
+        and not _takes_tool_passthrough(payload, backend)
+    ):
+        policy = _request_context_policy(payload)
+        ratio = _request_compaction_headroom_ratio(payload)
+        can_reset = _can_reset_epoch(
+            thread_id,
+            backend.supports_tools,
+            tools_withheld = _memory_tool_withheld(thread_id, tools),
+        )
+        sticky, checkpoint, manual = _sticky_compaction_details(
+            thread_id,
+            messages,
+            context_policy = policy,
+            can_reset = can_reset,
+            compaction_headroom_ratio = ratio,
+        )
+        if sticky > 0:
+            fitted, truncation = _fit_with_instruction_pins(
+                messages,
+                context_length = context_length,
+                max_tokens = getattr(payload, "max_tokens", None),
+                count_tokens = count_tokens,
+                sticky_dropped = sticky,
+                sticky_is_checkpoint = checkpoint,
+                sticky_manual = manual,
+                can_reset = can_reset,
+                keeps_boundary = True,
+                recall_offered = any(
+                    (tool.get("function") or {}).get("name") == "search_conversation"
+                    for tool in tools or []
+                ),
+                replay_only = True,
+                **_compaction_fit_kwargs(policy, ratio),
+            )
+            if truncation is not None:
+                return int(truncation["prompt_tokens_after"])
+            messages = fitted
+    return count_tokens(messages)
+
+
 @router.post("/chat/count_tokens")
 async def chat_count_tokens(
     payload: ChatCountTokensRequest,
@@ -44550,12 +44666,25 @@ async def chat_count_tokens(
                 status_code = 503,
                 detail = "Cannot count tokens until enabled MCP tools have been discovered.",
             )
-    if not _takes_passthrough and (_tools_on or _mcp_on) and llama_backend.supports_tools:
+    if (
+        not _takes_passthrough
+        and llama_backend.supports_tools
+        and (
+            _tools_on
+            or _mcp_on
+            or (
+                not _client_disabled_tool_calls
+                and payload.max_tool_calls_per_message != 0
+                and await asyncio.to_thread(_checkpoint_recall_may_enable_tools, payload)
+            )
+        )
+    ):
         tools_to_use = await _select_request_tools(
             payload,
             tools_on = _tools_on,
             mcp_allowed = _mcp_allowed,
             supports_vision = bool(getattr(llama_backend, "is_vision", False)),
+            checkpoint_fitted = _rolling_context_policy(payload) is not None,
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
@@ -44580,6 +44709,12 @@ async def chat_count_tokens(
                 ),
                 tools_to_use,
                 rag_scope = payload.rag_scope,
+            )
+            _count_nudge = _apply_compaction_nudge(
+                _count_nudge,
+                tools_to_use,
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
+                payload = payload,
             )
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
@@ -44634,15 +44769,12 @@ async def chat_count_tokens(
 
     try:
         count = await asyncio.to_thread(
-            llama_backend.count_chat_tokens,
+            _count_chat_context_tokens,
+            llama_backend,
+            payload,
             openai_messages,
-            None,
             openai_tools,
-            strict = True,
-            chat_template_kwargs = _template_kwargs,
-            # Polled between /apply-template and /tokenize: admission and the work are separate
-            # steps, so a run starting in between is caught here and the second round trip is not.
-            should_abort = lambda: model_slots.routed_generation_count() > 0,
+            _template_kwargs,
         )
     except CountAborted:
         raise HTTPException(
@@ -50824,8 +50956,10 @@ async def diffusion_download_plan(
                     text_encoder_files = request.supplied_text_encoder_files(),
                     gguf_filename = request.gguf_filename,
                 )
+        from core.inference.diffusion_memory import unified_oversize_scoped
+
         plan = await asyncio.to_thread(
-            planner.download_plan,
+            unified_oversize_scoped(request.allow_oversized_load, planner.download_plan),
             request.model_path,
             gpu_ordinal = gpu_ordinal,
             gguf_filename = request.gguf_filename,
@@ -51342,6 +51476,8 @@ async def load_diffusion_model_gated(
                 # different card from free VRAM that has moved since.
                 gpu_ordinal = gpu_ordinal,
                 **_component_file_kwargs(request),
+                # Only when set: the native engines take no such argument.
+                **({"allow_oversized_load": True} if request.allow_oversized_load else {}),
             )
             # A warm start that took the generation slot between the stop above and begin_load publishing the load would
             # bring the old model's upsampler up beside this one: cancel it now that the load is visible.
@@ -53147,13 +53283,13 @@ async def prompt_upsampler_preview(
     return PromptUpsamplerPreviewResponse(enhanced_prompt = caption)
 
 
-# ── Text-to-mask segmenter (SAM 3) ───────────────────────────────────────────────────────────────────────────────────
+# ── Text-to-mask segmenter (SAM 3.1 / SAM 3) ─────────────────────────────────────────────────────────────────────
 
 
 @studio_router.get("/images/segment/status")
 async def mask_segmenter_status(current_subject: str = Depends(get_current_subject)):
-    """Whether SAM 3 can run here, is downloaded (gated facebook/sam3), is loaded and where, and the download
-    progress (the dictation download's shape)."""
+    """Whether SAM 3 can run here, which variant is active (repo, size, gated or not), whether it is downloaded and
+    loaded (and where), and the download progress (the dictation download's shape)."""
     from core.inference import diffusion_segment
     return JSONResponse(content = await asyncio.to_thread(diffusion_segment.status))
 
@@ -53164,26 +53300,42 @@ async def mask_segmenter_download(
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
 ):
-    """Start the background download of facebook/sam3's transformers weights; progress on /status."""
+    """Start the background download of the active segmenter variant's transformers weights; progress on /status."""
     from core.inference import diffusion_segment
     from core.inference.stt_sidecar import SttDownloadCacheError, SttModelIdError
 
     account_access.require_installation_owner()
     if not diffusion_segment.transformers_supports_sam3():
         raise HTTPException(status_code = 501, detail = diffusion_segment.status()["reason"])
-    if diffusion_segment.status().get("override"):
+    variant = await asyncio.to_thread(diffusion_segment.active_variant)
+    if (os.environ.get(diffusion_segment.ENV_PATH_OVERRIDE) or "").strip():
         raise HTTPException(
             status_code = 409,
-            detail = "The segmenter weights come from UNSLOTH_SAM3_PATH; unset it to download facebook/sam3.",
+            detail = (
+                f"The segmenter weights come from {diffusion_segment.ENV_PATH_OVERRIDE}; "
+                f"unset it to download {variant.repo}."
+            ),
         )
+    # An ungated variant needs no token; one the user set is still sent.
     token = account_access.account_hf_token(
         (payload.hf_token if payload is not None and payload.hf_token else None) or hf_token
     )
     try:
-        download_id = await asyncio.to_thread(diffusion_segment.start_download, token)
+        download_id = await asyncio.to_thread(diffusion_segment.start_download, token, variant.id)
     except (SttModelIdError, SttDownloadCacheError) as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
-    return JSONResponse(content = {**diffusion_segment.download_status(), "download_id": download_id})
+    plan = diffusion_segment.download_plan(variant)
+    return JSONResponse(
+        content = {
+            **diffusion_segment.download_status(),
+            **diffusion_segment.variant_summary(variant),
+            # The one weights file this host fetches (a pre-quantized one, or bf16) and its download size.
+            "precision": plan["precision"],
+            "weights_file": plan["file"],
+            "size_bytes": plan["size_bytes"],
+            "download_id": download_id,
+        }
+    )
 
 
 @studio_router.post("/images/segment/cancel")
@@ -53283,6 +53435,21 @@ def _parse_openai_image_size(size: str) -> tuple[int, int]:
         if value % 16 != 0:
             raise ValueError(f"size {label} must be a multiple of 16.")
     return width, height
+
+
+def _openai_image_dims(body: ImageGenerationRequest) -> tuple[int, int]:
+    """(width, height) from ``size``, or from the width/height extension when sent. Raises
+    ValueError with a client-facing message."""
+    if body.width is None and body.height is None:
+        return _parse_openai_image_size(body.size)
+    if body.width is None or body.height is None:
+        raise ValueError("Send width and height together, or size.")
+    dims = _parse_openai_image_size(f"{body.width}x{body.height}")
+    if (body.size or "").strip().lower() not in ("", "auto") and (
+        _parse_openai_image_size(body.size) != dims
+    ):
+        raise ValueError("size and width/height disagree; send one of them.")
+    return dims
 
 
 # response_format=url links must be fetchable by whoever received them: a client downloads data[].url with a plain GET
@@ -53421,7 +53588,8 @@ async def openai_image_generations(
 
     Generates ``n`` images from ``prompt`` on the loaded diffusion model and
     returns them as URLs (default) or base64 PNGs per ``response_format``. Steps
-    and guidance have no OpenAI knob, so they default per loaded model.
+    and guidance have no OpenAI knob: the x-unsloth fields set them (and width, height,
+    seed, negative_prompt), else they default per loaded model.
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
@@ -53446,7 +53614,7 @@ async def openai_image_generations(
                 ),
             )
     try:
-        width, height = _parse_openai_image_size(body.size)
+        width, height = _openai_image_dims(body)
     except ValueError as exc:
         raise HTTPException(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
@@ -53539,16 +53707,20 @@ async def _generate_openai_images(
             )
 
         steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
+        steps = steps if body.steps is None else body.steps
+        guidance = guidance if body.guidance is None else body.guidance
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
                 result = await asyncio.to_thread(
                     backend.generate,
                     prompt = body.prompt,
+                    negative_prompt = body.negative_prompt,
                     width = width,
                     height = height,
                     steps = steps,
                     guidance = guidance,
+                    seed = body.seed,
                     batch_size = body.n,
                     expected_load = load_identity(
                         status.get("repo_id"), status.get("base_repo"), status.get("family")
@@ -53591,7 +53763,7 @@ async def _generate_openai_images(
     # Persist each image with its full recipe, like /images/generate, so url links resolve and images show in the gallery.
     recipe = {
         "prompt": body.prompt,
-        "negative_prompt": None,
+        "negative_prompt": result.get("negative_prompt"),
         "width": width,
         "height": height,
         "steps": steps,

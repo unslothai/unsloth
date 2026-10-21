@@ -2,7 +2,7 @@
 
 Fine-tune and run LLMs on AMD GPUs with no setup. This image carries the full training stack built against ROCm: PyTorch with ROCm 7.2, Unsloth, unsloth-zoo, a bitsandbytes build with the ROCm 4-bit fix, triton-rocm, TRL, PEFT and diffusers.
 
-This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsloth/unsloth), which is CUDA-only. Source: [`docker/Dockerfile.rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.rocm). Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
+This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsloth/unsloth), which is CUDA-only. Source: [`docker/Dockerfile.rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.rocm). Guide: [unsloth.ai/docs](https://unsloth.ai/docs/get-started/install/docker).
 
 ## Quick start
 
@@ -140,5 +140,5 @@ The build's own record is in the image: `cat /etc/unsloth-rocm-build` reports th
 
 - Source and issues: [github.com/unslothai/unsloth](https://github.com/unslothai/unsloth)
 - Docker files: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker)
-- Documentation: [docs.unsloth.ai](https://docs.unsloth.ai)
+- Documentation: [unsloth.ai/docs](https://unsloth.ai/docs)
 - Licences: the image is labelled `Apache-2.0 AND AGPL-3.0-only`. [Apache-2.0](https://github.com/unslothai/unsloth/blob/main/LICENSE) covers the repository and the training stack. The [AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0) half is there for the one AGPL file this image ships, `/workspace/smoke_test_rocm.py`, which carries an `AGPL-3.0-only` header; Unsloth Studio itself is only in the `studio` tag.

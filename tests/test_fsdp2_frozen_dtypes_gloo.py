@@ -11,7 +11,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import pathlib
-import socket
 import types
 
 import pytest
@@ -36,9 +35,8 @@ def _fsdp2_module():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 class _Block(torch.nn.Module):

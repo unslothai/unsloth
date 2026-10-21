@@ -50,6 +50,11 @@ export const fr = {
     removeFromMessage: "Retirer du message",
   },
   browser: {
+    drafts: {
+      title: "Décharger une page contenant du texte saisi ?",
+      description: "Pour préserver la réactivité du chat, seules trois pages masquées contenant du texte saisi restent actives. Continuer déchargera {pages} et risque de perdre le texte non enregistré. Annuler revient à l’onglet précédent.",
+      confirm: "Décharger et continuer",
+    },
     agentSettings: {
       title: "Utilisation du navigateur",
       enable: "Autoriser les modèles à utiliser le navigateur",
@@ -2421,6 +2426,9 @@ export const fr = {
         multiModelDescriptionAlways:
           "Charger un modèle n'en décharge jamais un autre. Un modèle qui ne tient pas n'est pas chargé. Le déchargement automatique en veille et l'entraînement libèrent toujours de la mémoire.",
         multiModelHint: "Concerne les modèles de discussion, vocaux, d'image et de vidéo. Chaque modèle de discussion chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, Unsloth essaie de placer un nouveau modèle sur un GPU qu'aucun autre modèle n'utilise. « S'ils tiennent » laisse environ 1 Go libre. « S'ils tiennent » et « Toujours » ne déchargent jamais un modèle sur un autre GPU.",
+        allowOversizedLoad: "Autoriser le chargement de modèles trop grands",
+        allowOversizedLoadDescription: "Charger les modèles d'image et de vidéo même si la vérification de mémoire indique qu'ils ne tiennent pas.",
+        allowOversizedLoadHint: "S'applique lorsque le CPU et le GPU partagent une seule mémoire (Apple Silicon, GPU intégrés). Studio refuse un chargement quand son estimation des poids du modèle dépasse la mémoire restante après la réserve pour le système d'exploitation. Si cette option est activée, le chargement est tenté quand même. L'estimation peut se tromper dans les deux sens : un chargement trop grand peut échouer, épuiser la mémoire, faire beaucoup swapper l'ordinateur ou le bloquer, ou arrêter Studio. Désactivé par défaut.",
         mediaIdleUnloadDescription:
           "Libérer la VRAM en déchargeant les modèles d’image et de vidéo après ce nombre de secondes d’inactivité. 0 les maintient chargés ; le minimum est 60.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
@@ -3248,6 +3256,7 @@ export const fr = {
       audioCppVersion: "Version d'audio.cpp",
       hardware: "Matériel",
       gpu: "GPU",
+      gpuIntegrated: "intégrée",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

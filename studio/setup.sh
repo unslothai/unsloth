@@ -1722,17 +1722,22 @@ fi
 # llama.cpp section needs STUDIO_HOME / _STUDIO_HOME_IS_CUSTOM, but
 # UNSLOTH_STUDIO_LLAMA_ONLY=1 ('unsloth studio update') skips the base install.
 # UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
-# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+# (mirrors install.sh), followed by the studio/ child of UNSLOTH_HOME.
 _studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+_studio_override=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 if [ -n "$_studio_override" ]; then
     _studio_override_var="UNSLOTH_STUDIO_HOME"
 else
-    _studio_override="${STUDIO_HOME:-}"
+    _studio_override=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
 fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+if [ -z "$_studio_override" ]; then
+    _studio_override=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -n "$_studio_override" ]; then
+        _studio_override_var="UNSLOTH_HOME (studio child)"
+        _studio_override="${_studio_override%/}/studio"
+    fi
+fi
 case "$_studio_override" in
     "~") _studio_override="$HOME" ;;
     "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
@@ -4735,12 +4740,7 @@ _master_root_note_is_honoured() {
         echo "      you run Unsloth." >&2
         return 1
     fi
-    # A note must describe the tree it is written into: all four readers require the Studio
-    # directory to lie INSIDE the root it names, so a tree copied between master roots cannot
-    # aim a removal at the original install. install.sh and install.ps1 do not read UNSLOTH_HOME
-    # yet, so `UNSLOTH_HOME=/mnt/portable unsloth studio update` leaves Studio at
-    # ~/.unsloth/studio with the runtimes at /mnt/portable, which is exactly that shape: warn,
-    # rather than leave a file that reads as a recorded root and behaves as none.
+    # Reject split layouts: readers require Studio inside the recorded root to prevent deleting another install.
     case "$STUDIO_HOME" in
         "$_mrn_root"|"$_mrn_root"/*) return 0 ;;
     esac
