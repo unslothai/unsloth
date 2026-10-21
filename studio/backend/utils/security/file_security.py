@@ -3,6 +3,7 @@
 
 """Malware / unsafe-file gate for model loads. The ``trust_remote_code`` consent gate covers the ``auto_map`` Python vector; this covers the other one, a malicious pickle inside a weight file, which executes during ``from_pretrained`` deserialization even with ``trust_remote_code=False``. It reads Hugging Face's OWN scan (picklescan + ClamAV) via ``model_info(securityStatus=True).security_repo_status``. METADATA-ONLY: it never downloads, opens, or unpickles the flagged files. Policy: a hard, non-approvable block whenever ``filesWithIssues`` lists a non-``safe`` level, regardless of ``scansDone`` (often false even for clean repos); unknown/future levels fail CLOSED so Hub schema drift cannot silently allow a bad verdict, and only a small allowlist of clean / not-yet-scanned levels is non-blocking, while an unavailable status falls back to local inspection for a pinned cache snapshot and otherwise fails open. Scoped to the load-path RCE vector: a root-level (or load-subdir-level) code-executing file, since inert formats (safetensors / gguf / config / text) and subdirectory pickles that no root weight-index references are not loaded and do not block, while an index-referenced shard does, wherever it lives. That blocks real malware (eicar's root ``*.pkl``/``*.dat``) without false-blocking repos like ``nvidia/Nemotron-H-8B-Base-8K`` (flagged NeMo pickles under ``nemo/`` that no index lists). No first-party exemption (scoping is by load path/format, not org), and local paths are skipped (no Hub scan) while a remote ``*.gguf``-named repo is still scanned so a repo cannot dodge the gate by suffixing its name."""
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +62,46 @@ _TRANSFORMERS_INDEX_FILES = (
     "tf_model.h5.index.json",
     "flax_model.msgpack.index.json",
 )
+
+
+def _escapes_folder(name: str) -> bool:
+    spelled = name.replace("\\", "/")
+    return (
+        spelled.startswith("/")
+        or (len(spelled) > 1 and spelled[1] == ":")
+        or ".." in spelled.split("/")
+    )
+
+
+def escaping_weight_references(folder) -> list:
+    """Weight names a local model folder's index files or config.json ``transformers_weights``
+    give that point outside the folder: transformers joins each onto the folder as is. Text only,
+    so Hub cache snapshots whose files link into the blob store still pass."""
+    try:
+        folder = Path(str(folder)).expanduser()
+        if not folder.is_dir():
+            return []
+    except (OSError, ValueError):
+        return []
+    names = []
+    for index_name in _TORCH_INDEX_FILES:
+        try:
+            payload = json.loads((folder / index_name).read_text(encoding = "utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+        if isinstance(weight_map, dict):
+            names.extend(v for v in weight_map.values() if isinstance(v, str))
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        config = None
+    weights = config.get("transformers_weights") if isinstance(config, dict) else None
+    if isinstance(weights, str):
+        names.append(weights)
+    elif isinstance(weights, (list, tuple)):
+        names.extend(v for v in weights if isinstance(v, str))
+    return [name for name in dict.fromkeys(names) if _escapes_folder(name)]
 
 
 def _normalize_repo_path(path: str) -> str:

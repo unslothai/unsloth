@@ -175,6 +175,14 @@ def _adapter_base_changed_error(config: dict) -> str | None:
     return None
 
 
+def _escaping_weights_error(config: dict) -> str | None:
+    from utils.security.file_security import escaping_weight_references
+    for key in ("model_name", "model_local_path", "model_snapshot_path", "adapter_base_pin"):
+        if config.get(key) and escaping_weight_references(config[key]):
+            return "This model's weight index names files outside its folder."
+    return None
+
+
 def _untrainable_model_format_error(config: dict) -> str | None:
     model_format = str(config.get("model_format") or "").strip().lower()
     if model_format == "gguf":
@@ -5079,7 +5087,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         from utils.hf_xet_fallback import start_watchdog
 
         # Recheck right before the load: the adapter folder may have been edited since start (#13140).
-        base_error = _adapter_base_changed_error(config)
+        base_error = _adapter_base_changed_error(config) or _escaping_weights_error(config)
         if base_error:
             event_queue.put({"type": "error", "error": base_error, "stack": "", "ts": time.time()})
             return

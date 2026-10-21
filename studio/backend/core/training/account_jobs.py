@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sys
 import threading
 import weakref
 from functools import wraps
@@ -48,6 +49,37 @@ def account_key(value: str):
     return value if account.is_owner else (account.account_id, value)
 
 
+# Packaged ``datasets`` builders resolve before the Hub and read local files from the server's cwd.
+_BUILTIN_DATASET_BUILDERS = frozenset(
+    (
+        "arrow", "audiofolder", "cache", "csv", "eval", "generator", "hdf5", "imagefolder",
+        "json", "lance", "niftifolder", "pandas", "parquet", "pdffolder", "spark", "sql", "text",
+        "videofolder", "webdataset", "xml",
+    )
+)  # fmt: skip
+
+
+def _dataset_builder_name(name: str) -> bool:
+    builders = _BUILTIN_DATASET_BUILDERS
+    # Only when datasets is already loaded: validating a reference must not import it.
+    packaged = sys.modules.get("datasets.packaged_modules")
+    builders |= set(getattr(packaged, "_PACKAGED_DATASETS_MODULES", None) or ())
+    return name in builders or name.lower() in builders
+
+
+def _root_spellings(roots) -> list:
+    """Each root as given, resolved, and through the owner's own studio home link."""
+    spellings = [spelling for root in roots for spelling in (root, root.resolve())]
+    override = (
+        os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+    ).strip()
+    if override:
+        from utils.paths.storage_roots import studio_root
+        home, link = studio_root(), Path(os.path.abspath(Path(override).expanduser()))
+        spellings += [link / root.relative_to(home) for root in roots if root.is_relative_to(home)]
+    return spellings
+
+
 def account_path(
     value,
     *,
@@ -58,6 +90,12 @@ def account_path(
     if not value or not managed_account():
         return value
     raw = str(value)
+    from utils.paths.path_utils import normalize_path
+
+    normalized = normalize_path(raw)
+    if normalized != raw:
+        # Loaders open the forward-slash spelling, so it must pass too.
+        account_path(normalized, reference = reference, shared_cache = shared_cache)
     path = Path(raw).expanduser()
     if reference and not path.is_absolute() and not path.exists():
         parts = raw.split("/")
@@ -68,15 +106,20 @@ def account_path(
                 for part in parts
             )
             and not raw.startswith((".", "~"))
+            and not (len(parts) == 1 and _dataset_builder_name(raw))
         ):
             return value
     resolved = path.resolve()
+    # Callers reopen the name itself, so every link it walks through must sit inside the roots too.
+    lexical = Path(os.path.abspath(path))
 
     roots = (workspace_root(), project_workspaces_root(), tmp_root())
     if shared_cache:
         from utils.hf_cache_settings import active_hf_hub_cache
         roots += (Path(active_hf_hub_cache()),)
-    if not any(resolved.is_relative_to(root.resolve()) for root in roots):
+    if not any(resolved.is_relative_to(root.resolve()) for root in roots) or not any(
+        lexical.is_relative_to(root) for root in _root_spellings(roots)
+    ):
         raise HTTPException(status_code = 403, detail = "Path is outside this account's workspace")
     return value
 

@@ -1296,6 +1296,12 @@ def _reject_untrainable_model_request(
         return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
+        if managed_account() and _has_adapter_metadata(path):
+            # The loader still follows adapter_config.json to its base, so check and pin it.
+            adapter_base = _authorize_adapter_base(str(path), hf_token)
+            return _ModelPreflightResult(
+                model_name, model_local_path, cached_model_pin, adapter_base_pin = adapter_base or ""
+            )
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _has_adapter_metadata(path) or (
         model_format == "adapter" and _has_local_adapter_weights(path)

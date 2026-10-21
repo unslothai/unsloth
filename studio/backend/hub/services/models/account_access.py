@@ -28,6 +28,7 @@ from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
 from storage.studio_db import connect_studio_db
 from utils.paths import storage_roots
+from utils.paths.path_utils import normalize_path
 from utils.paths.storage_roots import project_workspaces_root, studio_db_path, workspace_root
 
 from utils.account_context import (
@@ -878,6 +879,16 @@ def model_visible(
     if not isinstance(reference, str) or not reference:
         return False
     reference = reference.strip()
+    normalized = normalize_path(reference)
+    if normalized != reference:
+        # Loaders open the forward-slash spelling, so both must be visible.
+        return _model_visible(reference, grants, repo_type, offline) and _model_visible(
+            normalized, grants, repo_type, offline
+        )
+    return _model_visible(reference, grants, repo_type, offline)
+
+
+def _model_visible(reference: str, grants, repo_type: str, offline: bool) -> bool:
     access_options = {"offline": True} if offline else {}
     path = Path(reference).expanduser()
     if path.is_absolute() or reference.startswith(("./", "../", "~")) or path.exists():
@@ -925,9 +936,12 @@ def require_model_allowed(reference) -> None:
     """The allowlist alone, for routes that fetch a Hub model without the visibility gate."""
     if not isinstance(reference, str) or model_allowlist() is None:
         return
-    repo_id = _reference_repo_id(reference.strip())
-    if repo_id is not None and not model_allowed(repo_id):
-        raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
+    reference = reference.strip()
+    # Loaders open the forward-slash spelling, so both must be allowed.
+    for spelling in dict.fromkeys((reference, normalize_path(reference))):
+        repo_id = _reference_repo_id(spelling)
+        if repo_id is not None and not model_allowed(repo_id):
+            raise HTTPException(status_code = 403, detail = MODEL_NOT_ALLOWED)
 
 
 def _row_reference(row):
@@ -956,6 +970,10 @@ def private_directory(path: str, folder: str) -> str:
         return path
     from utils.paths.storage_roots import studio_root
 
+    normalized = normalize_path(path)
+    if normalized != path:
+        # Scanners open the forward-slash spelling, so it must be the account's own too.
+        private_directory(normalized, folder)
     legacy = studio_root() / folder
     target = workspace_root() / folder if Path(path).resolve() == legacy.resolve() else Path(path)
     # The project workspace counts as the account's own, matching within_account().

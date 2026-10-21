@@ -729,6 +729,19 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
         logger.warning(f"Could not publish the model card: {exception}")
 
 
+def _checkpoint_load_refusal(checkpoint_path, pinned_base) -> Optional[str]:
+    """Why a local checkpoint must not load now: a pinned adapter base it no longer names, or
+    weight entries that point outside the folder."""
+    from core.export.decision import adapter_base_changed
+    from utils.security.file_security import escaping_weight_references
+
+    if pinned_base and adapter_base_changed(checkpoint_path, pinned_base):
+        return "The adapter's base model changed after it was checked. Load it again."
+    if escaping_weight_references(checkpoint_path):
+        return "This checkpoint's weight index names files outside its folder."
+    return None
+
+
 class ExportBackend:
     # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
     decision: Optional[dict] = None
@@ -822,8 +835,12 @@ class ExportBackend:
         # Loaders only: the probes' cache guards refuse an anonymous read, which offline
         # misreads a cached VLM as a text model.
         probe_token = token or None
+        pinned_base = base_model
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             self.cleanup_memory()
             self.diffusion_lm_profile = None
@@ -889,6 +906,11 @@ class ExportBackend:
                 if self.diffusion_lm_profile:
                     # DiffusionGemma ships a vision tower; its text-diffusion load is FastModel's.
                     self.is_vision = False
+
+            # Again right before the load: the folder may have been edited during the probes.
+            refusal = _checkpoint_load_refusal(checkpoint_path, pinned_base)
+            if refusal:
+                return False, refusal
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
