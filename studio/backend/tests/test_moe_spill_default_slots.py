@@ -508,20 +508,35 @@ def test_a_missing_drafter_file_keeps_the_slots(tmp_path, _moe_cache_host):
     assert _flag(cmd, "--parallel") == "4", cmd
 
 
-def test_a_cache_only_cut_the_ram_check_refuses_keeps_the_slots(
-    tmp_path, _moe_cache_host, monkeypatch
+@pytest.mark.parametrize("smart_offload", [False, True])
+def test_a_cache_the_ram_check_refuses_keeps_the_cut_placement(
+    tmp_path, _moe_cache_host, monkeypatch, smart_offload
 ):
-    """Cut only because the cache would serve a deep spill; no cache, no cut."""
+    """The cache is refused after placement was priced at the cut count (with smart
+    offload a --fit off tensor plan), so the launch keeps the count it was priced at:
+    raising it here would run four slots on a placement sized for two."""
     monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
-    _backend, cmd = _load(tmp_path, memory = _DEEP_SPILL_CARD, ram_gib = 24)
+    if smart_offload:
+        monkeypatch.setenv("UNSLOTH_SMART_OFFLOAD", "on")
+    else:
+        monkeypatch.delenv("UNSLOTH_SMART_OFFLOAD", raising = False)
+    backend, cmd = _load(tmp_path, memory = [(0, 15_000, 32_000)], ram_gib = 24)
 
     assert "--moe-cache-mib" not in cmd, cmd
     assert _flag(cmd, "--spec-type") == "draft-mtp", cmd
-    assert _flag(cmd, "--parallel") == "4", cmd
+    assert _flag(cmd, "--parallel") == "2", cmd
+    assert backend.effective_parallel_slots == 2
 
 
-def _cache_crash_launch(tmp_path, monkeypatch, *, memory):
-    """First launch dies allocating the MoE cache; the uncached retry comes up."""
+def _cache_crash_launch(
+    tmp_path,
+    monkeypatch,
+    *,
+    memory,
+    healthy = None,
+):
+    """First launch dies allocating the MoE cache; the uncached retry comes up unless
+    ``healthy(cmd)`` says otherwise."""
     spawned = []
     crash_line = "failed to allocate the MoE cache buffers"
 
@@ -555,15 +570,20 @@ def _cache_crash_launch(tmp_path, monkeypatch, *, memory):
                 backend._stdout_lines = [crash_line]
                 return False
             backend._stdout_lines = []
-            return True
+            return True if healthy is None else healthy(spawned[-1])
 
         backend._wait_for_health = health
         with placement.patch.object(placement.subprocess, "Popen", side_effect = fake_popen):
-            assert backend.load_model(
-                placement.GgufLoadIntent(
-                    gguf_path = str(gguf), model_identifier = model_identifier, **load_kwargs
+            try:
+                backend.load_model(
+                    placement.GgufLoadIntent(
+                        gguf_path = str(gguf), model_identifier = model_identifier, **load_kwargs
+                    )
                 )
-            )
+            except RuntimeError:
+                # A ladder that ends without a healthy server; the argv list is the test.
+                if healthy is None:
+                    raise
         return {"cmd": spawned[-1]}
 
     monkeypatch.setattr(placement, "_launch", launch)
@@ -593,3 +613,22 @@ def test_a_shallow_cut_survives_the_cache_retry(tmp_path, _moe_cache_host, monke
     assert "--moe-cache-mib" in first and _flag(first, "--parallel") == "2", first
     assert "--moe-cache-mib" not in retry and _flag(retry, "--parallel") == "2", retry
     assert backend.effective_parallel_slots == 2
+
+
+def test_slots_given_back_for_the_cache_are_not_cut_again_by_the_drafter_fallback(
+    tmp_path, _moe_cache_host, monkeypatch
+):
+    """Once the asked count is back the spill cut is gone: a failing drafterless retry
+    must not relaunch the identical four-slot argv as the cut count."""
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
+    backend, spawned = _cache_crash_launch(
+        tmp_path,
+        monkeypatch,
+        memory = _DEEP_SPILL_CARD,
+        healthy = lambda cmd: "draft-mtp" not in cmd and "--kv-unified" not in cmd,
+    )
+
+    later = spawned[1:]
+    assert all(_flag(c, "--parallel") == "4" for c in later[:2]), later
+    assert not any(a == b for a, b in zip(later, later[1:])), "identical relaunch"
+    assert not backend._slots_cut_for_drafter

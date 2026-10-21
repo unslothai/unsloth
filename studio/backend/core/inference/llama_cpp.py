@@ -32029,14 +32029,21 @@ class LlamaCppBackend:
                     cmd.extend(_pv_device_pin)
 
                 def _undo_cache_only_spill_cut(why: str, run_cmd = None):
-                    """Back to the asked slots once a launch drops the MoE cache that alone
+                    """Back to the asked slots once a relaunch drops the MoE cache that alone
                     justified the spilled-MoE cut (a deep --fit split keeps four, see
                     _MOE_SPILL_SLOTS_MIN_RESIDENT_SHARE). Rewrites ``cmd`` too, since later
-                    rungs rebuild from it; a rung that set its own count is left alone."""
-                    nonlocal cmd, n_parallel, _spill_cut_needs_cache
+                    rungs rebuild from it; a rung that set its own count is left alone.
+
+                    Only for a launch that carried the cache: it is emitted on a placement
+                    llama.cpp's fitter owns (_placed_by_fitter, no tensor plan), which
+                    re-fits at the restored count. A cache refused at emission keeps the
+                    cut, since that placement (a --fit off plan included) was priced at it."""
+                    nonlocal cmd, n_parallel, _spill_slots_asked, _spill_cut_needs_cache
                     nonlocal _auto_ctx_checkpoints, _auto_ckpt_emitted
                     if not (
                         _spill_cut_needs_cache
+                        and self._moe_cache_flags
+                        and _placed_by_fitter
                         and _spill_slots_asked is not None
                         and n_parallel == _MOE_SPILL_DEFAULT_SLOTS
                     ):
@@ -32050,6 +32057,9 @@ class LlamaCppBackend:
                     )
                     _cut = n_parallel
                     n_parallel = _spill_slots_asked
+                    # The cut is gone, as in the placement rollback: nothing below may
+                    # read it as standing (drafter fallback, the slot-cut marker).
+                    _spill_slots_asked = None
                     _kv_unified_caps = bool(server_caps.get("supports_kv_unified"))
                     _old_ckpt = _auto_ckpt_emitted
                     _auto_ctx_checkpoints = _decide_auto_ctx_checkpoints()
@@ -32105,8 +32115,6 @@ class LlamaCppBackend:
                         "MoE experts spill to pinned system RAM on one GPU; adding "
                         "--moe-cache-mib auto so llama.cpp caches hot experts in VRAM."
                     )
-                else:
-                    _undo_cache_only_spill_cut("launch")
 
                 # A build with no --flash-attn cannot run a quantized V cache
                 # either: llama.cpp aborts init with "V cache quantization
