@@ -2443,7 +2443,7 @@ def arm_block_graphs(
         return ()
     try:
         from .diffusion_block_graph import (
-            MODEL_OFFLOAD_REASON,
+            BLOCK_GRAPHS_ENV,
             OPT_IN_REASON,
             block_graphs_disabled,
             block_graphs_requested,
@@ -2472,7 +2472,13 @@ def arm_block_graphs(
         if block_graphs_disabled():
             _set_reason(pipe, "disabled by UNSLOTH_DIFFUSION_BLOCK_GRAPHS=0")
         else:
-            _set_reason(pipe, MODEL_OFFLOAD_REASON if model_offload else OPT_IN_REASON)
+            # Keep the whole-step opt-in visible: the block layer's own reason names only its switch.
+            _set_reason(
+                pipe,
+                MODEL_OFFLOAD_REASON + ", or " + BLOCK_GRAPHS_ENV + "=1 to record per block"
+                if model_offload
+                else OPT_IN_REASON,
+            )
         return ()
     armed: list = []
     reasons: list = []
