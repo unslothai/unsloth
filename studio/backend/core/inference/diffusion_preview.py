@@ -97,6 +97,9 @@ def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
     """First image / frame as a (gh, gw, D) view, or None. Packed tokens take their grid from the render
     size, which must tile the sequence exactly."""
     if spec.layout == "tokens":
+        if latents.ndim == 4 and latents.shape[1] == spec.channels:
+            # The same packed channels kept spatial (MOSS-Image runs FLUX.2 latents as [B, 128, h, w]).
+            return latents[0].permute(1, 2, 0)
         gh, gw = int(height) // spec.down, int(width) // spec.down
         if latents.ndim != 3 or latents.shape[-1] != spec.channels or gh <= 0 or gw <= 0:
             return None
