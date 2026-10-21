@@ -45,8 +45,7 @@ _MAX_PROBE_BASE_LEN = 59
 # A stale PASS is served while one background re-probe runs; a FAIL never is.
 _STALE_GRACE_SECONDS = 3600.0
 
-# Tool code can exhaust these from inside the jail (fill the disk /tmp shares with the workdir), so a probe
-# failing on one says nothing about the backend: undecided, never cached, and auto refuses instead of falling back.
+# Tool code can exhaust these from the jail: undecided, never cached, and auto refuses rather than falls back.
 _RESOURCE_ERRNOS = frozenset(
     code
     for code in (

@@ -462,8 +462,7 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
             return ()
         if not _looks_like_our_scratch_dir(scratch):
             return ()
-        # By directory fd where the platform has one: the jail can swap a directory for a link mid-sweep, and a
-        # path-based unlink would then follow it onto the host. Windows has no fwalk and keeps the path walk.
+        # By directory fd: the jail can swap a directory for a link mid-sweep. Windows has no fwalk.
         if hasattr(os, "fwalk"):
             walk = os.fwalk(scratch, follow_symlinks = False)
         else:

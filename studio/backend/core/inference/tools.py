@@ -10200,8 +10200,7 @@ def _host_access_launch(plan, script: "str | None") -> "tuple[tuple, dict, str]"
                 f.write(script)
             packages = os.path.join(plan.workdir, os_sandbox.SESSION_PACKAGES_RELPATH)
             if os.path.isdir(packages):
-                # Packages pip-installed earlier in the chat stay importable, but after the stdlib and installed
-                # packages, so nothing in the sandbox-writable folder can shadow those.
+                # Chat-installed packages go last on sys.path, so the sandbox-writable folder cannot shadow anything.
                 launcher = os.path.join(private, "unsloth_host_launch.py")
                 fd = os.open(launcher, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "w", encoding = "utf-8") as f:
@@ -11133,8 +11132,7 @@ def _get_project_workdir(session_id: str) -> str | None:
         return None
     root_real = os.path.realpath(root_path)
     sandbox_real = os.path.realpath(sandbox_path)
-    # The rule _get_workdir applies to a chat's folder: tool code can rename its workdir and leave a link, which is
-    # dropped, never followed. Strictly below the root, so `sandbox -> .` cannot make the root the workdir either.
+    # Same rule as _get_workdir: a link left by tool code is dropped, and the root itself is never the workdir.
     if os.path.islink(sandbox_path) or not sandbox_real.startswith(root_real + os.sep):
         return None
     from storage.studio_db import available_project_working_folder
