@@ -57,7 +57,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    # pyproject.toml is a hand-kept matrix: many packages are split by Python version or
+    # accelerator (typer / fastapi / uvicorn / gguf for 3.9, triton / flash-attn wheel URLs),
+    # and a version update rewrites every copy of a requirement at once. Version-update PRs
+    # stay off, as for /studio/frontend; security PRs have their own limit and still open.
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
     # pyproject.toml pins these by hand: torch / torchvision per CUDA extra (with the
