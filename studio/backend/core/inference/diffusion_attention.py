@@ -2517,7 +2517,7 @@ def _refresh_diffusers_kernels_version(logger: Any = None) -> None:
     if "kernels" in sys.modules:
         if logger is not None:
             logger.warning(
-                "diffusion.attention: kernels was upgraded to %s for FlashAttention 4 and takes effect after Studio "
+                "diffusion.attention: kernels was upgraded to %s for FlashAttention 4 and takes effect after Unsloth "
                 "restarts; this load uses the default backend",
                 FA4_KERNELS_SPEC.split("==", 1)[1],
             )
@@ -2828,7 +2828,7 @@ def _ensure_backend_package(backend: str, logger: Any = None) -> Optional[str]:
         reason = f"{module} is disabled in this process because it requires a different torch"
         if logger is not None:
             logger.warning(
-                "diffusion.attention: not installing %s for backend=%s: %s; restart Studio "
+                "diffusion.attention: not installing %s for backend=%s: %s; restart Unsloth "
                 "once the installer has removed it. Using the default backend",
                 package,
                 backend,

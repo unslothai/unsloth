@@ -180,7 +180,7 @@ def test_an_oversize_body_is_refused_while_streaming():
         ({"AUDIO_INPUT_MAX_BYTES": 2048}, lambda: wav_bytes(2.0), 413, "Audio is too large."),
         ({"MAX_SECONDS": 1}, lambda: wav_bytes(2.0), 413, "Audio is longer than 0 minutes."),
         ({}, lambda: b"", 400, "Audio is empty."),
-        ({}, lambda: b"not audio " * 120, 400, "This file is not audio Studio can read."),
+        ({}, lambda: b"not audio " * 120, 400, "This file is not audio Unsloth can read."),
         ({}, _video_without_audio, 400, "This file has no audio stream."),
     ],
 )

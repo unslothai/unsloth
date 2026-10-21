@@ -1407,7 +1407,7 @@ def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
         ):
             raise HTTPException(
                 status_code = 400,
-                detail = "Studio's own folders cannot be used as a project folder.",
+                detail = "Unsloth's own folders cannot be used as a project folder.",
             )
     if not os.access(path, os.W_OK):
         raise HTTPException(status_code = 400, detail = "The folder is not writable.")

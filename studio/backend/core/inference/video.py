@@ -4250,7 +4250,7 @@ class VideoBackend:
             raise ValueError(
                 f"'{fam.name}' is a dual-expert model: a single {kind} file covers only "
                 f"one of its two transformers. Pick one expert of a high_noise / low_noise pair "
-                f"(Studio loads its partner from the same folder), or load the diffusers "
+                f"(Unsloth loads its partner from the same folder), or load the diffusers "
                 f"pipeline repo ('{fam.base_repo}')."
             )
         # A missing local checkpoint must fail HERE, before the route evicts a resident model.
@@ -9007,7 +9007,7 @@ class VideoBackend:
             transformer_quant_decline = (
                 f"this GPU's memory plan moves the DiT ({_video_plan_label(plan)}), and "
                 f"'{normalize_transformer_quant(transformer_quant)}' is built as torchao weights here, "
-                "which Studio keeps on a resident DiT only; int8 runs torchao-free under offload. Pick "
+                "which Unsloth keeps on a resident DiT only; int8 runs torchao-free under offload. Pick "
                 "int8, or a resident memory mode (Fast) on a card that holds the quantised DiT"
             )
         elif (
@@ -10010,7 +10010,7 @@ class VideoBackend:
                 and (h3_int8 if comfy_scheme == TQ_INT8 else h3_fp8) is None
             ):
                 raise RuntimeError(
-                    f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
+                    f"{Path(comfy_checkpoint).name} needs Unsloth's {comfy_scheme} runtime, which this "
                     f"device does not run; dequantized, the denoiser would be the 40 GB bfloat16 model. "
                     f"Load '{fam.base_repo}' instead."
                 )
@@ -10036,7 +10036,7 @@ class VideoBackend:
             if engaged is None and comfy_scheme is not None and not dense_pin:
                 del transformer
                 raise RuntimeError(
-                    f"{Path(comfy_checkpoint).name} needs Studio's {comfy_scheme} runtime, which this "
+                    f"{Path(comfy_checkpoint).name} needs Unsloth's {comfy_scheme} runtime, which this "
                     f"device does not run; dequantized, the denoiser would be the 40 GB bfloat16 model. "
                     f"Load '{fam.base_repo}' instead."
                 )
