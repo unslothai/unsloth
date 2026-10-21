@@ -664,6 +664,30 @@ def test_a_load_turned_off_during_training_never_falls_back_to_cpu(client, monke
     assert laya_runtime.status()["loaded_model"] is None
 
 
+def test_a_load_unloaded_while_it_builds_in_process_frees_its_memory(client, monkeypatch, tmp_path):
+    agents, freed = [], []
+
+    def build(*args, **kwargs):
+        agent = FakeAgent()
+        agents.append(weakref.ref(agent))
+        laya_runtime.unload()
+        return agent, "mps"
+
+    monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint, **kwargs: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_device", lambda: "mps")
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    monkeypatch.setattr(
+        laya_runtime, "_release_memory", lambda: freed.append(bool(agents) and agents[0]() is None)
+    )
+    monkeypatch.setattr(laya_runtime, "LOAD_WAIT_S", 0.05)
+    _post(client)
+    laya_runtime._loader.join(5)
+    assert laya_runtime.status()["loaded_model"] is None
+    assert freed[-1] is True
+
+
 def test_an_unload_waits_for_a_load_that_is_publishing(client):
     done = threading.Event()
     unloading = threading.Thread(target = lambda: (laya_runtime.unload(), done.set()), daemon = True)

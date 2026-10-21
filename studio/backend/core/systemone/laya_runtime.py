@@ -1460,6 +1460,8 @@ def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
     if stale:
         logger.info("System One dropped %s: it was unloaded while it loaded", checkpoint.name)
         _close(agent)
+        del agent
+        _release_memory()
         return
     if _arbitrated(checkpoint):
         _schedule_idle_unload(generation)
