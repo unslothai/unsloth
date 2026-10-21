@@ -2393,8 +2393,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
         _indent = _old_logps_if.group(1)
         function = (
             function[: _old_logps_if.start()]
-            + f"\n{_indent}_unsloth_rollout_old = _unsloth_grpo_rollout_logps_as_old(\n"
-            + f"{_indent}    self, locals().get('sampling_per_token_logps'), completion_mask, locals().get('tool_mask'),\n"
+            + f"\n{_indent}_unsloth_rollout_logps = locals().get('sampling_per_token_logps')\n"
+            + f"{_indent}_unsloth_rollout_old = _unsloth_grpo_rollout_logps_as_old(\n"
+            + f"{_indent}    self, _unsloth_rollout_logps, completion_mask, locals().get('tool_mask'),\n"
             + f"{_indent})\n"
             + f"{_indent}if _unsloth_rollout_old:\n"
             + f"{_indent}    old_per_token_logps = None\n"
@@ -2406,7 +2407,9 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             _old_logps_output + "        if _unsloth_rollout_old:\n"
             '            output["unsloth_rollout_logps_as_old"] = torch.ones(\n'
             "                completion_ids.size(0), dtype = torch.bool, device = completion_ids.device\n"
-            "            )\n",
+            "            )\n"
+            # Older TRL (0.23.x) keeps the rollout logprobs only with the IS correction on.
+            '            output["sampling_per_token_logps"] = _unsloth_rollout_logps\n',
         )
     elif os.environ.get("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD", "0") == "1":
         _warn_once(
@@ -3652,27 +3655,35 @@ def _unsloth_grpo_rollout_logps_as_old(
             )
         return False
 
+    reason = None
     if sampling_per_token_logps is None:
-        return _skip("there are no rollout logprobs (needs use_vllm=True or a rollout_func)")
-    if getattr(trainer.args, "loss_type", None) == "vespo":
-        return _skip("loss_type='vespo' weights by the vLLM importance ratio itself")
-    if not hasattr(trainer.args, "loss_type"):
-        return _skip("this TRL version predates loss_type")
-    try:
-        from unsloth_zoo.rl_replacements import grpo_rollout_logps_as_old  # noqa: F401
-    except Exception:
-        return _skip("it needs a newer unsloth_zoo: pip install -U unsloth_zoo")
-    loss_mask = completion_mask.to(torch.bool)
-    if tool_mask is not None:
-        loss_mask = loss_mask & tool_mask.to(device = loss_mask.device, dtype = torch.bool)
-    finite = torch.isfinite(sampling_per_token_logps[loss_mask]).all()
+        # A custom rollout_func may return logprobs on some processes only.
+        reason = "there are no rollout logprobs (needs use_vllm=True or a rollout_func)"
+    elif getattr(trainer.args, "loss_type", None) == "vespo":
+        reason = "loss_type='vespo' weights by the vLLM importance ratio itself"
+    elif not hasattr(trainer.args, "loss_type"):
+        reason = "this TRL version predates loss_type"
+    else:
+        try:
+            from unsloth_zoo.rl_replacements import grpo_rollout_logps_as_old  # noqa: F401
+        except Exception:
+            reason = "it needs a newer unsloth_zoo: pip install -U unsloth_zoo"
+    if reason is None:
+        loss_mask = completion_mask.to(torch.bool)
+        if tool_mask is not None:
+            loss_mask = loss_mask & tool_mask.to(device = loss_mask.device, dtype = torch.bool)
+        if not bool(torch.isfinite(sampling_per_token_logps[loss_mask]).all()):
+            # vLLM could not score some tokens (NaN): those need the trainer's own pi_old.
+            reason = "some rollout logprobs on loss tokens are not finite"
     accelerator = getattr(trainer, "accelerator", None)
     if getattr(accelerator, "num_processes", 1) > 1:
-        # Every rank takes the same branch: under FSDP / ZeRO-3 the old-policy forward is collective.
-        finite = accelerator.gather(finite.to(torch.int32).reshape(1)).min()
-    if not bool(finite):
-        # vLLM could not score some tokens (NaN): those need the trainer's own pi_old.
-        return _skip("some rollout logprobs on loss tokens are not finite")
+        # One reduction on every rank, before any of them returns: under FSDP / ZeRO-3 the
+        # old-policy forward a fallback runs is collective, so all ranks take the same branch.
+        eligible = torch.tensor([int(reason is None)], dtype = torch.int32, device = completion_mask.device)
+        if not bool(accelerator.gather(eligible).min()) and reason is None:
+            reason = "another process cannot use its rollout logprobs for this batch"
+    if reason is not None:
+        return _skip(reason)
     trainer._unsloth_rollout_logps_as_old_batches = (
         getattr(trainer, "_unsloth_rollout_logps_as_old_batches", 0) + 1
     )

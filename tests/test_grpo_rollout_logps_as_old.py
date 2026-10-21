@@ -183,3 +183,78 @@ def test_ranks_agree_on_the_fallback(monkeypatch):
     assert decide(trainer, sampling, mask) is True
     assert trainer._unsloth_rollout_logps_as_old_fallbacks == 1
     assert trainer._unsloth_rollout_logps_as_old_batches == 1
+
+
+_FAKE_TRL = '''
+    def _generate_and_score_completions(self, inputs):
+        sampling_per_token_logps = inputs["sampling"]
+        completion_mask = inputs["mask"]
+        completion_ids = inputs["ids"]
+        generate_every = self.args.steps_per_generation * self.num_iterations
+        with torch.no_grad():
+            if self.args.gradient_accumulation_steps % generate_every != 0 or (
+                self.use_vllm and self.vllm_importance_sampling_correction
+            ):
+                old_per_token_logps = self.score()
+            else:
+                old_per_token_logps = None
+        output = {"completion_ids": completion_ids}
+        if old_per_token_logps is not None:
+            output["old_per_token_logps"] = old_per_token_logps
+        return output
+'''
+
+
+def test_marked_batch_keeps_its_rollout_logprobs_on_older_trl():
+    # TRL 0.23.x only puts sampling_per_token_logps into the output with the IS correction on:
+    # a marked batch must carry them anyway, or the loss gets the marker without the tensor.
+    from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_completions
+
+    patched = grpo_trainer__generate_and_score_completions("_generate_and_score_completions", _FAKE_TRL)
+    ns = {
+        "torch": torch,
+        "_unsloth_grpo_rollout_logps_as_old": lambda *args: True,
+        "_unsloth_reject_grpo_image_list": lambda *args: None,  # other rewrites' prologue
+    }
+    exec(textwrap.dedent(patched), ns)
+    sampling, mask = _batch()
+    calls = []
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(steps_per_generation = 1, gradient_accumulation_steps = 1),
+        num_iterations = 2, use_vllm = False, vllm_importance_sampling_correction = False,
+        score = lambda: calls.append(1),
+    )
+    out = ns["_generate_and_score_completions"](trainer, {"sampling": sampling, "mask": mask, "ids": torch.zeros(3, 5)})
+    assert not calls and "old_per_token_logps" not in out
+    assert out["unsloth_rollout_logps_as_old"].all()
+    assert out["sampling_per_token_logps"] is sampling
+
+
+def test_missing_rollout_logprobs_still_join_the_rank_reduction(monkeypatch):
+    # A rollout_func can return logprobs on one rank and None on another. The None rank must still
+    # take part in the reduction, or the other rank blocks in gather while it runs the collective
+    # old-policy forward.
+    monkeypatch.setenv("UNSLOTH_GRPO_ROLLOUT_LOGPROBS_AS_OLD", "1")
+    _Zoo(monkeypatch, True)
+    sampling, mask = _batch()
+    gathered = []
+
+    class _Acc:
+        num_processes = 2
+
+        def __init__(self, other):
+            self.other = other
+
+        def gather(self, t):
+            gathered.append(int(t.item()))
+            return torch.cat([t, torch.tensor([self.other], dtype = t.dtype)])
+
+    decide = _decision()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        no_logps = SimpleNamespace(args = SimpleNamespace(loss_type = "dapo"), accelerator = _Acc(1))
+        assert decide(no_logps, None, mask) is False
+        has_logps = SimpleNamespace(args = SimpleNamespace(loss_type = "dapo"), accelerator = _Acc(0))
+        assert decide(has_logps, sampling, mask) is False
+    assert gathered == [0, 1]
+    assert not hasattr(has_logps, "_unsloth_rollout_logps_as_old_batches")
