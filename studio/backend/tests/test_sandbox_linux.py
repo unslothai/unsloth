@@ -1318,6 +1318,9 @@ def _share_cache_paths(monkeypatch, cache):
     module.get_hf_cache_paths = lambda: _Paths()
     module.effective_cache_home = lambda: cache
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+    # The resolver prefers these over cache_home; a caller's own settings must not leak in.
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
 
 
 def test_a_symlinked_runtime_entry_inside_the_workdir_is_protected_by_name(tmp_path, monkeypatch):
@@ -1561,6 +1564,8 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
 
     # datasets/assets follow the real HF home, which a Studio-selected folder leaves in place.
     monkeypatch.setenv("HF_HOME", str(home))
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
     monkeypatch.setattr(
         cache_settings,
         "get_hf_cache_paths",
@@ -1584,6 +1589,8 @@ def _real_cache(monkeypatch, home):
     module.get_hf_cache_paths = lambda: paths
     module.effective_cache_home = lambda: home
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
 
 
 def test_a_cache_component_holding_an_ipc_node_is_not_shared(tmp_path, monkeypatch):

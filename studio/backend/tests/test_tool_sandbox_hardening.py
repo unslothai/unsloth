@@ -152,6 +152,8 @@ def test_datasets_and_assets_are_bound_from_the_real_hf_home(tmp_path, monkeypat
     for path in (hub / "datasets", hub / "assets", real_home / "datasets", real_home / "assets"):
         path.mkdir(parents = True)
     monkeypatch.setenv("HF_HOME", str(real_home))
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
+    monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
     monkeypatch.setattr(
         cache_settings,
         "get_hf_cache_paths",
