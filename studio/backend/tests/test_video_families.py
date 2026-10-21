@@ -597,6 +597,8 @@ def test_the_model_own_folder_or_file_still_names_the_video_family():
     assert name("/data/models/LTX-2-GGUF/Q4_K_M/model.gguf") == "ltx-2"
     assert name("/data/models/LTX-2") == "ltx-2"
     assert name("/data/models/LTX-2/") == "ltx-2"
+    assert name("/data/models/LTX-2/weights/model.safetensors") == "ltx-2"
+    assert name("/data/models/LTX-2/checkpoints/model.safetensors") == "ltx-2"
     assert (
         name("/data/models/MiniMax-H3/transformer/diffusion_pytorch_model.safetensors")
         == "minimax-h3"

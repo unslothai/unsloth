@@ -52,7 +52,8 @@ _WEIGHT_FILE_SUFFIXES = (".gguf", ".safetensors", ".sft", ".ckpt", ".pt", ".pth"
 # Folders holding a model's files without naming it (diffusers component, ComfyUI kind folder, quant tier).
 _CONTAINER_SEGMENT = re.compile(
     r"^(?:transformer(?:_\d)?|unet|vae|text_encoder(?:_\d)?|tokenizer(?:_\d)?|scheduler|"
-    r"diffusion_models|split_files|gguf|(?:u?d-)?(?:i?q\d\w*|f16|bf16|f32|fp8\w*|fp16|nvfp4|mxfp4))$",
+    r"diffusion_models|split_files|gguf|weights?|checkpoints?|ckpts?|models?|files|safetensors|original|"
+    r"(?:u?d-)?(?:i?q\d\w*|f16|bf16|f32|fp8\w*|fp16|nvfp4|mxfp4))$",
     re.IGNORECASE,
 )
 

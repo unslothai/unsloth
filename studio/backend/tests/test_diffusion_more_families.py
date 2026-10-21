@@ -1079,6 +1079,9 @@ def test_a_parent_folder_keyword_does_not_pick_the_image_family(parent):
     assert fam is not None and fam.name == "flux.1"
     fam = detect_family(sep.join([parent, "plain", "flux1-schnell-Q4_K_M.gguf"]))
     assert fam is not None and fam.name == "flux.1"
+    for sub in ("weights", "checkpoints", "models", "ckpt"):
+        nested = sep.join([parent, "Qwen-Image-Edit", sub, "model.safetensors"])
+        assert detect_family(nested).name == "qwen-image-edit"
     hf = "/home/sdxl/.cache/huggingface/hub/models--black-forest-labs--FLUX.1-dev/snapshots/0123abc"
     assert detect_family(hf).name == "flux.1"
     assert detect_family(hf + "/flux1-dev.safetensors").name == "flux.1"
