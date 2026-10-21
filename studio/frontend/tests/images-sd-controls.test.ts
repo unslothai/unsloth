@@ -246,6 +246,26 @@ test("pasted A1111 Clip skip, CFG Rescale and Variation seed restore into the SD
   assert.doesNotMatch(src, /notApplied\.unshift\(`CLIP skip|notApplied\.unshift\(`CFG rescale|notApplied\.unshift\("variation seed"\)/);
 });
 
+test("a literal-prompt recipe restored onto sd.cpp names prompt weighting off as not applied", async () => {
+  const { importNotApplied, literalPromptNotApplied } = await import(
+    "../src/features/images/lib/image-metadata.ts"
+  );
+  const literal = { prompt: "a (fox:1.5)", prompt_weighting: false };
+  const note = "prompt weighting off (the native sd.cpp engine always reads (word:1.2) syntax)";
+  assert.equal(literalPromptNotApplied(literal, true, null), note);
+  // Diffusers SDXL turns weighting off; diffusers without the control never parsed the syntax anyway.
+  assert.equal(literalPromptNotApplied(literal, false, SDXL), null);
+  assert.equal(literalPromptNotApplied(literal, false, null), null);
+  assert.equal(literalPromptNotApplied({ prompt_weighting: true }, true, null), null);
+  assert.deepEqual(importNotApplied(literal, "sdxl", true, null), [note]);
+  assert.deepEqual(importNotApplied(literal, "sdxl", false, SDXL), []);
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(
+    src,
+    /via === "restore"\n\s+\? literalPromptNotApplied\(image, Boolean\(status\?\.loaded && isNativeEngineStatus\(status\)\), sdCaps\)/,
+  );
+});
+
 test("imported variation values out of the request bounds are named, not randomised or clamped", async () => {
   const { importNotApplied, variationApplies } = await import(
     "../src/features/images/lib/image-metadata.ts"

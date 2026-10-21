@@ -1040,6 +1040,8 @@ export function importNotApplied(
   sdControls?: SdControlsCapability | null,
 ): string[] {
   const out: string[] = [];
+  const literal = literalPromptNotApplied(r, parsesEmphasis, sdControls);
+  if (literal) out.push(literal);
   if (sdControls?.prompt_weighting) parsesEmphasis = true;
   if (!parsesEmphasis && Array.isArray(r.prompt_emphasis) && r.prompt_emphasis.length > 0) {
     const groups = r.prompt_emphasis.filter((g): g is string => typeof g === "string");
@@ -1099,6 +1101,18 @@ export function importNotApplied(
       if (typeof item === "string") out.push(item);
   }
   return out;
+}
+
+/** A run that turned prompt weighting off (its prompt has attention syntax) cannot be replayed literally on an
+ *  engine that always parses that syntax itself (sd.cpp) and has no off switch. */
+export function literalPromptNotApplied(
+  r: ImportedRecipe | { prompt_weighting?: boolean | null },
+  parsesEmphasis: boolean,
+  sdControls?: SdControlsCapability | null,
+): string | null {
+  return r.prompt_weighting === false && parsesEmphasis && !sdControls?.prompt_weighting
+    ? "prompt weighting off (the native sd.cpp engine always reads (word:1.2) syntax)"
+    : null;
 }
 
 /** The variation seed restores only on a model that offers it, for text-to-image (and ControlNet):

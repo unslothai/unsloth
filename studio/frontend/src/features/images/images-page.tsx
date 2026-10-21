@@ -316,6 +316,7 @@ import {
   type ImportedRecipe,
   importedRecipe,
   importNotApplied,
+  literalPromptNotApplied,
   variationApplies,
   textualInversionLabel,
   isGenerationParametersPaste,
@@ -2798,7 +2799,8 @@ export function ImagesPage({
     [dropFromStrip],
   );
 
-  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false) => {
+  // `via`: "import" names what was not applied in its own toast.
+  const restoreSettings = useCallback((image: GalleryImage, exactCaption = false, via: "restore" | "import" = "restore") => {
     const viaConnection = image.model_kind === "connection";
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
@@ -2888,7 +2890,17 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [changeSamplerChoice, samplerOptions.length, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits]);
+    // sd.cpp has no off switch for (word:1.2) syntax, so a literal-prompt run would replay weighted.
+    const literal =
+      via === "restore"
+        ? literalPromptNotApplied(image, Boolean(status?.loaded && isNativeEngineStatus(status)), sdCaps)
+        : null;
+    if (literal) {
+      toast.warning("Some settings in this image were not applied", {
+        description: `Not applied: ${literal}. This model or build does not support them.`,
+      });
+    }
+  }, [changeSamplerChoice, samplerOptions.length, sdCaps, setEnhanceOverride, setPromptFor, setShiftValue, setWorkflow, sizeLimits, status]);
 
   // Like dropping an image on ComfyUI: Unsloth's recipe first, else AUTOMATIC1111 / ComfyUI metadata.
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -2961,16 +2973,20 @@ export function ImagesPage({
           : recipe;
       const settings = recipeSettings(merged, { width, height, steps, guidance });
       const localized = settings.localized_edit;
-      restoreSettings({
-        ...settings,
-        id: "",
-        url: "",
-        seed: settings.seed ?? 0,
-        batch_index: 0,
-        created_at: 0,
-        localized_edit:
-          localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
-      });
+      restoreSettings(
+        {
+          ...settings,
+          id: "",
+          url: "",
+          seed: settings.seed ?? 0,
+          batch_index: 0,
+          created_at: 0,
+          localized_edit:
+            localized === "annotate" || localized === "paint" || localized === "mask" ? localized : null,
+        },
+        false,
+        "import",
+      );
       if (settings.seed === null && settings.model_kind !== "connection") setSeed("");
       // A variation seed this model or workflow cannot apply is named below, not left armed (the backend refuses it).
       if (!variationApplies(merged, sdCaps))
