@@ -113,10 +113,14 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     if not account_access.managed_account():
         return None
     from utils.models import get_base_model_from_lora
+    from core.export.decision import adapter_load_bases
 
-    base = get_base_model_from_lora(checkpoint_path)
-    if base:
-        account_access.require_model_access(base)
+    bases = adapter_load_bases(checkpoint_path)
+    base = get_base_model_from_lora(checkpoint_path) or next(iter(bases), None)
+    # The decision loader prefers its own config's base, so every base named is checked.
+    for name in dict.fromkeys([base, *bases]):
+        if name:
+            account_access.require_model_access(name)
     return base or None
 
 
