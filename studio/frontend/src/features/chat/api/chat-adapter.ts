@@ -7653,7 +7653,7 @@ export function createOpenAIStreamAdapter(
                         body: JSON.stringify({
                           action_id: raw.id,
                           session_id: typeof raw.session_id === "string" ? raw.session_id : "",
-                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Studio." },
+                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Unsloth." },
                         }),
                       }).catch(() => undefined);
                     },

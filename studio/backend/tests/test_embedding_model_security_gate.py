@@ -839,3 +839,101 @@ def test_st_gate_covers_router_sub_module_types():
     with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
         router.import_from_string("custom_mod.Pooling")
     assert router.import_from_string("sentence_transformers.models.Pooling").__name__ == "Pooling"
+
+
+def _pre_six_module(name):
+    st = pytest.importorskip("sentence_transformers")
+    if int(st.__version__.split(".")[0]) >= 6:
+        pytest.skip("sentence-transformers 6 gates this itself")
+    import importlib
+
+    module = importlib.import_module(f"sentence_transformers.models.{name}")
+    if not hasattr(module, "import_from_string"):
+        pytest.skip(f"this {name} does not resolve its config through import_from_string")
+    return module
+
+
+def _marker_package(tmp_path, monkeypatch, name):
+    marker = tmp_path / f"{name}.ran"
+    pkg = tmp_path / "site" / name
+    pkg.mkdir(parents = True)
+    (pkg / "__init__.py").write_text(
+        f"open({str(marker)!r}, 'w').write('ran')\n"
+        "def act():\n"
+        "    return None\n"
+        "class Tok:\n"
+        "    @staticmethod\n"
+        "    def load(path):\n"
+        "        return Tok()\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    return marker
+
+
+def test_st_gate_covers_dense_activation_function(tmp_path, monkeypatch):
+    # Dense.load imports and calls config["activation_function"] below 6.0.
+    import json
+
+    dense = _pre_six_module("Dense")
+    import core.rag.embeddings as embeddings
+
+    marker = _marker_package(tmp_path, monkeypatch, "dense_payload_mod")
+    folder = tmp_path / "2_Dense"
+    folder.mkdir()
+    (folder / "config.json").write_text(
+        json.dumps(
+            {"in_features": 4, "out_features": 4, "activation_function": "dense_payload_mod.act"}
+        )
+    )
+    embeddings._gate_st_custom_modules()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        dense.Dense.load(str(folder))
+    assert not marker.exists()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        dense.import_from_string("os.getcwd")
+
+
+def test_st_gate_keeps_a_real_dense_module_loading(tmp_path):
+    torch = pytest.importorskip("torch")
+    dense = _pre_six_module("Dense")
+    import core.rag.embeddings as embeddings
+
+    embeddings._gate_st_custom_modules()
+    saved = dense.Dense(4, 4, activation_function = torch.nn.Tanh())
+    (tmp_path / "2_Dense").mkdir()
+    saved.save(str(tmp_path / "2_Dense"))
+    loaded = dense.Dense.load(str(tmp_path / "2_Dense"))
+    assert isinstance(loaded.activation_function, torch.nn.Tanh)
+
+
+def test_st_gate_covers_word_embeddings_tokenizer_class(tmp_path, monkeypatch):
+    import json
+
+    word = _pre_six_module("WordEmbeddings")
+    import core.rag.embeddings as embeddings
+
+    marker = _marker_package(tmp_path, monkeypatch, "word_payload_mod")
+    folder = tmp_path / "0_WordEmbeddings"
+    folder.mkdir()
+    (folder / "wordembedding_config.json").write_text(
+        json.dumps({"tokenizer_class": "word_payload_mod.Tok", "update_embeddings": False})
+    )
+    embeddings._gate_st_custom_modules()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        word.WordEmbeddings.load(str(folder))
+    assert not marker.exists()
+    tok = "sentence_transformers.models.tokenizer.WhitespaceTokenizer.WhitespaceTokenizer"
+    assert word.import_from_string(tok).__name__ == "WhitespaceTokenizer"
+
+
+def test_st_gate_module_loader_wrappers_are_idempotent():
+    import core.rag.embeddings as embeddings
+
+    modules = [_pre_six_module(name) for name in ("Router", "Dense", "WordEmbeddings")]
+    embeddings._gate_st_custom_modules()
+    first = [module.import_from_string for module in modules]
+    embeddings._gate_st_custom_modules()
+    for module, wrapper in zip(modules, first):
+        assert module.import_from_string is wrapper
+        assert getattr(wrapper, embeddings._ST_GATE_MARKER, False)
+        assert not getattr(wrapper.__wrapped__, embeddings._ST_GATE_MARKER, False)

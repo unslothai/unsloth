@@ -1846,7 +1846,7 @@ def _unified_memory_shortfall_text(plan: Any, family: Optional[str]) -> Optional
         f"choose Load anyway, or turn on '{UNIFIED_OVERSIZE_SETTING_LABEL}' in "
         f"{UNIFIED_OVERSIZE_SETTING_LOCATION} (API callers can send {UNIFIED_OVERSIZE_REQUEST_FIELD}; "
         f"server installs can set {UNIFIED_OVERSIZE_ENV}=1). An oversized load can exhaust memory, "
-        "swap heavily, stop Studio or make the computer unresponsive."
+        "swap heavily, stop Unsloth or make the computer unresponsive."
     )
 
 

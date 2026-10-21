@@ -1339,7 +1339,7 @@ export function AppSidebar() {
           ? "Training was left out of this install (Chat only). Use Repair installation in Settings to add it."
           : "Training was left out of this install (--no-torch). Reinstall without --no-torch to enable Train."
         : chatOnlyReason === "rosetta"
-        ? "Studio is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable training."
+        ? "Unsloth is running under Rosetta (x86_64 Python). Re-run the installer from a native arm64 terminal to enable training."
         : chatOnlyReason === "intel_mac"
         ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
         : chatOnlyReason === "torch_cpu_build" ||

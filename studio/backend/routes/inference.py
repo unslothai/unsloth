@@ -69,7 +69,7 @@ import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, asynccontextmanager, contextmanager, nullcontext
+from contextlib import AsyncExitStack, ExitStack, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass, fields as dataclass_fields, replace
 
 
@@ -4526,7 +4526,7 @@ async def create_artifact_preview_page(
 
 @studio_router.get("/artifact-preview-page/{token}", include_in_schema = False)
 async def artifact_preview_page(token: str):
-    """Unauthenticated: an outside browser has no Studio session, so the token is the capability."""
+    """Unauthenticated: an outside browser has no Unsloth session, so the token is the capability."""
     entry = _artifact_pages.get(token)
     if entry is None or time.monotonic() - entry[0] > _ARTIFACT_PAGE_TTL_SECONDS:
         _artifact_pages.pop(token, None)
@@ -6283,7 +6283,7 @@ def _skill_tool_tip(
     return (
         "Enabled Agent Skills are listed below. Use their descriptions to select one when "
         "helpful, then call read_skill before following its instructions unless the complete "
-        "SKILL.md is already in context. Studio loads explicit @skill-name mentions before "
+        "SKILL.md is already in context. Unsloth loads explicit @skill-name mentions before "
         "generation when permitted; do not read an already loaded manifest again or claim a "
         "failed/denied load succeeded."
         + create_tip
@@ -11560,6 +11560,22 @@ async def _auto_switch_npu_model(
             _note_switch_waiter(key, -1)
 
 
+def _switch_loads_beside(target_speaks: Callable[[], bool]) -> bool:
+    """Under Keep multiple models loaded, a speech model loads beside a text one (or the reverse); the same kind replaces."""
+    from utils.multi_model_settings import get_multi_model_enabled
+
+    if not get_multi_model_enabled():
+        return False
+    if _llama_cpp_backend.is_active:
+        return target_speaks() != bool(getattr(_llama_cpp_backend, "_is_audio", False))
+    orchestrator = _peek_inference_backend()
+    active = getattr(orchestrator, "active_model_name", None)
+    if not active or getattr(orchestrator, "_managed_engine", None) is not None:
+        return False
+    info = orchestrator.models.get(active, {})
+    return target_speaks() != bool(info.get("is_audio") and info.get("audio_type") != "whisper")
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -12204,7 +12220,21 @@ async def _maybe_auto_switch_model(
                 try:
                     # Hold the keep-warm gate across the swap so no new inference can
                     # start on the model while it is being torn down and replaced.
-                    async with model_load_gate(), inference_lifecycle_gate():
+                    # Beside: load_model_gated takes the load gate itself; the primary keeps serving.
+                    beside = await asyncio.to_thread(
+                        _switch_loads_beside,
+                        # Chat serves a TTS model too, so the target decides, not the endpoint.
+                        lambda: require_speech
+                        or (
+                            resolved is not None
+                            and _target_speech_audio_type(target_id, target_is_gguf, variant)
+                            is not None
+                        ),
+                    )
+                    async with AsyncExitStack() as swap_gates:
+                        if not beside:
+                            await swap_gates.enter_async_context(model_load_gate())
+                            await swap_gates.enter_async_context(inference_lifecycle_gate())
                         # Re-read under the gate: the snapshot above predates the wait.
                         if ollama_target:
                             ollama_source_identity = await asyncio.to_thread(
@@ -12268,6 +12298,8 @@ async def _maybe_auto_switch_model(
                         )
                         if caller_hf_token:
                             load_kwargs["hf_token"] = caller_hf_token
+                        if beside:
+                            load_kwargs["alongside"] = True
                         saved_gpu_ids = load_kwargs.get("gpu_ids")
                         if saved_gpu_ids and not await _override_gpu_ids_still_resolve(
                             saved_gpu_ids, stored_gpu_index_kind(override)
@@ -12308,18 +12340,50 @@ async def _maybe_auto_switch_model(
                                 load_internal_kw["speech_codec_path"] = speech_codec_path
                             if speech_type is not None and caller_hf_token is None:
                                 load_internal_kw["anonymous_hf_access"] = True
+
+                            async def _switch_load(load_request: LoadRequest) -> None:
+                                nonlocal target_backend
+                                if not beside:
+                                    await _load_model_impl(
+                                        load_request,
+                                        fastapi_request,
+                                        current_subject,
+                                        current_request_counted = True,
+                                        **load_internal_kw,
+                                    )
+                                    return
+                                await load_model_gated(
+                                    load_request,
+                                    fastapi_request,
+                                    current_subject,
+                                    current_request_counted = True,
+                                    impl_kwargs = load_internal_kw,
+                                    background = True,
+                                )
+                                slot = routed_slot.get()
+                                if slot is None:
+                                    return
+                                if not model_slots.reserve(slot):
+                                    # Unloaded since: never answer as the primary.
+                                    routed_slot.set(None)
+                                    raise HTTPException(
+                                        status_code = 503,
+                                        detail = openai_error_body(
+                                            "The requested model was unloaded before this request "
+                                            "could use it. Please retry shortly.",
+                                            status = 503,
+                                            code = "model_loading",
+                                            param = "model",
+                                        ),
+                                    )
+                                target_backend = slot.llama if target_is_gguf else slot.orchestrator
+
                             try:
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
                                 load_request._override_alias_id = override_id
-                                await _load_model_impl(
-                                    load_request,
-                                    fastapi_request,
-                                    current_subject,
-                                    current_request_counted = True,
-                                    **load_internal_kw,
-                                )
+                                await _switch_load(load_request)
                             except HTTPException as exc:
                                 # The pre-flight check cannot mirror every loader gpu_ids rule,
                                 # and a stale pin must never block a request, so retry without it.
@@ -12341,13 +12405,7 @@ async def _maybe_auto_switch_model(
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
                                 load_request._override_alias_id = override_id
-                                await _load_model_impl(
-                                    load_request,
-                                    fastapi_request,
-                                    current_subject,
-                                    current_request_counted = True,
-                                    **load_internal_kw,
-                                )
+                                await _switch_load(load_request)
                             _switch_loaded_ok = True
                             # publish the completed load before a late cancellation is observed.
                             target_backend._openai_advertised_id = override_id
@@ -18629,6 +18687,12 @@ def _owner_session(fastapi_request) -> bool:
     return not _request_has_api_key(fastapi_request)
 
 
+def _raise_if_load_cancelled(attempt: _ScopedLoadAttempt, impl_kwargs: Optional[dict]) -> None:
+    request_cancel = (impl_kwargs or {}).get("load_cancel_event")
+    if attempt.cancel_event.is_set() or (request_cancel is not None and request_cancel.is_set()):
+        raise HTTPException(status_code = 409, detail = "Model load cancelled")
+
+
 async def _run_tracked_load_model_impl(
     request: LoadRequest,
     fastapi_request: Request,
@@ -18637,17 +18701,34 @@ async def _run_tracked_load_model_impl(
     attempt: Optional[_ScopedLoadAttempt] = None,
     current_request_counted: bool = False,
     on_reload_confirmed = None,
+    impl_kwargs: Optional[dict] = None,
+    background: bool = False,
 ):
     global _running_load_attempt
 
     owned_attempt = attempt is None
     attempt = attempt or _begin_load_attempt(request, current_subject)
+    impl_kwargs = dict(impl_kwargs or {})
+    request_cancel = impl_kwargs.pop("load_cancel_event", None)
+    follow = None
     with _scoped_load_attempts_lock:
         _running_load_attempt = attempt
     try:
+        if request_cancel is not None:
+            # /unload, shutdown and account retirement cancel through the attempt's event.
+            async def _follow_request_cancel():
+                while not attempt.cancel_event.is_set():
+                    if request_cancel.is_set():
+                        _cancel_for_shutdown(attempt)
+                        return
+                    await asyncio.sleep(0.1)
+
+            if request_cancel.is_set():
+                _cancel_for_shutdown(attempt)
+            follow = asyncio.create_task(_follow_request_cancel())
         if attempt.cancel_event.is_set():
             raise HTTPException(status_code = 409, detail = "Model load cancelled")
-        warnings_token = _load_warnings_reach_user.set(True)
+        warnings_token = _load_warnings_reach_user.set(not background)
         try:
             with collecting_hub_token_rejections() as token_rejections:
                 response = await _load_model_impl(
@@ -18657,6 +18738,7 @@ async def _run_tracked_load_model_impl(
                     current_request_counted = current_request_counted,
                     on_reload_confirmed = on_reload_confirmed,
                     load_cancel_event = attempt.cancel_event,
+                    **impl_kwargs,
                 )
         finally:
             _load_warnings_reach_user.reset(warnings_token)
@@ -18664,6 +18746,8 @@ async def _run_tracked_load_model_impl(
         _remember_hub_access_warning(response, token_rejections)
         return response
     finally:
+        if follow is not None:
+            follow.cancel()
         if attempt.cancel_event.is_set() and not attempt.cancel_complete.is_set():
             if not await asyncio.to_thread(
                 attempt.cancel_complete.wait, _SCOPED_LOAD_CANCEL_HANDSHAKE_TIMEOUT_S
@@ -18800,6 +18884,8 @@ async def load_model_gated(
     *,
     user_initiated: bool = False,
     current_request_counted: bool = False,
+    impl_kwargs: Optional[dict] = None,
+    background: bool = False,
 ):
     """Everything ``POST /load`` does except the tunnel-safe padding.
 
@@ -18875,6 +18961,9 @@ async def load_model_gated(
                         force = request.force_cancel_active,
                         action = "Reloading this model",
                     )
+                elif background:
+                    # Under the lifecycle gate the load waits for running chats instead.
+                    reload_gate = None
                 else:
                     reload_gate = functools.partial(
                         _raise_or_cancel_active_generations,
@@ -18892,9 +18981,13 @@ async def load_model_gated(
                             attempt = attempt,
                             current_request_counted = current_request_counted,
                             on_reload_confirmed = reload_gate,
+                            impl_kwargs = impl_kwargs,
+                            background = background,
                         )
                         break
                     except (GpuMemoryShortError, HTTPException) as exc:
+                        # Before any eviction below: a cancelled load unloads nothing to make room.
+                        _raise_if_load_cancelled(attempt, impl_kwargs)
                         measured = isinstance(exc, GpuMemoryShortError)
                         if not measured:
                             if extra is None and _ran_out_of_memory(exc):
@@ -18959,11 +19052,12 @@ async def load_model_gated(
                             # Fits nowhere beside the others: replace the active model, as before,
                             # unless its chats refuse that, checked before anything else changes.
                             routed_slot.set(None)
-                            _raise_or_cancel_active_generations(
-                                force = request.force_cancel_active,
-                                action = "Loading a model",
-                                cancel = False,
-                            )
+                            if not background:
+                                _raise_or_cancel_active_generations(
+                                    force = request.force_cancel_active,
+                                    action = "Loading a model",
+                                    cancel = False,
+                                )
                             await asyncio.to_thread(model_slots.drop, extra)
                             model_slots.loading, extra = None, None
                             replaced = _primary_model_label()
@@ -18974,9 +19068,18 @@ async def load_model_gated(
                                 update = {"alongside": False, "force_alongside": False}
                             )
                             async with inference_lifecycle_gate() if new_slot else nullcontext():
-                                _raise_or_cancel_active_generations(
-                                    force = request.force_cancel_active, action = "Loading a model"
-                                )
+                                if background:
+                                    await _wait_for_model_switch_idle(
+                                        current_request_counted = current_request_counted
+                                    )
+                                    # The drain can outlast a sidecar install or a cancel: never unload for nothing.
+                                    _raise_if_sidecar_swap_in_progress()
+                                    _raise_if_load_cancelled(attempt, impl_kwargs)
+                                else:
+                                    _raise_or_cancel_active_generations(
+                                        force = request.force_cancel_active,
+                                        action = "Loading a model",
+                                    )
                                 # As a pick does before a switch: the active model goes first, so
                                 # the new one is placed on a GPU it no longer shares.
                                 await asyncio.to_thread(_unload_primary)
@@ -18990,6 +19093,8 @@ async def load_model_gated(
                                     attempt = attempt,
                                     current_request_counted = current_request_counted,
                                     on_reload_confirmed = None,
+                                    impl_kwargs = impl_kwargs,
+                                    background = background,
                                 )
                             evicted += [replaced] if replaced else []
                             break
@@ -19445,7 +19550,7 @@ def _reject_unsupported_managed_kind(request, config) -> None:
         status_code = 400,
         detail = (
             f"This model was detected as {detected_kind}. "
-            f"The Studio {request.engine} integration currently supports text and vision checkpoints. "
+            f"The Unsloth {request.engine} integration currently supports text and vision checkpoints. "
             "Choose Default for this model, or select a supported text checkpoint."
         ),
     )
@@ -23103,6 +23208,45 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         "logging_enabled": api_monitor.enabled,
         "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
     }
+
+
+@studio_router.get("/sampling-defaults")
+async def get_sampling_defaults(model: str, current_subject: str = Depends(get_current_subject)):
+    """The sampling a /v1 request naming ``model`` gets for every field it leaves out.
+
+    The same resolution the request path applies (operator ``UNSLOTH_SAMPLING_*`` pins, then the
+    model's recommendation, then the schema default), so the API page's example request shows the
+    values a client would actually get. Off-loop: the first read of a model loads its YAML.
+    """
+    # A kept model answers its own requests: route as the request path does, so the backend getters
+    # below read that slot rather than the primary.
+    await _route_to_extra_slot(model)
+    return await asyncio.to_thread(_sampling_defaults_for, model)
+
+
+def _sampling_defaults_for(model: str) -> dict:
+    """``resolve_effective_sampling`` as the request path calls it. For the loaded llama model that
+    keys on its identifier and passes its default thinking mode: Qwen3-family recommendations
+    differ between thinking and non-thinking, and leaving it out shows values a request never gets.
+    """
+    from utils.inference.inference_config import resolve_effective_sampling
+
+    model_id, thinking = model, None
+    llama_backend = get_llama_cpp_backend()
+    # Another account's resident stays hidden, as on the monitor: resolving against it would tell
+    # the caller which model that account has loaded.
+    if getattr(llama_backend, "is_loaded", False) and not account_access.resident_hidden(
+        "chat", _monitor_active_model()
+    ):
+        identifier = getattr(llama_backend, "model_identifier", None)
+        names = {n for n in (identifier, _llama_public_model_id(llama_backend)) if n}
+        if model in names or model.rsplit(":", 1)[0] in names:
+            model_id = identifier or model
+            thinking = _sampling_thinking_mode(
+                llama_backend,
+                ChatCompletionRequest(messages = [{"role": "user", "content": "Hello!"}]),
+            )
+    return resolve_effective_sampling(model_id, {}, thinking = thinking)
 
 
 @studio_router.delete("/monitor")
@@ -37685,7 +37829,7 @@ async def open_sandbox_file(
         await run_in_threadpool(open_in_default_app, Path(path), Path(root))
     except PermissionError:
         raise HTTPException(
-            status_code = 415, detail = "This kind of file does not open outside Studio"
+            status_code = 415, detail = "This kind of file does not open outside Unsloth"
         ) from None
     except FileNotFoundError:
         raise HTTPException(status_code = 404, detail = "Not found") from None
@@ -40118,7 +40262,16 @@ def _embeddings_items(body: dict, *, tokens_ok: bool) -> list:
         raise HTTPException(
             status_code = 400, detail = "'encoding_format' must be 'float' or 'base64'."
         )
+    _embeddings_truncate(body)
     return items
+
+
+def _embeddings_truncate(body: dict) -> bool:
+    """``truncate`` (Ollama / TEI spelling), default on (#14309)."""
+    truncate = body.get("truncate", True)
+    if not isinstance(truncate, bool):
+        raise HTTPException(status_code = 400, detail = "'truncate' must be a boolean.")
+    return truncate
 
 
 def _embeddings_texts(body: dict) -> list[str]:
@@ -40361,12 +40514,19 @@ async def _studio_embeddings(
         # setting, mixing one model's limit and dimension with another's vectors.
         limit = rag_embeddings.max_tokens(model_name)
         count = rag_embeddings.token_counter(model_name)
-        token_counts = [count(text) for text in texts]
+        inputs = texts
+        token_counts = [count(text) for text in inputs]
         if limit and max(token_counts) > limit:
-            raise HTTPException(
-                status_code = 400,
-                detail = f"'input' exceeds the {limit}-token limit of {label}.",
+            if not _embeddings_truncate(body):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = f"'input' exceeds the {limit}-token limit of {label}.",
+                )
+            inputs = [rag_embeddings.clip_to_limit(text, count, limit)[0] for text in inputs]
+            logger.warning(
+                "Embedding input over the %d-token limit of %s truncated to fit", limit, label
             )
+            token_counts = [count(text) for text in inputs]
         if dimensions is not None and dimensions != rag_embeddings.dim(model_name):
             raise HTTPException(
                 status_code = 400, detail = f"'dimensions' is not supported by {label}."
@@ -40374,7 +40534,7 @@ async def _studio_embeddings(
         # encode_with_identity: an ST failure swaps the process to llama-server mid-encode, and
         # reporting the configured name anyway files two spaces under one label.
         vectors, identity = rag_embeddings.encode_with_identity(
-            texts, model_name = model_name, normalize = True
+            inputs, model_name = model_name, normalize = True
         )
         return vectors, identity, sum(token_counts), limit
 
@@ -40471,6 +40631,75 @@ async def _studio_embeddings(
     return Response(content = json.dumps(payload), media_type = "application/json")
 
 
+# llama-server's refusals past one micro-batch (500) or the slot context (400), server-context.cpp;
+# a splittable slot (LAST pooling, e.g. Qwen3-Embedding) refuses n_tokens >= n_ctx instead.
+_LLAMA_EMBED_OVERFLOW_RE = re.compile(
+    r"input \(\d+ tokens\) is (?:too large to process\. increase the physical batch size "
+    r"\(current batch size: (\d+)\)|larger than the max context size \((\d+) tokens\))"
+    r"|request \(\d+ tokens\) exceeds the available context size \((\d+) tokens\)"
+)
+
+
+def _llama_embedding_overflow_limit(resp) -> Optional[int]:
+    if resp.status_code not in (400, 500):
+        return None
+    try:
+        match = _LLAMA_EMBED_OVERFLOW_RE.search(resp.json()["error"]["message"])
+    except Exception:  # noqa: BLE001
+        return None
+    if not match:
+        return None
+    if match.group(3):
+        return int(match.group(3)) - 1
+    return int(match.group(1) or match.group(2))
+
+
+async def _truncated_llama_embedding_inputs(
+    client, base_url, headers, value, limit, cache: dict
+) -> Optional[list]:
+    """Strings past ``limit`` cut to their first tokens, keeping the special tokens llama-server
+    adds around a string. None when nothing was cut. ``cache`` spans the retries."""
+    items = [value] if isinstance(value, str) else value
+    # A top-level array holding numbers is one prompt (tokens, or tokens mixed with strings).
+    if not isinstance(items, list) or any(not isinstance(item, (str, list)) for item in items):
+        return None
+
+    async def tokenize(text: str, add_special: bool) -> Optional[list]:
+        r = await client.post(
+            f"{base_url}/tokenize",
+            json = {"content": text, "add_special": add_special},
+            headers = headers,
+            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        )
+        try:
+            tokens = r.json()["tokens"] if r.status_code == 200 else None
+        except (ValueError, KeyError, TypeError):
+            tokens = None
+        return tokens if isinstance(tokens, list) else None
+
+    out, cut = [], False
+    for index, item in enumerate(items):
+        # Short ASCII skips /tokenize (>= 1 byte per token); normalization can expand non-ASCII.
+        if isinstance(item, str) and (not item.isascii() or len(item) + 8 > limit):
+            if index not in cache:
+                cache[index] = [await tokenize(item, True), None]
+            full, bare = cache[index]
+            if full is None:
+                return None
+            if len(full) > limit:
+                if bare is None:
+                    bare = cache[index][1] = await tokenize(item, False)
+                    if bare is None:
+                        return None
+                extra = len(full) - len(bare)
+                head = next((h for h in range(extra + 1) if full[h : h + len(bare)] == bare), None)
+                if head is not None and limit > extra:
+                    item = full[:head] + bare[: limit - extra] + full[head + len(bare) :]
+                    cut = True
+        out.append(item)
+    return out if cut else None
+
+
 def _embedding_width(resp) -> Optional[int]:
     try:
         embedding = resp.json()["data"][0]["embedding"]
@@ -40495,7 +40724,7 @@ def _embeddings_input_present(body: dict) -> bool:
 @account_access.gpu_busy_route
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
-    else Studio's configured embedding model."""
+    else Unsloth's configured embedding model."""
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))
@@ -40590,6 +40819,8 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         # llama-server fetches media URLs inside multimodal items; a managed account sends text or tokens only.
         _embeddings_items(body, tokens_ok = True)
     dimensions = body.pop("dimensions", None)
+    truncate = _embeddings_truncate(body)
+    body.pop("truncate", None)
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
@@ -40628,13 +40859,35 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     _direct_llama_request_started()
     try:
         try:
+            upstream_headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend)
             resp = await _client.post(
                 target_url,
                 json = body,
-                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+                headers = upstream_headers,
                 timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             )
-        except httpx.RequestError:
+            original, cache, limit = body.get("input"), {}, None
+            for _ in range(2):
+                reported = _llama_embedding_overflow_limit(resp) if truncate else None
+                if not reported:
+                    break
+                # Cut the client's inputs, not the token arrays the first retry sent.
+                limit = min(limit or reported, reported)
+                inputs = await _truncated_llama_embedding_inputs(
+                    _client, llama_backend.base_url, upstream_headers, original, limit, cache
+                )
+                if not inputs:
+                    break
+                logger.warning("Embedding input over the %d-token limit truncated to fit", limit)
+                body["input"] = inputs
+                resp = await _client.post(
+                    target_url,
+                    json = body,
+                    headers = upstream_headers,
+                    timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+                )
+        # RuntimeError: a retry or /tokenize call sent after the watcher already closed the client.
+        except (httpx.RequestError, RuntimeError):
             # The watcher closed the client out from under the request: report the cancel, not a transport failure.
             _raise_if_nonstreaming_request_cancelled(_cancel_event)
             raise
