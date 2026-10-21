@@ -183,33 +183,25 @@ test("a run whose response was lost still becomes the seed Reuse last seed picks
   );
 });
 
-test("with only pinned images on the first page, no older pinned seed is offered as the last one", () => {
+test("with more gallery pages unloaded, only this session's seed is offered", () => {
   const pinned = Array.from({ length: 50 }, (_, i) => ({
     seed: i,
     created_at: i,
     pinned: true,
   }));
   assert.equal(reusableSeed(null, pinned, true), null);
-  // The whole gallery is loaded: the newest pinned record is the newest.
+  // The whole gallery is loaded: the newest record by creation time is the newest.
   assert.equal(reusableSeed(null, pinned, false), 49);
-  // An unpinned seeded record on the page means every pinned one is loaded too.
   assert.equal(
-    reusableSeed(null, [...pinned, { seed: 7, created_at: 100 }], true),
+    reusableSeed(null, [...pinned, { seed: 7, created_at: 100 }], false),
     7,
   );
+  // Unpinned rows page in manual (drag) order, so a loaded unpinned row does not prove the newest is loaded.
   assert.equal(
-    reusableSeed(null, [...pinned, { seed: 7, created_at: 1 }], true),
-    49,
-  );
-  // A connection record carries no seed, so it does not prove the rest are older.
-  assert.equal(
-    reusableSeed(
-      null,
-      [...pinned, { seed: 7, created_at: 100, model_kind: "connection" }],
-      true,
-    ),
+    reusableSeed(null, [...pinned, { seed: 7, created_at: 100 }], true),
     null,
   );
+  assert.equal(reusableSeed(null, [{ seed: 7, created_at: 100 }], true), null);
   assert.equal(reusableSeed(3, pinned, true), 3);
   const page = readSrc("features/images/images-page.tsx");
   assert.match(page, /reusableSeed\(sessionSeed, images, hasMore\)/);
