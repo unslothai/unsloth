@@ -345,7 +345,9 @@ def _grouped_gemm_dW_kernel(
                         prev = tl.reshape(prev, (BLOCK_SIZE_N, BLOCK_SIZE_K))
                     else:
                         prev = tl.load(
-                            dW_ptr + store_row_offs[:, None] * K + (k_offset + block_range_k)[None, :],
+                            dW_ptr
+                            + store_row_offs[:, None] * K
+                            + (k_offset + block_range_k)[None, :],
                             mask = nk_mask,
                             other = 0.0,
                         )
@@ -432,7 +434,9 @@ def _grouped_gemm_dW_kernel(
                         prev = tl.reshape(prev, (BLOCK_SIZE_N, BLOCK_SIZE_K))
                     else:
                         prev = tl.load(
-                            dW_ptr + store_row_offs[:, None] * K + (k_offset + block_range_k)[None, :],
+                            dW_ptr
+                            + store_row_offs[:, None] * K
+                            + (k_offset + block_range_k)[None, :],
                             mask = nk_mask,
                             other = 0.0,
                         )

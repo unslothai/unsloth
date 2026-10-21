@@ -35,7 +35,11 @@ DEV = "cuda"
 TMA_STORE = [False, True] if gg.supports_tma() else [False]
 
 
-def _cfgs(bn = 64, bk = 64, tma_store = False):
+def _cfgs(
+    bn = 64,
+    bk = 64,
+    tma_store = False,
+):
     fwd = KernelConfigForward(BLOCK_SIZE_M = 64, BLOCK_SIZE_N = bn, BLOCK_SIZE_K = bk)
     dx = KernelConfigBackward_dX(BLOCK_SIZE_M = 64, BLOCK_SIZE_N = bn, BLOCK_SIZE_K = bk)
     dw = KernelConfigBackward_dW(
@@ -44,7 +48,12 @@ def _cfgs(bn = 64, bk = 64, tma_store = False):
     return fwd, dx, dw
 
 
-def _routing(T, E, topk, empty = ()):
+def _routing(
+    T,
+    E,
+    topk,
+    empty = (),
+):
     logits = torch.randn(T, E, device = DEV)
     for e in empty:
         logits[:, e] = -float("inf")
@@ -82,7 +91,18 @@ def _ref_dW(X, G, m_sizes, gather, topk, mode, E, N, K):
 
 
 class _Case:
-    def __init__(self, E, N, K, T, topk, mode, dtype, empty = (), seed = 0):
+    def __init__(
+        self,
+        E,
+        N,
+        K,
+        T,
+        topk,
+        mode,
+        dtype,
+        empty = (),
+        seed = 0,
+    ):
         g = torch.Generator(device = DEV).manual_seed(seed)
         torch.manual_seed(seed)
         self.E, self.N, self.K, self.topk, self.mode = E, N, K, topk, mode
@@ -92,14 +112,22 @@ class _Case:
         self.G = torch.randn(T * topk, N, device = DEV, generator = g).to(dtype)
         self.ref = _ref_dW(self.X, self.G, self.m_sizes, self.gather, topk, mode, E, N, K)
         # sum |dY| |X|: scales the fp32 accumulation error of the kernel's dot products.
-        self.absref = _ref_dW(self.X.abs(), self.G.abs(), self.m_sizes, self.gather, topk, mode, E, N, K)
+        self.absref = _ref_dW(
+            self.X.abs(), self.G.abs(), self.m_sizes, self.gather, topk, mode, E, N, K
+        )
 
     def backward(self, W, cfgs, **bw):
         Y = _gemm(self.X, W, self.m_sizes, self.gather, self.topk, self.mode, cfgs)
         Y.backward(self.G, **bw)
 
 
-def _param(E, N, K, dtype, seed = 1):
+def _param(
+    E,
+    N,
+    K,
+    dtype,
+    seed = 1,
+):
     torch.manual_seed(seed)
     return torch.nn.Parameter(torch.randn(E, N, K, device = DEV).to(dtype) * 0.05)
 
@@ -206,7 +234,9 @@ def test_bf16_weight_with_fp32_activations(mode, monkeypatch):
             err = (after.double() - r).abs()
             errs[inplace].append(err.mean().item())
             if inplace:
-                bound = _half_ulp(r, after, torch.bfloat16) + _FP32_SLACK * (absref + prev.double().abs())
+                bound = _half_ulp(r, after, torch.bfloat16) + _FP32_SLACK * (
+                    absref + prev.double().abs()
+                )
                 assert (err <= bound).all()
     assert sum(errs[True]) <= sum(errs[False]), errs
 
@@ -286,7 +316,9 @@ def test_autograd_grad_and_backward_inputs_do_not_touch_param_grad(monkeypatch):
     before = gg.DW_ACCUMULATE_STATS["inplace"]
     _gemm(X, W, c.m_sizes, c.gather, topk, c.mode, cfgs).backward(c.G, inputs = [W])
     assert gg.DW_ACCUMULATE_STATS["inplace"] == before + 1
-    torch.testing.assert_close((W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item())
+    torch.testing.assert_close(
+        (W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item()
+    )
 
 
 def test_hooks_create_graph_kill_switch_and_non_leaf_fall_back(monkeypatch):
@@ -321,7 +353,9 @@ def test_hooks_create_graph_kill_switch_and_non_leaf_fall_back(monkeypatch):
     # A non-leaf weight (scaled copy): its grad must flow on through autograd.
     W = _param(E, N, K, torch.bfloat16)
     g0, _ = _fallback_check(W, cfgs, c, lambda: c.backward(W * 1.0, cfgs))
-    torch.testing.assert_close((W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item())
+    torch.testing.assert_close(
+        (W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item()
+    )
 
     # Frozen experts (LoRA): no dW at all.
     W = _param(E, N, K, torch.bfloat16).requires_grad_(False)
@@ -438,7 +472,9 @@ def _ddp_worker(rank, world, port, inplace, bucket_view, out_path):
 
     model = Block()
     ddp = torch.nn.parallel.DistributedDataParallel(model, gradient_as_bucket_view = bucket_view)
-    cases = [_Case(E, N, K, T, topk, "permute_x", torch.bfloat16, seed = 100 * rank + i) for i in range(4)]
+    cases = [
+        _Case(E, N, K, T, topk, "permute_x", torch.bfloat16, seed = 100 * rank + i) for i in range(4)
+    ]
     for i, case in enumerate(cases):
         loss = ddp(case.X, case.m_sizes, case.gather).float().pow(2).mean()
         if i < 3:
@@ -503,9 +539,7 @@ def _fsdp2_worker(rank, inplace, out_path):
         model.set_requires_gradient_sync(i == 3)
         model(case.X, case.m_sizes, case.gather).float().pow(2).mean().backward()
     grad = model.w.grad.full_tensor() if hasattr(model.w.grad, "full_tensor") else model.w.grad
-    torch.save(
-        {"grad": grad.float().cpu(), "inplace": gg.DW_ACCUMULATE_STATS["inplace"]}, out_path
-    )
+    torch.save({"grad": grad.float().cpu(), "inplace": gg.DW_ACCUMULATE_STATS["inplace"]}, out_path)
     dist.destroy_process_group()
 
 

@@ -710,7 +710,13 @@ _DW_PARAM_NAMES = tuple(inspect.signature(_grouped_gemm_dW_impl).parameters)
 _OPTIONAL_TENSORS = ("gather_indices", "topk_weights")
 
 
-def _make_op(name, impl, fake, mutates_args = (), returns = torch.Tensor):
+def _make_op(
+    name,
+    impl,
+    fake,
+    mutates_args = (),
+    returns = torch.Tensor,
+):
     """torch.library.custom_op (torch >= 2.4) over impl; torch.compiler.disable where it is missing."""
     custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
     if custom_op is None:
@@ -850,7 +856,9 @@ def _dW_accumulate_target(ctx, X, autotune):
         or not grad.is_contiguous()
     ):
         return None
-    if getattr(param, "_backward_hooks", None) or getattr(param, "_post_accumulate_grad_hooks", None):
+    if getattr(param, "_backward_hooks", None) or getattr(
+        param, "_post_accumulate_grad_hooks", None
+    ):
         return None  # these hooks only run on a defined incoming gradient
     try:
         if not torch._C._will_engine_execute_node(acc):
