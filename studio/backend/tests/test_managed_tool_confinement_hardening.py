@@ -234,7 +234,21 @@ def test_macos_managed_profile_filters_network_mach_sysctl_and_shm(tmp_path):
     sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec"),
     reason = "live Seatbelt check",
 )
-def test_macos_managed_child_keeps_python_network_and_its_own_files(tmp_path):
+def test_macos_managed_child_keeps_python_network_and_its_own_files(monkeypatch):
+    # pytest's tmp_path lives under /var/folders, which the managed profile denies as a whole.
+    import shutil
+    import tempfile
+
+    home = tempfile.mkdtemp(dir = os.path.expanduser("~"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", os.path.join(home, "studio"))
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", os.path.join(home, "projects"))
+    try:
+        _run_macos_managed_child()
+    finally:
+        shutil.rmtree(home, ignore_errors = True)
+
+
+def _run_macos_managed_child():
     import socket
     import tempfile
 
