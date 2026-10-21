@@ -27167,7 +27167,7 @@ class LlamaCppBackend:
                 # so the drafter-free fallback can take each one back off.
                 _sidecar_override_pairs: List[List[str]] = []
                 # Re-prices the reserve off a respawn's own argv (cache types, attention).
-                _sidecar_reserve_reprice: Optional[Callable[[List[str]], int]] = None
+                _sidecar_reserve_reprice: Optional[Callable[..., int]] = None
                 _sidecar_kind_for_fit = None
                 # The fit and launch must use the same Model Memory snapshot.
                 from utils.model_memory_settings import capture_model_memory_settings
@@ -30186,6 +30186,7 @@ class LlamaCppBackend:
 
                         def _sidecar_reserve_reprice(
                             run_args: List[str],
+                            child_env: Mapping[str, str],
                             _ctx: int = _sidecar_reserve_ctx,
                             _n: int = _mtp_eff_n_max,
                             _dp: Optional[str] = _sidecar_reserve_path,
@@ -30195,7 +30196,6 @@ class LlamaCppBackend:
                             _swa_full: bool = swa_full,
                             _kv_unified: bool = planned_kv_unified,
                             _ub: Optional[int] = _effective_ubatch,
-                            _fa_default: bool = planned_flash_attn,
                             _floor: int = _sidecar_compute_mib,
                             _auto_ctx: bool = _sidecar_auto_ctx,
                             _native: Optional[int] = self._context_length,
@@ -30204,16 +30204,16 @@ class LlamaCppBackend:
                             # to f16, so the reserve priced for the first launch is short.
                             # Slots and the KV layout come off the argv too: extras can
                             # set --parallel / --no-kv-unified past the request.
-                            _ck, _cv = _extra_args_draft_cache_types(run_args, env)
-                            _np = _extra_args_n_parallel(run_args, env) or _np
+                            _ck, _cv = _extra_args_draft_cache_types(run_args, child_env)
+                            _np = _extra_args_n_parallel(run_args, child_env) or _np
                             _kv_unified = _kv_unified_from_args(
-                                run_args, default = _kv_unified, env = env
+                                run_args, default = _kv_unified, env = child_env
                             )
                             # An automatic context scales with the FINAL slots and layout.
                             if _auto_ctx:
-                                _ctx = _sidecar_child_ctx(run_args, env, _native, _np, _kv_unified)
+                                _ctx = _sidecar_child_ctx(run_args, child_env, _native, _np, _kv_unified)
                             # The draft context's own micro-batch sizes its compute graph.
-                            _ub = _draft_n_ubatch(run_args, env) or _ub
+                            _ub = _draft_n_ubatch(run_args, child_env) or _ub
                             _v = self._estimate_mtp_overhead_bytes(
                                 _ctx,
                                 spec_draft_n_max = _n,
@@ -30229,7 +30229,7 @@ class LlamaCppBackend:
                                 kv_unified = _kv_unified,
                                 n_ubatch = _ub,
                                 flash_attn = _flash_attn_enabled_from_args(
-                                    run_args, default = _fa_default, env = env
+                                    run_args, default = planned_flash_attn, env = child_env
                                 ),
                             )
                             return self._sidecar_fit_reserve_mib(_v or 0, _dp) + _floor
@@ -33592,7 +33592,7 @@ class LlamaCppBackend:
                             # (draft cache types, slots, KV layout, context, draft
                             # micro-batch) are final only here.
                             _spawn_reserve = (
-                                _sidecar_reserve_reprice(list(run_cmd))
+                                _sidecar_reserve_reprice(list(run_cmd), env)
                                 if _sidecar_reserve_reprice is not None
                                 else _sidecar_fit_reserve_eligible_mib
                             )
@@ -34872,7 +34872,7 @@ class LlamaCppBackend:
                             _sidecar_reserve_reprice = functools.partial(
                                 _sidecar_reserve_reprice, _np = 1, _kv_unified = False
                             )
-                            _sidecar_fit_reserve_eligible_mib = _sidecar_reserve_reprice(cmd)
+                            _sidecar_fit_reserve_eligible_mib = _sidecar_reserve_reprice(cmd, env)
                             _sidecar_fit_reserve_mib = 0
                         # The cap in argv was sized for slots this retry no longer runs;
                         # same re-decide as the arch-crash respawn.
