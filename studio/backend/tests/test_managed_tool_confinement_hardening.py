@@ -228,3 +228,54 @@ def test_macos_managed_profile_filters_network_mach_sysctl_and_shm(tmp_path):
     # The account's own sockets (multiprocessing) still work.
     assert f'(allow network-outbound (remote unix-socket (subpath "{writable}")))' in lines
     assert f'(allow network-bind (local unix-socket (subpath "{writable}")))' in lines
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec"),
+    reason = "live Seatbelt check",
+)
+def test_macos_managed_child_keeps_python_network_and_its_own_files(tmp_path):
+    import socket
+    import tempfile
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    outside = tempfile.mkdtemp(dir = "/tmp")
+    host_socket_path = os.path.join(outside, "s")
+    host_socket = socket.socket(socket.AF_UNIX)
+    host_socket.bind(host_socket_path)
+    host_socket.listen(1)
+    code = f"""
+import multiprocessing as mp, os, socket
+print("cpus", os.cpu_count() is not None)
+print("dns", bool(socket.getaddrinfo("localhost", {port})))
+socket.create_connection(("127.0.0.1", {port}), timeout = 5).close()
+print("tcp", True)
+open("own.txt", "w").write("x")
+print("write", open("own.txt").read() == "x")
+parent, child = mp.Pipe()
+proc = mp.get_context("fork").Process(target = lambda conn: conn.send(7), args = (child,))
+proc.start(); proc.join(10)
+print("fork", parent.recv() == 7)
+try:
+    socket.socket(socket.AF_UNIX).connect({host_socket_path!r})
+    print("host_unix", "reached")
+except OSError:
+    print("host_unix", "refused")
+"""
+    try:
+        out = run_as(ALICE, tools._python_exec, code, session_id = "chat")
+    finally:
+        listener.close()
+        host_socket.close()
+    for line in (
+        "cpus True",
+        "dns True",
+        "tcp True",
+        "write True",
+        "fork True",
+        "host_unix refused",
+    ):
+        assert line in out, out
