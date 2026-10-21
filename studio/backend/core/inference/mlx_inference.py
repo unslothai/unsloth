@@ -3957,7 +3957,7 @@ class _TextBatchSession:
         self._by_uid.pop(row.uid, None)
         history = self.backend._prompt_cache_history
         if self._rows and history is not None:
-            # Held next to a row still decoding, it would raise peak memory over the merge base's.
+            # Holding it beside a row still decoding would raise peak memory.
             history.release_oversized()
         stream = row.plan.stream
         yield from ((row.handle, snap) for snap in stream.settle())
