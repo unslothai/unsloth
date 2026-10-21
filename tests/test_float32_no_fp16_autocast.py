@@ -75,6 +75,7 @@ def _run(
     full_finetuning = "0",
     mixed_precision = "float32",
     user_float32 = None,
+    device_type = "cuda",
 ):
     """Execute the block and report what it decided."""
     config = types.SimpleNamespace(dtype = model_dtype, torch_dtype = model_dtype)
@@ -108,6 +109,7 @@ def _run(
     # Stub the parent too: a raising unsloth_zoo __init__ would route through the torch.cuda fallback.
     mod = types.ModuleType("unsloth_zoo.device_type")
     mod.device_is_bf16_supported = lambda: bf16_supported
+    mod.DEVICE_TYPE = device_type
     utils = types.ModuleType("unsloth_zoo.utils")
     utils._get_dtype = _get_dtype
     parent = types.ModuleType("unsloth_zoo")
@@ -269,3 +271,15 @@ def test_block_still_compiles():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_explicit_bf16_model_on_emulated_xpu_autocasts_bf16():
+    """XPU keeps an explicit bf16 load (emulated); fp16 autocast over bf16 weights would overflow."""
+    args, env = _run(torch.bfloat16, bf16_supported = False, device_type = "xpu")
+    assert (args.bf16, args.fp16) == (True, False)
+    assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
+    # A default XPU load there is float16 and keeps float16 autocast; CUDA is unchanged.
+    args, _ = _run(torch.float16, bf16_supported = False, device_type = "xpu")
+    assert (args.bf16, args.fp16) == (False, True)
+    args, _ = _run(torch.bfloat16, bf16_supported = False, device_type = "cuda")
+    assert (args.bf16, args.fp16) == (False, True)

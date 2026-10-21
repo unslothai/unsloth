@@ -28,6 +28,7 @@ from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
 from .qwen3_moe import FastQwen3MoeModel
+from .reap import reap_prune as _reap_prune, raise_if_unsaved_reap
 from .cohere import FastCohereModel
 from transformers import AutoConfig
 from transformers import __version__ as transformers_version
@@ -50,6 +51,8 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _fp8_load_as_is,
+    _fp8_dequantize_quantization_config,
+    _drop_fp8_dequantize_conversions,
     _fp8_needs_offline_quantize,
     _offline_quantize_to_fp8,
     _tag_model_with_fp8_torchao_config,
@@ -80,6 +83,7 @@ except:
         from huggingface_hub.utils._token import get_token
 import importlib.util
 from ..device_type import (
+    xpu_keeps_explicit_bf16,
     is_hip,
     get_device_type,
     DEVICE_TYPE,
@@ -1089,10 +1093,13 @@ def _drop_vllm_engine_kwargs(kwargs):
 
 
 class FastLanguageModel(FastLlamaModel):
+    reap_prune = staticmethod(_reap_prune)
+
     # Text-diffusion models load through FastModel's slow path; these route them there for the PEFT / mode helpers.
     @staticmethod
     @functools.wraps(FastLlamaModel.get_peft_model)
     def get_peft_model(model, *args, **kwargs):
+        raise_if_unsaved_reap(model)
         if getattr(model, "_unsloth_slow_diffusion", False):
             return FastDiffusionModel.get_peft_model(
                 model, **_diffusion_peft_kwargs(model, args, kwargs)
@@ -1793,6 +1800,18 @@ class FastLanguageModel(FastLlamaModel):
         if quantization_config is not None and not fast_inference:
             load_in_4bit_kwargs = False
             load_in_8bit_kwargs = False
+        # Mirror FastModel: an explicit 16bit load dequantizes a fine-grained fp8 checkpoint.
+        _fp8_dequantize_config = None
+        if (
+            load_in_16bit
+            and not load_in_4bit
+            and not load_in_8bit
+            and not fast_inference
+            and kwargs.get("quantization_config", None) is None
+        ):
+            _fp8_dequantize_config = _fp8_dequantize_quantization_config(model_config)
+            if _fp8_dequantize_config is not None:
+                kwargs["quantization_config"] = _fp8_dequantize_config
 
         # Mirror FastModel: bitsandbytes < 0.46.0 needs dynamo disabled. Best effort, never crash the load (an old zoo without the #710 fix raises NameError here on Python 3.13).
         try:
@@ -1834,6 +1853,8 @@ class FastLanguageModel(FastLlamaModel):
             **kwargs,
         )
         _record_modelscope_repo_id(model, modelscope_repo_id, modelscope_dir)
+        if _fp8_dequantize_config is not None:
+            _drop_fp8_dequantize_conversions(model)
 
         if resize_model_vocab is not None:
             _resize_vocab(model, resize_model_vocab)
@@ -2007,6 +2028,8 @@ except:
 
 
 class FastModel(FastBaseModel):
+    reap_prune = staticmethod(_reap_prune)
+
     @staticmethod
     def get_mtp_head(model, *args, **kwargs):
         from .speculative import get_mtp_head
@@ -2019,6 +2042,7 @@ class FastModel(FastBaseModel):
 
     @staticmethod
     def get_peft_model(model, *args, **kwargs):
+        raise_if_unsaved_reap(model)
         # Route text-diffusion models (slow path) to the transformers-only PEFT helper.
         if getattr(model, "_unsloth_slow_diffusion", False):
             return FastDiffusionModel.get_peft_model(
@@ -2128,7 +2152,8 @@ class FastModel(FastBaseModel):
         SUPPORTS_BFLOAT16 = is_bfloat16_supported()
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
-        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16:
+        # XPU runs an explicit bf16 request (emulated if need be), as before the native-bf16 probe.
+        elif dtype == torch.bfloat16 and not SUPPORTS_BFLOAT16 and not xpu_keeps_explicit_bf16():
             logger.warning_once("Device does not support bfloat16. Will change to float16.")
             dtype = torch.float16
         assert dtype in (torch.float16, torch.bfloat16, torch.float32)
@@ -2833,7 +2858,10 @@ class FastModel(FastBaseModel):
             if (
                 disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
                 or disable_name.lower() in model_types_all
-            ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
+            ) and (
+                # An explicit bf16 load kept on XPU stays bf16, not the fp16 + float32 path.
+                dtype == torch.float16 or (not SUPPORTS_BFLOAT16 and dtype != torch.bfloat16)
+            ):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 do_forced_float32 = True
                 dtype = torch.bfloat16  # Change to bfloat16 loading

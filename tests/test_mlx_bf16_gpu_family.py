@@ -4,6 +4,7 @@
 """MLX is_bfloat16_supported(): Metal GPU family first (g13/g14 lack bf16), chip name only as fallback."""
 
 import ast
+import inspect
 import sys
 import types
 from pathlib import Path
@@ -112,9 +113,32 @@ def _mlx_from_pretrained(bf16):
         if isinstance(n, ast.FunctionDef) and n.name == "_mlx_from_pretrained"
     )
     calls = []
+
+    # zoo's FastMLXModel.from_pretrained positional order.
+    def signature(
+        model_name = None,
+        max_seq_length = 2048,
+        dtype = None,
+        load_in_4bit = True,
+        load_in_8bit = False,
+        load_in_16bit = False,
+        load_in_fp8 = False,
+        load_in_mxfp4 = False,
+        load_in_nvfp4 = False,
+        full_finetuning = False,
+        **kwargs,
+    ):
+        pass
+
+    def from_pretrained(*a, **k):
+        calls.append((a, k))
+
+    from_pretrained.__signature__ = inspect.signature(signature)
+
     namespace = {
         "is_bfloat16_supported": lambda: bf16,
-        "FastMLXModel": types.SimpleNamespace(from_pretrained = lambda *a, **k: calls.append((a, k))),
+        "_inspect": inspect,
+        "FastMLXModel": types.SimpleNamespace(from_pretrained = from_pretrained),
     }
     exec(compile(ast.Module(body = [node], type_ignores = []), str(INIT), "exec"), namespace)
     return namespace["_mlx_from_pretrained"], calls
@@ -138,6 +162,28 @@ def _mlx_from_pretrained(bf16):
         ),
         pytest.param(
             ("m", 2048, "float32"), {}, False, (("m", 2048, "float32"), {}), id = "explicit-pos-wins"
+        ),
+        # zoo trains a non-bf16 full finetune in float32: leave its default alone there.
+        pytest.param(
+            ("m",),
+            {"full_finetuning": True},
+            False,
+            (("m",), {"full_finetuning": True}),
+            id = "full-ft-kw-untouched",
+        ),
+        pytest.param(
+            ("m", 2048, None, False, False, False, False, False, False, True),
+            {},
+            False,
+            (("m", 2048, None, False, False, False, False, False, False, True), {}),
+            id = "full-ft-pos-untouched",
+        ),
+        pytest.param(
+            ("m",),
+            {"full_finetuning": False},
+            False,
+            (("m",), {"full_finetuning": False, "dtype": "float16"}),
+            id = "lora-still-float16",
         ),
     ],
 )

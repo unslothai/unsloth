@@ -90,14 +90,19 @@ test("clamping is idempotent, so the observer cannot feed itself", () => {
 
 // ── The wiring the geometry depends on ──────────────────────────────────
 
-test("the stored position is clamped as it is read", () => {
+test("the stored position is clamped before the first measurement", () => {
   // Without this the card paints once at the stored coordinates. On a smaller
   // screen that single frame is off screen, and if the observer ever fails to
   // attach it stays there.
   assert.match(
     SOURCE,
-    /const stored = readStored[\s\S]{0,500}?clampToViewport\(stored,/,
-    "useState initialiser must clamp what it reads",
+    /readStored\(storageKey\)[\s\S]{0,600}?width: 0,\s*height: 0,/,
+    "the fit starts at zero size so the read is clamped before any measurement",
+  );
+  assert.match(
+    SOURCE,
+    /clampToViewport\(chosen, fit\.width, fit\.height, fit\.viewport\)/,
+    "what is painted is always the clamped spot",
   );
 });
 

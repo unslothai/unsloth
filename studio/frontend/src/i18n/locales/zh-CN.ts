@@ -215,7 +215,7 @@ export const zhCN = {
     importBookmarksDoneOne: "已导入 {count} 个书签。",
     importBookmarksDoneMany: "已导入 {count} 个书签。",
     importBookmarksNone: "该文件中没有新书签。",
-    importBookmarksPartial: "已导入 {count} 个，但还有 {leftOut} 个放不下：Studio 最多保存 {max} 个书签。",
+    importBookmarksPartial: "已导入 {count} 个，但还有 {leftOut} 个放不下：Unsloth 最多保存 {max} 个书签。",
     importBookmarksFailed: "无法读取该文件。请选择从浏览器导出的书签 HTML 文件。",
     downloadsTitle: "下载",
     askWhereToSaveSetting: "每次询问文件保存位置",
@@ -266,7 +266,7 @@ export const zhCN = {
     annotationScreenshotsAlways: "始终附带",
     annotationScreenshotsNever: "从不附带",
     clearDataSetting: "清除浏览数据",
-    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面仅在重新加载 Studio 之前保留 Cookie 和网站数据。",
+    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面仅在重新加载 Unsloth 之前保留 Cookie 和网站数据。",
     manage: "管理",
     fullView: {
       enter: "全屏视图",
@@ -842,6 +842,7 @@ export const zhCN = {
       byProject: "按项目",
       inOneList: "合并为一个列表",
       sortChatsBy: "对话排序方式",
+      projectsHome: "项目主页",
       lastUpdated: "最近更新",
       manualOrder: "手动排序",
       switchedToManual: "已改为手动排序，拖动行即可重新排序",
@@ -1444,15 +1445,15 @@ export const zhCN = {
       dictation: {
         audioUploadTitle: "使用录音进行语音输入",
         audioUploadDescription:
-          "浏览器需要安全连接 (HTTPS) 才能直接在 Studio 中录音。在当前 HTTP 连接下，请改用手机录音工具，或选择已保存的录音。Studio 服务器会转写音频，并将文字添加到您的消息中。",
+          "浏览器需要安全连接 (HTTPS) 才能直接在 Unsloth 中录音。在当前 HTTP 连接下，请改用手机录音工具，或选择已保存的录音。Unsloth 服务器会转写音频，并将文字添加到您的消息中。",
         audioUploadChooseFile: "选择录音",
         audioUploadRecord: "录制音频",
         audioUploadIphoneHint:
           "在 iPhone 上，请通过“语音备忘录”(Voice Memos) 或其他录音应用保存录音，然后在此处选择。",
         audioUploadServerModelNote:
-          "此录音会使用 Studio 服务器上方显示的本地模型，即使普通语音输入使用的是其他引擎。",
+          "此录音会使用 Unsloth 服务器上方显示的本地模型，即使普通语音输入使用的是其他引擎。",
         audioUploadAutomatic: "自动",
-        audioUploadModelReady: "已在此 Studio 服务器上就绪",
+        audioUploadModelReady: "已在此 Unsloth 服务器上就绪",
         audioUploadRetryTitle: "无法转写 {file}",
         audioUploadRetry: "重试转写",
         audioUploadChooseModel:
@@ -1794,9 +1795,6 @@ export const zhCN = {
         showLoadedModels: "已加载模型指示器",
         showLoadedModelsDescription:
           "在右下角显示一张小卡片，列出当前位于内存中的所有模型（聊天、语音、图像、视频），并为每个模型提供卸载按钮。",
-        showWhisperUpdates: "whisper.cpp 更新通知",
-        showWhisperUpdatesDescription:
-          "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
         showAudioCppUpdates: "audio.cpp 更新通知",
         showAudioCppUpdatesDescription:
           "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
@@ -1939,7 +1937,7 @@ export const zhCN = {
         menuSubtitle: "用于文件搜索",
         device: "嵌入设备",
         deviceDescription:
-          "嵌入模型的运行位置，适用于所有模型。GPU 索引大量文档更快，但在 Studio 重启前会占用部分显存。",
+          "嵌入模型的运行位置，适用于所有模型。GPU 索引大量文档更快，但在 Unsloth 重启前会占用部分显存。",
         deviceAuto: "自动",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
@@ -2367,7 +2365,7 @@ export const zhCN = {
         multiModelHint: "适用于聊天、语音、图像和视频模型。每个已加载的聊天模型都会响应指定它的请求。在多 GPU 机器上，Unsloth 会尽量把新模型放到没有其他模型使用的 GPU 上。“能容纳时”会预留约 1 GB 空间。“能容纳时”和“总是”都不会卸载其他 GPU 上的模型。",
         allowOversizedLoad: "允许加载超大模型",
         allowOversizedLoadDescription: "即使内存检查认为放不下，也加载图像和视频模型。",
-        allowOversizedLoadHint: "适用于 CPU 和 GPU 共用一块内存的设备（Apple Silicon、集成显卡）。当模型权重的估算值大于为操作系统预留空间后剩余的内存时，Studio 会拒绝加载。开启后仍会尝试加载。估算可能偏高也可能偏低：超大加载可能失败、耗尽内存、导致电脑大量换页或无响应，或使 Studio 停止运行。默认关闭。",
+        allowOversizedLoadHint: "适用于 CPU 和 GPU 共用一块内存的设备（Apple Silicon、集成显卡）。当模型权重的估算值大于为操作系统预留空间后剩余的内存时，Unsloth 会拒绝加载。开启后仍会尝试加载。估算可能偏高也可能偏低：超大加载可能失败、耗尽内存、导致电脑大量换页或无响应，或使 Unsloth 停止运行。默认关闭。",
         mediaIdleUnloadDescription:
           "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
@@ -2719,6 +2717,22 @@ export const zhCN = {
         visibilityDescription:
           "思考过程如何展开。你仍可自行展开或折叠任意区块。",
       },
+      memory: {
+        title: "记忆",
+        description: "每个对话都会读取的笔记，适用于所有本地或云端模型。项目中的对话还会读取该项目的 AGENTS.md。",
+        enable: "在对话中使用记忆",
+        enableDescription: "在每个对话中发送这些笔记。",
+        locked: "已被 UNSLOTH_STUDIO_AGENTS_MD 在此安装中关闭。",
+        editor: "记忆笔记",
+        placeholder: "例如：\n- 我用 Python 编程，使用 uv。\n- 回答尽量简短。",
+        hint: "保存在 {path}。你也可以用任意文本编辑器编辑该文件。",
+        size: "{used} / {max} KB",
+        save: "保存",
+        saved: "记忆已保存",
+        loadError: "无法加载记忆。",
+        saveError: "无法保存记忆。",
+        keywords: "memory remember personalization personalisation profile preferences notes facts custom instructions about me agents.md claude.md 记忆 记住 个性化 个人资料 笔记",
+      },
       currentDate: {
         label: "告诉模型今天的日期",
         description:
@@ -2797,7 +2811,7 @@ export const zhCN = {
       importFailed: "导入失败。",
       importFromSource: "从 {source} 导入",
       importFromSourceDescription:
-        "将你在 {source} 中的对话按项目分组复制到 Studio。",
+        "将你在 {source} 中的对话按项目分组复制到 Unsloth。",
       importingAction: "导入中...",
       importedSourceOneChat: "已从 {source} 导入 1 个对话。",
       importedSourceChatCount: "已从 {source} 导入 {count} 个对话。",
@@ -3208,7 +3222,7 @@ export const zhCN = {
         desktopAvailable: "桌面应用 {version} 已可用",
         desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
         desktopExternalServer:
-          "应用已连接到正在运行的 Studio 服务器，无法更新该服务器。请先停止该服务器，再退出并重新打开桌面应用以进行更新。",
+          "应用已连接到正在运行的 Unsloth 服务器，无法更新该服务器。请先停止该服务器，再退出并重新打开桌面应用以进行更新。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
         desktopCheckFailed: "无法检查更新",
         desktopCheckFailedDescription: "请检查网络连接后重试。",
@@ -3784,7 +3798,7 @@ export const zhCN = {
           "请输入大于 0 且小于 1 的 Embedding 学习率。",
         decisionColumnsMissing:
           "决策模型需要 state、questions 和 gold（或 answers）列。缺少：{columns}。",
-        decisionOwnerOnly: "只有 Studio 所有者可以微调决策模型。",
+        decisionOwnerOnly: "只有 Unsloth 所有者可以微调决策模型。",
         hfDatasetRequired: "请先选择 Hugging Face 数据集。",
         hfDatasetSplitRequired: "请先选择或输入训练拆分。",
         localDatasetRequired: "请先选择本地数据集。",

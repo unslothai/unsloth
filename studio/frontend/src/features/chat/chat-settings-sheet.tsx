@@ -216,7 +216,7 @@ export function ParamSlider({
           max={max}
           step={step}
           {...sliderProps}
-          className="panel-slider min-w-0 flex-1"
+          className="min-w-0 flex-1"
           disabled={disabled}
         />
         <NumericValueInput
@@ -261,7 +261,6 @@ export function ParamSlider({
         max={max}
         step={step}
         {...sliderProps}
-        className="panel-slider"
         disabled={disabled}
       />
     </div>
@@ -959,6 +958,7 @@ export function ChatSettingsPanel({
     if (p) {
       setParams(applyPresetParamsWithinCurrentLimits(p), {
         minPChoiceEdited: true,
+        fromPreset: true,
       });
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
@@ -1021,7 +1021,7 @@ export function ChatSettingsPanel({
       if (fallbackPreset) {
         setParams(
           applyPresetParamsWithinCurrentLimits(fallbackPreset),
-          { minPChoiceEdited: true },
+          { minPChoiceEdited: true, fromPreset: true },
         );
         if (fallbackPreset.loadConfig) {
           applyPresetLoadConfig(fallbackPreset.loadConfig);
@@ -1213,7 +1213,7 @@ export function ChatSettingsPanel({
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length is above Studio&apos;s free-memory estimate
+                      Context length is above Unsloth&apos;s free-memory estimate
                       ({maxContextLength?.toLocaleString()} tokens). It may
                       still load, but macOS may have to compress or swap other
                       apps and generation may slow down. Lower the context,

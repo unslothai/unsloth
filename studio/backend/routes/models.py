@@ -68,6 +68,7 @@ _MAX_TASK_CLASSIFY_GGUFS = _catalog_classification._MAX_TASK_CLASSIFY_GGUFS
 _PLACEHOLDER_DIFFUSION_GGUF_ARCHS = _catalog_classification._PLACEHOLDER_DIFFUSION_GGUF_ARCHS
 _TASK_CLASSIFY_READ_SECONDS = _catalog_classification._TASK_CLASSIFY_READ_SECONDS
 _gguf_family_buildable = _catalog_classification._gguf_family_buildable
+_diffusion_gguf_family_hints = _catalog_classification._diffusion_gguf_family_hints
 _is_h3_bundle_gguf_hint = _catalog_classification._is_h3_bundle_gguf_hint
 SPEECH_GGUF_ARCHS = _gguf_archs.SPEECH_GGUF_ARCHS
 is_speech_gguf_architecture = _gguf_archs.is_speech_gguf_architecture
@@ -3213,6 +3214,50 @@ async def scan_diffusion_loras(
         ],
         "loras_dir": str(diffusion_lora.loras_dir()),
     }
+
+
+@router.get("/diffusion-embeddings")
+async def scan_diffusion_embeddings(
+    family: Optional[str] = Query(
+        default = None, description = "Filter to embeddings this diffusion family can use"
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """List textual-inversion embeddings in ``<studio_home>/embeddings/diffusion`` for the Images page.
+
+    The filename stem is the trigger word: naming it in a prompt or negative prompt uses the embedding.
+    ``family`` keeps only files of that family's format (an unknown family, or one without embeddings,
+    lists none). One directory scan reading safetensors headers only; no network.
+    """
+    from core.inference import diffusion_embeddings
+
+    kind = None
+    if family:
+        fam = next((f for f in _diffusion_families() if f.name == family.strip().lower()), None)
+        kind = getattr(fam, "textual_inversion", None) if fam is not None else None
+    entries = (
+        await asyncio.to_thread(diffusion_embeddings.list_embeddings, kind)
+        if kind is not None or not family
+        else []
+    )
+    return {
+        "embeddings": [
+            {
+                "id": e.id,
+                "trigger": e.id,
+                "kind": e.kind,
+                "vectors": e.vectors,
+                "size_bytes": e.size_bytes,
+            }
+            for e in entries
+        ],
+        "embeddings_dir": str(diffusion_embeddings.embeddings_dir()),
+    }
+
+
+def _diffusion_families():
+    from core.inference.diffusion_families import _FAMILIES
+    return _FAMILIES
 
 
 @router.get("/diffusion-controlnets")

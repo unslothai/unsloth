@@ -28,6 +28,7 @@ import {
   emitTrainingRunsChanged,
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
+import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
 import { NOTIFICATION_PREF_KEYS } from "@/hooks/use-notification-frequency";
 import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
@@ -177,6 +178,7 @@ const PREFS_KEYS: string[] = [
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
   LOADED_MODELS_PREFERENCE_KEYS.position,
   LOADED_MODELS_PREFERENCE_KEYS.dismissed,
+  ...Object.values(FLOATING_PANEL_POSITION_KEYS),
   // Voice settings
   "unsloth_voice_settings",
   // Retired keys. The onboarding wizard is gone, but installs that ran it still
@@ -720,17 +722,6 @@ export function GeneralTab() {
           <NotificationFrequencySelect
             channel="llama"
             label={t("settings.general.notifications.showLlamaUpdates")}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.general.notifications.showWhisperUpdates")}
-          description={t(
-            "settings.general.notifications.showWhisperUpdatesDescription",
-          )}
-        >
-          <NotificationFrequencySelect
-            channel="whisper"
-            label={t("settings.general.notifications.showWhisperUpdates")}
           />
         </SettingsRow>
         <SettingsRow
