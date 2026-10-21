@@ -6050,6 +6050,30 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		box-shadow: none;
 	}
 
+	/* rounded-* compile to var(--radius) (@theme inline), so the step goes on --radius. */
+	.api-rounding {
+		--radius: calc(1.1rem - 2px);
+	}
+
+	.api-rounding .elevated-card,
+	.api-rounding.elevated-card {
+		border-radius: 18px;
+	}
+
+	@media (min-width: 640px) {
+		.api-rounding .elevated-card,
+		.api-rounding.elevated-card {
+			border-radius: 25px;
+		}
+	}
+
+	@media (min-width: 1024px) {
+		.api-rounding .elevated-card,
+		.api-rounding.elevated-card {
+			border-radius: 29px;
+		}
+	}
+
 	.dark .elevated-card.elevated-card-dark-border {
 		border-color: color-mix(in srgb, var(--border) 70%, transparent);
 	}
