@@ -20,10 +20,7 @@ def private_tmp_path(name: str) -> Path:
 
 
 def private_tmp_dir(name: str) -> Path:
-    """Create (or reuse) a 0700 folder in the temp dir that only this user can write.
-
-    Refuses a link, a folder owned by another user, or one that keeps group/world write bits
-    after a chmod: whoever owns or can write it could swap what Studio writes there."""
+    """Create (or reuse) a 0700 per-user temp folder; refuse a link, foreign owner or lingering g/o write."""
     path = private_tmp_path(name)
     path.mkdir(mode = 0o700, parents = True, exist_ok = True)
     if not hasattr(os, "getuid"):

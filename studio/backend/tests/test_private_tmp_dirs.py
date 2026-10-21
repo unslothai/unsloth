@@ -73,7 +73,7 @@ def _seed_reader(monkeypatch):
     try:
         importlib.import_module("data_designer.engine.resources.seed_reader")
     except ImportError:
-        # Bare test env: just enough of data_designer for the reader class to define.
+
         class SeedReader:
             def __class_getitem__(cls, item):
                 return cls

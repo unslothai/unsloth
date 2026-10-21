@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A managed account's path checks refuse a UNC or device path before touching the disk: on
-Windows resolving one is an outbound SMB sign-in with the service account's credentials. UNC
-calls go through a recorder; no network is touched."""
+"""A managed account's path checks refuse a UNC or device path before touching the disk."""
 
 import errno
 import os
@@ -54,7 +52,6 @@ def unc_calls(monkeypatch):
         return real_resolve(self, *a, **k)
 
     def stat(self, *a, **k):
-        # Path.exists() goes through stat, not os.path.exists.
         if str(self).startswith(UNC_PREFIXES):
             calls.append(("stat", str(self)))
             raise FileNotFoundError(errno.ENOENT, "not found", str(self))
@@ -114,8 +111,7 @@ def test_local_spellings_are_not_network_paths():
 
 
 def test_the_allowlist_fallback_does_not_touch_a_unc_path(studio_home, unc_calls, monkeypatch):
-    # With a model allowlist set, require_model_access asks it about a refused reference;
-    # that check resolves paths on disk, which a share path must never reach.
+    # The allowlist check resolves paths on disk, which a share path must never reach.
     monkeypatch.setattr(account_access, "model_allowlist", lambda: {"org/allowed"})
     token = bind_account(ALICE)
     try:

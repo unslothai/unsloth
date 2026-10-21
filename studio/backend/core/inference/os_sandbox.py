@@ -644,8 +644,7 @@ def model_library_roots() -> tuple[str, ...]:
         # The approval gate still asks for a credential inside a model folder; a whole-folder grant would not.
         if tool_path_approval._references_sensitive_path(real + os.sep):
             continue
-        # The root check above can't see a credential inside the folder: an HF home holds token and
-        # stored_tokens (its hub cache is bound on its own), and these basenames sit at a folder's top.
+        # The root check can't see an HF home's token / stored_tokens at this folder's top.
         if any(_is_within(home, real) for home in hf_homes) or _holds_a_credential_file(real):
             continue
         if any(_paths_overlap(real, root) for root in state):
@@ -682,10 +681,8 @@ def _hf_home_roots() -> tuple[str, ...]:
 
 
 def _is_within(path: str, root: str) -> bool:
-    """Whether *path* is *root* or sits inside it."""
     if sys.platform in ("darwin", "win32"):
-        # Case-insensitive by default, and realpath keeps the caller's spelling on macOS. Folding on a
-        # case-sensitive volume can only over-match, which skips a grant rather than adding one.
+        # Case-insensitive volumes; over-matching on a case-sensitive one only skips a grant.
         path, root = path.casefold(), root.casefold()
     try:
         return os.path.commonpath([path, root]) == root

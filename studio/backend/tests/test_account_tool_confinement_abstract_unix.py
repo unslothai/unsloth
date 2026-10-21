@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A managed account's Landlock ruleset scopes abstract AF_UNIX sockets as well as signals.
-Landlock's filesystem rules don't cover abstract sockets, so without the scope a confined tool
-reaches the service user's abstract sockets (X11, `unix:abstract=` buses), which the owner's bwrap
-path blocks. Pathname sockets (systemd's /run/user/<uid>/bus) are a separate, still-open gap."""
+"""A managed account's Landlock ruleset scopes abstract AF_UNIX sockets as well as signals."""
 
 import os
 import socket

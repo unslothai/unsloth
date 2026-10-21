@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A registered model folder is granted to the Linux and macOS jails whole, so it must not be (or
-hold) an HF home, whose token and stored_tokens sit at its top. Fake token files only."""
+"""A model folder granted to the jails whole must not be (or hold) an HF home."""
 
 import os
 
@@ -44,7 +43,6 @@ def test_a_folder_holding_an_hf_home_is_not_granted(roots, tmp_path):
 
 
 def test_a_folder_holding_a_cache_only_home_is_still_granted(roots, tmp_path):
-    # A cache switch or download home with only hub bytes holds no credential.
     models = tmp_path / "models"
     (models / "hf" / "hub").mkdir(parents = True)
     assert roots(models, hf_homes = [models / "hf"]) == (os.path.realpath(models),)
@@ -59,7 +57,6 @@ def test_a_folder_with_a_credential_file_at_its_top_is_not_granted(roots, tmp_pa
 
 
 def test_a_folder_holding_the_hf_token_path_is_not_granted(roots, tmp_path, monkeypatch):
-    # HF_TOKEN_PATH moves token (and stored_tokens beside it) out of the HF home.
     folder = tmp_path / "models"
     (folder / "secrets").mkdir(parents = True)
     (folder / "secrets" / "hf-token").write_text("hf_FAKE")
