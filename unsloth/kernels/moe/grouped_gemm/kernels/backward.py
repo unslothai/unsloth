@@ -140,7 +140,6 @@ def _grouped_gemm_dX_kernel(
                     row_mask = gather_offsets < m_size
                     row_mask = row_mask[:, None]
 
-
                     if PERMUTE_X:
                         load_a_idx = indices_to_gather_64[:, None] * N
                         store_idx = expert_token_offsets * K
@@ -359,9 +358,7 @@ def _grouped_gemm_dW_kernel(
                             row_load_mask = gather_offsets < m_size
 
                             if PERMUTE_X:
-                                x_row_load_idx = (
-                                    (expert_token_offsets // TOPK) * K
-                                )
+                                x_row_load_idx = (expert_token_offsets // TOPK) * K
                                 dY_row_load_idx = m_offsets[:, None] * N
                             else:
                                 x_row_load_idx = indices_to_gather.to(tl.int64)[:, None] * K

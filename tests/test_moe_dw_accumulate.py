@@ -571,5 +571,7 @@ def test_side_stream_use_keeps_the_returned_gradient_path(monkeypatch):
         torch.cuda.current_stream().wait_stream(side)
 
     g0, _ = _fallback_check(W, cfgs, c, side_call)
-    torch.testing.assert_close((W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item())
+    torch.testing.assert_close(
+        (W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item()
+    )
     _fallback_check(W, cfgs, c, lambda: c.backward(W, cfgs))
