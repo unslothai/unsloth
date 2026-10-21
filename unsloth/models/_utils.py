@@ -7876,6 +7876,59 @@ def _group_size_linear_filter(model, group_size, qat_scheme):
     return filter_fn
 
 
+def _block_linear_filter(model, block_size, qat_scheme, skip_output_head):
+    """Microscaling filter: both Linear dims divisible by the scale block, optionally never the output head."""
+    get_output_embeddings = getattr(model, "get_output_embeddings", None)
+    out_head = get_output_embeddings() if skip_output_head and get_output_embeddings else None
+    out_head_id = id(out_head) if out_head is not None else None
+
+    def eligible(m):
+        return isinstance(m, torch.nn.Linear) and id(m) != out_head_id
+
+    filter_fn = lambda m, _: (
+        eligible(m) and m.in_features % block_size == 0 and m.out_features % block_size == 0
+    )
+    skipped = [
+        name
+        for name, module in model.named_modules()
+        if eligible(module)
+        and (module.in_features % block_size != 0 or module.out_features % block_size != 0)
+        and not _is_lora_adapter_name(name)
+    ]
+    if skipped:
+        warnings.warn(
+            f"Unsloth: qat_scheme='{qat_scheme}' uses {block_size}-element scale blocks; these Linear "
+            f"layers have a dim not divisible by {block_size} and stay in full precision: "
+            + ", ".join(skipped[:8])
+            + (f", ... ({len(skipped) - 8} more)" if len(skipped) > 8 else ""),
+            stacklevel = 3,
+        )
+    return filter_fn
+
+
+def _model_device(model):
+    for p in model.parameters():
+        return p.device
+    return torch.device("cpu")
+
+
+def _qat_forward_runs(base_config, device) -> bool:
+    """One tiny QAT forward with this base config, so a GPU / torch without the low precision GEMM is caught at prepare time."""
+    from torchao.quantization import quantize_
+    from torchao.quantization.qat import QATConfig
+
+    try:
+        probe = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(
+            device = device, dtype = torch.bfloat16
+        )
+        quantize_(probe, QATConfig(base_config, step = "prepare"))
+        with torch.no_grad():
+            probe(torch.ones(16, 64, device = device, dtype = torch.bfloat16))
+        return True
+    except Exception:
+        return False
+
+
 def _is_lora_adapter_name(fqn: str) -> bool:
     return any(part.startswith("lora_") for part in fqn.split("."))
 
@@ -7937,6 +7990,31 @@ def _prepare_model_for_qat(
             base_config = Float8DynamicActivationFloat8WeightConfig(granularity = PerRow())
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme, base_config_and_filter_fns = [(base_config, None)]
+            )
+        elif qat_scheme == "nvfp4":
+            try:
+                from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+            except ImportError:
+                raise ImportError(TORCHAO_MSG)
+            # W4A4: the QAT forward runs torchao's real NVFP4 GEMM (Blackwell); the backward is fake quantized bf16.
+            # use_triton_kernel = False: the default Triton activation quantizer needs the optional MSLK
+            # package, and the saved checkpoint would not run where MSLK is absent.
+            try:
+                base_config = NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False)
+            except TypeError:  # older torchao without the knob
+                base_config = NVFP4DynamicActivationNVFP4WeightConfig()
+            device = _model_device(model)
+            if not _qat_forward_runs(base_config, device):
+                raise RuntimeError(
+                    "Unsloth: qat_scheme='nvfp4' runs NVFP4 matmuls in the forward pass and needs a GPU "
+                    "with FP4 tensor cores (compute capability 10.0+: B200, GB200, RTX 50 series) and a "
+                    f"torch / torchao that support it. This model is on {device}. Use "
+                    "qat_scheme='fp8-fp8' instead."
+                )
+            filter_fn = _block_linear_filter(model, 16, qat_scheme, skip_output_head = True)
+            torchao_config = TorchAOConfig(
+                qat_scheme = qat_scheme,
+                base_config_and_filter_fns = [(base_config, filter_fn)],
             )
         elif qat_scheme == "int8-int4":
             try:

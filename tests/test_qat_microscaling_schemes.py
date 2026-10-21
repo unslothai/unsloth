@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Saving torchao NVFP4 / MX QAT linears (forward fake quantized, no quantizer children), CPU only."""
+"""qat_scheme = "nvfp4" shorthand and saving torchao NVFP4 / MX QAT linears, CPU only."""
 
 from __future__ import annotations
 
 import importlib.util
+import warnings
 
 import pytest
 import torch
@@ -41,6 +42,49 @@ def _mx_linear():
 
     return MXFakeQuantizedLinear
 
+
+def _nvfp4_linear():
+    from torchao.prototype.qat import NVFP4FakeQuantizedLinear
+
+    return NVFP4FakeQuantizedLinear
+
+
+def test_nvfp4_scheme_refuses_without_fp4_gemm():
+    model = _tiny_qwen3()
+    with pytest.raises(RuntimeError, match = "FP4 tensor cores"):
+        _prepare_model_for_qat(model, "nvfp4")
+    assert not any(isinstance(m, _nvfp4_linear()) for m in model.modules())
+
+
+def test_nvfp4_scheme_layers_where_fp4_gemm_runs(monkeypatch):
+    from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
+
+    monkeypatch.setattr(qat_utils, "_qat_forward_runs", lambda *a: True)
+    model = _tiny_qwen3()
+    model.model.layers[0].odd = torch.nn.Linear(128, 40, bias = False)
+    with warnings.catch_warnings(record = True):
+        warnings.simplefilter("always")
+        model = _prepare_model_for_qat(model, "nvfp4")
+    (base_config, _), = model._torchao_config.base_config_and_filter_fns
+    assert isinstance(base_config, NVFP4DynamicActivationNVFP4WeightConfig)
+    assert base_config.use_triton_kernel is False  # the Triton quantizer needs the optional MSLK package
+    layer = model.model.layers[0]
+    for proj in (layer.self_attn.q_proj, layer.self_attn.k_proj, layer.mlp.down_proj):
+        assert isinstance(proj, _nvfp4_linear())
+    assert type(model.lm_head) is torch.nn.Linear  # 4-bit head costs too much accuracy
+    assert type(layer.odd) is torch.nn.Linear
+
+
+def test_nvfp4_plain_module_without_hf_heads(monkeypatch):
+    monkeypatch.setattr(qat_utils, "_qat_forward_runs", lambda *a: True)
+    model = torch.nn.Sequential(torch.nn.Linear(64, 128, bias = False)).to(torch.bfloat16)
+    model = _prepare_model_for_qat(model, "nvfp4")
+    assert isinstance(model[0], _nvfp4_linear())
+
+
+def test_unknown_scheme_still_rejected():
+    with pytest.raises(ValueError, match = "Unexpected QAT scheme"):
+        _prepare_model_for_qat(_tiny_qwen3(), "mxfp8")
 
 
 def _mx_torchao_config():
