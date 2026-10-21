@@ -6,6 +6,7 @@ interface SeededImage {
   batch_seed?: number | null;
   created_at: number;
   model_kind?: string | null;
+  pinned?: boolean;
 }
 
 const seedOf = (image: SeededImage): number | null => {
@@ -24,11 +25,19 @@ export function lastSeedOf(run: readonly SeededImage[]): number | null {
   return null;
 }
 
+/** `hasMore`: the gallery is a first page. The server lists pinned images first, so until a seeded
+ *  unpinned one is loaded the newest seeded record may be unseen, and no seed is offered. */
 export function reusableSeed(
   sessionSeed: number | null,
   gallery: readonly SeededImage[],
+  hasMore = false,
 ): number | null {
   if (sessionSeed !== null) return sessionSeed;
+  if (
+    hasMore &&
+    !gallery.some((image) => !image.pinned && seedOf(image) !== null)
+  )
+    return null;
   let newest: SeededImage | null = null;
   for (const image of gallery) {
     if (

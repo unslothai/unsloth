@@ -1843,7 +1843,10 @@ export function ImagesPage({
   const [selectedId, setSelectedId] = useState<string | null>(() => galleryCache.selectedId);
   // The base seed of this session's last run, for "Reuse last seed"; before one, the newest record's.
   const [sessionSeed, setSessionSeed] = useState<number | null>(null);
-  const lastSeed = useMemo(() => reusableSeed(sessionSeed, images), [sessionSeed, images]);
+  const lastSeed = useMemo(
+    () => reusableSeed(sessionSeed, images, hasMore),
+    [sessionSeed, images, hasMore],
+  );
   const [srcById, setSrcById] = useState<Record<string, string>>(() =>
     galleryCache.srcById.toRecord(),
   );

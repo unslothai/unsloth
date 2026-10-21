@@ -177,3 +177,35 @@ test("a run whose response was lost still becomes the seed Reuse last seed picks
     /if \(!\(err instanceof GenerateResponseLostError\)\) throw err;[\s\S]*?if \(!external\) setSessionSeed\(runBaseSeed\);\n\s+setGenDone\(i \+ 1\);\n\s+continue;/,
   );
 });
+
+test("with only pinned images on the first page, no older pinned seed is offered as the last one", () => {
+  const pinned = Array.from({ length: 50 }, (_, i) => ({
+    seed: i,
+    created_at: i,
+    pinned: true,
+  }));
+  assert.equal(reusableSeed(null, pinned, true), null);
+  // The whole gallery is loaded: the newest pinned record is the newest.
+  assert.equal(reusableSeed(null, pinned, false), 49);
+  // An unpinned seeded record on the page means every pinned one is loaded too.
+  assert.equal(
+    reusableSeed(null, [...pinned, { seed: 7, created_at: 100 }], true),
+    7,
+  );
+  assert.equal(
+    reusableSeed(null, [...pinned, { seed: 7, created_at: 1 }], true),
+    49,
+  );
+  // A connection record carries no seed, so it does not prove the rest are older.
+  assert.equal(
+    reusableSeed(
+      null,
+      [...pinned, { seed: 7, created_at: 100, model_kind: "connection" }],
+      true,
+    ),
+    null,
+  );
+  assert.equal(reusableSeed(3, pinned, true), 3);
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /reusableSeed\(sessionSeed, images, hasMore\)/);
+});
