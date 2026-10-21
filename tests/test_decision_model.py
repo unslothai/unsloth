@@ -1418,7 +1418,10 @@ def test_clef_trains_in_float16_and_bfloat16(clef_checkpoint, tmp_path, dtype):
     handler = trainer.accelerator.autocast_handler
     assert (handler is not None and handler.enabled is False) == (dtype == torch.float16)
     trainer.train()
-    assert grads and all(math.isfinite(loss) and math.isfinite(g) and g > 0 for loss, g in grads)
+    assert grads and all(math.isfinite(loss) for loss, _ in grads)
+    # fp16's loss scaler skips the steps that overflow while it calibrates; they log a nan grad norm.
+    stepped = [g for _, g in grads if math.isfinite(g)]
+    assert len(stepped) * 2 >= len(grads) and all(g > 0 for g in stepped), grads
     assert math.isfinite(FastDecisionModel.evaluate(model, processor, items)["loss"])
 
 
