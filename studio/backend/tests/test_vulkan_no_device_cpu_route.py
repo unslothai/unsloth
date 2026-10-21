@@ -287,6 +287,24 @@ def test_a_failed_stall_replay_leaves_only_bounded_vulkan_rungs(monkeypatch, tmp
             assert "max_total_s" in kwargs
 
 
+def test_the_text_only_retry_is_bounded_too(monkeypatch, tmp_path):
+    """The projector recovery starts its text-only child outside _spawn_and_wait."""
+    _route_env(monkeypatch, "devices")
+    sink = {}
+    backend, loaded, launches, _ = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, None],
+        first_output = "projector-incompatible",
+        mmproj_from_argv = True,
+        sink = sink,
+    )
+    assert loaded is True
+    assert "--mmproj" not in launches[1][0]
+    assert sink["health_kwargs"][1]["cpu_counts_as_progress"] is False
+    assert "max_total_s" in sink["health_kwargs"][1]
+
+
 def test_a_stall_on_a_non_vulkan_runtime_keeps_cpu_progress(monkeypatch, tmp_path):
     _route_env(monkeypatch, "devices")
     sink = {}

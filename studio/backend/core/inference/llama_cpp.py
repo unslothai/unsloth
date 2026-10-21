@@ -32916,6 +32916,22 @@ class LlamaCppBackend:
                 # Memoed only when the load ends terminally, so a recovering fallback is not blocked.
                 _sched_abort_seen = False
 
+                def _vulkan_wait_args(label):
+                    """(timeout, extra kwargs) for a health wait. A driver stuck in init or
+                    shader compilation burns CPU and touches fresh pages forever (#142), so
+                    an auto-Vulkan launch gets a ceiling. Extra kwargs only when set, so a
+                    wait double without them still serves every other launch."""
+                    timeout = self._HEALTH_STALL_TIMEOUT_S
+                    if not _cpu_fallback_eligible or intent.cpu_fallback or label == "-cpu":
+                        return timeout, {}
+                    if _vulkan_suspect and not label:
+                        timeout = min(timeout, self._SUSPECT_VULKAN_STALL_TIMEOUT_S)
+                    ceiling = (model_size or 0) / (1 << 30) * self._AUTO_VULKAN_START_S_PER_GIB
+                    return timeout, {
+                        "cpu_counts_as_progress": False,
+                        "max_total_s": max(timeout, ceiling),
+                    }
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -33040,24 +33056,7 @@ class LlamaCppBackend:
                             target = self._drain_stdout, daemon = True, name = "llama-stdout"
                         )
                         self._stdout_thread.start()
-                        # A driver stuck in init or shader compilation burns CPU and touches
-                        # fresh pages forever (#142), so an auto-Vulkan launch gets a ceiling.
-                        _wait_timeout = self._HEALTH_STALL_TIMEOUT_S
-                        _wait_kwargs = {}
-                        if _cpu_fallback_eligible and not intent.cpu_fallback and label != "-cpu":
-                            if _vulkan_suspect and not label:
-                                _wait_timeout = min(
-                                    _wait_timeout, self._SUSPECT_VULKAN_STALL_TIMEOUT_S
-                                )
-                            _wait_kwargs = {
-                                "cpu_counts_as_progress": False,
-                                "max_total_s": max(
-                                    _wait_timeout,
-                                    (model_size or 0)
-                                    / (1 << 30)
-                                    * self._AUTO_VULKAN_START_S_PER_GIB,
-                                ),
-                            }
+                        _wait_timeout, _wait_kwargs = _vulkan_wait_args(label)
                         if self._wait_for_health(
                             timeout = _wait_timeout,
                             cancelled = _load_cancelled,
@@ -33780,6 +33779,9 @@ class LlamaCppBackend:
                     and not _load_cancelled()
                 ):
                     _stalled_cmd = list(_last_spawn_cmd)
+                    # The replay rewrites env for the staged CPU runtime; the Vulkan rungs
+                    # below must not inherit it if the replay does not come up.
+                    _env_before_replay, _cwd_before_replay = dict(env), _spawn_cwd
                     self._kill_process()
                     if _try_auto_vulkan_cpu_fallback(
                         _stalled_cmd, None, terminal = False, stalled = True
@@ -33795,6 +33797,10 @@ class LlamaCppBackend:
                         "Load cancelled during the CPU replay health wait"
                     ):
                         return False
+                    else:
+                        env.clear()
+                        env.update(_env_before_replay)
+                        _spawn_cwd = _cwd_before_replay
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
                 # so its output drops the marker and recording later would miss it,
@@ -34803,8 +34809,11 @@ class LlamaCppBackend:
                                 # the old child the teardown is clearing.
                                 _cleanup_cancelled_load("App shut down during the text-only retry")
                                 return False
+                            _textonly_timeout, _textonly_kwargs = _vulkan_wait_args("-textonly")
                             if self._wait_for_health(
-                                timeout = self._HEALTH_STALL_TIMEOUT_S, cancelled = _load_cancelled
+                                timeout = _textonly_timeout,
+                                cancelled = _load_cancelled,
+                                **_textonly_kwargs,
                             ):
                                 healthy = True
                                 # The child that serves this session never read the
