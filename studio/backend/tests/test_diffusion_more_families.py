@@ -1059,7 +1059,13 @@ def test_an_opaque_local_load_with_a_shipped_grid_runs_its_step_count():
 
 
 @pytest.mark.parametrize(
-    "parent", ["/home/flux.1/models", "/data/sdxl_backup", "D:\\qwen-image\\archive", "/srv/2.14_flux.1/test0"]
+    "parent",
+    [
+        "/home/flux.1/models",
+        "/data/sdxl_backup",
+        "D:\\qwen-image\\archive",
+        "/srv/2.14_flux.1/test0",
+    ],
 )
 def test_a_parent_folder_keyword_does_not_pick_the_image_family(parent):
     # Only the model's own folder / file names it: a keyword in a user name or backup folder above it is not evidence.
