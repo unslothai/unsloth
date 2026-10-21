@@ -27053,9 +27053,7 @@ class LlamaCppBackend:
 
                     def _tiered_subsets(ranked: list, floor: int) -> list:
                         # (count, prefix) in _select_gpus order: unshared discrete first.
-                        tier = LlamaCppBackend._discrete_tier(
-                            ranked, _tier_gpus, _shared_gpus
-                        )
+                        tier = LlamaCppBackend._discrete_tier(ranked, _tier_gpus, _shared_gpus)
                         tiers = (
                             (tier, ranked) if tier is not None and floor <= len(tier) else (ranked,)
                         )

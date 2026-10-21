@@ -6529,9 +6529,7 @@ def test_the_context_ceiling_starts_at_a_forced_gpu_floor(tmp_path, monkeypatch)
     # context must not set the published ceiling.
     memory = [(0, 1_500, 0), _DGPU]
     backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, memory, 11)
-    result = _launch(
-        backend, gguf, n_ctx = 0, ctx_checkpoints = 6, preserve_multi_gpu_on_layer = True
-    )
+    result = _launch(backend, gguf, n_ctx = 0, ctx_checkpoints = 6, preserve_multi_gpu_on_layer = True)
     assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0,1"
     assert _launched_ctx(result) < 32_768
     assert backend.max_context_length == _launched_ctx(result)
