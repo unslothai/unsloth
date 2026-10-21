@@ -468,3 +468,14 @@ test("a LoRA tag takes the exact path first and never guesses between same-named
   assert.deepEqual(m.unmatched, []);
   assert.deepEqual(m.notes, ["LoRA detail (ambiguous: 2 adapters named detail)"]);
 });
+
+test("each textual-inversion embedding in TI hashes is named as not applied", () => {
+  const r = parseA1111Parameters(
+    'a cat, easynegative\nSteps: 20, Seed: 1, TI hashes: "easynegative: c74b4e810b03, badhandv4: 5e40d722fc3d"',
+  );
+  assert.ok(r);
+  assert.deepEqual(importNotApplied(r, "sdxl"), [
+    "textual inversion easynegative",
+    "textual inversion badhandv4",
+  ]);
+});

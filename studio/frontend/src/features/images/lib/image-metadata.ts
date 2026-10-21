@@ -555,7 +555,6 @@ const A1111_INFO_KEYS = new Set([
   "model hash",
   "vae hash",
   "lora hashes",
-  "ti hashes",
   "hashes",
   "version",
   "user",
@@ -753,6 +752,13 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
       n !== undefined
     )
       out.inpaint_padding = n;
+    // `TI hashes: "name: hash, ..."` lists the embeddings the prompt used; Studio loads none.
+    else if (key === "ti hashes") {
+      for (const item of value.split(",")) {
+        const name = item.slice(0, item.lastIndexOf(":") > 0 ? item.lastIndexOf(":") : undefined).trim();
+        if (name) notApplied.push(`textual inversion ${name}`);
+      }
+    }
     // A1111 writes Emphasis only when it is not the default; "Original" is what Studio's prompt encoding does.
     else if (key === "emphasis") {
       if (value && value.toLowerCase() !== "original")
