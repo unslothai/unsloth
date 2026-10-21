@@ -992,6 +992,42 @@ def exercise_skip_undo(page, label: str) -> None:
         toggle.click()
 
 
+# Signs out locally and follows a client-side route change, which keeps the banner mounted.
+LEAVE_FOR_LOGIN = """
+() => {
+  localStorage.removeItem('unsloth_auth_token');
+  localStorage.removeItem('unsloth_refresh_token');
+  const index = (history.state?.__TSR_index ?? 0) + 1;
+  history.pushState({ ...history.state, __TSR_index: index }, '', '/login');
+  dispatchEvent(new PopStateEvent('popstate'));
+}
+"""
+
+
+def exercise_skip_on_auth_route(page, label: str) -> None:
+    """A skip notice must not follow the user onto a route that hides the update cards."""
+    card = page.locator('[data-testid="llama-update-banner"]')
+    notice = page.locator('[data-testid="llama-update-skipped"]')
+    check(f"{label}: the card is up before skipping", card.count() == 1)
+    if card.count() != 1:
+        return
+    page.locator('[data-testid="llama-update-changelog-toggle"]').click()
+    # a keyboard skip focuses Undo, and focus holds the notice open.
+    page.locator('[data-testid="llama-update-skip-button"]').focus()
+    page.keyboard.press("Enter")
+    notice.wait_for(state = "visible", timeout = 5_000)
+    page.evaluate(LEAVE_FOR_LOGIN)
+    page.wait_for_url("**/login", timeout = 10_000)
+    page.wait_for_timeout(500)
+    check(
+        f"{label}: the skip notice does not follow onto /login",
+        notice.count() == 0,
+        f"notices={notice.count()}",
+    )
+    # later boots must see the offer again.
+    page.evaluate("localStorage.removeItem('unsloth_llama_update_offer_suppression')")
+
+
 def exercise_llama_changelog(page, label: str) -> None:
     toggle = page.locator('[data-testid="llama-update-changelog-toggle"]')
     check(
@@ -1189,6 +1225,7 @@ def main() -> int:
             )
             if (width, height) == (VIEWPORTS[2:5] if SPOT else VIEWPORTS)[0]:
                 exercise_skip_undo(page, f"{width}x{height} whisper")
+                exercise_skip_on_auth_route(page, f"{width}x{height} whisper")
 
             # pending runtimes share one card and one summary line.
             llama_payload[0] = BUNDLE_STATUS

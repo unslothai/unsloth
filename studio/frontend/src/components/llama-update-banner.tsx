@@ -430,15 +430,15 @@ export function LlamaUpdateBanner({
     updateProgress,
     jobSucceeded,
   );
-  // a card that comes back (undo, or a newer offer) retires the notice.
+  // a card that comes back (undo, or a newer offer) retires the notice, and so does a route that hides the banner.
   useEffect(() => {
-    if (show) {
+    if (show || !enabled) {
       setSkipped(null);
     }
-  }, [show]);
+  }, [show, enabled]);
 
   if (!show) {
-    return skipped ? (
+    return skipped && enabled ? (
       <SkippedNotice
         message={skipped.message}
         focusUndo={skipped.fromKeyboard}
