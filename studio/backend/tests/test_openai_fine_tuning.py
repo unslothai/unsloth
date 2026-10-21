@@ -139,6 +139,7 @@ def test_upload_then_create_starts_a_studio_run(studio):
         second = await client.files.create(file = ("more.jsonl", CHATS), purpose = "fine-tune")
         listed = await client.files.list()
         first_page = await client.files.list(limit = 1)
+        oldest_first = await client.files.list(order = "asc")
         job = await client.fine_tuning.jobs.create(
             model = "unsloth/Qwen3-0.6B",
             training_file = uploaded.id,
@@ -159,13 +160,14 @@ def test_upload_then_create_starts_a_studio_run(studio):
             extra_body = {"lora_r": 32, "max_seq_length": 4096},
         )
         retrieved = await client.fine_tuning.jobs.retrieve(job.id)
-        return uploaded, second, listed, first_page, job, retrieved
+        return uploaded, second, listed, first_page, oldest_first, job, retrieved
 
-    uploaded, second, listed, first_page, job, retrieved = _run(flow())
+    uploaded, second, listed, first_page, oldest_first, job, retrieved = _run(flow())
     assert uploaded.id.startswith("file-") and uploaded.filename == "chats.jsonl"
     assert uploaded.bytes == len(CHATS)
     assert {f.id for f in listed.data} == {uploaded.id, second.id}
     assert len(first_page.data) == 1 and first_page.has_more
+    assert [f.id for f in oldest_first.data] == [f.id for f in listed.data][::-1]
 
     [request] = calls["start"]
     assert request.model_name == "unsloth/Qwen3-0.6B"
@@ -285,9 +287,13 @@ def test_refusals_are_openai_errors(studio):
             await client.fine_tuning.jobs.retrieve("ftjob_unknown")
         except openai.NotFoundError:
             errors.append(404)
+        try:
+            await client.fine_tuning.jobs.pause("ftjob_unknown")
+        except openai.BadRequestError:
+            errors.append(400)
         return errors
 
-    assert _run(flow()) == [404, 400, 400, 400, 400, 404]
+    assert _run(flow()) == [404, 400, 400, 400, 400, 404, 400]
     assert calls["start"] == []
 
 

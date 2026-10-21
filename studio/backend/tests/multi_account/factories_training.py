@@ -331,6 +331,20 @@ FACTORIES = {
     "routes.openai_fine_tuning:POST:/fine_tuning/jobs/{job_id}/cancel": Factory(
         "training-openai-job", success = 400
     ),
+    "routes.openai_fine_tuning:POST:/fine_tuning/jobs/{job_id}/pause": Factory(
+        "training-openai-job",
+        success = 400,
+        owner = (400,),
+        wrong = (400,),
+        reason = "unsupported for every job: refused before any lookup, so nothing is revealed",
+    ),
+    "routes.openai_fine_tuning:POST:/fine_tuning/jobs/{job_id}/resume": Factory(
+        "training-openai-job",
+        success = 400,
+        owner = (400,),
+        wrong = (400,),
+        reason = "unsupported for every job: refused before any lookup, so nothing is revealed",
+    ),
     "routes.training:GET:/start-requests/{start_request_id}": Factory(
         "training-start-request", fragment = SENTINEL
     ),

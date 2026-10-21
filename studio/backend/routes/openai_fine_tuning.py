@@ -16,7 +16,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict
@@ -154,10 +154,11 @@ async def create_file(
 async def list_files(
     after: Optional[str] = None,
     limit: int = Query(10000, ge = 1, le = 10000),
+    order: Literal["asc", "desc"] = "desc",
     current_subject: str = Depends(get_current_subject),
 ):
     files = await asyncio.to_thread(lambda: [_file_object(path) for path in _uploaded_files()])
-    return _paged(files, after, limit)
+    return _paged(files if order == "desc" else files[::-1], after, limit)
 
 
 @router.get("/files/{file_id}")
@@ -665,3 +666,11 @@ async def cancel_fine_tuning_job(
     # The worker stops at its next safe step; the job reads "cancelled" from then on.
     _CANCELLING.add(run_id)
     return {**job, "status": "cancelled"}
+
+
+@router.post("/fine_tuning/jobs/{job_id}/pause")
+@router.post("/fine_tuning/jobs/{job_id}/resume")
+async def pause_or_resume_fine_tuning_job(
+    job_id: str, current_subject: str = Depends(get_current_subject)
+):
+    raise _bad_request("Pausing and resuming fine-tuning jobs is not supported; use cancel.")
