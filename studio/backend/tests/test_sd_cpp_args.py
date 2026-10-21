@@ -1130,8 +1130,9 @@ def _all_builders(binary, extra_args = None):
 @pytest.mark.parametrize(
     "tag, expected",
     [
-        ("master-968-8cd731e-ubdb47d1", True),  # the pinned bundle
-        ("master-951-f89d9b1-uafac7a7", True),  # the previous pin
+        ("master-982-0518b34-u0a68764", True),  # the pinned bundle
+        ("master-968-8cd731e-ubdb47d1", True),  # the previous pin
+        ("master-951-f89d9b1-uafac7a7", True),  # the pin before it
         ("master-907-500ef5f", True),  # the build that merged #2037
         ("master-906-abcdef0", False),  # --mmap there hands Metal an unaddressable CPU buffer
         ("master-813-bfbef5b-u6321a69", False),
