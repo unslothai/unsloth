@@ -4086,8 +4086,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
     from utils.security.hub_data_files import install as guard_hub_data_files
+    from utils.security.dataset_media import allow_dataset_repos, install as guard_dataset_media
 
     guard_hub_data_files()
+    guard_dataset_media()
+    allow_dataset_repos(config.get("hf_dataset"))
 
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous

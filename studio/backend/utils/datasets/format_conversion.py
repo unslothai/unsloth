@@ -21,6 +21,16 @@ def _quiet_bar_kwargs() -> dict:
         return {}
 
 
+def _own_image_path(path, account):
+    """A local image a managed account names must be one it may read (a no-op for the owner). ``account`` is
+    captured when the conversion starts: URL datasets convert in a thread pool, which does not carry it."""
+    from utils.account_context import run_as
+    from utils.security.dataset_media import require_readable_media
+
+    run_as(account, require_readable_media, path)
+    return path
+
+
 def _normalize_role_alias(role) -> str:
     """Stripped and lowercased, as `standardize_data_formats` and the preview do it."""
     if role is None:
@@ -395,7 +405,10 @@ def convert_to_vlm_format(
     Returns a LIST of dicts with a 'messages' field, not a HuggingFace Dataset, to preserve PIL Images. For URL-based datasets, runs a 200-sample parallel probe first to estimate speed and failure rate via progress_callback, an optional callable(status_message=str).
     """
     from PIL import Image
+    from utils.account_context import current_account
     from .vlm_processing import generate_smart_vlm_instruction
+
+    account = current_account()
 
     def _notify(msg):
         """Send a status update to the training overlay if callback set."""
@@ -448,7 +461,7 @@ def convert_to_vlm_format(
                 )
                 image_data = Image.open(local_path).convert("RGB")
             else:
-                image_data = Image.open(image_data).convert("RGB")
+                image_data = Image.open(_own_image_path(image_data, account)).convert("RGB")
         elif image_data is None:
             raise ValueError("Row has no image")
 
@@ -738,7 +751,9 @@ def convert_sharegpt_with_images_to_vlm_format(
     """Convert ShareGPT/ChatML datasets carrying a separate image column and ``<image>`` placeholders in the conversation text, e.g. {"image": "sam/images/sa_545504.jpg", "conversations": [{"from": "human", "value": "<image> What is this photo about?"}, ...]}. Returns a list of dicts in standard VLM messages format, PIL Images inline."""
     from PIL import Image
     from tqdm import tqdm
+    from utils.account_context import current_account
 
+    account = current_account()
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     _ROLE_MAP = {
         "human": "user",
@@ -815,13 +830,13 @@ def convert_sharegpt_with_images_to_vlm_format(
                 )
                 return Image.open(local_path).convert("RGB")
             else:
-                return Image.open(image_data).convert("RGB")
+                return Image.open(_own_image_path(image_data, account)).convert("RGB")
         if isinstance(image_data, dict) and ("bytes" in image_data or "path" in image_data):
             if image_data.get("bytes"):
                 from io import BytesIO
                 return Image.open(BytesIO(image_data["bytes"])).convert("RGB")
             if image_data.get("path"):
-                return Image.open(image_data["path"]).convert("RGB")
+                return Image.open(_own_image_path(image_data["path"], account)).convert("RGB")
         raise ValueError(f"Cannot resolve image: {type(image_data)}")
 
     def _convert_single_sample(sample):
@@ -891,6 +906,9 @@ def convert_sharegpt_with_images_to_vlm_format(
 def convert_llava_to_vlm_format(dataset):
     """Convert Llava format to standard VLM format: Llava carries messages whose content blocks name an image by {'type': 'image', 'index': 0} plus a parallel images list, while the standard form inlines the PIL object as {'type': 'image', 'image': PIL_Image}."""
     from PIL import Image
+    from utils.account_context import current_account
+
+    account = current_account()
 
     is_iterable = is_streaming_dataset(dataset)
     if is_iterable:
@@ -949,7 +967,7 @@ def convert_llava_to_vlm_format(dataset):
 
                     pil_image = images[img_idx]
                     if isinstance(pil_image, str):
-                        pil_image = Image.open(pil_image).convert("RGB")
+                        pil_image = Image.open(_own_image_path(pil_image, account)).convert("RGB")
                     elif not isinstance(pil_image, Image.Image):
                         raise ValueError(
                             f"Unsupported Llava image value at index {img_idx}: "
