@@ -119,6 +119,9 @@ def save_cached_config(
         logger.warning(f"Failed to save cache file {cache_file}: {e}")
 
 
+# Always eager: unsloth_zoo calls this from the MoE forward inside compiled decoder blocks, and a
+# Dynamo trace reads `.best_config` before any kernel ran, so every tuning silently fell back.
+@torch.compiler.disable
 def get_or_autotune_moe_kernels(
     num_experts: int,
     hidden_dim: int,
