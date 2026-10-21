@@ -1164,6 +1164,8 @@ def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
     free, #7072); unknown readings answer False."""
     if (
         memory.memory_kind != "unified_memory"
+        # The amdgpu GTT pool is a HIP device's: an mps / cpu snapshot keeps the unified reserve on any torch.
+        or str(getattr(memory, "device", None) or "").split(":")[0] != "cuda"
         or not sys.platform.startswith("linux")
         or memory.free_mib is None
     ):
