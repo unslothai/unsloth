@@ -86,8 +86,6 @@ def _inputs(
     return latents, embeds, mask
 
 
-
-
 def test_state_dict_keys_match_the_reference(transformers_pair):
     reference, ours = transformers_pair
     assert list(reference.state_dict()) == list(ours.state_dict())
@@ -164,8 +162,6 @@ def test_refined_text_and_mask_are_exclusive(transformers_pair):
         )
 
 
-
-
 @pytest.mark.parametrize("steps", [1, 2, 8, 28, 50])
 def test_training_grid_matches_the_reference_scheduler(moss, ref, steps):
     import torch
@@ -230,8 +226,6 @@ def test_repo_scheduler_config_loads(moss, tmp_path):
     assert sched.config.shift == 5.0 and sched.resolved_sigma_schedule() in moss.SIGMA_SCHEDULES
 
 
-
-
 def test_cpu_generator_noise_is_the_reference_draw(moss):
     import torch
     from diffusers.utils.torch_utils import randn_tensor
@@ -269,8 +263,6 @@ def test_accelerator_generator_draws_comfyui_cpu_noise_from_its_seed(moss):
     assert torch.equal(got, want)
     with pytest.raises(ValueError):
         moss.comfy_noise((3, 128, 4, 4), [_FakeCudaGenerator(), _FakeCudaGenerator()], "cpu")
-
-
 
 
 @pytest.fixture(scope = "module")
@@ -403,8 +395,6 @@ def test_skip_layers_reach_the_transformer_as_a_tuple(pipelines, monkeypatch):
         output_type = "latent",
     )
     assert calls == [None, (22,)]
-
-
 
 
 def test_family_detects_both_repos_and_a_local_pipeline(tmp_path):

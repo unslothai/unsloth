@@ -123,8 +123,6 @@ def test_the_tokenizer_defaults_to_none():
     assert SdCppModelFiles(**_FILES).tokenizer is None
 
 
-
-
 def _binary(tmp_path, name, *, marker):
     path = tmp_path / name
     path.write_bytes(b"ELF-ish padding " * 64 + (b"MOSS-Image" if marker else b"") + b" trailing")
