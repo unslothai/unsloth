@@ -564,8 +564,6 @@ def install_fbcache_split_guard() -> bool:
         from diffusers.hooks.first_block_cache import FBCBlockHook
     except Exception:  # noqa: BLE001 - no FBCache in this diffusers
         return False
-    # Under the mixed-stream tail (FLUX.2): this guard moves the head output to the tail's card for it, and its
-    # residuals back.
     install_fbcache_mixed_stream_tail()
     original = getattr(FBCBlockHook, "new_forward", None)
     if original is None:
@@ -600,7 +598,6 @@ def install_fbcache_split_guard() -> bool:
         return out
 
     new_forward._unsloth_split_guard = True
-    # install_fbcache_mixed_stream_tail reads its marker off the outermost forward: it is already inside
     new_forward._unsloth_mixed_stream_tail = getattr(original, "_unsloth_mixed_stream_tail", False)
     FBCBlockHook.new_forward = new_forward
     return True

@@ -785,7 +785,6 @@ def _swap(
     else:
         dev = resident_cuda_device(transformer)
         if dev is None:
-            # a layer split: every block resident on one of several cards, each swapped against its own card
             cards = _split_cards(transformer)
             if cards:
                 count = sum(_swap_on(transformer, logger, index) for index in cards)
@@ -851,7 +850,6 @@ def _swap_on(transformer: Any, logger: Any, index: int) -> int:
         for module, rec in recs:
             if _MARK in module.__dict__:
                 if multi:
-                    # swapped before the split placed it (against the one-card onload device): this card's flags now
                     module.__dict__[_REC] = (
                         rec[0],
                         rec[1],

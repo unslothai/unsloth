@@ -173,8 +173,6 @@ def test_a_host_tensor_input_is_never_recorded():
 
 
 def test_a_block_graph_keys_on_the_roots_branch_flag():
-    # HunyuanVideo-1.5's pre-hook sets a null-mask flag on the root that picks a branch inside the blocks at the same
-    # shapes (diffusion_cuda_graph.GRAPH_KEY_EXTRA_ATTR): a block recorded on one branch must not replay for the other
     _cuda()
     block = Block().cuda()
     root = types.SimpleNamespace(masked = False)
@@ -199,8 +197,6 @@ def test_a_block_graph_keys_on_the_roots_branch_flag():
 
 
 def test_a_block_graph_runs_eager_while_a_step_cache_is_on():
-    # An auto First-Block-Cache that turns on at generate time puts its hooks on blocks recorded without them: the
-    # cached step's tail must not replay the full block (diffusion_cuda_graph.GraphedForward has the same belt)
     _cuda()
     block = Block().cuda()
     root = types.SimpleNamespace(_unsloth_step_cache = None)

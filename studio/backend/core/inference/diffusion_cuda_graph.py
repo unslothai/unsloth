@@ -1079,7 +1079,6 @@ class GraphedForward:
             or self.poisoned
             # Belt to the caller's per-chunk bypass: one step's cond and uncond share a key.
             or getattr(self.module, "_unsloth_step_cache", None)
-            # armed before placement split the denoiser (``force`` on a resident plan): one capture records one card
             or _layer_split(self.module)
         ):
             return self._eager(args, kwargs)
@@ -1930,7 +1929,6 @@ def arm_after_placement(
 
     for module in _denoiser_modules(pipe):
         if is_layer_split(module):
-            # the speed layer judged the one-card plan; one capture stream records one card
             refusals.append(f"{type(module).__name__}: denoiser is split across cards")
             continue
         placement, why = offload_placement(module)
@@ -2062,7 +2060,6 @@ def graph_eligible(
 
     from .diffusion_layer_split import is_layer_split
 
-    # one capture stream records one card; a split denoiser runs its blocks on several
     if any(is_layer_split(m) for m in _denoiser_modules(pipe)):
         return False, "denoiser is split across cards"
 
@@ -2376,8 +2373,7 @@ def arm_block_graphs(
     step = [h for h in whole if h.placement is not None or h.plan is not None]
     split = _layer_split_pipe(pipe)
     if split:
-        # A whole-step capture records one card; a layer split's blocks each run whole on one card, so they record
-        # per block on their own card's stream and pool.
+        # a whole-step capture records one card; a split's blocks record per block on their own card
         step = []
         _rehome_after_layer_split(pipe, logger)
     if whole and len(step) == len(whole):
@@ -2394,7 +2390,6 @@ def arm_block_graphs(
         # whose blocks still record.
         return handles
     why = _block_basics(target, family, cache_engaged, speed_mode, family_default) or (
-        # a split has no whole-step graph to seal: its per-card graphs seal per image scope instead
         None if split else prompt_length_reason(pipe, family)
     )
     if whole:

@@ -40,7 +40,6 @@ def _check(split, limits):
     return split
 
 
-# --- pure packer --------------------------------------------------------------------------------------------------
 
 
 def test_packs_a_dit_too_big_for_one_card_over_two():
@@ -57,19 +56,15 @@ def test_packs_a_dit_too_big_for_one_card_over_two():
     _check(split, limits)
     assert split.cards == (0, 1)
     assert split.ranges[-1].stop == 23
-    # the TE goes to the last card first; the VAE and the stem stay on the primary
     assert split.text_encoders_card == 1
     weights = dict(split.card_weights_mib)
     assert sum(weights.values()) == 1000 + 23000 + 4000 + 300
     assert weights[0] == 1000 + 300 + sum(r.mib for r in split.ranges if r.card == 0)
-    # primary -> cuda:1 -> back to the primary
     assert split.boundaries == 2
     assert "layer split" in reason
 
 
 def test_text_encoders_too_big_for_any_card_stream_and_the_blocks_still_split():
-    # FLUX.2-dev class: a 60 GB DiT and a 45 GB text encoder on two 55 GB cards. No card holds the encoder beside its
-    # blocks, so it streams onto the primary for the encode instead of the whole DiT streaming every step.
     kw = dict(
         denoisers = {"transformer": L(1000, (1100,) * 54)},
         companions = {"text_encoder": (45000, "text_encoder"), "vae": (300, "other")},
@@ -84,7 +79,6 @@ def test_text_encoders_too_big_for_any_card_stream_and_the_blocks_still_split():
     assert split.as_public_dict()["text_encoders_streamed"] is True
     assert {r.card for r in split.ranges} == {0, 1}
     _check(split, kw["card_limits"])
-    # room for the encoder on a card: it stays resident there (faster), never streamed
     kw["card_limits"] = {0: 55000, 1: 110000}
     split, reason = lsp.plan_layer_split(**kw)
     assert split is not None, reason
@@ -162,8 +156,6 @@ def test_streamed_encoders_are_paged_not_moved_and_undo_removes_their_hooks(monk
 
 
 def test_every_denoiser_keeps_a_block_off_the_primary():
-    # the engine refuses an assignment with every block on the primary; a nearly full secondary made the
-    # proportional cut round everything onto the primary while the text encoder alone moved
     limits = {0: 100000, 1: 6000}
     kw = dict(
         companions = {"text_encoder": (2000, "text_encoder"), "vae": (300, "other")},
@@ -238,11 +230,8 @@ def test_mixed_card_sizes_cut_in_proportion_to_free_capacity():
     )
     _check(split, limits)
     on = {o: sum(r.mib for r in split.ranges if r.card == o) for o in (0, 1)}
-    # primary: stem, full headroom, the larger of the overhead and the per-card reserve; secondary: two blocks of
-    # working set and the reserve
     reserve = lsp.secondary_reserve_mib()
     caps = {0: 20000 - 1000 - 3000 - max(500, reserve), 1: 68000 - 2000 - reserve}
-    # each card keeps about the same fraction of its capacity free (within one block)
     for o in (0, 1):
         assert abs(on[o] / caps[o] - 60000 / sum(caps.values())) < 1000 / caps[o] + 1e-9
 
@@ -299,8 +288,6 @@ def test_two_experts_are_each_cut_with_the_headroom_charged_once():
     weights = dict(split.card_weights_mib)
     required = dict(split.card_required_mib)
     reserve = lsp.secondary_reserve_mib()
-    # one expert runs at a time: one headroom per card, not one per expert; the secondary only holds one block's
-    # working set (2 x 700 MiB) beside the encoder phase
     assert required[0] == weights[0] + 4000 + max(500, reserve)
     assert required[1] == weights[1] + max(1400, 1024) + reserve
 
@@ -320,12 +307,10 @@ def test_phase_headroom_prices_decode_on_the_primary_and_encode_on_the_te_card()
     reserve = lsp.secondary_reserve_mib()
     assert split.text_encoders_card == 1
     assert required[0] == weights[0] + max(1500, 2500) + max(500, reserve)
-    # working set min(max(1 GiB, 2 blocks), denoise 1500) beside the 3000 MiB encode
     assert required[1] == weights[1] + 3000 + reserve
 
 
 def test_secondary_is_charged_a_block_working_set_not_the_primary_activation_peak():
-    # FLUX.2-dev shape: 56 blocks of about 1 GiB, primary activation peak far above one block
     denoisers = {"transformer": L(1500, (1070,) * 56)}
     limits = {0: 80000, 1: 80000}
     split, reason = lsp.plan_layer_split(
@@ -342,7 +327,6 @@ def test_secondary_is_charged_a_block_working_set_not_the_primary_activation_pea
     assert lsp.block_working_set_mib(denoisers, 30000) == 2140
     assert required[1] == weights[1] + 2140 + lsp.secondary_reserve_mib()
     assert required[0] == weights[0] + 30000 + 2048
-    # the working set never exceeds the plan's own denoise headroom
     assert lsp.block_working_set_mib(denoisers, 1500) == 1500
     assert lsp.block_working_set_mib({"transformer": L(0, (100,))}, 0) == 1024
 
@@ -379,7 +363,6 @@ def test_layouts_count_storage_bytes_so_quantized_blocks_are_smaller():
     int8 = lsp._denoiser_layouts(Quant())["transformer"]
     assert bf16.block_mib == (32,) * 5
     assert int8.block_mib == (16,) * 5
-    # the stem is what the blocks did not claim (proj_out: 4096 * 1024 bf16 + bias)
     assert bf16.stem_mib == 9
 
 
@@ -390,7 +373,6 @@ def test_a_denoiser_without_a_block_list_has_no_layout():
     assert lsp._denoiser_layouts(Pipe()) is None
 
 
-# --- post-load refinement through refine_plan_for_multigpu ---------------------------------------------------------
 
 
 @dataclasses.dataclass
@@ -514,7 +496,6 @@ def test_one_card_offload_becomes_a_layer_split(monkeypatch, engine):
 
 
 def test_no_engine_keeps_the_one_card_plan(monkeypatch):
-    # no CUDA torch: engine_available() is False and nothing asks for a layer split
     monkeypatch.setattr(lsp, "engine_available", lambda: False)
     _cards(monkeypatch)
     plan = _plan()
@@ -560,7 +541,6 @@ def test_a_dit_that_fits_one_card_keeps_todays_plan(monkeypatch, engine):
     plan = _plan(model_dense_mib = 8000)
     assert plan.offload_policy == dm.OFFLOAD_NONE
     assert _refine(plan)[0] is plan
-    # a resident denoiser with only the encoders streamed is not cut either
     streamed_te = dataclasses.replace(
         _plan(),
         offload_policy = dm.OFFLOAD_GROUP,
@@ -575,7 +555,6 @@ def test_a_dit_that_fits_one_card_keeps_todays_plan(monkeypatch, engine):
 def test_quantized_storage_that_fits_one_card_is_a_companion_split_not_a_layer_split(
     monkeypatch, engine
 ):
-    # dense 24 GB, but the loaded int8 storage is half: the denoiser fits the primary whole
     quant = {
         "transformer": (12000, "dit"),
         "text_encoder": (4000, "text_encoder"),
@@ -653,7 +632,6 @@ def test_video_two_expert_cut_when_neither_expert_fits_a_card(monkeypatch, engin
     assert {r.denoiser for r in split.ranges} == {"transformer", "transformer_2"}
 
 
-# --- placement, status, CFG-parallel, guards -----------------------------------------------------------------------
 
 
 def _layer_plan(monkeypatch, engine):
@@ -726,26 +704,19 @@ def test_video_guard_prices_a_block_card_by_its_planned_headroom():
     cards = ((0, 13300, True, True, True, None), (1, 20000, False, False, True, 3200))
     free = {0: 60000, 1: 23500}
     kw = dict(family = "wan", available_mib = lambda o: free[o], planned_shape = (832, 480, 33))
-    # the planned 3200 MiB fits on cuda:1; the old flat 4096 + 2048 MiB charge refused this loaded split
     assert V.video_split_shortfall_message(cards, width = 832, height = 480, frames = 33, **kw) is None
-    # twice the tokens: twice the block activations
     message = V.video_split_shortfall_message(cards, width = 832, height = 480, frames = 66, **kw)
     assert message is not None and "cuda:1" in message
-    # a smaller request never charges less than the plan
     assert V.video_split_shortfall_message(cards, width = 416, height = 240, frames = 17, **kw) is None
 
 
 def test_video_guard_scales_only_the_working_set_not_the_fixed_reserve():
     from core.inference import video as V
 
-    # cuda:1 planned 3200 MiB past its blocks: 700 MiB of block activations and a 2500 MiB fixed reserve. Twice the
-    # tokens doubles the 700, not the reserve: 1400 + 2500 + 20000 fits in 24000 MiB free, where doubling all 3200
-    # (26400) refused it
     cards = ((0, 13300, True, True, True, None, None), (1, 20000, False, False, True, 700, 2500))
     free = {0: 60000, 1: 24000}
     kw = dict(family = "wan", available_mib = lambda o: free[o], planned_shape = (832, 480, 33))
     assert V.video_split_shortfall_message(cards, width = 832, height = 480, frames = 66, **kw) is None
-    # the reserve is still charged in full
     free[1] = 20000 + 700 + 2400
     message = V.video_split_shortfall_message(cards, width = 832, height = 480, frames = 33, **kw)
     assert message is not None and "cuda:1" in message
@@ -763,7 +734,6 @@ def test_a_from_pipe_sibling_sees_the_split_through_its_shared_denoiser(monkeypa
     assert lsp.applied_layer_split(sibling) is plan.layer_split
     assert lsp.secondary_block_cards(sibling) == (1,)
     assert mg.is_split(sibling)
-    # torn down: neither the pipeline nor the sibling reports it
     mg.undo_split(pipe)
     assert lsp.applied_layer_split(pipe) is None and lsp.applied_layer_split(sibling) is None
 
@@ -844,9 +814,7 @@ def test_offload_installers_refuse_or_replace_a_split(monkeypatch):
     monkeypatch.setattr(engine_mod, "is_layer_split", lambda m: m is dit)
     monkeypatch.setattr(dm, "_offload_groups", lambda m: [])
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda p: True)
-    # the request-time resident hook would onload every block to one card
     assert dm.hook_resident_denoiser(pipe, "cuda:0") is False
-    # an offload plan applied to a split pipeline takes the split off first
     undone = []
     monkeypatch.setattr(lsp, "undo_layer_split", lambda p: undone.append(p))
     dm._apply_group_offload(pipe, "cpu", None)
@@ -879,8 +847,6 @@ def test_image_guard_checks_every_other_card_running_blocks(monkeypatch, engine)
 
 
 def test_two_denoisers_that_fit_only_jointly_are_cut_jointly():
-    # cut in turn by proportion, the first expert takes 1/1 and leaves 2/2, where (1, 2, 1) has no contiguous cut;
-    # searched jointly the experts fit 3/3, each keeping a block off the primary (the engine places each on its own)
     kw = dict(
         companions = {},
         primary = 0,

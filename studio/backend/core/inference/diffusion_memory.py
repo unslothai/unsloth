@@ -621,8 +621,6 @@ class MemoryPlan:
     # The single-card plan a split replaced, applied on the primary if the split placement fails (a torchao denoiser
     # cannot take the whole-module offload a blind fallback would choose).
     fallback_plan: Optional["MemoryPlan"] = field(default = None, compare = False, repr = False)
-    # Layer split (diffusion_layer_split_plan.LayerSplit): the denoiser's blocks cut across the selected cards because
-    # one card would offload the denoiser itself. Mutually exclusive with ``secondary_ordinal``.
     layer_split: Optional[Any] = None
 
     @property
@@ -646,7 +644,6 @@ class MemoryPlan:
             "secondary_components": (
                 list(self.secondary_components) if self.secondary_components is not None else None
             ),
-            # only on a layer split plan, so every other plan's public dict is unchanged
             **(
                 {"layer_split": self.layer_split.as_public_dict()}
                 if self.layer_split is not None
@@ -3535,7 +3532,6 @@ def hook_resident_denoiser(
         transformer is None
         or _offload_groups(transformer)
         or not _pipe_denoisers_hold_torchao(pipe)
-        # a layer split's blocks live on several cards: hooks onloading to ``device`` would pull every block there
         or _any_layer_split(pipe)
     ):
         return False
@@ -5052,7 +5048,6 @@ def _apply_group_offload(
     if not stream_transformer and not stream_text_encoders:
         return False
     if _any_layer_split(pipe):
-        # an offload plan replaces the split: its block boundary comes off before streaming hooks go on
         from .diffusion_layer_split_plan import undo_layer_split
         undo_layer_split(pipe)
         if logger is not None:

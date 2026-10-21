@@ -37,8 +37,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 LAYER_SPLIT_ENV = "UNSLOTH_DIFFUSION_LAYER_SPLIT"
 
-# Denoisers whose forward passes block outputs straight to the next block of the same list (checked against
-# diffusers' loops); the residual-add variants below are caught per call by ``_RESIDUAL_KWARG_PARTS``.
+# Denoisers whose forward passes block outputs straight to the next block (checked against diffusers' loops).
 LAZY_CLASSES: frozenset[str] = frozenset(
     {
         "Flux2Transformer2DModel",
@@ -50,9 +49,7 @@ LAZY_CLASSES: frozenset[str] = frozenset(
         "ZImageTransformer2DModel",
         "WanTransformer3DModel",
         "LTX2VideoTransformer3DModel",
-        # HiDream's per-block llama states and cats follow ``hidden_states.device`` (a two-card split of a tiny HiDream
-        # is bitwise equal to one card, tests/test_diffusion_layer_split_cuda.py); the refiner lists of
-        # HunyuanVideo-1.5 / Krea2 / Lumina2 / MiniMax-H3 and Ideogram4's layers pass outputs straight on.
+        # HiDream's llama states / cats follow hidden_states.device (bitwise vs one card, test_diffusion_layer_split_cuda.py).
         "HiDreamImageTransformer2DModel",
         "HunyuanVideo15Transformer3DModel",
         "Ideogram4Transformer2DModel",
@@ -61,8 +58,7 @@ LAZY_CLASSES: frozenset[str] = frozenset(
         "MiniMaxH3Transformer3DModel",
     }
 )
-# Block lists a denoiser runs in another order than it registers them (forward order, so ranges stay contiguous in the
-# order the blocks execute and each card is entered once).
+# Block lists run in another order than registered (forward order, so each card is entered once).
 FORWARD_ORDER: dict[str, tuple[str, ...]] = {
     "Flux3Transformer2DModel": (
         "txt_mode_blocks",
@@ -80,7 +76,6 @@ _RESIDUAL_KWARG_PARTS: tuple[str, ...] = (
     "vace",
 )
 
-# Studio's First-Block-Cache hook names (diffusers.hooks.first_block_cache); see :func:`step_cache_hooked`.
 _STEP_CACHE_HOOKS: frozenset[str] = frozenset({"fbc_leader_block_hook", "fbc_block_hook"})
 
 _SPLIT_ATTR = "_unsloth_layer_split"
@@ -351,7 +346,6 @@ def plan_layer_split(
             ranges.append(LayerRange(str(order[card]), list(current), current_bytes // mib))
 
     for (qual, _, _), size in zip(blocks, sizes):
-        # balance: move on once a card reached its share and the next one still has room
         while card < len(order) - 1 and (
             used + size > budgets[card] or (strategy == "balance" and used >= targets[card])
         ):
@@ -571,8 +565,7 @@ def _split_call(self: Any, *args: Any, **kwargs: Any) -> Any:
             nxt_device = nxt_state.current()
             target = nxt_device if nxt_device != device else None
     else:
-        # eager: the denoiser may write a primary tensor in place before the next block, and an inference tensor
-        # carries no version to catch it, so no copy outlives the block that asked for it
+        # eager: an in-place write between blocks is invisible (inference tensors carry no version), so no copy outlives its block
         split.memo.clear()
     if target is not None:
         out = cross_outputs(out, target)
@@ -713,7 +706,6 @@ def _install_boundary(transformer: Any, plan: LayerSplitPlan, blocks: list, spli
         transformer.register_forward_hook(_post, with_kwargs = True, always_call = True)
     )
     transformer.__dict__[_SPLIT_ATTR + "_root"] = split
-    # a component split under this one already marked the denoiser; undo must leave that marker
     split.owns_home = "_unsloth_split_home" not in transformer.__dict__
     transformer._unsloth_split_home = split.home
 
@@ -899,7 +891,6 @@ def layer_split_stats(module: Any) -> Optional[dict]:
             "calls": split.calls,
             "lazy_calls": split.lazy_calls,
             "eager_calls": split.eager_calls,
-            # inputs found on another card at a block entry, and the copies they cost (the rest came from the memo)
             "input_handoffs": split.crossings,
             "input_copies": split.memo.copies,
         }

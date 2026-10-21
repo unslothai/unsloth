@@ -886,10 +886,7 @@ def test_generate_load_installs_the_encode_release():
             fn = node.func
             name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
             calls.setdefault(name, []).append(node.lineno)
-    # the generate load's one call (the helper's own definition lives in diffusion_memory)
     (at,) = calls["install_encode_release"]
-    # after the placement is applied and before the pinned-denoiser check that binds the speed records (the int8
-    # GEMM) to the final residency, whatever the formatter does to that condition's layout
     assert any(line < at for line in calls["apply_memory_plan"])
     pinned = min(line for line in calls["denoisers_pinned_resident"] if line > at)
     engage = min(line for line in calls["engage_pinned_denoisers"] if line > at)

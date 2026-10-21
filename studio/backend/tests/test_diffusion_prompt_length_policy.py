@@ -85,6 +85,5 @@ def test_qwen_image_arms_its_sources_on_the_dynamic_tier_too():
     if not dt.supported():
         return
     assert dt._armed_when_dynamic(Qwen()) and not dt._armed_when_dynamic(Flux3())
-    # the compile-cache key follows what the compile arms
     assert dt.fingerprint(Qwen(), True) == dt.fingerprint(Qwen(), None)
     assert dt.fingerprint(Flux3(), True) != dt.fingerprint(Flux3(), None)

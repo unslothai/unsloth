@@ -79,7 +79,6 @@ class FakeDiT(nn.Module):
         return self.proj_out(h)
 
 
-# Lazy output routing is keyed on the class name (a loop with no tensor op between blocks).
 LazyDiT = type("Flux2Transformer2DModel", (FakeDiT,), {})
 
 
@@ -164,8 +163,6 @@ def test_flux3_forward_order_names_its_real_lists():
 
 
 def test_a_wrapped_list_entry_groups_with_its_list():
-    # HiDream's list entries wrap the repeated block (double_stream_blocks.3.block): grouped by the immediate parent,
-    # every block was a group of its own, so no hop routed lazily and no per-card segment formed
     assert ls._block_list_name("double_stream_blocks.3.block") == "double_stream_blocks"
     assert ls._block_list_name("transformer_blocks.7") == "transformer_blocks"
     assert ls._block_list_name("mode_blocks.image.2") == "mode_blocks.image"
@@ -200,7 +197,6 @@ def test_plan_fill_packs_the_primary_first():
     block = _mib(dit.transformer_blocks[0])
     single = _mib(dit.single_transformer_blocks[0])
     rest = _mib(dit) - 4 * block - 4 * single
-    # the primary takes the rest plus three double blocks; everything else goes to cuda:1
     budget0 = int(rest + 3 * block + 0.5 * block + 1)
     plan = ls.plan_layer_split(dit, primary = 0, cards = [1], budgets_mib = {0: budget0, 1: 100})
     assert plan.primary == "cuda:0"
@@ -209,7 +205,6 @@ def test_plan_fill_packs_the_primary_first():
     assert plan.ranges[1].blocks[0] == "transformer_blocks.3"
     assert len(plan.ranges[1].blocks) == 5
     assert set(plan.assignment.values()) == {"cuda:0", "cuda:1"}
-    # string keys work too, and a card that is not needed gets no range
     plan = ls.plan_layer_split(
         dit, primary = "cuda:0", cards = ["cuda:1"], budgets_mib = {"cuda:0": 100, "cuda:1": 100}
     )
@@ -283,7 +278,6 @@ class _Recorder:
             if tensor_fn is None:
                 self.out_moves.append(str(device))
             else:
-                # walk with the real mover, pretending every tensor sits elsewhere
                 def counted(t):
                     self.in_moves.append(str(device))
                     return t
@@ -294,7 +288,6 @@ class _Recorder:
         monkeypatch.setattr(mg, "move_to_device", fake_move)
         monkeypatch.setattr(mg, "_device_context", lambda device: contextlib.nullcontext())
         if simulate_cards:
-            # the weights stay on the CPU: each block and the denoiser report the card placement assigned them
             monkeypatch.setattr(ls, "_probe_device", lambda probe, default: default)
 
 
@@ -323,8 +316,6 @@ def test_lazy_routing_moves_only_at_card_and_list_boundaries(monkeypatch):
     with torch.no_grad():
         out = dit(x)
     assert torch.equal(out, reference)
-    # block 1 (last on cuda:0) hands its output to cuda:1; the last double block and the last single block, both on
-    # cuda:1, bring theirs home at the end of their list
     assert rec.out_moves == ["cuda:1", "cuda:0", "cuda:0"]
     assert split.lazy_calls == 1 and split.eager_calls == 0
     assert not split.lazy_now  # reset after the forward
@@ -342,7 +333,6 @@ def test_eager_routing_with_a_residual_kwarg(monkeypatch):
     with torch.no_grad():
         out = dit(x, controlnet_block_samples = residual)
     assert torch.equal(out, reference)
-    # every block off the primary (2 double + 3 single) returns home
     assert rec.out_moves == ["cuda:0"] * 5
     assert split.eager_calls == 1
 
@@ -378,7 +368,6 @@ def test_class_swap_keeps_names_and_undo_restores(monkeypatch):
     assert status["placement"]["transformer"] == "cuda:0+cuda:1"
     assert status["layer_split"]["per_card_mib"].keys() == {"cuda:0", "cuda:1"}
     assert status["layer_split"]["calls"] == 0
-    # a second place re-plans instead of stacking subclasses
     ls.place_layer_split(pipe, primary = 0, cards = [1], budgets_mib = budgets)
     assert type(block).__mro__[1] is FakeBlock
 
@@ -465,7 +454,6 @@ def test_move_to_device_keeps_attribute_holders_when_asked():
         {"c": cache}, torch.device("meta"), tensor_fn = lambda t: t, objects = False
     )
     assert moved["c"] is cache
-    # the default still copies a holder whose tensors are elsewhere (component split outputs)
     assert mg.move_to_device(cache, torch.device("meta"), tensor_fn = lambda t: t) is not cache
 
 
@@ -479,15 +467,12 @@ def test_cfg_parallel_declines_on_a_split(monkeypatch):
     assert "layer split" in mg.cfg_parallel_decline(pipe, offload_policy = "none", selection = sel)
     from core.inference.diffusion_block_graph import install_block_graphs
 
-    # block graphs record per card on a split, but only blocks whose weights sit on a card (these stay on the CPU)
     handle, reason = install_block_graphs(dit)
     assert handle is None and "weights off the GPU" in reason
     ls.undo_layer_split(pipe)
 
 
 def test_a_whole_step_graph_armed_before_the_split_stays_eager(monkeypatch):
-    # The speed layer arms graphs from the one-card plan, before placement splits the denoiser: arming after placement
-    # must refuse the split denoiser, and a graph armed earlier (``force`` on a resident plan) must run eager.
     from core.inference import diffusion_cuda_graph as cg
 
     dit = FakeDiT(dim = 1024, double = 4, single = 3)
@@ -499,7 +484,6 @@ def test_a_whole_step_graph_armed_before_the_split_stays_eager(monkeypatch):
     seen = []
     monkeypatch.setattr(early, "_eager", lambda args, kwargs: seen.append(1) or "eager")
     assert early(torch.zeros(1), return_dict = False) == "eager" and seen
-    # eager because the denoiser is split, before any capture attempt (on the CPU that attempt refuses and poisons)
     assert not early.poisoned and not early.stats.get("refused_host_tensor")
     early.disable()
     handles, reason = cg.arm_after_placement(pipe)
@@ -508,8 +492,6 @@ def test_a_whole_step_graph_armed_before_the_split_stays_eager(monkeypatch):
 
 
 def test_a_positional_residual_runs_eager(monkeypatch):
-    # FakeDiT.forward(hidden_states, controlnet_block_samples): the residual passed by position must switch the call to
-    # eager routing exactly as the keyword does, or a lazy route adds a residual on another card
     torch.manual_seed(0)
     dit = LazyDiT(dim = 1024, double = 4, single = 3)
     x = torch.randn(2, 1024)
@@ -523,15 +505,12 @@ def test_a_positional_residual_runs_eager(monkeypatch):
     assert torch.equal(out, reference)
     assert rec.out_moves == ["cuda:0"] * 5
     assert split.eager_calls == 1 and split.lazy_calls == 0
-    # None in the residual slot is a plain call: lazy
     with torch.no_grad():
         dit(x, None)
     assert split.lazy_calls == 1
 
 
 def test_routes_follow_a_relocated_denoiser(monkeypatch):
-    # Placement said cuda:0 / cuda:1, but the weights are on the CPU now (pipe.to("cpu") after the split, an eviction):
-    # every route reads the blocks' current device, so the forward stays on one device and moves nothing.
     torch.manual_seed(0)
     dit = LazyDiT(dim = 1024, double = 4, single = 3)
     pipe = Pipe(dit)
@@ -559,14 +538,12 @@ def test_routes_follow_a_relocated_denoiser(monkeypatch):
         out = dit(x)  # on the CPU: a route still aimed at cuda:1 would fail here
     assert torch.equal(out, reference)
     assert set(moves) <= {"cpu"}
-    # the pipeline's execution device follows the split denoiser's weights, not the placement-time marker
     assert dit._unsloth_split_home == torch.device("cuda", 0)
     assert mg._split_home(pipe) == torch.device("cpu")
     ls.undo_layer_split(pipe)
 
 
 def test_routes_follow_one_relocated_block(monkeypatch):
-    # only the last double block moves (to the "primary"): its output no longer crosses, the next list's entry does
     torch.manual_seed(0)
     dit = LazyDiT(dim = 1024, double = 4, single = 3)
     _install(dit, _two_card_budget(dit))
@@ -589,7 +566,6 @@ def test_routes_follow_one_relocated_block(monkeypatch):
     monkeypatch.setattr(ls, "_probe_device", probe_device)
     with torch.no_grad():
         dit(torch.randn(2, 1024))
-    # block 1 -> cuda:1 (block 2), block 2 -> cuda:0 (block 3 now there), single list end -> home
     assert rec.out_moves == ["cuda:1", "cuda:0", "cuda:0"]
 
 
@@ -607,9 +583,7 @@ def test_generic_undo_split_removes_a_layer_split(monkeypatch):
 
 
 def test_eager_calls_keep_no_copy_across_blocks(monkeypatch):
-    # An inference tensor carries no version, so an in-place write between blocks cannot be seen by the memo: an eager
-    # call (the denoiser may do tensor ops between blocks) must not reuse a copy from an earlier block, while a lazy
-    # call (no op between blocks) shares one copy per card.
+    # inference tensors carry no version: an eager call must not reuse an earlier block's copy; a lazy call shares one per card
     class InPlaceDiT(FakeDiT):
         def forward(
             self,
@@ -666,7 +640,6 @@ def test_eager_calls_keep_no_copy_across_blocks(monkeypatch):
         _, split = _install(dit, {0: 10**6, 1: 10**6})
         monkeypatch.setattr(mg, "move_to_device", fake_move)
         monkeypatch.setattr(mg, "_device_context", lambda device: contextlib.nullcontext())
-        # blocks report cuda:1, the denoiser cuda:0, while every tensor is on the CPU "primary"
         monkeypatch.setattr(ls, "_probe_device", lambda probe, default: default)
         monkeypatch.setattr(split, "home", torch.device("cpu"))
         for qual, _, block in ls.find_blocks(dit):

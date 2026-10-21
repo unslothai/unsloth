@@ -2231,7 +2231,6 @@ def _guard_layer_cards(pipe: Any, guard_target: Any, guard_kwargs: dict) -> int:
         return 0
     checked = 0
     for ordinal in secondary_block_cards(pipe):
-        # the working set grows with the request; the fixed per-card reserve beside it does not
         working, reserve = split.working_mib(ordinal)
         if working + reserve <= 0:
             continue
@@ -9094,11 +9093,8 @@ class DiffusionBackend:
                     # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
                     # bit-identical `off`.
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
-                    # A layer split keeps every block resident on some card: the speed layer and the compile key are set
-                    # up for that placement, not for the one-card offload plan it replaces.
                     split_expected = _layer_split_expected(pipe, plan)
-                    # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF); so
-                    # must the torchao-free int8 one once it stays resident.
+                    # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower, losing to GGUF.
                     quant_forces_compile = (
                         transformer_quant_engaged is not None or comfy_compile
                     ) and (
@@ -9626,7 +9622,6 @@ class DiffusionBackend:
                             # placed from the planned saver's peak: requests size from the flat estimate instead
                             pipe._unsloth_peak_static = True
                     if cache_engaged == TC_FBCACHE and _step_cache_dropped_by_layer_split(pipe):
-                        # the blocks sit on their cards now (or the one-card fallback landed): the cache goes back on
                         cache_engaged = _restore_step_cache_after_layer_split(
                             pipe,
                             (pipe,),
@@ -9636,7 +9631,6 @@ class DiffusionBackend:
                             logger = logger,
                         )
                         if cache_engaged is None and getattr(plan, "layer_split", None) is not None:
-                            # declined on the split: status must say so (the compile still runs graph-broken)
                             cache_may_toggle = False
                             cache_reason = (
                                 "off: the step cache declined the denoiser split across cards"

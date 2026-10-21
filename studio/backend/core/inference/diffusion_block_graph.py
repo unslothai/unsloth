@@ -288,7 +288,6 @@ class _Shared:
         self.warmed: set = set()
         self.pool_bytes = 0
         self.static_bytes = 0
-        # a layer split's card: record / replay only while that card is current (the split's boundary sets it)
         self.strict_device = False
         _LIVE.add(self)
 
@@ -413,10 +412,8 @@ class BlockGraph:
         self.unreplayed_placements = 0
         self.churned = False
         self.protect: Any = None  # None until resolved, then False or the NVFP4 step controller
-        # a layer split's run of blocks on one card, recorded as one graph (``SegmentGraph``), and this block's index
         self.segment: Any = None
         self.seg_index = 0
-        # the BlockGraphSet whose image scopes may be sealed against new prompt lengths (a layer split), else None
         self.owner: Any = None
         self.placements: set = set()
         self.refusals: dict = {}
@@ -513,7 +510,6 @@ class BlockGraph:
             torch.cuda.current_device() != self.shared.device_index
             or any(t.device.index != self.shared.device_index for t in live)
         ):
-            # a split block called outside its card's scope: the capture stream and pool belong to its card
             self.stats["refused_host_input"] += 1
             return self._eager(args, kwargs)
         if self.protect is None:
@@ -533,7 +529,6 @@ class BlockGraph:
         entry = self.cache.get(full)
         if entry is None:
             if self.owner is not None and self.owner.scope_sealed():
-                # a prompt length first seen after the first render of this image scope: no warm-up, no capture
                 self.stats["length_eager"] = self.stats.get("length_eager", 0) + 1
                 return self._eager(args, kwargs)
             if full not in self.seen:
@@ -837,7 +832,6 @@ class SegmentGraph:
             out.append(p)
         return tuple(out)
 
-    # -- per call -----------------------------------------------------------------------------------------------
 
     def call(self, i: int, args: tuple, kwargs: dict) -> Any:
         if self.poisoned or not self.enabled:
@@ -897,7 +891,6 @@ class SegmentGraph:
             self.stats["segment_replays"] += 1
             self.mode, self.cur, self.ext = "replay", entry, live
             return self._hand_out(0, entry)
-        # first sighting of this layout: run the block for real and record where the next ones take their inputs from
         rec = _SegRecord()
         out = self.graphs[0].compute(*args, **kwargs)
         flat: list = []
@@ -952,7 +945,6 @@ class SegmentGraph:
         if self.mode == "record":
             full, rec = self.cur
             if prov is None or _refusal(key, kwargs):
-                # an input from outside the run: this layout stays per block
                 self.refused.add(full)
                 self.stats["segment_refusals"] += 1
                 self._abandon()
@@ -983,7 +975,6 @@ class SegmentGraph:
             return out
         entry = self.cur
         if prov is None or key != entry.record.keys[i] or prov != entry.record.prov[i]:
-            # the denoiser changed something between blocks: the recorded outputs from here on do not apply
             self.stats["segment_breaks"] += 1
             self._abandon()
             return _NOT_HANDLED
@@ -993,7 +984,6 @@ class SegmentGraph:
         tensors = entry.outputs[i]
         last = i == len(self.graphs) - 1
         if last:
-            # what leaves the run must survive the next replay
             tensors = [t.clone() for t in tensors]
             self._reset_forward()
         else:
@@ -1010,7 +1000,6 @@ class SegmentGraph:
     def _abandon(self) -> None:
         self._reset_forward()
 
-    # -- capture ------------------------------------------------------------------------------------------------
 
     def _chain(self, rec: _SegRecord, ext: list) -> list:
         results: list = []
@@ -1173,9 +1162,7 @@ class BlockGraphSet:
     ) -> None:
         self.module = transformer
         self.shared = shared
-        # a layer split's other cards: ordinal -> that card's pool, stream and static buffers
         self.card_shared: dict = {}
-        # a layer split's per-card runs of blocks, each recorded as one graph
         self.segments: list = []
         self.logger = logger
         self.graphs: list = []
@@ -1186,9 +1173,6 @@ class BlockGraphSet:
         self._prefetcher = None
         self.mode = "blocks"
         self.max_graphs = MAX_GRAPHS_PER_BLOCK
-        # A layer split of a denoiser whose text length follows the prompt (diffusion_dynamic_text): per image scope
-        # its graphs record the first render's prompt lengths only, as GraphedForward does, and
-        # diffusion_cuda_graph.seal_lengths seals a scope at the end of the render that recorded it.
         self.length_varies = False
         self.scope: Any = None
         self._sealed_scopes: set = set()
@@ -1255,7 +1239,6 @@ class BlockGraphSet:
         for seg in self.segments:
             for k, v in seg.stats.items():
                 total[k] = total.get(k, 0) + int(v)
-        # a segment's capture / warm-up / replay is the graph layer's too (one per run instead of one per block)
         total["captures"] = total.get("captures", 0) + total.get("segment_captures", 0)
         total["warmups"] = total.get("warmups", 0) + total.get("segment_warmups", 0)
         total["replays"] = total.get("replays", 0) + total.get("segment_replays", 0)
@@ -1462,8 +1445,6 @@ def install_block_graphs(
         hook = _group_offload_hook(block)
         block_shared = shared
         if split:
-            # Each block runs whole on its own card (the split's boundary sets that card current around the call):
-            # it records and replays on that card's stream and pool, with that card's static buffers.
             index = _block_card(block)
             if index is None:
                 refused["weights off the GPU"] = refused.get("weights off the GPU", 0) + 1
@@ -1539,7 +1520,6 @@ def install_block_graphs(
         )
         return None, reason
     if split and not segment_graphs_disabled():
-        # each card's run of blocks replays as one graph; a call the run cannot vouch for falls to its block's graph
         handle.segments = [
             SegmentGraph(run, run_shared)
             for run, run_shared in _segments(transformer, handle.graphs)

@@ -63,8 +63,6 @@ class _Pipe:
 
 
 def test_a_lazy_hidream_split_matches_one_card_bitwise():
-    # HiDream concatenates root-level llama states with a block's output between blocks, all on
-    # ``hidden_states.device``: routing it lazily must not change a bit
     assert "HiDreamImageTransformer2DModel" in ls.LAZY_CLASSES
     reference = _run(_hidream().to("cuda:0"))
     pipe = _Pipe()
@@ -86,8 +84,6 @@ def test_a_lazy_hidream_split_matches_one_card_bitwise():
 
 
 def test_a_hidream_split_hops_once_per_card_boundary_and_records_per_card_segments(monkeypatch):
-    # Several blocks per stream per card. Each list entry wraps its block (double_stream_blocks.N.block): grouped by
-    # the immediate parent every off-primary block sent its output back to the primary and no segment formed.
     from core.inference import diffusion_block_graph as bg
 
     monkeypatch.setitem(globals(), "_NL", 4)
@@ -111,9 +107,7 @@ def test_a_hidream_split_hops_once_per_card_boundary_and_records_per_card_segmen
     try:
         out = _run(pipe.transformer)
         stats = ls.layer_split_stats(pipe.transformer)
-        # four card boundaries: double 1 -> 2 onto cuda:1, the double list's end back, single 2 -> 3, the end back
         assert hops == ["cuda:1", "cuda:0", "cuda:1", "cuda:0"]
-        # the root's own tensors (temb, rotary embedding) cross once each, memoised for every later block
         assert stats["input_copies"] == 2 and stats["lazy_calls"] == 1
         assert torch.equal(out, reference)
         handle, why = bg.install_block_graphs(pipe.transformer, slots = False)

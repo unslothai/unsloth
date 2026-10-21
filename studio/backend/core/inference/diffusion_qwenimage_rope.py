@@ -148,7 +148,6 @@ def install(transformer: Any, logger: Any = None) -> bool:
     from .diffusion_int8_fused import resident_cuda_cards, run_on_first_call
 
     def _finish(t: Any) -> bool:
-        # every card of a layer split probed: the wrapper keeps the complex path on a card whose probe failed
         cards = resident_cuda_cards(t)
         passed = [index for index in cards if _probe(index)]
         return bool(passed) and _patch_table(passed[0], logger)

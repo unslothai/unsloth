@@ -259,9 +259,7 @@ class DiffusionFamily:
 # Fresh servers rendered 2-4 variants of one seed here (FLUX.1, Z-Image, Qwen-Image; the edit siblings share their DiT):
 # near-tied norm-reduction configs, benchmarked per process, sum in different orders. B200 measured deterministic.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
-# Qwen-Image races on B200 too (torch 2.14): two fresh one-card processes rendered one seed 42 / 26 dB apart, and a
-# layer split, which compiles its blocks once per card, picked per card. With the filter 6 of 6 fresh processes (one
-# card and split) matched bitwise at the same s/step.
+# Qwen-Image races on B200 too (torch 2.14): fresh processes rendered one seed 26 dB apart; with the filter 6/6 matched bitwise.
 _QWEN_REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = _REDUCTION_RACE_ARCHS + ((10, 0),)
 
 # --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
@@ -614,8 +612,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         label = "FLUX.2-dev",
         profile = FamilyProfile(te_int8_skip = (3, 0), preview_factors = "flux2"),
         pipeline_class = "Flux2Pipeline",
-        # cudnn.benchmark's per-process VAE conv pick rendered 5 variants of one seed over 7 fresh B200 processes
-        # (one card and layer split alike); held off, every process renders the same image.
+        # cudnn.benchmark's per-process VAE conv pick rendered 5 variants of one seed over 7 fresh B200 processes.
         cudnn_benchmark = False,
         uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",

@@ -483,7 +483,6 @@ def refine_plan_for_multigpu(
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
 
     def layer_split_or_plan() -> Any:
-        # Second choice: cut the denoiser's blocks across the cards; the one-card plan when that does not fit either.
         return refine_plan_for_layer_split(
             pipe,
             plan,
@@ -615,7 +614,6 @@ def move_to_device(
             move_to_device(v, device, _depth + 1, tensor_fn = tensor_fn, objects = objects) for v in obj
         ]
     if type(obj).__name__ == "BlockMask" and callable(getattr(obj, "to", None)):
-        # flex attention's mask: immutable per call, its own .to() moves its block tensors
         return obj.to(device)
     if isinstance(obj, torch.nn.Module) or not objects:
         return obj
@@ -741,7 +739,6 @@ def _split_home(pipe: Any) -> Any:
     for module in components.values():
         layered = layer_split_of(module)
         if layered is not None:
-            # where the split denoiser's own weights are now (a later .to() of the pipeline moves the home with it)
             return layered.current_home()
     for module in components.values():
         home = getattr(module, "_unsloth_split_home", None)
@@ -947,7 +944,6 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     out: dict[str, Any] = dict(info or {})
     from .diffusion_layer_split import layer_split_stats
 
-    # the planner's split (cards, ranges, budgets) plus the engine's live counters per split denoiser
     live = {
         name: stats
         for name in DENOISER_ATTRS

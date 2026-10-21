@@ -29,11 +29,9 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 LAYER_SPLIT_ENV = "UNSLOTH_DIFFUSION_LAYER_SPLIT"
 _TE_ROLE = "text_encoder"
 _DIT_ROLE = "dit"
-# One-card policies that page the denoiser's weights per call (group only when ``stream_transformer``).
 _DENOISER_OFFLOAD_POLICIES = ("model", "sequential", "streaming")
-# A secondary that only runs blocks holds one block's working set at a time (measured on B200 at 1024x1024 over the
-# DiT weights: 0.6 GiB FLUX.2-klein-4B, 1.2 GiB FLUX.2-dev, while the primary peaked 8.4 / 35.7 GiB). Priced as twice
-# the largest block, at least 1 GiB, never above the plan's denoise headroom.
+# A block-only secondary holds one block's working set (B200 1024px: 0.6 GiB klein-4B, 1.2 GiB FLUX.2-dev):
+# priced as twice the largest block, at least 1 GiB, never above the plan's denoise headroom.
 _WORKING_SET_BLOCKS = 2
 _WORKING_SET_MIN_MIB = 1024
 _TE_ONLY_HEADROOM_MIB = (
@@ -79,12 +77,9 @@ class LayerSplit:
     text_encoders_card: Optional[int]
     card_required_mib: tuple[tuple[int, int], ...]
     card_limit_mib: tuple[tuple[int, int], ...]
-    # weights resident per card: its blocks, plus the stems and non-TE companions (primary) and the text encoders
     card_weights_mib: tuple[tuple[int, int], ...] = ()
     reason: str = ""
-    # the text encoders stay in host memory and page onto the primary for the encode (no card holds them)
     text_encoders_streamed: bool = False
-    # the fixed per-card reserve inside card_required_mib (not an activation: a larger request does not grow it)
     card_reserve_mib: tuple[tuple[int, int], ...] = ()
 
     def working_mib(self, ordinal: int) -> tuple[int, int]:
@@ -154,7 +149,6 @@ def _partition(blocks: Sequence[int], capacities: Sequence[int]) -> Optional[lis
             sum(blocks[cuts[i] : cuts[i + 1]]) <= capacities[i] for i in range(len(capacities))
         )
 
-    # proportional: the same fraction of each card's capacity, so each keeps the same slack
     cuts = [0]
     acc = 0
     prefix = [0]
@@ -163,7 +157,6 @@ def _partition(blocks: Sequence[int], capacities: Sequence[int]) -> Optional[lis
     for i, cap in enumerate(capacities[:-1]):
         acc += max(0, cap)
         target = total * acc / cap_sum
-        # nearest cut to the cumulative target, never before the previous cut
         best = min(range(cuts[-1], n + 1), key = lambda j: (abs(prefix[j] - target), j))
         cuts.append(best)
     cuts.append(n)
@@ -290,9 +283,7 @@ def plan_layer_split(
     best_shortfall: Optional[int] = None
     for k in range(2, len(secondaries) + 2):
         cards = [primary, *secondaries[: k - 1]]
-        # TE home: the last card first (proportional cuts leave it the most room), then earlier ones, the primary last
-        # streaming the text encoders from host memory is the last resort: they run once, before step 0, so it
-        # costs one paged encode per prompt, while a DiT that stays offloaded pays every step
+        # TE home: last card first, primary last; streaming the TE from host (one paged encode per prompt) is the last resort
         te_homes = (
             [(o, False) for o in reversed(cards)] + [(None, True)] if te_mib else [(None, False)]
         )
@@ -309,7 +300,6 @@ def plan_layer_split(
             caps = [card_limits[o] - fixed[o] - head[o] - reserve[o] for o in cards]
             if any(c < 0 for c in caps):
                 continue
-            # every expert is cut over the same cards in proportion; their parts share each card's capacity
             ranges: list[BlockRange] = []
             remaining = list(caps)
             ok = True
@@ -324,8 +314,7 @@ def plan_layer_split(
                 )
                 n = len(layout.block_mib)
                 if cuts is not None and n > 1 and cuts[1] == n:
-                    # the cut rounded every block onto the primary (a nearly full secondary), which the engine
-                    # refuses: its last block goes to the furthest card with room for it
+                    # the cut rounded every block onto the primary, which the engine refuses: move its last block to the furthest card with room
                     room = [
                         c
                         for c in range(len(cards) - 1, 0, -1)
@@ -403,7 +392,6 @@ def plan_layer_split(
     )
 
 
-# --- engine interface (implemented by the layer split engine; these stubs keep production unchanged) -------------
 
 _BLOCK_LIST_ATTRS: tuple[str, ...] = (
     "transformer_blocks",
@@ -484,7 +472,6 @@ def place_layer_split(
             module.to(device)
         placement[name] = str(device)
     if streamed:
-        # too big for any card beside the blocks: paged onto the primary for the one encode before step 0
         from .diffusion_memory import stream_text_encoders_onto
         for name in stream_text_encoders_onto(pipe, primary_dev, logger):
             placement[name] = f"cpu (streamed to {primary_dev})"
@@ -514,7 +501,6 @@ def place_layer_split(
                 for qual, _ in blocks[r.start : r.stop]:
                     assignment[qual] = int(r.card)
         if assignment and all(card == primary_dev.index for card in assignment.values()):
-            # one expert of a multi-denoiser split may fit the primary whole: placed plainly, no boundary
             with fast_upload([module], primary_dev, logger = logger):
                 module.to(primary_dev)
             out[name] = {"primary": str(primary_dev), "denoiser": name, "whole_on_primary": True}
@@ -550,7 +536,6 @@ def undo_layer_split(pipe: Any) -> None:
         mg.undo_split(pipe)
 
 
-# --- planner glue -----------------------------------------------------------------------------------------------
 
 _APPLIED: "weakref.WeakKeyDictionary[Any, LayerSplit]" = weakref.WeakKeyDictionary()
 _DECLINES: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
@@ -715,7 +700,6 @@ def apply_layer_split_plan(
             )
         with contextlib.suppress(Exception):
             undo_layer_split(pipe)
-        # a split this pipeline carried before must not keep reporting as placed (status, is_split, the guards)
         forget_applied_layer_split(pipe)
         with contextlib.suppress(Exception):
             pipe.to("cpu")
@@ -728,7 +712,6 @@ def apply_layer_split_plan(
     for name in _denoisers(split):
         module = getattr(pipe, name, None)
         if module is not None:
-            # also on the module: a from_pipe sibling (img2img, inpaint, ControlNet) shares it, not the pipeline
             module.__dict__[_RECORD_ATTR] = split
     return True
 

@@ -1334,7 +1334,6 @@ def _swiglu_forward(self: Any, hidden_states: Any, *args: Any, **kwargs: Any) ->
     ok = ok and hidden_states.dtype == torch.bfloat16
     if ok:
         fused_in, parts, down_name, n, gate_col, value_col, in_group, down_group = rec
-        # parts moved since the fusion (a layer split before its re-home): the stale fused copy sits on another card
         ok = (
             all(_get(self, nm) is mod for nm, mod in parts)
             and fused_in.weight.device == hidden_states.device
@@ -1617,7 +1616,6 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
     dev = resident_cuda_device(transformer)
     cards: tuple = ()
     if dev is None:
-        # a layer split: every block resident on one of several cards, each region swapped against its own card
         from .diffusion_int8_gemm import _split_cards
         cards = _split_cards(transformer)
         if not cards:
@@ -1706,8 +1704,6 @@ def _module_card(module: Any) -> Optional[int]:
     return None
 
 
-# Off-tree fused Linears (attribute -> where its parts sit in the record): a fused [gate | value] in-projection of a
-# split SwiGLU (record[1] = ((name, module), ...)), and the fused QKV of Z-Image / Qwen-Image-2.1 (record[1:] = q, k, v).
 _OFF_TREE_RECORDS = (
     (_SWIGLU_ATTR, "swiglu"),
     ("_unsloth_fused_qkv", "qkv"),
@@ -1848,7 +1844,6 @@ def _restore_module(module: Any) -> None:
         return
     slot = _hooked_forward_slot(module)
     if slot is not None and _is_fused_forward(getattr(*slot), module):
-        # Swapped under a hook, or a cache engaged after the swap: restore the hook's inner, keep its wrapper.
         setattr(*slot, prev if prev is not _NO_PREV else _class_forward(module))
     elif _is_fused_forward(module.__dict__.get("forward"), module):
         if prev is _NO_PREV:

@@ -129,8 +129,6 @@ _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "MiniMaxH3Transformer3DModel": _MINIMAX_H3_SOURCES,
 }
 
-# dynamic=True still compiled Qwen-Image's text RoPE table (``image_rotary_emb[1]``) static, so every new prompt
-# length recompiled on the default tier; armed there too, the first compile covers every length (same images).
 _ARMED_WHEN_DYNAMIC: frozenset[str] = frozenset({"QwenImageTransformer2DModel"})
 
 

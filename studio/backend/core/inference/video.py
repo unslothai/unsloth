@@ -3508,7 +3508,6 @@ def video_split_shortfall_message(
         denoises = bool(card[4]) if len(card) > 4 else home
         shaped = bool(width and height and frames)
         block_headroom = card[5] if len(card) > 5 else None
-        # the fixed per-card reserve inside that headroom (a seventh field): it does not grow with the request
         block_reserve = int(card[6] or 0) if len(card) > 6 else 0
         if block_headroom is not None and not home and not decodes:
             scale = 1.0
@@ -9152,12 +9151,9 @@ class VideoBackend:
         effective_speed = resolve_speed_mode(
             speed_mode, is_gguf = kind == "gguf", dense_default = SPEED_DEFAULT
         )
-        # A layer split keeps every block resident on some card: the speed layer is set up for that placement, not for
-        # the one-card offload plan it replaces.
         video_refine = lambda p, pl, lg: _video_refine_for_multigpu(fam, p, pl, lg)  # noqa: E731
         split_expected = _layer_split_expected(pipe, plan, video_refine)
-        # A torchao-quantised DiT must be compiled (eager is ~30x slower), and so must the torchao-free int8 one once
-        # it stays resident: force the regional profile when quant engaged but speed was off.
+        # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower.
         quant_forces_compile = transformer_quant_engaged is not None and (
             native_scheme is None
             or _native_quant_needs_compile(
@@ -9412,7 +9408,6 @@ class VideoBackend:
             planned = plan
             plan = applied_plan(pipe, plan)
             if cache_engaged == TC_FBCACHE and _step_cache_dropped_by_layer_split(pipe):
-                # the blocks sit on their cards now (or the one-card fallback landed): the cache goes back on
                 cache_engaged = _restore_step_cache_after_layer_split(
                     pipe,
                     views,
@@ -9421,7 +9416,6 @@ class VideoBackend:
                     logger = logger,
                 )
                 if cache_engaged is None and getattr(plan, "layer_split", None) is not None:
-                    # declined on the split: status must say so (the compile still runs graph-broken)
                     cache_may_toggle = False
                     cache_reason = "off: the step cache declined the denoiser split across cards"
             if (
@@ -9483,9 +9477,7 @@ class VideoBackend:
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
             if not speed_offload and _video_denoiser_hooked(pipe):
-                # The speed layer compiled for a resident denoiser (a layer split it expected, or a resident plan), but
-                # what landed is hooked (the split's one-card fallback, an OOM re-plan): move the compile below the
-                # offload hooks, as the image backend does, so its full graph never traces a disabled onload hook.
+                # compiled for a resident denoiser but it landed hooked: move the compile below the offload hooks (as the image backend)
                 compile_pipe_below_offload_hooks(pipe, logger)
             # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
             graph_applied = arm_graphs_after_placement(
@@ -9496,9 +9488,6 @@ class VideoBackend:
             elif not graph_applied.get("cuda_graph"):
                 speed_optims = tuple(o for o in speed_optims if o != "cuda_graph")
             if getattr(plan, "layer_split", None) is not None:
-                # Placement first, then what binds to it: the int8 kernels and fused records per card
-                # (diffusion_int8_gemm.after_layer_split, run by arm_block_graphs) and per-card block graphs where
-                # the family records graphs.
                 split_applied = {k: True for k in speed_optims}
                 engage_pinned_denoisers(pipe, split_applied, logger)
                 from . import diffusion_cuda_graph
@@ -11764,7 +11753,6 @@ class VideoBackend:
                         width = width,
                         height = height,
                         frames = frames,
-                        # the shape the load-time plan (and a layer split's per-card reserve) was priced at
                         planned_shape = (
                             fam.resolution_presets[0][0],
                             fam.resolution_presets[0][1],
@@ -12242,9 +12230,7 @@ class VideoBackend:
                                 + ("reaches" if toggled else "is below")
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
-                # A step cache keys residuals on the cond / uncond context, which a graph key cannot see: graphs armed
-                # while an auto cache was off (per-card block graphs on a layer split) run eager while it is on, as on
-                # the image backend. Re-taken per generation, since an auto decision is.
+                # A step cache keys residuals on cond / uncond context, invisible to a graph key: graphs armed with the cache off run eager.
                 graph_handles = tuple(getattr(state.pipe, "_unsloth_cuda_graphs", ()) or ())
                 if graph_handles:
                     from . import diffusion_cuda_graph

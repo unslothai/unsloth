@@ -69,7 +69,6 @@ def test_studio_step_cache_does_not_refuse_a_split_but_other_hooks_do():
     assert ls.step_cache_hooked(dit)
     assert "carries diffusers hooks" in ls.layer_split_refusal(dit)
     assert ls.layer_split_refusal(dit, step_cache_ok = True) is None
-    # a foreign hook next to the cache (group offload, layerwise casting) still refuses
     _hook(dit.proj_out, "group_offloading")
     assert not ls.step_cache_hooked(dit)
     assert "carries diffusers hooks" in ls.layer_split_refusal(dit, step_cache_ok = True)
@@ -175,8 +174,6 @@ def test_the_step_cache_goes_back_on_after_the_split_placed_the_blocks(monkeypat
 
 
 def test_split_loads_bind_speed_records_after_placement():
-    # source contract: both backends hand the speed layer the split-aware offload flag, re-apply the step cache after
-    # placement, and run the per-card int8 / graph binding once a split landed
     import inspect
 
     from core.inference import video as V
@@ -192,7 +189,6 @@ def test_split_loads_bind_speed_records_after_placement():
 
 
 def test_a_resident_torchao_free_int8_dit_is_compiled_like_a_torchao_one(monkeypatch):
-    # the NVIDIA int8 offload scheme runs ~3.5x slower eager once the DiT is resident (a layer split, or one card)
     monkeypatch.setattr(D, "native_offload_host", lambda target: True)
     monkeypatch.setattr(D, "native_quant_host", lambda target: False)
     assert D._native_quant_needs_compile(object(), "int8", resident = True)
@@ -212,8 +208,6 @@ def test_a_resident_torchao_free_int8_dit_is_compiled_like_a_torchao_one(monkeyp
 
 
 def test_a_companion_split_preview_counts_as_a_resident_denoiser():
-    # the one-card plan offloads; the multi-GPU refinement keeps the denoiser resident by moving other components to a
-    # second card. A torchao-free int8 DiT there runs ~3.5x slower eager, so the quant compile rule must see it.
     plan = types.SimpleNamespace(offload_policy = "group")
     companion = types.SimpleNamespace(offload_policy = "none", secondary_ordinal = 1, layer_split = None)
     assert D._companion_split_expected(None, plan, lambda p, pl, lg: companion)
@@ -255,7 +249,6 @@ def test_both_backends_force_compile_through_the_one_quant_rule():
     for src in (inspect.getsource(D.DiffusionBackend), inspect.getsource(V.VideoBackend)):
         assert "quant_forces_compile = " in src and "_native_quant_needs_compile(" in src
         assert "if quant_forces_compile and effective_speed == SPEED_OFF:" in src
-        # the preview the rule reads is computed before it
         assert src.index("split_expected = _layer_split_expected(") < src.index(
             "quant_forces_compile = "
         )

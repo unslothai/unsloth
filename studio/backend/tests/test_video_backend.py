@@ -14055,9 +14055,6 @@ def test_an_automatic_encoder_pick_that_does_not_engage_loads_dense_without_a_re
 def test_a_layer_split_fallback_moves_the_compile_below_the_offload_hooks(
     fake_runtime, tmp_path, monkeypatch, split_expected, hooked, moved
 ):
-    # The speed layer compiles before placement, for the split it previewed (offload_active False: a full graph). When
-    # placement falls back to the one-card offload plan, the onload hooks land under that compile; the image backend
-    # moves the compile below them, and the video load must too.
     import core.inference.video as video_mod
 
     _shared_setup_7(monkeypatch, video_mod)

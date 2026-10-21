@@ -80,8 +80,6 @@ def _kw(side):
 
 
 def test_block_card_guard_prices_the_planned_headroom_not_the_whole_request(monkeypatch):
-    # the block card reserved 3000 MiB at the default resolution; a 1536 render scales it, not the whole-request
-    # estimate (TE + VAE decode + every activation: about 28 GiB free at 1536), which only the primary holds
     pipe = _placed(_split())
     _free(monkeypatch, 8000)
     assert D._guard_layer_cards(pipe, object(), _kw(1024)) == 1
@@ -90,19 +88,14 @@ def test_block_card_guard_prices_the_planned_headroom_not_the_whole_request(monk
     assert D._guard_layer_cards(pipe, object(), _kw(1024)) == 1
     with pytest.raises(ValueError, match = "cuda:1"):
         D._guard_layer_cards(pipe, object(), _kw(1536))
-    # allow_oversized runs anyway, as on the primary
     assert D._guard_layer_cards(pipe, object(), {**_kw(1536), "allow_oversized": True}) == 0
 
 
 def test_block_card_guard_scales_only_the_working_set_not_the_fixed_reserve(monkeypatch):
-    # cuda:1 planned 3000 MiB past its blocks: 500 MiB of block activations plus a 2500 MiB fixed reserve (CUDA
-    # context, allocator slack). A 1536 render grows the activations, not the reserve: 500 * 2.25 + 2500 fits in
-    # 4000 MiB free, where scaling all 3000 MiB asked for 6750 and refused a render that fits
     pipe = _placed(_split(reserve = 2500))
     assert pipe in lsp._APPLIED and lsp._APPLIED[pipe].working_mib(1) == (500, 2500)
     _free(monkeypatch, 4000)
     assert D._guard_layer_cards(pipe, object(), _kw(1536)) == 1
-    # the reserve is still charged in full: below it nothing fits
     _free(monkeypatch, 2400)
     with pytest.raises(ValueError, match = "cuda:1"):
         D._guard_layer_cards(pipe, object(), _kw(1024))
@@ -117,7 +110,6 @@ def test_block_card_guard_is_a_no_op_without_a_layer_split(monkeypatch):
 def test_image_generate_guards_the_loaded_pipe_for_a_workflow_pipeline(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # img2img renders through a from_pipe pipeline that shares the split modules but carries no layer split record
     seen = []
     monkeypatch.setattr(
         D,
@@ -136,8 +128,6 @@ def test_image_generate_guards_the_loaded_pipe_for_a_workflow_pipeline(
 
 
 def test_a_layer_split_drops_the_one_card_measured_reserve():
-    # the one-card plan measured a partial residency; a conditioned request past it would hook the split denoiser for
-    # group offload onto the primary (hook_resident_denoiser), pulling every block off its card
     class Pipe:
         _unsloth_measured_reserve = (4096, "flux2", "default")
 

@@ -53,7 +53,6 @@ def _assignment(dit) -> dict:
     return out
 
 
-# --- per-card block graphs ---------------------------------------------------------------------------------------
 
 
 def test_block_graphs_record_each_block_on_its_own_card(monkeypatch):
@@ -67,7 +66,6 @@ def test_block_graphs_record_each_block_on_its_own_card(monkeypatch):
     for graph in handle.graphs:
         assert graph.shared.device_index == by_block[id(graph.block)]
         assert graph.shared.strict_device  # records only while its own card is current
-    # one pool / stream / static set per card, never shared across cards
     assert handle.shared.device_index == 0 and set(handle.card_shared) == {1}
     assert handle.describe()["cards"] == [0, 1]
     handle.free()
@@ -77,7 +75,6 @@ def test_block_graphs_record_each_block_on_its_own_card(monkeypatch):
 
 def test_one_card_block_graphs_keep_one_shared_state(monkeypatch):
     dit = FakeDiT(dim = 64, double = 2, single = 2)
-    # never consulted without a split: the one-card path reads no block card
     monkeypatch.setattr(
         bg, "_block_card", lambda block: pytest.fail("read a block card on one card")
     )
@@ -165,7 +162,6 @@ def test_arm_block_graphs_leaves_a_resident_one_card_denoiser_alone(monkeypatch)
     assert cg.arm_block_graphs(pipe, applied, target = target, family = None, hooked = False) == ()
 
 
-# --- step cache across cards -------------------------------------------------------------------------------------
 
 
 def test_split_block_classes_register_with_a_copy_of_their_base_metadata(monkeypatch):
@@ -299,7 +295,6 @@ def test_apply_step_cache_stays_off_on_a_split_without_the_guard(monkeypatch):
     ls.undo_layer_split(pipe)
 
 
-# --- int8 GEMM per card ------------------------------------------------------------------------------------------
 
 
 def _int8_dit(monkeypatch, cards):
@@ -330,7 +325,6 @@ def test_split_int8_swap_probes_and_swaps_each_card(monkeypatch):
     monkeypatch.setattr(g8, "_split_cards", lambda t: (0, 1))
     monkeypatch.setattr("core.inference.diffusion_int8_fused.resident_cuda_device", lambda t: None)
     probed = []
-    # card 1 has no fused tile (its probe failed): its Linears keep the stock path, card 0's run the fused GEMM
     monkeypatch.setattr(
         g8, "device_config", lambda index: probed.append(index) or ((1,) if index == 0 else None)
     )
@@ -356,13 +350,11 @@ def test_split_int8_swap_refreshes_a_pre_split_onload_install(monkeypatch):
     monkeypatch.setattr(g8, "_weight_card", lambda m: cards.get(id(m), 0))
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: (10, 0))
     monkeypatch.setattr(g8, "device_config", lambda index: (1,) if index == 0 else None)
-    # before placement: swapped against the onload card 0 (every Linear marked fused)
     monkeypatch.setattr(g8, "_split_cards", lambda t: ())
     try:
         assert g8._swap_on(dit, None, 0) == len(recs)
         moved = [m for m in dit.modules() if id(m) in recs and cards.get(id(m), 0) == 1]
         assert moved and all(m.__dict__[g8._REC][4] is True for m in moved)
-        # after the split: card 1's Linears take card 1's flags (no fused tile there)
         monkeypatch.setattr(g8, "_split_cards", lambda t: (0, 1))
         monkeypatch.setattr(g8, "device_config", lambda index: (2,) if index == 1 else (1,))
         assert g8._swap_on(dit, None, 1) == len(moved)
@@ -387,7 +379,6 @@ def test_one_card_int8_swap_never_reads_a_weight_card(monkeypatch):
         g8.uninstall(dit)
 
 
-# --- fused records re-homed after the split ------------------------------------------------------------------------
 
 
 def _swiglu_module(stale_device = "meta"):
@@ -414,7 +405,6 @@ def test_a_stale_fused_swiglu_is_rebuilt_on_its_parts_card_and_shares_their_stor
     rec = m.__dict__[f8._SWIGLU_ATTR]
     assert out["rebuilt"] == 1 and rec[0] is not stale
     assert rec[0].weight.device == m.w1.weight.device
-    # the parts are views of the rebuilt fused weight again (no second copy on the card)
     assert rec[0].weight.data_ptr() == m.w1.weight.data_ptr()
     assert torch.equal(m.w1.weight, gate) and rec[1:] == m.__dict__[f8._SWIGLU_ATTR][1:]
     assert f8.relocate_after_layer_split(m) == {
@@ -488,7 +478,6 @@ def test_arm_block_graphs_re_homes_the_split_records_before_arming(monkeypatch):
     ls.undo_layer_split(pipe)
 
 
-# --- per-card segment graphs -------------------------------------------------------------------------------------
 
 
 def test_segments_are_per_card_runs_within_one_block_list(monkeypatch):
@@ -501,7 +490,6 @@ def test_segments_are_per_card_runs_within_one_block_list(monkeypatch):
     runs = [[ls.find_blocks(dit)[i][0] for i in range(len(ls.find_blocks(dit)))]]
     quals = {id(b): q for q, _, b in ls.find_blocks(dit)}
     got = [[quals[id(g.block)] for g in seg.graphs] for seg in handle.segments]
-    # every run stays on one card and inside one list, and keeps forward order
     for run in got:
         assert len(run) >= 2
         assert len({card[q] for q in run}) == 1
@@ -561,7 +549,6 @@ def test_a_segment_breaks_when_a_block_gets_anything_else():
     rewritten = outs[0][0] + 0  # an op between blocks: same values, another tensor
     assert seg.call(1, (rewritten, temb), {}) is bg._NOT_HANDLED
     assert seg.stats["segment_breaks"] == 1 and seg.pos is None
-    # the rest of that forward goes to each block's own path
     assert seg.call(2, (rewritten, temb), {}) is bg._NOT_HANDLED
 
 
@@ -572,7 +559,6 @@ def test_a_segment_breaks_on_a_fresh_copy_of_a_shared_input():
 
 
 def test_a_segment_breaks_when_an_op_between_blocks_rewrites_an_output_in_place():
-    # same tensor, same layout, new values: the recorded next output no longer applies
     seg, outs, temb = _replaying_segment()
     outs[0][0].add_(100)
     assert seg.call(1, (outs[0][0], temb), {}) is bg._NOT_HANDLED
@@ -580,8 +566,6 @@ def test_a_segment_breaks_when_an_op_between_blocks_rewrites_an_output_in_place(
 
 
 def test_a_segment_starts_only_on_a_lazily_routed_chain(monkeypatch):
-    # a segment cannot see an op between blocks that rewrites an inference tensor in place (no version counter), so it
-    # only runs where the split verified the forward hands each block's outputs straight to the next one
     walked = []
     real_walk = bg._walk
     monkeypatch.setattr(bg, "_walk", lambda tree, live: walked.append(1) or real_walk(tree, live))
@@ -619,8 +603,6 @@ def test_a_segment_never_starts_while_a_step_cache_is_on(monkeypatch):
 
 
 def test_video_generate_bypasses_graphs_after_the_auto_cache_toggle():
-    # an auto First-Block-Cache re-decided per generation: graphs armed while it was off must run eager once it is
-    # on, as the image backend does per chunk
     import inspect
 
     from core.inference import video as V
@@ -632,12 +614,9 @@ def test_video_generate_bypasses_graphs_after_the_auto_cache_toggle():
     assert bypass < src.index("if static_skip:", toggle)
 
 
-# --- FBCache head / tail streams -----------------------------------------------------------------------------------
 
 
 def test_split_guard_wraps_the_mixed_stream_tail_once():
-    # FLUX.2's dual-stream head and single-stream tail (diffusion_cache.install_fbcache_mixed_stream_tail) run inside
-    # the split guard, so the mixed-stream residual subtracts the head output already copied to the tail's card
     from diffusers.hooks.first_block_cache import FBCBlockHook
 
     assert dc.install_fbcache_split_guard()
@@ -744,8 +723,6 @@ def test_real_rope_probes_every_card_of_a_split(monkeypatch):
 
 
 def test_split_graphs_seal_new_prompt_lengths_per_image_scope():
-    # A split has no whole-step graph: its per-card graphs record the first render's prompt lengths per image scope
-    # (diffusion_cuda_graph.seal_lengths), and a new length after that runs compiled ungraphed
     den = nn.Linear(4, 4)
     handle = bg.BlockGraphSet(den, bg._Shared(0, None))
     handle.track_scopes()
@@ -769,8 +746,6 @@ def test_split_graphs_seal_new_prompt_lengths_per_image_scope():
 
 
 def test_a_split_records_block_graphs_for_a_prompt_length_family(monkeypatch):
-    # one card refuses per-block graphs for a denoiser whose text length follows the prompt (it seals its whole-step
-    # graph instead); a split has no whole step, so the reason does not apply there
     import inspect
 
     src = inspect.getsource(cg.arm_block_graphs)

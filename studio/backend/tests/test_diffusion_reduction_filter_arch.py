@@ -23,7 +23,6 @@ from core.inference import diffusion_speed as ds  # noqa: E402
 _SM120 = (12, 0)
 _MEASURED_ARCHS = ((8, 0), (8, 9), (12, 0))
 _IMAGE_FAMILIES = ("flux.1", "z-image", "qwen-image", "flux.1-kontext", "qwen-image-edit")
-# Qwen-Image (and its edit / layered siblings, one DiT) also races on B200
 _QWEN_FAMILIES = ("qwen-image", "qwen-image-edit", "qwen-image-layered")
 
 
@@ -90,8 +89,6 @@ def test_qwen_image_also_pins_on_b200(monkeypatch, name):
 @pytest.mark.parametrize("cap", [(10, 0), (10, 3), (9, 0), (7, 5), (12, 1), None])
 @pytest.mark.parametrize("name", _IMAGE_FAMILIES)
 def test_image_family_keeps_inductor_pick_elsewhere(monkeypatch, name, cap):
-    # B200 (measured deterministic, except Qwen-Image), B300, H100, T4, other Blackwell parts (unmeasured), no CUDA /
-    # ROCm.
     if cap == (10, 0) and name in _QWEN_FAMILIES:
         pytest.skip("Qwen-Image pins on B200 (test_qwen_image_also_pins_on_b200)")
     _on(monkeypatch, cap)
