@@ -849,6 +849,7 @@ export const de = {
       byProject: "Nach Projekt",
       inOneList: "In einer Liste",
       sortChatsBy: "Chats sortieren nach",
+      projectsHome: "Projektübersicht",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
       switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",

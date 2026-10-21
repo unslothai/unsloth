@@ -316,14 +316,18 @@ export const BUDGET = {
   // Chat safety for diagrams, redirect links and approval cards adds 617 B raw / 238 B transfer (6,862,624 ->
   // 6,863,241 B raw, 2,066,394 -> 2,066,632 B transfer against 731cb16c2, one machine and build, the diagram
   // source check itself loaded with the first diagram). Raised to that build plus the same margin.
-  // Scheduled tasks (#13871) add 17,256 B raw / 5,539 B transfer over main's build (merged with main at 2552ee3895:
-  // 6,880,497 B raw / 2,072,171 B transfer, Node 26, chunk count 96 -> 97): the results poll that announces finished
+  // The sidebar Projects menu's Projects home item and its strings add 240 B raw / no transfer (6,862,692 ->
+  // 6,862,932 B raw, 2,066,441 -> 2,066,440 B transfer against 2aeeceb07e, one machine and build, 96 chunks).
+  // Merged with main at 2552ee3895 the build measures 6,863,532 B raw / 2,066,692 B transfer (Node 26, 97 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Scheduled tasks (#13871) add 17,208 B raw / 5,514 B transfer over main's build (merged with main at a83d791e95:
+  // 6,880,740 B raw / 2,072,206 B transfer, Node 26, 97 chunks): the results poll that announces finished
   // runs on any page with its per-account record and API client, the unseen-run dots, the scheduled-chat marks in
   // Recents and over its prompt, the sidebar's new-task "+", the model-load question queue (the question itself is
   // lazy) and the English strings; the Scheduled page and its dialog are lazy. Raised to that build plus the same
   // 160 B raw / 189 B transfer margin.
-  transferBytes: 2_072_360,
-  rawBytes: 6_880_657,
+  transferBytes: 2_072_395,
+  rawBytes: 6_880_900,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -848,6 +848,7 @@ export const es = {
       byProject: "Por proyecto",
       inOneList: "En una sola lista",
       sortChatsBy: "Ordenar chats por",
+      projectsHome: "Inicio de proyectos",
       lastUpdated: "Última actualización",
       manualOrder: "Orden manual",
       switchedToManual: "Orden manual: arrastra las filas para reordenarlas",

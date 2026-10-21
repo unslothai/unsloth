@@ -945,6 +945,7 @@ export const sv = {
       byProject: "Efter projekt",
       inOneList: "I en lista",
       sortChatsBy: "Sortera chattar efter",
+      projectsHome: "Projektöversikt",
       lastUpdated: "Senast uppdaterad",
       manualOrder: "Manuell ordning",
       switchedToManual: "Manuell sortering: dra rader för att ändra ordning",

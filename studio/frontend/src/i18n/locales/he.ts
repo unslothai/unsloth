@@ -926,6 +926,7 @@ export const he = {
       byProject: "לפי פרויקט",
       inOneList: "ברשימה אחת",
       sortChatsBy: "מיין צ'אטים לפי",
+      projectsHome: "דף הפרויקטים",
       lastUpdated: "עודכן לאחרונה",
       manualOrder: "סדר ידני",
       switchedToManual: "מיון ידני: גרור שורות כדי לשנות סדר",

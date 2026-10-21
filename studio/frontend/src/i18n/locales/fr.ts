@@ -849,6 +849,7 @@ export const fr = {
       byProject: "Par projet",
       inOneList: "Dans une seule liste",
       sortChatsBy: "Trier les discussions par",
+      projectsHome: "Accueil des projets",
       lastUpdated: "Dernière mise à jour",
       manualOrder: "Ordre manuel",
       switchedToManual: "Tri manuel : faites glisser les lignes pour les réorganiser",

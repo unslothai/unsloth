@@ -848,6 +848,7 @@ export const ru = {
       byProject: "По проектам",
       inOneList: "Одним списком",
       sortChatsBy: "Сортировать чаты по",
+      projectsHome: "Главная проектов",
       lastUpdated: "Последнему обновлению",
       manualOrder: "Вручную",
       switchedToManual: "Ручной порядок: перетащите строки, чтобы изменить порядок",

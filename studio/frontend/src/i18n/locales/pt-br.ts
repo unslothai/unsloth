@@ -848,6 +848,7 @@ export const ptBR = {
       byProject: "Por projeto",
       inOneList: "Em uma lista",
       sortChatsBy: "Ordenar conversas por",
+      projectsHome: "Início dos projetos",
       lastUpdated: "Última atualização",
       manualOrder: "Ordem manual",
       switchedToManual: "Ordem manual: arraste as linhas para reordenar",

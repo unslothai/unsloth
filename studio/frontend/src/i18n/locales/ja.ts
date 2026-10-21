@@ -847,6 +847,7 @@ export const ja = {
       byProject: "プロジェクト別",
       inOneList: "1つのリストで",
       sortChatsBy: "チャットの並び順",
+      projectsHome: "プロジェクトのホーム",
       lastUpdated: "最終更新",
       manualOrder: "手動で並べ替え",
       switchedToManual: "手動の並び順に切り替えました。行をドラッグして並べ替えます",

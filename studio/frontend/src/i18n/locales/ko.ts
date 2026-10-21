@@ -845,6 +845,7 @@ export const ko = {
       byProject: "프로젝트별",
       inOneList: "하나의 목록으로",
       sortChatsBy: "채팅 정렬 기준",
+      projectsHome: "프로젝트 홈",
       lastUpdated: "최근 업데이트",
       manualOrder: "수동 정렬",
       switchedToManual: "수동 정렬로 전환됨: 행을 끌어 순서를 바꾸세요",
