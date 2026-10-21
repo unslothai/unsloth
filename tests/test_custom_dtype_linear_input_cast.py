@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Falcon-H1 / Nemotron-H fp16: float32 norm output into a float16 nn.Linear outside autocast."""
+
 import ast
 from pathlib import Path
 
