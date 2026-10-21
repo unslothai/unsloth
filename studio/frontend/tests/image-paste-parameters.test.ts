@@ -363,3 +363,13 @@ test("LoRAs past the request's adapter limit are named as not applied", () => {
     /\.\.\.lorasOverLimit\(merged\)\.map\(\(id\) => `LoRA \$\{id\} \(over the \$\{MAX_LORAS\} adapter limit\)`\),/,
   );
 });
+
+test("a dynamic-prompts prompt starting with { still parses as A1111 parameters", () => {
+  const text = "{red|blue} car\nSteps: 20, Sampler: Euler a, CFG scale: 7, Seed: 5, Size: 512x512";
+  const r = pastedParameters(text);
+  assert.ok(r);
+  assert.equal(r.prompt, "{red|blue} car");
+  assert.equal(r.seed, 5);
+  assert.equal(isGenerationParametersPaste(text), true);
+  assert.equal(pastedParameters("{not json"), null);
+});

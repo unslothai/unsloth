@@ -670,7 +670,9 @@ function isSettingsLine(
 /** Requires A1111's settings line, else any text would parse as a bare prompt. */
 export function pastedParameters(text: string): ImportedRecipe | null {
   const trimmed = text.trim();
-  if (trimmed.startsWith("{")) return recipeJson(trimmed);
+  // A dynamic-prompts prompt (`{red|blue} car`) also starts with "{", so a failed JSON parse falls through.
+  const json = trimmed.startsWith("{") ? recipeJson(trimmed) : null;
+  if (json) return json;
   const last = trimmed.replace(/\r\n?/g, "\n").split("\n").pop() ?? "";
   return isSettingsLine(last, a1111Fields(last))
     ? parseA1111Parameters(trimmed)
