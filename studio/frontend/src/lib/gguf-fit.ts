@@ -164,13 +164,9 @@ export function ggufVariantLookupTableBytes(variant: GgufVariantSizes): number {
   return Math.min(table, ggufVariantFitSizeBytes(variant));
 }
 
-/** A size verdict with the lookup tables priced apart.
- *
- * The tables are row-gathered, host-pinned and, under llama.cpp's default lazy mode, mmap'd
- * from disk with only the touched rows paged in, so they are neither VRAM nor resident RAM.
- * When charging them as weights would not change the verdict, that verdict stands. Otherwise
- * a load that runs only with them on disk gets its own tier, `streamed`, rather than the
- * verdict of the smaller footprint: prefill and decode then depend on the disk. */
+/** A size verdict with the lookup tables priced apart: llama.cpp mmaps them from disk by
+ *  default, so they are neither VRAM nor resident RAM. A load that runs only with them on
+ *  disk gets its own `streamed` tier, since its speed then depends on the disk. */
 export function classifyGgufFitWithLookupTables(
   fitOf: (sizeBytes: number) => GgufFitClass,
   variant: GgufVariantSizes,

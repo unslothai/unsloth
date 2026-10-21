@@ -119,10 +119,8 @@ class PlanOptions:
     # move out of the VRAM footprint and into the host one; charging them to VRAM anyway would spill FFN blocks for a
     # deficit the child never has.
     kv_on_host: bool = False
-    # Bytes of the per-layer lookup table llama.cpp reads lazily (``--lazy-mode`` auto/on): they stay mmap'd from disk
-    # under every load mode, ``none`` included, and page through the page cache, so they are not host RAM a pinned copy
-    # has to hold. The caller resolves the mode (0 when llama.cpp turns auto into off on an iGPU/APU). Capped at the
-    # layout's own per-layer bytes.
+    # Bytes of the per-layer lookup table llama.cpp reads lazily: mmap'd from disk under every load mode, so not
+    # host RAM a pinned copy holds. 0 when the caller resolves the mode to off (iGPU/APU).
     lazy_read_bytes: int = 0
 
 
@@ -908,9 +906,7 @@ def _finish(
     spilled_bytes = sum(b.spillable_bytes for b in chosen) + (
         layout.lm_head_bytes if spill_lm_head else 0
     )
-    # token_embd and the per-layer tables are host-resident on every launch, so they are host RAM this plan must pay for
-    # even when nothing is spilled -- less the part llama.cpp leaves mmap'd from disk (lazy read), which the load mode
-    # never copies.
+    # token_embd and the per-layer tables are host RAM even when nothing spills, less the lazily read part.
     lazy = min(max(0, int(opts.lazy_read_bytes or 0)), layout.per_layer_embd_bytes)
     host_bytes = layout.token_embd_bytes + layout.per_layer_embd_bytes - lazy + spilled_bytes
     if opts.kv_on_host:

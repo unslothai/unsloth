@@ -28732,11 +28732,9 @@ class LlamaCppBackend:
                         if (not gpus or len(_mm_budgeted_gpus) < len(gpus))
                         else 0
                     )
-                    # Input-layer tensors (token_embd beside its own head, and every
-                    # per-layer lookup table: PLE, Engram) sit on the CPU however many
-                    # layers go to a card, so a discrete card's fit does not carry them.
-                    # Shared pools keep them: an iGPU's or APU's "VRAM" is the very RAM
-                    # they occupy, and Apple prices its own discount below.
+                    # Input-layer tensors (token_embd, per-layer lookup tables) stay on
+                    # the CPU, so a discrete card's fit does not carry them. Shared pools
+                    # (iGPU, APU) keep them; Apple prices its own discount below.
                     _host_input_embd = 0
                     if (
                         gpus
@@ -34264,9 +34262,8 @@ class LlamaCppBackend:
                         _apu_ram_msg = None
                         _host_ram_msg = None
                         _apu_avail_mib = None
-                        # Read now, before the kill frees the crashed child's memory, as
-                        # the preflights always have; priced below, once `cmd` and `env`
-                        # carry the retry's own mask and device flags.
+                        # Read before the kill frees the crashed child's memory; priced
+                        # below against the retry's own mask and device flags.
                         _retry_apu_avail_mib = (
                             self._available_system_memory_mib()
                             if model_size is not None and _retry_wants_unified
@@ -34420,13 +34417,9 @@ class LlamaCppBackend:
                                 "Arch-crash retry leaves one GPU; dropped tensor "
                                 "parallelism, which needs at least two."
                             )
-                        # Priced here, after the mask, companion-device and split rewrites,
-                        # so a --device ordinal resolves against the retry's own mask.
-                        # The APU RAM preflight upstream ran against the CRASHED
-                        # selection. The mirror shape (crash on the dGPU, retry on the
-                        # unified-memory sibling) makes the respawn the first load into
-                        # system RAM, so price it here too. Advisory: the respawn goes
-                        # ahead either way.
+                        # Priced after the mask and device rewrites, against the retry's
+                        # own selection: a crash on the dGPU retried on the APU sibling is
+                        # the first load into system RAM. Advisory only.
                         _retry_apu_msg = None
                         if model_size is not None and _retry_wants_unified:
                             _apu_avail_mib = _retry_apu_avail_mib
@@ -34453,10 +34446,8 @@ class LlamaCppBackend:
                                 _apu_resident_model_size + _mmproj_pinned_bytes,
                                 _apu_avail_mib,
                             )
-                            # Same contract as the preflight above: the opt-out takes
-                            # the message and nothing else. _retry_apu_msg itself stays
-                            # set, so _retry_is_oversized below still sees the
-                            # shortfall and the pageable rewrite still happens.
+                            # The opt-out takes the message only; _retry_is_oversized
+                            # still sees the shortfall.
                             if not self._host_offload_warning_opted_out():
                                 _apu_ram_msg = _retry_apu_msg
                                 self._record_load_warning(_retry_apu_msg)
