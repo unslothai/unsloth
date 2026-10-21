@@ -26,6 +26,8 @@ def test_route_answers_with_the_request_path_resolution():
 def test_an_operator_pin_wins_over_the_recommendation(monkeypatch):
     monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.25")
     got = asyncio.run(
-        inference_routes.get_sampling_defaults(model = "unsloth/Qwen3-4B-GGUF", current_subject = "owner")
+        inference_routes.get_sampling_defaults(
+            model = "unsloth/Qwen3-4B-GGUF", current_subject = "owner"
+        )
     )
     assert got["temperature"] == 0.25
