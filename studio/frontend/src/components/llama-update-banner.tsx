@@ -371,9 +371,12 @@ export function LlamaUpdateBanner({
       : null;
   const changelogAvailable = Boolean(changelogTags && !status?.source_build);
   // a different offer starts collapsed.
-  const detailsKey = rows
-    .map((row) => `${row.component}\0${row.installedTag}\0${row.latestTag}`)
-    .join("\n");
+  const detailsKey = [
+    ...rows.map(
+      (row) => `${row.component}\0${row.installedTag}\0${row.latestTag}`,
+    ),
+    backendChange ?? "",
+  ].join("\n");
   const detailsOpen = !applying && detailsVersion === detailsKey;
   // the panel and its protective height floor must use the same predicate.
   const changelogPanelOpen = Boolean(
