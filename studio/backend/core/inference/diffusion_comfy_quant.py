@@ -1036,6 +1036,26 @@ def load_comfy_quant_transformer(
         NVFP4: nvfp4_backend,
         MXFP8: mxfp8_backend,
     }
+    # Before the widening (the read above is memory-mapped): with no runtime for the format (fp8 below
+    # sm_89) every layer is widened to ``dtype`` in host RAM, 26 GB for an fp8 Krea 2, which used to
+    # take the whole app down.
+    from .diffusion_single_file_converters import converted_host_bytes, refuse_host_ram_shortfall
+
+    _widened = {
+        layer.name + ".weight": not (backends.get(layer.format) or fp16_keep)
+        for layer in scan.layers.values()
+    }
+    refuse_host_ram_shortfall(
+        path,
+        converted_host_bytes(
+            path,
+            dtype,
+            keep_fp32 = keep_fp32 if fp16_keep else (),
+            dequantized = _widened.get,
+        ),
+        f"expanding its quantized weights to {str(dtype).replace('torch.', '')}",
+        logger,
+    )
     sources: list = []  # (layer, codes, scale, block extras or None) kept for a runtime
     dequantized = 0
     for layer in scan.layers.values():

@@ -349,6 +349,119 @@ CONVERTERS: dict = {
 }
 
 
+# ------------------------------------------------------------------ host RAM a single-file DiT load writes
+
+# safetensors header dtype -> bytes per element
+_ST_ITEMSIZE = {
+    "F64": 8, "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1, "F8_E8M0": 1,
+    "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+}  # fmt: skip
+_ST_FLOATS = ("F64", "F32", "F16", "BF16", "F8_E4M3", "F8_E5M2")
+# Below this the load cannot be what takes a host down; never refuse on it.
+HOST_RAM_CHECK_MIN_MIB = 1024
+_MIB = 1024 * 1024
+
+
+class HostRamShortfallError(RuntimeError):
+    """A single-file load whose converted weights would not fit in the host RAM left."""
+
+
+def _torch_dtype_tag(dtype: Any) -> str:
+    return {
+        "torch.float32": "F32",
+        "torch.float16": "F16",
+        "torch.bfloat16": "BF16",
+    }.get(str(dtype), "BF16")
+
+
+def converted_host_bytes(
+    path: str,
+    dtype: Any,
+    *,
+    keep_fp32: Any = (),
+    dequantized: Any = None,
+) -> int:
+    """Bytes of ANONYMOUS host RAM loading ``path`` at ``dtype`` writes, from the header alone.
+
+    safetensors hands CPU tensors back memory-mapped, so a tensor already stored at its target dtype
+    costs page cache the OS can drop. Every other float tensor is widened (fp8 -> bf16 doubles it) into
+    fresh private memory that stays resident for the life of the model. ``keep_fp32`` = module names
+    kept in float32 (matched on any key segment, the ``_keep_in_fp32_modules`` rule, so original-layout
+    names under-match only small norms); ``dequantized(key)`` names ComfyUI-quantized weights that are
+    expanded to ``dtype`` (True; their codes are mapped, the expansion is not), False for one kept as
+    codes, None for any other key. Block formats are counted per stored element, under their logical
+    size, which only ever under-asks. 0 for an
+    unreadable header: no claim."""
+    from .diffusion_comfy_quant import _read_header
+
+    try:
+        header, _base = _read_header(str(path))
+    except Exception:  # noqa: BLE001 -- the loader reports a bad file itself
+        return 0
+    header.pop("__metadata__", None)
+    target = _torch_dtype_tag(dtype)
+    keep = tuple(keep_fp32 or ())
+    total = 0
+    for key, meta in header.items():
+        try:
+            stored = str(meta.get("dtype"))
+            numel = 1
+            for dim in meta.get("shape") or ():
+                numel *= int(dim)
+        except Exception:  # noqa: BLE001
+            continue
+        verdict = dequantized(key) if dequantized is not None else None
+        if verdict is not None:
+            # A quantized weight: widened to ``dtype`` (True) or kept as codes on a runtime (False)
+            total += numel * _ST_ITEMSIZE[target] if verdict else 0
+            continue
+        if stored not in _ST_FLOATS:
+            continue
+        want = "F32" if keep and any(m in key.split(".") for m in keep) else target
+        if stored != want:
+            total += numel * _ST_ITEMSIZE[want]
+    return total
+
+
+def refuse_host_ram_shortfall(path: str, need_bytes: int, why: str, logger: Any = None) -> None:
+    """Raise ``HostRamShortfallError`` when ``need_bytes`` of new host RAM plus the small-host reserve
+    exceed what this host has free right now, instead of letting the load run the process out of
+    memory: on Linux the OOM killer takes the whole server, on Windows an exhausted commit limit ends
+    it inside native code. ``UNSLOTH_DIFFUSION_HOST_RAM_CHECK=0`` skips the check."""
+    import os
+
+    from .diffusion_small_host import (
+        HOST_RAM_CHECK_ENV,
+        host_ram_check_disabled,
+        host_ram_mib,
+        host_reserve_mib,
+    )
+
+    need_mib = -(-int(need_bytes) // _MIB)
+    if need_mib < HOST_RAM_CHECK_MIN_MIB or host_ram_check_disabled():
+        return
+    try:
+        total, available = host_ram_mib()
+    except Exception:  # noqa: BLE001 -- unreadable: no claim, as the small-host route does
+        return
+    if available is None:
+        return
+    reserve = host_reserve_mib(total)
+    if need_mib + reserve <= int(available):
+        return
+    name = os.path.basename(str(path))
+    message = (
+        f"Not enough system RAM to load {name}: {why} needs about "
+        f"{(need_mib + reserve) / 1024:.1f} GB of free host memory "
+        f"({need_mib / 1024:.1f} GB of weights + {reserve / 1024:.1f} GB reserve) and "
+        f"{int(available) / 1024:.1f} GB is free. Close other applications, use a GGUF or a "
+        f"smaller quant of this model, or set {HOST_RAM_CHECK_ENV}=0 to try anyway."
+    )
+    if logger is not None:
+        logger.error("diffusion.single_file: refusing load: %s", message)
+    raise HostRamShortfallError(message)
+
+
 def load_original_layout_transformer(
     transformer_cls: Any,
     path: str,
@@ -381,6 +494,17 @@ def load_original_layout_transformer(
     mapping_fn = CONVERTERS.get(transformer_cls.__name__) or entry.get("checkpoint_mapping_fn")
     if mapping_fn is None:
         raise ValueError(f"{transformer_cls.__name__} has no single-file converter")
+    keep = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
+    if isinstance(keep, str):
+        keep = [keep]
+    # Before a byte is read: an fp8 file widened to bf16 (13B Krea 2: ~26 GB) used to run the host out of
+    # memory, which kills the whole app rather than failing this load.
+    refuse_host_ram_shortfall(
+        path,
+        converted_host_bytes(path, dtype, keep_fp32 = keep),
+        f"widening its weights to {str(dtype).replace('torch.', '')}",
+        logger,
+    )
     with init_empty_weights():
         model = transformer_cls.from_config(config)
     wanted = model.state_dict()
@@ -396,9 +520,6 @@ def load_original_layout_transformer(
             f"{name} does not match {transformer_cls.__name__}: {len(missing)} missing "
             f"(e.g. {missing[:1]}), {len(unexpected)} unused (e.g. {unexpected[:1]})"
         )
-    keep = getattr(transformer_cls, "_keep_in_fp32_modules", None) or []
-    if isinstance(keep, str):
-        keep = [keep]
     for key, value in converted.items():
         want = torch.float32 if any(m in key.split(".") for m in keep) else dtype
         if not value.is_floating_point():
