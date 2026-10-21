@@ -13,19 +13,26 @@ import sys
 import pytest
 import torch
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 pytest.importorskip("accelerate")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # spawned ranks inherit sys.path
 import _ddp_comm_defaults_worker as worker  # noqa: E402
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "two gloo ranks over TCP localhost")
 
-CASES = [
+# BF16/FP16 DDP hooks need CUDA 11+ and NCCL (or XPU/XCCL). On CPU gloo they raise
+# TypeError and sink the whole module-scoped ranks fixture (#14065 CI).
+_BASE_CASES = [
     ("full", "full", {}, {}),
     ("full_off", "full", {"UNSLOTH_DDP_GRADIENT_AS_BUCKET_VIEW": "0"}, {}),
     ("peft", "peft", {}, {}),
+]
+_HOOK_CASES = [
     ("bf16_hook", "full", {"UNSLOTH_DDP_COMM_HOOK": "bf16"}, {}),
     ("fp16_hook", "peft", {"UNSLOTH_DDP_COMM_HOOK": "fp16"}, {}),
 ]
+CASES = _BASE_CASES + (_HOOK_CASES if has_real_cuda() else [])
 _UTILS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_utils.py"
 
 
@@ -111,6 +118,10 @@ def test_lora_keeps_gradients_unaliased(ranks):
     _assert_parity(case, "peft")
 
 
+@pytest.mark.skipif(
+    not has_real_cuda(),
+    reason = "BF16/FP16 DDP comm hooks need CUDA 11+ and NCCL (or XPU/XCCL)",
+)
 def test_comm_hook_opt_in(ranks):
     for name, kind in (("bf16_hook", "full"), ("fp16_hook", "peft")):
         case = ranks[0][name]
