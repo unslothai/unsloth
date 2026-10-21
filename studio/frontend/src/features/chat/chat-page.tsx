@@ -76,6 +76,7 @@ import {
   type NativeIntent,
   NativeAttachmentTargetContext,
   NativeAttachmentDragContext,
+  NativeAttachmentOwnerScopeContext,
   NativeModelChip,
   NativeModelDropOverlay,
   useNativeIntentStore,
@@ -3463,10 +3464,17 @@ export function ChatPage({
         ? `compare:${view.pairId}`
         : `project:${view.projectId}`;
 
+  // A project can open successive drafts without changing its route. Keep late
+  // native file reads bound to the draft that received the drop.
+  const nativeAttachmentTargetKey =
+    view.mode === "project"
+      ? `project:${view.projectId}:${projectNewThreadNonce}`
+      : artifactViewKey;
+
   const attachmentScope =
     view.mode === "single" && !search.thread && !search.new && !search.project
       ? "single:implicit"
-      : artifactViewKey;
+      : nativeAttachmentTargetKey;
 
   // Compare replaces the shared provider on screen, so the base view is kept mounted behind it: unmounting runs
   // useLocalRuntime's detach(), the backend cancels on the disconnect, and a project chat's run would die. Frozen
@@ -3476,11 +3484,14 @@ export function ChatPage({
     attachmentTargetKey: string;
   } | null>(null);
   if (view.mode !== "compare") {
-    keptBaseViewRef.current = { view, attachmentTargetKey: artifactViewKey };
+    keptBaseViewRef.current = {
+      view,
+      attachmentTargetKey: nativeAttachmentTargetKey,
+    };
   }
   const baseView = keptBaseViewRef.current?.view ?? null;
   const baseAttachmentTargetKey =
-    keptBaseViewRef.current?.attachmentTargetKey ?? artifactViewKey;
+    keptBaseViewRef.current?.attachmentTargetKey ?? nativeAttachmentTargetKey;
   const baseBackgrounded = view.mode === "compare";
 
   // #9251's reload signal, taken here because the provider is hoisted. Stored as the project it belongs to, not
@@ -3533,6 +3544,22 @@ export function ChatPage({
     projectChat.nonce === projectNewThreadNonce
       ? projectChat.threadId
       : null;
+  // A project draft keeps its owner when it is saved and opened through its
+  // thread route. Remember each saved chat, so revisiting it after another
+  // project cannot adopt that project's pending files.
+  const nativeAttachmentScopesByThread = useRef(new Map<string, string>());
+  if (projectChatShownId) {
+    nativeAttachmentScopesByThread.current.set(
+      projectChatShownId,
+      nativeAttachmentTargetKey,
+    );
+  }
+  const baseAttachmentOwnerScope =
+    baseView?.mode === "project"
+      ? baseAttachmentTargetKey
+      : nativeAttachmentScopesByThread.current.get(
+          baseView?.mode === "single" ? baseView.threadId ?? "" : "",
+        ) ?? null;
   const shownChatKey =
     view.mode === "single"
       ? `single:${view.threadId ?? newChatShownId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
@@ -3804,40 +3831,46 @@ export function ChatPage({
   );
   const handleNativeImageDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addImageAttachments(nativeAttachmentTargetKey, intents);
     },
-    [artifactViewKey],
+    [nativeAttachmentTargetKey],
   );
   const handleNativeDocumentDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore
         .getState()
-        .addOpenDocumentAttachments(artifactViewKey, intents);
+        .addOpenDocumentAttachments(nativeAttachmentTargetKey, intents);
     },
-    [artifactViewKey],
+    [nativeAttachmentTargetKey],
   );
   const handleNativeAudioDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addAudioAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addAudioAttachments(nativeAttachmentTargetKey, intents);
     },
-    [artifactViewKey],
+    [nativeAttachmentTargetKey],
   );
   const handleNativeVideoDrop = useCallback(
     (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addVideoAttachments(artifactViewKey, intents);
+      useNativeIntentStore
+        .getState()
+        .addVideoAttachments(nativeAttachmentTargetKey, intents);
     },
-    [artifactViewKey],
+    [nativeAttachmentTargetKey],
   );
   const nativeModelDropState = useNativeModelDrop({
     // Compare used to disable this outright, so a drop there vanished with no overlay and no message
     // (#9036). Keep listening and refuse out loud.
     enabled: active,
     dropsUnsupportedReason:
-      view.mode === "single"
-        ? undefined
-        : "Dropped files need a single chat. Open one, then drop it there.",
+      view.mode === "compare"
+        ? "Dropped files need a single chat. Open one, then drop it there."
+        : undefined,
     attachmentScope,
-    attachmentTargetKey: artifactViewKey,
+    attachmentTargetKey: nativeAttachmentTargetKey,
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
@@ -5033,29 +5066,35 @@ export function ChatPage({
                 }
                 onCompactionCountChange={handleCompactionCountChange}
               >
-                {baseView.mode === "project" ? (
-                  <ProjectLanding
-                    key={baseView.projectId}
-                    projectId={baseView.projectId}
-                    projectName={currentProject?.name ?? "Project"}
-                    items={currentProjectItems}
-                    newThreadNonce={projectNewThreadNonce}
-                    rotateNewThreadNonce={rotateProjectNewThreadNonce}
-                    dataLoaded={currentProjectItemsLoaded && !projectsLoading}
-                    runtimeReady={projectRuntimeReady}
-                  />
-                ) : (
-                  <NativeAttachmentDragContext.Provider
-                    value={nativeModelDropState.status === "attach"}
+                <NativeAttachmentDragContext.Provider
+                  value={nativeModelDropState.status === "attach"}
+                >
+                  <NativeAttachmentTargetContext.Provider
+                    value={baseAttachmentTargetKey}
                   >
-                    <NativeAttachmentTargetContext.Provider
-                      value={baseAttachmentTargetKey}
+                    <NativeAttachmentOwnerScopeContext.Provider
+                      value={baseAttachmentOwnerScope}
                     >
-                      <TemporaryChatSaveBridge />
-                      <SingleContent threadId={baseView.threadId} />
-                    </NativeAttachmentTargetContext.Provider>
-                  </NativeAttachmentDragContext.Provider>
-                )}
+                      {baseView.mode === "project" ? (
+                        <ProjectLanding
+                          key={baseView.projectId}
+                          projectId={baseView.projectId}
+                          projectName={currentProject?.name ?? "Project"}
+                          items={currentProjectItems}
+                          newThreadNonce={projectNewThreadNonce}
+                          rotateNewThreadNonce={rotateProjectNewThreadNonce}
+                          dataLoaded={currentProjectItemsLoaded && !projectsLoading}
+                          runtimeReady={projectRuntimeReady}
+                        />
+                      ) : (
+                        <>
+                          <TemporaryChatSaveBridge />
+                          <SingleContent threadId={baseView.threadId} />
+                        </>
+                      )}
+                    </NativeAttachmentOwnerScopeContext.Provider>
+                  </NativeAttachmentTargetContext.Provider>
+                </NativeAttachmentDragContext.Provider>
               </ChatRuntimeProvider>
             </ChatActiveContext.Provider>
             </BrowserOverlaidContext.Provider>

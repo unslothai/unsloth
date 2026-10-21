@@ -86,6 +86,7 @@ import {
   withAttachmentOriginal,
 } from "./attachment-originals";
 import { AudioAttachmentAdapter } from "./audio-attachment-adapter";
+import { DraftScopedAttachmentAdapter } from "./draft-attachment-adapter";
 import {
   isBinaryPropertyList,
   isBinaryTrackerModule,
@@ -2083,6 +2084,7 @@ function createStudioDbAdapter(
   pairId?: string,
   projectId?: string | null,
   listThreads = true,
+  newThreadSwitchStateRef?: { current: NewThreadSwitchState },
 ): unstable_RemoteThreadListAdapter {
   return {
     async fetch(remoteId: string) {
@@ -2128,6 +2130,9 @@ function createStudioDbAdapter(
     },
 
     initialize(threadId: string) {
+      // Initialization gives this blank runtime its own saved identity. Record it
+      // synchronously: a pending attachment may finish after several later drafts.
+      const attachmentDraft = getAttachmentDraft(newThreadSwitchStateRef?.current, threadId);
       // assistant-ui withholds the first message until this resolves, so the row write is tracked,
       // not awaited. Captured here, not inside the creator: these describe what the SEND was made
       // under, and all four move in between, since materialization is no longer the send's tick.
@@ -2160,6 +2165,7 @@ function createStudioDbAdapter(
       // A run already streaming on this thread filed its handles under "__default" because the id did
       // not exist yet. Re-key them, or the sidebar row and Stop look up an unregistered id.
       useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
+      if (attachmentDraft) attachmentDraft.initialized = true;
       return Promise.resolve({ remoteId: threadId, externalId: undefined });
     },
 
@@ -3098,7 +3104,8 @@ function useStudioRuntimeAdapters(
     const text = new TextAttachmentAdapter();
     const largeFallback = (browser: AttachmentAdapter) =>
       new LargeDocumentFallbackAdapter(browser, server);
-    return new PreStreamAwareAttachmentAdapter(
+    return new DraftScopedAttachmentAdapter(
+      new PreStreamAwareAttachmentAdapter(
         new CompositeAttachmentAdapter([
           new VisionImageAdapter(),
           new AudioAttachmentAdapter(),
@@ -3124,8 +3131,33 @@ function useStudioRuntimeAdapters(
             useChatRuntimeStore.getState().activeThreadId,
           );
         },
-      );
-  }, [aui]);
+      ),
+      () => {
+        const { id, remoteId } = aui.threadListItem().getState();
+        const switchState = newThreadSwitchStateRef?.current;
+        const attempt = switchState?.attempt;
+        // Saved background runtimes must not replace the foreground draft's token.
+        const draft = remoteId ? undefined : getAttachmentDraft(switchState, id);
+        return () => {
+          let current: ReturnType<ReturnType<typeof aui.threadListItem>["getState"]>;
+          try {
+            current = aui.threadListItem().getState();
+          } catch {
+            return false; // The thread was deleted while the adapter read it.
+          }
+          if (current.id !== id) return false;
+          if (isChatThreadDeleted(current.remoteId ?? id)) return false;
+          // Saved runtimes remain their own destination while backgrounded.
+          if (remoteId) return true;
+          const latest = newThreadSwitchStateRef?.current;
+          if (latest?.attempt === attempt) return true;
+          // Keep the original generation's initialization, independently of the
+          // latest route. A blank runtime saved by a later draft cannot qualify.
+          return Boolean(current.remoteId && draft?.initialized);
+        };
+      },
+    );
+  }, [aui, newThreadSwitchStateRef]);
   const adapters = useMemo(
     () => ({ history, dictation, speech, attachments }),
     [history, dictation, speech, attachments],
@@ -3187,6 +3219,8 @@ const MAX_PENDING_SAVED_THREAD_SWITCHES = 16;
 
 type PendingSavedThreadSwitch = { id: string; settled: boolean };
 
+type AttachmentDraft = { attempt: number; threadId: string; initialized: boolean };
+
 type NewThreadSwitchState = {
   activeNonce: string | null;
   hasSwitched: boolean;
@@ -3194,6 +3228,9 @@ type NewThreadSwitchState = {
   // leaving for a saved chat and coming back releases it, so two switches for the SAME nonce
   // can be in flight.
   attempt: number;
+  // Only the current draft is retained here. Pending adds keep their captured token,
+  // so later saves cannot revoke their ownership or grow a permanent thread-ID map.
+  attachmentDraft?: AttachmentDraft;
   // One entry per switch STARTED, so a nonce view recognises any of these ids landing after the
   // route moved on. By id rather than id SHAPE, which cannot tell a stale arrival from a fresh
   // switch's thread. `settled` retires a claim with its own switch.
@@ -3207,6 +3244,17 @@ type NewThreadSwitchState = {
   // `mainThreadId` until switchToNewThread() resolves, so "unclaimed and current" is no proof.
   landedAttempt: number;
 };
+
+function getAttachmentDraft(
+  state: NewThreadSwitchState | undefined,
+  threadId: string,
+): AttachmentDraft | undefined {
+  if (!state) return undefined;
+  if (state.attachmentDraft?.attempt !== state.attempt || state.attachmentDraft.threadId !== threadId) {
+    state.attachmentDraft = { attempt: state.attempt, threadId, initialized: false };
+  }
+  return state.attachmentDraft;
+}
 
 function ThreadAutoSwitch({
   threadId,
@@ -4278,7 +4326,7 @@ export function ChatRuntimeProvider({
   );
   const runtime = useRemoteThreadListRuntime({
     runtimeHook,
-    adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads),
+    adapter: createStudioDbAdapter(modelType, pairId, projectId, listThreads, newThreadSwitchStateRef),
   });
   const signalFailedInitialSwitchReady = useCallback(() => {
     if (onInitialHistoryReady) {
