@@ -181,7 +181,7 @@ LLAMA_CHANGELOG = {
     "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/b10333-mix-e34b418",
     "error": None,
 }
-# whisper.cpp renames the shared runtime card instead of adding a banner.
+# A whisper.cpp-only release, which never opens the runtime card by itself.
 WHISPER_STATUS = dict(
     LLAMA_STATUS,
     llama_update_available = False,
@@ -1114,17 +1114,15 @@ def main() -> int:
                 if path == "/":
                     exercise_llama_changelog(page, f"{size} {name}")
 
-            # whisper.cpp must reuse the shared runtime card.
+            # whisper.cpp rides along with llama.cpp and audio.cpp: alone it never opens the runtime card.
             llama_payload[0] = WHISPER_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat whisper")
-            rows = page.locator('[data-testid="llama-update-version-line"]').count()
+            cards = page.locator('[data-testid="llama-update-banner"]').count()
             check(
-                f"{width}x{height}: whisper.cpp reuses the one runtime card",
-                page.locator('[data-testid="llama-update-banner"]').count() <= 1
-                and "whisper.cpp" in facts["llamaText"]
-                and rows == 1,
-                f"rows={rows} text={facts['llamaText']!r}",
+                f"{width}x{height}: a whisper.cpp-only release opens no runtime card",
+                cards == 0,
+                f"cards={cards} text={facts['llamaText']!r}",
             )
 
             # pending runtimes add rows without adding cards.
