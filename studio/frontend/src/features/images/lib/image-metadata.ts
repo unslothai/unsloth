@@ -952,12 +952,18 @@ export function unknownRecipeKeys(r: ImportedRecipe): string[] {
   });
 }
 
-export function importNotApplied(r: ImportedRecipe): string[] {
+/** `family`: the loaded model's family, when one is loaded. */
+export function importNotApplied(
+  r: ImportedRecipe,
+  family?: string | null,
+): string[] {
   const out: string[] = [];
   const clipSkip = num(r.clip_skip);
   // SDXL already encodes from the penultimate layer, which is what A1111 / Forge render for Clip skip
   // 1 and 2 (Forge minimal_clip_skip=2; A1111 skips CLIP-G never, CLIP-L only with sdxl_clip_l_skip).
-  if (clipSkip !== undefined && clipSkip > 2) out.push(`Clip skip ${clipSkip}`);
+  // Elsewhere Studio applies no clip skip, so anything past A1111's default 1 is not applied.
+  if (clipSkip !== undefined && clipSkip > (family === "sdxl" ? 2 : 1))
+    out.push(`Clip skip ${clipSkip}`);
   const rescale = num(r.cfg_rescale);
   if (rescale !== undefined && rescale !== 0)
     out.push(`CFG rescale ${rescale}`);

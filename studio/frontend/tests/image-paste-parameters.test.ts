@@ -52,8 +52,12 @@ test("a Civitai block parses: legacy sampler name, JSON values with commas, quot
     { name: "missing_style", weight: 1 },
   ]);
   assert.equal(r.parameters_not_applied, undefined);
-  // Clip skip 2 is what SDXL already renders, so nothing is reported for it.
-  assert.deepEqual(importNotApplied(r), []);
+  // Clip skip 2 is what SDXL already renders, so nothing is reported for it there.
+  assert.deepEqual(importNotApplied(r, "sdxl"), []);
+  // Any other family (or none loaded) applies no clip skip, so it is named.
+  assert.deepEqual(importNotApplied(r), ["Clip skip 2"]);
+  assert.deepEqual(importNotApplied(r, "flux"), ["Clip skip 2"]);
+  assert.deepEqual(importNotApplied({ prompt: "p", clip_skip: 1 }, "flux"), []);
   assert.deepEqual(unknownRecipeKeys(r), []);
 });
 
@@ -277,7 +281,7 @@ test("the Images page wires paste into the same restore path as a drop", () => {
     page,
     /if \(isGenerationParametersPaste\(text\)\) \{\n\s+e\.preventDefault\(\);\n\s+importSettingsFromText\(text\);/,
   );
-  assert.match(page, /\.\.\.importNotApplied\(recipe\),/);
+  assert.match(page, /\.\.\.importNotApplied\(recipe, status\?\.loaded \? status\.family : null\),/);
   assert.match(
     page,
     /tagged\.unmatched\.map\(\(name\) => `LoRA \$\{name\} \(not installed\)`\)/,

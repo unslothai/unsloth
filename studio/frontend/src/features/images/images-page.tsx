@@ -2877,7 +2877,7 @@ export function ImagesPage({
         }
       }
       const notApplied = [
-        ...importNotApplied(recipe),
+        ...importNotApplied(recipe, status?.loaded ? status.family : null),
         ...tagged.unmatched.map((name) => `LoRA ${name} (not installed)`),
         ...lorasOverLimit(merged).map((id) => `LoRA ${id} (over the ${MAX_LORAS} adapter limit)`),
         ...tagged.notes,
