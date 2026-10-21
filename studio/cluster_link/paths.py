@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -43,7 +44,28 @@ def run_dir() -> Path:
     except AttributeError:  # Windows
         import getpass
         user = getpass.getuser()
-    return private_dir(Path(tempfile.gettempdir()) / f"unsloth-cluster-{user}")
+    path = Path(tempfile.gettempdir()) / f"unsloth-cluster-{user}"
+    if os.name == "nt":  # the temp directory is per user on Windows
+        return private_dir(path)
+    return _own_shared_tmp_dir(path)
+
+
+def _own_shared_tmp_dir(path: Path) -> Path:
+    """A predictable name in a shared temp directory: another local user may have created it first,
+    or made it a symlink to a directory of theirs (or of a victim, for the chmod)."""
+    try:
+        path.mkdir(mode = 0o700)
+    except FileExistsError:
+        pass
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise RuntimeError(
+            f"{path} is not a directory owned by this user (another user may have created it); "
+            f"remove it or set {ENV_RUN_DIR} to a private directory"
+        )
+    if stat.S_IMODE(st.st_mode) != 0o700:
+        os.chmod(path, 0o700)
+    return path
 
 
 def private_dir(path: Path) -> Path:

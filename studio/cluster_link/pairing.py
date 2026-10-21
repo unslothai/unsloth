@@ -39,6 +39,8 @@ TRANSCRIPT_LABEL = b"unsloth-pair-v1"
 CONFIRM_LABEL = b"unsloth-pair-confirm-v1"
 FRAME_TIMEOUT_S = 10.0
 CONNECT_TIMEOUT_S = 5.0
+# How long a caller waits past its deadline for a claimed pairing to finish: the ack read plus the commit.
+CLAIMED_GRACE_S = 3 * FRAME_TIMEOUT_S
 MAX_ATTEMPTS = 20
 MAX_NAME = 64
 
@@ -217,7 +219,14 @@ class PairingWindow:
     async def wait(self, timeout: Optional[float] = None) -> Peer:
         if self._done is None:
             raise RuntimeError("start() first")
-        return await asyncio.wait_for(asyncio.shield(self._done), timeout)
+        try:
+            return await asyncio.wait_for(asyncio.shield(self._done), timeout)
+        except asyncio.TimeoutError:
+            if not self._claimed:
+                raise
+        # A worker proved the token in time and may already have saved its identity: let the handler
+        # finish (its reads are bounded) instead of closing the window under it.
+        return await asyncio.wait_for(asyncio.shield(self._done), CLAIMED_GRACE_S)
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:

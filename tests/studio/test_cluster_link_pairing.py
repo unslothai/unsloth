@@ -962,3 +962,53 @@ def test_waiting_for_the_identity_lock_does_not_block_the_event_loop(master_dir)
         assert await asyncio.wait_for(third(), 20)
 
     asyncio.run(main())
+
+
+def test_a_caller_deadline_waits_out_a_claimed_pairing(master_dir, tmp_path):
+    # `cluster pair` waits with its own deadline: when it passes while a worker that proved the token
+    # is still acknowledging, the master must finish recording it, not close the window under it.
+    async def main():
+        _, window = _window()
+        token = await window.start()
+        release = tmp_path / "release_ack"
+        worker = asyncio.ensure_future(
+            _worker(WORKER_JOIN_SLOW_ACK, tmp_path / "w", token, str(release))
+        )
+        deadline = time.monotonic() + 60
+        while not window._used and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert window._used, "the worker never proved the token"
+        waiting = asyncio.ensure_future(window.wait(0.2))
+        await asyncio.sleep(0.6)  # past the caller's deadline
+        release.write_text("go")
+        peer = await waiting
+        result = await worker
+        assert result["ok"], result
+        assert peer.node_id == result["node_id"]
+        assert [w.node_id for w in identity.Registry().load().workers()] == [peer.node_id]
+
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX shared temp directory")
+def test_a_run_dir_another_user_could_have_planted_is_refused(tmp_path, monkeypatch):
+    from studio.cluster_link import paths
+
+    monkeypatch.delenv(paths.ENV_RUN_DIR, raising = False)
+    monkeypatch.setattr(paths.tempfile, "gettempdir", lambda: str(tmp_path))
+    run = tmp_path / f"unsloth-cluster-{os.getuid()}"
+    assert paths.run_dir() == run and stat.S_IMODE(run.stat().st_mode) == 0o700
+    run.rmdir()
+    victim = tmp_path / "victim"
+    victim.mkdir(mode = 0o755)
+    run.symlink_to(victim)
+    with pytest.raises(RuntimeError, match = "not a directory owned by this user"):
+        paths.run_dir()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o755  # never chmod-ed through the link
+    run.unlink()
+    real_uid = os.getuid()
+    run.mkdir(mode = 0o777)
+    monkeypatch.setattr(paths.os, "getuid", lambda: real_uid + 1)
+    monkeypatch.setattr(paths.tempfile, "gettempdir", lambda: str(tmp_path))
+    with pytest.raises(RuntimeError, match = "not a directory owned by this user"):
+        paths._own_shared_tmp_dir(run)

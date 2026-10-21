@@ -586,3 +586,16 @@ def test_the_local_tls_probe_reads_the_bundled_rpc_server(monkeypatch, tmp_path)
         assert cs._local_tls_client() is tls_build
         monkeypatch.setenv(native.DISABLE_ENV, "0")
         assert cs._local_tls_client() is False
+
+
+def test_every_status_read_sees_workers_paired_or_removed_since(monkeypatch, relays):
+    # `cluster pair` / `cluster remove` run in another process while Studio stays up: the status API
+    # must follow the registry without waiting for a model load to refresh the nodes.
+    st = cs.state()
+    assert {n["name"] for n in st.status()["nodes"]} == {"desk", "laptop"}
+    planned = list(st.nodes)
+    FakeRegistry.peers = [p for p in FakeRegistry.peers if p.name == "desk"]
+    assert {n["name"] for n in st.status()["nodes"]} == {"desk"}
+    assert st.nodes == planned  # a load in flight keeps the nodes it planned against
+    FakeRegistry.peers = FakeRegistry.peers + [peer("node-c", "attic", "c" * 64, ("192.168.1.30",))]
+    assert {n["name"] for n in st.status()["nodes"]} == {"desk", "attic"}

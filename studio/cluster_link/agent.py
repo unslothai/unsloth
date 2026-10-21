@@ -318,7 +318,8 @@ class Agent:
                 ssl = ctx,
                 ssl_handshake_timeout = HANDSHAKE_TIMEOUT_S,
                 limit = STREAM_LIMIT,
-                reuse_address = True,
+                # As in _listen: on Windows SO_REUSEADDR lets another process take the port.
+                reuse_address = os.name != "nt",
             )
             sockets = self._server.sockets or []
             if sockets:

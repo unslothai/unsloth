@@ -895,6 +895,14 @@ def load_nodes(verify: bool = True) -> List[Node]:
     return _one_managed_worker_per_host(nodes)
 
 
+def _paired_only() -> bool:
+    """No env list and no cluster.json: the nodes are this machine's paired workers."""
+    if (os.environ.get(ENV_NODES) or "").strip():
+        return False
+    path = _config_path()
+    return path is None or not path.is_file()
+
+
 def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     # A managed rpc-server exposes every accelerator on its host: a second one double counts.
     hosts = [n.host for n in nodes if not n.link]
@@ -2670,10 +2678,29 @@ class ClusterServing:
         self.topology, self.block = "single", []
         self._backend, self._resident = None, {}
 
-    def status(self) -> Dict[str, Any]:
+    def _status_nodes(self) -> List[Node]:
         if not self.nodes and not self.config_error:
             # Called from async routes: list paired workers without checking them over the network.
-            self.refresh_nodes(verify = False)
+            return self.refresh_nodes(verify = False)
+        if not _paired_only():
+            return self.nodes
+        # Paired workers change while Studio runs (`cluster pair` / `remove` in another process): re-read
+        # the registry for every status, without network checks and without replacing self.nodes, which
+        # a load in flight planned against.
+        dropped = dict(LINK_DROPPED)
+        try:
+            nodes = load_nodes(verify = False)
+        except ClusterConfigError:
+            nodes = []
+        # The re-read starts LINK_DROPPED over; keep why the last load left out a worker still paired.
+        paired = {n.name or n.node_id for n in nodes} | set(LINK_DROPPED)
+        for label, why in dropped.items():
+            if label in paired:
+                LINK_DROPPED.setdefault(label, why)
+        return nodes
+
+    def status(self) -> Dict[str, Any]:
+        nodes = self._status_nodes()
         return {
             "enabled": True,
             "mode": "cluster",
@@ -2691,7 +2718,7 @@ class ClusterServing:
                         self.workers[n.endpoint].snapshot() if n.endpoint in self.workers else None
                     ),
                 }
-                for n in self.nodes
+                for n in nodes
             ],
             "plan": self.plan.snapshot() if self.plan is not None else None,
             "split_args": list(self.block) or None,

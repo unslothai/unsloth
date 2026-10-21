@@ -44,6 +44,8 @@ BUSY_GRACE_S = 0.25
 # A live session re-checks its worker's authorization this often: `unsloth cluster remove` in another
 # process only edits the registry, and authorization is otherwise checked at connect time only.
 REVALIDATE_S = 2.0
+# Backoff cap for re-sending native_close to a removed worker that did not answer.
+NATIVE_CLOSE_RETRY_MAX_S = 30.0
 
 
 def _drop(sock: Any) -> None:
@@ -274,16 +276,30 @@ class RelayManager:
                 ok = False
             if ok:
                 continue
-            if self._native_watches.get(relay.node_id) is asyncio.current_task():
-                del self._native_watches[relay.node_id]
             relay.last_error = f"{relay.node_id} is no longer paired; native session closed"
             logger.warning("cluster relay: %s", relay.last_error)
+            break
+        # The worker still trusts this master, so nothing else ends its native session: keep asking
+        # until it acknowledges (a new native() or shutdown cancels this watch).
+        delay = REVALIDATE_S
+        while True:
             try:
                 # The relay object, not its id: Studio may already have dropped the relay.
-                await self._control(relay, {"type": "native_close"}, 15.0, paired = False)
+                reply = await self._control(relay, {"type": "native_close"}, 15.0, paired = False)
+                if isinstance(reply, dict) and reply.get("type") == "ok":
+                    break
+                # An answer that is not "ok" means the worker no longer admits this master, and its
+                # own revalidation has already left native mode: nothing left to retry.
+                logger.warning(
+                    "cluster relay: %s answered native_close with %s", relay.node_id, reply
+                )
+                break
             except Exception as exc:
                 logger.warning("cluster relay: could not close %s natively: %s", relay.node_id, exc)
-            return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, NATIVE_CLOSE_RETRY_MAX_S)
+        if self._native_watches.get(relay.node_id) is asyncio.current_task():
+            del self._native_watches[relay.node_id]
 
     async def _remove(self, node_id: str) -> None:
         relay = self._relays.pop(node_id, None)

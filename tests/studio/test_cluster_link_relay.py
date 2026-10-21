@@ -1549,3 +1549,43 @@ def test_removing_a_native_worker_on_the_master_alone_cuts_its_session(
     assert _wait(lambda: link.agent.mode == "loopback", 10.0)
     assert native.allowlist_path(link.agent.native_port).read_text().split() == []
     assert _wait(lambda: link.agent.rpc_pid not in (None, pid_native), 10.0)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the fake rpc-server is a shebang script")
+def test_a_failed_native_revocation_is_retried_until_the_worker_answers(
+    make_link, tmp_path, monkeypatch
+):
+    # The first native_close after a remove cannot reach the agent (a blip on the LAN): the watch must
+    # keep asking, or the worker, which still trusts this master, keeps its native session forever.
+    from studio.cluster_link import native
+
+    import studio.cluster_link.relay as relay_mod
+
+    monkeypatch.setattr(relay_mod, "REVALIDATE_S", 0.2)
+    monkeypatch.setattr(relay_mod, "NATIVE_CLOSE_RETRY_MAX_S", 0.4, raising = False)
+    trusted = {"ok": True}
+    link = _native_link(
+        make_link, tmp_path, relay_authorize = lambda pid: trusted["ok"] and pid.node_id == "w1"
+    )
+    assert link.relay.native("w1")["type"] == "native_ok"
+    pid_native = link.agent.rpc_pid
+    plain, failures = link.relay._control, []
+
+    async def flaky(
+        node,
+        request,
+        timeout,
+        paired = True,
+    ):
+        if request.get("type") == "native_close" and len(failures) < 2:
+            failures.append(request)
+            raise OSError("network unreachable")
+        return await plain(node, request, timeout, paired = paired)
+
+    link.relay._control = flaky
+    trusted["ok"] = False
+    assert _wait(lambda: link.agent.mode == "loopback", 15.0)
+    assert len(failures) == 2
+    assert native.allowlist_path(link.agent.native_port).read_text().split() == []
+    assert _wait(lambda: link.agent.rpc_pid not in (None, pid_native), 10.0)
+    assert _wait(lambda: "w1" not in link.relay._native_watches, 5.0)
