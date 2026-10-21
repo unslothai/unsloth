@@ -3116,14 +3116,23 @@ def test_one_mask_string_for_rocr_and_hip_keeps_rocrs_repeat_rule():
     env = {"ROCR_VISIBLE_DEVICES": mask, "HIP_VISIBLE_DEVICES": mask}
     assert env["ROCR_VISIBLE_DEVICES"] is env["HIP_VISIBLE_DEVICES"]
     assert sd_cpp_backend._physical_index_of(1, env = env) == (None, True)
-    assert sd_cpp_backend._physical_index_of(1, env = {"ROCR_VISIBLE_DEVICES": mask, "HIP_VISIBLE_DEVICES": "0,0,1 "}) == (None, True)
+    assert sd_cpp_backend._physical_index_of(
+        1, env = {"ROCR_VISIBLE_DEVICES": mask, "HIP_VISIBLE_DEVICES": "0,0,1 "}
+    ) == (None, True)
 
 
 def test_trademark_marks_do_not_split_a_card_name():
     from core.inference import sd_cpp_backend
 
     listing = "Vulkan0\tAMD Radeon Graphics (RADV RAPHAEL)\n"
-    assert sd_cpp_backend.sd_cpp_device_named("b", "AMD Radeon(TM) Graphics", position = 0, listing = listing) == "Vulkan0"
-    assert sd_cpp_backend._normalized_card_name("Intel(R) Arc(TM) B580") == sd_cpp_backend._normalized_card_name("Intel Arc B580")
+    assert (
+        sd_cpp_backend.sd_cpp_device_named(
+            "b", "AMD Radeon(TM) Graphics", position = 0, listing = listing
+        )
+        == "Vulkan0"
+    )
+    assert sd_cpp_backend._normalized_card_name(
+        "Intel(R) Arc(TM) B580"
+    ) == sd_cpp_backend._normalized_card_name("Intel Arc B580")
     # Only the marks go: a model letter R or TM inside a word stays.
     assert sd_cpp_backend._normalized_card_name("Radeon R9") == "radeonr9"

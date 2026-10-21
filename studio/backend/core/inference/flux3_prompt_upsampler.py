@@ -941,7 +941,6 @@ def _user_device_pick(binary: Optional[str] = None) -> bool:
 def _vulkan_pin_possible(binary: str, torch) -> bool:
     """Whether a Vulkan pin is worth the probe: a torch card, a Vulkan build, nothing the user picked."""
     from core.inference.llama_cpp import LlamaCppBackend
-
     return (
         torch.cuda.device_count() >= 1
         and not _user_device_pick()
@@ -959,7 +958,6 @@ def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None)
     its 15 s timeout, which a blocking unload behind this warm start must not sit out."""
     try:
         import torch
-
         if not _vulkan_pin_possible(binary, torch):
             return
     except Exception:  # noqa: BLE001
@@ -993,7 +991,9 @@ def _vulkan_card_name(ordinal: int, torch) -> tuple:
         return physical_card_name(ordinal)
     if not torch.cuda.is_available() or not 0 <= ordinal < torch.cuda.device_count():
         return None, None
-    names = [(torch.cuda.get_device_name(i) or "").strip() for i in range(torch.cuda.device_count())]
+    names = [
+        (torch.cuda.get_device_name(i) or "").strip() for i in range(torch.cuda.device_count())
+    ]
     name = names[ordinal]
     if not name:
         return None, None
@@ -1020,7 +1020,6 @@ def _vulkan_device_args(
         if not _vulkan_pin_possible(binary, torch):
             # Backends from GGML_BACKEND_PATH are not the ones the probe lists; a HIP mask on a CUDA torch steers nothing.
             from core.inference.llama_cpp import LlamaCppBackend
-
             if count == 1 or not (
                 str(os.environ.get("GGML_BACKEND_PATH", "")).strip()
                 or LlamaCppBackend._is_vulkan_backend(binary)

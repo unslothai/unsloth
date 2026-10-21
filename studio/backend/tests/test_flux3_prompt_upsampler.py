@@ -2312,7 +2312,9 @@ def test_a_cuda_torch_mask_never_steers_the_vulkan_pin_onto_a_guess(
 
 
 @pytest.mark.parametrize("vulkan", [False, True])
-def test_one_torch_card_and_one_vulkan_device_launch_as_before(spawn_argv, warmable, monkeypatch, vulkan):
+def test_one_torch_card_and_one_vulkan_device_launch_as_before(
+    spawn_argv, warmable, monkeypatch, vulkan
+):
     # The pre-pinning launch: no --device, no mask, a start. A non-Vulkan build never probes; one Vulkan row (even a
     # renamed `Radeon(TM)` card) is nothing to choose between, so no name match can decline it.
     import torch
@@ -2325,7 +2327,10 @@ def test_one_torch_card_and_one_vulkan_device_launch_as_before(spawn_argv, warma
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend,
         "_run_vulkan_probe",
-        staticmethod(lambda b = None: calls.append(b) or [{"index": 0, "name": "AMD Radeon Graphics (RADV RAPHAEL)"}]),
+        staticmethod(
+            lambda b = None: calls.append(b)
+            or [{"index": 0, "name": "AMD Radeon Graphics (RADV RAPHAEL)"}]
+        ),
     )
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     state["vulkan"] = vulkan
@@ -2353,9 +2358,13 @@ def test_a_warm_start_probes_an_empty_vulkan_answer_once(spawn_argv, warmable, m
     monkeypatch.setattr(pup, "_VULKAN_ROWS_TTL_S", 120.0)
     monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
     monkeypatch.setattr(
-        llama_cpp.LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda b = None: calls.append(b) or [])
+        llama_cpp.LlamaCppBackend,
+        "_run_vulkan_probe",
+        staticmethod(lambda b = None: calls.append(b) or []),
     )
-    monkeypatch.setattr(sidecar, "_spawn_server", pup.PromptUpsamplerSidecar._spawn_server.__get__(sidecar))
+    monkeypatch.setattr(
+        sidecar, "_spawn_server", pup.PromptUpsamplerSidecar._spawn_server.__get__(sidecar)
+    )
     sidecar.warm(binary = "/x/llama-server", model = model, mmproj = None)
     assert len(calls) == 1
 
@@ -2395,7 +2404,12 @@ def test_a_cancelled_warm_start_does_not_wait_out_the_vulkan_probe(warmable, mon
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b = None: True)
     )
-    for var in ("HIP_VISIBLE_DEVICES", "GGML_BACKEND_PATH", "LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU"):
+    for var in (
+        "HIP_VISIBLE_DEVICES",
+        "GGML_BACKEND_PATH",
+        "LLAMA_ARG_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+    ):
         monkeypatch.delenv(var, raising = False)
     entered, release = threading.Event(), threading.Event()
 
@@ -2407,7 +2421,9 @@ def test_a_cancelled_warm_start_does_not_wait_out_the_vulkan_probe(warmable, mon
     monkeypatch.setattr(llama_cpp.LlamaCppBackend, "_run_vulkan_probe", staticmethod(_probe))
     monkeypatch.setattr(pup, "_vulkan_rows_memo", {})
     out = []
-    warm = threading.Thread(target = lambda: out.append(sidecar.warm(binary = "b", model = model, mmproj = None)))
+    warm = threading.Thread(
+        target = lambda: out.append(sidecar.warm(binary = "b", model = model, mmproj = None))
+    )
     warm.start()
     try:
         assert entered.wait(5)
