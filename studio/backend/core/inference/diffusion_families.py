@@ -1248,6 +1248,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         dimension_multiple = 16,
         # ComfyUI lists bf16 / fp32 only for MOSS-Image; the residual stream overflows float16.
         fp16_incompatible = True,
+        # The fp32 FLUX.2 VAE decode is the only conv work. cudnn.benchmark's plan search on it took 254 s and a 73 GiB
+        # transient workspace on the first 1024^2 decode (B200), then settled on a 4x slower plan (0.34 vs 0.08 s warm)
+        # with different pixels, so the family keeps cuDNN's heuristic pick.
+        cudnn_benchmark = False,
         # Assembled per component from the diffusers folders; no transformer-only single file or GGUF yet.
         pipeline_only = True,
     ),
