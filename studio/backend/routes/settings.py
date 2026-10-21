@@ -2514,24 +2514,6 @@ async def update_model_aliases_setting(
     return ModelAliasesResponse(aliases = aliases)
 
 
-def _without_owner_paths(override: dict) -> dict:
-    """The owner's row as a managed account may read it: loads still fall back to the whole row,
-    but its file paths and RPC hosts are not the managed account's to see."""
-    from core.inference.llama_server_args import without_owner_only_path_args
-
-    args = override.get("llama_extra_args")
-    if not args:
-        return override
-    kept = without_owner_only_path_args(args)
-    if kept == list(args):
-        return override
-    narrowed = {k: v for k, v in override.items() if k != "llama_extra_args"}
-    # All stripped: absent, not an explicit empty list, so a UI load still inherits the resident args.
-    if kept:
-        narrowed["llama_extra_args"] = kept
-    return narrowed
-
-
 @_account_settings_router.get(
     "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
 )
@@ -2551,8 +2533,6 @@ def get_openai_auto_switch_overrides(
     if model_id:
         from utils.openai_auto_switch_settings import resolve_override_for_load
         resolved_key, resolved = resolve_override_for_load(model_id, alias_id, gguf_variant)
-        if resolved and not is_owner_context() and resolved_key not in get_model_overrides():
-            resolved = _without_owner_paths(resolved)
     return ModelOverridesResponse(
         overrides = get_model_overrides(),
         resolved = resolved,

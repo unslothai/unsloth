@@ -496,55 +496,6 @@ def test_managed_load_uses_its_own_override_then_the_owners(fresh_override_cache
     assert run_as(BOB, resolve_override_for_load, "org/other") == (None, {})
 
 
-def test_managed_read_of_owner_override_hides_owner_path_flags(client, fresh_override_cache):
-    from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
-
-    owner_args = [
-        "--mmproj",
-        "C:/Users/owner/secret/mmproj.gguf",
-        "--lora=C:/Users/owner/private-adapter.gguf",
-        "--rpc",
-        "10.0.0.5:50052",
-        "-c",
-        "8192",
-    ]
-    run_as(OWNER, set_model_override, "org/model:Q4_K_M", owner_args, max_seq_length = 8192)
-    query = "/settings/openai-auto-switch/overrides?model_id=org/model&gguf_variant=Q4_K_M"
-
-    alice = client.get(query)
-    assert alice.status_code == 200, alice.text
-    body = alice.json()
-    assert body["overrides"] == {}
-    assert body["resolved"]["max_seq_length"] == 8192
-    assert body["resolved"]["llama_extra_args"] == ["-c", "8192"]
-    for leaked in ("owner/secret", "private-adapter", "10.0.0.5"):
-        assert leaked not in json.dumps(body)
-
-    owner = client.get(query, headers = {"x-test-account": "unsloth"})
-    assert owner.json()["resolved"]["llama_extra_args"] == owner_args
-    # The loader still applies the owner's row for a managed load; only the read is narrowed.
-    assert (
-        run_as(ALICE, resolve_override_for_load, "org/model", None, "Q4_K_M")[1]["llama_extra_args"]
-        == owner_args
-    )
-
-    # A row that carries nothing but path flags reads as "no launch flags stored", not an explicit empty list.
-    run_as(
-        OWNER,
-        set_model_override,
-        "org/other",
-        ["--mmproj", "C:/Users/owner/p.gguf"],
-        max_seq_length = 4096,
-    )
-    other = client.get("/settings/openai-auto-switch/overrides?model_id=org/other").json()
-    assert other["resolved"] == {"max_seq_length": 4096}
-
-    # Alice's own row comes back as she saved it.
-    run_as(ALICE, set_model_override, "org/model:Q4_K_M", ["-c", "4096"])
-    mine = client.get(query).json()
-    assert mine["resolved"]["llama_extra_args"] == ["-c", "4096"]
-
-
 def test_pinned_models_are_per_account(client):
     empty = client.get("/settings/pinned-models")
     assert empty.status_code == 200 and empty.json() == {
