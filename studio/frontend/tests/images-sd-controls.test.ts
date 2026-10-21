@@ -115,6 +115,11 @@ test("recipe restore and rows", () => {
   });
   assert.equal(restored.variationSeed, "12");
   assert.equal(restored.clipSkip, 2);
+  assert.equal(restored.promptWeighting, true);
+  // A run with weighting off records false; restoring it must keep the prompt literal.
+  assert.equal(sdControlsFromRecipe({ prompt_weighting: false }).promptWeighting, false);
+  assert.equal(sdControlsFromRecipe({ prompt_weighting: null }).promptWeighting, true);
+  assert.equal(sdControlsFromRecipe({ prompt_weighting: true }).promptWeighting, true);
   assert.deepEqual(sdControlsRecipeRows({}), []);
   assert.deepEqual(
     sdControlsRecipeRows({
@@ -161,6 +166,12 @@ test("AUTOMATIC1111 parameters import the controls", async () => {
   assert.equal(settings.cfg_rescale, 0.7);
   assert.equal(settings.variation_seed, 12);
   assert.equal(settings.variation_strength, 0.15);
+  assert.equal(settings.prompt_weighting, undefined);
+  const literal = recipeSettings(
+    { prompt: "(fox:1.5)", prompt_weighting: false },
+    { width: 1024, height: 1024, steps: 9, guidance: 0 },
+  );
+  assert.equal(sdControlsFromRecipe(literal).promptWeighting, false);
   const clamped = recipeSettings(
     {
       prompt: "p",

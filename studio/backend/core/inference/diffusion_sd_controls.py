@@ -337,11 +337,13 @@ def record_fields(
     weighting_used: bool,
     variation_seed_list: Optional[Sequence[int]],
 ) -> dict[str, Any]:
-    """Result / recipe fields for what actually ran; None = off."""
+    """Result / recipe fields for what actually ran; None = off (prompt_weighting: False = turned off)."""
     controls = controls or SdControls()
     varied = bool(controls.variation_strength) and bool(variation_seed_list)
     return {
-        "prompt_weighting": True if weighting_used else None,
+        "prompt_weighting": True
+        if weighting_used
+        else (False if controls.prompt_weighting is False else None),
         "clip_skip": int(controls.clip_skip)
         if controls.clip_skip and controls.clip_skip > 1
         else None,

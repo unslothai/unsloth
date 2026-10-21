@@ -22,6 +22,7 @@ from core.inference.diffusion_sd_controls import (
     apply_prompt_controls,
     diffusers_clip_skip,
     guidance_rescale_kwargs,
+    record_fields,
     slerp,
     status_fields,
     validate,
@@ -283,6 +284,18 @@ def test_sdxl_status_and_validation():
     validate(SdControls(variation_strength = 0.2), SDXL, pipe, _TXT2IMG_PARAMS, "txt2img")
     with pytest.raises(ValueError, match = "text-to-image"):
         validate(SdControls(variation_strength = 0.2), SDXL, pipe, _TXT2IMG_PARAMS, "inpaint")
+
+
+def test_record_keeps_a_literal_prompt_choice():
+    def pw(controls, used):
+        return record_fields(controls, weighting_used = used, variation_seed_list = None)[
+            "prompt_weighting"
+        ]
+
+    assert pw(SdControls(prompt_weighting = False), False) is False
+    assert pw(SdControls(), True) is True
+    assert pw(SdControls(), False) is None
+    assert pw(None, False) is None
 
 
 def test_guidance_rescale_passthrough():

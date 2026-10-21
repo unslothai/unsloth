@@ -5322,7 +5322,9 @@ class GalleryImage(BaseModel):
         None, description = "Schedule type the sampler ran with (resolved); null = the config's"
     )
     prompt_weighting: Optional[bool] = Field(
-        None, description = "True when AUTOMATIC1111 weight syntax was applied; null = literal prompt"
+        None,
+        description = "True when AUTOMATIC1111 weight syntax was applied; false when the request turned "
+        "it off (literal prompt); null = nothing to weight",
     )
     clip_skip: Optional[int] = Field(
         None, description = "CLIP skip (AUTOMATIC1111 numbering) above 1; null = the model's layer"

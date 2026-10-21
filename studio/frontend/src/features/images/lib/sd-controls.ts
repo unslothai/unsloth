@@ -110,7 +110,8 @@ export function sdControlsFromRecipe(image: {
   // A batch replays whole from its first image's variation seed (image i used base + i), like its seed.
   const offset = (image.batch_size ?? 1) > 1 ? (image.batch_index ?? 0) : 0;
   return {
-    promptWeighting: true,
+    // false = the run turned weighting off; null / absent = it was on (or never mattered).
+    promptWeighting: image.prompt_weighting !== false,
     clipSkip: image.clip_skip ?? 1,
     cfgRescale: image.cfg_rescale ?? 0,
     variationSeed:
