@@ -9,11 +9,8 @@ from typing import Optional
 
 import typer
 
-# The deepest bug found here, and why this check exists: /usr/local/cuda/bin is on the peer's PATH
-# in a LOGIN shell but not in a non-interactive one (`ssh host cmd`, which is how every launch
-# works), so `which("nvcc")` differed by rank, vLLM's has_flashinfer() differed with it, rank 0
-# entered a collective rank 1 never entered, and the job hung for 1800 s surfacing as a gloo TCP
-# error.
+# Why this exists: /usr/local/cuda/bin is on PATH only in login shells, so ssh ranks diverged and
+# hung in a collective.
 
 PARITY_SKIP = (
     "host",
@@ -167,7 +164,6 @@ def _run_probe_local(
                 timeout = timeout,
             )
         else:
-            # Windows or an image with no POSIX shell, so never a Spark: only tests reach this.
             proc = subprocess.run(
                 [sys.executable, "-c", source], capture_output = True, text = True, timeout = timeout
             )
@@ -285,8 +281,7 @@ def check_parity(peer_ip: str, deep: bool = False) -> int:
         return 2
 
     diffs = compare_parity(local, peer)
-    # PATH is the usual CAUSE, not itself a capability, so it is supporting evidence when something
-    # real diverges and silent otherwise; a check that cries wolf gets ignored.
+    # PATH is a cause, not a capability: report it only beside a real divergence.
     capability_diffs = [d for d in diffs if d[0] != "PATH"]
     path_diff = next((d for d in diffs if d[0] == "PATH"), None)
     diffs = capability_diffs
@@ -334,9 +329,7 @@ def check_parity(peer_ip: str, deep: bool = False) -> int:
     return 1
 
 
-# The second-deepest bug, and why THIS check exists: one node was missing `causal_conv1d` and
-# `flash-linear-attention`, so Qwen3.5's linear-attention layers silently fell back to the torch
-# path -- 2.19x slower and 39% more memory on a byte-identical cell with identical clocks and NCCL.
+# Why: a node missing causal_conv1d / fla silently ran Qwen3.5 2.19x slower.
 
 FASTPATH_PACKAGES = (
     ("torch", ("torch",)),
@@ -370,8 +363,7 @@ FASTPATH_WHY = {
 
 FASTPATH_HEAVY = ("torch", "triton")
 
-# Run as a CHILD process on purpose: importing flash-attn or a mismatched causal_conv1d extension
-# can abort the interpreter, and that must cost the package inventory nothing.
+# A child process: a mismatched native extension can abort the interpreter.
 FASTPATH_RUNTIME_SOURCE = """
 import json
 g = {}
@@ -485,8 +477,6 @@ def compare_fastpath(local: dict, peer: dict) -> list:
             {"kind": "package", "name": name, "local": mine, "peer": theirs, "lagging": lagging}
         )
 
-    # A node whose runtime probe did not report has no gates to compare, and calling that a
-    # divergence would dress an UNKNOWN up as a finding.
     if local.get("gates_error") or peer.get("gates_error"):
         return findings
 
@@ -692,8 +682,7 @@ def spark_doctor(
 
     fastpath_rc = 0
     if peer_ip and not skip_fastpath:
-        # `--parity-only` promises no GPU work, and the runtime half of this probe imports torch and
-        # the native kernel packages on both nodes, which is minutes and a CUDA context.
+        # --parity-only promises no GPU work.
         fastpath_rc = check_fastpath(peer_ip, runtime = deep or not parity_only)
 
     if parity_only:
