@@ -588,7 +588,6 @@ def _launch_grouped_gemm_dW(
     }
     if accumulate:
         kernel_args["ACCUMULATE"] = True
-        kernel_args["ACCUMULATE_SEED"] = dW.dtype != torch.float32
 
     if not autotune:
         kernel_args.update(
@@ -823,8 +822,8 @@ def _dW_accumulate_target(ctx, X, autotune):
     every case where AccumulateGrad would do more than `param.grad += dW` falls back to the
     returned-gradient path: compiling (the AOT backward graph decides statically), autograd.grad or
     backward(inputs=) not covering W, create_graph, no gradient yet (AccumulateGrad steals the fresh
-    buffer, so there is nothing to save), tensor hooks, anomaly mode, layout or dtype mismatch,
-    autotune. Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook)
+    buffer, so there is nothing to save), tensor hooks, anomaly mode, a weight used on a non-default
+    CUDA stream, layout or dtype mismatch, autotune. Hooks registered directly on autograd Nodes (Node.register_hook / register_prehook)
     cannot be enumerated from Python and see None for W here; UNSLOTH_MOE_DW_ACCUMULATE=0 restores
     the returned-gradient path. The grad may be narrower than X (bf16 weights, fp32 activations):
     the add still runs in fp32.
@@ -860,6 +859,10 @@ def _dW_accumulate_target(ctx, X, autotune):
         param, "_post_accumulate_grad_hooks", None
     ):
         return None  # these hooks only run on a defined incoming gradient
+    if getattr(param, "_unsloth_dw_side_stream", False):
+        return None
+    if torch.cuda.current_stream(X.device) != torch.cuda.default_stream(X.device):
+        return None
     try:
         if not torch._C._will_engine_execute_node(acc):
             return None  # backward(inputs=[...]) without W
@@ -901,6 +904,11 @@ class GroupedGemm(torch.autograd.Function):
 
         # topk_weights is not saved for backward: training with fused_mul is unsupported.
         ctx.save_for_backward(X, W, m_sizes, gather_indices)
+        if W.requires_grad and X.is_cuda and not torch.compiler.is_compiling():
+            if torch.cuda.current_stream(X.device) != torch.cuda.default_stream(X.device):
+                # A use on a side stream may run its backward concurrently with another use of W:
+                # in-place accumulation would race, so this weight keeps the returned-gradient path.
+                W._unsloth_dw_side_stream = True
 
         fwd_config = {}
         if kernel_config_fwd is not None:

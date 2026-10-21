@@ -559,3 +559,43 @@ def test_fsdp2_no_sync_gradient_accumulation(tmp_path):
     assert rel < 1e-2, rel
     # Whether FSDP2 keeps the unsharded grad between no-sync micro-steps decides engagement; record it.
     print(f"FSDP2 in-place launches: {got[True]['inplace']}, rel vs stock {rel:.2e}")
+
+
+def test_existing_gradient_survives_in_microbatch_cancellation(monkeypatch):
+    # dW = +1e8 (first M tile) - 1e8 (second M tile) = 0: the existing 1 must stay 1, not be
+    # absorbed into the fp32 accumulator before the reduction.
+    monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")
+    E, N, K, T = 1, 64, 64, 128
+    dtype, big = torch.bfloat16, 1e4
+    X = torch.zeros(T, K, device = DEV, dtype = dtype)
+    G = torch.zeros(T, N, device = DEV, dtype = dtype)
+    X[0], X[64] = big, big
+    G[0], G[64] = big, -big
+    m_sizes = torch.tensor([T], device = DEV, dtype = torch.int32)
+    gather = torch.arange(T, device = DEV, dtype = torch.int32)
+    W = _param(E, N, K, dtype)
+    W.grad = torch.ones_like(W)
+    before = gg.DW_ACCUMULATE_STATS["inplace"]
+    _gemm(X, W, m_sizes, gather, 1, "none", _cfgs()).backward(G)
+    assert gg.DW_ACCUMULATE_STATS["inplace"] == before + 1
+    assert torch.equal(W.grad, torch.ones_like(W))
+
+
+def test_side_stream_use_keeps_the_returned_gradient_path(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_MOE_DW_ACCUMULATE", "1")
+    E, N, K, T, topk = 4, 64, 64, 32, 2
+    cfgs = _cfgs()
+    c = _Case(E, N, K, T, topk, "permute_x", torch.bfloat16)
+    W = _param(E, N, K, torch.bfloat16)
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+
+    def side_call():
+        with torch.cuda.stream(side):
+            c.backward(W, cfgs)
+        torch.cuda.current_stream().wait_stream(side)
+
+    g0, _ = _fallback_check(W, cfgs, c, side_call)
+    torch.testing.assert_close((W.grad.double() - g0.double()), c.ref, rtol = 3e-2, atol = 3e-2 * c.ref.abs().max().item())
+    # The weight was seen on a side stream: later default-stream uses fall back too.
+    _fallback_check(W, cfgs, c, lambda: c.backward(W, cfgs))

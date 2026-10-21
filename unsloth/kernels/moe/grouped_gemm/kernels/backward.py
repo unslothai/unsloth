@@ -270,7 +270,6 @@ def _grouped_gemm_dW_kernel(
     # Seed the fp32 accumulator with the existing tile (load overlaps the main loop) instead of adding
     # it after the loop. Only for a bf16 / fp16 dW, whose final rounding dwarfs the fp32 order change;
     # an fp32 dW adds at the end, the same single fp32 add autograd would do.
-    ACCUMULATE_SEED: tl.constexpr = False,
 ) -> None:
     TOTAL_TOKENS = NUM_TOKENS * TOPK
     TMA_LOAD_BOTH: tl.constexpr = USE_TMA_LOAD_X and USE_TMA_LOAD_dY
@@ -337,21 +336,6 @@ def _grouped_gemm_dW_kernel(
             store_row_offs = n_start + n_offset + block_range_n
 
             if m_size > 0:
-                # ACCUMULATE: dW is an existing gradient. This program alone owns the (expert, n, k)
-                # tile, so read-modify-write is race free; the sum is rounded to dW's dtype once.
-                if ACCUMULATE and ACCUMULATE_SEED:
-                    if USE_TMA_STORE:
-                        prev = dW_desc.load([expert_idx, n_offset, k_offset])
-                        prev = tl.reshape(prev, (BLOCK_SIZE_N, BLOCK_SIZE_K))
-                    else:
-                        prev = tl.load(
-                            dW_ptr
-                            + store_row_offs[:, None] * K
-                            + (k_offset + block_range_k)[None, :],
-                            mask = nk_mask,
-                            other = 0.0,
-                        )
-                    accumulator = prev.to(acc_dtype)
                 if TMA_LOAD_BOTH:
                     dY_desc = tl.make_tensor_descriptor(
                         dY_ptr,
@@ -428,7 +412,10 @@ def _grouped_gemm_dW_kernel(
                             x,
                         )
 
-                if ACCUMULATE and not ACCUMULATE_SEED:
+                # ACCUMULATE: dW is an existing gradient. This program alone owns the (expert, n, k)
+                # tile, so read-modify-write is race free. The old value is added after the reduction
+                # (seeding the accumulator with it lets in-microbatch cancellation erase it); one rounding.
+                if ACCUMULATE:
                     if USE_TMA_STORE:
                         prev = dW_desc.load([expert_idx, n_offset, k_offset])
                         prev = tl.reshape(prev, (BLOCK_SIZE_N, BLOCK_SIZE_K))
