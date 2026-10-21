@@ -259,7 +259,6 @@ export function RemoteAccessSection() {
       if (pollSuppressed.current) {
         return;
       }
-      // A hidden tab reads nothing; keep the loop, skip the request.
       if (document.hidden) {
         schedule(null);
         return;

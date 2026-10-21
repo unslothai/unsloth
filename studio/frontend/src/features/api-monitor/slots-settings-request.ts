@@ -77,14 +77,11 @@ export function runSettingsRequest(
   };
 }
 
-/** Run settings for a model kept loaded beside the resident: what the picker's own row gear opens,
- *  so Run saves its settings and reloads that model. */
 export function keptRunSettingsRequest(
   model: { checkpoint: string; quant: string | null },
   requestId: string,
 ): ModelConfigHandoffRequest {
-  // A standalone .gguf reports a filename label as its quant; its settings are saved without one,
-  // as residentModelConfigTarget keys them, or Run settings would open and save a second record.
+  // A standalone .gguf's quant is a filename label; saved without it (residentModelConfigTarget), else a second record.
   const standalone = isStandaloneGgufPath(model.checkpoint);
   return {
     requestId,

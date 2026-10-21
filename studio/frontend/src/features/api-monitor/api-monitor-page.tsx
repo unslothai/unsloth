@@ -126,14 +126,10 @@ const SERVER_STATUS: Record<
 const PANE_HEIGHT =
   "max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(260px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto";
 
-// The Train page's cards: elevated-card is a soft border and glow in light, borderless in dark.
 const SURFACE = "elevated-card bg-card";
-// A page-colored seam in dark mode instead of a lighter rule.
 const DIVIDER = "border-border/60 dark:border-background";
-// Train's option tiles inside a card (selectableOptionStateClassName, unselected).
 const INSET =
   "border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
-// INSET's light fill made opaque, for tiles whose gaps paint the dividers.
 const INSET_OPAQUE =
   "bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
@@ -148,7 +144,6 @@ function formatFullTime(value: number): string {
   return new Date(value * 1000).toLocaleString();
 }
 
-/** "now", "40s", "5m", "3h", then the date: a row's age at a glance. */
 function formatAgo(value: number, now: number): string {
   const seconds = Math.max(0, Math.round(now - value));
   if (seconds < 10) return "now";
@@ -163,9 +158,7 @@ function formatAgo(value: number, now: number): string {
 
 const AGO_TICK_MS = 10_000;
 
-// Server-clock seconds, so ages read right over a tunnel to a host whose clock differs. Ticks on
-// its own because a paused feed stops the polls that would otherwise re-render the rows. Skew is
-// whole seconds so a poll's jitter does not re-render every row.
+// Server-clock seconds (host clock may differ over a tunnel); ticks itself since a paused feed stops polls.
 function useServerNow(
   serverTime: number | undefined,
   ticking: boolean,
@@ -194,7 +187,6 @@ function formatDuration(value?: number | null): string {
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} s`;
 }
 
-// A finished row without a duration is not running, so it must not say so.
 function entryDuration(entry: ApiMonitorEntry): string {
   if (entry.duration_ms == null && entry.status === "running") {
     return "running";
@@ -257,24 +249,19 @@ function statusTextClass(status: ApiMonitorEntry["status"]): string {
 }
 
 type ServedModel = {
-  /** What a client sends as `model`, quant pinned as the monitor and /v1/models spell it. */
   name: string;
-  /** What /unload names: a local model's path, else the id. */
   checkpoint: string;
-  /** The primary server's model, the one the monitor's context and slots describe. */
   active: boolean;
   quant: string | null;
 };
 
-// Chat's runtime lists every model answering requests; the monitor names only the primary.
 function servedModels(
   loaded: { id: string; quant?: string | null; checkpoint?: string }[],
   activeModel: string | null,
   residentCheckpoint: string | null | undefined,
 ): ServedModel[] {
   const activeId = monitorSelection(activeModel).id;
-  // Two local files can share a public name, so at most one row is the primary: the one whose
-  // checkpoint the status names, else the first whose name matches. Marking both ejected the primary.
+  // At most one primary row: two local files can share a public name, and marking both ejected the primary.
   const named = (model: { id: string }): boolean =>
     Boolean(activeId) && modelIdsMatch(model.id, activeId);
   const byCheckpoint = residentCheckpoint
@@ -347,7 +334,6 @@ function CopyButton({
 }: {
   value: string;
   label: string;
-  /** Hidden until the pointer is over the nearest `group/copy`; always shown on touch. */
   revealOnHover?: boolean;
 }): ReactElement {
   const [copied, setCopied] = useState(false);
@@ -379,7 +365,6 @@ function CopyButton({
           "size-7 shrink-0 rounded-full p-0",
           revealOnHover &&
             !copied &&
-            // Opacity only: the slot stays, so revealing it moves nothing, and hovering it counts.
             "opacity-0 group-hover/copy:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100",
         )}
       >
@@ -477,7 +462,6 @@ function ContextUsageBar({ value }: { value?: number | null }): ReactElement {
   );
 }
 
-// Memoized: polls share unchanged entries, so only the rows that changed re-render.
 const RequestRow = memo(function RequestRow({
   entry,
   selected,
@@ -565,7 +549,6 @@ const RequestRow = memo(function RequestRow({
           {entry.model}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2.5 text-ui-11 tabular-nums text-muted-foreground">
-          {/* Tokens ride the tooltip: niche next to time and speed, and the detail pane has them. */}
           <span
             className="flex items-center gap-1"
             title={
@@ -654,7 +637,6 @@ function PayloadBlock({
           ) : null}
         </div>
       </div>
-      {/* The copy button sits in the box it copies, not on the title row. */}
       <div className="relative min-w-0">
         {/* Prompt and reply bodies, so keep them out of the reload snapshot. */}
         <pre
@@ -1030,12 +1012,10 @@ export function ApiMonitorPage(): ReactElement {
   const [statusFilter, setStatusFilter] = useState<MonitorStatusFilter>("all");
   const [modelFilter, setModelFilter] = useState<string>(ALL_MODELS);
   const [query, setQuery] = useState("");
-  // Typing stays responsive while the list filters behind it.
   const deferredQuery = useDeferredValue(query);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // A row picked in the floating monitor: select it with every filter cleared, so it is listed.
   const focusRequestId = useApiMonitorOverlayStore((s) => s.focusRequestId);
   const scrollToSelected = useRef(false);
   useEffect(() => {
@@ -1048,7 +1028,6 @@ export function ApiMonitorPage(): ReactElement {
     useApiMonitorOverlayStore.getState().focusRequest(null);
   }, [focusRequestId]);
 
-  // Requests only: a load row's model is a path or repo, not what a client named.
   const loggedModels = useMemo(() => {
     const names = new Set<string>();
     for (const entry of entries) {
@@ -1136,7 +1115,6 @@ export function ApiMonitorPage(): ReactElement {
     detailInFlight,
   ]);
 
-  // Waits for the row to render: the log may still be loading when the request arrives.
   useEffect(() => {
     if (!scrollToSelected.current || selectedId == null) return;
     const row = listRef.current?.querySelector<HTMLElement>(
@@ -1180,8 +1158,6 @@ export function ApiMonitorPage(): ReactElement {
     () => servedModels(loadedModels, activeModel, residentCheckpoint),
     [loadedModels, activeModel, residentCheckpoint],
   );
-  // The monitor reads only the primary server, so with that one ejected a kept model can still
-  // be answering while it reports idle.
   const serverStatus =
     SERVER_STATUS[
       data?.status === "idle" && served.length > 0
@@ -1224,8 +1200,6 @@ export function ApiMonitorPage(): ReactElement {
       setEjectingKept(false);
     }
   };
-  // The resident opens on its live settings; a kept model on what it has saved, as its row in
-  // the picker does. Either way Run saves and reloads that model alone.
   const openRunSettings = (model: ServedModel): void => {
     const requestId = createModelConfigHandoffRequestId();
     setConfigRequest(
@@ -1243,8 +1217,7 @@ export function ApiMonitorPage(): ReactElement {
         aria-label={`Run settings for ${model.name}`}
         aria-haspopup="dialog"
         onClick={() => openRunSettings(model)}
-        // The primary opens only on its live settings: a file-picked GGUF whose access lapsed has none
-        // to reload from, and the kept-model fallback would send Run its bare label.
+        // Primary opens only on live settings: the kept-model fallback would send Run its bare label.
         disabled={
           ejecting || modelLoading || (model.active && !canEditSettings)
         }
@@ -1371,7 +1344,6 @@ export function ApiMonitorPage(): ReactElement {
             size="icon"
             onClick={openApiSettings}
             aria-label="API settings"
-            // Bare at rest beside the title; hover fills it a clear step off the page background.
             className="size-10 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
           >
             <HugeiconsIcon
@@ -1462,7 +1434,6 @@ export function ApiMonitorPage(): ReactElement {
               <p className="text-ui-12 text-muted-foreground">
                 {served.length} models answering requests
               </p>
-              {/* One grid for every row, so name, settings, context, slots and eject line up. */}
               <div className="grid grid-cols-[minmax(0,max-content)_auto_auto_auto_1fr] items-center gap-x-6 gap-y-1.5">
                 {served.map((model) => (
                   <div key={model.checkpoint} className="contents">
@@ -1615,7 +1586,6 @@ export function ApiMonitorPage(): ReactElement {
               className="pl-8"
             />
           </div>
-          {/* The Library page's tab strip (library-header.tsx TabStrip). */}
           <nav
             aria-label="Filter by status"
             className="-my-2 flex max-w-full gap-1 overflow-x-auto px-1 py-2 [scrollbar-width:none]!"
@@ -1631,8 +1601,6 @@ export function ApiMonitorPage(): ReactElement {
                   onClick={() => setStatusFilter(option.value)}
                   className={cn(
                     "flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-ui-14 text-foreground/80 transition-colors hover:text-foreground",
-                    // Library's RAISED_SURFACE, lifted a step further in dark: this strip sits on a
-                    // card, where bg-card would match the card itself.
                     active &&
                       "bg-white font-medium text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:shadow-none",
                   )}
@@ -1691,7 +1659,6 @@ export function ApiMonitorPage(): ReactElement {
                 onClick={() => setPaused(!paused)}
                 className={cn(
                   "rounded-full",
-                  // The only sign the list has stopped updating, so it stays coloured while paused.
                   paused &&
                     "bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-500",
                 )}

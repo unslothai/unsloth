@@ -17,9 +17,7 @@ export interface MonitorStats {
   /** Slowest finished request, for spotting a pathological call. */
   maxDurationMs: number | null;
   totalTokens: number;
-  /** Prompt tokens, what the requests sent in. */
   inputTokens: number;
-  /** Completion tokens, what the model sent back. */
   outputTokens: number;
   /** Share of finished requests that failed, 0-1. Null when nothing finished. */
   errorRate: number | null;

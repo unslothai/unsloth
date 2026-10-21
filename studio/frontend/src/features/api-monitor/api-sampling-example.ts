@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** GET /api/inference/sampling-defaults: what a /v1 request gets for each field it omits. */
 export type ApiSamplingDefaults = Partial<{
   temperature: number;
   top_p: number;
@@ -11,8 +10,7 @@ export type ApiSamplingDefaults = Partial<{
   presence_penalty: number;
 }>;
 
-// The OpenAI client takes these as keyword arguments; the rest are Unsloth extensions it only
-// forwards through extra_body.
+// The OpenAI client takes these as kwargs; the Unsloth extensions only go through extra_body.
 const CLIENT_FIELDS = ["temperature", "top_p", "presence_penalty"] as const;
 const EXTRA_FIELDS = ["top_k", "min_p", "repetition_penalty"] as const;
 

@@ -23117,7 +23117,6 @@ def _sampling_defaults_for(model: str) -> dict:
         names = {n for n in (identifier, _llama_public_model_id(llama_backend)) if n}
         if model in names or model.rsplit(":", 1)[0] in names:
             model_id = identifier or model
-            # A request that sends no reasoning controls, so the template's own default applies.
             thinking = _sampling_thinking_mode(
                 llama_backend,
                 ChatCompletionRequest(messages = [{"role": "user", "content": "Hello!"}]),

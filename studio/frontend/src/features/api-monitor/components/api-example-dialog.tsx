@@ -26,14 +26,12 @@ import {
   buildApiSamplingExample,
 } from "../api-sampling-example";
 
-// The Settings usage examples' highlighter (usage-examples.tsx HighlightedCode), so both read alike.
 const SHIKI_THEMES = [unslothLightTheme, unslothDarkTheme] as [
   typeof unslothLightTheme,
   typeof unslothDarkTheme,
 ];
 const codePlugin = createCodePlugin({ themes: SHIKI_THEMES });
 
-/** A request for one served model, with the sampling the server fills in for omitted fields. */
 export function ApiExampleDialog({
   open,
   onOpenChange,
@@ -44,9 +42,7 @@ export function ApiExampleDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   baseUrl: string;
-  /** What the client sends as `model`, quant included. */
   model: string;
-  /** The checkpoint the server resolves sampling for. */
   samplingModelId: string;
 }): ReactElement {
   const [sampling, setSampling] = useState<ApiSamplingDefaults | null>(null);
@@ -64,7 +60,7 @@ export function ApiExampleDialog({
       .then((body: ApiSamplingDefaults) => {
         if (!cancelled) setSampling(body);
       })
-      // An older backend has no route: the example still runs, it just carries no values.
+      // Older backends lack the route: the example still runs, without values.
       .catch(() => {
         if (!cancelled) setSampling({});
       });

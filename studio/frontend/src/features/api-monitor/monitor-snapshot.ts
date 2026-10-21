@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure helpers behind useApiMonitor, in a React-free module so the node --test suite can drive them.
+// React-free so the node --test suite can import it.
 
 import type {
   ApiMonitorEntry,
@@ -62,11 +62,6 @@ function mergeEntries(
   return unchanged ? previous : merged;
 }
 
-/**
- * The next poll's snapshot, sharing every unchanged entry with the previous one and returning the
- * previous snapshot itself when only `server_time` moved. A quiet server then re-renders nothing,
- * and a busy one re-renders only the rows that changed.
- */
 export function mergeMonitorResponse(
   previous: ApiMonitorResponse | null,
   next: ApiMonitorResponse,
@@ -87,10 +82,6 @@ export function mergeMonitorResponse(
   return merged;
 }
 
-/**
- * A model load or unload is not a request, so the status tabs leave it out, as the summary does.
- * A failed load still lists under Errors, which is where someone looks for it.
- */
 export function matchesStatus(
   entry: ApiMonitorEntry,
   status: MonitorStatusFilter,
@@ -113,8 +104,7 @@ export function filterEntries(
     if (!needle) {
       return true;
     }
-    // The fields a debugging session keys off. Coerced, not trusted: these arrive over
-    // the network, and one malformed entry throwing here would blank the whole log.
+    // Coerced: one malformed network entry throwing here would blank the whole log.
     return [
       entry.model,
       entry.endpoint,
@@ -136,7 +126,6 @@ const COUNTED_STATUSES = [
   "cancelled",
 ] as const;
 
-/** Each tab's count, from the same predicate as filterEntries so a count is what its tab lists. */
 export function countByStatus(
   entries: ApiMonitorEntry[],
 ): Record<MonitorStatusFilter, number> {

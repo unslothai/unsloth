@@ -39,7 +39,6 @@ interface ApiMonitorOverlayState {
   suppressed: boolean;
   /** Persisted opt out: when false the panel never opens itself. */
   autoOpen: boolean;
-  /** A request picked in the panel, for the API page to select once it mounts. Session state. */
   focusRequestId: string | null;
   open: () => void;
   close: () => void;

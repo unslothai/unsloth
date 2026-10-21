@@ -43,7 +43,6 @@ function AccessLine({
   url,
 }: {
   label: string;
-  /** Null while loading; "unavailable" when the read failed. */
   state: AccessState | "unavailable" | null;
   url: string | null;
 }) {
@@ -72,8 +71,7 @@ function AccessLine({
 }
 
 /**
- * Remote and LAN access at a glance. Starting, stopping and their options live on the Remote & LAN
- * tab; this reads each once instead of mounting both panels and their five-second polls here.
+ * Reads each once instead of mounting both panels and their five-second polls here.
  */
 export function RemoteLanSummary() {
   const t = useT();
@@ -88,7 +86,6 @@ export function RemoteLanSummary() {
       .then((next) => {
         if (cancelled) return;
         setRemote(next);
-        // The usage examples' base URL reads it, as when the full panel was here.
         usePlatformStore.setState({ cloudflareUrl: next.url });
       })
       .catch(() => {

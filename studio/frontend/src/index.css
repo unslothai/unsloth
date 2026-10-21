@@ -6068,9 +6068,7 @@ html.force-reduced-motion .sidebar-section-drop-line {
 		box-shadow: none;
 	}
 
-	/* The API surfaces sit a hair tighter than Train's cards and the app's boxes. */
-	/* rounded-* compile to var(--radius) itself (@theme inline), so the step goes on --radius: the
-	   theme's 1.1rem less 2px, which moves lg, xl and the rest together. */
+	/* rounded-* compile to var(--radius) (@theme inline), so the step goes on --radius. */
 	.api-rounding {
 		--radius: calc(1.1rem - 2px);
 	}

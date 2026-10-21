@@ -147,7 +147,6 @@ test("a kept model's settings open on its own checkpoint and quant", () => {
   assert.equal(gguf.focus, "advanced");
   assert.equal(gguf.meta.ggufVariant, "Q4_K_M");
   assert.equal(gguf.meta.isGguf, true);
-  // Opened from the model's row, so Run settings has no list to go back to.
   assert.equal(gguf.standalone, true);
   assert.equal(runSettingsRequest(GGUF, "live")?.standalone, true);
   const safetensors = keptRunSettingsRequest(
@@ -165,7 +164,6 @@ test("a kept standalone GGUF opens its saved settings, keyed without the filenam
   );
   assert.equal(request.meta.ggufVariant, undefined);
   assert.equal(request.meta.isGguf, true);
-  // A repo id still carries its quant: it has several to choose between.
   assert.equal(
     keptRunSettingsRequest(
       { checkpoint: "unsloth/gemma-3-270m-it-GGUF", quant: "Q4_K_M" },

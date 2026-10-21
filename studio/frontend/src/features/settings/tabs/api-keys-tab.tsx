@@ -188,7 +188,6 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      {/* Right under the keys, so a key just created shows up in a request at once. */}
       <UsageExamples
         apiKey={revealed}
         useTunnel={useTunnel}
@@ -205,7 +204,6 @@ export function ApiKeysTab() {
         <>
           <KeylessApiAccessSection onSettingsChange={setKeyless} />
 
-          {/* Managed on the Remote & LAN tab; a status line here, not a second set of controls. */}
           <RemoteLanSummary />
 
           <ModelAutoSwitchSection />

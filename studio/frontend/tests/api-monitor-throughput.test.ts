@@ -59,7 +59,6 @@ test("rating is total tokens over total decode time, not a mean of rates", () =>
 test("tokens split into what requests sent in and what the model sent back", () => {
   const stats = computeStats([
     queuedEntry({ id: "a", prompt_tokens: 30, completion_tokens: 10 }),
-    // Only a total and the prompt: the output is their difference.
     queuedEntry({
       id: "b",
       prompt_tokens: 20,

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Each model row on the API page opens an example request carrying the sampling the server fills
-// in for omitted fields, so a client can copy the values the model really runs with.
 
 import assert from "node:assert/strict";
 import test from "node:test";

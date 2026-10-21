@@ -221,8 +221,7 @@ export function ApiModelLoadControls({
 }: {
   runtime: ReturnType<typeof useChatModelRuntime>;
   activeModel: string | null | undefined;
-  // Changes on every load or unload the monitor records, which can leave active_model unchanged
-  // (a kept model unloaded, a second one loaded alongside).
+  // Not active_model: a kept-model unload or a side load leaves that unchanged.
   residencyKey: string;
   onSettled: () => void;
   onUnloadActive: () => void;

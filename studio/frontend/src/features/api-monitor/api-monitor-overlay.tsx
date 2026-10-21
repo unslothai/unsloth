@@ -78,7 +78,6 @@ function formatDuration(value?: number | null): string {
   return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)}s`;
 }
 
-// Only a running row is live: a finished one without a duration has none to show.
 function entryDuration(entry: ApiMonitorEntry): string {
   if (entry.duration_ms == null && entry.status === "running") {
     return "live";
@@ -179,9 +178,7 @@ export function ApiMonitorOverlay(): ReactElement | null {
     let cancelled = false;
     let timer: number | undefined;
     let inFlight = false;
-    // The first snapshot of each stand up is a fresh object, so the watch folds it even when it
-    // matches the one from before the stand down. Later polls share what did not change, so a
-    // quiet server re-renders nothing.
+    // A stand up's first snapshot is a fresh object so the watch refolds it; later polls share unchanged entries.
     let first = true;
     const intervalMs = isOpen ? OPEN_POLL_MS : IDLE_POLL_MS;
 
@@ -189,7 +186,6 @@ export function ApiMonitorOverlay(): ReactElement | null {
     // (a hidden tab skips its poll), and everything terminal would read as history.
     startWatching(watchRef.current, performance.now());
 
-    // A hidden tab has nobody to show the panel to, so it stops until the tab shows again.
     function schedule(): void {
       timer = window.setTimeout(() => {
         timer = undefined;
@@ -310,8 +306,6 @@ function ApiMonitorPanel({
   const entries = useMemo(() => data?.entries ?? [], [data]);
   const stats = useMemo(() => computeStats(entries), [entries]);
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
-  // The monitor names only the primary; Chat's runtime lists every model answering requests,
-  // so a kept model still serving after the primary's eject does not read as "No model".
   const servedNames = useMemo(() => {
     const names = loadedModels.map((model) =>
       model.quant && !model.id.includes(":")
@@ -500,7 +494,6 @@ function ApiMonitorPanel({
             </p>
 
             {/* Soft tile, as the Hub and Train pages group readouts. */}
-            {/* Nudged down 1.5px: the label's line box pads below its ink, so even padding sat the text high. */}
             <div className="grid grid-cols-4 rounded-[14px] bg-muted/45 pt-[calc(11.5px*var(--ui-space-scale,1))] pb-[calc(8.5px*var(--ui-space-scale,1))] dark:bg-background/45">
               <StatCell
                 label="In flight"
@@ -567,7 +560,6 @@ function ApiMonitorPanel({
                       </span>
                     </>
                   );
-                  // A load or unload has no payload to inspect, so only requests open the page.
                   return lifecycle ? (
                     <div
                       key={entry.id}

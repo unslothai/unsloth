@@ -27,8 +27,7 @@ async function requestLanAccess(
 
 export const loadLanAccess = () => requestLanAccess();
 
-/** Hands the LAN URLs to the base URL readers, only when they changed: every poll returns a fresh
- *  array, and publishing it re-rendered each of them every five seconds. */
+/** Publishes only on change: each poll's fresh array re-rendered every reader every 5 s. */
 export function publishLanUrls(status: LanAccessStatus): void {
   const next = lanApiUrls(status);
   const current = usePlatformStore.getState().lanUrls;

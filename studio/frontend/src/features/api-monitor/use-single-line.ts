@@ -3,9 +3,7 @@
 
 import { useLayoutEffect, useState } from "react";
 
-/** Whether a box holds a single line of text, so it can draw as a pill like the page's other
- *  one-line controls. A callback ref, so a box that mounts later is measured too; re-measured on
- *  resize, which also catches text that wraps or grows. */
+/** Callback ref, so a box that mounts later is measured too; ResizeObserver catches wrapping. */
 export function useSingleLine<T extends HTMLElement>(): [
   (element: T | null) => void,
   boolean,

@@ -153,8 +153,6 @@ export function useApiMonitor({
     let timer: number | undefined;
     let inFlight = false;
 
-    // A hidden tab stops polling until it shows again: nobody is reading the log, and the
-    // server it would keep polling may be busy serving the requests it lists.
     function schedule(): void {
       timer = window.setTimeout(() => {
         timer = undefined;

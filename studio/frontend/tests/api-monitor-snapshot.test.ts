@@ -149,7 +149,6 @@ test("status tabs count requests only, and a failed load lists under Errors", ()
 test("the floating monitor folds a fresh first snapshot and pauses while hidden", async () => {
   const { readSrc } = await import("./helpers/kit.ts");
   const overlay = readSrc("features/api-monitor/api-monitor-overlay.tsx");
-  // A merged first snapshot can be the pre-stand-down object, which the watch never refolds.
   assert.match(
     overlay,
     /fresh \? next : mergeMonitorResponse\(previous, next\)/,

@@ -124,7 +124,6 @@ interface ModelSelectorProps {
   onEject?: (modelId?: string) => void;
   onEjectAll?: () => void;
   loadedCount?: number;
-  /** Short names of every loaded model; with more than one the trigger lists them instead. */
   loadedNames?: string[];
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -197,7 +196,6 @@ function ModelSelectorTrigger({
   placeholder?: string;
 }) {
   const severalLoaded = loadedCount > 1;
-  // The names alone: one model's format and quant beside a count read as if only it were loaded.
   const listsNames = severalLoaded && (loadedNames?.length ?? 0) > 1;
   const triggerTitle = listsNames
     ? loadedNames?.join(" • ")
@@ -494,12 +492,9 @@ function ModelSelectorContent({
     string | null
   >(null);
   const [configFocus, setConfigFocus] = useState<ModelConfigFocus | null>(null);
-  // A page's own Run settings button opened it, so there is no list to go back to.
   const [configStandalone, setConfigStandalone] = useState(false);
 
-  // Cleared during render, as a config request is adopted below: from an effect, a close and
-  // reopen inside the exit animation (a Run settings button clicked with the list open) dropped
-  // the adopted target and showed the list.
+  // Cleared during render, not in an effect: a reopen inside the exit animation dropped the adopted target.
   const [renderedOpen, setRenderedOpen] = useState(open);
   if (renderedOpen !== open) {
     setRenderedOpen(open);
