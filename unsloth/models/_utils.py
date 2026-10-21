@@ -7916,7 +7916,11 @@ def _block_linear_filter(model, block_size, qat_scheme, skip_output_head):
     return filter_fn
 
 
-def _qat_forward_runs(base_config, device, dtype = torch.bfloat16) -> bool:
+def _qat_forward_runs(
+    base_config,
+    device,
+    dtype = torch.bfloat16,
+) -> bool:
     """One tiny QAT forward with this base config, so a GPU / torch without the low precision GEMM is caught at prepare time."""
     from torchao.quantization import quantize_
     from torchao.quantization.qat import QATConfig
@@ -7933,7 +7937,11 @@ def _qat_forward_runs(base_config, device, dtype = torch.bfloat16) -> bool:
         return False
 
 
-def _qat_bias_grad_supported(base_config, device, dtype = torch.bfloat16) -> bool:
+def _qat_bias_grad_supported(
+    base_config,
+    device,
+    dtype = torch.bfloat16,
+) -> bool:
     """torchao <= 0.18's NVFP4 QAT backward returns None for the bias: probe a biased layer's backward."""
     from torchao.quantization import quantize_
     from torchao.quantization.qat import QATConfig
@@ -7974,7 +7982,6 @@ def _nvfp4_any_rank_forward(self, x):
 
 def _accept_any_rank_nvfp4_inputs(model) -> None:
     import types
-
     try:
         from torchao.prototype.qat import NVFP4FakeQuantizedLinear
     except Exception:
@@ -8061,7 +8068,11 @@ def _prepare_model_for_qat(
             candidates = _block_linear_filter(model, 16, qat_scheme, skip_output_head = True)
             placements = _eligible_layer_placements(model, candidates)
             unsupported = sorted(
-                {str(dtype) for _, dtype in placements if dtype not in (torch.bfloat16, torch.float32)}
+                {
+                    str(dtype)
+                    for _, dtype in placements
+                    if dtype not in (torch.bfloat16, torch.float32)
+                }
             )
             if unsupported:
                 raise RuntimeError(
@@ -8085,7 +8096,9 @@ def _prepare_model_for_qat(
                 and module.bias is not None
             ]
             filter_fn = candidates
-            if biased and not all(_qat_bias_grad_supported(base_config, d, t) for d, t in placements):
+            if biased and not all(
+                _qat_bias_grad_supported(base_config, d, t) for d, t in placements
+            ):
                 warnings.warn(
                     "Unsloth: qat_scheme='nvfp4': this torchao's NVFP4 QAT backward returns no bias "
                     "gradient, so these biased Linear layers stay in full precision: "

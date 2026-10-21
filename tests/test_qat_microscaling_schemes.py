@@ -39,13 +39,11 @@ def _tiny_qwen3():
 
 def _mx_linear():
     from torchao.prototype.qat import MXFakeQuantizedLinear
-
     return MXFakeQuantizedLinear
 
 
 def _nvfp4_linear():
     from torchao.prototype.qat import NVFP4FakeQuantizedLinear
-
     return NVFP4FakeQuantizedLinear
 
 
@@ -65,9 +63,11 @@ def test_nvfp4_scheme_layers_where_fp4_gemm_runs(monkeypatch):
     with warnings.catch_warnings(record = True):
         warnings.simplefilter("always")
         model = _prepare_model_for_qat(model, "nvfp4")
-    (base_config, _), = model._torchao_config.base_config_and_filter_fns
+    ((base_config, _),) = model._torchao_config.base_config_and_filter_fns
     assert isinstance(base_config, NVFP4DynamicActivationNVFP4WeightConfig)
-    assert base_config.use_triton_kernel is False  # the Triton quantizer needs the optional MSLK package
+    assert (
+        base_config.use_triton_kernel is False
+    )  # the Triton quantizer needs the optional MSLK package
     layer = model.model.layers[0]
     for proj in (layer.self_attn.q_proj, layer.self_attn.k_proj, layer.mlp.down_proj):
         assert isinstance(proj, _nvfp4_linear())
@@ -90,7 +90,6 @@ def test_unknown_scheme_still_rejected():
 def _mx_torchao_config():
     from torchao.prototype.mx_formats import MXDynamicActivationMXWeightConfig
     from torchao.quantization.quantize_.common.kernel_preference import KernelPreference
-
     return TorchAOConfig(
         qat_scheme = "custom-mx",
         base_config_and_filter_fns = [
@@ -121,9 +120,7 @@ def test_peft_save_merges_plain_linears(monkeypatch, tmp_path):
     monkeypatch.setattr(
         save_mod, "_unsloth_save_torchao_with_given_config", lambda **kw: seen.update(kw)
     )
-    model = get_peft_model(
-        _tiny_qwen3(), LoraConfig(r = 16, target_modules = ["q_proj", "down_proj"])
-    )
+    model = get_peft_model(_tiny_qwen3(), LoraConfig(r = 16, target_modules = ["q_proj", "down_proj"]))
     model = _prepare_model_for_qat(model, _mx_torchao_config())
     assert any(isinstance(m, _mx_linear()) for m in model.modules())
     save_mod._unsloth_save_torchao_with_attached_config(
@@ -134,8 +131,16 @@ def test_peft_save_merges_plain_linears(monkeypatch, tmp_path):
     assert seen["torchao_config"] is not None
 
 
-def _probe_ok(monkeypatch, bias_grad = True, calls = None):
-    def forward_runs(base_config, device, dtype = torch.bfloat16):
+def _probe_ok(
+    monkeypatch,
+    bias_grad = True,
+    calls = None,
+):
+    def forward_runs(
+        base_config,
+        device,
+        dtype = torch.bfloat16,
+    ):
         if calls is not None:
             calls.append((str(device), dtype))
         return True
