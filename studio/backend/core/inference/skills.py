@@ -52,6 +52,7 @@ _WINDOWS_RESERVED_STEMS = frozenset(
 )
 _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
 _FRONTMATTER_KEY = re.compile(r"[a-zA-Z_-]+:[ \t]+(?=[^\s\"'])")
+MAX_FRONTMATTER_REPAIRS = 16
 
 
 class SkillError(ValueError):
@@ -304,7 +305,7 @@ def _quote_frontmatter_value(text: str, line: int) -> Optional[str]:
         end += 1
     while not lines[end - 1].strip():
         end -= 1
-    block = "".join(lines[start:end])
+    block = re.sub(r"[ \t]+#[^\r\n]*", "", "".join(lines[start:end]))
     value = block[match.end() :].rstrip()
     tail = block[match.end() + len(value) :]
     value = value.replace("\\", "\\\\").replace('"', '\\"')
@@ -313,10 +314,10 @@ def _quote_frontmatter_value(text: str, line: int) -> Optional[str]:
 
 
 def _load_frontmatter(text: str):
-    while True:
+    for _ in range(MAX_FRONTMATTER_REPAIRS):
         try:
             return yaml.safe_load(text)
-        except yaml.MarkedYAMLError as exc:
+        except (yaml.scanner.ScannerError, yaml.parser.ParserError) as exc:
             # Agent skill loaders accept unquoted values such as `description: Use when: ...`.
             repaired = (
                 _quote_frontmatter_value(text, exc.problem_mark.line) if exc.problem_mark else None
@@ -324,6 +325,7 @@ def _load_frontmatter(text: str):
             if repaired is None:
                 raise
             text = repaired
+    return yaml.safe_load(text)
 
 
 def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:

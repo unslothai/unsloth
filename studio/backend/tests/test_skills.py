@@ -965,6 +965,10 @@ def test_skill_manifest_saved_with_a_utf8_byte_order_mark_is_valid(isolated_skil
             "Fill PDF forms. Use when: the user attaches\n  a PDF form\n\n  Then check the fields.",
             "Fill PDF forms. Use when: the user attaches a PDF form\nThen check the fields.",
         ),
+        (
+            "Fill PDF forms. Use when: the user attaches a PDF form # draft",
+            "Fill PDF forms. Use when: the user attaches a PDF form",
+        ),
     ],
 )
 def test_unquoted_description_with_a_colon_is_valid(isolated_skills, written, description):
@@ -975,6 +979,15 @@ def test_unquoted_description_with_a_colon_is_valid(isolated_skills, written, de
 
     assert record["valid"] is True
     assert record["description"] == description
+
+
+def test_undefined_alias_in_frontmatter_stays_invalid(isolated_skills):
+    home, _ = isolated_skills
+    _write_skill(home, "claude", "pdf-forms", description = "*missing")
+
+    record = next(item for item in skills.list_skills(home = home) if item["name"] == "pdf-forms")
+
+    assert record["valid"] is False
 
 
 def test_colon_fallback_keeps_the_other_fields_as_written(isolated_skills):
