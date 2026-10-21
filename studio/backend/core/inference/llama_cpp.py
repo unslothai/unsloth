@@ -26999,6 +26999,17 @@ class LlamaCppBackend:
                                 )
                             )
                         _integrated_gpus = frozenset(idx for idx, _free in gpus if idx in _unified)
+                        # A user device flag names ordinals of the base pick's mask, and an
+                        # unmappable mask re-emits ordinals as physical ids: keep the base pick.
+                        if _integrated_gpus and (
+                            _extra_args_set_any_flag(extra_args, _DEVICE_FLAGS)
+                            or any(
+                                str(os.environ.get(_v, "")).strip()
+                                for _v in ("LLAMA_ARG_DEVICE", "LLAMA_ARG_MAIN_GPU")
+                            )
+                            or self._visibility_mask_is_unmappable()
+                        ):
+                            _integrated_gpus = frozenset()
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
                     _shared_gpu_ids = (
@@ -28536,13 +28547,13 @@ class LlamaCppBackend:
                             )
                             best_cap = 0
                             _cap_fraction = _vram_frac - _flat_mtp_reserve
-                            for n_gpus in range(1, len(ranked_for_cap) + 1):
-                                subset = ranked_for_cap[:n_gpus]
+                            # Every subset Auto may take, discrete tier included, priced as Auto prices it.
+                            for n_gpus, subset in _tiered_subsets(ranked_for_cap, 1):
                                 # Per-GPU-consistent pool budget (fixes mixed
                                 # known/unknown totals); pass it as an absolute
                                 # budget so the fit and the check below agree.
                                 pool_budget = _pool_budget_mib(subset, _cap_fraction)
-                                _ms = _subset_model_size(n_gpus)
+                                _ms = _subset_model_size(n_gpus) - _discrete_host_only(subset)
                                 # Compute buffer is replicated per device in a layer
                                 # split, so scale the context term by the subset size.
                                 _cc_sub = lambda c, n = n_gpus: _cc_bytes(c, n)
@@ -28562,7 +28573,7 @@ class LlamaCppBackend:
                                     budget_frac = 1.0,
                                     pooled = True,
                                     total_mib = None,
-                                    ctx_checkpoints = _placement_ctx_checkpoints,
+                                    ctx_checkpoints = _subset_ckpts(subset),
                                 )
                                 kv = _kv_bytes(capped)
                                 footprint_mib = (
@@ -28671,6 +28682,12 @@ class LlamaCppBackend:
                                             split_extra_bytes = _cc_split_extra(
                                                 effective_ctx, cache_type = "q8_0"
                                             ),
+                                            integrated = _integrated_gpus,
+                                            discrete_size_bytes = model_size_fit
+                                            + _q8_kv
+                                            + _mtp_bytes(effective_ctx)
+                                            + _cc_bytes(effective_ctx, cache_type = "q8_0")
+                                            - _discrete_host_only(),
                                         )
                                         _q8_fits = not _q8_use_fit
                                 _cuda_ctx_notice = self._cuda_context_overcommit_notice(
@@ -28731,14 +28748,15 @@ class LlamaCppBackend:
                                 # discrete-tier subset draws on none.
                                 return _subset_model_size(n_gpus) - _discrete_host_only(subset)
 
-                            for n_gpus, subset in _subsets:
+                            def _auto_fit(n_gpus: int, subset, ctx: int) -> Optional[int]:
+                                # The context ``subset`` holds when Auto caps ``ctx`` to it, or None.
                                 pool_budget = _pool_budget_mib(subset, pin_fraction)
                                 _ms = _subset_ms(n_gpus, subset)
                                 # Compute buffer is replicated per device in a layer
                                 # split, so scale the context term by the subset size.
                                 _cc_sub = lambda c, n = n_gpus: _cc_bytes(c, n)
                                 capped = self._fit_context_to_vram(
-                                    effective_ctx,
+                                    ctx,
                                     pool_budget,
                                     _ms,
                                     cache_type_kv,
@@ -28760,7 +28778,7 @@ class LlamaCppBackend:
                                     _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
                                 ) / (1024 * 1024)
                                 if footprint_mib > pool_budget:
-                                    continue
+                                    return None
                                 # Pooling admits a subset whose per-device reserve
                                 # does not fit the smallest card, which then OOMs at
                                 # launch; only knowable once `capped` is chosen.
@@ -28782,7 +28800,7 @@ class LlamaCppBackend:
                                         capped, _usable_mib, _reserve_at
                                     )
                                     if capped <= 0:
-                                        continue
+                                        return None
                                     # Pooled terms only shrink with the context, so this
                                     # cannot newly fail; re-price rather than lean on that
                                     # across the KV and MTP branches.
@@ -28791,9 +28809,34 @@ class LlamaCppBackend:
                                         _ms + kv + _mtp_bytes(capped) + _cc_sub(capped)
                                     ) / (1024 * 1024)
                                     if footprint_mib > pool_budget:
-                                        continue
+                                        return None
+                                return capped
+
+                            for n_gpus, subset in _subsets:
+                                capped = _auto_fit(n_gpus, subset, effective_ctx)
+                                if capped is None:
+                                    continue
                                 effective_ctx = capped
                                 _ctx_capped_for_vram = 0 < capped < _ctx_before_fit
+                                if (
+                                    _ctx_capped_for_vram
+                                    and _integrated_gpus
+                                    and _integrated_gpus.isdisjoint(i for i, _f in subset)
+                                ):
+                                    # Capped only by the discrete preference: the base walk
+                                    # holds the full context, so nothing evicted would help.
+                                    _base_ctx = next(
+                                        (
+                                            c
+                                            for n in range(_auto_min_gpus, len(ranked) + 1)
+                                            for c in (_auto_fit(n, ranked[:n], _ctx_before_fit),)
+                                            if c is not None
+                                        ),
+                                        None,
+                                    )
+                                    _ctx_capped_for_vram = not (
+                                        _base_ctx is not None and _base_ctx >= _ctx_before_fit
+                                    )
                                 gpu_indices = sorted(idx for idx, _ in subset)
                                 use_fit = False
                                 break

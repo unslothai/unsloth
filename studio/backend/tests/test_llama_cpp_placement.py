@@ -6412,3 +6412,115 @@ def test_projector_preflight_skips_a_shared_dgpu_like_placement(
     out = _launch(backend, gguf, n_ctx = 8192, is_vision = True)
     assert out["env"].get("CUDA_VISIBLE_DEVICES") == expected_gpu
     assert ("--no-mmproj-offload" in out["cmd"]) is pinned
+
+
+def _mixed_auto_backend(tmp_path, monkeypatch, memory, gguf_gb, rocm = (0,)):
+    """Auto context at a 32K native context; checkpoints cost 512 MiB each on unified memory."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set(rocm))
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_INTEGRATED_CUDA_IDS",
+        {LlamaCppBackend._integrated_cuda_mask_key(): set()},
+    )
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
+    backend._get_gguf_size_bytes = lambda _p: int(gguf_gb * 1024**3)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, ctx_checkpoints = 0, **k: (
+        int(ctx) * 64 * 1024 + int(ctx_checkpoints or 0) * 512 * 1024**2
+    )
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend._amd_apu_wants_unified_memory = lambda ids = None, *a, **k: bool(
+        set(ids or [i for i, _f, _t in memory]) & set(rocm)
+    )
+    backend.probe_server_capabilities = lambda *a, **k: {
+        "ctx_checkpoints_flag": "--ctx-checkpoints"
+    }
+
+    def read_metadata(_path):
+        backend._context_length = 32_768
+
+    backend._read_gguf_metadata = read_metadata
+    return backend, gguf
+
+
+def test_a_cap_from_the_discrete_preference_is_not_a_shortfall(tmp_path, monkeypatch):
+    # The APU holds the full context; only preferring the dGPU caps it, so a load beside
+    # other models must not report a shortfall that evicting them could never cover.
+    backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, [_APU, _DGPU], 14)
+    result = _launch(backend, gguf, n_ctx = 0, refuse_partial_gpu_fit = True)
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+    assert _launched_ctx(result) < 32_768
+
+
+@pytest.mark.parametrize(
+    "memory, rocm",
+    [
+        ([(0, 16_000, 16_384), (1, 15_000, 16_384)], ()),
+        ([(0, 15_000, 0), _DGPU], (0,)),
+    ],
+    ids = ["homogeneous", "apu_caps_too"],
+)
+def test_a_real_vram_cap_still_refuses_a_partial_fit(tmp_path, monkeypatch, memory, rocm):
+    from core.inference.llama_cpp import GpuMemoryShortError
+
+    backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, memory, 14, rocm = rocm)
+    with pytest.raises(GpuMemoryShortError) as exc:
+        _launch(backend, gguf, n_ctx = 0, refuse_partial_gpu_fit = True)
+    assert exc.value.capped
+
+
+def test_the_context_ceiling_covers_a_discrete_auto_launch(tmp_path, monkeypatch):
+    # Host-RAM checkpoints are not charged to the dGPU Auto picks, so the published
+    # ceiling must not be priced with them either.
+    memory = [(0, 16_000, 16_384), (1, 1_000, 0)]
+    backend, gguf = _mixed_auto_backend(tmp_path, monkeypatch, memory, 11, rocm = (1,))
+    result = _launch(backend, gguf, n_ctx = 0, ctx_checkpoints = 6)
+    assert result["env"]["CUDA_VISIBLE_DEVICES"] == "0"
+    assert _launched_ctx(result) <= backend.max_context_length
+    assert _launched_ctx(result) <= backend.vram_fit_context_length
+
+
+@pytest.mark.parametrize("path", ["filesize", "auto_ctx", "explicit_ctx"])
+@pytest.mark.parametrize("how", ["argv", "env", "main_gpu"])
+def test_a_user_device_selection_keeps_the_base_placement(tmp_path, monkeypatch, path, how):
+    # A user device flag names ordinals of the pinned mask; re-pinning to the dGPU would
+    # silently point "ROCm0" at a different card.
+    monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
+    kw = {}
+    if how == "argv":
+        kw["extra_args"] = ["--device", "ROCm0"]
+    elif how == "main_gpu":
+        kw["extra_args"] = ["--main-gpu", "0"]
+    else:
+        monkeypatch.setenv("LLAMA_ARG_DEVICE", "ROCm0")
+    got = _mixed_host_launch(
+        tmp_path, monkeypatch, [_APU, _DGPU], gguf_gb = 8, path = path, rocm = {0}, **kw
+    )
+    assert got == "0"
+
+
+@pytest.mark.parametrize("path", ["filesize", "auto_ctx", "explicit_ctx"])
+def test_an_unmappable_mask_keeps_the_base_placement(tmp_path, monkeypatch, path):
+    # UUID tokens cannot be mapped back, so a picked ordinal 1 would be emitted as
+    # physical GPU 1, which this mask hides.
+    import torch
+
+    monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
+    monkeypatch.setattr(sys, "platform", "linux")
+    for name in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "GPU-aaaaaaaaaaaaaaaa,GPU-bbbbbbbbbbbbbbbb")
+    assert LlamaCppBackend._visibility_mask_is_unmappable()
+    captured = {}
+    real_launch = _launch
+
+    def keep_env(*a, **k):
+        captured.update(real_launch(*a, **k))
+        return captured
+
+    monkeypatch.setitem(globals(), "_launch", keep_env)
+    _mixed_host_launch(tmp_path, monkeypatch, [_APU, _DGPU], gguf_gb = 8, path = path, rocm = {0})
+    assert captured["env"].get("ROCR_VISIBLE_DEVICES") != "1"
