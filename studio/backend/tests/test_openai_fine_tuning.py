@@ -335,3 +335,14 @@ def test_a_legacy_non_finite_config_still_lists(studio, tmp_path):
         return await client.fine_tuning.jobs.list()
 
     assert [j.status for j in _run(listed()).data] == ["succeeded"]
+
+
+def test_cancel_before_the_run_row_sticks(studio):
+    client, _calls, live = studio
+    live["status"] = _Status("job_20261021_101500_ab12cd34", "loading_model")
+
+    async def flow():
+        await client.fine_tuning.jobs.cancel("ftjob_20261021_101500_ab12cd34")
+        return await client.fine_tuning.jobs.retrieve("ftjob_20261021_101500_ab12cd34")
+
+    assert _run(flow()).status == "cancelled"

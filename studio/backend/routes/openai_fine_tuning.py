@@ -314,10 +314,15 @@ async def _job(run_id: str, current_subject: str, via_api_key: bool) -> dict[str
         failed = _status_field(status, "start_request_state") == "rejected" or phase == "error"
         message = _status_field(status, "error") or _status_field(status, "message")
         config, created_at = _STARTED.get(run_id, ({}, None))
+        state = _PHASE_STATUS.get(phase, "queued")
+        if failed:
+            state = "failed"
+        elif run_id in _CANCELLING:
+            state = "cancelled"
         return _for_caller(
             _job_object(
                 run_id,
-                status = "failed" if failed else _PHASE_STATUS.get(phase, "queued"),
+                status = state,
                 config = config,
                 created_at = created_at,
                 error = (message or "Training failed") if failed else None,
