@@ -132,6 +132,7 @@ import {
   FINISHED_TEXT_REMEND,
   IncrementalMarkdownCache,
   LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
   markdownRenderKey,
   parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
@@ -1571,6 +1572,10 @@ function MarkdownTextRenderer({
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const pendingLinkRepair = useMemo(
+    () => cut && hasIncompleteLinkRepair(processedText),
+    [cut, processedText],
+  );
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1588,7 +1593,13 @@ function MarkdownTextRenderer({
             key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}:${cut}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
-            remend={cut ? LITERAL_LINK_REMEND : FINISHED_TEXT_REMEND}
+            remend={
+              !cut
+                ? FINISHED_TEXT_REMEND
+                : pendingLinkRepair
+                  ? LITERAL_LINK_REMEND
+                  : undefined
+            }
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
               parseMarkdownIntoRenderableBlocks

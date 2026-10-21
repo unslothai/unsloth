@@ -14,6 +14,7 @@ import { Streamdown } from "streamdown";
 import {
   FINISHED_TEXT_REMEND,
   LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 
 /**
@@ -146,7 +147,11 @@ function renderSettled(markdown: string, cut = true): string {
       {
         mode: "streaming",
         parseIncompleteMarkdown: settledParseIncompleteMarkdown(cut),
-        remend: cut ? LITERAL_LINK_REMEND : FINISHED_TEXT_REMEND,
+        remend: !cut
+          ? FINISHED_TEXT_REMEND
+          : hasIncompleteLinkRepair(markdown)
+            ? LITERAL_LINK_REMEND
+            : undefined,
       },
       markdown,
     ),
@@ -243,6 +248,20 @@ test("a finished reply keeps its lone markers as written", () => {
       renderedText(html).replace(/\s+/g, ""),
       reply.replace(/\s+/g, ""),
       `a finished ${JSON.stringify(reply)} did not reach the reader as written`,
+    );
+  }
+});
+
+test("a cut reply still hides a dangling image", () => {
+  for (const cut of [
+    "see ![alt](https://example.com/very/long/partial",
+    "see ![alt](data:image/png;base64,iVBORw0KGgo",
+  ]) {
+    const text = renderedText(renderSettled(cut));
+    assert.doesNotMatch(
+      text,
+      /!\[|example\.com|base64/,
+      `a cut ${JSON.stringify(cut)} showed its partial image: ${text}`,
     );
   }
 });
