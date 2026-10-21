@@ -113,6 +113,8 @@ def test_request_defaults_to_sft_so_saved_configs_load_unchanged():
             {"objective": "dpo", "drafter": {"enabled": True}},
             "drafter training is not available with DPO",
         ),
+        ({"objective": "dpo", "rl_beta": 0}, "DPO needs a beta above 0"),
+        ({"objective": "orpo", "rl_beta": 0}, "ORPO needs a beta above 0"),
     ],
 )
 def test_request_refuses_unsupported_rl_combinations(extra, message):
@@ -1768,3 +1770,10 @@ def test_preference_rows_render_a_thinking_field_as_reasoning():
     row = render_preference_rows(ds, _Tok())[0]
     assert row["chosen"] != row["rejected"]
     assert "2 and 2 is 4" in row["chosen"] and "guess" in row["rejected"]
+
+
+def test_grpo_keeps_a_zero_kl_coefficient():
+    request = TrainingStartRequest(
+        **{**BASE, "objective": "grpo", "grpo_rewards": [{"name": "a"}], "rl_beta": 0}
+    )
+    assert request.rl_beta == 0
