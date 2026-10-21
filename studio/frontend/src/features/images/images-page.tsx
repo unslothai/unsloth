@@ -412,6 +412,7 @@ import {
   sdControlsRecipeRows,
   sdControlsRequestFields,
   type SdControlsChoice,
+  varyBlockedReason,
 } from "./lib/sd-controls";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
@@ -5590,11 +5591,12 @@ export function ImagesPage({
   const canVary =
     !external && Boolean(status?.loaded && sdCaps?.variation_seed) && workflow === "create" && selected !== null &&
     canVaryImage(selected, status?.display_repo_id ?? status?.repo_id ?? null);
+  const varyBlocked = canVary && selected ? varyBlockedReason(selected, loraCapable, sdCaps) : null;
   // Vary runs the SELECTED image's recipe (prompt, size, guidance, LoRAs, ...), not whatever the form holds now:
   // restore it (the exact caption it ran with), then generate once the restored form has rendered.
   const [varyQueued, setVaryQueued] = useState(false);
   const handleVary = useCallback(() => {
-    if (busy !== null || !selected || !sdCaps?.variation_seed) return;
+    if (busy !== null || !selected || !sdCaps?.variation_seed || varyBlocked) return;
     varyOnce.current = {
       seed: selected.seed,
       variationSeed: randomVariationSeed(),
@@ -5602,7 +5604,7 @@ export function ImagesPage({
     };
     restoreSettings(selected, true, "vary");
     setVaryQueued(true);
-  }, [busy, restoreSettings, sdCaps, selected]);
+  }, [busy, restoreSettings, sdCaps, selected, varyBlocked]);
   useEffect(() => {
     if (!varyQueued || busy !== null) return;
     setVaryQueued(false);
@@ -7000,18 +7002,25 @@ export function ImagesPage({
                 {canVary && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
-                      <Button
-                        className="relative z-10 h-11 px-5"
-                        variant="secondary"
-                        disabled={busy !== null}
-                        onClick={handleVary}
-                      >
-                        Vary
-                      </Button>
+                      {/* A disabled button gets no pointer events; the span keeps the reason reachable. */}
+                      <span className="relative z-10 inline-flex">
+                        <Button
+                          className="h-11 px-5"
+                          variant="secondary"
+                          disabled={busy !== null || varyBlocked !== null}
+                          onClick={handleVary}
+                        >
+                          Vary
+                        </Button>
+                      </span>
                     </TooltipTrigger>
                     <TooltipContent>
-                      Restore the selected image&apos;s settings and re-run its seed with a new variation seed at strength{" "}
-                      {sdCaps?.vary_strength ?? FALLBACK_VARY_STRENGTH}: same composition, small changes
+                      {varyBlocked ?? (
+                        <>
+                          Restore the selected image&apos;s settings and re-run its seed with a new variation seed at
+                          strength {sdCaps?.vary_strength ?? FALLBACK_VARY_STRENGTH}: same composition, small changes
+                        </>
+                      )}
                     </TooltipContent>
                   </Tooltip>
                 )}

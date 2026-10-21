@@ -308,6 +308,23 @@ test("imported variation values out of the request bounds are named, not randomi
   assert.deepEqual(importNotApplied({ prompt: "x", variation_strength: 3 }, "sdxl", false, SDXL), ["variation strength 3"]);
 });
 
+test("Vary is disabled with a reason when the load cannot apply the selected recipe as recorded", async () => {
+  const { varyBlockedReason } = await import("../src/features/images/lib/sd-controls.ts");
+  const recipe = { loras: ["style:0.8"], cfg_rescale: 0.7, clip_skip: 2, prompt_weighting: false };
+  assert.equal(varyBlockedReason(recipe, true, SDXL), null);
+  assert.equal(varyBlockedReason({ loras: [] }, false, SDXL), null);
+  // Speed=Auto compiled after the render: supports_lora is now false, so the adapters would be dropped.
+  assert.match(varyBlockedReason({ loras: ["style:0.8"] }, false, SDXL) ?? "", /its LoRAs/);
+  const noRescale = { ...SDXL, cfg_rescale: null, clip_skip: { ...SDXL.clip_skip, max: 2 } };
+  assert.match(varyBlockedReason({ cfg_rescale: 0.7 }, true, noRescale) ?? "", /CFG rescale 0\.7/);
+  assert.match(varyBlockedReason({ clip_skip: 4 }, true, noRescale) ?? "", /CLIP skip 4/);
+  assert.match(varyBlockedReason({ prompt_weighting: false }, true, { ...SDXL, prompt_weighting: false }) ?? "", /weighting off/);
+  const src = readSrc("features/images/images-page.tsx");
+  assert.match(src, /const varyBlocked = canVary && selected \? varyBlockedReason\(selected, loraCapable, sdCaps\) : null;/);
+  assert.match(src, /disabled=\{busy !== null \|\| varyBlocked !== null\}/);
+  assert.match(src, /\{varyBlocked \?\? \(/);
+});
+
 test("Create with an SDXL ControlNet engaged sends no CFG rescale, and the control says why", () => {
   const choice = { ...DEFAULT_SD_CONTROLS, cfgRescale: 0.7, variationStrength: 0.2, variationSeed: "5" };
   assert.deepEqual(sdControlsRequestFields(SDXL, choice, null, true, false), {

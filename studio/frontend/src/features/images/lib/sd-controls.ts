@@ -112,6 +112,27 @@ export function canVaryImage(
   return !image.model || image.model === loadedModel;
 }
 
+/** Why Vary cannot replay `image` as recorded on the current load (it would silently drop a part), else null. */
+export function varyBlockedReason(
+  image: {
+    loras?: string[] | null;
+    prompt_weighting?: boolean | null;
+    clip_skip?: number | null;
+    cfg_rescale?: number | null;
+  },
+  loraCapable: boolean,
+  capability: SdControlsCapability | null | undefined,
+): string | null {
+  const missing: string[] = [];
+  if (image.loras?.length && !loraCapable) missing.push("its LoRAs");
+  if (image.prompt_weighting === false && !capability?.prompt_weighting) missing.push("prompt weighting off");
+  if ((image.clip_skip ?? 1) > (capability?.clip_skip?.max ?? 1)) missing.push(`CLIP skip ${image.clip_skip}`);
+  if (image.cfg_rescale && !capability?.cfg_rescale) missing.push(`CFG rescale ${image.cfg_rescale}`);
+  return missing.length
+    ? `The current load cannot apply ${missing.join(", ")} from this image's recipe, so Vary would not match it.`
+    : null;
+}
+
 /** The choice a gallery recipe restores. Absent fields (older records, other models) read as off. */
 export function sdControlsFromRecipe(image: {
   prompt_weighting?: boolean | null;
