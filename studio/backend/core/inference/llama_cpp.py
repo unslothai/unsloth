@@ -5282,12 +5282,16 @@ def _spawn_draft_on_target(run_cmd: List[str], spawn_devices: Optional[str]) -> 
     --device / LLAMA_ARG_DEVICE names, else the masked child's device 0. Other pins (MTL0,
     Vulkan, RPC) were settled at planning, where the backend is known."""
     pin = _extra_args_draft_device_pin(run_cmd)
+    if pin is not None:
+        # A repeated pin (CUDA0,CUDA0) names one card.
+        distinct = {d.strip() for d in pin.split(",") if d.strip()}
+        pin = distinct.pop() if len(distinct) == 1 else pin
     if pin is None or not _CUDA_LIKE_DEVICE_RE.match(pin.strip()):
         return True
     if spawn_devices:
         # A repeated card (CUDA0,CUDA0) is one device, as _distinct_device_count counts it.
         named = {d.strip().lower() for d in spawn_devices.split(",") if d.strip()}
-        return named == {pin.strip().lower()}
+        return named == {d.strip().lower() for d in pin.split(",") if d.strip()}
     return int(re.sub(r"\D", "", pin)) == 0
 
 
@@ -6517,6 +6521,8 @@ def _sidecar_reserve_margin_flags(
     env: Optional[Mapping[str, str]],
     base_margin_mib: float,
     reserve_mib: int,
+    *,
+    spread: bool = False,
 ) -> list[str]:
     """``--fit-target`` that keeps an unsizeable sidecar's reserve free, read off the CHILD.
 
@@ -6532,11 +6538,33 @@ def _sidecar_reserve_margin_flags(
         return []
     # --fit-target is one scalar for every device: a launch spanning several (a
     # surviving --device list or LLAMA_ARG_DEVICE) would withhold it on each card.
+    # ``spread``: the caller priced a per-card share for a multi-device launch; and
+    # --split-mode none keeps both models on the main card, one device's worth.
     devices = _extra_args_main_device(args) or (os.environ if env is None else env).get(
         "LLAMA_ARG_DEVICE"
     )
-    if devices and _distinct_device_count(devices) > 1:
+    if (
+        not spread
+        and devices
+        and _distinct_device_count(devices) > 1
+        and not _split_mode_confines_to_one_device(args, env)
+    ):
         return []
+    if spread:
+        # Every card keeps its own user margin (a per-device list stays a list).
+        raw = _last_flag_value(user_args or (), {"-fitt", "--fit-target"})
+        if raw is None and env:
+            raw = env.get("LLAMA_ARG_FIT_TARGET")
+        entries = [e.strip() for e in str(raw or "").replace("/", ",").split(",") if e.strip()]
+        try:
+            margins = [float(e) for e in entries]
+        except ValueError:
+            margins = []
+        if len(margins) > 1:
+            return [
+                "--fit-target",
+                ",".join(str(math.ceil(max(base_margin_mib, m) + reserve_mib)) for m in margins),
+            ]
     want = math.ceil(
         max(base_margin_mib, _single_device_fit_margin(user_args or (), env) or 0.0) + reserve_mib
     )
@@ -27729,6 +27757,9 @@ class LlamaCppBackend:
                             )
                             if named:
                                 count = _distinct_device_count(named)
+                        # --split-mode none keeps the target and an unpinned drafter on one card.
+                        if count > 1 and _split_mode_confines_to_one_device(extra_args, os.environ):
+                            return 1
                         return count
 
                     def _draft_on_target_device_now(apple_budget_mib: Optional[int] = None) -> bool:
@@ -27738,6 +27769,8 @@ class LlamaCppBackend:
                         pin = _extra_args_draft_device_pin(extra_args)
                         if pin is None:
                             return True
+                        distinct = {d.strip() for d in pin.split(",") if d.strip()}
+                        pin = distinct.pop() if len(distinct) == 1 else pin
                         # Passed by a caller ahead of the unified-memory budget (discrete: 0).
                         apple = _apple_budget_mib if apple_budget_mib is None else apple_budget_mib
                         # The picker strips competing --device extras at emission.
@@ -27761,7 +27794,12 @@ class LlamaCppBackend:
                             # CUDA / ROCm: the picker remaps pins into the child's mask, so
                             # only the spawned argv can tell (_spawn_draft_on_target).
                             return True
-                        return bool(main) and pin.strip().lower() == main.strip().lower()
+
+                        # As sets: CUDA0,CUDA0 is one card on either side.
+                        def _names(value: str) -> set:
+                            return {d.strip().lower() for d in str(value).split(",") if d.strip()}
+
+                        return bool(main) and _names(pin) == _names(main)
 
                     _draft_share_unknown = bool(
                         _mtp_draft_for_budget
@@ -30233,7 +30271,8 @@ class LlamaCppBackend:
                                 else max(
                                     (
                                         free
-                                        for idx, free in gpus
+                                        # Manual mode plans with no gpus; the cards are there.
+                                        for idx, free in (gpus or _detected_gpus)
                                         if gpu_indices is None or idx in gpu_indices
                                     ),
                                     default = 0,
@@ -33684,10 +33723,12 @@ class LlamaCppBackend:
                         # --fit-target value (broadcast to every device) must cover the
                         # largest card's share; unknown cards (named by --device) get none.
                         _spawn_share: Optional[float] = 1.0
-                        if _spawn_device_count > 1:
+                        if _spawn_device_count > 1 and not _split_mode_confines_to_one_device(
+                            run_cmd, env
+                        ):
                             _spawn_share = None
                             if not _spawn_devices and _extra_args_draft_device_pin(run_cmd) is None:
-                                _free_by_idx = dict(gpus or ())
+                                _free_by_idx = dict(gpus or _detected_gpus or ())
                                 _spawn_ids = (
                                     [idx for idx, _free in _detected_gpus]
                                     if _child_gpu_physical_ids is None
@@ -33722,6 +33763,7 @@ class LlamaCppBackend:
                                     floor_mib = _metal_fit_target_floor_mib,
                                 ),
                                 _spawn_reserve,
+                                spread = _spawn_share < 1.0,
                             )
                             if _spawn_flags:
                                 run_cmd = [*run_cmd, *_spawn_flags]

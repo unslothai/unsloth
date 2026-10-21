@@ -192,3 +192,27 @@ def test_a_partly_placed_drafter_keeps_its_compute_floor(tmp_path, _discrete, ex
     floor = math.ceil(_lc.LlamaCppBackend._MTP_DRAFT_COMPUTE_BYTES / (1024 * 1024))
     # Not the whole 8 GiB file, but not nothing either.
     assert 1024 + floor <= margin < _FLOOR
+
+
+def test_a_users_per_device_margins_stay_per_device_across_cards():
+    flags = _lc._sidecar_reserve_margin_flags(
+        ["--model-draft", "/d.gguf", "--fit", "on"],
+        ["--fit-target", "1024,20000"],
+        {},
+        1024,
+        4213,
+        spread = True,
+    )
+    assert flags == ["--fit-target", "5237,24213"]
+
+
+def test_split_mode_none_keeps_the_whole_reserve_on_the_main_card(tmp_path, _discrete):
+    backend, gguf = _r2._cuda_backend(tmp_path, memory = _TWO)
+    backend._arch_gate_survivors = lambda binary = None: []
+    margin = _r4._margin(_dspark(backend, gguf, tmp_path, extra_args = ["--split-mode", "none"]))
+    assert margin >= _FLOOR
+
+
+def test_a_repeated_draft_pin_is_one_card():
+    argv = ["--device", "CUDA0", "--device-draft", "CUDA0,CUDA0"]
+    assert _lc._spawn_draft_on_target(argv, "CUDA0")
