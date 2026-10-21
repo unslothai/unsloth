@@ -1218,7 +1218,7 @@ def _hooks_present(module: Any) -> Optional[str]:
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
             continue
         if not name and _resident_graph(sub) is not None:
-            # the root's whole-step graph: install_cfg_parallel moves it under the router, the copy runs the class forward
+            # install_cfg_parallel moves the root's graph under the router
             continue
         if kind == "offload" or _is_offload_object(override):
             continue
@@ -1475,9 +1475,7 @@ class _ReplicaWorker:
         self._thread = threading.Thread(
             target = self._loop, name = f"unsloth-cfg-replica-{device}", daemon = True
         )
-        # Everything this thread does on CUDA, from binding its card to a job dropping its inputs, is held out of the
-        # source card's graph recordings: they use the global capture mode, which prohibits this thread's
-        # allocations (and its context set-up) for as long as one records anywhere in the process.
+        # Global capture mode forbids this thread's CUDA allocations while any recording runs, so hold them out.
         from .diffusion_cuda_graph import capture_hold
 
         capture_hold()
@@ -1508,7 +1506,7 @@ class _ReplicaWorker:
                         done["result"] = ctx.run(self._run, fn, modes)
                     except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's thread
                         done["error"] = exc
-                    # the inputs die here, inside the hold, not when the next job replaces them
+                    # drop inputs inside the hold
                     fn = ctx = None
             finally:
                 capture_release()
@@ -1721,11 +1719,8 @@ class CfgParallelRouter:
     predicted tensors (identity) and equal plain values, else the prediction is discarded and the branch runs
     unpredicted.
 
-    A whole-step CUDA graph armed later (the deferred speed profile) installs UNDER the router (``inner``): the primary
-    branch replays it, the replica runs the same compiled blocks ungraphed (same kernels, same output). A caller that
-    splits one batched guided call into its two halves (Z-Image) pairs them explicitly through :meth:`run_pair`."""
+    A whole-step CUDA graph installs under the router (``inner``); split callers (Z-Image) use :meth:`run_pair`."""
 
-    # diffusion_cuda_graph.GraphedForward.install looks for this to install under the router instead of replacing it
     _unsloth_cfg_router_layer = True
 
     def __init__(
@@ -1740,9 +1735,7 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
-        # The whole-step graph wrapper installed under the router (diffusion_cuda_graph), else None.
         self.inner: Any = None
-        # True while run_pair's primary half passes through this router on the source.
         self._pairing = False
         self.had_override = "forward" in module.__dict__
         self.primary = torch.device(primary)
@@ -1893,20 +1886,16 @@ class CfgParallelRouter:
     def run_pair(
         self, primary_call: Callable[[], Any], args: tuple, kwargs: dict
     ) -> Optional[tuple]:
-        """The two halves of one guided step, known up front by a caller that split a batched call (Z-Image): the
-        second half (``args`` / ``kwargs``) is queued on the replica, then ``primary_call`` runs the first half on the
-        source through its normal call (the graph under the router, when armed). ``(first, second)``, or None when the
-        pair cannot run here; the caller then runs both halves on the source. The halves are fresh tensors every call,
-        which the identity pairing of :meth:`__call__` can never match."""
+        """Second half on the replica, ``primary_call`` on the source. ``(first, second)``; None = run both on source;
+        ``second`` None = replica failed."""
         if self.disabled_reason is not None or _background_compile_call():
             return None
         module = self.module_ref()
         if module is None or _holds_opaque_tensors((args, kwargs)):
             return None
-        # A root hook would run on the source for the first half only; its per-call state has no second call to set.
+        # A root hook would only see the first half.
         if any(getattr(module, attr, None) for attr in _ROOT_HOOK_DICTS):
             return None
-        # this step's state is the pair's own: nothing the identity path predicted belongs to it
         self._drop_pending()
         self.template = None
         self.prev_latent = None
@@ -1938,7 +1927,7 @@ class CfgParallelRouter:
         try:
             second = _ReplicaWorker.wait(job)
             if _hook_state(self.pairs) != hook_state:
-                # the source's state moved during the first half: run the second again on what it is now
+                # source hook state moved during the first half: rerun
                 _mirror_hook_state(self.pairs)
                 second = self.worker.call(_replica_call(self.replica, r_args, r_kwargs))
         except Exception as exc:  # noqa: BLE001 - the caller recomputes the second half on the source
@@ -2221,7 +2210,6 @@ def cfg_parallel_decline(
 
 
 def _resident_graph(module: Any) -> Any:
-    """The whole-step graph wrapper of a resident denoiser in its forward slot (no offload placement), else None."""
     slot = module.__dict__.get("forward")
     try:
         from .diffusion_cuda_graph import GraphedCompiledCall, GraphedForward
@@ -2279,7 +2267,7 @@ def install_cfg_parallel(
             if free is not None and need_mib + 1024 > free:
                 reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
             else:
-                # A whole-step graph armed at load (before this router) moves under it, as a later one would install.
+                # A graph armed at load moves under the router.
                 graph = _resident_graph(denoiser)
                 if graph is not None:
                     del denoiser.__dict__["forward"]
@@ -2380,7 +2368,6 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
     if module is not None:
         if module.__dict__.get("forward") is router:
             if router.inner is not None:
-                # the graph wrapper installed under the router takes the slot back
                 module.__dict__["forward"] = router.inner
                 router.inner = None
             elif router.had_override:

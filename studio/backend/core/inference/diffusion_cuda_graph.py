@@ -138,14 +138,11 @@ def _disabled_reason() -> str:
 # and neither holds the lock while it records, so captures do not serialise against each other.
 _CAPTURE_LOCK = threading.Lock()
 _CAPTURE_DEPTH = 0
-# A CFG-parallel replica runs whole forwards on its own thread (diffusion_multigpu), far longer than a query, so it
-# cannot hold the lock across its calls. Each piece of that work is counted in from the moment it is queued (thread
-# start, job submit) until it has finished and dropped its inputs, and a capture waits for the count to drain.
+# CFG-parallel replica work is counted from queueing until its inputs drop; a capture waits for the count to drain.
 _CAPTURE_IDLE = threading.Condition(_CAPTURE_LOCK)
 _OUTSIDE_JOBS = 0
 _OUTSIDE_LOCAL = threading.local()
-# A held count that never drains (a worker that died) must not hang every later capture: it then records anyway, and
-# a capture that the other thread does invalidate fails and runs eager, as any failed capture does.
+# A count that never drains (dead worker) must not hang captures: record anyway; a broken capture runs eager.
 OUTSIDE_WAIT_S = 120.0
 
 
@@ -170,7 +167,6 @@ def _capturing():
 
 
 def capture_hold() -> None:
-    """Count one piece of off-thread CUDA work in (queued now, run later): no capture begins until its release."""
     global _OUTSIDE_JOBS
     with _CAPTURE_IDLE:
         _OUTSIDE_JOBS += 1
@@ -185,8 +181,7 @@ def capture_release() -> None:
 
 @contextlib.contextmanager
 def held_work():
-    """Run a held piece of work: waits for a recording another thread began first, and lets this thread record
-    without waiting on its own hold."""
+    """Waits for another thread's recording; this thread may then record without waiting on its own hold."""
     with _CAPTURE_IDLE:
         _CAPTURE_IDLE.wait_for(lambda: _CAPTURE_DEPTH == 0, timeout = OUTSIDE_WAIT_S)
     _OUTSIDE_LOCAL.depth = getattr(_OUTSIDE_LOCAL, "depth", 0) + 1
@@ -198,7 +193,6 @@ def held_work():
 
 @contextlib.contextmanager
 def outside_capture():
-    """``capture_hold`` + ``held_work`` + ``capture_release`` around one block on the calling thread."""
     capture_hold()
     try:
         with held_work():
@@ -692,7 +686,6 @@ def _outer_layer(module: Any) -> Any:
 
 
 def _router_layer(module: Any) -> Any:
-    """The CFG-parallel router (diffusion_multigpu.CfgParallelRouter) in ``module``'s forward slot, else None."""
     try:
         slot = module.__dict__.get("forward")
     except Exception:  # noqa: BLE001
@@ -859,8 +852,7 @@ class GraphedForward:
         return bool(getattr(self, "_sealed_scopes", None))
 
     def install(self) -> "GraphedForward":
-        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any outer step-skip layer or
-        CFG-parallel router (which keeps routing the guidance branches: the primary one replays this graph)."""
+        """Set ``forward`` via ``__dict__`` (``__setattr__`` would inspect it), under any step-skip layer or CFG router."""
         if self.placement is not None:
             self.placement.install(self)
             return self

@@ -19,9 +19,7 @@ bit-exact: a single sample with no mask can pick other attention / GEMM tiles th
 Engaged per render (``render``: Studio knows the images per call, so ``2 * B`` samples is a guided call, ``B`` is not),
 only on a resident denoiser: a block-streamed one would upload its weights twice per step, which costs more than the
 recompile. Declined per call under a step cache and a static step skip that cannot key a step's two calls apart.
-Under a CFG-parallel router the two halves are handed to it as one explicit pair (``run_pair``): the conditional half on
-the source card, the unconditional one on the replica, at the same time. Their inputs are fresh tensors every step, so
-the router's own pairing by latent identity never matches them. Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
+Under a CFG-parallel router the halves go to ``run_pair`` (identity pairing never matches fresh tensors). Kill switch: ``UNSLOTH_DIFFUSION_ZIMAGE_CFG_SPLIT=0``.
 """
 
 from __future__ import annotations
