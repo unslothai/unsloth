@@ -271,13 +271,60 @@ export const BUDGET = {
   // and build, Node 24, 96 chunks): its strings join the eager English catalog and the developer-mode
   // flag is read by the eager shell (__root.tsx, app-sidebar.tsx, env.ts, hardware-verdict.ts). Raised by that
   // growth, to the measured build plus a 160 B raw / 189 B transfer margin.
-  // Picking a preset forgetting the model's remembered sampling values (#14128) adds 1,862 B raw / 422 B transfer
-  // (6,842,518 -> 6,844,380 B raw, 2,060,402 -> 2,060,824 B transfer against 6ccf0e4e7 and the PR merged onto it,
-  // one machine and build, Node 24, chunk count unchanged at 96): the preset marks live in the chat runtime store,
-  // which the first screen loads. 6ccf0e4e7 already measured 175 B raw over its limit, so this is raised to the
-  // measured build plus the same 160 B raw / 189 B transfer margin.
-  transferBytes: 2_061_013,
-  rawBytes: 6_844_540,
+  // A setting to hide the macOS menu bar icon (#11937) adds 349 B raw / 78 B transfer (6,842,183 -> 6,842,532 B raw,
+  // 2,060,321 -> 2,060,399 B transfer against 46e4f50bea and 2b20770c91, one machine and build, Node 24, 96 chunks):
+  // its strings join the eager English catalog and settings search index. #14223 and #14232 add no raw bytes.
+  // Raised by that growth, to the measured build at 6ccf0e4e74 (6,842,532 B raw / 2,060,400 B transfer) plus a
+  // 160 B raw / 189 B transfer margin.
+  // The Loaded models card's eject confirmation (#14161, eager shell) adds 356 B raw / 158 B transfer over 28a222f20
+  // (6,842,874 B raw, 2,060,540 B transfer); limits = that build plus the same margin.
+  // Naming a chat export after its model, title and day (#12586) adds 615 B raw / 65 B transfer (6,842,183 ->
+  // 6,842,798 B raw, 2,060,321 -> 2,060,386 B transfer against 46e4f50bea, one machine and build, Node 24,
+  // 96 chunks): the name builder sits beside the chat exporters in the eager chat chunk. Raised by that growth.
+  // Opening Parallel Slots from the API page's Slots readout (#14225) adds 546 B raw / 212 B transfer (6,842,518 ->
+  // 6,843,064 B raw, 2,060,427 -> 2,060,639 B transfer against bff0a25b4, one machine and build, Node 24, 96 chunks):
+  // the field focus and per-visit Advanced reveal live in the Run settings page and the picker, both in the eager chat
+  // chunk. Raised to the measured build plus the same 160 B raw / 189 B transfer margin.
+  // Reconciled with main at 87c6408455: the combined build measures 6,844,101 B raw / 2,060,934 B transfer
+  // (Node 24, 96 chunks). The API Settings button stays in its lazy page. Keep the same 160 B / 189 B margin.
+  // FLUX.3 workflows, controls and LoRAs (#14312) add 426 B raw / 138 B transfer (6,844,101 -> 6,844,527 B raw,
+  // 2,060,887 -> 2,061,025 B transfer against 6a19cb20b9, one machine and build, Node 24, 96 chunks), and #14228
+  // adds 95 B raw / 15 B transfer on top, measured at d3a82576a4 as 6,844,622 B raw / 2,061,040 B transfer. Raised
+  // to that build plus the same 160 B raw / 189 B transfer margin.
+  // The modern toggles (#14322) add 449 B raw / 86 B transfer (6,844,459 -> 6,844,908 B raw, 2,061,006 ->
+  // 2,061,092 B transfer against ad2fc0659c, one machine and build, Node 24, 96 chunks): switch.tsx is a shared UI
+  // primitive the startup set already carries. #14329 removed 163 B raw just before. Raised to that build plus the
+  // same 160 B raw / 189 B transfer margin.
+  // The Desktop chat-only install choice (#14245) adds 679 B raw / 205 B transfer (6,842,169 -> 6,842,848 B raw,
+  // 2,060,319 -> 2,060,524 B transfer against 26e246d407, one machine and build, Node 24, 96 chunks): the
+  // first-run checkbox lives in the eager startup screen and the Train hint in the eager sidebar. Raised by that.
+  // Explicit browser download names retain the prior startup margin.
+  // The About tab's iGPU memory row (#14317): merged with main at ca0252968 the build measures 6,848,044 B raw /
+  // 2,062,332 B transfer (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // Token usage tracking (#14076) keeps the saved-count matching, recount scheduling and their review guards in the
+  // eager chat runtime: merged with main at 4e0fe5b99 the build measures 6,857,322 B raw / 2,064,700 B transfer
+  // (Node 24, 96 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  // The Allow oversized model loads row in Settings (#14379) adds its switch and strings to the eager settings
+  // chunk and locale: 1,886 B raw / 628 B transfer (6,857,308 -> 6,859,194 B raw, 2,064,700 -> 2,065,328 B
+  // transfer against f1f283a24e, one machine and build, Node 24, 96 chunks). Raised by that, same margin.
+  // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
+  // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
+  // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Chat safety for diagrams, redirect links and approval cards adds 617 B raw / 238 B transfer (6,862,624 ->
+  // 6,863,241 B raw, 2,066,394 -> 2,066,632 B transfer against 731cb16c2, one machine and build, the diagram
+  // source check itself loaded with the first diagram). Raised to that build plus the same margin.
+  // The sidebar Projects menu's Projects home item and its strings add 240 B raw / no transfer (6,862,692 ->
+  // 6,862,932 B raw, 2,066,441 -> 2,066,440 B transfer against 2aeeceb07e, one machine and build, 96 chunks).
+  // Merged with main at 2552ee3895 the build measures 6,863,532 B raw / 2,066,692 B transfer (Node 26, 97 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // Picking a preset forgetting a model's remembered sampling (#14128) keeps its preset marks in the eager chat
+  // runtime store: merged with main at 664fe02d8c the build measures 6,865,380 B raw / 2,067,132 B transfer
+  // (Node 24, 97 chunks), 1,848 B raw / 440 B transfer over the build above. Raised to that plus the same margin.
+  transferBytes: 2_067_321,
+  rawBytes: 6_865_540,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

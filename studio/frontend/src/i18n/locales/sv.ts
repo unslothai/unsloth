@@ -48,6 +48,11 @@ export const sv = {
     removeFromMessage: "Ta bort från meddelandet",
   },
   browser: {
+    drafts: {
+      title: "Ladda ur en sida med inmatad text?",
+      description: "För att hålla chatten responsiv fortsätter bara tre dolda sidor med inmatad text att köras. Om du fortsätter laddas {pages} ur och osparad text kan gå förlorad. Avbryt återgår till föregående flik.",
+      confirm: "Ladda ur och fortsätt",
+    },
     agentSettings: {
       title: "Webbläsaranvändning",
       enable: "Låt modeller använda webbläsaren",
@@ -939,6 +944,7 @@ export const sv = {
       byProject: "Efter projekt",
       inOneList: "I en lista",
       sortChatsBy: "Sortera chattar efter",
+      projectsHome: "Projektöversikt",
       lastUpdated: "Senast uppdaterad",
       manualOrder: "Manuell ordning",
       switchedToManual: "Manuell sortering: dra rader för att ändra ordning",
@@ -2574,6 +2580,9 @@ export const sv = {
           "När en modell läses in avlastas aldrig en annan. En modell som inte får plats läses inte in. Avlastning efter inaktivitet och träning frigör fortfarande minne.",
         multiModelHint:
           "Gäller chatt-, tal-, bild- och videomodeller. Varje inläst chattmodell besvarar de förfrågningar som anger den. Med flera GPU:er försöker Unsloth placera en ny modell på en GPU som ingen annan modell använder. ”När de får plats” lämnar ungefär 1 GB ledigt. ”När de får plats” och ”Alltid” avlastar aldrig en modell på en annan GPU.",
+        allowOversizedLoad: "Tillåt inläsning av för stora modeller",
+        allowOversizedLoadDescription: "Läs in bild- och videomodeller även när minneskontrollen säger att de inte får plats.",
+        allowOversizedLoadHint: "Gäller när CPU och GPU delar ett minne (Apple Silicon, integrerade GPU:er). Studio vägrar en inläsning när uppskattningen av modellvikterna är större än minnet som finns kvar efter reserven för operativsystemet. Med detta påslaget görs inläsningen ändå. Uppskattningen kan fela åt båda hållen: en för stor inläsning kan misslyckas, ta slut på minnet, få datorn att swappa kraftigt eller sluta svara, eller stoppa Studio. Av som standard.",
         mediaIdleUnloadDescription:
           "Frigör VRAM genom att avlasta bild- och videomodeller efter så många inaktiva sekunder. 0 behåller dem inlästa; minst 60.",
         mlockVetoed:
@@ -3426,6 +3435,7 @@ export const sv = {
       audioCppVersion: "audio.cpp-version",
       hardware: "Maskinvara",
       gpu: "GPU",
+      gpuIntegrated: "integrerad",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

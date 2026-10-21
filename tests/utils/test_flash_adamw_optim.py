@@ -27,14 +27,40 @@ def stub_flashoptim(monkeypatch):
             betas = (0.9, 0.999),
             eps = 1e-8,
             weight_decay = 1e-2,
+            decouple_lr = False,
+            quantize = True,
+            compress_state_dict = True,
             master_weight_bits = 24,
             **kwargs,
         ):
             calls.append(
                 dict(lr = lr, betas = betas, eps = eps, master_weight_bits = master_weight_bits, **kwargs)
             )
-            # flashoptim's own defaults carry initial_lr = the constructor lr.
-            super().__init__(params, dict(lr = lr, initial_lr = lr, weight_decay = weight_decay))
+            if quantize is not True:
+                calls[-1]["quantize"] = quantize
+            if compress_state_dict is not True:
+                calls[-1]["compress_state_dict"] = compress_state_dict
+            # flashoptim 0.1.4's own defaults carry initial_lr = the constructor lr and quantize,
+            # and a group without the key falls back to self._quantize.
+            self._quantize = quantize
+            super().__init__(
+                params, dict(lr = lr, initial_lr = lr, weight_decay = weight_decay, quantize = quantize)
+            )
+
+        # flashoptim: step() calls step_param() for every parameter with a gradient, and
+        # gradient release calls step_param() directly.
+        def step(self, closure = None):
+            for group in self.param_groups:
+                for p in group["params"]:
+                    if p.grad is not None:
+                        self.step_param(p, group)
+
+        def step_param(
+            self,
+            p,
+            group = None,
+        ):
+            return None
 
     module = types.ModuleType("flashoptim")
     module.FlashAdamW = FlashAdamW
@@ -404,3 +430,90 @@ def test_adamw_flash_requires_compatible_flashoptim(stub_flashoptim, monkeypatch
     monkeypatch.setattr(sys.modules["flashoptim"], "__version__", "0.1.1")
     with pytest.raises(ImportError, match = "flashoptim>=0.1.4, found 0.1.1"):
         flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args())
+
+
+def test_adamw_flash_rejects_fp16_params_with_unquantized_moments(stub_flashoptim, monkeypatch):
+    # flashoptim stores unquantized moments in the param dtype: an fp16 variance underflows to 0
+    # for |grad| < ~2e-4, and the next step divides the momentum by eps alone.
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    fp16 = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+    fp32 = torch.nn.Parameter(torch.zeros(4))
+    bf16 = torch.nn.Parameter(torch.zeros(4, dtype = torch.bfloat16))
+    for optim_args in (None, "quantize=False", "master_weight_bits=none"):
+        optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(
+            _flash_kwargs_args(optim_args = optim_args)
+        )
+        with pytest.raises(ValueError, match = "float16"):
+            optimizer_cls([{"params": [fp32, fp16]}], **optimizer_kwargs)
+        # bf16 / fp32 keep working with unquantized moments.
+        optimizer_cls([{"params": [fp32, bf16]}], **optimizer_kwargs)
+    # quantize=True stores the variance as sqrt with its own scales, so fp16 is accepted.
+    optimizer_cls, optimizer_kwargs = flash_adamw.get_flash_adamw_cls_and_kwargs(
+        _flash_kwargs_args(optim_args = "quantize=True")
+    )
+    optimizer_cls([{"params": [fp32, fp16]}], **optimizer_kwargs)
+
+
+def test_adamw_flash_fp16_check_covers_positional_late_and_unfrozen_groups(
+    stub_flashoptim, monkeypatch
+):
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    optimizer_cls, _ = flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args())
+    fp32 = torch.nn.Parameter(torch.zeros(4))
+    fp16 = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+    # quantize passed positionally (lr, betas, eps, weight_decay, decouple_lr, quantize).
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer_cls([fp32, fp16], 1e-3, (0.9, 0.999), 1e-8, 0.0, False, False)
+    # A group added after construction (progressive unfreezing) is checked too.
+    optimizer = optimizer_cls([fp32], quantize = False)
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.add_param_group({"params": [fp16]})
+    # A frozen fp16 base (fp32 LoRA on top) is fine until it is unfrozen and gets a gradient.
+    frozen = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16), requires_grad = False)
+    optimizer = optimizer_cls([fp32, frozen], quantize = False)
+    fp32.grad = torch.ones(4)
+    optimizer.step()
+    frozen.requires_grad_(True)
+    frozen.grad = torch.ones(4, dtype = torch.float16)
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.step()
+    # Gradient release updates through step_param directly, without step().
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.step_param(frozen)
+    # Frozen again after backward: .grad stays attached, but flashoptim skips the param.
+    frozen.requires_grad_(False)
+    optimizer.step()
+    optimizer.step_param(frozen)
+    # Resuming a checkpoint whose group had quantize=False switches an accepted fp16 group.
+    trainable = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+    optimizer = optimizer_cls([trainable], quantize = True)
+    saved = optimizer.state_dict()
+    saved["param_groups"][0]["quantize"] = False
+    optimizer.load_state_dict(saved)
+    trainable.grad = torch.ones(4, dtype = torch.float16)
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.step()
+    # A vanilla AdamW state dict has no quantize key: the optimizer-wide quantize=False applies.
+    trainable = torch.nn.Parameter(torch.zeros(4, dtype = torch.float16))
+    optimizer = optimizer_cls([trainable], quantize = True)
+    saved = optimizer.state_dict()
+    saved["param_groups"][0].pop("quantize")
+    optimizer = optimizer_cls([trainable], quantize = True)
+    optimizer._quantize = False
+    optimizer.load_state_dict(saved)
+    trainable.grad = torch.ones(4, dtype = torch.float16)
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.step()
+    # A refused group is not kept, so the caller can add the params again with quantize=True.
+    optimizer = optimizer_cls([fp32], quantize = False)
+    with pytest.raises(ValueError, match = "float16"):
+        optimizer.add_param_group({"params": [fp16]})
+    assert len(optimizer.param_groups) == 1
+    optimizer.add_param_group({"params": [fp16], "quantize": True})
+    assert len(optimizer.param_groups) == 2
+    fp16.grad = torch.ones(4, dtype = torch.float16)
+    optimizer.step()

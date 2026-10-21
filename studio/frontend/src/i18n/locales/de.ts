@@ -50,6 +50,11 @@ export const de = {
     removeFromMessage: "Aus Nachricht entfernen",
   },
   browser: {
+    drafts: {
+      title: "Seite mit eingegebenem Text entladen?",
+      description: "Damit der Chat reaktionsschnell bleibt, laufen nur drei ausgeblendete Seiten mit eingegebenem Text weiter. Beim Fortfahren wird {pages} entladen. Nicht gespeicherter Text kann verloren gehen. Abbrechen kehrt zum vorherigen Tab zurück.",
+      confirm: "Entladen und fortfahren",
+    },
     agentSettings: {
       title: "Browsernutzung",
       enable: "Modelle den Browser nutzen lassen",
@@ -843,6 +848,7 @@ export const de = {
       byProject: "Nach Projekt",
       inOneList: "In einer Liste",
       sortChatsBy: "Chats sortieren nach",
+      projectsHome: "Projektübersicht",
       lastUpdated: "Zuletzt aktualisiert",
       manualOrder: "Manuelle Reihenfolge",
       switchedToManual: "Manuell sortiert: Zeilen zum Umordnen ziehen",
@@ -2422,6 +2428,9 @@ export const de = {
         multiModelDescriptionAlways:
           "Beim Laden eines Modells wird nie ein anderes entladen. Ein Modell, das nicht passt, wird nicht geladen. Das automatische Entladen im Leerlauf und das Training geben weiterhin Speicher frei.",
         multiModelHint: "Gilt für Chat-, Sprach-, Bild- und Videomodelle. Jedes geladene Chat-Modell beantwortet die Anfragen, die es nennen. Bei mehreren GPUs versucht Unsloth, ein neues Modell auf eine GPU zu legen, die kein anderes Modell nutzt. „Wenn sie passen“ lässt etwa 1 GB frei. „Wenn sie passen“ und „Immer“ entladen nie ein Modell auf einer anderen GPU.",
+        allowOversizedLoad: "Übergroße Modelle trotzdem laden",
+        allowOversizedLoadDescription: "Bild- und Videomodelle auch laden, wenn die Speicherprüfung meldet, dass sie nicht passen.",
+        allowOversizedLoadHint: "Gilt, wenn CPU und GPU sich einen Speicher teilen (Apple Silicon, integrierte GPUs). Studio verweigert das Laden, wenn die geschätzten Modellgewichte größer sind als der Speicher, der nach der Reserve für das Betriebssystem bleibt. Ist dies aktiviert, wird das Laden trotzdem versucht. Die Schätzung kann in beide Richtungen falsch sein: Ein zu großes Modell kann fehlschlagen, den gesamten Speicher belegen, starkes Auslagern verursachen, den Computer einfrieren oder Studio beenden. Standardmäßig aus.",
         mediaIdleUnloadDescription:
           "Gibt VRAM frei, indem die Bild- und Videomodelle nach der angegebenen Anzahl von Sekunden ohne Aktivität entladen werden. Bei 0 bleiben sie geladen; der Mindestwert ist 60.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
@@ -3246,6 +3255,7 @@ export const de = {
       audioCppVersion: "audio.cpp-Version",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integriert",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",

@@ -50,6 +50,11 @@ export const es = {
     removeFromMessage: "Quitar del mensaje",
   },
   browser: {
+    drafts: {
+      title: "¿Descargar una página con texto introducido?",
+      description: "Para mantener la capacidad de respuesta del chat, solo siguen ejecutándose tres páginas ocultas con texto introducido. Continuar descargará {pages} y podría perder texto sin guardar. Cancelar vuelve a la pestaña anterior.",
+      confirm: "Descargar y continuar",
+    },
     agentSettings: {
       title: "Uso del navegador",
       enable: "Permitir que los modelos usen el navegador",
@@ -842,6 +847,7 @@ export const es = {
       byProject: "Por proyecto",
       inOneList: "En una sola lista",
       sortChatsBy: "Ordenar chats por",
+      projectsHome: "Inicio de proyectos",
       lastUpdated: "Última actualización",
       manualOrder: "Orden manual",
       switchedToManual: "Orden manual: arrastra las filas para reordenarlas",
@@ -2417,6 +2423,9 @@ export const es = {
         multiModelDescriptionAlways:
           "Al cargar un modelo nunca se descarga otro. Un modelo que no cabe no se carga. La descarga automática por inactividad y el entrenamiento siguen liberando memoria.",
         multiModelHint: "Se aplica a los modelos de chat, voz, imagen y vídeo. Cada modelo de chat cargado responde a las solicitudes que lo nombran. Con varias GPU, Unsloth intenta colocar un modelo nuevo en una GPU que ningún otro modelo usa. «Cuando quepan» deja aproximadamente 1 GB libre. «Cuando quepan» y «Siempre» nunca descargan un modelo de otra GPU.",
+        allowOversizedLoad: "Permitir cargar modelos demasiado grandes",
+        allowOversizedLoadDescription: "Cargar modelos de imagen y vídeo aunque la comprobación de memoria indique que no caben.",
+        allowOversizedLoadHint: "Se aplica cuando la CPU y la GPU comparten una sola memoria (Apple Silicon, GPU integradas). Studio rechaza la carga cuando su estimación de los pesos del modelo supera la memoria que queda tras reservar espacio para el sistema operativo. Con esta opción activada, se intenta cargar de todos modos. La estimación puede fallar en ambos sentidos: una carga demasiado grande puede fallar, agotar la memoria, hacer que el equipo use mucho la memoria de intercambio o deje de responder, o cerrar Studio. Desactivado de forma predeterminada.",
         mediaIdleUnloadDescription:
           "Libera la VRAM descargando los modelos de imagen y vídeo después de este número de segundos de inactividad. El valor 0 los mantiene cargados; el mínimo es 60.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
@@ -3240,6 +3249,7 @@ export const es = {
       audioCppVersion: "Versión de audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
+      gpuIntegrated: "integrada",
       cuda: "CUDA",
       rocm: "ROCm",
       xpu: "XPU",
