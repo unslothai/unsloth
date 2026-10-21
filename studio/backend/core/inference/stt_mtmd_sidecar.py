@@ -63,6 +63,7 @@ from core.inference.stt_sidecar import (
     _TARGET_SAMPLE_RATE,
     _training_active,
     _write_revision_record,
+    QWEN3_ASR_LANGUAGE_NAMES,
     normalize_whisper_language,
 )
 
@@ -83,6 +84,8 @@ class MtmdSttModel:
     transcript_marker: Optional[str] = None
 
 
+# All entries use Qwen3-ASR's assistant-prefill language protocol. Revisit
+# language conditioning in _post_transcribe before adding another model family.
 MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
     "qwen3-asr-0.6b": MtmdSttModel(
         repo = "unslothai/Qwen3-ASR-0.6B-GGUF",
@@ -1155,8 +1158,8 @@ class MtmdSttSidecar:
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
-        ``fast`` has no effect: decoding is greedy and the model picks the
-        language itself.
+        ``fast`` has no effect: decoding is greedy. A supported ``language``
+        prefills the assistant turn; otherwise the model auto-detects it.
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
@@ -1197,6 +1200,7 @@ class MtmdSttSidecar:
                 model_id,
                 wav_bytes,
                 audio_seconds,
+                language = language,
                 cancel_event = cancel_event,
                 **({"api_key": api_key} if api_key else {}),
                 **({"on_progress": on_progress} if on_progress is not None else {}),
@@ -1230,6 +1234,7 @@ class MtmdSttSidecar:
         wav_bytes: bytes,
         audio_seconds: Optional[float] = None,
         *,
+        language: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
         on_progress = None,
         api_key: Optional[str] = None,
@@ -1255,6 +1260,12 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
+        # Qwen3-ASR selects a forced language from the assistant prefill.
+        forced_language = QWEN3_ASR_LANGUAGE_NAMES.get(normalize_whisper_language(language) or "")
+        assistant_prefix = ""
+        if forced_language:
+            assistant_prefix = f"language {forced_language}<asr_text>"
+            payload["messages"].append({"role": "assistant", "content": assistant_prefix})
         if on_progress is not None:
             payload["stream"] = True
         connection = http.client.HTTPConnection(
@@ -1281,7 +1292,9 @@ class MtmdSttSidecar:
             )
             with connection.getresponse() as response:
                 if on_progress is not None and 200 <= response.status < 300:
-                    text = ""
+                    # Prefill tokens are not echoed in the stream. Keep the marker
+                    # locally so progress can publish the generated transcript immediately.
+                    text = assistant_prefix
                     finished = False
                     for line in response:
                         if cancel_event is not None and cancel_event.is_set():
