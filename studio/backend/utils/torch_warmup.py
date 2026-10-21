@@ -267,10 +267,25 @@ def gate_torch_stack_import(reason: str, log = None) -> bool:
     ``torch._inductor``; racing the warm inside ``import torch._dynamo`` takes the two package locks
     in opposite order, and CPython's deadlock detector leaves a half-built module in sys.modules."""
     if _dynamo_done:
+        _prime_cuda_driver()
         return True
     if os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1":
+        _prime_cuda_driver()  # the kill switch skips only the dynamo wait
         return False
-    return ensure_dynamo_imported(log = log or logger, reason = reason, timeout = _dynamo_gate_timeout())
+    imported = ensure_dynamo_imported(
+        log = log or logger, reason = reason, timeout = _dynamo_gate_timeout()
+    )
+    _prime_cuda_driver()
+    return imported
+
+
+def _prime_cuda_driver() -> None:
+    """``cuInit`` off the GIL before the gated importer probes CUDA. See utils/cuda_driver_prime.py."""
+    try:
+        from utils.cuda_driver_prime import prime_cuda_driver  # noqa: PLC0415
+        prime_cuda_driver()
+    except Exception as exc:  # noqa: BLE001 -- never fatal; torch initialises as before
+        logger.debug("cuda driver prime skipped: %r", exc)
 
 
 def ensure_dynamo_imported(
@@ -341,6 +356,8 @@ def close_dynamo_import_window(log) -> bool:
     front of its first one. A warning, not a retry: a process that lost the race does not
     recover. Wrap the IMPORT of this module too, since it reaches a private CPython name."""
     imported = ensure_dynamo_imported(log = log, reason = "diffusers import")
+    # `import diffusers` probes CUDA at module level (diffusers.utils.torch_utils) with the GIL held.
+    _prime_cuda_driver()
     # Not nested in the dynamo gate: the background import it waits on reaches torch._dynamo.
     claim_media_import_window(log)
     if imported:

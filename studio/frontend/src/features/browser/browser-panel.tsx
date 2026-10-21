@@ -169,6 +169,7 @@ import {
   pageDownload,
   useBrowserStore,
 } from "./store";
+import { sendFrameCommand } from "./page-frame";
 import { TabView } from "./tab-view";
 import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
 import { useShallow } from "zustand/shallow";
@@ -1436,21 +1437,21 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
   const { goBack, goForward, reload } = useBrowserStore.getState();
   const native = nativePage(tab);
   const canGoBack = Boolean(
-    tab && (tab.index > 0 || (native && (tab.nativeError || tab.nativeHistory?.back))),
+    tab && (tab.index > 0 || tab.pageHistory?.back || (native && (tab.nativeError || tab.nativeHistory?.back))),
   );
   const canGoForward = Boolean(
-    tab && (tab.index < tab.history.length - 1 || (native && tab.nativeHistory?.forward)),
+    tab && (tab.index < tab.history.length - 1 || tab.pageHistory?.forward || (native && tab.nativeHistory?.forward)),
   );
   const back = () => {
     if (!tab) return;
     if (native && tab.nativeError && returnToNativePage(tab.id)) return;
     if (native && tab.nativeHistory?.back) nativeAction(tab.id, "back");
-    else goBack(tab.id);
+    else if (!tab.pageHistory?.back || !sendFrameCommand(tab.id, { command: "go", delta: -1 })) goBack(tab.id);
   };
   const forward = () => {
     if (!tab) return;
     if (native && tab.nativeHistory?.forward) nativeAction(tab.id, "forward");
-    else goForward(tab.id);
+    else if (!tab.pageHistory?.forward || !sendFrameCommand(tab.id, { command: "go", delta: 1 })) goForward(tab.id);
   };
   return (
     <>

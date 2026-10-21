@@ -158,11 +158,12 @@ test("suppression retains layout but does not publish a phantom frame", () => {
 test("a net-zero docked drag must not discard the saved full-width X", () => {
   const update = layoutSource.slice(layoutSource.indexOf("function updateDrag"), layoutSource.indexOf("function finishDrag"));
   const finish = layoutSource.slice(layoutSource.indexOf("function finishDrag"));
-  assert.doesNotMatch(update, /chosenLeftRef\.current = null/);
-  assert.match(finish, /if \(left !== baseLeft\) \{\s*hasDraggedLeftRef\.current = true;\s*chosenLeftRef\.current = narrowedRef\.current \? null : left;/);
-  assert.match(layoutSource, /restoreLeftRef\.current = chosenLeftRef\.current/);
-  assert.match(layoutSource, /if \(!narrowed\) \{\s*restoreLeftRef\.current = chosenLeftRef\.current;\s*reconcileRef\.current\?\.\(\);/);
-  assert.match(layoutSource, /place\(hasDraggedTopRef\.current, currentTop, maxTop\)/);
+  // Only a released drag replaces the stored spot, per axis.
+  assert.doesNotMatch(update, /intentRef\.current/);
+  assert.match(finish, /left: left !== baseLeft \? left : intent\.left,/);
+  assert.match(finish, /top: top !== baseTop \? top : intent\.top,/);
+  assert.match(layoutSource, /if \(!narrowed\) \{\s*reconcileRef\.current\?\.\(\);/);
+  assert.match(layoutSource, /placeAxis\(intentRef\.current\.top, maxTop\)/);
 });
 
 test("the panel width clamps to the same bounds used by docking", async () => {
@@ -198,7 +199,6 @@ test("spacing and the resize handle use the same live UI scale", () => {
 test("docking never remounts the monitor or loses its drag geometry", () => {
   assert.doesNotMatch(source, /key=\{`\$\{panelKey\}-/);
   assert.match(layoutSource, /useLayoutEffect\(\(\) => \{\s*if \(narrowedRef\.current === narrowed\)/);
-  assert.match(layoutSource, /const restoreTo = restoreLeftRef\.current;/);
-  assert.match(layoutSource, /place\(hasDraggedLeftRef\.current, currentLeft, maxLeft\)/);
+  assert.match(layoutSource, /placeAxis\(intentRef\.current\.left, maxLeft\)/);
   assert.match(source, /const unpinnedSidebarWidth = sidebarHoldsRail \? paintedSidebarWidth : 0/);
 });
