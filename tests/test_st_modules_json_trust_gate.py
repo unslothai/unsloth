@@ -1505,3 +1505,228 @@ def test_an_unreadable_module_config_is_tolerated_where_upstream_gates_it(tmp_pa
         False,
         st_models.Dense,
     )
+
+
+# Router routes, whole-model module types and rooted module paths: each opens configs of its
+# own one level down, so the gate has to follow them where the loader does.
+
+_ROUTER = "sentence_transformers.models.Router"
+
+
+def _nested_router_model(tmp_path, inner_types):
+    """A model whose Router's only route is another Router, whose types are inner_types."""
+    model = tmp_path / "nested"
+    _write_module_config(
+        model / "0_Router",
+        "router_config.json",
+        {
+            "types": {"inner": _ROUTER},
+            "structure": {"query": ["inner"]},
+            "parameters": {},
+        },
+    )
+    _write_module_config(
+        model / "0_Router" / "inner",
+        "router_config.json",
+        {
+            "types": inner_types,
+            "structure": {"query": list(inner_types)},
+            "parameters": {},
+        },
+    )
+    (model / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": "0_Router", "type": _ROUTER}]),
+        encoding = "utf8",
+    )
+    return model
+
+
+def test_a_router_inside_a_router_is_checked_on_the_load_route(model_dir, tmp_path):
+    pytest.importorskip("sentence_transformers.models").Router
+    _, witness = model_dir
+    model = _nested_router_model(tmp_path, {"payload": f"{MARKER}.Thing"})
+
+    with pytest.raises(ValueError, match = "outside sentence_transformers"):
+        _load_modules(model, False)
+    assert not witness.exists()
+
+
+def test_a_router_inside_a_router_is_checked_on_the_delegated_route(
+    model_dir, tmp_path, monkeypatch
+):
+    pytest.importorskip("sentence_transformers.models").Router
+    _simulate_pre_six(monkeypatch)
+    _, witness = model_dir
+    model = _nested_router_model(tmp_path, {"payload": f"{MARKER}.Thing"})
+
+    with pytest.raises(ValueError, match = "outside sentence_transformers"):
+        FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+    assert not witness.exists()
+
+
+def test_a_router_inside_a_router_is_fetched_from_the_hub_on_the_delegated_route(
+    tmp_path, monkeypatch
+):
+    pytest.importorskip("sentence_transformers.models").Router
+    _simulate_pre_six(monkeypatch)
+    model = _nested_router_model(tmp_path, {"payload": "evil_pkg.Thing"})
+    requested = []
+
+    def fake_download(repo, filename, **kwargs):
+        requested.append(filename)
+        path = model / filename
+        if not path.is_file():
+            from huggingface_hub.errors import EntryNotFoundError
+            raise EntryNotFoundError(filename)
+        return str(path)
+
+    _patch_download(monkeypatch, fake_download)
+    with pytest.raises(ValueError, match = "evil_pkg.Thing"):
+        FastSentenceTransformer._check_delegated_module_config(
+            "acme/embedder",
+            {"idx": 0, "name": "0", "path": "0_Router", "type": _ROUTER},
+            _ROUTER,
+            pytest.importorskip("sentence_transformers.models").Router,
+        )
+    assert "0_Router/inner/router_config.json" in requested
+
+
+def test_a_real_nested_router_still_passes(tmp_path, monkeypatch):
+    pytest.importorskip("sentence_transformers.models").Router
+    model = _nested_router_model(
+        tmp_path,
+        {
+            "a": "sentence_transformers.models.Pooling",
+            "b": "sentence_transformers.models.Normalize",
+            "c": "sentence_transformers.models.Dense",
+        },
+    )
+    _write_module_config(
+        model / "0_Router" / "inner" / "c",
+        "config.json",
+        {
+            "in_features": 4,
+            "out_features": 4,
+            "activation_function": "torch.nn.modules.activation.Tanh",
+        },
+    )
+    FastSentenceTransformer._check_module_config_class_refs(
+        str(model / "0_Router"),
+        _ROUTER,
+        str(model),
+        False,
+        pytest.importorskip("sentence_transformers.models").Router,
+    )
+    _simulate_pre_six(monkeypatch)
+    FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+
+
+def test_a_bad_route_under_a_nested_router_is_fine_with_consent(tmp_path):
+    model = _nested_router_model(tmp_path, {"payload": "evil_pkg.Thing"})
+    FastSentenceTransformer._check_module_config_class_refs(
+        str(model / "0_Router"),
+        _ROUTER,
+        str(model),
+        True,
+        pytest.importorskip("sentence_transformers.models").Router,
+    )
+
+
+def test_a_whole_model_is_not_accepted_as_a_module(tmp_path):
+    model = tmp_path / "model"
+    (model / "inner").mkdir(parents = True)
+    (model / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "inner",
+                    "type": "sentence_transformers.SentenceTransformer",
+                }
+            ]
+        ),
+        encoding = "utf8",
+    )
+    with pytest.raises(ValueError, match = "whole model"):
+        FastSentenceTransformer._check_modules_json_types(str(model), None, False)
+    with pytest.raises(ValueError, match = "whole model"):
+        _load_modules(model, False)
+
+
+def test_a_whole_model_is_not_accepted_as_a_router_route(tmp_path):
+    model = tmp_path / "model"
+    _write_module_config(
+        model / "0_Router",
+        "router_config.json",
+        {
+            "types": {"inner": "sentence_transformers.SentenceTransformer"},
+            "structure": {"query": ["inner"]},
+            "parameters": {},
+        },
+    )
+    with pytest.raises(ValueError, match = "whole model"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(model / "0_Router"),
+            _ROUTER,
+            str(model),
+            False,
+            pytest.importorskip("sentence_transformers.models").Router,
+        )
+
+
+def test_word_embeddings_tokenizer_class_must_be_a_word_tokenizer(tmp_path):
+    st_models = pytest.importorskip("sentence_transformers.models")
+    if getattr(st_models, "WordEmbeddings", None) is None:
+        pytest.skip("this sentence-transformers has no WordEmbeddings")
+    folder = _write_module_config(
+        tmp_path / "0_WordEmbeddings",
+        "wordembedding_config.json",
+        {"tokenizer_class": _ROUTER, "max_seq_length": 8},
+    )
+    with pytest.raises(ValueError, match = "word tokenizer"):
+        FastSentenceTransformer._check_module_config_class_refs(
+            str(folder),
+            "sentence_transformers.models.WordEmbeddings",
+            "acme/embedder",
+            False,
+            st_models.WordEmbeddings,
+        )
+    (folder / "wordembedding_config.json").write_text(
+        json.dumps(
+            {
+                "tokenizer_class": "sentence_transformers.models.tokenizer.WhitespaceTokenizer.WhitespaceTokenizer",
+                "max_seq_length": 8,
+            }
+        )
+    )
+    FastSentenceTransformer._check_module_config_class_refs(
+        str(folder),
+        "sentence_transformers.models.WordEmbeddings",
+        "acme/embedder",
+        False,
+        st_models.WordEmbeddings,
+    )
+
+
+def test_a_rooted_router_path_checks_the_folder_the_loader_reads(tmp_path, monkeypatch):
+    """Path(model, "/x") is "/x" for the loader, so stripping the slash checked the wrong folder."""
+    pytest.importorskip("sentence_transformers.models").Router
+    _simulate_pre_six(monkeypatch)
+    elsewhere = _write_module_config(
+        tmp_path / "elsewhere",
+        "router_config.json",
+        {
+            "types": {"payload": "evil_pkg.Thing"},
+            "structure": {},
+            "parameters": {},
+        },
+    )
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": str(elsewhere), "type": _ROUTER}]),
+        encoding = "utf8",
+    )
+    with pytest.raises(ValueError, match = "evil_pkg.Thing"):
+        FastSentenceTransformer._check_modules_json_types(str(model), None, False)

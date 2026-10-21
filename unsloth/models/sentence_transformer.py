@@ -1340,9 +1340,12 @@ class FastSentenceTransformer(FastModel):
             )
 
         if class_ref.startswith("sentence_transformers."):
-            return FastSentenceTransformer._import_sentence_transformers_class(
+            resolved = FastSentenceTransformer._import_sentence_transformers_class(
                 class_ref, model_name
             )
+            if not trust_remote_code:
+                FastSentenceTransformer._refuse_whole_model_class(resolved, class_ref, model_name)
+            return resolved
 
         if not trust_remote_code:
             # Not transformers' resolve_trust_remote_code: it appends a hf.co URL that is bogus for local dirs.
@@ -1401,6 +1404,31 @@ class FastSentenceTransformer(FastModel):
                 f"Refusing to load it."
             )
         return resolved
+
+    # A whole model is not a module: its load() opens a modules.json of its own, which
+    # nothing here has read, and below 6.0 imports what that names from the folder.
+    _WHOLE_MODEL_CLASS_NAMES = frozenset(
+        {"SentenceTransformer", "CrossEncoder", "SparseEncoder", "BaseModel"}
+    )
+
+    @staticmethod
+    def _refuse_whole_model_class(resolved, class_ref, model_name):
+        for ancestor in getattr(resolved, "__mro__", ()):
+            module_name = getattr(ancestor, "__module__", "") or ""
+            if (
+                module_name.split(".")[0] == "sentence_transformers"
+                and getattr(ancestor, "__name__", "")
+                in FastSentenceTransformer._WHOLE_MODEL_CLASS_NAMES
+            ):
+                raise ValueError(
+                    f"Unsloth: The model {model_name} declares a whole model ({class_ref!r}) "
+                    f"as one of its modules. Its loader reads a second, unchecked set of "
+                    f"modules. Please pass the argument `trust_remote_code=True` to allow "
+                    f"custom code to be run."
+                )
+
+    # Router routes can hold further Routers; a "" route is the same folder again.
+    _MAX_SUB_MODULE_DEPTH = 8
 
     @staticmethod
     def _is_transformer_module_ref(class_ref):
@@ -1466,7 +1494,13 @@ class FastSentenceTransformer(FastModel):
 
     @staticmethod
     def _check_module_config_class_refs(
-        load_path, class_ref, model_name, trust_remote_code, module_class
+        load_path,
+        class_ref,
+        model_name,
+        trust_remote_code,
+        module_class,
+        descend = None,
+        depth = 0,
     ):
         if trust_remote_code:
             return
@@ -1494,6 +1528,7 @@ class FastSentenceTransformer(FastModel):
         config_names.append("config.json")
 
         refs = []
+        routes = []
         for config_name in dict.fromkeys(config_names):
             config_path = os.path.join(load_path, config_name)
             if not os.path.isfile(config_path):
@@ -1538,6 +1573,11 @@ class FastSentenceTransformer(FastModel):
                             for value in types.values()
                             if isinstance(value, str)
                         ]
+                        routes += [
+                            (route, value)
+                            for route, value in types.items()
+                            if isinstance(route, str) and isinstance(value, str)
+                        ]
                 elif isinstance(config.get(key), str):
                     refs.append((key, config[key], prefix))
 
@@ -1557,6 +1597,59 @@ class FastSentenceTransformer(FastModel):
                     f"code. Please pass the argument `trust_remote_code=True` to allow custom code to "
                     f"be run."
                 )
+            if key == "tokenizer_class":
+                # WordEmbeddings.load calls tokenizer_class.load(folder): only a word
+                # tokenizer is meant here, not a Router or a whole model with configs of
+                # their own.
+                FastSentenceTransformer._require_word_tokenizer(value, class_ref, model_name)
+
+        # Router.load runs the same unchecked loaders one folder down for each route, so
+        # each route is checked the way this module was, where the loader will read it.
+        for route, value in routes:
+            if depth >= FastSentenceTransformer._MAX_SUB_MODULE_DEPTH:
+                raise ValueError(
+                    f"Unsloth: The model {model_name} nests its {class_ref} modules more than "
+                    f"{FastSentenceTransformer._MAX_SUB_MODULE_DEPTH} levels deep. Please pass "
+                    f"the argument `trust_remote_code=True` to allow custom code to be run."
+                )
+            sub_class = FastSentenceTransformer._import_sentence_transformers_class(
+                value, model_name
+            )
+            FastSentenceTransformer._refuse_whole_model_class(sub_class, value, model_name)
+            if descend is not None:
+                descend(route, value, sub_class, depth + 1)
+            else:
+                FastSentenceTransformer._check_module_config_class_refs(
+                    os.path.join(load_path, route),
+                    value,
+                    model_name,
+                    False,
+                    sub_class,
+                    depth = depth + 1,
+                )
+
+    @staticmethod
+    def _require_word_tokenizer(class_ref, module_ref, model_name):
+        from sentence_transformers.util import import_from_string
+
+        resolved = None
+        if all(part.isidentifier() for part in class_ref.split(".")):
+            try:
+                resolved = import_from_string(class_ref)
+            except Exception:
+                resolved = None
+        names = {
+            getattr(ancestor, "__name__", "")
+            for ancestor in getattr(resolved, "__mro__", ())
+            if (getattr(ancestor, "__module__", "") or "").split(".")[0] == "sentence_transformers"
+        }
+        if "WordTokenizer" not in names:
+            raise ValueError(
+                f"Unsloth: The model {model_name} declares the module {module_ref} whose "
+                f"tokenizer_class is {class_ref!r}, which is not a sentence-transformers word "
+                f"tokenizer. Please pass the argument `trust_remote_code=True` to allow custom "
+                f"code to be run."
+            )
 
     @staticmethod
     def _is_commit(revision):
@@ -1937,6 +2030,7 @@ class FastSentenceTransformer(FastModel):
         token = None,
         cache_dir = None,
         revision = None,
+        depth = 0,
     ):
         """Check a module's own config on a delegated route, where nothing is local yet.
 
@@ -1966,10 +2060,13 @@ class FastSentenceTransformer(FastModel):
         folder = module_config.get("path")
         if not isinstance(folder, str):
             return
+        # A rooted path is not a repository folder: Path(model, "/x") is "/x" to the
+        # loader, so that local folder is the one to check.
+        rooted = folder.startswith("/") or os.path.isabs(folder)
         # An empty path is the repository root, which sentence-transformers accepts and
         # loads the root config.json from. Skipping it left the whole check bypassable by
         # declaring Dense with "path": "".
-        folder = folder.strip("/")
+        folder = folder.rstrip("/") if rooted else folder.strip("/")
 
         config_names = []
         config_file_name = getattr(module_class, "config_file_name", None)
@@ -2003,7 +2100,9 @@ class FastSentenceTransformer(FastModel):
             is_local = False
 
         folders = []
-        if is_local:
+        if rooted:
+            folders.append(folder or "/")
+        elif is_local:
             folders.append(os.path.join(model_name, *folder.split("/")) if folder else model_name)
         else:
             from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
@@ -2057,9 +2156,32 @@ class FastSentenceTransformer(FastModel):
                 if content:
                     break
 
+        def descend(route, sub_ref, sub_class, sub_depth):
+            # Router.load joins the route onto its own subfolder (Path(subfolder, route)),
+            # and fetches it from the same repository.
+            sub_folder = (
+                route if route.startswith("/") else (f"{folder}/{route}" if folder else route)
+            )
+            FastSentenceTransformer._check_delegated_module_config(
+                model_name,
+                {"path": sub_folder},
+                sub_ref,
+                sub_class,
+                token = token,
+                cache_dir = cache_dir,
+                revision = revision,
+                depth = sub_depth,
+            )
+
         for load_path in dict.fromkeys(folders):
             FastSentenceTransformer._check_module_config_class_refs(
-                load_path, class_ref, model_name, False, module_class
+                load_path,
+                class_ref,
+                model_name,
+                False,
+                module_class,
+                descend = descend,
+                depth = depth,
             )
 
     @staticmethod
