@@ -52019,6 +52019,9 @@ async def _external_image_generation(
         or body.localized_edit
         or body.sampler
         or body.schedule_type
+        or body.mask_blur is not None
+        or body.inpaint_only_masked is not None
+        or body.inpaint_padding is not None
     ):
         raise HTTPException(
             status_code = 400,

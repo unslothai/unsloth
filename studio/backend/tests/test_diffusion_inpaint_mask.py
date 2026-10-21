@@ -27,6 +27,7 @@ from test_diffusion_backend import (  # noqa: E402,F401
     _tiny_png_b64,
     fake_runtime,
 )
+from test_diffusion_routes import client  # noqa: E402,F401  (fixture)
 
 
 def _mask():
@@ -271,3 +272,22 @@ def test_only_masked_passes_padding_mask_crop(fake_runtime, tmp_path, monkeypatc
 def test_status_flag_false_when_nothing_loaded():
     from core.inference.diffusion import DiffusionBackend
     assert DiffusionBackend().status().get("supports_inpaint_only_masked", False) is False
+
+
+@pytest.mark.parametrize(
+    "field", [{"mask_blur": 4}, {"inpaint_only_masked": True}, {"inpaint_padding": 48}]
+)
+def test_external_connection_refuses_inpaint_mask_fields(client, monkeypatch, field):
+    import routes.inference as inference_routes
+
+    looked_up = []
+    monkeypatch.setattr(
+        inference_routes.providers_db, "get_provider", lambda pid: looked_up.append(pid)
+    )
+    response = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "provider_id": "openai-1", "model": "gpt-image-1", **field},
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "An external image connection only supports text to image."
+    assert looked_up == []
