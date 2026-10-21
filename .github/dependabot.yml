@@ -2,7 +2,12 @@
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" only scans .github/workflows. The composite actions under
+    # .github/actions pin the same actions (setup-node, cache) and must
+    # move in the same PR, or two SHAs of one action end up in the tree.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     cooldown:
