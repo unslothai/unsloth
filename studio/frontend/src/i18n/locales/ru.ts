@@ -2724,6 +2724,10 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      showReplyTimes: "Время ответов",
+      showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
+      showReplyTimesKeywords:
+        "время метка дата когда завершено ответ сообщение timestamp time clock date reply",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       modelDisclaimer: "Показывать предупреждение о модели",

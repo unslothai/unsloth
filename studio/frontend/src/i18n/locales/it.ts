@@ -2653,6 +2653,10 @@ export const it = {
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
+      showReplyTimes: "Orario delle risposte",
+      showReplyTimesDescription: "Mostra sotto ogni risposta quando è terminata.",
+      showReplyTimesKeywords:
+        "orario ora data quando terminata risposta messaggio timestamp time clock date reply",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       modelDisclaimer: "Mostra l'avviso sul modello",

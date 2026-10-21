@@ -2739,6 +2739,10 @@ export const es = {
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
+      showReplyTimes: "Hora de las respuestas",
+      showReplyTimesDescription: "Mostrar debajo de cada respuesta cuándo terminó.",
+      showReplyTimesKeywords:
+        "marca de tiempo hora fecha cuándo terminó respuesta mensaje timestamp time clock date reply",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       modelDisclaimer: "Mostrar aviso del modelo",

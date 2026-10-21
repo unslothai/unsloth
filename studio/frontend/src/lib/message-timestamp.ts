@@ -10,3 +10,19 @@ export function messageTimestamp(message: {
   const time = message.createdAt?.getTime();
   return time !== undefined && Number.isFinite(time) ? time : undefined;
 }
+
+/** When a reply finished, else when it was created; none while it is still running. */
+export function replyFinishedTimestamp(message: {
+  createdAt?: Date;
+  status?: { type?: string };
+  metadata?: { custom?: Record<string, unknown> };
+}): number | undefined {
+  if (message.status?.type === "running") return undefined;
+  const details = message.metadata?.custom?.responseDetails as
+    | { finishedAt?: unknown }
+    | undefined;
+  const finishedAt = details?.finishedAt;
+  return typeof finishedAt === "number" && Number.isFinite(finishedAt)
+    ? finishedAt
+    : messageTimestamp(message);
+}

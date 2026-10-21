@@ -2664,6 +2664,10 @@ export const zhCN = {
         "通知 提醒 完成 结束 就绪 回复 后台 最小化 notify notification alert done finished reply background",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
+      showReplyTimes: "回复时间",
+      showReplyTimesDescription: "在每条回复下方显示其完成的时间。",
+      showReplyTimesKeywords:
+        "时间戳 时间 时刻 日期 完成 回复 消息 timestamp time clock date reply",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       modelDisclaimer: "显示模型免责声明",

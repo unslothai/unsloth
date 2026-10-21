@@ -2707,6 +2707,10 @@ export const ar = {
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
+      showReplyTimes: "أوقات الردود",
+      showReplyTimesDescription: "إظهار وقت انتهاء كل رد أسفله.",
+      showReplyTimesKeywords:
+        "طابع زمني وقت ساعة تاريخ متى انتهى رد رسالة timestamp time clock date reply",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",

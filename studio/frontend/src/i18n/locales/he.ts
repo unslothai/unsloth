@@ -2823,6 +2823,10 @@ export const he = {
         "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
+      showReplyTimes: "זמני תשובות",
+      showReplyTimesDescription: "הצג מתחת לכל תשובה מתי היא הסתיימה.",
+      showReplyTimesKeywords:
+        "חותמת זמן שעה תאריך מתי הסתיים תשובה הודעה timestamp time clock date reply",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",
       inlineEditResponseDescription:
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",

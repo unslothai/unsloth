@@ -2690,6 +2690,10 @@ export const ja = {
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
+      showReplyTimes: "応答の時刻",
+      showReplyTimesDescription: "各応答の下に、完了した時刻を表示します。",
+      showReplyTimesKeywords:
+        "タイムスタンプ 時刻 時間 日付 完了 応答 メッセージ timestamp time clock date reply",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       modelDisclaimer: "モデルの免責事項を表示",

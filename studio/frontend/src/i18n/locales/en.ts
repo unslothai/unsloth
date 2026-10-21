@@ -2765,6 +2765,10 @@ export const en = {
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
+      showReplyTimes: "Reply times",
+      showReplyTimesDescription: "Show when each reply finished, below the reply.",
+      showReplyTimesKeywords:
+        "timestamp time clock date hour when finished arrived reply response message",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",

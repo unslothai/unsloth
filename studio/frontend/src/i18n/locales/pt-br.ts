@@ -2726,6 +2726,10 @@ export const ptBR = {
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",
+      showReplyTimes: "Horário das respostas",
+      showReplyTimesDescription: "Mostrar abaixo de cada resposta quando ela terminou.",
+      showReplyTimesKeywords:
+        "carimbo de data hora data quando terminou resposta mensagem timestamp time clock date reply",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       modelDisclaimer: "Mostrar aviso do modelo",

@@ -2907,6 +2907,10 @@ export const sv = {
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
+      showReplyTimes: "Svarstider",
+      showReplyTimesDescription: "Visa under varje svar när det blev klart.",
+      showReplyTimesKeywords:
+        "tidsstämpel tid klocka datum när klar svar meddelande timestamp time clock date reply",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",

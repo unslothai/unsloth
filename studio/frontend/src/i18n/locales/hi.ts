@@ -2716,6 +2716,10 @@ export const hi = {
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
+      showReplyTimes: "जवाब का समय",
+      showReplyTimesDescription: "हर जवाब के नीचे दिखाएँ कि वह कब पूरा हुआ।",
+      showReplyTimesKeywords:
+        "टाइमस्टैम्प समय घड़ी तारीख कब पूरा जवाब संदेश timestamp time clock date reply",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",

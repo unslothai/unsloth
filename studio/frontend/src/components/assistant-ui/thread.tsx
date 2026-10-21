@@ -51,6 +51,7 @@ import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-lis
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
+import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
@@ -8453,6 +8454,8 @@ const AssistantMessage: FC = () => {
       </div>
 
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
+        {/* First, so the action bar mounting on hover never moves it. */}
+        <AssistantMessageTime />
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>

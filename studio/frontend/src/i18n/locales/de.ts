@@ -2748,6 +2748,10 @@ export const de = {
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
+      showReplyTimes: "Antwortzeiten",
+      showReplyTimesDescription: "Unter jeder Antwort anzeigen, wann sie fertig war.",
+      showReplyTimesKeywords:
+        "Zeitstempel Uhrzeit Datum wann fertig Antwort Nachricht timestamp time clock date reply",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       modelDisclaimer: "Modell-Hinweis anzeigen",

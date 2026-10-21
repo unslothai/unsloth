@@ -2698,6 +2698,10 @@ export const ko = {
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
+      showReplyTimes: "응답 시간",
+      showReplyTimesDescription: "각 응답 아래에 완료된 시간을 표시합니다.",
+      showReplyTimesKeywords:
+        "타임스탬프 시간 시각 날짜 완료 응답 메시지 timestamp time clock date reply",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       modelDisclaimer: "모델 고지 표시",
