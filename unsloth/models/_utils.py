@@ -5613,6 +5613,9 @@ def patch_gradient_accumulation_fix(Trainer):
             _replan_auto_offload_safely(self)
             _block_swap_for_trainer_backend(self)
             _enable_ddp_batched_grad_copy(self)
+            from ._ddp_defaults import install_unsloth_ddp_comm_defaults
+
+            install_unsloth_ddp_comm_defaults(self)
             if os.environ.get("UNSLOTH_OFFLOAD_OPTIMIZER_STATE", "0") != "0":
                 from ..optimizers.state_offload import install_optimizer_state_offload
                 install_optimizer_state_offload(self)
@@ -8140,6 +8143,19 @@ def _get_inference_mode_context_manager(model: torch.nn.Module):
         getattr(accelerate_state, "AcceleratorState", None), "_shared_state", None
     )
     if isinstance(shared_state, dict) and "FSDP" in str(shared_state.get("distributed_type", "")):
+        return torch.no_grad()
+    # ZeRO-3 keeps small persistent gathered params, so the same poisoning applies.
+    if os.environ.get("ACCELERATE_USE_DEEPSPEED", "").strip().lower() in ("1", "true", "yes", "on"):
+        return torch.no_grad()
+    if isinstance(shared_state, dict) and "DEEPSPEED" in str(
+        shared_state.get("distributed_type", "")
+    ):
+        return torch.no_grad()
+    try:
+        first = next(iter(model.parameters()), None)
+    except Exception:
+        first = None
+    if first is not None and hasattr(first, "ds_id"):
         return torch.no_grad()
     return torch.inference_mode()
 

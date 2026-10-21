@@ -310,6 +310,9 @@ export const BUDGET = {
   // The Rosetta chat-only messages (#14374) in the eager sidebar and hardware verdict add 298 B raw / 127 B
   // transfer (6,859,194 -> 6,859,492 B raw, 2,065,328 -> 2,065,455 B transfer against 34c5203ebb, one machine and
   // build, Node 24, 96 chunks). Raised to that build plus the same 160 B raw / 189 B transfer margin.
+  // The retrieved passage viewer (#13987) in the eager chat UI adds 3,132 B raw / 939 B transfer (6,859,492 ->
+  // 6,862,624 B raw, 2,065,455 -> 2,066,394 B transfer against 98010f6eee, one machine and build, 96 chunks).
+  // Raised to that build plus the same 160 B raw / 189 B transfer margin.
   // The Settings > MCP tab and per-tool toggles add 1,966 B raw / 738 B transfer (measured against d9aded3801, one
   // machine and build, Node 24, 96 -> 97 chunks): the tab panel is lazy, so the growth is its strings in the eager
   // English catalog plus the TABS, search and palette entries. The 97th chunk is api-provider-logo, split out of the
@@ -319,8 +322,10 @@ export const BUDGET = {
   // catalog. Raised by that.
   // Opening backend media links against the backend on Desktop adds 82 B raw (6,861,779 -> 6,861,861 B raw,
   // 2,066,292 -> 2,066,268 B transfer, one machine and build, Node 22, 97 chunks). Raised by that.
-  transferBytes: 2_066_397,
-  rawBytes: 6_861_933,
+  // Merged with main at 77e6eaffc the build measures 6,864,999 B raw / 2,067,252 B transfer (one machine and build,
+  // Node 22, 97 chunks). Raised to that plus the same 160 B raw / 189 B transfer margin.
+  transferBytes: 2_067_441,
+  rawBytes: 6_865_159,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -166,6 +166,8 @@ def _running_under_rosetta() -> bool:
                     ["sysctl", "-n", "hw.optional.arm64"],
                     capture_output = True,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                     timeout = 2,
                 )
                 answer = out.returncode == 0 and out.stdout.strip() == "1"
